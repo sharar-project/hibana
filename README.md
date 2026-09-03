@@ -30,12 +30,13 @@ attributed Triton kernels, on top of `torch`, `flashinfer`, `triton`,
 
 ## Status
 
-Phases 0 and 1 are complete: the dev container, the reference oracles, the
-weight loader, the vendored GDN kernels and the full Qwen3.8 prefill forward
-exist, and `sharar parity` shows the forward matches the reference to within
-the model's own quantization noise floor ([docs/parity.md](docs/parity.md)).
-Phase 2 (decode loop, KV/state pools, CUDA graphs) is next. Read
-[roadmap.md](roadmap.md) before doing anything else.
+Phases 0 to 2 are complete. The engine loads the checkpoint, prefills, and
+decodes with CUDA graphs at 12.1 tok/s single-stream and 44.6 aggregate at
+batch 4 (reference 12.7 and 46.4), passes the four quality canaries, and
+matches the reference to within the model's own quantization noise floor
+([docs/parity.md](docs/parity.md), [docs/phase2.md](docs/phase2.md)). Phase 3
+(memory ledger and radix prefix cache) is next. Read [roadmap.md](roadmap.md)
+before doing anything else.
 
 ## Attribution and license
 

@@ -1,9 +1,9 @@
 """Qwen3.8-27B hybrid model assembled from the layer modules.
 
-`prefill()` runs one full sequence with fresh state and can capture per-layer
-outputs in the reference's layout: each decoder layer yields
-(hidden_states, residual) where residual is the stream before this layer's MLP
-output is added; the next layer's input norm performs that addition.
+`forward()` runs a prefill (one fresh sequence) or a decode step (a batch of
+one new token each) according to the ForwardContext. Per-layer capture keeps
+the reference's layout: each decoder layer yields (hidden_states, residual)
+where residual is the stream before this layer's MLP output is added.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from pathlib import Path
 import torch
 
 from sharar import config
+from sharar.engine.context import ForwardContext, scratch_prefill_context
 from sharar.kernels import ops
 from sharar.model.attention import Attention
 from sharar.model.gdn import GatedDeltaNet
@@ -34,24 +35,23 @@ class DecoderLayer:
         self.input_norm = GemmaRMSNorm(w.get(f"{p}.input_layernorm.weight").to(device), config.RMS_NORM_EPS)
         self.post_norm = GemmaRMSNorm(w.get(f"{p}.post_attention_layernorm.weight").to(device), config.RMS_NORM_EPS)
         if kind == "full_attention":
-            self.mixer = Attention(w, f"{p}.self_attn", device, rope, ragged)
+            self.mixer = Attention(w, f"{p}.self_attn", index, device, rope, ragged)
         else:
-            self.mixer = GatedDeltaNet(w, f"{p}.linear_attn", device)
+            self.mixer = GatedDeltaNet(w, f"{p}.linear_attn", index, device)
         self.mlp = Mlp(w, f"{p}.mlp", device, fused_silu_quant=fused_silu_quant)
 
-    def prefill(self, hidden: torch.Tensor, residual: torch.Tensor | None, positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        if residual is None:
-            residual = hidden
-            hidden = self.input_norm(hidden)
-        else:
-            hidden, residual = self.input_norm.fused_add(hidden, residual)
-        if self.kind == "full_attention":
-            hidden = self.mixer.prefill(hidden, positions)
-        else:
-            hidden = self.mixer.prefill(hidden)
-        hidden, residual = self.post_norm.fused_add(hidden, residual)
+    def forward(self, hidden: torch.Tensor, residual: torch.Tensor | None, ctx: ForwardContext) -> tuple[torch.Tensor, torch.Tensor]:
+        inplace = not ctx.capture
+        # Input norm also emits the FP8 input of the mixer's first projection.
+        hidden, hidden_q, residual = self.input_norm.fused_add_quant(hidden, residual, self.mixer.input_scale, inplace=inplace)
+        hidden = self.mixer.forward(hidden, ctx, hidden_q)
+        hidden, residual = self.post_norm.fused_add(hidden, residual, inplace=inplace)
         hidden = self.mlp(hidden)
         return hidden, residual
+
+    def prefill(self, hidden: torch.Tensor, residual: torch.Tensor | None, positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Stand-alone prefill without pools (parity tools)."""
+        return self.forward(hidden, residual, scratch_prefill_context(hidden.shape[0], hidden.device))
 
 
 class Qwen38:
@@ -84,24 +84,27 @@ class Qwen38:
                 f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated")
 
     @torch.inference_mode()
-    def prefill(self, input_ids: torch.Tensor, capture: bool = False) -> dict:
-        """Run one sequence. Returns final normalized hidden states and, when
-        capture is set, embed/per-layer/norm tensors for parity."""
-        t = input_ids.shape[0]
-        positions = torch.arange(t, dtype=torch.int64, device=self.device)
+    def forward(self, input_ids: torch.Tensor, ctx: ForwardContext, capture: bool = False) -> dict:
+        """Run one prefill sequence or one decode batch. Returns the final
+        normalized hidden states and, when capture is set, per-layer tensors."""
         hidden = torch.nn.functional.embedding(input_ids, self.embed)
-        out: dict = {"input_ids": input_ids, "positions": positions}
+        ctx.capture = capture
+        out: dict = {"input_ids": input_ids, "positions": ctx.positions}
         if capture:
             out["embed"] = hidden
             out["layers"] = []
         residual = None
         for layer in self.layers:
-            hidden, residual = layer.prefill(hidden, residual, positions)
+            hidden, residual = layer.forward(hidden, residual, ctx)
             if capture:
                 out["layers"].append((hidden, residual))
         normed, _ = self.final_norm.fused_add(hidden, residual)
         out["norm"] = normed
         return out
+
+    def prefill(self, input_ids: torch.Tensor, capture: bool = False) -> dict:
+        """Stand-alone prefill without pools (parity tools)."""
+        return self.forward(input_ids, scratch_prefill_context(input_ids.shape[0], self.device), capture)
 
     @torch.inference_mode()
     def logits(self, hidden: torch.Tensor) -> torch.Tensor:

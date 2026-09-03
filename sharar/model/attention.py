@@ -1,11 +1,19 @@
-"""Full attention layer: FP8 QKV/O projections, gated output, q/k Gemma norm, partial RoPE."""
+"""Full attention layer: FP8 QKV/O projections, gated output, q/k Gemma norm, partial RoPE.
+
+Prefill uses FlashInfer ragged causal attention over bf16 K/V (the reference's
+no-prefix path) and writes K/V into the FP8 pages. Decode reads the FP8 pages
+through FlashInfer paged decode.
+"""
 
 from __future__ import annotations
 
 import torch
 
 from sharar import config
+from sharar.engine.context import ForwardContext
 from sharar.kernels import ops
+from sharar.kernels.fp8_quant import gated_quant_fp8
+from sharar.kernels.qk_norm_rope import qk_norm_rope
 from sharar.model.norm import GemmaRMSNorm
 from sharar.model.rope import PartialRotary
 from sharar.weights.modelopt import load_fp8_linear
@@ -13,7 +21,8 @@ from sharar.weights.safetensors import SnapshotWeights
 
 
 class Attention:
-    def __init__(self, w: SnapshotWeights, prefix: str, device: torch.device, rope: PartialRotary, ragged: ops.RaggedAttention):
+    def __init__(self, w: SnapshotWeights, prefix: str, layer_id: int, device: torch.device, rope: PartialRotary, ragged: ops.RaggedAttention):
+        self.layer_id = layer_id
         self.num_heads = config.NUM_ATTENTION_HEADS
         self.num_kv_heads = config.NUM_KV_HEADS
         self.head_dim = config.HEAD_DIM
@@ -27,17 +36,43 @@ class Attention:
         self.rope = rope
         self.ragged = ragged
 
-    def prefill(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+    @property
+    def input_scale(self) -> torch.Tensor:
+        return self.qkv.input_scale
+
+    def _qkv(self, x: torch.Tensor, positions: torch.Tensor, x_q: torch.Tensor | None = None):
         t = x.shape[0]
-        qkv = ops.fp8_linear(x, self.qkv)
-        q_gate, k, v = qkv.split([self.q_size * 2, self.kv_size, self.kv_size], dim=-1)
-        q_gate = q_gate.view(t, self.num_heads, 2 * self.head_dim)
-        q, gate = q_gate[..., : self.head_dim], q_gate[..., self.head_dim :]
-        q = self.q_norm(q.reshape(-1, self.head_dim)).view(t, self.num_heads, self.head_dim)
-        k = self.k_norm(k.reshape(-1, self.head_dim)).view(t, self.num_kv_heads, self.head_dim)
-        q = self.rope(positions, q)
-        k = self.rope(positions, k)
+        qkv = ops.fp8_linear(x, self.qkv, x_q=x_q)
+        gate = qkv[:, : self.q_size * 2].view(t, self.num_heads, 2 * self.head_dim)[..., self.head_dim :]
+        q, k = qk_norm_rope(
+            qkv, positions, self.rope.cos_sin, self.q_norm.weight, self.k_norm.weight,
+            self.num_heads, self.num_kv_heads, self.head_dim, self.rope.rotary_dim, config.RMS_NORM_EPS,
+        )
+        v = qkv[:, self.q_size * 2 + self.kv_size :].view(t, self.num_kv_heads, self.head_dim).contiguous()
+        return q, k, v, gate
+
+    def _finish(self, attn: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
+        t = attn.shape[0]
+        # attn * sigmoid(gate), quantized straight into o_proj's FP8 input.
+        o_in = gated_quant_fp8(attn.view(t, self.num_heads, self.head_dim), gate, self.o.input_scale)
+        return ops.fp8_linear(None, self.o, x_q=o_in)
+
+    def prefill(self, x: torch.Tensor, positions: torch.Tensor, ctx: ForwardContext | None = None, x_q: torch.Tensor | None = None) -> torch.Tensor:
+        t = x.shape[0]
+        q, k, v, gate = self._qkv(x, positions, x_q)
+        if ctx is not None and ctx.kv_pool is not None:
+            ctx.kv_pool.write(self.layer_id, ctx.pages, k, v)
         self.ragged.plan([t], x.device)
-        attn = self.ragged.run(q.contiguous(), k.contiguous(), v.contiguous())
-        attn = attn.view(t, self.num_heads, self.head_dim) * torch.sigmoid(gate)
-        return ops.fp8_linear(attn.reshape(t, self.q_size), self.o)
+        attn = self.ragged.run(q, k, v)
+        return self._finish(attn, gate)
+
+    def decode(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
+        q, k, v, gate = self._qkv(x, ctx.positions, x_q)
+        ctx.kv_pool.write(self.layer_id, ctx.out_pages, k, v)
+        attn = ctx.decode_wrapper.run(q, ctx.kv_pool.cache(self.layer_id))
+        return self._finish(attn.view(x.shape[0], self.q_size), gate)
+
+    def forward(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
+        if ctx.mode == "prefill":
+            return self.prefill(x, ctx.positions, ctx, x_q)
+        return self.decode(x, ctx, x_q)

@@ -19,6 +19,26 @@ def main(argv: list[str] | None = None) -> int:
     p_par.add_argument("--layers", default="all", help="'all' or comma-separated layer ids to dump-compare")
     p_pp = sub.add_parser("parity-prompts", help="write the fixed parity prompt set as token IDs")
     p_pp.add_argument("--out", required=True)
+    p_gen = sub.add_parser("generate", help="greedy/sampled generation for one parity prompt (eager decode)")
+    p_gen.add_argument("--prompts", required=True, help="prompts.json from parity-prompts")
+    p_gen.add_argument("--name", required=True)
+    p_gen.add_argument("--max-new-tokens", type=int, default=32)
+    p_gen.add_argument("--temperature", type=float, default=0.0)
+    p_can = sub.add_parser("canaries", help="decode every parity prompt and compare with the reference continuations")
+    p_can.add_argument("--reference", required=True)
+    p_can.add_argument("--max-new-tokens", type=int, default=32)
+    p_can.add_argument("--batch", type=int, default=1, help="also decode the four canaries as one batch of this size")
+    p_can.add_argument("--eager", action="store_true", help="skip CUDA graph capture")
+    p_bd = sub.add_parser("bench-decode", help="decode throughput and determinism with CUDA graphs")
+    p_bd.add_argument("--prompts", required=True)
+    p_bd.add_argument("--name", default="rand128")
+    p_bd.add_argument("--max-new-tokens", type=int, default=64)
+    p_bd.add_argument("--batches", default="1,2,4")
+    p_prof = sub.add_parser("profile", help="kernel time breakdown for prefill or decode")
+    p_prof.add_argument("--prompts", required=True)
+    p_prof.add_argument("--name", default="rand2048")
+    p_prof.add_argument("--mode", choices=["prefill", "decode", "both"], default="both")
+    p_prof.add_argument("--top", type=int, default=30)
     args = parser.parse_args(argv)
 
     from sharar import config
@@ -46,6 +66,22 @@ def main(argv: list[str] | None = None) -> int:
         for name, ids in prompts.items():
             print(f"  {name}: {len(ids)} tokens")
         return 0
+    if args.command == "generate":
+        from sharar.engine.run import generate_cli
+
+        return generate_cli(args.prompts, args.name, args.max_new_tokens, args.temperature)
+    if args.command == "canaries":
+        from sharar.engine.run import canaries_cli
+
+        return canaries_cli(args.reference, args.max_new_tokens, args.batch, graphs=not args.eager)
+    if args.command == "profile":
+        from sharar.engine.run import profile_cli
+
+        return profile_cli(args.prompts, args.name, args.mode, top=args.top)
+    if args.command == "bench-decode":
+        from sharar.engine.run import bench_decode_cli
+
+        return bench_decode_cli(args.prompts, args.name, args.max_new_tokens, args.batches)
     if args.command == "parity":
         from sharar.parity.run import run_parity
 

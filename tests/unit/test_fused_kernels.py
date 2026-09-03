@@ -1,0 +1,126 @@
+import pytest
+import torch
+
+cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs the GB10")
+
+
+@cuda
+def test_gemma_rmsnorm_matches_torch():
+    from sharar.kernels.fused_norm import gemma_rmsnorm
+    from sharar.model.norm import GemmaRMSNorm
+
+    torch.manual_seed(0)
+    x = torch.randn(37, 5120, device="cuda", dtype=torch.bfloat16)
+    r = torch.randn(37, 5120, device="cuda", dtype=torch.bfloat16)
+    w = torch.randn(5120, device="cuda", dtype=torch.bfloat16) * 0.1
+    ref_norm = GemmaRMSNorm(w, 1e-6)
+    out, _ = gemma_rmsnorm(x, w, 1e-6)
+    _close_bf16(out, ref_norm(x))
+    r2 = r.clone()
+    out2, fp8 = gemma_rmsnorm(x, w, 1e-6, residual=r2, fp8_scale=torch.tensor(0.05, device="cuda"))
+    ref_out, ref_res = ref_norm.fused_add(x, r)
+    assert torch.equal(r2, ref_res)
+    _close_bf16(out2, ref_out)
+    ref_fp8 = (ref_out.float() / 0.05).clamp(-448, 448).to(torch.float8_e4m3fn)
+    _close_fp8(fp8, ref_fp8)
+
+
+def _close_bf16(a, b):
+    # Operation order differs from torch; allow one bf16 ulp on a few elements.
+    assert torch.allclose(a.float(), b.float(), rtol=1e-2, atol=1e-3), (a.float() - b.float()).abs().max()
+
+
+def _close_fp8(a, b):
+    a = a.float()
+    b = b.float()
+    exact = (a == b).float().mean().item()
+    assert exact > 0.995, exact
+    assert torch.allclose(a, b, rtol=0.13, atol=0.5), (a - b).abs().max()
+
+
+@cuda
+def test_quant_fp8_and_gate():
+    from sharar.kernels.fp8_quant import gated_quant_fp8, quant_fp8
+
+    torch.manual_seed(0)
+    x = torch.randn(5, 24 * 256, device="cuda", dtype=torch.bfloat16)
+    qkv = torch.randn(5, 24, 512, device="cuda", dtype=torch.bfloat16)
+    gate = qkv[..., 256:]
+    scale = torch.tensor(0.02, device="cuda")
+    ref = (x.float() / 0.02).clamp(-448, 448).to(torch.float8_e4m3fn)
+    assert torch.equal(quant_fp8(x, scale).float(), ref.float())
+    gated = (x.view(5, 24, 256).float() * torch.sigmoid(gate.float())).to(torch.bfloat16).reshape(5, -1)
+    ref_g = (gated.float() / 0.02).clamp(-448, 448).to(torch.float8_e4m3fn)
+    _close_fp8(gated_quant_fp8(x.view(5, 24, 256), gate, scale), ref_g)
+
+
+@cuda
+def test_fp8_gemv_matches_scaled_mm():
+    from sharar.kernels.fp8_gemv import fp8_gemv
+
+    torch.manual_seed(0)
+    for m in (1, 2, 4):
+        x = (torch.randn(m, 5120, device="cuda") * 40).clamp(-448, 448).to(torch.float8_e4m3fn)
+        w = (torch.randn(6144, 5120, device="cuda") * 40).clamp(-448, 448).to(torch.float8_e4m3fn)
+        a = torch.tensor(0.2, device="cuda")
+        b = torch.tensor(0.001, device="cuda")
+        ref = torch._scaled_mm(x, w.t(), scale_a=a.reshape(1, 1), scale_b=b.reshape(1, 1), out_dtype=torch.bfloat16)
+        out = fp8_gemv(x, w, a * b)
+        assert torch.allclose(out.float(), ref.float(), rtol=2e-2, atol=1e-2), (out - ref).abs().max()
+
+
+@cuda
+def test_qk_norm_rope_matches_torch():
+    from sharar.kernels.qk_norm_rope import qk_norm_rope
+    from sharar.model.norm import GemmaRMSNorm
+    from sharar.model.rope import PartialRotary
+
+    torch.manual_seed(0)
+    t, hq, hk, d, r = 7, 24, 4, 256, 64
+    qkv = torch.randn(t, hq * 2 * d + 2 * hk * d, device="cuda", dtype=torch.bfloat16)
+    qw = torch.randn(d, device="cuda", dtype=torch.bfloat16) * 0.3
+    kw = torch.randn(d, device="cuda", dtype=torch.bfloat16) * 0.3
+    rope = PartialRotary(d, r, 1e7, 4096, torch.device("cuda"))
+    pos = torch.arange(100, 100 + t, device="cuda")
+    q, k = qk_norm_rope(qkv, pos, rope.cos_sin, qw, kw, hq, hk, d, r, 1e-6)
+    qn, kn = GemmaRMSNorm(qw, 1e-6), GemmaRMSNorm(kw, 1e-6)
+    q_gate, k_ref, _ = qkv.split([hq * 2 * d, hk * d, hk * d], dim=-1)
+    q_ref = q_gate.view(t, hq, 2 * d)[..., :d]
+    q_ref = rope(pos, qn.torch_forward(q_ref.reshape(-1, d)).view(t, hq, d))
+    k_ref = rope(pos, kn.torch_forward(k_ref.reshape(-1, d)).view(t, hk, d))
+    assert torch.allclose(q.float(), q_ref.float(), rtol=2e-2, atol=2e-2), (q.float() - q_ref.float()).abs().max()
+    assert torch.allclose(k.float(), k_ref.float(), rtol=2e-2, atol=2e-2), (k.float() - k_ref.float()).abs().max()
+
+
+@cuda
+def test_nvfp4_quantize_matches_flashinfer():
+    from sharar.kernels import ops
+    from sharar.kernels.nvfp4_quant import nvfp4_quantize
+
+    torch.manual_seed(0)
+    for m, k in ((2048, 5120), (37, 17408), (1, 5120)):
+        x = torch.randn(m, k, device="cuda", dtype=torch.bfloat16) * 0.05
+        gs = torch.tensor(700.0, device="cuda")
+        q_ref, sf_ref = ops.fp4_quantize(x, gs)
+        q, sf = nvfp4_quantize(x, gs)
+        assert sf.shape == sf_ref.shape, (sf.shape, sf_ref.shape)
+        sf_eq = (sf.view(torch.uint8) == sf_ref.view(torch.uint8)).float().mean().item()
+        q_eq = (q == q_ref).float().mean().item()
+        assert sf_eq > 0.9999, sf_eq
+        assert q_eq > 0.9995, q_eq
+
+
+@cuda
+def test_silu_mul_nvfp4_quantize_matches_two_step():
+    from sharar.kernels.nvfp4_quant import nvfp4_quantize, silu_mul_nvfp4_quantize
+
+    torch.manual_seed(0)
+    x = torch.randn(64, 2 * 17408, device="cuda", dtype=torch.bfloat16)
+    gs = torch.tensor(400.0, device="cuda")
+    g, u = x[:, :17408].float(), x[:, 17408:].float()
+    h = (torch.nn.functional.silu(g) * u).to(torch.bfloat16)
+    q_ref, sf_ref = nvfp4_quantize(h, gs)
+    q, sf = silu_mul_nvfp4_quantize(x, gs)
+    # fp32 product vs bf16-rounded product: a few blocks round differently
+    assert (sf.view(torch.uint8) == sf_ref.view(torch.uint8)).float().mean().item() > 0.98
+    assert (q == q_ref).float().mean().item() > 0.97

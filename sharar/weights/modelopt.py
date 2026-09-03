@@ -23,6 +23,11 @@ class Fp8Linear:
     weight: torch.Tensor  # [N, K] float8_e4m3fn, one scale for all rows
     weight_scale: torch.Tensor  # [] float32
     input_scale: torch.Tensor  # [] float32
+    alpha: torch.Tensor = None  # [] float32 = input_scale * weight_scale
+
+    def __post_init__(self):
+        if self.alpha is None:
+            self.alpha = (self.input_scale * self.weight_scale).float()
 
     @property
     def out_features(self) -> int:
