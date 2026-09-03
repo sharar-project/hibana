@@ -30,8 +30,12 @@ attributed Triton kernels, on top of `torch`, `flashinfer`, `triton`,
 
 ## Status
 
-Phase 0. The repository, oracle plumbing and roadmap exist; no engine code yet.
-Read [roadmap.md](roadmap.md) before doing anything else.
+Phases 0 and 1 are complete: the dev container, the reference oracles, the
+weight loader, the vendored GDN kernels and the full Qwen3.8 prefill forward
+exist, and `sharar parity` shows the forward matches the reference to within
+the model's own quantization noise floor ([docs/parity.md](docs/parity.md)).
+Phase 2 (decode loop, KV/state pools, CUDA graphs) is next. Read
+[roadmap.md](roadmap.md) before doing anything else.
 
 ## Attribution and license
 
