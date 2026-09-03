@@ -100,13 +100,21 @@ class GatedDeltaNet:
         mixed_qkv, z, b, a = self._project(x, x_q)
         query_start_loc = torch.tensor([0, t], dtype=torch.int32, device=device)
         cache_indices = torch.tensor([slot], dtype=torch.int32, device=device)
+        has_prefix = ctx is not None and ctx.prefix_len > 0
+        checkpoints = list(ctx.checkpoint_positions) if ctx is not None else []
+        if checkpoints:
+            # conv snapshot = the last 3 pre-conv inputs before the boundary
+            prefix = ctx.prefix_len
+            for pos, cslot in zip(checkpoints, ctx.checkpoint_slots):
+                local = pos - prefix
+                conv_states[cslot] = mixed_qkv[local - CONV_STATE_LEN : local].transpose(0, 1)
         mixed_qkv = causal_conv1d_fn(
             mixed_qkv.transpose(0, 1),
             self.conv_weight,
             None,
             activation="silu",
             conv_states=conv_states,
-            has_initial_state=torch.tensor([False], device=device),
+            has_initial_state=torch.tensor([has_prefix], device=device),
             cache_indices=cache_indices,
             query_start_loc=query_start_loc,
             seq_lens_cpu=[t],
@@ -116,7 +124,7 @@ class GatedDeltaNet:
         k = k.reshape(1, t, self.num_k_heads, self.head_k_dim)
         v = v.reshape(1, t, self.num_v_heads, self.head_v_dim)
         g, beta = fused_gdn_gating(self.A_log, a, b, self.dt_bias)
-        core, _, _ = chunk_gated_delta_rule(
+        core, _, h = chunk_gated_delta_rule(
             q=q, k=k, v=v, g=g, beta=beta,
             initial_state=ssm_states,
             initial_state_indices=cache_indices,
@@ -124,6 +132,13 @@ class GatedDeltaNet:
             head_first=False,
             use_qk_l2norm_in_kernel=True,
         )
+        if checkpoints:
+            # h[0, c] is the state entering chunk c, i.e. after 64*c new tokens.
+            prefix = ctx.prefix_len
+            for pos, cslot in zip(checkpoints, ctx.checkpoint_slots):
+                local = pos - prefix
+                assert local % 64 == 0 and 0 < local < t, (pos, prefix, t)
+                ssm_states[cslot] = h[0, local // 64].to(ssm_states.dtype)
         return self._finish(core, z, t)
 
     def decode(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:

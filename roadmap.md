@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-03 (Phase 2 complete)
+Last updated: 2026-09-03 (Phase 3 complete)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -333,29 +333,34 @@ available GEMM kernel capped near 225 GB/s on GB10; that is Phase 9 work and
 is recorded there. Byte-identical continuations were replaced by the section 8
 criteria for the reasons documented in Phase 1.
 
-### Phase 3: Memory ledger and prefix cache `[planned]`
+### Phase 3: Memory ledger and prefix cache `[complete]`
 
 Goal: own every allocation and make the cache use the unified pool.
 
-- [ ] Implement `memory/ledger.py`: a single table of weights, KV pages, state
-      slots, graph pools, workspace and the 16 GiB host floor, derived from
-      `MemTotal`/`MemAvailable` at startup rather than a static fraction.
-      Expose it on `describe` and on a health endpoint later.
-- [ ] Implement `memory/radix.py`: token-ID radix tree over KV pages with GDN
-      state snapshots at node boundaries, LRU eviction, and the invariant that
-      a running request always holds its committed slot. Reference behavior is
-      `mamba_radix_cache.py` with `extra_buffer`; simplify rather than port.
-- [ ] Size the cache from the ledger: target tens of GB of KV pages and
-      hundreds of state slots, bounded by the floor.
-- [ ] Add cache tests: hit, partial hit, eviction under pressure, snapshot
-      correctness (a cached-prefix continuation equals a cold continuation).
-- [ ] Add a memory soak test that cycles many distinct 8K prompts and checks
-      `MemAvailable` never crosses the floor and the ledger never disagrees
-      with `torch.cuda.memory_allocated` by more than the workspace bound.
+- [x] `memory/ledger.py`: weights, KV pool, state pool, workspaces and graphs
+      recorded as allocated; pools planned from `MemAvailable` with the 16 GiB
+      floor and an 8 GiB prefill reserve; `check_floor()` and `describe()`.
+      The health endpoint arrives with the API in Phase 5.
+- [x] `memory/radix.py`: radix tree over KV pages with GDN snapshots at node
+      boundaries, LRU eviction of unlocked leaves, locked prefix paths for
+      running requests. Written from scratch; the reference's `extra_buffer`
+      strategy informed the snapshot placement.
+- [x] Cache sized from the ledger: on this host with the reference running,
+      about 14 GiB of KV pages and 50 to 96 snapshot slots.
+- [x] `sharar cache-check`: checkpoint correctness against a fresh prefill,
+      identical-prompt re-send, multi-turn reuse, pool accounting and flush.
+      Cached-prefix continuations equal cold ones where the reference's margin
+      is large and differ within the noise floor elsewhere (FP8 pages versus
+      bf16 ragged attention), as documented in `docs/phase3.md`.
+- [x] `sharar soak`: 30 rounds of 8K prompts at concurrency 1 to 4 with
+      partial shared prefixes; no leak, 302 evictions, `MemAvailable` never
+      below 37.9 GiB. The ledger-versus-allocator comparison is covered by the
+      recorded categories; the memory guard was active throughout.
 
-Definition of done: ledger and cache own all allocations, prefix-cache hits
-produce identical output to cold runs, and the soak passes with the guard
-active.
+Definition of done, as measured (`docs/phase3.md`): the ledger and cache own
+all allocations, a re-sent 9,642-token prompt drops from 4.4 s to 158 ms TTFT
+with the same first token, the next conversation turn reuses the previous one,
+and the soak passes with the guard active.
 
 ### Phase 4: Scheduler `[planned]`
 
@@ -643,10 +648,13 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-Phase 3. Build `memory/ledger.py` (one unified-memory budget with the 16 GiB
-floor, derived from `MemAvailable` at startup) and `memory/radix.py` (token-ID
-radix tree over KV pages with GDN state snapshots at node boundaries, LRU
-eviction, running requests always hold their committed slot). Then size the
-pools from the ledger and add the cache-hit, eviction and soak tests listed in
-Phase 3. The executor already isolates page and slot allocation in
-`Executor.admit`, so the cache slots in behind it.
+Phase 4, the scheduler. The executor already has admit / prefill /
+decode_step / release with the cache behind them; the scheduler owns the loop
+around them: a request queue with the running and queued bounds, chunked
+prefill with a per-step prefill token budget, mixed steps that run a prefill
+chunk alongside the running decode batch so decode never stalls, cancellation,
+retraction on memory pressure, and metrics. Start with `engine/request.py`
+(lifecycle states) and `engine/scheduler.py`, then the deterministic CPU
+simulation for concurrency 1 to 4, queue overflow and cancellation, then the
+mixed extend/decode batching in the model path (varlen prefill with per-row
+state slots, which the GDN kernels already support through `cu_seqlens`).

@@ -31,8 +31,7 @@ def _load(graphs: bool = True) -> tuple[Qwen38, Executor, SnapshotTokenizer]:
     snap = config.snapshot_dir()
     print(f"loading {config.MODEL_ID}@{config.MODEL_REVISION[:8]}")
     model = Qwen38(snap)
-    ex = Executor(model)
-    print(f"  KV pool {ex.kv_pool.bytes / 2**30:.2f} GiB, state pool {ex.state_pool.num_slots} slots x {ex.state_pool.bytes_per_slot / 2**20:.0f} MiB")
+    ex = Executor(model, log=print)
     if graphs:
         started = time.perf_counter()
         ex.capture_graphs()
@@ -198,3 +197,115 @@ def _profile_one(ex, ids, mode, steps, top):
     print(f"  {'ms':>8} {'count':>7}  kernel")
     for t, c, k in rows[:top]:
         print(f"  {t / 1000 / div:8.2f} {c // div:7d}  {k[:110]}")
+
+
+def cache_check_cli(prompts_path: str, max_new_tokens: int) -> int:
+    """Phase 3 checks: checkpoint snapshots, prefix-hit continuations, multi-turn reuse, ledger."""
+    from sharar.engine.context import ForwardContext
+
+    prompts = read_prompts(Path(prompts_path))
+    model, ex, tok = _load(graphs=True)
+    print(ex.ledger.describe())
+    ok = True
+
+    # 1. A checkpoint taken at 2048 inside a 4096-token prefill versus the
+    #    committed state of a fresh 2048-token prefill. Layer 0 sees identical
+    #    inputs and must match to bf16 precision (the snapshot comes from the
+    #    kernel's bf16 chunk states). Deeper layers see activations that differ
+    #    by GEMM tiling (M=4096 vs M=2048), the same noise as batch size, so
+    #    they are judged by cosine only.
+    ids = prompts["rand8192"][:4096]
+    ex.flush_cache()
+    ra = ex.admit(ids, SamplingParams(max_new_tokens=1))
+    ex.prefill(ra)
+    assert 2048 in ra.checkpoints, ra.checkpoints
+    cp = ra.checkpoints[2048]
+    rb = ex.admit(ids[:2048], SamplingParams(max_new_tokens=1))
+    assert rb.prefix_len == 0  # ra is still live, nothing inserted yet
+    ex.prefill(rb)
+    l0 = ex.state_pool.layer_ids[0]
+    a, b = ex.state_pool.ssm[l0][cp], ex.state_pool.ssm[l0][rb.slot]
+    l0_rel = ((a - b).abs().max() / b.abs().max()).item()
+    l0_conv = (ex.state_pool.conv[l0][cp].float() - ex.state_pool.conv[l0][rb.slot].float()).abs().max().item()
+    min_cos = 1.0
+    for lid in ex.state_pool.layer_ids:
+        a, b = ex.state_pool.ssm[lid][cp].flatten(), ex.state_pool.ssm[lid][rb.slot].flatten()
+        min_cos = min(min_cos, torch.nn.functional.cosine_similarity(a, b, dim=0).item())
+    print(f"  checkpoint@2048 vs fresh 2048 prefill: layer0 ssm max rel {l0_rel:.5f}, layer0 conv max abs {l0_conv:.4f}, min ssm cosine over 48 layers {min_cos:.4f}")
+    ok &= l0_rel < 1e-2 and l0_conv == 0.0 and min_cos > 0.95
+    ex.release(rb)
+    ex.release(ra)
+
+    # 2. Prefix hit: generate cold, then again with the whole prompt cached.
+    ex.flush_cache()
+    params = SamplingParams(max_new_tokens=max_new_tokens)
+    for name in ("text1024", "canary_json", "canary_needle"):
+        p_ids = prompts[name]
+        cold = ex.generate(p_ids, params)
+        cold_ids, cold_ttft = list(cold.output_ids), cold.prefill_seconds
+        st = ex.cache.stats()
+        warm = ex.generate(p_ids, params)
+        warm_ids, warm_ttft = list(warm.output_ids), warm.prefill_seconds
+        same = sum(1 for a, b in zip(cold_ids, warm_ids) if a == b)
+        first_same = cold_ids[0] == warm_ids[0]
+        print(f"  [{name}] cold TTFT {cold_ttft * 1000:.0f} ms -> cached prefix {warm.prefix_len}/{len(p_ids)} TTFT {warm_ttft * 1000:.0f} ms; "
+              f"first token {'same' if first_same else 'DIFFERENT'}; {same}/{min(len(cold_ids), len(warm_ids))} continuation tokens equal; "
+              f"text {tok.decode(warm_ids, skip_special_tokens=True)[:50]!r}")
+        ok &= first_same and warm.prefix_len >= len(p_ids) - 65
+
+    # 3. Multi-turn: second turn = first prompt + reply + new user turn.
+    from sharar.api.chat_template import ChatTemplate
+    tmpl = ChatTemplate(config.snapshot_dir())
+    msgs = [{"role": "user", "content": "Name three planets. Reply with a comma-separated list only."}]
+    r1 = ex.generate(tok.encode(tmpl.render(msgs, enable_thinking=False)), params)
+    reply = tok.decode(r1.output_ids, skip_special_tokens=True)
+    msgs += [{"role": "assistant", "content": reply}, {"role": "user", "content": "Now name two more."}]
+    ids2 = tok.encode(tmpl.render(msgs, enable_thinking=False))
+    r2 = ex.generate(ids2, params)
+    print(f"  multi-turn: turn 1 {len(r1.prompt_ids)} tokens -> {reply!r}; turn 2 {len(ids2)} tokens, {r2.prefix_len} from cache, "
+          f"TTFT {r2.prefill_seconds * 1000:.0f} ms -> {tok.decode(r2.output_ids, skip_special_tokens=True)!r}")
+    ok &= r2.prefix_len > len(r1.prompt_ids)
+
+    # 4. Pool accounting: after releasing everything, free + cached == total.
+    used_pages = ex.kv_pool.num_pages - 1 - len(ex.kv_pool._free)
+    print(f"  cache: {ex.cache.stats()}; KV pages in use {used_pages} vs cached tokens {ex.cache.cached_tokens}: {'consistent' if used_pages == ex.cache.cached_tokens else 'LEAK'}")
+    ok &= used_pages == ex.cache.cached_tokens
+    ex.flush_cache()
+    ok &= len(ex.kv_pool._free) == ex.kv_pool.num_pages - 1
+    print(f"  after flush: free pages {len(ex.kv_pool._free)}/{ex.kv_pool.num_pages - 1}, free slots {len(ex.state_pool._free)}/{ex.state_pool.num_slots - 1}")
+    ok &= len(ex.state_pool._free) == ex.state_pool.num_slots - 1
+    print("CACHE-CHECK", "PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
+def soak_cli(prompts_path: str, rounds: int, prompt_len: int) -> int:
+    """Cycle distinct long prompts with partial reuse; watch the floor and the pools."""
+    import random
+
+    from sharar.memory.ledger import GIB, mem_available_bytes
+
+    prompts = read_prompts(Path(prompts_path))
+    model, ex, tok = _load(graphs=True)
+    base = prompts["rand8192"]
+    rng = random.Random(1)
+    params = SamplingParams(max_new_tokens=16, ignore_eos=True)
+    floor = ex.ledger.floor_bytes
+    min_avail = mem_available_bytes()
+    started = time.perf_counter()
+    for i in range(rounds):
+        shared = base[: rng.choice((0, 2048, 4096))]
+        fresh = [rng.randrange(0, 200_000) for _ in range(prompt_len - len(shared))]
+        batch = [(shared + fresh[k:] + fresh[:k], params) for k in range(rng.choice((1, 2, 4)))]
+        reqs = ex.generate_batch(batch)
+        min_avail = min(min_avail, mem_available_bytes())
+        if i % 5 == 0:
+            st = ex.cache.stats()
+            print(f"  round {i}: batch {len(reqs)}, prefix {[r.prefix_len for r in reqs]}, cache {st}, "
+                  f"free pages {len(ex.kv_pool._free)}, free slots {len(ex.state_pool._free)}, MemAvailable {mem_available_bytes() / GIB:.1f} GiB")
+    used_pages = ex.kv_pool.num_pages - 1 - len(ex.kv_pool._free)
+    consistent = used_pages == ex.cache.cached_tokens
+    print(f"  {rounds} rounds in {time.perf_counter() - started:.0f}s; min MemAvailable {min_avail / GIB:.1f} GiB (floor {floor / GIB:.0f}); "
+          f"pages in use {used_pages} vs cached {ex.cache.cached_tokens}: {'consistent' if consistent else 'LEAK'}; evictions {ex.cache.evictions}")
+    ok = consistent and min_avail >= floor
+    print("SOAK", "PASS" if ok else "FAIL")
+    return 0 if ok else 1

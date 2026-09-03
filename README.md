@@ -38,7 +38,10 @@ Other commands: `python3 -m sharar canaries --reference /results/parity/referenc
 --prompts /results/parity/prompts.json` (decode throughput and determinism),
 `python3 -m sharar parity --reference /results/parity/reference` (prefill
 parity), `python3 -m sharar profile --prompts /results/parity/prompts.json`
-(kernel time breakdown). All run inside `tools/dev-shell.sh`.
+(kernel time breakdown), `python3 -m sharar cache-check --prompts
+/results/parity/prompts.json` (prefix cache correctness) and `python3 -m sharar
+soak --prompts /results/parity/prompts.json` (memory soak). All run inside
+`tools/dev-shell.sh`.
 
 ## Layout
 
@@ -53,13 +56,15 @@ parity), `python3 -m sharar profile --prompts /results/parity/prompts.json`
 
 ## Status
 
-Phases 0 to 2 are complete. The engine loads the checkpoint, prefills, and
+Phases 0 to 3 are complete. The engine loads the checkpoint, prefills, and
 decodes with CUDA graphs at 12.1 tok/s single-stream and 44.6 aggregate at
-batch 4 (reference 12.7 and 46.4), passes the four quality canaries, and
-matches the reference to within the model's own quantization noise floor
-([docs/parity.md](docs/parity.md), [docs/phase2.md](docs/phase2.md)). Phase 3
-(memory ledger and radix prefix cache) is next. Read [roadmap.md](roadmap.md)
-before doing anything else.
+batch 4 (reference 12.7 and 46.4), passes the four quality canaries, matches
+the reference to within the model's own quantization noise floor, and keeps a
+radix prefix cache with GDN state snapshots sized from a unified-memory ledger
+(a re-sent 9.6K-token prompt goes from 4.4 s to 0.16 s to first token). See
+[docs/parity.md](docs/parity.md), [docs/phase2.md](docs/phase2.md),
+[docs/phase3.md](docs/phase3.md). Phase 4 (scheduler) is next. Read
+[roadmap.md](roadmap.md) before doing anything else.
 
 ## Attribution and license
 

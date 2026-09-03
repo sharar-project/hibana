@@ -6,7 +6,7 @@ Decode runs a batch of B requests, one new token each.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 
@@ -23,8 +23,17 @@ class ForwardContext:
     positions: torch.Tensor  # [T] prefill or [B] decode, int64
     # prefill
     slot: int = 0
-    pages: torch.Tensor | None = None  # [T] int32, KV write location per token
-    seq_len: int = 0
+    pages: torch.Tensor | None = None  # [T] int32, KV write location for each new token
+    seq_len: int = 0  # number of new tokens in this prefill
+    # prefix reuse: the request's committed slot already holds the state after
+    # `prefix_len` tokens and `prefix_pages` hold their KV
+    prefix_len: int = 0
+    prefix_pages: torch.Tensor | None = None
+    paged_prefill_wrapper: object = None  # planned FlashInfer paged prefill (prefix case)
+    # GDN state checkpoints requested at these absolute token counts (multiples
+    # of 64, inside the new tokens); layer i writes them to checkpoint_slots
+    checkpoint_positions: list[int] = field(default_factory=list)
+    checkpoint_slots: list[int] = field(default_factory=list)
     # decode
     slots: torch.Tensor | None = None  # [B] int32 committed state slot per row
     out_pages: torch.Tensor | None = None  # [B] int32 KV write location for the new token

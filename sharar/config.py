@@ -40,6 +40,7 @@ LINEAR_CONV_KERNEL = 4
 VOCAB_SIZE = 248320
 RMS_NORM_EPS = 1e-6
 MAX_POSITION_EMBEDDINGS = 262144
+CONTEXT_LENGTH = 32768  # the validated serving profile; the model supports 262144 positions
 NVFP4_GROUP_SIZE = 16
 
 

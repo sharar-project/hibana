@@ -41,6 +41,13 @@ def main(argv: list[str] | None = None) -> int:
     p_chat.add_argument("--system", default=None)
     p_chat.add_argument("--prompt", default=None, help="one-shot: answer this and exit")
     p_chat.add_argument("--no-graphs", action="store_true")
+    p_cc = sub.add_parser("cache-check", help="prefix cache: checkpoint, prefix-hit, multi-turn and accounting checks")
+    p_cc.add_argument("--prompts", required=True)
+    p_cc.add_argument("--max-new-tokens", type=int, default=16)
+    p_soak = sub.add_parser("soak", help="cycle long prompts with partial reuse and watch memory")
+    p_soak.add_argument("--prompts", required=True)
+    p_soak.add_argument("--rounds", type=int, default=40)
+    p_soak.add_argument("--prompt-len", type=int, default=8192)
     p_prof = sub.add_parser("profile", help="kernel time breakdown for prefill or decode")
     p_prof.add_argument("--prompts", required=True)
     p_prof.add_argument("--name", default="rand2048")
@@ -81,6 +88,14 @@ def main(argv: list[str] | None = None) -> int:
         from sharar.engine.run import canaries_cli
 
         return canaries_cli(args.reference, args.max_new_tokens, args.batch, graphs=not args.eager)
+    if args.command == "cache-check":
+        from sharar.engine.run import cache_check_cli
+
+        return cache_check_cli(args.prompts, args.max_new_tokens)
+    if args.command == "soak":
+        from sharar.engine.run import soak_cli
+
+        return soak_cli(args.prompts, args.rounds, args.prompt_len)
     if args.command == "chat":
         from sharar.engine.chat import chat_cli
 

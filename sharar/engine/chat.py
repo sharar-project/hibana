@@ -39,8 +39,9 @@ def _stream_generate(ex: Executor, tok: SnapshotTokenizer, ids: list[int], param
     torch.cuda.synchronize()
     decode_s = time.perf_counter() - t1
     out = list(req.output_ids)
+    cached = req.prefix_len
     ex.release(req)
-    return {"output_ids": out, "ttft": ttft, "decode_s": decode_s, "steps": steps, "prompt_tokens": len(ids)}
+    return {"output_ids": out, "ttft": ttft, "decode_s": decode_s, "steps": steps, "prompt_tokens": len(ids), "cached": cached}
 
 
 def chat_cli(max_new_tokens: int, temperature: float, thinking: bool, system: str | None, prompt: str | None, no_graphs: bool) -> int:
@@ -49,7 +50,7 @@ def chat_cli(max_new_tokens: int, temperature: float, thinking: bool, system: st
     tmpl = ChatTemplate(snap)
     print(f"loading {config.MODEL_ID} ...", flush=True)
     model = Qwen38(snap, log=None)
-    ex = Executor(model, num_slots=4)
+    ex = Executor(model, log=print)
     if not no_graphs:
         ex.capture_graphs(log=None)
     print(f"ready ({torch.cuda.memory_allocated() / 2**30:.1f} GiB). thinking={'on' if thinking else 'off'} temperature={temperature} max_new_tokens={max_new_tokens}")
@@ -70,7 +71,7 @@ def chat_cli(max_new_tokens: int, temperature: float, thinking: bool, system: st
         messages.append({"role": "assistant", "content": reply})
         gen = len(r["output_ids"])
         tps = (gen - 1) / r["decode_s"] if r["decode_s"] > 0 and gen > 1 else 0.0
-        print(f"\n[{r['prompt_tokens']} prompt tokens, TTFT {r['ttft'] * 1000:.0f} ms | {gen} generated, {tps:.1f} tok/s]\n", flush=True)
+        print(f"\n[{r['prompt_tokens']} prompt tokens ({r['cached']} from cache), TTFT {r['ttft'] * 1000:.0f} ms | {gen} generated, {tps:.1f} tok/s]\n", flush=True)
 
     if prompt is not None:
         turn(prompt)
