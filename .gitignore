@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Host-local configuration and evidence never belong in git.
+config/gb10.env
+results/
+parity/
+*.log
+*.safetensors
+*.npy
+*.pt
