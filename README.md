@@ -17,6 +17,29 @@ Target size is about 6K lines of engine code plus about 5K lines of vendored,
 attributed Triton kernels, on top of `torch`, `flashinfer`, `triton`,
 `safetensors` and `tokenizers`.
 
+## Try it
+
+From a DGX Spark with the model snapshot and the reference image present
+(`config/gb10.env` points at them):
+
+```bash
+tools/dev-shell.sh --tty -- python3 -u -m sharar chat
+```
+
+This loads the model (about 90 s), captures the decode CUDA graphs, and gives
+an interactive `you>` prompt. Replies stream token by token and every turn ends
+with a stats line: prompt tokens, time to first token, tokens generated and
+decode tokens per second. `/reset` clears the history, `/exit` quits. Useful
+flags: `--temperature 0.7` to sample, `--thinking` to enable the model's
+reasoning mode, `--system "..."`, and `--prompt "..."` for a one-shot answer.
+
+Other commands: `python3 -m sharar canaries --reference /results/parity/reference`
+(quality canaries against the reference), `python3 -m sharar bench-decode
+--prompts /results/parity/prompts.json` (decode throughput and determinism),
+`python3 -m sharar parity --reference /results/parity/reference` (prefill
+parity), `python3 -m sharar profile --prompts /results/parity/prompts.json`
+(kernel time breakdown). All run inside `tools/dev-shell.sh`.
+
 ## Layout
 
 | Path | Purpose |
