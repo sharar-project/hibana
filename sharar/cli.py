@@ -34,6 +34,13 @@ def main(argv: list[str] | None = None) -> int:
     p_bd.add_argument("--name", default="rand128")
     p_bd.add_argument("--max-new-tokens", type=int, default=64)
     p_bd.add_argument("--batches", default="1,2,4")
+    p_chat = sub.add_parser("chat", help="interactive chat with streaming output and speed stats")
+    p_chat.add_argument("--max-new-tokens", type=int, default=512)
+    p_chat.add_argument("--temperature", type=float, default=0.0, help="0 = greedy")
+    p_chat.add_argument("--thinking", action="store_true", help="enable the model's thinking mode")
+    p_chat.add_argument("--system", default=None)
+    p_chat.add_argument("--prompt", default=None, help="one-shot: answer this and exit")
+    p_chat.add_argument("--no-graphs", action="store_true")
     p_prof = sub.add_parser("profile", help="kernel time breakdown for prefill or decode")
     p_prof.add_argument("--prompts", required=True)
     p_prof.add_argument("--name", default="rand2048")
@@ -74,6 +81,10 @@ def main(argv: list[str] | None = None) -> int:
         from sharar.engine.run import canaries_cli
 
         return canaries_cli(args.reference, args.max_new_tokens, args.batch, graphs=not args.eager)
+    if args.command == "chat":
+        from sharar.engine.chat import chat_cli
+
+        return chat_cli(args.max_new_tokens, args.temperature, args.thinking, args.system, args.prompt, args.no_graphs)
     if args.command == "profile":
         from sharar.engine.run import profile_cli
 

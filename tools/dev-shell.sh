@@ -14,6 +14,7 @@ if [[ -r "$CONFIG_FILE" ]]; then
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
 fi
+fail() { echo "dev-shell: $*" >&2; exit 1; }
 IMAGE="${SHARAR_DEV_IMAGE:-sparklang-gb10-engine:qwen38-27b}"
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
@@ -21,13 +22,16 @@ DRIVER_LIB_DIR="/usr/lib/aarch64-linux-gnu"
 NAME="${SHARAR_DEV_CONTAINER:-sharar-dev-$$}"
 
 with_reference=false
-if [[ "${1:-}" == "--with-reference" ]]; then
-  with_reference=true
+tty=false
+while [[ "${1:-}" == --* && "${1:-}" != "--" ]]; do
+  case "$1" in
+    --with-reference) with_reference=true ;;
+    --tty) tty=true ;;
+    *) fail "unknown option $1" ;;
+  esac
   shift
-fi
+done
 [[ "${1:-}" == "--" ]] && shift
-
-fail() { echo "dev-shell: $*" >&2; exit 1; }
 
 [[ "$(uname -m)" == "aarch64" ]] || fail "host must be aarch64"
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "missing image $IMAGE"
@@ -94,5 +98,8 @@ args+=(--mount type=bind,src=/usr/bin/nvidia-smi,dst=/usr/bin/nvidia-smi,readonl
 
 if [[ $# -eq 0 ]]; then
   exec "${args[@]}" --interactive --tty "$IMAGE" bash
+fi
+if $tty; then
+  exec "${args[@]}" --interactive --tty "$IMAGE" "$@"
 fi
 exec "${args[@]}" "$IMAGE" "$@"
