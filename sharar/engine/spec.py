@@ -81,13 +81,19 @@ class SpecDecoder:
         self.draft_seconds = self.verify_seconds = self.accept_seconds = 0.0
 
     def stats(self) -> dict:
-        return {
+        r = max(1, self.rounds)
+        out = {
             "rounds": self.rounds, "proposed": self.proposed, "accepted": self.accepted, "emitted": self.emitted,
-            "accept_rate": self.accepted / max(1, self.proposed), "tokens_per_round": self.emitted / max(1, self.rounds),
-            "draft_ms_per_round": 1000 * self.draft_seconds / max(1, self.rounds),
-            "verify_ms_per_round": 1000 * self.verify_seconds / max(1, self.rounds),
-            "accept_ms_per_round": 1000 * self.accept_seconds / max(1, self.rounds),
+            "accept_rate": self.accepted / max(1, self.proposed), "tokens_per_round": self.emitted / r,
+            "round_ms": 1000 * (self.draft_seconds + self.verify_seconds + self.accept_seconds) / r,
         }
+        if self.timing:  # phase split is only meaningful with the synchronizing timers on
+            out.update({
+                "draft_ms_per_round": 1000 * self.draft_seconds / r,
+                "verify_ms_per_round": 1000 * self.verify_seconds / r,
+                "accept_ms_per_round": 1000 * self.accept_seconds / r,
+            })
+        return out
 
     # ---- prefill hooks ----
     def ingest_prefill(self, req: Request, new_ids: list[int], start: int, norm_rows: torch.Tensor) -> None:
