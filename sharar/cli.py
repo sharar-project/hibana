@@ -48,6 +48,11 @@ def main(argv: list[str] | None = None) -> int:
     p_soak.add_argument("--prompts", required=True)
     p_soak.add_argument("--rounds", type=int, default=40)
     p_soak.add_argument("--prompt-len", type=int, default=8192)
+    p_sb = sub.add_parser("sched-bench", help="controlled matrix cells through the scheduler (TTFT and aggregate tok/s)")
+    p_sb.add_argument("--cells", default="128,1;128,4;2048,1;2048,4;8192,1;8192,4")
+    p_sb.add_argument("--output-len", type=int, default=256)
+    p_sb.add_argument("--chunk-size", type=int, default=2048)
+    p_sb.add_argument("--prefill-budget", type=int, default=4096)
     p_prof = sub.add_parser("profile", help="kernel time breakdown for prefill or decode")
     p_prof.add_argument("--prompts", required=True)
     p_prof.add_argument("--name", default="rand2048")
@@ -88,6 +93,10 @@ def main(argv: list[str] | None = None) -> int:
         from sharar.engine.run import canaries_cli
 
         return canaries_cli(args.reference, args.max_new_tokens, args.batch, graphs=not args.eager)
+    if args.command == "sched-bench":
+        from sharar.engine.run import sched_bench_cli
+
+        return sched_bench_cli(args.cells, args.output_len, args.chunk_size, args.prefill_budget)
     if args.command == "cache-check":
         from sharar.engine.run import cache_check_cli
 

@@ -40,7 +40,8 @@ Other commands: `python3 -m sharar canaries --reference /results/parity/referenc
 parity), `python3 -m sharar profile --prompts /results/parity/prompts.json`
 (kernel time breakdown), `python3 -m sharar cache-check --prompts
 /results/parity/prompts.json` (prefix cache correctness) and `python3 -m sharar
-soak --prompts /results/parity/prompts.json` (memory soak). All run inside
+soak --prompts /results/parity/prompts.json` (memory soak), `python3 -m sharar
+sched-bench` (the six matrix cells through the scheduler). All run inside
 `tools/dev-shell.sh`.
 
 ## Layout
@@ -56,14 +57,17 @@ soak --prompts /results/parity/prompts.json` (memory soak). All run inside
 
 ## Status
 
-Phases 0 to 3 are complete. The engine loads the checkpoint, prefills, and
+Phases 0 to 4 are complete. The engine loads the checkpoint, prefills, and
 decodes with CUDA graphs at 12.1 tok/s single-stream and 44.6 aggregate at
 batch 4 (reference 12.7 and 46.4), passes the four quality canaries, matches
 the reference to within the model's own quantization noise floor, and keeps a
 radix prefix cache with GDN state snapshots sized from a unified-memory ledger
-(a re-sent 9.6K-token prompt goes from 4.4 s to 0.16 s to first token). See
-[docs/parity.md](docs/parity.md), [docs/phase2.md](docs/phase2.md),
-[docs/phase3.md](docs/phase3.md). Phase 4 (scheduler) is next. Read
+(a re-sent 9.6K-token prompt goes from 4.4 s to 0.16 s to first token), and a
+continuous-batching scheduler with chunked, batched prefill (8K prompts at
+concurrency 4: 27 tok/s and 13.9 s p95 TTFT against the reference's 18 tok/s
+and 31.7 s). See [docs/parity.md](docs/parity.md),
+[docs/phase2.md](docs/phase2.md), [docs/phase3.md](docs/phase3.md),
+[docs/phase4.md](docs/phase4.md). Phase 5 (HTTP API) is next. Read
 [roadmap.md](roadmap.md) before doing anything else.
 
 ## Attribution and license

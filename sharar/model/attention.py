@@ -62,9 +62,9 @@ class Attention:
         q, k, v, gate = self._qkv(x, positions, x_q)
         if ctx is not None and ctx.kv_pool is not None:
             ctx.kv_pool.write(self.layer_id, ctx.pages, k, v)
-        if ctx is not None and ctx.prefix_len > 0:
-            # Cached prefix: attend over prefix + new pages (FP8) with the
-            # causal mask aligned to the sequence end.
+        if ctx is not None and (ctx.prefix_len > 0 or ctx.batched):
+            # Cached prefix or several sequences: attend over each sequence's
+            # prefix + new pages (FP8) with the causal mask aligned to its end.
             attn = ctx.paged_prefill_wrapper.run(q, ctx.kv_pool.cache(self.layer_id)).view(t, self.q_size)
         else:
             self.ragged.plan([t], x.device)

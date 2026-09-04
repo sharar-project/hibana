@@ -90,23 +90,37 @@ class GatedDeltaNet:
         return ops.fp8_linear(None, self.out, x_q=quant_fp8(core, self.out.input_scale))
 
     def prefill(self, x: torch.Tensor, ctx: ForwardContext | None = None, x_q: torch.Tensor | None = None) -> torch.Tensor:
-        """Fresh-sequence prefill into the context's slot. The chunk kernel reads
-        the initial state from the pool, so the slot must be cleared beforehand
-        (StatePool.alloc does; the scratch path does)."""
+        """Prefill one sequence, or several (ctx.batched) laid end to end.
+        Each sequence continues from the state in its slot when it has a prefix
+        (cached or earlier chunks); the chunk kernel reads the initial state
+        from the pool, so fresh slots must be cleared (StatePool.alloc does)."""
         t = x.shape[0]
         device = x.device
         conv_states, ssm_states = self._states(ctx)
-        slot = ctx.slot if (ctx is not None and ctx.state_pool is not None) else 0
-        mixed_qkv, z, b, a = self._project(x, x_q)
-        query_start_loc = torch.tensor([0, t], dtype=torch.int32, device=device)
-        cache_indices = torch.tensor([slot], dtype=torch.int32, device=device)
-        has_prefix = ctx is not None and ctx.prefix_len > 0
+        if ctx is not None and ctx.batched:
+            query_start_loc = ctx.cu_seqlens
+            cache_indices = ctx.seq_slots
+            seq_lens = ctx.seq_lens
+            has_init = torch.tensor([p > 0 for p in ctx.seq_prefix_lens], device=device)
+            starts = [int(v) for v in ctx.cu_seqlens[:-1].tolist()]
+            prefixes = ctx.seq_prefix_lens
+            ck_seqs = ctx.checkpoint_seqs
+        else:
+            slot = ctx.slot if (ctx is not None and ctx.state_pool is not None) else 0
+            query_start_loc = torch.tensor([0, t], dtype=torch.int32, device=device)
+            cache_indices = torch.tensor([slot], dtype=torch.int32, device=device)
+            seq_lens = [t]
+            has_prefix = ctx is not None and ctx.prefix_len > 0
+            has_init = torch.tensor([has_prefix], device=device)
+            starts = [0]
+            prefixes = [ctx.prefix_len if ctx is not None else 0]
+            ck_seqs = [0] * (len(ctx.checkpoint_positions) if ctx is not None else 0)
         checkpoints = list(ctx.checkpoint_positions) if ctx is not None else []
+        mixed_qkv, z, b, a = self._project(x, x_q)
         if checkpoints:
             # conv snapshot = the last 3 pre-conv inputs before the boundary
-            prefix = ctx.prefix_len
-            for pos, cslot in zip(checkpoints, ctx.checkpoint_slots):
-                local = pos - prefix
+            for pos, cslot, si in zip(checkpoints, ctx.checkpoint_slots, ck_seqs):
+                local = starts[si] + (pos - prefixes[si])
                 conv_states[cslot] = mixed_qkv[local - CONV_STATE_LEN : local].transpose(0, 1)
         mixed_qkv = causal_conv1d_fn(
             mixed_qkv.transpose(0, 1),
@@ -114,10 +128,10 @@ class GatedDeltaNet:
             None,
             activation="silu",
             conv_states=conv_states,
-            has_initial_state=torch.tensor([has_prefix], device=device),
+            has_initial_state=has_init,
             cache_indices=cache_indices,
             query_start_loc=query_start_loc,
-            seq_lens_cpu=[t],
+            seq_lens_cpu=seq_lens,
         ).transpose(0, 1)[:t]
         q, k, v = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
         q = q.reshape(1, t, self.num_k_heads, self.head_k_dim)
@@ -133,12 +147,15 @@ class GatedDeltaNet:
             use_qk_l2norm_in_kernel=True,
         )
         if checkpoints:
-            # h[0, c] is the state entering chunk c, i.e. after 64*c new tokens.
-            prefix = ctx.prefix_len
-            for pos, cslot in zip(checkpoints, ctx.checkpoint_slots):
-                local = pos - prefix
-                assert local % 64 == 0 and 0 < local < t, (pos, prefix, t)
-                ssm_states[cslot] = h[0, local // 64].to(ssm_states.dtype)
+            # h[0, c] is the state entering chunk c. With several sequences the
+            # chunks are laid out per sequence: offset_i = sum_j<i ceil(len_j/64).
+            chunk_offsets = [0]
+            for n_tok in seq_lens[:-1]:
+                chunk_offsets.append(chunk_offsets[-1] + (n_tok + 63) // 64)
+            for pos, cslot, si in zip(checkpoints, ctx.checkpoint_slots, ck_seqs):
+                local = pos - prefixes[si]
+                assert local % 64 == 0 and 0 < local < seq_lens[si], (pos, prefixes[si], seq_lens[si])
+                ssm_states[cslot] = h[0, chunk_offsets[si] + local // 64].to(ssm_states.dtype)
         return self._finish(core, z, t)
 
     def decode(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:

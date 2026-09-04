@@ -36,6 +36,9 @@ def _load(graphs: bool = True) -> tuple[Qwen38, Executor, SnapshotTokenizer]:
         started = time.perf_counter()
         ex.capture_graphs()
         print(f"  graphs captured in {time.perf_counter() - started:.1f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated")
+    started = time.perf_counter()
+    ex.warmup()
+    print(f"  warmup {time.perf_counter() - started:.1f}s")
     return model, ex, SnapshotTokenizer(snap)
 
 
@@ -309,3 +312,33 @@ def soak_cli(prompts_path: str, rounds: int, prompt_len: int) -> int:
     ok = consistent and min_avail >= floor
     print("SOAK", "PASS" if ok else "FAIL")
     return 0 if ok else 1
+
+
+def sched_bench_cli(cells: str, output_len: int, chunk_size: int, prefill_budget: int = 4096) -> int:
+    """Run the controlled matrix cells through the scheduler and report TTFT
+    percentiles and aggregate output throughput (the reference's table is in
+    the roadmap). Prompts are distinct random IDs so the cache cannot help."""
+    from sharar.engine.scheduler import Scheduler, SchedulerConfig
+    from sharar.parity.prompts import random_ids
+
+    model, ex, tok = _load(graphs=True)
+    sched = Scheduler(ex, SchedulerConfig(chunk_size=chunk_size, prefill_budget=prefill_budget))
+    print(f"  chunk_size={chunk_size} prefill_budget={prefill_budget}")
+    print(f"  {'input':>6} {'conc':>4} {'agg tok/s':>10} {'ttft p50':>9} {'ttft p95':>9} {'steps':>6} {'avg step ms':>11}")
+    for cell in cells.split(";"):
+        n_in, conc = (int(x) for x in cell.split(","))
+        ex.flush_cache()
+        sched.metrics.__init__()
+        params = SamplingParams(max_new_tokens=output_len, ignore_eos=True)
+        reqs = [sched.submit(random_ids(n_in, 1000 + 17 * i + n_in), params) for i in range(conc)]
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        sched.run_until_idle()
+        torch.cuda.synchronize()
+        wall = time.perf_counter() - t0
+        out_tokens = sum(len(r.output_ids) for r in reqs)
+        ttfts = sorted(r.ttft for r in reqs)
+        p95 = ttfts[min(len(ttfts) - 1, int(0.95 * len(ttfts)))]
+        m = sched.metrics.summary()
+        print(f"  {n_in:>6} {conc:>4} {out_tokens / wall:>10.2f} {ttfts[len(ttfts) // 2]:>9.2f} {p95:>9.2f} {m['steps']:>6} {m['avg_step_ms']:>11.1f}")
+    return 0

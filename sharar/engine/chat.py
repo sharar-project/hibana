@@ -53,6 +53,7 @@ def chat_cli(max_new_tokens: int, temperature: float, thinking: bool, system: st
     ex = Executor(model, log=print)
     if not no_graphs:
         ex.capture_graphs(log=None)
+    ex.warmup()
     print(f"ready ({torch.cuda.memory_allocated() / 2**30:.1f} GiB). thinking={'on' if thinking else 'off'} temperature={temperature} max_new_tokens={max_new_tokens}")
     print("commands: /reset clears history, /exit quits\n", flush=True)
     params = SamplingParams(max_new_tokens=max_new_tokens, temperature=temperature, seed=0 if temperature > 0 else None)

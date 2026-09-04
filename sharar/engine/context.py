@@ -34,6 +34,17 @@ class ForwardContext:
     # of 64, inside the new tokens); layer i writes them to checkpoint_slots
     checkpoint_positions: list[int] = field(default_factory=list)
     checkpoint_slots: list[int] = field(default_factory=list)
+    # batched prefill (several requests' chunks in one forward): per-sequence
+    # metadata; when set, `slot`/`prefix_len` above are unused
+    cu_seqlens: torch.Tensor | None = None  # int32 [B+1] over the new tokens
+    seq_slots: torch.Tensor | None = None  # int32 [B]
+    seq_prefix_lens: list[int] = field(default_factory=list)  # tokens already in state/pages per seq
+    seq_lens: list[int] = field(default_factory=list)  # new tokens per seq
+    checkpoint_seqs: list[int] = field(default_factory=list)  # sequence index of each checkpoint
+
+    @property
+    def batched(self) -> bool:
+        return self.cu_seqlens is not None
     # decode
     slots: torch.Tensor | None = None  # [B] int32 committed state slot per row
     out_pages: torch.Tensor | None = None  # [B] int32 KV write location for the new token

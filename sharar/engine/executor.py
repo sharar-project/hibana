@@ -4,7 +4,6 @@ cached prefixes and state checkpoints, batched decode, CUDA graphs, generate."""
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
 
 import flashinfer
 import torch
@@ -12,6 +11,7 @@ import torch
 from sharar import config
 from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import DecodeGraphs
+from sharar.engine.request import Request, State
 from sharar.engine.sampler import Sampler, SamplingParams
 from sharar.memory.kv_pool import KV_DTYPE, KvPool
 from sharar.memory.ledger import Ledger
@@ -20,33 +20,6 @@ from sharar.memory.state_pool import StatePool
 from sharar.model.qwen38 import Qwen38
 
 CHECKPOINT_INTERVAL = 2048  # GDN snapshots inside long prefills (multiple of 64)
-
-
-@dataclass
-class Request:
-    prompt_ids: list[int]
-    params: SamplingParams
-    output_ids: list[int] = field(default_factory=list)
-    slot: int = -1
-    pages: torch.Tensor | None = None  # all KV pages: cached prefix pages then own pages
-    prefix_len: int = 0  # tokens served from the cache
-    match: Match | None = None
-    checkpoints: dict[int, int] = field(default_factory=dict)  # prefix length -> snapshot slot
-    finished: bool = False
-    finish_reason: str = ""
-    prefill_seconds: float = 0.0
-    released: bool = False
-
-    @property
-    def context_len(self) -> int:
-        return len(self.prompt_ids) + len(self.output_ids)
-
-    def push(self, token: int) -> None:
-        self.output_ids.append(token)
-        if not self.params.ignore_eos and token in self.params.stop_token_ids:
-            self.finished, self.finish_reason = True, "stop"
-        elif len(self.output_ids) >= self.params.max_new_tokens:
-            self.finished, self.finish_reason = True, "length"
 
 
 class Executor:
@@ -85,8 +58,9 @@ class Executor:
         self.use_graphs = True
 
     # ---- lifecycle ----
-    def admit(self, prompt_ids: list[int], params: SamplingParams) -> Request:
-        req = Request(prompt_ids=list(prompt_ids), params=params)
+    def admit(self, prompt_ids: list[int], params: SamplingParams, req: Request | None = None) -> Request:
+        if req is None:
+            req = Request(prompt_ids=list(prompt_ids), params=params)
         n = len(prompt_ids)
         if self.cache is not None:
             # Keep at least one token to prefill so the last logits exist.
@@ -103,14 +77,45 @@ class Executor:
             self.state_pool.copy_slot(req.match.snapshot_slot, req.slot)
         own = self.kv_pool.alloc(need_pages)
         req.pages = torch.cat([req.match.pages, own]) if req.prefix_len else own
+        req.prefill_pos = req.prefix_len
+        req.state = State.PREFILL
+        req.t_admit = time.perf_counter()
         return req
+
+    def can_admit(self, prompt_len: int, reserve_tokens: int = 0) -> bool:
+        """Enough free pages and a free slot for this prompt (after evicting cache)."""
+        need = prompt_len + reserve_tokens
+        if self.cache is not None:
+            self.cache.evict(need_pages=need, need_slots=1)
+        return len(self.kv_pool._free) >= need and len(self.state_pool._free) >= 1
+
+    def retract(self, req: Request) -> None:
+        """Give a request's resources back and requeue it (memory pressure).
+        Its progress is lost except for whatever the cache still holds."""
+        if req.match is not None:
+            self.cache.lock(req.match.node, -1)
+            req.match = None
+        if req.pages is not None:
+            self.kv_pool.free(req.pages[req.prefix_len :])
+        if req.slot >= 0:
+            self.state_pool.free(req.slot)
+        for slot in req.checkpoints.values():
+            self.state_pool.free(slot)
+        req.pages = None
+        req.slot = -1
+        req.checkpoints = {}
+        req.prefix_len = 0
+        req.prefill_pos = 0
+        req.output_ids = []
+        req.stream_cursor = 0
+        req.state = State.QUEUED
 
     def release(self, req: Request) -> None:
         """Return a finished request's resources; hand its sequence to the cache."""
         if req.released:
             return
         cached = False
-        if self.cache is not None and req.slot >= 0 and req.pages is not None:
+        if self.cache is not None and req.slot >= 0 and req.pages is not None and req.prefill_done:
             cached = self._insert_into_cache(req)
         if req.match is not None:
             self.cache.lock(req.match.node, -1)
@@ -131,6 +136,8 @@ class Executor:
         # The committed slot holds the state after every token that went
         # through the model: the prompt and all outputs but the last sampled one.
         ids = req.prompt_ids + req.output_ids[:-1]
+        if req.pages is None or req.pages.shape[0] < len(ids):
+            return False
         n = len(ids)
         if n == 0 or n > req.pages.shape[0]:
             return False
@@ -165,43 +172,51 @@ class Executor:
             causal=True, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
         )
 
-    def _checkpoint_positions(self, prefix_len: int, total: int) -> list[int]:
-        """Absolute positions (multiples of 64, strictly inside the new tokens)
-        where GDN state is snapshotted during prefill: every CHECKPOINT_INTERVAL
-        for shared long prefixes, plus the last 64-boundary before the prompt
-        end so an identical prompt re-sent later recomputes at most 64 tokens
-        (the last token can never be served from cache: its logits are needed)."""
+    def _checkpoint_positions(self, start: int, end: int, total: int) -> list[int]:
+        """Absolute positions (multiples of 64, strictly inside this chunk's new
+        tokens (start, end)) where GDN state is snapshotted: every
+        CHECKPOINT_INTERVAL for shared long prefixes, plus the last 64-boundary
+        before the prompt end so an identical prompt re-sent later recomputes at
+        most 64 tokens (the last token is never served from cache: its logits
+        are needed)."""
         if self.cache is None:
             return []
-        first = (prefix_len // CHECKPOINT_INTERVAL + 1) * CHECKPOINT_INTERVAL
-        positions = [p for p in range(first, total, CHECKPOINT_INTERVAL) if p > prefix_len]
+        first = (start // CHECKPOINT_INTERVAL + 1) * CHECKPOINT_INTERVAL
+        positions = [p for p in range(first, end, CHECKPOINT_INTERVAL) if p > start]
         last = ((total - 1) // 64) * 64
-        if last > prefix_len and last < total and last not in positions:
+        if start < last < end and last not in positions:
             positions.append(last)
         return sorted(positions)
 
-    def prefill(self, req: Request) -> int:
+    def prefill(self, req: Request, max_tokens: int | None = None) -> int | None:
+        """Prefill up to `max_tokens` of the remaining prompt (all of it by
+        default). Each chunk continues from the state and pages left by the
+        previous one, exactly like a cache hit. Only the final chunk samples a
+        token; it is returned, otherwise None."""
         started = time.perf_counter()
         n = len(req.prompt_ids)
-        new_ids = req.prompt_ids[req.prefix_len :]
+        start = req.prefill_pos
+        end = n if max_tokens is None else min(n, start + max_tokens)
+        new_ids = req.prompt_ids[start:end]
         t = len(new_ids)
+        assert t > 0, (start, end)
         ids = torch.tensor(new_ids, dtype=torch.int64, device=self.device)
-        positions = torch.arange(req.prefix_len, n, dtype=torch.int64, device=self.device)
+        positions = torch.arange(start, end, dtype=torch.int64, device=self.device)
         ctx = ForwardContext(
             mode="prefill",
             kv_pool=self.kv_pool,
             state_pool=self.state_pool,
             positions=positions,
             slot=req.slot,
-            pages=req.pages[req.prefix_len :],
+            pages=req.pages[start:end],
             seq_len=t,
-            prefix_len=req.prefix_len,
-            prefix_pages=req.pages[: req.prefix_len] if req.prefix_len else None,
+            prefix_len=start,
+            prefix_pages=req.pages[:start] if start else None,
         )
-        if req.prefix_len:
-            self._plan_paged_prefill(req.pages, t)
+        if start:
+            self._plan_paged_prefill(req.pages[:end], t)
             ctx.paged_prefill_wrapper = self._paged_prefill
-        for pos in self._checkpoint_positions(req.prefix_len, n):
+        for pos in self._checkpoint_positions(start, end, n):
             if not self.state_pool._free:
                 self.cache.evict(need_slots=1)
             if not self.state_pool._free:
@@ -211,21 +226,121 @@ class Executor:
             ctx.checkpoint_slots.append(slot)
             req.checkpoints[pos] = slot
         out = self.model.forward(ids, ctx)
-        logits = self.model.logits(out["norm"][-1:])
-        token = int(self.sampler.sample(logits, [req.params]).item())
-        if self.cache is not None:
-            # Snapshot the state after the whole prompt: the next turn of a
-            # conversation extends exactly this sequence.
-            if not self.state_pool._free:
-                self.cache.evict(need_slots=1)
-            if self.state_pool._free:
-                snap = self.state_pool.alloc()
-                self.state_pool.copy_slot(req.slot, snap)
-                req.checkpoints[n] = snap
+        req.prefill_pos = end
+        token = None
+        if end == n:
+            logits = self.model.logits(out["norm"][-1:])
+            token = int(self.sampler.sample(logits, [req.params]).item())
+            if self.cache is not None:
+                # Snapshot the state after the whole prompt: the next turn of a
+                # conversation extends exactly this sequence.
+                if not self.state_pool._free:
+                    self.cache.evict(need_slots=1)
+                if self.state_pool._free:
+                    snap = self.state_pool.alloc()
+                    self.state_pool.copy_slot(req.slot, snap)
+                    req.checkpoints[n] = snap
         torch.cuda.synchronize()
-        req.prefill_seconds = time.perf_counter() - started
-        req.push(token)
+        req.prefill_seconds += time.perf_counter() - started
+        if token is not None:
+            req.push(token)
         return token
+
+    def prefill_batch(self, chunks: list[tuple[Request, int]]) -> None:
+        """Prefill several requests' next chunks in one forward. `chunks` is a
+        list of (request, number_of_new_tokens). Requests whose prompt completes
+        get their first token sampled."""
+        if len(chunks) == 1:
+            self.prefill(chunks[0][0], chunks[0][1])
+            return
+        started = time.perf_counter()
+        ids_list, pos_list, page_list, cu, kv_indptr, kv_indices = [], [], [], [0], [0], []
+        seq_slots, prefix_lens, seq_lens = [], [], []
+        ck_pos, ck_slots, ck_seqs = [], [], []
+        for si, (req, n_new) in enumerate(chunks):
+            start = req.prefill_pos
+            end = start + n_new
+            total = len(req.prompt_ids)
+            ids_list += req.prompt_ids[start:end]
+            pos_list += list(range(start, end))
+            page_list.append(req.pages[start:end])
+            cu.append(cu[-1] + n_new)
+            kv_indices.append(req.pages[:end])
+            kv_indptr.append(kv_indptr[-1] + end)
+            seq_slots.append(req.slot)
+            prefix_lens.append(start)
+            seq_lens.append(n_new)
+            for pos in self._checkpoint_positions(start, end, total):
+                if not self.state_pool._free:
+                    self.cache.evict(need_slots=1)
+                if not self.state_pool._free:
+                    break
+                slot = self.state_pool.alloc()
+                ck_pos.append(pos)
+                ck_slots.append(slot)
+                ck_seqs.append(si)
+                req.checkpoints[pos] = slot
+        d = self.device
+        ctx = ForwardContext(
+            mode="prefill", kv_pool=self.kv_pool, state_pool=self.state_pool,
+            positions=torch.tensor(pos_list, dtype=torch.int64, device=d),
+            pages=torch.cat(page_list), seq_len=cu[-1],
+            cu_seqlens=torch.tensor(cu, dtype=torch.int32, device=d),
+            seq_slots=torch.tensor(seq_slots, dtype=torch.int32, device=d),
+            seq_prefix_lens=prefix_lens, seq_lens=seq_lens,
+            checkpoint_positions=ck_pos, checkpoint_slots=ck_slots, checkpoint_seqs=ck_seqs,
+        )
+        self._paged_prefill.plan(
+            ctx.cu_seqlens, torch.tensor(kv_indptr, dtype=torch.int32, device=d), torch.cat(kv_indices),
+            torch.ones(len(chunks), dtype=torch.int32, device=d),
+            config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, self.kv_pool.page_size,
+            causal=True, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
+        )
+        ctx.paged_prefill_wrapper = self._paged_prefill
+        ids = torch.tensor(ids_list, dtype=torch.int64, device=d)
+        out = self.model.forward(ids, ctx)
+        last_rows = [c - 1 for c in cu[1:]]
+        finishing = [i for i, (req, n_new) in enumerate(chunks) if req.prefill_pos + n_new == len(req.prompt_ids)]
+        tokens = None
+        if finishing:
+            logits = self.model.logits(out["norm"][[last_rows[i] for i in finishing]])
+            tokens = self.sampler.sample(logits, [chunks[i][0].params for i in finishing]).tolist()
+        for i, (req, n_new) in enumerate(chunks):
+            req.prefill_pos += n_new
+        for i, tok in zip(finishing, tokens or []):
+            req = chunks[i][0]
+            if self.cache is not None:
+                if not self.state_pool._free:
+                    self.cache.evict(need_slots=1)
+                if self.state_pool._free:
+                    snap = self.state_pool.alloc()
+                    self.state_pool.copy_slot(req.slot, snap)
+                    req.checkpoints[len(req.prompt_ids)] = snap
+        torch.cuda.synchronize()
+        elapsed = time.perf_counter() - started
+        for req, _ in chunks:
+            req.prefill_seconds += elapsed
+        for i, tok in zip(finishing, tokens or []):
+            chunks[i][0].push(int(tok))
+
+    def warmup(self, log=None) -> None:
+        """Run every prefill path once so first requests do not pay backend
+        initialization (b12x module load, cuDNN handles, Triton compiles)."""
+        from sharar.parity.prompts import random_ids
+
+        params = SamplingParams(max_new_tokens=1)
+        a = self.admit(random_ids(300, 11), params)
+        self.prefill(a, max_tokens=256)  # chunk 1
+        self.prefill(a)  # chunk 2 with prefix
+        b = self.admit(random_ids(40, 12), params)
+        c = self.admit(random_ids(70, 13), params)
+        self.prefill_batch([(b, 40), (c, 70)])
+        for r in (a, b, c):
+            self.release(r)
+        self.flush_cache()
+        torch.cuda.synchronize()
+        if log:
+            log("  warmup done")
 
     def _plan_decode(self, reqs: list[Request]) -> None:
         counts = [r.context_len for r in reqs]
@@ -241,8 +356,11 @@ class Executor:
     def decode_step(self, reqs: list[Request]) -> list[int]:
         """Process the last generated token of every request and sample the next."""
         assert 0 < len(reqs) <= self.max_batch
-        if self.cache is not None and len(self.kv_pool._free) < len(reqs):
-            self.cache.evict(need_pages=len(reqs))
+        if len(self.kv_pool._free) < len(reqs):
+            if self.cache is not None:
+                self.cache.evict(need_pages=len(reqs))
+            if len(self.kv_pool._free) < len(reqs):
+                raise MemoryError("KV pool exhausted during decode")
         new_pages = self.kv_pool.alloc(len(reqs))
         for i, r in enumerate(reqs):
             r.pages = torch.cat([r.pages, new_pages[i : i + 1]])
