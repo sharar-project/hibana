@@ -69,6 +69,8 @@ class Executor:
     def capture_graphs(self, log=print) -> None:
         self.graphs = DecodeGraphs(self)
         self.graphs.capture(log=log)
+        if self.spec is not None:
+            self.spec.capture_graphs(log=log)
         self.ledger.record_cuda_allocated("cuda_graphs")
         self.use_graphs = True
 

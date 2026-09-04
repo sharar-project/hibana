@@ -85,6 +85,22 @@ attention work per round is not hidden by the shared weight read.
   hidden states are not stored); drafting quality drops for that request
   until its own tokens dominate. Correctness is unaffected. Storing draft
   KV alongside the cache is a Phase 8 item.
-- The spec path runs eagerly. Verify costs 97 ms against 83 ms for the
-  graphed decode step, and the three draft steps cost 26 ms; capturing both
-  into CUDA graphs is the first Phase 9 item and is worth roughly 25% more.
+- CUDA graphs (`engine/spec_graphs.py`) cover the verify forward at batch
+  1, 2, 4 and all chain draft steps. After a round every request has exactly
+  one pending draft row (the last emitted token with the target's hidden at
+  that position), so draft step 1 uses the same single-row graph as steps
+  2..k; the eager multi-row path remains for graphs disabled. Verify went
+  from 97 to 90 ms per round at batch 1 and the draft from 27 to 25 ms, which
+  is close to its bandwidth floor (the MTP layer plus the NVFP4 lm_head read
+  about 1.4 GB per step). Acceptance bookkeeping after verify is a separate
+  4.5 ms bucket (`accept_ms_per_round` in `spec_stats`). With graphs:
+  text1024 29.4 tok/s (2.42x), needle 30.0 (2.52x), JSON 30.4 (2.53x),
+  rand128 23.0 (1.91x) at batch 1; 75 to 101 aggregate at batch 4.
+- Re-ingesting every accepted position with the target's hidden state
+  (EAGLE's draft extend) was tried and measured no acceptance change on
+  text1024 or rand128, so the draft keeps the KV it wrote from its own chain
+  hiddens and only the last emitted token is re-drafted with the target's
+  hidden.
+- `/generate` reports `spec_verify_ct`, `spec_accept_length` and
+  `spec_accept_rate` per request with SGLang's meaning, so the harness and
+  `docs/comparison.md` can compare acceptance directly.

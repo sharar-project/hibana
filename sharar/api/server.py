@@ -237,14 +237,20 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         t0 = time.perf_counter()
 
         def meta(n_out: int, reason: str | None) -> dict:
-            return {
+            req = ticket.req
+            info = {
                 "id": body.get("rid") or uuid.uuid4().hex,
                 "prompt_tokens": len(ids),
                 "completion_tokens": n_out,
-                "cached_tokens": ticket.req.prefix_len,
+                "cached_tokens": req.prefix_len,
                 "finish_reason": {"type": reason} if reason else None,
                 "e2e_latency": time.perf_counter() - t0,
             }
+            if req.spec_rounds:  # same meaning as SGLang's fields: tokens per verify round, accepted/proposed
+                info["spec_verify_ct"] = req.spec_rounds
+                info["spec_accept_length"] = n_out / req.spec_rounds
+                info["spec_accept_rate"] = req.spec_accepted / max(1, req.spec_proposed)
+            return info
 
         if body.get("stream"):
             async def events():

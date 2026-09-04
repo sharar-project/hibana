@@ -97,19 +97,21 @@ include the vision encoder, which is never loaded.
 
 Runtime image `sharar:qwen38-27b` launched by `SHARAR_SPEC=3 run-sharar.sh`
 with the memory guard. Result directories under `${SHARAR_RESULTS}/controlled/`:
-`controlled-27b-sharar-spec3-20260904T134228Z` (matrix) and
-`controlled-27b-sharar-spec3-32766-20260904T135132Z` (boundary). The plain
-(non-speculative) run `controlled-27b-sharar-baseline-20260904T125049Z` is
-kept as the fallback baseline for `SHARAR_SPEC=0`.
+`controlled-27b-sharar-spec3g-20260904T153017Z` (matrix, speculative path in
+CUDA graphs) and `controlled-27b-sharar-spec3-32766-20260904T135132Z`
+(boundary, pre-graph build). The plain (non-speculative) run
+`controlled-27b-sharar-baseline-20260904T125049Z` is kept as the fallback
+baseline for `SHARAR_SPEC=0`. The same-machine comparison against SGLang
+plain and SGLang MTP, with GSM8K accuracy, is in `docs/comparison.md`.
 
 | Input | Concurrency | Aggregate tok/s | Median TTFT (s) | p95 TTFT (s) |
 |---:|---:|---:|---:|---:|
-| 128 | 1 | 31.6 | 0.15 | 0.15 |
-| 128 | 4 | 104.1 | 0.39 | 0.39 |
-| 2,048 | 1 | 22.1 | 0.87 | 0.87 |
-| 2,048 | 4 | 58.6 | 2.57 | 3.44 |
-| 8,192 | 1 | 18.8 | 3.69 | 3.69 |
-| 8,192 | 4 | 37.7 | 10.8 | 14.5 |
+| 128 | 1 | 32.7 | 0.16 | 0.16 |
+| 128 | 4 | 105.1 | 0.40 | 0.40 |
+| 2,048 | 1 | 22.8 | 0.86 | 0.86 |
+| 2,048 | 4 | 61.8 | 2.54 | 3.39 |
+| 8,192 | 1 | 19.5 | 3.65 | 3.65 |
+| 8,192 | 4 | 38.5 | 10.7 | 14.4 |
 
 Boundary: 31,742 in + 1,024 out at 20.2 tok/s, TTFT 17.1 s. Quality canaries
 4/4. Draft acceptance 79.5% over the matrix. Plain decoding (`SHARAR_SPEC=0`)
@@ -485,8 +487,8 @@ Goal: more emitted tokens per weight read. Expected 1.5x to 2x at concurrency 1.
       buffers (the vendored kernel's `intermediate_states_buffer` path), the
       conv window is recomputed in torch; accept copies the chosen state
       back. No replay-SSM kernels were needed.
-- [ ] CUDA graphs for the verify and draft shapes (first Phase 9 item; the
-      spec path runs eagerly at 97 ms verify + 26 ms draft per round).
+- [x] CUDA graphs for the verify forward and the chain draft steps
+      (`engine/spec_graphs.py`); draft step 1 stays eager (variable rows).
 - [x] Acceptance rate, tokens per round and draft/verify time in
       `SpecDecoder.stats()` and `/get_server_info`; the harness's spec
       columns stay empty because `/generate` does not report them yet.
@@ -699,8 +701,12 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-Phase 9 first item, then Phase 8. CUDA graphs for the speculative path
-(verify forward at batch 1, 2, 4 with k+1 rows each, and the draft steps),
-which is worth about 25% on every decode cell; then the FP8 GEMV in-model
-gap and the NVFP4 quantizer speed. Phase 8's zero-copy weight load (87 s of
-the 96 s restart) and the draft-KV-aware prefix cache follow.
+Phase 9, then Phase 8. The speculative path is in CUDA graphs and measured
+against SGLang MTP (`docs/comparison.md`): same acceptance, about 8 ms per
+round more engine cost at batch 1 (draft 25 ms + verify 90 ms + accept
+4.5 ms + about 7 ms of server and scheduler per round against SGLang's
+111 ms). Next: the draft step (8 ms per step against a 6 ms bandwidth
+floor), the acceptance path (per-layer state copies and host syncs), the
+server overhead per round, then the FP8 GEMV in-model gap and the NVFP4
+quantizer speed. Phase 8's zero-copy weight load (87 s of the 96 s restart)
+and the draft-KV-aware prefix cache follow.

@@ -100,5 +100,28 @@ class MtpHead:
         return out
 
     @torch.inference_mode()
+    def forward_static(self, tokens: torch.Tensor, hidden: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor) -> torch.Tensor:
+        """One row per sequence with the attention wrapper already planned
+        (graph capture path); same math as forward()."""
+        t = tokens.shape[0]
+        e = self.norm_e(torch.nn.functional.embedding(tokens, self.embed))
+        h = self.norm_h(hidden)
+        u = torch.cat([e, h], dim=-1) @ self.fc.T
+        x = self.input_norm(u)
+        qkv = x @ self.w_qkv.T
+        gate = qkv[:, : self.q_size * 2].view(t, self.num_heads, 2 * self.head_dim)[..., self.head_dim :]
+        q, k = qk_norm_rope(qkv, positions, self.rope.cos_sin, self.q_norm_w, self.k_norm_w, self.num_heads, self.num_kv_heads, self.head_dim, self.rope.rotary_dim, config.RMS_NORM_EPS)
+        v = qkv[:, self.q_size * 2 + self.kv_size :].view(t, self.num_kv_heads, self.head_dim).contiguous()
+        self.kv.write(0, write_pages, k, v)
+        attn = self._attn.run(q, self.kv.cache(0)).view(t, self.num_heads, self.head_dim)
+        attn = (attn * torch.sigmoid(gate)).reshape(t, self.q_size)
+        a_out = attn @ self.w_o.T
+        x, resid = self.post_norm.fused_add(a_out, u)
+        gu = x @ self.w_gate_up.T
+        m = torch.nn.functional.silu(gu[:, : config.INTERMEDIATE_SIZE]) * gu[:, config.INTERMEDIATE_SIZE :]
+        m = m @ self.w_down.T
+        return self.final_norm(m + resid)
+
+    @torch.inference_mode()
     def logits(self, d: torch.Tensor) -> torch.Tensor:
         return ops.nvfp4_linear(d, self.lm_head)

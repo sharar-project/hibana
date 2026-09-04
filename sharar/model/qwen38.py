@@ -98,8 +98,9 @@ class Qwen38:
             hidden, residual = layer.forward(hidden, residual, ctx)
             if capture:
                 out["layers"].append((hidden, residual))
-        normed, _ = self.final_norm.fused_add(hidden, residual)
+        normed, pre_norm = self.final_norm.fused_add(hidden, residual)
         out["norm"] = normed
+        out["pre_norm"] = pre_norm  # hidden + residual before the final norm
         return out
 
     def prefill(self, input_ids: torch.Tensor, capture: bool = False) -> dict:

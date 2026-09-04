@@ -97,7 +97,9 @@ and 31.7 s). See [docs/parity.md](docs/parity.md),
 [docs/phase6.md](docs/phase6.md), [docs/phase7.md](docs/phase7.md). Sharar is
 the production engine on the machine (`run-sharar.sh`, its own 14 GB image)
 and decodes speculatively with the checkpoint's MTP head at about 2x the
-plain rate. Phase 8 (unified memory) and Phase 9 (kernels and AOT) are next.
+plain rate; [docs/comparison.md](docs/comparison.md) measures it against
+SGLang plain and SGLang MTP on the same machine, including GSM8K accuracy.
+Phase 8 (unified memory) and Phase 9 (kernels and AOT) are next.
 Read [roadmap.md](roadmap.md) before doing anything else.
 
 ## Attribution and license

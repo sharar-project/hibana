@@ -49,6 +49,9 @@ class Request:
     spec_last_hidden: torch.Tensor | None = None
     spec_pending_tokens: list[int] | None = None
     spec_pending_hidden: torch.Tensor | None = None
+    spec_rounds: int = 0  # verify rounds this request took part in
+    spec_proposed: int = 0  # draft tokens proposed for this request
+    spec_accepted: int = 0  # draft tokens accepted for this request
 
     @property
     def context_len(self) -> int:

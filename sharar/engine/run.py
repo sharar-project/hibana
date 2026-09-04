@@ -372,7 +372,7 @@ def _bench_spec(ex, tok, prompts, max_new_tokens: int, batches: str) -> int:
             p_tps = sum(len(r.output_ids) - 1 for r in plain) / plain[0].decode_seconds
             f_tps = sum(len(r.output_ids) - 1 for r in fast) / fast[0].decode_seconds
             print(f"  [{name}] batch {b}: plain {p_tps:.1f} tok/s -> spec {f_tps:.1f} tok/s ({f_tps / p_tps:.2f}x); "
-                  f"accept {100 * st['accept_rate']:.0f}%, {st['tokens_per_round']:.2f} tok/round, draft {st['draft_ms_per_round']:.1f} ms + verify {st['verify_ms_per_round']:.1f} ms; "
+                  f"accept {100 * st['accept_rate']:.0f}%, {st['tokens_per_round']:.2f} tok/round, draft {st['draft_ms_per_round']:.1f} ms + verify {st['verify_ms_per_round']:.1f} ms + accept {st['accept_ms_per_round']:.1f} ms; "
                   f"first-row agreement {same}/{min(len(plain[0].output_ids), len(fast[0].output_ids))}")
             print(f"      spec text: {tok.decode(fast[0].output_ids, skip_special_tokens=True)[:80]!r}")
             results.append((name, b, f_tps / p_tps))

@@ -44,12 +44,23 @@ class SpecDecoder:
             lid: torch.zeros((n, self.steps, hv, vd, kd), dtype=torch.float32, device=self.device)
             for lid in executor.state_pool.layer_ids
         }
+        self.verify_graphs = None
+        self.draft_graphs = None
         self.rounds = 0
         self.proposed = 0
         self.accepted = 0
+        self.accept_seconds = 0.0
         self.emitted = 0
         self.draft_seconds = 0.0
         self.verify_seconds = 0.0
+
+    def capture_graphs(self, log=None) -> None:
+        from sharar.engine.spec_graphs import DraftGraphs, VerifyGraphs
+
+        self.verify_graphs = VerifyGraphs(self)
+        self.verify_graphs.capture(log=log)
+        self.draft_graphs = DraftGraphs(self)
+        self.draft_graphs.capture(log=log)
 
     @property
     def bytes(self) -> int:
@@ -61,6 +72,7 @@ class SpecDecoder:
             "accept_rate": self.accepted / max(1, self.proposed), "tokens_per_round": self.emitted / max(1, self.rounds),
             "draft_ms_per_round": 1000 * self.draft_seconds / max(1, self.rounds),
             "verify_ms_per_round": 1000 * self.verify_seconds / max(1, self.rounds),
+            "accept_ms_per_round": 1000 * self.accept_seconds / max(1, self.rounds),
         }
 
     # ---- prefill hooks ----
@@ -108,7 +120,11 @@ class SpecDecoder:
         d = self.device
         t0 = time.perf_counter()
         new_pages = ex.kv_pool.alloc(b_sz * s_len).view(b_sz, s_len)
-        # ---- draft step 1: ingest pending rows ----
+        # ---- draft step 1: ingest the pending row of every request ----
+        # After a round each request has exactly one pending row (the last
+        # emitted token with the target's hidden at that position), so this
+        # step is the same single-row draft as steps 2..k and uses the same
+        # CUDA graph. The eager path remains for graphs disabled.
         toks, hids, poss, wpages, qo_lens, kv_pages = [], [], [], [], [], []
         for i, r in enumerate(reqs):
             P = r.context_len - 1
@@ -123,19 +139,28 @@ class SpecDecoder:
             wpages.append(wp)
             qo_lens.append(m)
             kv_pages.append(torch.cat([r.pages[1:P], new_pages[i, :1]]))
-        dh = self.mtp.forward(
-            torch.tensor(toks, dtype=torch.int64, device=d), torch.cat(hids), torch.tensor(poss, dtype=torch.int64, device=d),
-            torch.cat(wpages), qo_lens, kv_pages,
-        )
-        last_rows = torch.tensor([sum(qo_lens[: i + 1]) - 1 for i in range(b_sz)], device=d)
-        d_last = dh[last_rows]
-        drafts = [self.mtp.logits(d_last).argmax(-1)]  # y_1 for each request
+        toks_t = torch.tensor(toks, dtype=torch.int64, device=d)
+        poss_t = torch.tensor(poss, dtype=torch.int64, device=d)
+        if self.draft_graphs is not None and all(q == 1 for q in qo_lens):
+            d_last, nxt = self.draft_graphs.run(toks_t, torch.cat(hids), poss_t, new_pages[:, 0].contiguous(), kv_pages)
+            d_last = d_last.clone()
+            drafts = [nxt.clone()]
+        else:
+            dh = self.mtp.forward(toks_t, torch.cat(hids), poss_t, torch.cat(wpages), qo_lens, kv_pages)
+            last_rows = torch.tensor([sum(qo_lens[: i + 1]) - 1 for i in range(b_sz)], device=d)
+            d_last = dh[last_rows]
+            drafts = [self.mtp.logits(d_last).argmax(-1)]  # y_1 for each request
         # ---- draft steps 2..k ----
         for j in range(2, k + 1):
             pos_j = torch.tensor([r.context_len - 1 + j - 1 for r in reqs], dtype=torch.int64, device=d)
             kv = [torch.cat([r.pages[1 : r.context_len - 1], new_pages[i, :j]]) for i, r in enumerate(reqs)]
-            d_last = self.mtp.forward(drafts[-1], d_last, pos_j, new_pages[:, j - 1].contiguous(), [1] * b_sz, kv)
-            drafts.append(self.mtp.logits(d_last).argmax(-1))
+            if self.draft_graphs is not None:
+                d_last, nxt = self.draft_graphs.run(drafts[-1], d_last, pos_j, new_pages[:, j - 1].contiguous(), kv)
+                d_last = d_last.clone()
+                drafts.append(nxt.clone())
+            else:
+                d_last = self.mtp.forward(drafts[-1], d_last, pos_j, new_pages[:, j - 1].contiguous(), [1] * b_sz, kv)
+                drafts.append(self.mtp.logits(d_last).argmax(-1))
         y = torch.stack(drafts, dim=1)  # [B, k]
         torch.cuda.synchronize()
         t1 = time.perf_counter()
@@ -149,6 +174,12 @@ class SpecDecoder:
             kv_all.append(torch.cat([r.pages, new_pages[i]]))
             kv_indptr.append(kv_indptr[-1] + kv_all[-1].shape[0])
         cu = torch.arange(0, b_sz * s_len + 1, s_len, dtype=torch.int32, device=d)
+        if self.verify_graphs is not None:
+            norm_rows, z_flat, ctx = self.verify_graphs.run(tokens_v, positions, new_pages.reshape(-1), [r.slot for r in reqs], kv_all)
+            norm = norm_rows.view(b_sz, s_len, -1).clone()
+            z = z_flat.view(b_sz, s_len).clone()
+            self._accept(reqs, y, z, norm, ctx, new_pages, t0, t1)
+            return
         ctx = ForwardContext(
             mode="verify", kv_pool=ex.kv_pool, state_pool=ex.state_pool, positions=positions,
             pages=new_pages.reshape(-1), seq_len=b_sz * s_len,
@@ -165,6 +196,13 @@ class SpecDecoder:
         out = ex.model.forward(tokens_v, ctx)
         norm = out["norm"].view(b_sz, s_len, -1)
         z = ex.model.logits(out["norm"]).argmax(-1).view(b_sz, s_len)  # target choice after each token
+        self._accept(reqs, y, z, norm, ctx, new_pages, t0, t1)
+
+    def _accept(self, reqs, y, z, norm, ctx, new_pages, t0, t1) -> None:
+        torch.cuda.synchronize()
+        t2 = time.perf_counter()
+        ex = self.ex
+        k, s_len = self.k, self.steps
         # ---- accept ----
         match = (y == z[:, :k])  # draft j matches target choice after token j-1
         acc = torch.cumprod(match.int(), dim=1).sum(dim=1).tolist()
@@ -185,15 +223,21 @@ class SpecDecoder:
             self.proposed += k
             self.accepted += a
             self.emitted += len(emitted)
-            # rows the draft still has to ingest: positions P+m0+1 .. P+a+1
-            m0 = min(a, k - 1)
-            P = r.context_len - len(emitted) - 1 + 0  # context_len before this round minus 1
-            P = (r.context_len - len(r.output_ids)) + len(r.output_ids) - len(emitted) - 1
-            r.spec_pending_tokens = [int(t) for t in emitted[m0:]]
-            r.spec_pending_hidden = norm[i, m0 : a + 1]
-            r.draft_pos = P + m0 + 1
+            r.spec_rounds += 1
+            r.spec_proposed += k
+            r.spec_accepted += a
+            # Next round drafts from the last emitted token and the target's
+            # hidden state at that position. (Re-ingesting every accepted
+            # position with target hiddens, EAGLE's "draft extend", was tried
+            # and measured no acceptance gain here, so the draft KV written
+            # from the chain hiddens is kept.)
+            P = r.context_len - len(emitted) - 1  # position of x_last this round
+            r.spec_pending_tokens = [int(emitted[a])]
+            r.spec_pending_hidden = norm[i, a : a + 1]
+            r.draft_pos = P + a + 1
         self.rounds += 1
         torch.cuda.synchronize()
-        t2 = time.perf_counter()
+        t3 = time.perf_counter()
         self.draft_seconds += t1 - t0
         self.verify_seconds += t2 - t1
+        self.accept_seconds += t3 - t2
