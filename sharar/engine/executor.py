@@ -48,8 +48,23 @@ class Executor:
         self.ledger.record_cuda_allocated("workspaces")
         self.graphs: DecodeGraphs | None = None
         self.use_graphs = False
+        self.spec = None
         if log:
             log(f"  pools: {num_pages} KV pages ({self.kv_pool.bytes / 2**30:.2f} GiB), {num_slots} state slots ({num_slots * self.state_pool.bytes_per_slot / 2**30:.2f} GiB)")
+
+    def enable_spec(self, k: int = 3, log=None) -> None:
+        """Load the MTP head and switch greedy decoding to speculative rounds."""
+        from sharar.engine.spec import SpecDecoder
+        from sharar.model.mtp import MtpHead
+        from sharar.weights.safetensors import SnapshotWeights
+
+        w = SnapshotWeights(config.snapshot_dir())
+        mtp = MtpHead(w, self.device, self.model.embed, self.model.lm_head, self.model.rope, self.kv_pool.num_pages)
+        w.close()
+        self.spec = SpecDecoder(self, mtp, k)
+        self.ledger.record_cuda_allocated("mtp_head_and_spec")
+        if log:
+            log(f"  speculative decoding: MTP head + draft KV {mtp.bytes / 2**30:.2f} GiB, verify buffers {self.spec.bytes / 2**30:.2f} GiB, k={k}")
 
     def capture_graphs(self, log=print) -> None:
         self.graphs = DecodeGraphs(self)
@@ -108,6 +123,9 @@ class Executor:
         req.prefill_pos = 0
         req.output_ids = []
         req.stream_cursor = 0
+        req.spec_pending_tokens = None
+        req.spec_last_hidden = None
+        req.draft_pos = 0
         req.state = State.QUEUED
 
     def release(self, req: Request) -> None:
@@ -227,10 +245,14 @@ class Executor:
             req.checkpoints[pos] = slot
         out = self.model.forward(ids, ctx)
         req.prefill_pos = end
+        if self.spec is not None:
+            self.spec.ingest_prefill(req, new_ids, start, out["norm"])
         token = None
         if end == n:
             logits = self.model.logits(out["norm"][-1:])
             token = int(self.sampler.sample(logits, [req.params]).item())
+            if self.spec is not None:
+                self.spec.start(req, token)
             if self.cache is not None:
                 # Snapshot the state after the whole prompt: the next turn of a
                 # conversation extends exactly this sequence.
@@ -305,6 +327,9 @@ class Executor:
         if finishing:
             logits = self.model.logits(out["norm"][[last_rows[i] for i in finishing]])
             tokens = self.sampler.sample(logits, [chunks[i][0].params for i in finishing]).tolist()
+        if self.spec is not None:
+            for i, (req, n_new) in enumerate(chunks):
+                self.spec.ingest_prefill(req, req.prompt_ids[req.prefill_pos : req.prefill_pos + n_new], req.prefill_pos, out["norm"][cu[i] : cu[i + 1]])
         for i, (req, n_new) in enumerate(chunks):
             req.prefill_pos += n_new
         for i, tok in zip(finishing, tokens or []):
@@ -322,6 +347,8 @@ class Executor:
             req.prefill_seconds += elapsed
         for i, tok in zip(finishing, tokens or []):
             chunks[i][0].push(int(tok))
+            if self.spec is not None:
+                self.spec.start(chunks[i][0], int(tok))
 
     def warmup(self, log=None) -> None:
         """Run every prefill path once so first requests do not pay backend
@@ -354,8 +381,24 @@ class Executor:
         )
 
     def decode_step(self, reqs: list[Request]) -> list[int]:
-        """Process the last generated token of every request and sample the next."""
+        """Process the last generated token of every request and sample the next.
+        With speculative decoding on, greedy requests go through spec rounds
+        and sampled ones through the plain step."""
         assert 0 < len(reqs) <= self.max_batch
+        if self.spec is not None:
+            spec_reqs = [r for r in reqs if r.params.greedy and self.spec.ready(r)]
+            plain = [r for r in reqs if r not in spec_reqs]
+            if spec_reqs:
+                need = len(spec_reqs) * self.spec.steps
+                if len(self.kv_pool._free) < need:
+                    if self.cache is not None:
+                        self.cache.evict(need_pages=need)
+                    if len(self.kv_pool._free) < need:
+                        raise MemoryError("KV pool exhausted during verify")
+                self.spec.round(spec_reqs)
+            if not plain:
+                return [r.output_ids[-1] for r in reqs]
+            reqs = plain
         if len(self.kv_pool._free) < len(reqs):
             if self.cache is not None:
                 self.cache.evict(need_pages=len(reqs))

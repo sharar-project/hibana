@@ -10,6 +10,7 @@ CONFIG_FILE="${SHARAR_CONFIG_FILE:-$SCRIPT_DIR/config/gb10.env}"
 IMAGE="${SHARAR_IMAGE:-sharar:qwen38-27b}"
 CONTAINER="${SHARAR_CONTAINER:-sharar-qwen38}"
 PORT="${SHARAR_PORT:-30001}"
+SPEC="${SHARAR_SPEC:-0}"   # MTP speculative decoding draft tokens (0 = off)
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
 STATE_DIR="$RESULTS_DIR/runtime-state"   # JIT caches; persists across restarts
@@ -56,7 +57,7 @@ Sharar preflight OK
   GPU: $gpu_name (SM $gpu_cc), driver $gpu_driver
   Model: RadixArk/Qwen3.8-27B-NVFP4@$MODEL_REVISION
   Host memory: $((mem_total / 1048576)) GiB total, $((mem_avail / 1048576)) GiB available; runtime floor $((GUARD_MIN_AVAILABLE_KIB / 1048576)) GiB
-  Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT
+  Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (speculative drafts: $SPEC)
 EOT
 [[ "${1:-}" == "--check" ]] && exit 0
 
@@ -72,6 +73,7 @@ args=(docker run --detach --name "$CONTAINER"
   --volume "$CACHE_DIR:/cache/huggingface:ro"
   --volume "$STATE_DIR:/state"
   --env TRITON_LIBCUDA_PATH=$DRIVER_LIB_DIR
+  --env SHARAR_SPEC=$SPEC
   --mount type=bind,src=/usr/bin/nvidia-smi,dst=/usr/bin/nvidia-smi,readonly)
 for dev in /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-modeset /dev/dri/renderD128; do
   [[ -e "$dev" ]] || fail "missing device $dev"

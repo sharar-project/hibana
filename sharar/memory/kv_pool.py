@@ -17,21 +17,22 @@ KV_DTYPE = torch.float8_e4m3fn
 
 
 class KvPool:
-    def __init__(self, num_pages: int, device: torch.device, page_size: int = 1):
+    def __init__(self, num_pages: int, device: torch.device, page_size: int = 1, layer_ids: list[int] | None = None, dtype: torch.dtype = KV_DTYPE):
         self.num_pages = num_pages
         self.page_size = page_size
         self.device = device
-        self.layer_ids = [i for i in range(config.NUM_LAYERS) if (i + 1) % config.FULL_ATTENTION_INTERVAL == 0]
+        self.dtype = dtype
+        self.layer_ids = layer_ids if layer_ids is not None else [i for i in range(config.NUM_LAYERS) if (i + 1) % config.FULL_ATTENTION_INTERVAL == 0]
         shape = (num_pages, page_size, config.NUM_KV_HEADS, config.HEAD_DIM)
-        self.k = {i: torch.zeros(shape, dtype=KV_DTYPE, device=device) for i in self.layer_ids}
-        self.v = {i: torch.zeros(shape, dtype=KV_DTYPE, device=device) for i in self.layer_ids}
+        self.k = {i: torch.zeros(shape, dtype=dtype, device=device) for i in self.layer_ids}
+        self.v = {i: torch.zeros(shape, dtype=dtype, device=device) for i in self.layer_ids}
         # Simple free list; page 0 is reserved as the dummy page for padded batch rows.
         self._free = list(range(num_pages - 1, 0, -1))
 
     @property
     def bytes(self) -> int:
         n = self.num_pages * self.page_size * config.NUM_KV_HEADS * config.HEAD_DIM
-        return n * 2 * len(self.layer_ids)
+        return n * 2 * len(self.layer_ids) * self.k[self.layer_ids[0]].element_size()
 
     def alloc(self, n: int) -> torch.Tensor:
         if n > len(self._free):
@@ -46,8 +47,8 @@ class KvPool:
         """Write [T, H, D] bf16 K/V for tokens whose (page, offset) are given
         with page_size 1: pages[t] is the token's page."""
         assert self.page_size == 1
-        self.k[layer_id][pages, 0] = k.to(KV_DTYPE)
-        self.v[layer_id][pages, 0] = v.to(KV_DTYPE)
+        self.k[layer_id][pages, 0] = k.to(self.dtype)
+        self.v[layer_id][pages, 0] = v.to(self.dtype)
 
     def cache(self, layer_id: int) -> tuple[torch.Tensor, torch.Tensor]:
         return self.k[layer_id], self.v[layer_id]

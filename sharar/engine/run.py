@@ -27,11 +27,13 @@ def _canary_checks():
     }
 
 
-def _load(graphs: bool = True) -> tuple[Qwen38, Executor, SnapshotTokenizer]:
+def _load(graphs: bool = True, spec: int = 0) -> tuple[Qwen38, Executor, SnapshotTokenizer]:
     snap = config.snapshot_dir()
     print(f"loading {config.MODEL_ID}@{config.MODEL_REVISION[:8]}")
     model = Qwen38(snap)
     ex = Executor(model, log=print)
+    if spec:
+        ex.enable_spec(spec, log=print)
     if graphs:
         started = time.perf_counter()
         ex.capture_graphs()
@@ -71,10 +73,10 @@ def _compare_continuation(name: str, mine: list[int], ref: dict) -> tuple[int, b
     return matched, True
 
 
-def canaries_cli(reference: str, max_new_tokens: int, batch: int, graphs: bool = True) -> int:
+def canaries_cli(reference: str, max_new_tokens: int, batch: int, graphs: bool = True, spec: int = 0) -> int:
     ref_dir = Path(reference)
     prompts = read_prompts(ref_dir.parent / "prompts.json")
-    model, ex, tok = _load(graphs)
+    model, ex, tok = _load(graphs, spec)
     checks = _canary_checks()
     all_ok = True
     rows = []
@@ -112,15 +114,19 @@ def canaries_cli(reference: str, max_new_tokens: int, batch: int, graphs: bool =
                 sem = False
             print(f"  [batch {len(reqs)}] {n}: {text[:60]!r} semantic {'PASS' if sem else 'FAIL'} ({r.decode_steps} steps in {r.decode_seconds:.2f}s, {r.decode_steps * len(reqs) / r.decode_seconds:.1f} aggregate tok/s)")
             all_ok &= bool(sem)
+    if ex.spec is not None:
+        print("  spec:", ex.spec.stats())
     print("CANARIES", "PASS" if all_ok else "FAIL")
     return 0 if all_ok else 1
 
 
-def bench_decode_cli(prompts_path: str, name: str, max_new_tokens: int, batches: str) -> int:
+def bench_decode_cli(prompts_path: str, name: str, max_new_tokens: int, batches: str, spec: int = 0) -> int:
     """Decode throughput with and without graphs, plus determinism checks."""
     prompts = read_prompts(Path(prompts_path))
     ids = prompts[name]
-    model, ex, tok = _load(graphs=True)
+    model, ex, tok = _load(graphs=True, spec=spec)
+    if spec:
+        return _bench_spec(ex, tok, prompts, max_new_tokens, batches)
     weight_bytes = 19.2 * 2**30
     params = SamplingParams(max_new_tokens=max_new_tokens, ignore_eos=True)
     ok = True
@@ -341,4 +347,34 @@ def sched_bench_cli(cells: str, output_len: int, chunk_size: int, prefill_budget
         p95 = ttfts[min(len(ttfts) - 1, int(0.95 * len(ttfts)))]
         m = sched.metrics.summary()
         print(f"  {n_in:>6} {conc:>4} {out_tokens / wall:>10.2f} {ttfts[len(ttfts) // 2]:>9.2f} {p95:>9.2f} {m['steps']:>6} {m['avg_step_ms']:>11.1f}")
+    return 0
+
+
+def _bench_spec(ex, tok, prompts, max_new_tokens: int, batches: str) -> int:
+    """Speculative vs plain greedy throughput and token agreement on text prompts."""
+    results = []
+    for name in ("text1024", "canary_needle", "canary_json", "rand128"):
+        ids = prompts[name]
+        params = SamplingParams(max_new_tokens=max_new_tokens, ignore_eos=(name == "rand128"))
+        for b in (int(x) for x in batches.split(",")):
+            items = [(ids, params) for _ in range(b)]
+            spec = ex.spec
+            ex.spec = None
+            ex.flush_cache()
+            plain = ex.generate_batch(items)
+            ex.spec = spec
+            spec.rounds = spec.proposed = spec.accepted = spec.emitted = 0
+            spec.draft_seconds = spec.verify_seconds = 0.0
+            ex.flush_cache()
+            fast = ex.generate_batch(items)
+            same = sum(1 for x, y in zip(plain[0].output_ids, fast[0].output_ids) if x == y)
+            st = spec.stats()
+            p_tps = sum(len(r.output_ids) - 1 for r in plain) / plain[0].decode_seconds
+            f_tps = sum(len(r.output_ids) - 1 for r in fast) / fast[0].decode_seconds
+            print(f"  [{name}] batch {b}: plain {p_tps:.1f} tok/s -> spec {f_tps:.1f} tok/s ({f_tps / p_tps:.2f}x); "
+                  f"accept {100 * st['accept_rate']:.0f}%, {st['tokens_per_round']:.2f} tok/round, draft {st['draft_ms_per_round']:.1f} ms + verify {st['verify_ms_per_round']:.1f} ms; "
+                  f"first-row agreement {same}/{min(len(plain[0].output_ids), len(fast[0].output_ids))}")
+            print(f"      spec text: {tok.decode(fast[0].output_ids, skip_special_tokens=True)[:80]!r}")
+            results.append((name, b, f_tps / p_tps))
+    print("SPEC-BENCH done")
     return 0

@@ -29,11 +29,13 @@ def main(argv: list[str] | None = None) -> int:
     p_can.add_argument("--max-new-tokens", type=int, default=32)
     p_can.add_argument("--batch", type=int, default=1, help="also decode the four canaries as one batch of this size")
     p_can.add_argument("--eager", action="store_true", help="skip CUDA graph capture")
+    p_can.add_argument("--spec", type=int, default=0, help="MTP speculative decoding with this many draft tokens")
     p_bd = sub.add_parser("bench-decode", help="decode throughput and determinism with CUDA graphs")
     p_bd.add_argument("--prompts", required=True)
     p_bd.add_argument("--name", default="rand128")
     p_bd.add_argument("--max-new-tokens", type=int, default=64)
     p_bd.add_argument("--batches", default="1,2,4")
+    p_bd.add_argument("--spec", type=int, default=0, help="benchmark MTP speculative decoding with k drafts")
     p_chat = sub.add_parser("chat", help="interactive chat with streaming output and speed stats")
     p_chat.add_argument("--max-new-tokens", type=int, default=512)
     p_chat.add_argument("--temperature", type=float, default=0.0, help="0 = greedy")
@@ -41,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     p_chat.add_argument("--system", default=None)
     p_chat.add_argument("--prompt", default=None, help="one-shot: answer this and exit")
     p_chat.add_argument("--no-graphs", action="store_true")
+    p_chat.add_argument("--spec", type=int, default=0, help="MTP speculative decoding with k draft tokens")
     p_cc = sub.add_parser("cache-check", help="prefix cache: checkpoint, prefix-hit, multi-turn and accounting checks")
     p_cc.add_argument("--prompts", required=True)
     p_cc.add_argument("--max-new-tokens", type=int, default=16)
@@ -56,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     p_serve = sub.add_parser("serve", help="OpenAI-compatible HTTP server")
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=30001)
+    p_serve.add_argument("--spec", type=int, default=int(__import__("os").environ.get("SHARAR_SPEC", "0")), help="MTP speculative decoding with k draft tokens (0 = off)")
     p_prof = sub.add_parser("profile", help="kernel time breakdown for prefill or decode")
     p_prof.add_argument("--prompts", required=True)
     p_prof.add_argument("--name", default="rand2048")
@@ -95,11 +99,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "canaries":
         from sharar.engine.run import canaries_cli
 
-        return canaries_cli(args.reference, args.max_new_tokens, args.batch, graphs=not args.eager)
+        return canaries_cli(args.reference, args.max_new_tokens, args.batch, graphs=not args.eager, spec=args.spec)
     if args.command == "serve":
         from sharar.api.server import serve
 
-        serve(args.host, args.port)
+        serve(args.host, args.port, spec=args.spec)
         return 0
     if args.command == "sched-bench":
         from sharar.engine.run import sched_bench_cli
@@ -116,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "chat":
         from sharar.engine.chat import chat_cli
 
-        return chat_cli(args.max_new_tokens, args.temperature, args.thinking, args.system, args.prompt, args.no_graphs)
+        return chat_cli(args.max_new_tokens, args.temperature, args.thinking, args.system, args.prompt, args.no_graphs, args.spec)
     if args.command == "profile":
         from sharar.engine.run import profile_cli
 
@@ -124,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "bench-decode":
         from sharar.engine.run import bench_decode_cli
 
-        return bench_decode_cli(args.prompts, args.name, args.max_new_tokens, args.batches)
+        return bench_decode_cli(args.prompts, args.name, args.max_new_tokens, args.batches, spec=args.spec)
     if args.command == "parity":
         from sharar.parity.run import run_parity
 

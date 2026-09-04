@@ -78,6 +78,6 @@ class Attention:
         return self._finish(attn.view(x.shape[0], self.q_size), gate)
 
     def forward(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
-        if ctx.mode == "prefill":
+        if ctx.mode in ("prefill", "verify"):
             return self.prefill(x, ctx.positions, ctx, x_q)
         return self.decode(x, ctx, x_q)

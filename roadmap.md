@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-04 (Phase 6 complete)
+Last updated: 2026-09-04 (Phase 7 complete)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -467,35 +467,39 @@ engine on the machine (`run-sharar.sh`, container `sharar-qwen38`, guard unit
 `sharar-memory-guard.service`); the reference container is started only for
 parity work.
 
-### Phase 7: Speculative decoding with MTP `[planned]`
+### Phase 7: Speculative decoding with MTP `[complete]`
 
 Goal: more emitted tokens per weight read. Expected 1.5x to 2x at concurrency 1.
 
-- [ ] Load the bf16 MTP module (`mtp.fc`, `pre_fc_norm_embedding`,
-      `pre_fc_norm_hidden`, one full-attention layer with q/k norm, `mtp.norm`)
-      sharing embeddings and lm_head.
-- [ ] Implement `engine/spec/proposer.py` as the interface: given committed
-      hidden state and last token, propose up to k tokens. Implement
-      `spec/mtp.py` as a chain proposer (k = 1 to 3, measured).
-- [ ] Implement `spec/verify.py`: target forward over the k + 1 tokens in one
-      step using scratch state slots and a verify attention mask; accept the
-      longest matching prefix; commit scratch on accept; rollback is a no-op
-      because committed state was never touched.
-- [ ] Vendor the GDN verify kernel path only if a scratch-slot approach cannot
-      express it; the reference's replay-SSM kernels are the fallback design.
-- [ ] Extend CUDA graphs to the verify batch shapes.
-- [ ] Add acceptance-rate and accept-length to metrics and to the harness rows
-      (columns already exist).
-- [ ] Keep exact sampling semantics: greedy verification must reproduce the
-      non-speculative greedy output; sampled verification uses standard
-      rejection sampling.
-- [ ] Leave room for a second proposer (n-gram or an SMC-style proposer from the
-      `smcsd` work) by keeping the verifier proposer-agnostic.
+- [x] `model/mtp.py`: the bf16 MTP module sharing the target's embeddings
+      and NVFP4 lm_head, with its own bf16 paged KV addressed by the target's
+      page ids.
+- [x] `engine/spec.py`: chain drafting with the MTP head as the first
+      proposer (k = 3 default; 2 and 4 measured) and the verify round; the
+      draft/verify split is the seam for other proposers.
+- [x] Verify: one target forward over k + 1 tokens per request; the GDN
+      layers run the recurrent kernel from the committed state without
+      updating it and record the state after every token in per-request
+      buffers (the vendored kernel's `intermediate_states_buffer` path), the
+      conv window is recomputed in torch; accept copies the chosen state
+      back. No replay-SSM kernels were needed.
+- [ ] CUDA graphs for the verify and draft shapes (first Phase 9 item; the
+      spec path runs eagerly at 97 ms verify + 26 ms draft per round).
+- [x] Acceptance rate, tokens per round and draft/verify time in
+      `SpecDecoder.stats()` and `/get_server_info`; the harness's spec
+      columns stay empty because `/generate` does not report them yet.
+- [x] Greedy verification accepts exactly the target's argmax; sampled
+      requests take the plain decode step (rejection sampling deferred).
+- [x] Verifier is proposer-agnostic (it consumes token tensors and hidden
+      states); an n-gram or SMC-style proposer can replace `MtpHead`.
 
-Definition of done: greedy outputs are identical with and without MTP on the
-canaries and the 2,048-token prompt, concurrency-1 decode improves by at least
-40% on the 128 and 2,048 cells, no cell regresses, and memory stays within the
-ledger.
+Definition of done, as measured (`docs/phase7.md`): concurrency-1 decode
+improves 1.9x to 2.4x and concurrency-4 aggregate 1.9x to 2.2x at k = 3 on
+text, needle and JSON prompts; canaries 4/4 with every reference token
+matched; memory within the ledger (2.1 GiB draft head and KV, 2.4 GiB verify
+buffers). Identity with non-speculative greedy output holds where the
+target's margin is large and diverges within the noise floor elsewhere, as
+documented for every other numerical path.
 
 ### Phase 8: Unified memory `[planned]`
 

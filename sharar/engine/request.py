@@ -44,6 +44,11 @@ class Request:
     t_finish: float = 0.0
     prefill_seconds: float = 0.0
     stream_cursor: int = 0
+    # speculative decoding bookkeeping (engine/spec.py)
+    draft_pos: int = 0  # next absolute position the draft has to ingest
+    spec_last_hidden: torch.Tensor | None = None
+    spec_pending_tokens: list[int] | None = None
+    spec_pending_hidden: torch.Tensor | None = None
 
     @property
     def context_len(self) -> int:

@@ -196,7 +196,10 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     @app.get("/get_server_info")
     @app.get("/describe")
     async def server_info():
-        return {**describe, "scheduler": engine.stats()}
+        info = {**describe, "scheduler": engine.stats()}
+        if engine.sched.ex.spec is not None:
+            info["spec_stats"] = engine.sched.ex.spec.stats()
+        return info
 
     @app.get("/metrics")
     async def metrics():
@@ -412,7 +415,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     return app
 
 
-def serve(host: str, port: int, log=print) -> None:
+def serve(host: str, port: int, log=print, spec: int = 0) -> None:
     import uvicorn
 
     from sharar.engine.executor import Executor
@@ -425,6 +428,8 @@ def serve(host: str, port: int, log=print) -> None:
     log(f"loading {MODEL_ID}@{config.MODEL_REVISION[:8]}")
     model = Qwen38(snap, log=log)
     ex = Executor(model, log=log)
+    if spec:
+        ex.enable_spec(spec, log=log)
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
     cfg = SchedulerConfig()
@@ -441,6 +446,7 @@ def serve(host: str, port: int, log=print) -> None:
         "kv_pages": ex.kv_pool.num_pages,
         "state_slots": ex.state_pool.num_slots,
         "ledger_gib": {k: round(v / 2**30, 2) for k, v in ex.ledger.entries.items()},
+        "speculative": {"algorithm": "mtp", "num_draft_tokens": spec} if spec else None,
         "attention_backend": "flashinfer",
         "gdn_backend": "triton",
         "kv_cache_dtype": "float8_e4m3fn",

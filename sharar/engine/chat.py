@@ -44,13 +44,15 @@ def _stream_generate(ex: Executor, tok: SnapshotTokenizer, ids: list[int], param
     return {"output_ids": out, "ttft": ttft, "decode_s": decode_s, "steps": steps, "prompt_tokens": len(ids), "cached": cached}
 
 
-def chat_cli(max_new_tokens: int, temperature: float, thinking: bool, system: str | None, prompt: str | None, no_graphs: bool) -> int:
+def chat_cli(max_new_tokens: int, temperature: float, thinking: bool, system: str | None, prompt: str | None, no_graphs: bool, spec: int = 0) -> int:
     snap = config.snapshot_dir()
     tok = SnapshotTokenizer(snap)
     tmpl = ChatTemplate(snap)
     print(f"loading {config.MODEL_ID} ...", flush=True)
     model = Qwen38(snap, log=None)
     ex = Executor(model, log=print)
+    if spec:
+        ex.enable_spec(spec, log=print)
     if not no_graphs:
         ex.capture_graphs(log=None)
     ex.warmup()

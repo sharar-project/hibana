@@ -17,7 +17,7 @@ from sharar.memory.state_pool import StatePool
 
 @dataclass
 class ForwardContext:
-    mode: str  # "prefill" | "decode"
+    mode: str  # "prefill" | "decode" | "verify"
     kv_pool: KvPool | None
     state_pool: StatePool | None
     positions: torch.Tensor  # [T] prefill or [B] decode, int64
@@ -41,6 +41,14 @@ class ForwardContext:
     seq_prefix_lens: list[int] = field(default_factory=list)  # tokens already in state/pages per seq
     seq_lens: list[int] = field(default_factory=list)  # new tokens per seq
     checkpoint_seqs: list[int] = field(default_factory=list)  # sequence index of each checkpoint
+
+    # speculative verify: k+1 tokens per sequence; GDN runs the recurrent
+    # kernel from the committed state without updating it, recording the state
+    # after every token in inter_ssm[layer][scratch, step]
+    verify_steps: int = 0
+    verify_scratch: torch.Tensor | None = None  # int32 [B]
+    inter_ssm: dict = field(default_factory=dict)  # layer -> [num_scratch, steps, HV, V, K] fp32
+    verify_conv_windows: dict = field(default_factory=dict)  # layer -> [B, steps, dim, 3] bf16 (output)
 
     @property
     def batched(self) -> bool:

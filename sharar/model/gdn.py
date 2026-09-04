@@ -18,6 +18,7 @@ from sharar.kernels.conv1d import causal_conv1d_fn, causal_conv1d_update
 from sharar.kernels.fla.chunk import chunk_gated_delta_rule
 from sharar.kernels.fla.fused_gdn_gating import fused_gdn_gating
 from sharar.kernels.fla.fused_recurrent import fused_recurrent_gated_delta_rule_packed_decode
+from sharar.kernels.fla.fused_sigmoid_gating_recurrent import fused_sigmoid_gating_delta_rule_update
 from sharar.kernels.fla.layernorm_gated import rms_norm_gated
 from sharar.kernels.fp8_quant import quant_fp8
 from sharar.memory.state_pool import CONV_DIM, CONV_STATE_LEN
@@ -181,7 +182,44 @@ class GatedDeltaNet:
         )
         return self._finish(out, z, b_sz)
 
+    def verify(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
+        """Speculative verify: B sequences of S = k+1 tokens each. The conv runs
+        in torch from the committed window (exact, tiny); the recurrent kernel
+        starts from the committed SSM state, leaves it untouched, and records
+        the state after every token so the accept step can commit any prefix."""
+        s_len = ctx.verify_steps
+        b_sz = x.shape[0] // s_len
+        conv_states = ctx.state_pool.conv[self.layer_id]
+        ssm_states = ctx.state_pool.ssm[self.layer_id]
+        mixed_qkv, z, b, a = self._project(x, x_q)
+        # conv over [history(3) | S tokens] per sequence
+        hist = conv_states[ctx.seq_slots].transpose(1, 2)  # [B, 3, dim]
+        xs = torch.cat([hist, mixed_qkv.view(b_sz, s_len, self.conv_dim)], dim=1)  # [B, 3+S, dim]
+        w = self.conv_weight  # [dim, 4]
+        conv = (xs[:, 0:s_len] * w[:, 0] + xs[:, 1:s_len + 1] * w[:, 1] + xs[:, 2:s_len + 2] * w[:, 2] + xs[:, 3:s_len + 3] * w[:, 3])
+        conv = torch.nn.functional.silu(conv.float()).to(torch.bfloat16)  # [B, S, dim]
+        # window after s+1 tokens = xs rows [s+1, s+4) -> [B, S, dim, 3]
+        windows = torch.stack([xs[:, s + 1 : s + 4].transpose(1, 2) for s in range(s_len)], dim=1)
+        ctx.verify_conv_windows[self.layer_id] = windows
+        q, k, v = torch.split(conv.reshape(1, b_sz * s_len, self.conv_dim), [self.key_dim, self.key_dim, self.value_dim], dim=-1)
+        q = q.reshape(1, b_sz * s_len, self.num_k_heads, self.head_k_dim)
+        k = k.reshape(1, b_sz * s_len, self.num_k_heads, self.head_k_dim)
+        v = v.reshape(1, b_sz * s_len, self.num_v_heads, self.head_v_dim)
+        core = fused_sigmoid_gating_delta_rule_update(
+            A_log=self.A_log, dt_bias=self.dt_bias, softplus_beta=1.0, softplus_threshold=20.0,
+            q=q, k=k, v=v, a=a, b=b,
+            initial_state_source=ssm_states, initial_state_indices=ctx.seq_slots,
+            use_qk_l2norm_in_kernel=True, cu_seqlens=ctx.cu_seqlens,
+            disable_state_update=True,
+            intermediate_states_buffer=ctx.inter_ssm[self.layer_id],
+            intermediate_state_indices=ctx.verify_scratch,
+            cache_steps=s_len,
+        )
+        return self._finish(core, z, b_sz * s_len)
+
     def forward(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
         if ctx.mode == "prefill":
             return self.prefill(x, ctx, x_q)
+        if ctx.mode == "verify":
+            return self.verify(x, ctx, x_q)
         return self.decode(x, ctx, x_q)
