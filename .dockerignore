@@ -1,0 +1,7 @@
+.git
+docs
+tools
+results
+parity
+**/__pycache__
+*.log

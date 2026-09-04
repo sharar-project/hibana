@@ -58,6 +58,7 @@ fi
 args=(
   docker run --rm
   --name "$NAME"
+  --entrypoint ""
   "${network_args[@]}"
   --security-opt no-new-privileges=true
   --cap-drop ALL

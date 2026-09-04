@@ -35,6 +35,17 @@ curl -s http://127.0.0.1:30001/v1/chat/completions -H 'content-type: application
   -d '{"model":"RadixArk/Qwen3.8-27B-NVFP4","messages":[{"role":"user","content":"Hi"}],"max_tokens":64,"chat_template_kwargs":{"enable_thinking":false}}'
 ```
 
+Production: build the runtime image once (14 GB, CUDA 13 base plus the pinned
+packages, no SGLang) and launch it with the preflight and the memory guard:
+
+```bash
+docker/build.sh                 # -> sharar:qwen38-27b
+./run-sharar.sh --check         # host, GPU, driver, memory and snapshot preflight
+./run-sharar.sh                 # container sharar-qwen38 on 127.0.0.1:30001 + guard
+tools/verify-sharar.sh
+./run-sharar.sh --stop
+```
+
 Streaming (`"stream": true`), thinking (`enable_thinking` true, returned as
 `reasoning_content`), tools (`tools`, returned as `tool_calls`), `stop`
 strings, `/v1/completions`, `/v1/tokenize`, `/flush_cache` and the SGLang-style

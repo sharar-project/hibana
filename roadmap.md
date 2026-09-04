@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-04 (Phase 5 complete)
+Last updated: 2026-09-04 (Phase 6 complete)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -93,12 +93,36 @@ Quantization (ModelOpt mixed recipe):
 Loaded weights are about 19.2 GB. Safetensors total 20.4 GiB because they
 include the vision encoder, which is never loaded.
 
-### Measured reference baseline
+### Current baseline: Sharar
 
-Frozen result directories live under `${SPARKLANG_RESULTS}` on the host:
+Runtime image `sharar:qwen38-27b` (`sha256:745c17e43d59783ca235b72b4e0bb1b3f2229d1d7f74b176314fd6e40ce6ed94`, 14.3 GB),
+launched by `run-sharar.sh` with the memory guard. Result directories live
+under `${SHARAR_RESULTS}/controlled/`:
+`controlled-27b-sharar-baseline-20260904T125049Z` (matrix) and
+`controlled-27b-sharar-baseline-32766-20260904T130641Z` (boundary).
+
+| Input | Concurrency | Aggregate tok/s | Median TTFT (s) | p95 TTFT (s) |
+|---:|---:|---:|---:|---:|
+| 128 | 1 | 11.95 | 0.19 | 0.19 |
+| 128 | 4 | 43.7 | 0.35 | 0.38 |
+| 2,048 | 1 | 11.49 | 0.85 | 0.85 |
+| 2,048 | 4 | 38.4 | 2.45 | 3.26 |
+| 8,192 | 1 | 10.15 | 3.55 | 3.55 |
+| 8,192 | 4 | 26.9 | 10.3 | 13.8 |
+
+Boundary: 31,742 in + 1,024 out at 9.61 tok/s, TTFT 16.4 s. Quality canaries
+4/4. Serial hashes identical across the dev container and the image. Profile:
+32,768-token context, concurrency 4, queue 16, prefill chunk 2,048 per request
+and 4,096 per step, KV pages and state slots planned by the ledger, FlashInfer
+attention, Triton GDN, CUDA FP8 GEMV, warm restart 96 s, offline cold start
+131 s.
+
+### Historical reference baseline (SGLang)
+
+Frozen result directories under `${SPARKLANG_RESULTS}` on the host:
 `controlled-27b-sparklang-cli-candidate-20260903T005850Z` (matrix) and
 `controlled-27b-sparklang-cli-candidate-32766-usable-20260903T011622Z`
-(boundary).
+(boundary). Kept for comparison and for the parity oracles only.
 
 | Input | Concurrency | Aggregate tok/s | Median TTFT (s) | p95 TTFT (s) |
 |---:|---:|---:|---:|---:|
@@ -110,8 +134,8 @@ Frozen result directories live under `${SPARKLANG_RESULTS}` on the host:
 | 8,192 | 4 | 18.30 | 8.46 | 31.7 |
 
 Reference profile: 32,768-token budget, concurrency 4, queue 16, chunked
-prefill 2,048, 20 FP32 Mamba slots, static fraction 0.70, FlashInfer
-attention, Triton GDN, cold start about 2 minutes of which weight load is 99 s.
+prefill 2,048, 20 FP32 Mamba slots, static fraction 0.70, cold start about 2
+minutes of which weight load is 99 s; image 21.1 GB.
 
 ### What the numbers mean
 
@@ -424,19 +448,24 @@ boundary completes at 9.62 tok/s. Serial hash equality with the reference is
 not a goal (section 8); Sharar's own serial hashes become the baseline in
 Phase 6.
 
-### Phase 6: Promotion and reference retirement `[planned]`
+### Phase 6: Promotion and reference retirement `[complete]`
 
-- [ ] Run the complete gate sequence (section 7) against Sharar with the
-      reference matrix as baseline; record result basenames here.
-- [ ] Run the 32,766-token boundary and a cold restart.
-- [ ] Build a first Sharar container image from a CUDA 13 aarch64 base with
-      only the pinned packages, and run the gates offline (no network
-      namespace).
-- [ ] Update this roadmap's baseline table with Sharar's numbers and mark the
-      reference as historical.
+- [x] Gates run against Sharar through the frozen harness (Phase 5) and again
+      against the runtime image (basenames in section 3).
+- [x] 32,766-token boundary and cold restart measured from the image.
+- [x] `docker/Dockerfile` from `nvidia/cuda:13.0.3-devel-ubuntu24.04` with only
+      the pinned packages (14.3 GB, no SGLang, transformers or vLLM);
+      `sharar check`, the unit tests, an offline cold start with an empty JIT
+      cache and a chat all pass inside it. `run-sharar.sh` is the production
+      launcher (preflight, devices, driver libraries, loopback port, memory
+      guard); `docker/build.sh` builds.
+- [x] Section 3 now carries Sharar's baseline; the SGLang reference is
+      historical and used only through `tools/reference/`.
 
-Definition of done: Sharar is the production engine on the machine; the
-reference container is started only for parity work.
+Definition of done, as measured (`docs/phase6.md`): Sharar is the production
+engine on the machine (`run-sharar.sh`, container `sharar-qwen38`, guard unit
+`sharar-memory-guard.service`); the reference container is started only for
+parity work.
 
 ### Phase 7: Speculative decoding with MTP `[planned]`
 
@@ -557,10 +586,11 @@ Parity (Phase 1 onward):
 sharar parity --prompts all --reference "${SHARAR_RESULTS}/parity/reference"
 ```
 
-Live verification (Phase 5 onward):
+Live verification:
 
 ```bash
-tools/verify-sharar.sh
+./run-sharar.sh --check
+SHARAR_URL=http://127.0.0.1:30001 tools/verify-sharar.sh
 ```
 
 Controlled matrix:
@@ -574,8 +604,8 @@ Acceptance thresholds, unchanged from the reference project:
 
 - No request failures.
 - 4/4 quality canaries.
-- Exact serial response hashes against the current baseline. From Phase 6 the
-  baseline is Sharar's own frozen run; hash equality with the SGLang reference
+- Exact serial response hashes against the current baseline, which is
+  Sharar's own frozen run (section 3); hash equality with the SGLang reference
   is not a goal (section 8).
 - No cell loses more than 3% aggregate throughput.
 - No cell regresses median TTFT by more than 15%.
@@ -663,8 +693,9 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-Phase 6, promotion. Freeze Sharar's own controlled baseline (result basenames
-into this roadmap), build the first Sharar runtime image from a CUDA 13
-aarch64 base with only the pinned packages, run the gates offline inside it,
-and retire the reference container from daily use. Then Phase 7 (MTP
-speculative decoding), which is the largest remaining performance lever.
+Phase 7, speculative decoding with the checkpoint's MTP head. Load the bf16
+MTP module, implement the proposer interface with MTP as the first proposer,
+the verifier over scratch state slots (the state pool already reserves them),
+graphs for the verify shapes, acceptance metrics, and the greedy-equivalence
+check against non-speculative output. Gate it with the full sequence in
+section 7 against the Sharar baseline in section 3.
