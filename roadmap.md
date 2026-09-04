@@ -93,29 +93,31 @@ Quantization (ModelOpt mixed recipe):
 Loaded weights are about 19.2 GB. Safetensors total 20.4 GiB because they
 include the vision encoder, which is never loaded.
 
-### Current baseline: Sharar
+### Current baseline: Sharar with MTP speculative decoding
 
-Runtime image `sharar:qwen38-27b` (`sha256:745c17e43d59783ca235b72b4e0bb1b3f2229d1d7f74b176314fd6e40ce6ed94`, 14.3 GB),
-launched by `run-sharar.sh` with the memory guard. Result directories live
-under `${SHARAR_RESULTS}/controlled/`:
-`controlled-27b-sharar-baseline-20260904T125049Z` (matrix) and
-`controlled-27b-sharar-baseline-32766-20260904T130641Z` (boundary).
+Runtime image `sharar:qwen38-27b` launched by `SHARAR_SPEC=3 run-sharar.sh`
+with the memory guard. Result directories under `${SHARAR_RESULTS}/controlled/`:
+`controlled-27b-sharar-spec3-20260904T134228Z` (matrix) and
+`controlled-27b-sharar-spec3-32766-20260904T135132Z` (boundary). The plain
+(non-speculative) run `controlled-27b-sharar-baseline-20260904T125049Z` is
+kept as the fallback baseline for `SHARAR_SPEC=0`.
 
 | Input | Concurrency | Aggregate tok/s | Median TTFT (s) | p95 TTFT (s) |
 |---:|---:|---:|---:|---:|
-| 128 | 1 | 11.95 | 0.19 | 0.19 |
-| 128 | 4 | 43.7 | 0.35 | 0.38 |
-| 2,048 | 1 | 11.49 | 0.85 | 0.85 |
-| 2,048 | 4 | 38.4 | 2.45 | 3.26 |
-| 8,192 | 1 | 10.15 | 3.55 | 3.55 |
-| 8,192 | 4 | 26.9 | 10.3 | 13.8 |
+| 128 | 1 | 31.6 | 0.15 | 0.15 |
+| 128 | 4 | 104.1 | 0.39 | 0.39 |
+| 2,048 | 1 | 22.1 | 0.87 | 0.87 |
+| 2,048 | 4 | 58.6 | 2.57 | 3.44 |
+| 8,192 | 1 | 18.8 | 3.69 | 3.69 |
+| 8,192 | 4 | 37.7 | 10.8 | 14.5 |
 
-Boundary: 31,742 in + 1,024 out at 9.61 tok/s, TTFT 16.4 s. Quality canaries
-4/4. Serial hashes identical across the dev container and the image. Profile:
-32,768-token context, concurrency 4, queue 16, prefill chunk 2,048 per request
-and 4,096 per step, KV pages and state slots planned by the ledger, FlashInfer
-attention, Triton GDN, CUDA FP8 GEMV, warm restart 96 s, offline cold start
-131 s.
+Boundary: 31,742 in + 1,024 out at 20.2 tok/s, TTFT 17.1 s. Quality canaries
+4/4. Draft acceptance 79.5% over the matrix. Plain decoding (`SHARAR_SPEC=0`)
+gives 11.95 / 43.7 / 11.49 / 38.4 / 10.15 / 26.9 tok/s in the same cells.
+Profile: 32,768-token context, concurrency 4, queue 16, prefill chunk 2,048
+per request and 4,096 per step, KV pages and state slots planned by the
+ledger, FlashInfer attention, Triton GDN, CUDA FP8 GEMV, MTP chain drafts of
+3, warm restart 96 s, offline cold start 131 s.
 
 ### Historical reference baseline (SGLang)
 
@@ -697,9 +699,8 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-Phase 7, speculative decoding with the checkpoint's MTP head. Load the bf16
-MTP module, implement the proposer interface with MTP as the first proposer,
-the verifier over scratch state slots (the state pool already reserves them),
-graphs for the verify shapes, acceptance metrics, and the greedy-equivalence
-check against non-speculative output. Gate it with the full sequence in
-section 7 against the Sharar baseline in section 3.
+Phase 9 first item, then Phase 8. CUDA graphs for the speculative path
+(verify forward at batch 1, 2, 4 with k+1 rows each, and the draft steps),
+which is worth about 25% on every decode cell; then the FP8 GEMV in-model
+gap and the NVFP4 quantizer speed. Phase 8's zero-copy weight load (87 s of
+the 96 s restart) and the draft-KV-aware prefix cache follow.

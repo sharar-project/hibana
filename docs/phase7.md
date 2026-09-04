@@ -47,7 +47,30 @@ spec path yet). k=3 is the default.
 Canaries with k=3: 4/4 pass and every reference token matched (exact 5/5,
 arithmetic 3/3, JSON 30/30, needle 12/12), at 26 to 32 tok/s.
 
-SPEC_MATRIX_PLACEHOLDER
+## Production matrix with k=3 (frozen harness, image run)
+
+Run `controlled-27b-sharar-spec3-20260904T134228Z`, compared with the plain
+baseline `controlled-27b-sharar-baseline-20260904T125049Z`:
+
+| Input | Conc | Plain tok/s | Spec tok/s | Gain | Spec TTFT p50 / p95 (s) |
+|---:|---:|---:|---:|---:|---|
+| 128 | 1 | 11.95 | 31.6 | 2.65x | 0.15 / 0.15 |
+| 128 | 4 | 43.7 | 104.1 | 2.38x | 0.39 / 0.39 |
+| 2,048 | 1 | 11.49 | 22.1 | 1.92x | 0.87 / 0.87 |
+| 2,048 | 4 | 38.4 | 58.6 | 1.53x | 2.57 / 3.44 |
+| 8,192 | 1 | 10.15 | 18.8 | 1.85x | 3.69 / 3.69 |
+| 8,192 | 4 | 26.9 | 37.7 | 1.40x | 10.8 / 14.5 |
+
+Boundary (31,742 in + 1,024 out): 20.2 tok/s (plain 9.6), TTFT 17.1 s.
+Canaries 4/4. Over the whole matrix the draft acceptance rate was 79.5% and
+rounds emitted 7.5 tokens on average across the batch. Minimum MemAvailable
+33.7 GiB with the extra 4.5 GiB of draft head, draft KV and verify buffers.
+Serial hashes differ from the plain baseline, as any different numerical path
+does; this run is the new baseline.
+
+The long-context concurrency-4 cell gains least: verification over an 8K
+prefix with four queries per request is the one place where the extra
+attention work per round is not hidden by the shared weight read.
 
 ## Decisions and notes
 
