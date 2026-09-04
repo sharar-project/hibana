@@ -63,7 +63,9 @@ so the largest budget does not win; 4,096 is the default.
 
 - Prefill chunks and decode steps are separate forwards that interleave. A
   running request's decode stalls for at most one prefill step (up to 4,096
-  tokens, about 1.7 s). Folding decode rows into the prefill forward ("mixed
+  tokens, about 1.7 s), or two when requests arrived during the first and are
+  admitted and prefilled before the decode step (Phase 5 added this for the
+  server, mirroring the reference's prefill-first policy). Folding decode rows into the prefill forward ("mixed
   chunk") would remove that stall at the cost of the CUDA-graph decode path
   for those steps; it stays a listed option, not the default.
 - FCFS with a shared budget, oldest first. Fairness between long and short

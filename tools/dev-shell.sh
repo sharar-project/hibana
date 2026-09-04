@@ -23,10 +23,12 @@ NAME="${SHARAR_DEV_CONTAINER:-sharar-dev-$$}"
 
 with_reference=false
 tty=false
+serve_port=""
 while [[ "${1:-}" == --* && "${1:-}" != "--" ]]; do
   case "$1" in
     --with-reference) with_reference=true ;;
     --tty) tty=true ;;
+    --serve) serve_port="$2"; shift ;;
     *) fail "unknown option $1" ;;
   esac
   shift
@@ -48,10 +50,15 @@ devices=(
   /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools
   /dev/nvidia-modeset /dev/dri/renderD128
 )
+network_args=(--network none)
+if [[ -n "$serve_port" ]]; then
+  # Serving: loopback-only publish; the server binds 0.0.0.0 inside the container.
+  network_args=(--publish "127.0.0.1:$serve_port:$serve_port")
+fi
 args=(
   docker run --rm
   --name "$NAME"
-  --network none
+  "${network_args[@]}"
   --security-opt no-new-privileges=true
   --cap-drop ALL
   --pids-limit 4096

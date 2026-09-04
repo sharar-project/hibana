@@ -26,6 +26,21 @@ From a DGX Spark with the model snapshot and the reference image present
 tools/dev-shell.sh --tty -- python3 -u -m sharar chat
 ```
 
+Or serve the OpenAI-compatible API on loopback port 30001 and verify it:
+
+```bash
+tools/dev-shell.sh --serve 30001 -- python3 -u -m sharar serve --host 0.0.0.0 --port 30001
+tools/verify-sharar.sh
+curl -s http://127.0.0.1:30001/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"RadixArk/Qwen3.8-27B-NVFP4","messages":[{"role":"user","content":"Hi"}],"max_tokens":64,"chat_template_kwargs":{"enable_thinking":false}}'
+```
+
+Streaming (`"stream": true`), thinking (`enable_thinking` true, returned as
+`reasoning_content`), tools (`tools`, returned as `tool_calls`), `stop`
+strings, `/v1/completions`, `/v1/tokenize`, `/flush_cache` and the SGLang-style
+`/generate` are supported. The frozen benchmark harness runs against it with
+`python3 bench/benchmark_text_server.py --base-url http://127.0.0.1:30001 --container <name>`.
+
 This loads the model (about 90 s), captures the decode CUDA graphs, and gives
 an interactive `you>` prompt. Replies stream token by token and every turn ends
 with a stats line: prompt tokens, time to first token, tokens generated and
@@ -57,7 +72,7 @@ sched-bench` (the six matrix cells through the scheduler). All run inside
 
 ## Status
 
-Phases 0 to 4 are complete. The engine loads the checkpoint, prefills, and
+Phases 0 to 5 are complete. The engine loads the checkpoint, prefills, and
 decodes with CUDA graphs at 12.1 tok/s single-stream and 44.6 aggregate at
 batch 4 (reference 12.7 and 46.4), passes the four quality canaries, matches
 the reference to within the model's own quantization noise floor, and keeps a
@@ -67,8 +82,9 @@ continuous-batching scheduler with chunked, batched prefill (8K prompts at
 concurrency 4: 27 tok/s and 13.9 s p95 TTFT against the reference's 18 tok/s
 and 31.7 s). See [docs/parity.md](docs/parity.md),
 [docs/phase2.md](docs/phase2.md), [docs/phase3.md](docs/phase3.md),
-[docs/phase4.md](docs/phase4.md). Phase 5 (HTTP API) is next. Read
-[roadmap.md](roadmap.md) before doing anything else.
+[docs/phase4.md](docs/phase4.md), [docs/phase5.md](docs/phase5.md). An
+OpenAI-compatible server exists: Phase 6 (promotion and runtime image) is
+next. Read [roadmap.md](roadmap.md) before doing anything else.
 
 ## Attribution and license
 

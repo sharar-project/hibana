@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-03 (Phase 4 complete)
+Last updated: 2026-09-04 (Phase 5 complete)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -393,28 +393,36 @@ cells are within 1 to 9% of the reference on TTFT and 5 to 7% below it on
 throughput, which is the Phase 2 decode GEMV gap, not the scheduler
 (overhead under 0.5 ms per step). All simulation cases pass.
 
-### Phase 5: API and CLI `[planned]`
+### Phase 5: API and CLI `[complete]`
 
 Goal: a drop-in replacement for the reference's HTTP surface as used by the
 harness and by local clients.
 
-- [ ] Implement `api/http.py` on a minimal async server (uvicorn plus a small
-      router, or plain asyncio HTTP if it stays under budget), bound to
-      127.0.0.1 by default.
-- [ ] Implement `/v1/chat/completions`, `/v1/completions` (streaming and not),
-      `/v1/models`, `/health`, `/tokenize`, `/describe` (profile and ledger),
-      and `/flush_cache` because the harness flushes between batches.
-- [ ] Implement `api/chat_template.py` with the snapshot's `chat_template.jinja`
-      and the `enable_thinking` switch the harness uses.
-- [ ] Port the Qwen3 reasoning parser and tool-call parser into
-      `api/parsers/`, text-only, with unit tests from captured reference
-      outputs.
-- [ ] Implement `sharar serve`, `describe`, `check`, `parity`.
-- [ ] Point `bench/` and `tools/verify-reference.sh` at Sharar via
-      configuration and add `tools/verify-sharar.sh`.
+- [x] `api/server.py`: FastAPI over one engine thread that owns the
+      scheduler; handlers await per-request queues; disconnects cancel.
+      Binds 127.0.0.1:30001 by default.
+- [x] `/v1/chat/completions`, `/v1/completions` (streaming and not),
+      `/v1/models`, `/health`, `/v1/tokenize`, `/get_server_info` (alias
+      `/describe`) with profile, ledger and scheduler stats, `/metrics`,
+      `/flush_cache`, and the SGLang-style `/generate` the harness speaks.
+- [x] Chat template with `chat_template_kwargs.enable_thinking`, `tools`,
+      `stop` strings, `stream_options.include_usage`.
+- [x] `api/parsers/reasoning.py` (streaming `<think>` split) and
+      `api/parsers/tools.py` (the model's XML tool-call blocks to OpenAI
+      `tool_calls`, schema-typed arguments), with unit tests.
+- [x] `sharar serve`; `describe`, `check`, `parity` existed already.
+- [x] `tools/verify-sharar.sh`; `tools/dev-shell.sh --serve PORT`; the
+      harness runs against Sharar unchanged with `--base-url` and
+      `--container`.
 
-Definition of done: the harness runs unchanged against Sharar, the four quality
-canaries pass, and serial response hashes equal the reference's.
+Definition of done, as measured (`docs/phase5.md`): the frozen harness runs
+unchanged against Sharar and reports 4/4 quality canaries; the controlled
+matrix (`controlled-27b-sharar-phase5c-20260904T034427Z`) shows throughput
+5.4 to 6.3% below the reference in five cells (the Phase 2 GEMV gap) and 46%
+above at 8,192 x 4 with p95 TTFT 13.9 s against 31.7 s; the 32,766-token
+boundary completes at 9.62 tok/s. Serial hash equality with the reference is
+not a goal (section 8); Sharar's own serial hashes become the baseline in
+Phase 6.
 
 ### Phase 6: Promotion and reference retirement `[planned]`
 
@@ -655,10 +663,8 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-Phase 5, the API. An asyncio HTTP server that drives `Scheduler.step()` from
-one loop and exposes `/v1/chat/completions` and `/v1/completions` (streaming
-and not), `/v1/models`, `/health`, `/tokenize`, `/describe` and
-`/flush_cache`; the chat template with `enable_thinking`; the Qwen3 reasoning
-and tool-call parsers ported into `api/parsers/`; `sharar serve`. Then point
-`bench/benchmark_text_server.py` and `tools/verify-sharar.sh` at it. That is
-the point where the frozen harness runs against Sharar unchanged.
+Phase 6, promotion. Freeze Sharar's own controlled baseline (result basenames
+into this roadmap), build the first Sharar runtime image from a CUDA 13
+aarch64 base with only the pinned packages, run the gates offline inside it,
+and retire the reference container from daily use. Then Phase 7 (MTP
+speculative decoding), which is the largest remaining performance lever.

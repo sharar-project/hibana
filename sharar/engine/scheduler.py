@@ -48,8 +48,8 @@ class Metrics:
     ttfts: list[float] = field(default_factory=list)
 
     def summary(self) -> dict:
-        ttfts = sorted(self.ttfts)
-        p = lambda q: ttfts[min(len(ttfts) - 1, int(q * len(ttfts)))] if ttfts else float("nan")  # noqa: E731
+        ttfts = sorted(t for t in self.ttfts if t == t)  # drop NaN
+        p = lambda q: ttfts[min(len(ttfts) - 1, int(q * len(ttfts)))] if ttfts else None  # noqa: E731
         return {
             "admitted": self.admitted, "finished": self.finished, "cancelled": self.cancelled,
             "retractions": self.retractions, "rejected": self.rejected,
@@ -61,9 +61,15 @@ class Metrics:
 
 
 class Scheduler:
-    def __init__(self, executor, cfg: SchedulerConfig | None = None):
+    def __init__(self, executor, cfg: SchedulerConfig | None = None, on_progress=None):
         self.ex = executor
         self.cfg = cfg or SchedulerConfig()
+        # Called after every prefill step and every decode step, so a server
+        # can deliver first tokens without waiting for the rest of the step,
+        # and hand over requests that arrived meanwhile (they are admitted and
+        # prefilled before the decode step, like the reference's prefill-first
+        # policy, bounded by one extra prefill step).
+        self.on_progress = on_progress
         self.queue: list[Request] = []
         self.prefilling: list[Request] = []
         self.running: list[Request] = []
@@ -105,10 +111,19 @@ class Scheduler:
         self._admit()
         if self.prefilling:
             self._prefill_step()
+            if self.on_progress:
+                self.on_progress()
+            self._admit()
+            if self.prefilling:
+                self._prefill_step()
+                if self.on_progress:
+                    self.on_progress()
             for _ in range(self.cfg.decode_steps_per_chunk):
                 self._decode()
         else:
             self._decode()
+        if self.on_progress:
+            self.on_progress()
         self.metrics.steps += 1
         self.metrics.step_seconds += time.perf_counter() - t0
 
