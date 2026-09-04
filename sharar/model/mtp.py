@@ -63,10 +63,11 @@ class MtpHead:
 
     def plan(self, qo_lens: list[int], kv_pages: list[torch.Tensor]) -> None:
         d = self.device
-        qo_indptr = torch.tensor([0] + list(torch.tensor(qo_lens).cumsum(0).tolist()), dtype=torch.int32, device=d)
-        kv_indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_pages]).cumsum(0).tolist()), dtype=torch.int32, device=d)
+        # Host index pointers: plan() reads them on the CPU (a device tensor would sync).
+        qo_indptr = torch.tensor([0] + list(torch.tensor(qo_lens).cumsum(0).tolist()), dtype=torch.int32)
+        kv_indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_pages]).cumsum(0).tolist()), dtype=torch.int32)
         self._attn.plan(
-            qo_indptr, kv_indptr, torch.cat(kv_pages), torch.ones(len(qo_lens), dtype=torch.int32, device=d),
+            qo_indptr, kv_indptr, torch.cat(kv_pages), torch.ones(len(qo_lens), dtype=torch.int32),
             self.num_heads, self.num_kv_heads, self.head_dim, 1,
             causal=True, q_data_type=torch.bfloat16, kv_data_type=torch.bfloat16, sm_scale=self.head_dim**-0.5,
         )

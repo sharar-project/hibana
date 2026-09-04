@@ -77,6 +77,8 @@ def canaries_cli(reference: str, max_new_tokens: int, batch: int, graphs: bool =
     ref_dir = Path(reference)
     prompts = read_prompts(ref_dir.parent / "prompts.json")
     model, ex, tok = _load(graphs, spec)
+    if ex.spec is not None:
+        ex.spec.timing = True
     checks = _canary_checks()
     all_ok = True
     rows = []
@@ -125,6 +127,8 @@ def bench_decode_cli(prompts_path: str, name: str, max_new_tokens: int, batches:
     prompts = read_prompts(Path(prompts_path))
     ids = prompts[name]
     model, ex, tok = _load(graphs=True, spec=spec)
+    if ex.spec is not None:
+        ex.spec.timing = True
     if spec:
         return _bench_spec(ex, tok, prompts, max_new_tokens, batches)
     weight_bytes = 19.2 * 2**30

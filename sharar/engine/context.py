@@ -48,7 +48,7 @@ class ForwardContext:
     verify_steps: int = 0
     verify_scratch: torch.Tensor | None = None  # int32 [B]
     inter_ssm: dict = field(default_factory=dict)  # layer -> [num_scratch, steps, HV, V, K] fp32
-    verify_conv_windows: dict = field(default_factory=dict)  # layer -> [B, steps, dim, 3] bf16 (output)
+    verify_conv_windows: dict = field(default_factory=dict)  # layer -> [max_batch, steps, dim, 3] bf16 buffer the layer fills
 
     @property
     def batched(self) -> bool:

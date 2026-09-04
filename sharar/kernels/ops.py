@@ -132,7 +132,7 @@ class RaggedAttention:
         key = tuple(seq_lens)
         if self._planned == key:
             return
-        indptr = torch.tensor([0] + list(torch.tensor(seq_lens).cumsum(0).tolist()), dtype=torch.int32, device=device)
+        indptr = torch.tensor([0] + list(torch.tensor(seq_lens).cumsum(0).tolist()), dtype=torch.int32)  # host: no sync in plan()
         self._wrapper.plan(
             indptr,
             indptr,

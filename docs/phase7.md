@@ -104,3 +104,46 @@ attention work per round is not hidden by the shared weight read.
 - `/generate` reports `spec_verify_ct`, `spec_accept_length` and
   `spec_accept_rate` per request with SGLang's meaning, so the harness and
   `docs/comparison.md` can compare acceptance directly.
+
+## Phase 9 follow-up: the round without host synchronizations (2026-09-04)
+
+A torch-profiler trace of one batch-1 round showed 107 ms of GPU work inside
+a 115 ms round and eight `cudaStreamSynchronize` calls on the host. Each
+`torch.tensor(python_list, device=cuda)` is a synchronous upload, each
+`.tolist()` a synchronous download, FlashInfer's `plan()` moves its index
+pointers to the CPU (a device tensor there costs a sync per plan), and the
+phase timers added three device synchronizations of their own. Every sync
+drains the GPU queue before the host can launch the next graph, so the GPU
+idled between the four graph replays of a round.
+
+Changes:
+
+- One pinned, non-blocking upload per round carries the pending token, its
+  position and the state slot for every request; draft positions for steps
+  2..k are derived on the device; the verified block starts with the pending
+  token, which is the last emitted token, so no separate upload.
+- KV pages are allocated with their ids kept on the host
+  (`KvPool.alloc_with_ids`) and freed by id, so accept does not read pages
+  back. The upload of new page ids is pinned and non-blocking.
+- All FlashInfer `plan()` calls (paged prefill, decode, verify, draft, MTP,
+  ragged) receive host index pointers.
+- The GDN state pool (`memory/state_pool.py`) and the verify intermediate
+  buffers are one tensor per kind stacked over layers with per-layer views,
+  so clearing, snapshotting and committing a slot are one strided copy per
+  kind instead of 96 launches.
+- Phase timing (`draft_ms`, `verify_ms`, `accept_ms` in `spec_stats`) is
+  opt-in via `SpecDecoder.timing`; benchmarks set it, the server does not.
+- Warmup runs two speculative rounds so the first request does not pay the
+  lazy kernel loads of the verify and accept path.
+- The draft step was profiled GEMM by GEMM: fc 0.47 ms, qkv 0.60, o 0.25,
+  gate_up 1.54, down 0.76, NVFP4 lm_head 2.96 (215 GB/s) for 1.42 GB of
+  weights per step. Eager the step is 7.9 ms, in its graph 6.5 ms, against
+  a 6.3 ms floor at 225 GB/s; the cuDNN, CUTLASS and b12x FP4 backends are
+  within 10% of each other for the lm_head at M=1.
+
+Result (dev container, `sharar bench-decode --spec 3`, timing on): batch 1
+JSON 32.4 tok/s (2.84x plain), needle 32.2, text1024 31.3, rand128 24.5;
+batch 4 up to 110 aggregate. Round wall time without timing 108.7 ms at
+batch 1 against 115.2 before, with the only remaining host wait the one
+`.tolist()` that reads the accepted counts. Canaries 4/4 plain and
+speculative.

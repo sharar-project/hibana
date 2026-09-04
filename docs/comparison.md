@@ -103,12 +103,14 @@ accept 98 to 100% and SGLang is 6 to 9% faster per round.
 
 ## Per-round cost at batch 1 (Sharar, dev container, `sharar bench-decode --spec 3`)
 
-| Bucket | ms per round | Notes |
-|---|---:|---|
-| Draft (3 chain steps, CUDA graphs) | 25 | ~8 ms per step; the MTP layer plus NVFP4 lm_head read ~1.4 GB per step, so the floor at 225 GB/s is ~6 ms |
-| Verify forward (4 rows, CUDA graph) | 90 | plain decode step is 84 ms; the extra is attention over 4 queries and the GDN verify kernel |
-| Accept bookkeeping | 4.5 | per-layer state copies, page bookkeeping, host syncs |
-| Server and scheduler | ~7 | difference between in-engine 33.5 tok/s and the harness's 31.5 tok/s |
+| Bucket | ms per round (morning) | ms per round (after the sync audit) | Notes |
+|---|---:|---:|---|
+| Draft (3 chain steps, CUDA graphs) | 25 | 21 (3 x 6.5 GPU) | the MTP layer plus NVFP4 lm_head read 1.42 GB per step, floor 6.3 ms at 225 GB/s |
+| Verify forward (4 rows, CUDA graph) | 90 | 88 (86 GPU) | plain decode step is 80 ms in its graph; the extra is attention over 4 queries and the GDN verify kernel |
+| Accept bookkeeping | 4.5 | 2.8 | one strided state copy per kind, one host download |
+| Host stalls between graphs | ~7 | ~1 | eight synchronous uploads/downloads per round removed (`docs/phase7.md`) |
+| Round wall time at batch 1 | 119 | 109 | SGLang MTP: 111 |
 
-SGLang MTP's 34.8 tok/s at 3.88 tokens per round is 111 ms per round. The
-draft step and the acceptance path are the two buckets with headroom.
+The remaining round is GPU time. SGLang MTP's 34.8 tok/s at 3.88 tokens per
+round is 111 ms per round, so at equal acceptance the two engines are now
+level at batch 1.

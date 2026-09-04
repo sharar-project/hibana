@@ -183,9 +183,11 @@ class Executor:
 
     # ---- steps ----
     def _plan_paged_prefill(self, total_pages: torch.Tensor, new_tokens: int) -> None:
-        qo_indptr = torch.tensor([0, new_tokens], dtype=torch.int32, device=self.device)
-        kv_indptr = torch.tensor([0, total_pages.shape[0]], dtype=torch.int32, device=self.device)
-        last_page_len = torch.ones(1, dtype=torch.int32, device=self.device)
+        # Host index pointers: FlashInfer's plan() reads them on the CPU, so
+        # device tensors would cost a synchronization per plan.
+        qo_indptr = torch.tensor([0, new_tokens], dtype=torch.int32)
+        kv_indptr = torch.tensor([0, total_pages.shape[0]], dtype=torch.int32)
+        last_page_len = torch.ones(1, dtype=torch.int32)
         self._paged_prefill.plan(
             qo_indptr, kv_indptr, total_pages, last_page_len,
             config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, self.kv_pool.page_size,
@@ -315,8 +317,8 @@ class Executor:
             checkpoint_positions=ck_pos, checkpoint_slots=ck_slots, checkpoint_seqs=ck_seqs,
         )
         self._paged_prefill.plan(
-            ctx.cu_seqlens, torch.tensor(kv_indptr, dtype=torch.int32, device=d), torch.cat(kv_indices),
-            torch.ones(len(chunks), dtype=torch.int32, device=d),
+            torch.tensor(cu, dtype=torch.int32), torch.tensor(kv_indptr, dtype=torch.int32), torch.cat(kv_indices),
+            torch.ones(len(chunks), dtype=torch.int32),
             config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, self.kv_pool.page_size,
             causal=True, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
         )
@@ -366,6 +368,18 @@ class Executor:
         self.prefill_batch([(b, 40), (c, 70)])
         for r in (a, b, c):
             self.release(r)
+        if self.spec is not None:
+            # Two speculative rounds at batch 1 and 2 so the first real request
+            # does not pay the lazy kernel loads of the verify/accept path.
+            d = self.admit(random_ids(50, 14), SamplingParams(max_new_tokens=12))
+            e = self.admit(random_ids(60, 15), SamplingParams(max_new_tokens=12))
+            self.prefill(d)
+            self.prefill(e)
+            self.decode_step([d])
+            self.decode_step([d, e])
+            for r in (d, e):
+                self.release(r)
+            self.spec.reset_stats()
         self.flush_cache()
         torch.cuda.synchronize()
         if log:
@@ -373,9 +387,9 @@ class Executor:
 
     def _plan_decode(self, reqs: list[Request]) -> None:
         counts = [r.context_len for r in reqs]
-        indptr = torch.tensor([0] + list(torch.tensor(counts).cumsum(0).tolist()), dtype=torch.int32, device=self.device)
+        indptr = torch.tensor([0] + list(torch.tensor(counts).cumsum(0).tolist()), dtype=torch.int32)
         indices = torch.cat([r.pages for r in reqs])
-        last_page_len = torch.ones(len(reqs), dtype=torch.int32, device=self.device)
+        last_page_len = torch.ones(len(reqs), dtype=torch.int32)
         self._decode_wrapper.plan(
             indptr, indices, last_page_len,
             config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, self.kv_pool.page_size,

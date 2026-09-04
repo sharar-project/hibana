@@ -531,10 +531,21 @@ Definition of done: weight load time, cache capacity and longest safe context
 are all improved and documented, and the host floor is never crossed in the
 soak.
 
-### Phase 9: SM121 kernels and AOT `[planned]`
+### Phase 9: SM121 kernels and AOT `[in progress]`
 
 Goal: prefill toward the compute roofline and a runtime with no compiler.
 
+- [x] Speculative round in CUDA graphs: verify forward at batch 1, 2, 4 and
+      every single-row draft step (`engine/spec_graphs.py`). 2026-09-04.
+- [x] Sync-free speculative round: one pinned upload per round (pending
+      token, position, slot), positions derived on device, page frees from
+      host ids, FlashInfer plans fed host index pointers (its `plan()` reads
+      them on the CPU, so device tensors cost a sync each), phase timing
+      opt-in (`SpecDecoder.timing`). GDN state pool and verify buffers are
+      stacked over layers so committing a request's state is one strided
+      copy per kind. Round wall time at batch 1 went from 119 to 109 ms with
+      107 ms of GPU work; the draft step is at 6.5 ms against a 6.3 ms
+      bandwidth floor. `docs/phase7.md`. 2026-09-04.
 - [ ] Profile prefill at 2,048 and 8,192 tokens with CUPTI on a separate
       profiling container; attribute time to NVFP4 GEMM, FP8 GEMM, GDN chunk
       kernels, attention, norms and quantization. (`sharar profile` gives the
@@ -701,12 +712,13 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-Phase 9, then Phase 8. The speculative path is in CUDA graphs and measured
-against SGLang MTP (`docs/comparison.md`): same acceptance, about 8 ms per
-round more engine cost at batch 1 (draft 25 ms + verify 90 ms + accept
-4.5 ms + about 7 ms of server and scheduler per round against SGLang's
-111 ms). Next: the draft step (8 ms per step against a 6 ms bandwidth
-floor), the acceptance path (per-layer state copies and host syncs), the
-server overhead per round, then the FP8 GEMV in-model gap and the NVFP4
-quantizer speed. Phase 8's zero-copy weight load (87 s of the 96 s restart)
-and the draft-KV-aware prefix cache follow.
+Phase 9, then Phase 8. The speculative round is graph-captured and free of
+host synchronizations (109 ms wall at batch 1 for 107 ms of GPU work, level
+with SGLang MTP's 111 ms; `docs/comparison.md`). What is left per round is
+GPU time: verify 88 ms (plain decode is 80 ms in its graph, so the four-row
+verify costs 8 ms over a decode step) and three 6.5 ms draft steps at their
+bandwidth floor. Next: apply the same sync audit to the plain decode step and
+the scheduler loop (`torch.tensor(list, device=...)` and `.tolist()` are
+synchronous), then the FP8 GEMV in-model gap and the NVFP4 quantizer speed.
+Phase 8's zero-copy weight load (87 s of the 96 s restart) and the
+draft-KV-aware prefix cache follow.

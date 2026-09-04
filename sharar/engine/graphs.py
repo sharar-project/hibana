@@ -41,17 +41,18 @@ class DecodeGraphs:
             "indptr": torch.zeros(b + 1, dtype=torch.int32, device=d),
             "indices": torch.zeros(b * self.max_context, dtype=torch.int32, device=d),
             "last_page_len": torch.ones(b, dtype=torch.int32, device=d),
+            "last_page_len_host": torch.ones(b, dtype=torch.int32),
             "logits": None,
         }
 
     def _plan(self, b: int, counts: list[int], pages: list[torch.Tensor]) -> None:
         st = self._static[b]
-        indptr = torch.tensor([0] + list(torch.tensor(counts).cumsum(0).tolist()), dtype=torch.int32, device=self.device)
+        indptr = torch.tensor([0] + list(torch.tensor(counts).cumsum(0).tolist()), dtype=torch.int32)  # host: no sync in plan()
         indices = torch.cat(pages)
         self._wrappers[b].plan(
             indptr,
             indices,
-            st["last_page_len"],
+            st["last_page_len_host"],
             config.NUM_ATTENTION_HEADS,
             config.NUM_KV_HEADS,
             config.HEAD_DIM,

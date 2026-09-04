@@ -57,15 +57,17 @@ class VerifyGraphs:
             pages=st["pages"], seq_len=b * s, cu_seqlens=st["qo_indptr"], seq_slots=st["slots"],
             seq_prefix_lens=[0] * b, seq_lens=[s] * b, verify_steps=s,
             verify_scratch=torch.arange(b, dtype=torch.int32, device=d), inter_ssm=self.spec.inter_ssm,
-            paged_prefill_wrapper=st["wrapper"],
+            verify_conv_windows=self.spec.conv_windows, paged_prefill_wrapper=st["wrapper"],
         )
         return st
 
     def _plan(self, st: dict, kv_all: list[torch.Tensor]) -> None:
         d = self.device
-        indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_all]).cumsum(0).tolist()), dtype=torch.int32, device=d)
+        b, s = len(kv_all), self.s_len
+        # Host index pointers: plan() reads them on the CPU (a device tensor would sync).
+        indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_all]).cumsum(0).tolist()), dtype=torch.int32)
         st["wrapper"].plan(
-            st["qo_indptr"], indptr, torch.cat(kv_all), st["last_page_len"],
+            torch.arange(0, b * s + 1, s, dtype=torch.int32), indptr, torch.cat(kv_all), torch.ones(b, dtype=torch.int32),
             config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, 1,
             causal=True, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
         )
@@ -96,10 +98,10 @@ class VerifyGraphs:
                 return s
         raise ValueError(b)
 
-    def run(self, tokens: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, slots: list[int], kv_all: list[torch.Tensor]):
+    def run(self, tokens: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, slots: torch.Tensor, kv_all: list[torch.Tensor]):
         """Returns (norm rows [b*s, H], argmax [b*s]) for the real rows; padded
         rows use slot 0 and page 0."""
-        b = len(slots)
+        b = slots.shape[0]
         size = self.pick(b)
         st = self._st[size]
         s = self.s_len
@@ -107,7 +109,7 @@ class VerifyGraphs:
         st["tokens"][:n].copy_(tokens)
         st["positions"][:n].copy_(positions)
         st["pages"][:n].copy_(pages)
-        st["slots"][:b].copy_(torch.tensor(slots, dtype=torch.int32))
+        st["slots"][:b].copy_(slots)
         if size > b:
             st["tokens"][n:].zero_()
             st["positions"][n:].zero_()
@@ -115,7 +117,6 @@ class VerifyGraphs:
             st["slots"][b:].zero_()
         pad_kv = [torch.zeros(s + 1, dtype=torch.int32, device=self.device) for _ in range(size - b)]
         self._plan(st, list(kv_all) + pad_kv)
-        st["ctx"].verify_conv_windows = st["ctx"].verify_conv_windows  # filled by the graph
         self._graphs[size].replay()
         return st["norm"][:n], st["argmax"][:n], st["ctx"]
 
@@ -151,9 +152,10 @@ class DraftGraphs:
 
     def _plan(self, st: dict, kv_all: list[torch.Tensor]) -> None:
         d = self.device
-        indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_all]).cumsum(0).tolist()), dtype=torch.int32, device=d)
+        b = len(kv_all)
+        indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_all]).cumsum(0).tolist()), dtype=torch.int32)  # host: no sync in plan()
         st["wrapper"].plan(
-            st["qo_indptr"], indptr, torch.cat(kv_all), st["last_page_len"],
+            torch.arange(0, b + 1, dtype=torch.int32), indptr, torch.cat(kv_all), torch.ones(b, dtype=torch.int32),
             config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, 1,
             causal=True, q_data_type=torch.bfloat16, kv_data_type=torch.bfloat16, sm_scale=config.HEAD_DIM**-0.5,
         )

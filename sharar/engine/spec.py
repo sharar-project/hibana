@@ -25,6 +25,7 @@ import time
 import torch
 
 from sharar import config
+from sharar.memory.state_pool import CONV_DIM, CONV_STATE_LEN
 from sharar.engine.context import ForwardContext
 from sharar.engine.request import Request
 from sharar.memory.kv_pool import KV_DTYPE
@@ -40,12 +41,21 @@ class SpecDecoder:
         self.device = executor.device
         n = executor.max_batch
         hv, vd, kd = config.LINEAR_NUM_VALUE_HEADS, config.LINEAR_VALUE_HEAD_DIM, config.LINEAR_KEY_HEAD_DIM
-        self.inter_ssm = {
-            lid: torch.zeros((n, self.steps, hv, vd, kd), dtype=torch.float32, device=self.device)
-            for lid in executor.state_pool.layer_ids
-        }
+        layer_ids = executor.state_pool.layer_ids
+        # Verify outputs, stacked over the GDN layers like the state pool so the
+        # accept step commits a request's state with one strided copy per kind.
+        self.inter_ssm_all = torch.zeros((len(layer_ids), n, self.steps, hv, vd, kd), dtype=torch.float32, device=self.device)
+        self.inter_ssm = {lid: self.inter_ssm_all[j] for j, lid in enumerate(layer_ids)}
+        self.conv_windows_all = torch.zeros((len(layer_ids), n, self.steps, CONV_DIM, CONV_STATE_LEN), dtype=torch.bfloat16, device=self.device)
+        self.conv_windows = {lid: self.conv_windows_all[j] for j, lid in enumerate(layer_ids)}
         self.verify_graphs = None
         self.draft_graphs = None
+        # Set by benchmarks: synchronize around the draft/verify/accept phases
+        # to attribute time. Off in serving so the host can queue graphs ahead.
+        self.timing = False
+        # Pinned staging for the per-round host -> device upload: rows are
+        # pending token, its position, state slot; one non-blocking copy.
+        self._host_rows = torch.empty((3, n), dtype=torch.int64).pin_memory()
         self.rounds = 0
         self.proposed = 0
         self.accepted = 0
@@ -65,6 +75,10 @@ class SpecDecoder:
     @property
     def bytes(self) -> int:
         return sum(t.numel() * 4 for t in self.inter_ssm.values())
+
+    def reset_stats(self) -> None:
+        self.rounds = self.proposed = self.accepted = self.emitted = 0
+        self.draft_seconds = self.verify_seconds = self.accept_seconds = 0.0
 
     def stats(self) -> dict:
         return {
@@ -118,41 +132,41 @@ class SpecDecoder:
         k, s_len = self.k, self.steps
         b_sz = len(reqs)
         d = self.device
+        timing = self.timing
+        if timing:
+            torch.cuda.synchronize()
         t0 = time.perf_counter()
-        new_pages = ex.kv_pool.alloc(b_sz * s_len).view(b_sz, s_len)
+        new_pages_flat, new_ids = ex.kv_pool.alloc_with_ids(b_sz * s_len)
+        new_pages = new_pages_flat.view(b_sz, s_len)
         # ---- draft step 1: ingest the pending row of every request ----
         # After a round each request has exactly one pending row (the last
         # emitted token with the target's hidden at that position), so this
         # step is the same single-row draft as steps 2..k and uses the same
         # CUDA graph. The eager path remains for graphs disabled.
-        toks, hids, poss, wpages, qo_lens, kv_pages = [], [], [], [], [], []
+        hids, kv_pages = [], []
+        host = self._host_rows
         for i, r in enumerate(reqs):
             P = r.context_len - 1
             pend = r.spec_pending_tokens
-            m = len(pend)
-            start = P - m + 1
-            assert start == r.draft_pos, (start, r.draft_pos, m)
-            toks += pend
+            assert len(pend) == 1 and P == r.draft_pos and pend[0] == r.output_ids[-1], (pend, P, r.draft_pos)
+            host[0, i] = pend[0]
+            host[1, i] = P
+            host[2, i] = r.slot
             hids.append(r.spec_pending_hidden)
-            poss += list(range(start, P + 1))
-            wp = torch.cat([r.pages[start:P], new_pages[i, :1]]) if start < P else new_pages[i, :1]
-            wpages.append(wp)
-            qo_lens.append(m)
             kv_pages.append(torch.cat([r.pages[1:P], new_pages[i, :1]]))
-        toks_t = torch.tensor(toks, dtype=torch.int64, device=d)
-        poss_t = torch.tensor(poss, dtype=torch.int64, device=d)
-        if self.draft_graphs is not None and all(q == 1 for q in qo_lens):
+        rows = host[:, :b_sz].to(d, non_blocking=True)  # the round's only upload
+        toks_t, poss_t, slots_t = rows[0], rows[1], rows[2].to(torch.int32)
+        if self.draft_graphs is not None:
             d_last, nxt = self.draft_graphs.run(toks_t, torch.cat(hids), poss_t, new_pages[:, 0].contiguous(), kv_pages)
             d_last = d_last.clone()
             drafts = [nxt.clone()]
         else:
-            dh = self.mtp.forward(toks_t, torch.cat(hids), poss_t, torch.cat(wpages), qo_lens, kv_pages)
-            last_rows = torch.tensor([sum(qo_lens[: i + 1]) - 1 for i in range(b_sz)], device=d)
-            d_last = dh[last_rows]
+            dh = self.mtp.forward(toks_t, torch.cat(hids), poss_t, new_pages[:, 0].contiguous(), [1] * b_sz, kv_pages)
+            d_last = dh
             drafts = [self.mtp.logits(d_last).argmax(-1)]  # y_1 for each request
         # ---- draft steps 2..k ----
         for j in range(2, k + 1):
-            pos_j = torch.tensor([r.context_len - 1 + j - 1 for r in reqs], dtype=torch.int64, device=d)
+            pos_j = poss_t + (j - 1)
             kv = [torch.cat([r.pages[1 : r.context_len - 1], new_pages[i, :j]]) for i, r in enumerate(reqs)]
             if self.draft_graphs is not None:
                 d_last, nxt = self.draft_graphs.run(drafts[-1], d_last, pos_j, new_pages[:, j - 1].contiguous(), kv)
@@ -162,33 +176,36 @@ class SpecDecoder:
                 d_last = self.mtp.forward(drafts[-1], d_last, pos_j, new_pages[:, j - 1].contiguous(), [1] * b_sz, kv)
                 drafts.append(self.mtp.logits(d_last).argmax(-1))
         y = torch.stack(drafts, dim=1)  # [B, k]
-        torch.cuda.synchronize()
+        if timing:
+            torch.cuda.synchronize()
         t1 = time.perf_counter()
         # ---- verify ----
-        x_last = torch.tensor([r.output_ids[-1] for r in reqs], dtype=torch.int64, device=d)
-        tokens_v = torch.cat([x_last.unsqueeze(1), y], dim=1).reshape(-1)
+        # The verified block starts with the last emitted token, which is the
+        # pending token uploaded above.
+        tokens_v = torch.cat([toks_t.unsqueeze(1), y], dim=1).reshape(-1)
         positions = torch.cat([torch.arange(r.context_len - 1, r.context_len - 1 + s_len, device=d) for r in reqs])
         kv_indptr = [0]
         kv_all = []
         for i, r in enumerate(reqs):
             kv_all.append(torch.cat([r.pages, new_pages[i]]))
             kv_indptr.append(kv_indptr[-1] + kv_all[-1].shape[0])
-        cu = torch.arange(0, b_sz * s_len + 1, s_len, dtype=torch.int32, device=d)
         if self.verify_graphs is not None:
-            norm_rows, z_flat, ctx = self.verify_graphs.run(tokens_v, positions, new_pages.reshape(-1), [r.slot for r in reqs], kv_all)
+            norm_rows, z_flat, ctx = self.verify_graphs.run(tokens_v, positions, new_pages_flat, slots_t, kv_all)
             norm = norm_rows.view(b_sz, s_len, -1).clone()
             z = z_flat.view(b_sz, s_len).clone()
-            self._accept(reqs, y, z, norm, ctx, new_pages, t0, t1)
+            self._accept(reqs, y, z, norm, ctx, new_pages, new_ids, t0, t1)
             return
+        cu = torch.arange(0, b_sz * s_len + 1, s_len, dtype=torch.int32, device=d)
         ctx = ForwardContext(
             mode="verify", kv_pool=ex.kv_pool, state_pool=ex.state_pool, positions=positions,
-            pages=new_pages.reshape(-1), seq_len=b_sz * s_len,
-            cu_seqlens=cu, seq_slots=torch.tensor([r.slot for r in reqs], dtype=torch.int32, device=d),
+            pages=new_pages_flat, seq_len=b_sz * s_len,
+            cu_seqlens=cu, seq_slots=slots_t,
             seq_prefix_lens=[r.context_len - 1 for r in reqs], seq_lens=[s_len] * b_sz,
             verify_steps=s_len, verify_scratch=torch.arange(b_sz, dtype=torch.int32, device=d), inter_ssm=self.inter_ssm,
+            verify_conv_windows=self.conv_windows,
         )
         ex._paged_prefill.plan(
-            cu, torch.tensor(kv_indptr, dtype=torch.int32, device=d), torch.cat(kv_all), torch.ones(b_sz, dtype=torch.int32, device=d),
+            torch.arange(0, b_sz * s_len + 1, s_len, dtype=torch.int32), torch.tensor(kv_indptr, dtype=torch.int32), torch.cat(kv_all), torch.ones(b_sz, dtype=torch.int32),
             config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, 1,
             causal=True, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
         )
@@ -196,25 +213,30 @@ class SpecDecoder:
         out = ex.model.forward(tokens_v, ctx)
         norm = out["norm"].view(b_sz, s_len, -1)
         z = ex.model.logits(out["norm"]).argmax(-1).view(b_sz, s_len)  # target choice after each token
-        self._accept(reqs, y, z, norm, ctx, new_pages, t0, t1)
+        self._accept(reqs, y, z, norm, ctx, new_pages, new_ids, t0, t1)
 
-    def _accept(self, reqs, y, z, norm, ctx, new_pages, t0, t1) -> None:
-        torch.cuda.synchronize()
+    def _accept(self, reqs, y, z, norm, ctx, new_pages, new_ids, t0, t1) -> None:
+        if self.timing:
+            torch.cuda.synchronize()
         t2 = time.perf_counter()
         ex = self.ex
         k, s_len = self.k, self.steps
         # ---- accept ----
         match = (y == z[:, :k])  # draft j matches target choice after token j-1
-        acc = torch.cumprod(match.int(), dim=1).sum(dim=1).tolist()
-        y_l, z_l = y.tolist(), z.tolist()
+        acc_t = torch.cumprod(match.int(), dim=1).sum(dim=1)
+        # One host transfer for drafts, target choices and accepted counts.
+        packed = torch.cat([y, z, acc_t.unsqueeze(1).to(y.dtype)], dim=1).tolist()
+        y_l = [row[:k] for row in packed]
+        z_l = [row[k : 2 * k + 1] for row in packed]
+        acc = [row[-1] for row in packed]
         for i, r in enumerate(reqs):
             a = acc[i]
-            for lid in ex.state_pool.layer_ids:
-                ex.state_pool.ssm[lid][r.slot].copy_(self.inter_ssm[lid][i, a])
-                ex.state_pool.conv[lid][r.slot].copy_(ctx.verify_conv_windows[lid][i, a])
+            # Commit the state after the accepted prefix: all GDN layers at once.
+            ex.state_pool.ssm_all[:, r.slot].copy_(self.inter_ssm_all[:, i, a])
+            ex.state_pool.conv_all[:, r.slot].copy_(self.conv_windows_all[:, i, a])
             r.pages = torch.cat([r.pages, new_pages[i, : a + 1]])
             if a + 1 < s_len:
-                ex.kv_pool.free(new_pages[i, a + 1 :])
+                ex.kv_pool.free_ids(new_ids[i * s_len + a + 1 : (i + 1) * s_len])
             emitted = y_l[i][:a] + [z_l[i][a]]
             for tok in emitted:
                 if r.finished:
@@ -236,7 +258,8 @@ class SpecDecoder:
             r.spec_pending_hidden = norm[i, a : a + 1]
             r.draft_pos = P + a + 1
         self.rounds += 1
-        torch.cuda.synchronize()
+        if self.timing:
+            torch.cuda.synchronize()
         t3 = time.perf_counter()
         self.draft_seconds += t1 - t0
         self.verify_seconds += t2 - t1

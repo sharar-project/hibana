@@ -200,7 +200,7 @@ class GatedDeltaNet:
         conv = torch.nn.functional.silu(conv.float()).to(torch.bfloat16)  # [B, S, dim]
         # window after s+1 tokens = xs rows [s+1, s+4) -> [B, S, dim, 3]
         windows = torch.stack([xs[:, s + 1 : s + 4].transpose(1, 2) for s in range(s_len)], dim=1)
-        ctx.verify_conv_windows[self.layer_id] = windows
+        ctx.verify_conv_windows[self.layer_id][:b_sz].copy_(windows)
         q, k, v = torch.split(conv.reshape(1, b_sz * s_len, self.conv_dim), [self.key_dim, self.key_dim, self.value_dim], dim=-1)
         q = q.reshape(1, b_sz * s_len, self.num_k_heads, self.head_k_dim)
         k = k.reshape(1, b_sz * s_len, self.num_k_heads, self.head_k_dim)

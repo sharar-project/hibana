@@ -35,13 +35,23 @@ class KvPool:
         return n * 2 * len(self.layer_ids) * self.k[self.layer_ids[0]].element_size()
 
     def alloc(self, n: int) -> torch.Tensor:
+        return self.alloc_with_ids(n)[0]
+
+    def alloc_with_ids(self, n: int) -> tuple[torch.Tensor, list[int]]:
+        """Allocate n pages; returns the device tensor and the same ids as a
+        host list so callers can free without a device-to-host copy. The upload
+        is a pinned non-blocking copy so it does not stall the host on GPU work."""
         if n > len(self._free):
             raise MemoryError(f"KV pool exhausted: need {n} pages, {len(self._free)} free")
         pages = [self._free.pop() for _ in range(n)]
-        return torch.tensor(pages, dtype=torch.int32, device=self.device)
+        host = torch.tensor(pages, dtype=torch.int32).pin_memory()
+        return host.to(self.device, non_blocking=True), pages
 
     def free(self, pages: torch.Tensor) -> None:
         self._free.extend(int(p) for p in pages.tolist())
+
+    def free_ids(self, pages: list[int]) -> None:
+        self._free.extend(pages)
 
     def write(self, layer_id: int, pages: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> None:
         """Write [T, H, D] bf16 K/V for tokens whose (page, offset) are given

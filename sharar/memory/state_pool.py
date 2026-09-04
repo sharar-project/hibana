@@ -22,17 +22,18 @@ class StatePool:
         self.device = device
         self.layer_ids = [i for i in range(config.NUM_LAYERS) if (i + 1) % config.FULL_ATTENTION_INTERVAL != 0]
         total = num_slots + num_scratch
-        self.conv = {
-            i: torch.zeros((total, CONV_DIM, CONV_STATE_LEN), dtype=torch.bfloat16, device=device) for i in self.layer_ids
-        }
-        self.ssm = {
-            i: torch.zeros(
-                (total, config.LINEAR_NUM_VALUE_HEADS, config.LINEAR_VALUE_HEAD_DIM, config.LINEAR_KEY_HEAD_DIM),
-                dtype=torch.float32,
-                device=device,
-            )
-            for i in self.layer_ids
-        }
+        n_layers = len(self.layer_ids)
+        # One contiguous tensor per kind, indexed [layer_index, slot, ...], with a
+        # per-layer view for the kernels; clearing or copying a slot across all
+        # layers is then one strided copy instead of one launch per layer.
+        self.conv_all = torch.zeros((n_layers, total, CONV_DIM, CONV_STATE_LEN), dtype=torch.bfloat16, device=device)
+        self.ssm_all = torch.zeros(
+            (n_layers, total, config.LINEAR_NUM_VALUE_HEADS, config.LINEAR_VALUE_HEAD_DIM, config.LINEAR_KEY_HEAD_DIM),
+            dtype=torch.float32,
+            device=device,
+        )
+        self.conv = {lid: self.conv_all[j] for j, lid in enumerate(self.layer_ids)}
+        self.ssm = {lid: self.ssm_all[j] for j, lid in enumerate(self.layer_ids)}
         # Slot 0 is the dummy slot for padded batch rows; scratch slots follow the committed ones.
         self._free = list(range(num_slots - 1, 0, -1))
         self.scratch = list(range(num_slots, total))
@@ -53,11 +54,9 @@ class StatePool:
         self._free.append(slot)
 
     def clear(self, slot: int) -> None:
-        for i in self.layer_ids:
-            self.conv[i][slot].zero_()
-            self.ssm[i][slot].zero_()
+        self.conv_all[:, slot].zero_()
+        self.ssm_all[:, slot].zero_()
 
     def copy_slot(self, src: int, dst: int) -> None:
-        for i in self.layer_ids:
-            self.conv[i][dst].copy_(self.conv[i][src])
-            self.ssm[i][dst].copy_(self.ssm[i][src])
+        self.conv_all[:, dst].copy_(self.conv_all[:, src])
+        self.ssm_all[:, dst].copy_(self.ssm_all[:, src])
