@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-05 (7C workload pilot and 7D infrastructure implemented; promotion gates remain explicit)
+Last updated: 2026-09-05 (7D draft profiling and device-resident greedy selection; promotion gates remain explicit)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -46,9 +46,11 @@ Multimodal, multi-GPU, multi-node, arbitrary model discovery, LoRA, generic
 hardware fallbacks and inherited CI are outside the target. Curated model
 profiles must preserve GB10 specialization and explicit kernel choices.
 
-Immediate priority: use the measured 7D results to select the next GB10 speed
-experiment and validate external drafts under equal memory and realistic cache
-pressure. Keep defaults fixed until quality and performance gates justify changes.
+Immediate priority: use the measured draft profile to prototype batched accepted
+feature/KV projection, followed by direct accepted-state commit and shared target
+projection work under mixed arrivals. Validate external drafts under equal
+memory and realistic cache pressure. Keep defaults fixed until quality and
+performance gates justify changes.
 
 ## 2. Relationship to the `sparklang` repository
 
@@ -785,6 +787,17 @@ from a broad quality, competitive-speed or production-promotion gate.
 - [x] Implement DSpark through the same interface: parallel backbone,
       sequential correction and confidence-scheduled verification. Calibrate
       confidence and cost curves on this GB10 workload before enabling adaptation.
+- [x] Profile DFlash2's graph, vocabulary/selector and accepted feature/KV work;
+      remove measured greedy predecessor scalar transfers with a small exact
+      device traversal. Interleaved confirmation reduces round time 2.8–5.4%
+      with identical emitted IDs; all 78 HTTP outputs match in the separate
+      HTTP pilot. [Evidence and limits](docs/draft-selection.md).
+- [ ] Prototype batched accepted feature/KV projection (about 8.2 ms at B=4)
+      through an explicit batch callback, preserving private ring and endpoint
+      ownership. Independently test BF16 shape-dependent numerical changes.
+- [ ] Prototype StateManager-authorized direct accepted-state reconstruction;
+      remove the final FP32 scratch/copy only after every count is validated.
+      The current B=4 commit copies cost about 5 ms. Preserve the bitwise oracle.
 - [x] Compare adapters on the pinned quantized target, cold and reused prefixes,
       greedy/sampled requests and mixed concurrency. Promote a proposer/profile
       only when quality and measured end-to-end performance justify it.

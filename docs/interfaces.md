@@ -128,6 +128,12 @@ retained views. DSpark consumes the checkpoint's anchor prediction and applies i
 Markov correction; DFlash2 discards the anchor query, then walks its sparse
 conditional selector lattice. Neither imports the reference framework.
 
+For an all-greedy DFlash2 batch, `kernels/draft_selection.py` traverses that
+lattice on the device and returns owned IDs. It preserves candidate rank/tie
+semantics, borrows score/candidate graph views only for the ordered kernel
+launch, and adds no target-state ownership. Mixed/sampled batches keep the
+conditional-law path below. See [the measured selection change](draft-selection.md).
+
 For sampled verification, probabilities are FP32 after temperature/top-k/top-p
 and all selector/Markov effects. Dense q has shape `[B,k,V]`; sparse q and its
 unique token support have shape `[B,k,C]`. `None` means point-mass proposals.

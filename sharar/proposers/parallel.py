@@ -173,8 +173,11 @@ class ParallelProposer:
                 candidates, scores = self.model.selector(hidden, inputs.tokens)
             else:
                 base_logits = self.model.target.logits(hidden.reshape(-1, 5120)).view(batch, self.k, -1)
-        all_tokens, all_q, all_confidence = [], [], []
         sampled = any(not r.params.greedy for r in requests)
+        if self.name == 'dflash2' and not sampled:
+            from sharar.kernels.draft_selection import greedy_lattice
+            return Proposal(greedy_lattice(candidates, scores))
+        all_tokens, all_q, all_confidence = [], [], []
         for row, req in enumerate(requests):
             previous, local = inputs.tokens[row:row + 1], 0
             chosen, laws, confidence_rows = [], [], []

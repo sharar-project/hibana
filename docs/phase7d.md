@@ -1,5 +1,8 @@
 # Phase 7D: native drafts and GB10 state retention
 
+The subsequent [DFlash2 profiling and selection optimization](draft-selection.md)
+records the next measured speed change; the measurements below remain the 7D baseline.
+
 7D adds native DSpark/DFlash2 adapters, draft-aware prefix state, exact sampled
 verification, prospective memory planning and experimental scheduling policies.
 It also implements the accepted-state reconstruction experiment selected in
