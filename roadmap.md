@@ -804,6 +804,17 @@ from a broad quality, competitive-speed or production-promotion gate.
       the bitwise oracle; all 548 GB10 checks pass, including stop/cache recovery.
       Interleaved B=4 round time falls 3.6–3.9%; B=1 results are mixed.
       [Evidence and measurements](docs/direct-state.md).
+- [x] Profile shared target projections under frozen mixed arrivals. Replay all
+      64 layers with real activations, include packing and B=3 graph padding,
+      and test the observed session tail. Short-prefill MLP/FP8 savings pass the
+      feasibility gate; whole-request speed remains unproven. Keep distinct
+      prefill/verify state and attention cores. [Experiment](docs/mixed-projection.md).
+- [ ] Build a bounded, opt-in mixed target forward through the existing model,
+      executor and StateManager boundaries. Share MLP work first as an ablation,
+      then FP8 projections; prepare existing requests' proposals before the
+      combined target pass. Preserve explicit row/feature ownership, graph
+      padding, separate commits and the separate-forward control. Prove full
+      state/EOS/cache/sampling/failure gates before measuring HTTP improvement.
 - [x] Compare adapters on the pinned quantized target, cold and reused prefixes,
       greedy/sampled requests and mixed concurrency. Promote a proposer/profile
       only when quality and measured end-to-end performance justify it.
@@ -814,8 +825,9 @@ from a broad quality, competitive-speed or production-promotion gate.
       policy. The implemented bounded policies are independent; first prove
       that enabling either improves its protected workloads.
       The 250 ms prefill pilot is rejected as a default: smaller observed stalls
-      came with much worse session TTFT/completion. Test shared prefill/verify
-      projection work before adding more scheduling heuristics.
+      came with much worse session TTFT/completion. The shared-projection profile
+      now supports a bounded execution prototype. Keep the existing chunk policy
+      initially; test any row-budget policy separately from projection sharing.
 - [ ] Complete independent quality/performance promotion of confidence and
       interactive policies. A short-context cost pilot is not a calibrated
       all-context policy; the 250 ms scheduler target is best effort.
@@ -1117,24 +1129,25 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-Use the [7D results](docs/phase7d.md) to choose the next speed experiment.
-Accepted-state reconstruction and native external proposers now exist; avoid
-rebuilding their infrastructure in a separate path.
+The external draft selector, batched feature/KV feedback, direct accepted-state
+reconstruction and [mixed-projection profile](docs/mixed-projection.md) are
+complete. The next speed implementation is an **opt-in mixed target forward**.
 
-1. Freeze a DFlash2/DSpark versus repaired-MTP comparison at equal total memory,
+1. Freeze its selected/protected HTTP cases before coding. Existing `local-v1`
+   arrivals expose useful overlap, but this profile does not prove its 10%
+   completion gate is reachable. Include short arriving prompts and cached
+   session tails with one to three already-running requests; retain the existing
+   full manifest as protection. Share per-layer MLP work first, then FP8
+   projections through the same boundary. Preserve distinct attention/GDN cores,
+   prepare proposals before the target pass and publish state/features through
+   the existing transaction. Keep the current prefill policy for the first
+   ablation. Require full correctness, quality, equal-memory and independent
+   client-visible measurements before promoting anything.
+2. Freeze a DFlash2/DSpark versus repaired-MTP comparison at equal total memory,
    including realistic long sessions, eviction, natural stopping and sampled
    quality. Refresh SGLang on the same pinned target and workloads. Choose a
    workload-specific profile only after these gates; no universal lead is proven.
-2. Profile the best external draft path. Measure its full vocabulary projection,
-   conditional correction/selector, feature-to-KV ingestion, target verify and
-   state commit separately. Fuse the dominant repeated work while retaining the
-   existing BF16/reference arithmetic as an oracle. Optimize useful tokens per
-   unit time, not acceptance percentage.
-3. Prototype reconstruction directly into StateManager-owned committed slots
-   after validating all accepted counts, eliminating final scratch and its copy.
-   Keep untouched source-state reads and exactly-once ownership publication;
-   demand the same bitwise state/stop/cache gates and client-visible improvement.
-4. Use Phase 8 for measured prepacked weight loading and reclaimable optional
+3. Use Phase 8 for measured prepacked weight loading and reclaimable optional
    cache slabs. Streaming checkpoint-map release already lowers the measured
    host load peak; it does not prove zero-copy hot inference. Keep physical
    memory accounting and CPU contention measurements alongside each experiment.

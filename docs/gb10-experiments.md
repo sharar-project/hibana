@@ -183,15 +183,19 @@ at B=4, with one shared feature/KV projection pass. A pinned FP32 oracle checks
 BF16 shape changes; private rings, endpoint snapshots and single-row arithmetic
 retain their contracts. This establishes a small measured step before a larger
 mixed target forward. Direct reconstruction into validated committed slots is
-the complementary capacity/copy experiment above. Next, profile shared target
-projections under mixed prefill/verification before adding scheduling heuristics.
+the complementary capacity/copy experiment above. The
+[mixed-projection profile](mixed-projection.md) now measures the next opportunity.
 
 The 250 ms separate-prefill feedback pilot is rejected for default use: it
 reduced observed stream stalls but more than doubled mixed-session completion
 time. A new hypothesis is to share target projections across prefill tokens
 and short verification blocks, then run their distinct recurrent operations
 and preserve their separate commits. This may amortize another weight traversal
-on bandwidth-limited GB10. First attribute the duplicated work in a mixed trace;
-then compare a bounded mixed-forward prototype with the existing separate
+on bandwidth-limited GB10. Frozen HTTP phase observations and all-layer dense
+replays support a bounded mixed-forward prototype. Compare it with the separate
 forwards, at equal memory and the same arrival/quality gate. Do not replace
 clear ownership with a general scheduler framework to attempt this experiment.
+Keep attention and GDN state kernels distinct; share MLP work first as an
+ablation, then FP8 projections. Include graph padding and row packing, preserve
+the existing chunk policy initially, and require client-visible evidence:
+the projection-only savings do not establish a whole-request speedup.
