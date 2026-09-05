@@ -173,10 +173,15 @@ so confidence tuning alone is not an established large speed opportunity.
 The [DFlash2 follow-up](draft-selection.md) now supplies that profile. An exact
 device traversal removes 52 proposer stream synchronizations per B=4 round;
 interleaved confirmation lowers fixed-work round time 2.8–5.4%, with all HTTP
-token outputs unchanged in the separate pilot. The vocabulary top-k itself is only 0.14 ms at B=4, so it is not the
-next priority. Four separate accepted feature projections and KV writes cost
-about 8.2 ms; batching only committed rows is a bounded weight-reuse experiment
-before a larger mixed target forward. Direct reconstruction into validated
+token outputs unchanged in the separate pilot. The vocabulary top-k itself is
+only 0.14 ms at B=4, so it is not the next priority.
+
+The [accepted-feature batching follow-up](accepted-batch.md) implements the
+next weight-reuse experiment: feedback cost falls from about 8.1 to 2.2 ms
+at B=4, with one shared feature/KV projection pass. A pinned FP32 oracle checks
+BF16 shape changes; private rings, endpoint snapshots and single-row arithmetic
+retain their contracts. This establishes a small measured step before a larger
+mixed target forward. Direct reconstruction into validated
 committed slots remains the complementary capacity/copy experiment above.
 
 The 250 ms separate-prefill feedback pilot is rejected for default use: it

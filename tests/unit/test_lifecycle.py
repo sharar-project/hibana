@@ -75,7 +75,7 @@ def test_speculative_commit_matches_returned_prefix(accepted, budget, stop_kind)
     ex.state = StateManager(ex.kv_pool, pool)
     spec = SpecDecoder.__new__(SpecDecoder)
     spec.ex, spec.k, spec.steps, spec.timing = ex, 3, 4, False
-    spec.proposer = SimpleNamespace(accepted=lambda *args: None)
+    spec.proposer = SimpleNamespace(accepted_batch=lambda *args: None)
     spec.inter_ssm_all = torch.arange(1, 5).reshape(1, 1, 4, 1).float()
     spec.conv_windows_all = spec.inter_ssm_all.clone()
     spec.reset_stats()

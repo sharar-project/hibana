@@ -205,7 +205,49 @@ class ParallelProposer:
                         candidates if sampled and self.name == 'dflash2' else None,
                         torch.stack(all_confidence) if all_confidence else None)
 
-    def accepted(self, req, emitted, features, row):
+    def accepted_batch(self, requests, emitted, features):
+        """Project committed rows together, then scatter into private rings.
+
+        The target has already committed all rows. Temporary work is bounded
+        by max_batch * (k + 1), independent of context/cache capacity. Single
+        rows and unusual interior checkpoints retain the sequential oracle.
+        """
+        if not 1 <= len(requests) <= self.context.max_batch or len(requests) != len(emitted):
+            raise ValueError('invalid accepted batch')
+        counts = [len(tokens) for tokens in emitted]
+        starts = [req.committed_len - count for req, count in zip(requests, counts)]
+        states = [req.proposer_state for req in requests]
+        if (any(not 1 <= n <= self.k + 1 for n in counts)
+                or any(not isinstance(s, DraftState) or not s.valid or s.end != start or start < 0
+                       for s, start in zip(states, starts))
+                or len({s.slot for s in states}) != len(states)):
+            raise ValueError('accepted rows do not follow private draft prefixes')
+        if features.layers is None or any(features.layers[lid].ndim != 3 or features.layers[lid].shape[0] != len(requests)
+                                         or features.layers[lid].shape[1] < max(counts) for lid in self.model.features):
+            raise ValueError('accepted features do not cover the committed rows')
+        if len(requests) == 1 or any(count > self.window or any(start < p < req.committed_len for p in req.checkpoints)
+                                     for req, start, count in zip(requests, starts, counts)):
+            for row, (req, tokens) in enumerate(zip(requests, emitted)):
+                self._accepted(req, tokens, features, row)
+            return
+        layers = {lid: torch.cat([features.layers[lid][row, :count] for row, count in enumerate(counts)])
+                  for lid in self.model.features}
+        hidden = self.model.project_features(layers)
+        # One asynchronous upload; no GPU scalar extraction or per-row wait.
+        metadata = [[pos, state.slot * self.window + pos % self.window,
+                     state.slot * self.pitch + pos % self.window]
+                    for state, start, count in zip(states, starts, counts) for pos in range(start, start + count)]
+        metadata = torch.tensor(metadata, dtype=torch.int64, pin_memory=self.context.device.type == 'cuda')
+        positions, rows, pages = metadata.to(self.context.device, non_blocking=True).unbind(1)
+        self.features.view(-1, self.features.shape[-1])[rows] = hidden
+        self.model.context_kv(hidden, positions, self.caches, pages)
+        for req, state, tokens in zip(requests, states, emitted):
+            state.end = req.committed_len
+            if state.end in req.checkpoints:
+                self._save(req, state.end)
+            state.pending = None if req.finished else tokens[-1]
+
+    def _accepted(self, req, emitted, features, row):
         count = len(emitted)
         self.ingest_prefill(req, emitted, req.committed_len - count,
                             {'features': {lid: rows[row, :count] for lid, rows in features.layers.items()}})

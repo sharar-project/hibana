@@ -267,7 +267,7 @@ class SpecDecoder:
             r.spec_proposed += self.k
             r.spec_accepted += a
             r.spec_emitted += count
-            self.proposer.accepted(r, emitted, features, i)
+        self.proposer.accepted_batch(reqs, outputs, features)
         self.rounds += 1
         if self.timing:
             torch.cuda.synchronize()

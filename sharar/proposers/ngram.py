@@ -46,7 +46,7 @@ class NGramProposer:
     def start(self, req, token):
         pass
 
-    def accepted(self, req, emitted, features, row):
+    def accepted_batch(self, requests, emitted, features):
         pass
 
     def release(self, req):

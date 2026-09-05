@@ -117,7 +117,13 @@ device-to-host vocabulary scan.
 
 The driver verifies `[pending, proposal...]`, performs greedy prefix acceptance
 or exact rejection sampling, truncates to EOS/budget, commits the corresponding target state,
-then calls `accepted(req, emitted, features, row)`. `release(req)` drops adapter
+then calls `accepted_batch(requests, emitted, features)` once, after **all**
+target rows are committed and their emitted histories updated. `emitted` is a
+list of stop/budget-truncated token lists; row `i` consumes only
+`features[i, :len(emitted[i])]`. These features describe processed verification
+inputs (the old pending token followed by accepted draft inputs); the last
+emitted correction/bonus remains unprocessed. Adapters must not read unused
+verify padding. `release(req)` drops adapter
 state on finish, failure or retraction. `capture_graphs` owns only draft graphs;
 the engine owns target verify graphs and intermediate snapshots.
 
@@ -127,6 +133,17 @@ Accepted-callback graph features are owned clones; callers still need to budget
 retained views. DSpark consumes the checkpoint's anchor prediction and applies its
 Markov correction; DFlash2 discards the anchor query, then walks its sparse
 conditional selector lattice. Neither imports the reference framework.
+
+DSpark/DFlash2 concatenate the committed feature rows for one shared projection
+and five layer KV projections, then scatter into their private rings. Temporary
+work is bounded by `max_batch * (k + 1)` rows. Metadata uses one asynchronous
+upload; no GPU scalar extraction is added. Single-row feedback and interior
+checkpoint cases use the per-row helper. MTP's batch callback runs its existing
+row calculations; n-gram feedback is empty. Target state/page ownership remains
+with StateManager. [Batching evidence](accepted-batch.md) records BF16 shape
+differences, cache/snapshot routing, and measured costs. Third-party proposers
+implementing the former `accepted(req, ..., row)` callback must migrate to
+`accepted_batch`; a loop over their existing calculation is sufficient.
 
 For an all-greedy DFlash2 batch, `kernels/draft_selection.py` traverses that
 lattice on the device and returns owned IDs. It preserves candidate rank/tie

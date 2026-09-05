@@ -9,11 +9,14 @@ pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason=
 
 @pytest.fixture(scope='module')
 def draft_runtime():
+    import gc
     from sharar import config
     from sharar.engine.executor import Executor
     from sharar.model.qwen38 import Qwen38
     from sharar.parity.prompts import PARAGRAPH
     from sharar.tokenizer import SnapshotTokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
     with torch.inference_mode():
         model = Qwen38(config.snapshot_dir(), log=print)
         torch.cuda.empty_cache()

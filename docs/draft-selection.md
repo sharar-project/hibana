@@ -1,5 +1,8 @@
 # DFlash2 selection on the GPU
 
+The next [accepted-feature batching experiment](accepted-batch.md) is now
+implemented; the measurements here remain the preceding selection baseline.
+
 The first follow-up to 7D profiles the external draft, then removes a measured
 host barrier without changing proposal scores or target execution. This is a
 small execution optimization for low-concurrency GB10 serving, not a new draft

@@ -311,7 +311,7 @@ def test_ngram_real_target_cache_and_feature_lifetimes(runtime, graphs, features
     previous, old_graphs = ex.spec, ex.use_graphs
     observed = []
     class ObservedNgram(NGramProposer):
-        def accepted(self, req, emitted, result, row):
+        def accepted_batch(self, requests, emitted, result):
             if features:
                 assert result.norm.shape[1:] == (4, config.HIDDEN_SIZE)
                 assert set(result.layers) == {0, 63}

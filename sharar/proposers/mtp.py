@@ -105,7 +105,11 @@ class MtpProposer:
         hidden = self.head.forward(tokens, hidden, positions, pages, [1] * len(kv), kv)
         return hidden, self.head.logits(hidden).argmax(-1)
 
-    def accepted(self, req, emitted, features, row):
+    def accepted_batch(self, requests, emitted, features):
+        for row, (req, tokens) in enumerate(zip(requests, emitted)):
+            self._accepted(req, tokens, features, row)
+
+    def _accepted(self, req, emitted, features, row):
         state = self._state(req)
         count = len(emitted)
         inputs = [state.pending_token] + emitted[:-1]

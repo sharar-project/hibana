@@ -28,9 +28,10 @@ def test_feature_free_proposer_uses_real_verify_commit_and_scheduler(monkeypatch
     expected = ex.generate([7] * 8, params).output_ids
     calls = []
     class CheckedNgram(NGramProposer):
-        def accepted(self, req, emitted, features, row):
+        def accepted_batch(self, requests, emitted, features):
             assert features.norm is None and features.layers is None
-            calls.append(len(emitted))
+            assert all(r.reservation is None and r.committed_len == r.context_len - 1 for r in requests)
+            calls.extend(map(len, emitted))
     proposer = CheckedNgram(ProposerContext(ex.device, ex.max_batch, ex.max_context), k=3)
     ex.set_proposer(proposer)
     sched = Scheduler(ex)

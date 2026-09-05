@@ -86,8 +86,12 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--name', choices=('dflash2', 'dspark'), default='dflash2')
     parser.add_argument('--workloads', action='store_true')
-    parser.add_argument('--compare-proposer', type=Path,
-                        help='alternate candidate/control/control/candidate fixed-work timing against this frozen source')
+    parser.add_argument('--workloads-only', action='store_true')
+    compare = parser.add_mutually_exclusive_group()
+    compare.add_argument('--compare-proposer', type=Path,
+                         help='alternate candidate/control/control/candidate fixed-work timing against this frozen source')
+    compare.add_argument('--compare-accepted', type=Path,
+                         help='compare batched feedback with the frozen per-request accepted method')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     root = Path(config.__file__).resolve().parents[1]
@@ -110,16 +114,25 @@ def main():
         tok = SnapshotTokenizer(config.snapshot_dir())
         ids = tok.encode(PARAGRAPH * 256)
         cache, ex.cache = ex.cache, None
-        current = ex.spec.proposer.propose
+        method = 'accepted_batch' if args.compare_accepted else 'propose'
+        current = getattr(ex.spec.proposer, method)
         control = None
-        if args.compare_proposer:
-            spec = importlib.util.spec_from_file_location('sharar_profile_control', args.compare_proposer)
+        control_path = args.compare_proposer or args.compare_accepted
+        if control_path:
+            spec = importlib.util.spec_from_file_location('sharar_profile_control', control_path)
             module = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = module
             spec.loader.exec_module(module)
-            control = module.ParallelProposer.propose.__get__(ex.spec.proposer)
-            report['control_proposer_sha256'] = local_workloads.digest(args.compare_proposer.read_bytes())
-        for length, batch in ((128, 1), (128, 4), (8192, 1), (8192, 4)):
+            if args.compare_accepted:
+                previous = module.ParallelProposer.accepted.__get__(ex.spec.proposer)
+                def control(requests, emitted, features):
+                    for row, (req, tokens) in enumerate(zip(requests, emitted)):
+                        previous(req, tokens, features, row)
+            else:
+                control = module.ParallelProposer.propose.__get__(ex.spec.proposer)
+            report['control_proposer_sha256'] = local_workloads.digest(control_path.read_bytes())
+            report['compared_method'] = method
+        for length, batch in (() if args.workloads_only else ((128, 1), (128, 4), (8192, 1), (8192, 4))):
             def prepare():
                 reqs = [ex.admit(ids[:length], SamplingParams(max_new_tokens=256, ignore_eos=True)) for _ in range(batch)]
                 for req in reqs:
@@ -135,7 +148,7 @@ def main():
                 compared = []
                 for repeat in range(4):
                     for mode in ('candidate', 'control', 'control', 'candidate'):
-                        ex.spec.proposer.propose = current if mode == 'candidate' else control
+                        setattr(ex.spec.proposer, method, current if mode == 'candidate' else control)
                         reqs = prepare()
                         torch.cuda.synchronize()
                         started = time.perf_counter()
@@ -212,8 +225,8 @@ def main():
             print(json.dumps({k: row[k] for k in ('context', 'batch', 'median_ms_per_round', 'phases', 'components')}), flush=True)
             ex.ledger.check_floor()
         ex.cache = cache
-        ex.spec.proposer.propose = current
-        if args.workloads:
+        setattr(ex.spec.proposer, method, current)
+        if args.workloads or args.workloads_only:
             frozen = local_workloads.materialize(local_workloads.DEFAULT_MANIFEST, config.snapshot_dir())
             with http_server(ex, tok, config.snapshot_dir(), {'experiment': 'draft-profile'}) as url:
                 report['workloads'] = local_workloads.run(url, frozen, tok, args.output / 'workloads')

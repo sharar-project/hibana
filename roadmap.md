@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-05 (7D draft profiling and device-resident greedy selection; promotion gates remain explicit)
+Last updated: 2026-09-05 (7D batched accepted-feature feedback implemented; promotion gates remain explicit)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -46,9 +46,9 @@ Multimodal, multi-GPU, multi-node, arbitrary model discovery, LoRA, generic
 hardware fallbacks and inherited CI are outside the target. Curated model
 profiles must preserve GB10 specialization and explicit kernel choices.
 
-Immediate priority: use the measured draft profile to prototype batched accepted
-feature/KV projection, followed by direct accepted-state commit and shared target
-projection work under mixed arrivals. Validate external drafts under equal
+Immediate priority: prototype direct accepted-state commit, then measure shared
+target projection work under mixed arrivals. Batched accepted feature/KV
+projection is implemented and measured. Validate external drafts under equal
 memory and realistic cache pressure. Keep defaults fixed until quality and
 performance gates justify changes.
 
@@ -792,9 +792,12 @@ from a broad quality, competitive-speed or production-promotion gate.
       device traversal. Interleaved confirmation reduces round time 2.8–5.4%
       with identical emitted IDs; all 78 HTTP outputs match in the separate
       HTTP pilot. [Evidence and limits](docs/draft-selection.md).
-- [ ] Prototype batched accepted feature/KV projection (about 8.2 ms at B=4)
-      through an explicit batch callback, preserving private ring and endpoint
-      ownership. Independently test BF16 shape-dependent numerical changes.
+- [x] Batch accepted feature/KV projection through an explicit proposer callback,
+      preserving private rings and endpoint snapshots after all target commits.
+      Measured feedback cost falls from about 8.1 to 2.2 ms at B=4. Single-row
+      arithmetic stays unchanged; interleaved B=4 round time falls 4.3–4.4%
+      with identical fixed-work outputs. BF16 projection changes pass a pinned
+      FP32 oracle; all 497 GB10 checks pass. [Evidence and limits](docs/accepted-batch.md).
 - [ ] Prototype StateManager-authorized direct accepted-state reconstruction;
       remove the final FP32 scratch/copy only after every count is validated.
       The current B=4 commit copies cost about 5 ms. Preserve the bitwise oracle.
