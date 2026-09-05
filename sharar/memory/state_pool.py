@@ -39,6 +39,10 @@ class StatePool:
         self.scratch = list(range(num_slots, total))
 
     @property
+    def free_count(self) -> int:
+        return len(self._free)
+
+    @property
     def bytes_per_slot(self) -> int:
         per_layer = CONV_DIM * CONV_STATE_LEN * 2 + config.LINEAR_NUM_VALUE_HEADS * config.LINEAR_VALUE_HEAD_DIM * config.LINEAR_KEY_HEAD_DIM * 4
         return per_layer * len(self.layer_ids)

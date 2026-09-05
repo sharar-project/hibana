@@ -9,22 +9,31 @@ replay (host side) and run() is inside the graph.
 
 from __future__ import annotations
 
-import flashinfer
 import torch
 
 from sharar import config
 from sharar.engine.context import ForwardContext
+from sharar.engine.profile import ServingProfile
 from sharar.memory.kv_pool import KV_DTYPE
 
 CAPTURE_SIZES = (1, 2, 4)
 
 
+def capture_sizes(max_batch: int) -> tuple[int, ...]:
+    return ServingProfile(max_batch=max_batch).graph_sizes
+
+
+def check_context_capacity(counts: list[int], capacity: int) -> None:
+    if not counts or any(n < 1 or n > capacity for n in counts):
+        raise ValueError(f"KV lengths {counts} exceed graph capacity {capacity}")
+
+
 class DecodeGraphs:
-    def __init__(self, executor, max_context: int = 32768, sizes: tuple[int, ...] = CAPTURE_SIZES):
+    def __init__(self, executor):
         self.ex = executor
         self.device = executor.device
-        self.sizes = tuple(sorted(sizes))
-        self.max_context = max_context
+        self.sizes = capture_sizes(executor.max_batch)
+        self.max_context = executor.max_context
         self._pool = torch.cuda.graph_pool_handle()
         self._graphs: dict[int, torch.cuda.CUDAGraph] = {}
         self._static: dict[int, dict] = {}
@@ -46,6 +55,7 @@ class DecodeGraphs:
         }
 
     def _plan(self, b: int, counts: list[int], pages: list[torch.Tensor]) -> None:
+        check_context_capacity(counts, self.max_context)
         st = self._static[b]
         indptr = torch.tensor([0] + list(torch.tensor(counts).cumsum(0).tolist()), dtype=torch.int32)  # host: no sync in plan()
         indices = torch.cat(pages)
@@ -77,6 +87,7 @@ class DecodeGraphs:
         )
 
     def capture(self, log=print) -> None:
+        import flashinfer
         for b in self.sizes:
             st = self._make_static(b)
             self._static[b] = st

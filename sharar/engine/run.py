@@ -280,13 +280,13 @@ def cache_check_cli(prompts_path: str, max_new_tokens: int) -> int:
     ok &= r2.prefix_len > len(r1.prompt_ids)
 
     # 4. Pool accounting: after releasing everything, free + cached == total.
-    used_pages = ex.kv_pool.num_pages - 1 - len(ex.kv_pool._free)
+    used_pages = ex.kv_pool.num_pages - 1 - ex.kv_pool.free_count
     print(f"  cache: {ex.cache.stats()}; KV pages in use {used_pages} vs cached tokens {ex.cache.cached_tokens}: {'consistent' if used_pages == ex.cache.cached_tokens else 'LEAK'}")
     ok &= used_pages == ex.cache.cached_tokens
     ex.flush_cache()
-    ok &= len(ex.kv_pool._free) == ex.kv_pool.num_pages - 1
-    print(f"  after flush: free pages {len(ex.kv_pool._free)}/{ex.kv_pool.num_pages - 1}, free slots {len(ex.state_pool._free)}/{ex.state_pool.num_slots - 1}")
-    ok &= len(ex.state_pool._free) == ex.state_pool.num_slots - 1
+    ok &= ex.kv_pool.free_count == ex.kv_pool.num_pages - 1
+    print(f"  after flush: free pages {ex.kv_pool.free_count}/{ex.kv_pool.num_pages - 1}, free slots {ex.state_pool.free_count}/{ex.state_pool.num_slots - 1}")
+    ok &= ex.state_pool.free_count == ex.state_pool.num_slots - 1
     print("CACHE-CHECK", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -314,8 +314,8 @@ def soak_cli(prompts_path: str, rounds: int, prompt_len: int) -> int:
         if i % 5 == 0:
             st = ex.cache.stats()
             print(f"  round {i}: batch {len(reqs)}, prefix {[r.prefix_len for r in reqs]}, cache {st}, "
-                  f"free pages {len(ex.kv_pool._free)}, free slots {len(ex.state_pool._free)}, MemAvailable {mem_available_bytes() / GIB:.1f} GiB")
-    used_pages = ex.kv_pool.num_pages - 1 - len(ex.kv_pool._free)
+                  f"free pages {ex.kv_pool.free_count}, free slots {ex.state_pool.free_count}, MemAvailable {mem_available_bytes() / GIB:.1f} GiB")
+    used_pages = ex.kv_pool.num_pages - 1 - ex.kv_pool.free_count
     consistent = used_pages == ex.cache.cached_tokens
     print(f"  {rounds} rounds in {time.perf_counter() - started:.0f}s; min MemAvailable {min_avail / GIB:.1f} GiB (floor {floor / GIB:.0f}); "
           f"pages in use {used_pages} vs cached {ex.cache.cached_tokens}: {'consistent' if consistent else 'LEAK'}; evictions {ex.cache.evictions}")

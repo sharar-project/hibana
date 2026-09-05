@@ -1,6 +1,9 @@
 .git
 docs
-tools
+tools/*
+!tools/check.sh
+.venv*
+*.egg-info
 results
 parity
 **/__pycache__

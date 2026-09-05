@@ -30,6 +30,10 @@ class KvPool:
         self._free = list(range(num_pages - 1, 0, -1))
 
     @property
+    def free_count(self) -> int:
+        return len(self._free)
+
+    @property
     def bytes(self) -> int:
         n = self.num_pages * self.page_size * config.NUM_KV_HEADS * config.HEAD_DIM
         return n * 2 * len(self.layer_ids) * self.k[self.layer_ids[0]].element_size()
@@ -41,6 +45,8 @@ class KvPool:
         """Allocate n pages; returns the device tensor and the same ids as a
         host list so callers can free without a device-to-host copy. The upload
         is a pinned non-blocking copy so it does not stall the host on GPU work."""
+        if n < 0:
+            raise ValueError("allocation size cannot be negative")
         if n > len(self._free):
             raise MemoryError(f"KV pool exhausted: need {n} pages, {len(self._free)} free")
         pages = [self._free.pop() for _ in range(n)]

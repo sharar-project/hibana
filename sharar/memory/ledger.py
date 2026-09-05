@@ -29,6 +29,14 @@ def mem_available_bytes() -> int:
     raise RuntimeError("MemAvailable missing from /proc/meminfo")
 
 
+def check_load_headroom(peak_bytes: int) -> None:
+    """Reject a second model load before transient allocations reach the floor."""
+    available = mem_available_bytes()
+    floor = config.HOST_FLOOR_KIB * 1024
+    if available < floor + peak_bytes:
+        raise MemoryError(f"model load needs {(floor + peak_bytes) / GIB:.1f} GiB MemAvailable including the host floor; have {available / GIB:.1f} GiB")
+
+
 @dataclass
 class Plan:
     kv_tokens: int

@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-04 (Phase 7 complete)
+Last updated: 2026-09-05 (Phase 7B complete; Phase 7C workloads and hardware experiments next)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -10,8 +10,11 @@ state.
 
 ## 1. Mission and end state
 
-Build the smallest practical, fastest local text-inference engine for one
-system and one model:
+Build a thin, contributor-friendly local text-inference engine specialized
+for GB10, with performance measured against the best validated alternatives
+on the same hardware. Aim for a substantial end-to-end performance lead on
+the declared local workloads while keeping the code easy to extend. The first
+supported profile is:
 
 - One NVIDIA GB10, compute capability 12.1, `aarch64`, unified memory.
 - `RadixArk/Qwen3.8-27B-NVFP4`, revision
@@ -20,21 +23,32 @@ system and one model:
 
 The finished engine has these properties:
 
-1. `sharar serve` is the only server entry point. Model, revision, quantization
-   and hardware are facts of the package, not flags.
+1. `sharar serve` is the server entry point. Hardware capabilities, immutable
+   model facts and serving limits are separate, explicit profile records.
+   The checkpoint above remains the only validated model today; a small
+   curated set may follow after each profile passes the same gates.
 2. The process contains no SGLang. All model math, memory management,
    scheduling and serving are Sharar modules with narrow interfaces and tests.
-3. Speculative decoding with the checkpoint's MTP head is the default decode
-   path, and the proposer is an interface so other proposers can be added.
+3. MTP, n-gram, DSpark, DFlash2 and future proposers share narrow lifecycle
+   and verification contracts. Choose the production proposer and draft width
+   from measured workload results. Greedy and sampled decoding both have
+   correctness gates; current MTP acceleration is greedy-only.
 4. Memory is planned as one unified pool with a hard host floor, and the
    prefix/session cache uses the capacity a discrete GPU cannot offer.
-5. Every kernel is built ahead of time for SM121. The runtime image carries no
-   CUDA compiler, no JIT cache, and cold start is a weight load.
-6. Output quality, serial determinism and memory safety meet the frozen
-   reference on every promoted change; throughput and latency exceed it.
+5. Every kernel needed by the supported profiles and shape buckets has a
+   versioned AOT artifact. The final runtime carries no compiler and never
+   compiles on a request. Final packaging follows the shape/interface work.
+6. State ownership, output quality, determinism under the stated numerical
+   profile and memory safety pass promotion gates. Performance claims specify
+   workload, latency, quality and memory budgets, with reproducible comparisons.
 
-Multimodal, multi-GPU, multi-node, arbitrary models, LoRA, generic hardware
-fallbacks and inherited CI are outside the target and must not be added.
+Multimodal, multi-GPU, multi-node, arbitrary model discovery, LoRA, generic
+hardware fallbacks and inherited CI are outside the target. Curated model
+profiles must preserve GB10 specialization and explicit kernel choices.
+
+Immediate priority: freeze local workloads and begin the GB10 mechanism
+experiments in 7C, including the retained cold/cache diagnostic.
+Keep the validated profile fixed until the workload and memory gates justify changes.
 
 ## 2. Relationship to the `sparklang` repository
 
@@ -45,13 +59,16 @@ is frozen. Its roles for Sharar are:
 
 - Correctness oracle: per-layer hidden states and logits, serial response
   hashes, and the four quality canaries.
-- Performance oracle: the six-cell controlled matrix and the 32,766-token
-  boundary result.
+- Historical performance reference: the six-cell controlled matrix and the
+  32,766-token boundary result.
 - Source of ported code and vendored kernels, with attribution.
 
 Sharar never imports `sglang`. Parity is measured over the network against the
 running reference container or against tensor dumps produced inside it. The
-reference is retired from daily use only after Phase 6.
+reference was retired from daily use in Phase 6. Keep its correctness dumps
+frozen. Maintain an evolving performance comparison separately, including
+validated SGLang MTP, DSpark and DFlash2 configurations and other relevant
+GB10 engines. Beating the frozen plain-decode image is an intermediate result.
 
 ## 3. Facts that drive the design
 
@@ -93,7 +110,7 @@ Quantization (ModelOpt mixed recipe):
 Loaded weights are about 19.2 GB. Safetensors total 20.4 GiB because they
 include the vision encoder, which is never loaded.
 
-### Current baseline: Sharar with MTP speculative decoding
+### Recorded baseline: Sharar with MTP speculative decoding
 
 Runtime image `sharar:qwen38-27b` launched by `SHARAR_SPEC=3 run-sharar.sh`
 with the memory guard. Result directories under `${SHARAR_RESULTS}/controlled/`:
@@ -103,6 +120,11 @@ CUDA graphs) and `controlled-27b-sharar-spec3-32766-20260904T135132Z`
 `controlled-27b-sharar-baseline-20260904T125049Z` is kept as the fallback
 baseline for `SHARAR_SPEC=0`. The same-machine comparison against SGLang
 plain and SGLang MTP, with GSM8K accuracy, is in `docs/comparison.md`.
+
+These runs predate the latest synchronization audit and do not cover the
+correctness defects recorded in Phase 7A. Keep them as historical measurements;
+do not interpret the phase-completion labels as evidence that those defects
+are fixed.
 
 | Input | Concurrency | Aggregate tok/s | Median TTFT (s) | p95 TTFT (s) |
 |---:|---:|---:|---:|---:|
@@ -141,25 +163,51 @@ Reference profile: 32,768-token budget, concurrency 4, queue 16, chunked
 prefill 2,048, 20 FP32 Mamba slots, static fraction 0.70, cold start about 2
 minutes of which weight load is 99 s; image 21.1 GB.
 
-### What the numbers mean
+### Earlier SGLang DSpark result: include in the competitive target
 
-- Decode at concurrency 1 reads about 19 GB of weights per token, which is
-  about 245 GB/s effective, about 90% of the bandwidth ceiling. Kernel work
-  cannot make single-stream decode much faster; only fewer weight reads per
-  emitted token can, which means speculative decoding.
-- Batch decode scales 3.6x at concurrency 4 and is also near the ceiling.
-- Single-stream prefill runs at about 2,500 tok/s, roughly half of dense FP8
-  peak. Prefill kernels (NVFP4 GEMM on SM120-class tiles, GDN chunk kernels)
-  are the real kernel optimization surface.
-- The p95 TTFT of 31.7 s at 8K x 4 is prefill serialization: decode pauses for
-  every 2,048-token chunk and later requests wait behind earlier prefills.
-  This is scheduler policy, fixed by owning the loop.
-- Weight load at 99 s is a 200 MB/s read path. On unified memory it should be
-  a zero-copy map, several times faster.
-- KV is about 32 KB per token at FP8 (16 layers x 4 heads x 256 x 2 x 1 byte),
-  so 32K tokens is 1 GB. Each GDN state slot is about 147 MB. After weights,
-  about 85 GiB remain: the prefix/session cache can hold over a million tokens
-  and hundreds of state slots. There are no host/device tiers on this machine.
+Saved run: `/home/yke/sparklang-dspark-results/` followed by
+`controlled-27b-nvfp4-dspark-20260902T182512Z`. Its manifest records the same
+target revision, FP8 KV, FP32 SSM, 32K context, concurrency bound four, seven
+draft proposals and draft revision `b9a5dbdf03bc999c6c73c426b19c2d9041cea393`.
+The table reports median aggregate output tokens per second.
+
+| Input | Concurrency | Sharar MTP recorded tok/s | Earlier SGLang DSpark tok/s |
+|---:|---:|---:|---:|
+| 128 | 1 | 32.7 | 62.7 |
+| 128 | 4 | 105.1 | 188.2 |
+| 2,048 | 1 | 22.8 | 52.3 |
+| 2,048 | 4 | 61.8 | 56.7 |
+| 8,192 | 1 | 19.5 | 22.9 |
+| 8,192 | 4 | 38.5 | 36.4 |
+
+The earlier DSpark run passed 4/4 canaries, had no matrix request failures
+and recorded about 72 GiB minimum MemAvailable. These are historical runs
+with differing configurations and repetitive prompts, not a fresh controlled
+comparison or a general speedup claim. Phase 7C must reproduce and broaden
+the comparison before choosing a production proposer.
+
+### What the numbers establish and what still needs measurement
+
+- Decode profiles support a bandwidth bottleneck, but the claimed 90% roofline
+  is not established. `engine/run.py` hardcodes `19.2 * 2**30` as bytes per
+  step; allocated bytes differ from traffic, and embeddings are indexed.
+  Measure hot weights, scales, KV/recurrent traffic and sustained bandwidth.
+- Plain batch decode scales about 3.6x at concurrency four. At the recorded
+  109 ms MTP round time, k=3 permits at most four emitted tokens, about
+  36.7 tok/s before prefill. Larger gains need better/wider proposals or reuse
+  as well as kernel work. That development measurement is not a new full matrix.
+- Prefill runs at about 2,500 tok/s. Profile the mixed NVFP4/FP8/GDN workload
+  rather than inferring utilization from one advertised peak.
+- Owning the scheduler improved long-input TTFT. It can still execute two
+  4,096-token prefill budgets before decode, allowing seconds of streaming
+  interruption. Inter-token latency and arrival patterns need their own gates.
+- The 87–99 s weight-load measurements include more than storage reads.
+  Attribute faults, transfers, concatenation, swizzling and initialization
+  before selecting prepacked loading or direct mapping.
+- Target FP8 KV costs 32 KiB/token (1 GiB for 32,768 tokens); a GDN state slot
+  costs about 147 MiB. Useful cache capacity also depends on snapshot placement,
+  draft KV/features, verify scratch, graphs, allocator slack and the host floor.
+  One physical DRAM pool does not make allocation APIs interchangeable.
 
 ## 4. Architecture
 
@@ -178,30 +226,57 @@ sharar serve
 
 | Module | Owns | Budget (lines) | Origin |
 |---|---|---:|---|
-| `sharar/config.py` | Pinned model/hardware facts, profile validation | 250 | new, from sparklang `gb10/` |
+| `sharar/config.py`, `model/qwen38_config.py`, `hardware/gb10.py`, `engine/profile.py` | Separate model facts, device constraints and validated serving limits; compatibility imports and validation | 250 | new, from sparklang `gb10/` |
 | `sharar/weights/` | Safetensors reader, ModelOpt layouts, NVFP4 block-scale swizzle, FP8 scales, tensor name mapping | 500 | port of `modelopt_quant.py` pieces |
 | `sharar/model/` | `qwen38.py` (layers, forward), `gdn.py`, `attention.py`, `mlp.py`, `norm.py`, `rope.py`, `mtp.py` | 1,000 | rewrite, reference `qwen3_5.py`, `qwen3_5_mtp.py` |
 | `sharar/kernels/fla/` | GDN Triton: `chunk`, `chunk_fwd`, `chunk_delta_h`, `chunk_o`, `chunk_intra`, `cumsum`, `wy_fast`, `l2norm`, `layernorm_gated`, `fused_gdn_gating`, `fused_sigmoid_gating_recurrent`, `fused_recurrent`, `index`, `op`, `utils` | 4,000 | vendored (fla-org via SGLang) |
 | `sharar/kernels/conv1d.py` | Causal Conv1D prefill and state update | 1,200 | vendored (Tri Dao / vLLM via SGLang) |
 | `sharar/kernels/ops.py` | FlashInfer wrappers: ragged/paged attention with FP8 KV, `mm_fp4`, FP8 GEMM, `fp4_quantize`, fused SiLU-mul-quant, top-k/top-p sampling | 400 | new |
-| `sharar/memory/` | `ledger.py` (one pool, host floor), `kv_pool.py` (paged FP8), `state_pool.py` (GDN conv+SSM slots, committed/scratch), `radix.py` (prefix tree with state snapshots) | 900 | rewrite, reference `mamba_radix_cache.py` |
-| `sharar/engine/` | `request.py`, `scheduler.py`, `executor.py` (batch assembly, CUDA graphs), `sampler.py`, `spec/` (`proposer.py`, `mtp.py`, `verify.py`) | 1,300 | new |
+| `sharar/memory/` | `ledger.py` (one pool, host floor), `kv_pool.py` (paged FP8), `state_pool.py` (GDN conv+SSM slots), `request_state.py` (ownership/transactions), `radix.py` (prefix tree with snapshots) | 900 | rewrite, reference `mamba_radix_cache.py` |
+| `sharar/engine/` | `request.py`, `scheduler.py`, `executor.py`, `contracts.py`, `sampler.py`, `spec.py` (shared verification/acceptance), target graphs | 1,300 | new |
+| `sharar/proposers/` | MTP adapter and private graphs, feature-free n-gram adapter; future draft-specific implementations | 250 | extracted MTP plus new adapters |
 | `sharar/api/` | `http.py`, `openai.py`, `chat_template.py`, `parsers/reasoning.py`, `parsers/tools.py` | 1,000 | new; parsers ported |
 | `sharar/cli.py` | `serve`, `describe`, `check`, `parity` | 200 | new |
 
 Total about 6,500 engine lines plus about 5,200 vendored kernel lines. Budgets
-are ceilings for review, not targets to fill.
+are review signals. Keep ownership, names and tests clear; do not compress
+code to meet a line count. The table is a module plan, not a claim that all
+interfaces already exist. Phase 7B separates the MTP adapter from `spec.py`;
+draft-aware prefix restoration and richer proposal algorithms follow in 7D.
 
-### Design rules that must hold from the first commit
+### Contribution boundaries to implement in Phase 7B
 
-- One process. Tokenization, scheduling, execution and detokenization run in one
-  asyncio process. No ZMQ, no worker processes, no distributed groups.
+| Boundary | Owns | Extension it permits |
+|---|---|---|
+| Target model and profile | Immutable model facts, forward results, selected feature taps; device capabilities and serving limits in separate records | A curated model profile without editing scheduling policy |
+| Proposer | Requirements, prefill/resume hooks, candidates, valid lengths, confidence and proposal probabilities when needed | MTP, n-gram, DSpark, DFlash2 and research proposers |
+| Verifier and acceptance | Target forward and greedy/stochastic acceptance under the request's sampling transforms | New proposals without changing target semantics |
+| State transaction and prefix entry | KV, recurrent and draft resource ownership; reserve, commit, rollback, share, release | New cache layouts and wider verification |
+| Scheduling policy | Admission, prefill budgets and selected verification widths from a measured cost model | Interactive latency and confidence scheduling |
+| Kernel and graph execution | Tensor layouts, persistent buffers, kernel choices and graph buckets | GB10 tuning independent of request lifecycle |
+
+Use small typed records and narrow adapters; select implementations at
+initialization and keep dispatch out of per-layer hot loops. Prove the
+contracts with MTP and a simple n-gram proposer before adding larger drafters.
+Document buffer lifetime, aliasing, valid token counts and mutation ownership.
+
+### Design rules and invariants
+
+- One process. HTTP/tokenization/detokenization use the asyncio side; one
+  engine thread owns scheduling and GPU work. Commands cross an explicit
+  queue. No ZMQ, worker processes or distributed groups.
 - Committed and scratch state. Every request owns one committed GDN state slot
   (conv + SSM) and the executor owns scratch slots. Prefill and accepted decode
   write committed state; speculative verification writes scratch and commits on
-  accept. This is what makes MTP and rollback cheap later.
-- No `auto`. Every backend, dtype and shape is chosen explicitly in code with a
-  comment naming the measurement that chose it.
+  accept. Record committed, emitted and streamed token counts separately;
+  cached KV and recurrent snapshots must describe the same exact prefix.
+  Stop/budget truncation happens before choosing the committed snapshot.
+- One terminal path releases each request exactly once. Active prefix
+  references survive cache flush; retraction preserves already emitted history
+  and reconstructs it without publishing those tokens again.
+- Every backend and dtype has an explicit measured choice. Adaptive draft
+  widths and prefill budgets are permitted through a bounded, documented
+  cost policy; every selectable shape must have a validated execution path.
 - Hot buffers in device allocations, unified pool for capacity. Weights, KV
   pages and state slots use `cudaMalloc`-backed tensors. Managed or mapped
   memory is used for the weight load path and for cache tiers only after a
@@ -221,19 +296,29 @@ are ceilings for review, not targets to fill.
    summaries only.
 5. Vendored code keeps its header and gets a row in `THIRD_PARTY_NOTICES.md`
    in the same commit.
-6. Do not add multimodal, distributed, LoRA, arbitrary-model or generic
-   fallback code paths, even behind flags.
+6. Do not add multimodal, distributed, LoRA, arbitrary-model discovery or
+   generic hardware fallback paths. Curated profiles need independent gates.
 7. The host memory guard runs whenever any engine is serving on the machine.
 8. Do not import `sglang` anywhere in `sharar/`, `tests/` or `bench/`. Tests
    talk to the reference over HTTP or read its tensor dumps.
-9. No CI/CD until Sharar defines its own; GitHub Actions stay disabled.
+9. Keep inherited workflows disabled. Phase 7B defines Sharar's own small CPU
+   CI and opt-in GB10 checks; GPU benchmarks must use an isolated measured host.
 10. Commits carry no attribution trailers.
 
 ## 6. Phases
 
-Phases 1 through 6 replace the reference. Phases 7 through 10 exceed it. The
-order inside a phase is the recommended order of work; each task is meant to be
-one commit or one small series.
+Phases 0 through 7 record implemented milestones and their historical gates.
+The 2026-09-04 review found defects those gates did not exercise; their repair
+is required before further promotion. No bugs below are marked fixed by this
+roadmap update.
+
+Work order: **7A correctness -> 7B contracts -> 7C benchmarks -> 7D speculative
+and cache extensions -> 8 unified memory -> 9 remaining kernels/AOT -> 10
+release hardening**. Profiling and benchmark preparation may proceed during
+repairs; new runtime features and compiler removal follow the relevant gates.
+Draft/scratch memory reservations are prerequisites within 7D, not deferred
+until after allocating a larger draft. Each checklist item is a focused commit
+or small series.
 
 ### Phase 0: Bootstrap `[complete]`
 
@@ -322,9 +407,10 @@ matches the reference at cosine at least 0.9994 given the reference's input;
 confident-position top-1 agreement is 84% to 100% per prompt, equal to the
 reference's own agreement with itself under a different prefill chunk size;
 the next token matches on every prompt where the reference's margin exceeds
-5 nats. The original wording (per-layer tolerance, all-position argmax
-equality) is unattainable for this W4A4 checkpoint by any second
-implementation, SGLang included, and was replaced by the measured criteria.
+5 nats. The original all-position argmax-equality gate did not hold across
+the measured implementations/chunk configurations and was replaced by these
+empirical criteria. This is not proof that all future differences are rounding;
+new discrepancies require the section 8 diagnosis.
 
 ### Phase 2: Decode loop and CUDA graphs `[complete]`
 
@@ -382,13 +468,15 @@ Goal: own every allocation and make the cache use the unified pool.
       bf16 ragged attention), as documented in `docs/phase3.md`.
 - [x] `sharar soak`: 30 rounds of 8K prompts at concurrency 1 to 4 with
       partial shared prefixes; no leak, 302 evictions, `MemAvailable` never
-      below 37.9 GiB. The ledger-versus-allocator comparison is covered by the
-      recorded categories; the memory guard was active throughout.
+      below 37.9 GiB. Categories track CUDA allocation deltas; full reconciliation
+      with reserved and non-PyTorch memory remains Phase 8 work. The memory
+      guard was active throughout.
 
-Definition of done, as measured (`docs/phase3.md`): the ledger and cache own
-all allocations, a re-sent 9,642-token prompt drops from 4.4 s to 158 ms TTFT
+Historical result (`docs/phase3.md`): the ledger sizes the pools and the cache
+tracks prefix resources; a re-sent 9,642-token prompt drops from 4.4 s to 158 ms TTFT
 with the same first token, the next conversation turn reuses the previous one,
-and the soak passes with the guard active.
+and the soak passes with the guard active. Phase 7A subsequently repaired and
+tested active-flush ownership and speculative-stop snapshots.
 
 ### Phase 4: Scheduler `[complete]`
 
@@ -402,8 +490,9 @@ behavior than the reference.
       pool check before admission, chunked prefill with a per-request chunk
       (2,048) and a per-step budget (4,096) shared oldest first, retraction of
       the newest request under memory pressure.
-- [x] Interleaved steps: one prefill step then one decode step, so a running
-      request waits at most one prefill step. The merged "mixed chunk"
+- [x] Interleaved steps: up to two prefill steps then decode in the current
+      scheduler. Interactive latency under arrivals remains Phase 7D work.
+      The merged "mixed chunk"
       forward (decode rows inside the prefill forward) is documented as an
       option in `docs/phase4.md`, not implemented; it would give up the
       CUDA-graph decode path on those steps.
@@ -471,16 +560,16 @@ engine on the machine (`run-sharar.sh`, container `sharar-qwen38`, guard unit
 `sharar-memory-guard.service`); the reference container is started only for
 parity work.
 
-### Phase 7: Speculative decoding with MTP `[complete]`
+### Phase 7: Speculative decoding with MTP `[implemented; follow-ups 7A–7D]`
 
 Goal: more emitted tokens per weight read. Expected 1.5x to 2x at concurrency 1.
 
 - [x] `model/mtp.py`: the bf16 MTP module sharing the target's embeddings
       and NVFP4 lm_head, with its own bf16 paged KV addressed by the target's
       page ids.
-- [x] `engine/spec.py`: chain drafting with the MTP head as the first
-      proposer (k = 3 default; 2 and 4 measured) and the verify round; the
-      draft/verify split is the seam for other proposers.
+- [x] `engine/spec.py`: chain drafting with MTP (k = 3 in the production
+      profile; 2 and 4 measured) and target verification. Extracting a reusable
+      proposer/verifier contract remains Phase 7B work.
 - [x] Verify: one target forward over k + 1 tokens per request; the GDN
       layers run the recurrent kernel from the committed state without
       updating it and record the state after every token in per-request
@@ -488,14 +577,16 @@ Goal: more emitted tokens per weight read. Expected 1.5x to 2x at concurrency 1.
       conv window is recomputed in torch; accept copies the chosen state
       back. No replay-SSM kernels were needed.
 - [x] CUDA graphs for the verify forward and the chain draft steps
-      (`engine/spec_graphs.py`); draft step 1 stays eager (variable rows).
+      (`engine/spec_graphs.py`), including the single pending row in step 1.
 - [x] Acceptance rate, tokens per round and draft/verify time in
-      `SpecDecoder.stats()` and `/get_server_info`; the harness's spec
-      columns stay empty because `/generate` does not report them yet.
+      `SpecDecoder.stats()` and `/get_server_info`; `/generate` now reports
+      per-request statistics too. Earlier saved matrices have empty columns;
+      Phase 7A repairs stop-aware emitted/committed accounting.
 - [x] Greedy verification accepts exactly the target's argmax; sampled
       requests take the plain decode step (rejection sampling deferred).
-- [x] Verifier is proposer-agnostic (it consumes token tensors and hidden
-      states); an n-gram or SMC-style proposer can replace `MtpHead`.
+- [ ] Make the verifier proposer-independent and prove it with a second
+      proposer (Phase 7B). The target accepts token chains, but `SpecDecoder`
+      and `DraftGraphs` still access MTP, request and executor internals.
 
 Definition of done, as measured (`docs/phase7.md`): concurrency-1 decode
 improves 1.9x to 2.4x and concurrency-4 aggregate 1.9x to 2.2x at k = 3 on
@@ -503,41 +594,246 @@ text, needle and JSON prompts; canaries 4/4 with every reference token
 matched; memory within the ledger (2.1 GiB draft head and KV, 2.4 GiB verify
 buffers). Identity with non-speculative greedy output holds where the
 target's margin is large and diverges within the noise floor elsewhere, as
-documented for every other numerical path.
+documented in the phase notes. This historical result does not cover stopping
+inside an accepted block or draft-aware prefix reuse; see Phases 7A and 7D.
 
-### Phase 8: Unified memory `[planned]`
+### Phase 7A: Request and state correctness `[implemented and validated]`
+
+Review baseline: `21019b01780df17658ade146c85da0757ac6df0d`. Existing CPU
+tests passed (21 passed, 9 GPU/snapshot tests skipped), but additional isolated
+CPU reproductions exposed the first six defects below. The retraction check
+used the scheduler test double plus inspection of `Executor.retract`; the
+speculative check ran the actual acceptance/cache-insertion method bodies
+against tiny CPU state buffers. These establish lifecycle/ownership defects,
+not a GPU numerical evaluation. Host-local evidence is under
+`${SHARAR_RESULTS}/reviews/2026-09-04/` (`review.md`, `audit.py`).
+
+All eight repairs below are implemented. Maintained tests and the invariants
+for subsequent refactors are documented in [docs/phase7a.md](docs/phase7a.md).
+The external audit remains historical evidence.
+
+| ID | Priority | Repaired defect and implementation location | Passing regression check |
+|---|---|---|---|
+| A1 | P1 | `_prefill_step()` drops requests finishing on the first token before `_reap()` can release them. Queued `cancel()` sets the enum but leaves `finished=False`. `engine/scheduler.py`, `engine/request.py`, `api/server.py` | One-token limit and first-token EOS release once; queued/running cancellation terminates its ticket; no lost request when the scheduler becomes idle |
+| A2 | P1 | `_accept()` commits the full accepted block before EOS/limit truncates returned tokens; `_insert_into_cache()` labels that state with the shorter prefix. `engine/spec.py`, `engine/executor.py` | Force every acceptance length and every stop position; assert cached KV, GDN state and token IDs refer to the same prefix, then resume it |
+| A3 | P1 | `RadixCache.flush()` frees locked pages still used by requests. `memory/radix.py`, `api/server.py` | Flush during active shared-prefix requests; active IDs cannot be reallocated, and deferred resources return after the final release |
+| A4 | P1 | `Executor.retract()` clears already emitted output and the stream cursor. `engine/executor.py`, `engine/scheduler.py` | Retract after streaming tokens; reconstruct the exact emitted history, preserve output budget/RNG progress, and never emit history twice |
+| A5 | P2 | `Sampler._generators` shares one evolving RNG per seed across requests. `engine/sampler.py`, `engine/request.py` | Independent same-seed requests get independent reproducible draws; use fixed logits to isolate RNG behavior from batch-dependent model rounding |
+| A6 | P2 | Spec stats count proposed output after stopping; scheduler counts one token per request despite multi-token rounds. `engine/spec.py`, `engine/scheduler.py`, `api/server.py` | Distinguish proposed, accepted, committed, emitted and streamed counts; reconcile per-request totals and serving metrics under truncation |
+| A7 | P1 | Source inspection: admission does not enforce the profile limit while graph index buffers hardcode `32768 + 64`. `engine/scheduler.py`, `engine/graphs.py`, `engine/spec_graphs.py`, `api/server.py` | Reject invalid token IDs, empty/oversized prompts and invalid budgets before allocation; validate prompt+output limits and internal speculative headroom; test exact boundary and one over |
+| A8 | P1 | Source inspection: an unhandled engine exception can strand tickets while `/health` still reports OK. `api/server.py` | Inject executor failures; terminate pending tickets, expose unhealthy/unready state, reject new work and release resources where safe |
+
+Validation: **103 CPU tests passed, 9 GPU/snapshot tests skipped**. The GB10
+run passed **194 tests**, including **84 real-checkpoint lifecycle cases**:
+eager/graphs, batches 1/2/3/4, cache disabled/miss/hit, mixed EOS/length stops,
+exact committed-state comparisons, cached continuation, active flush and
+retraction. Both 32K boundary cases and the four frozen canaries in both
+execution modes passed. Two additional CPU pressure tests were added after
+that GPU run collected its tests; they are included in the 103-test CPU result.
+The same seven selected behavioral reproductions failed on `21019b0` and
+passed with the repairs. Final GPU minimum `MemAvailable`: **73.99 GiB**.
+
+An initial concurrent load reached the memory floor and the test/serving guards
+stopped their respective containers. The passing run used exclusive GPU
+memory; service restoration is recorded in the phase notes. This is correctness
+evidence, not a refreshed throughput matrix, full layer-oracle rerun or a new
+competitive performance claim. Runtime promotion remains a separate action.
+
+### Phase 7B: Extension contracts and contributor workflow `[done — 2026-09-05]`
+
+Goal: a new proposer or GB10 kernel can be contributed through the section 4
+boundaries without changing unrelated scheduling, cache or HTTP internals.
+
+- [x] Separate target model facts, GB10 capabilities and serving profile
+      limits. Keep the existing Qwen revision as the only validated profile.
+      Graph sizes, context bounds and memory requirements derive from it.
+      Include transient weight-load peaks before loading another model;
+      steady-state allocated bytes alone do not establish startup headroom.
+- [x] Define typed forward results and optional selected-feature outputs;
+      document normalization point, shape, dtype, aliasing and lifetime.
+- [x] Extract proposer lifecycle and requirements from `SpecDecoder` and
+      `DraftGraphs`. Draft-specific KV and pending state belong to the proposer.
+- [x] Extract target verification/acceptance and a state transaction for
+      reservation, commit, rollback and release. Preserve the A1–A8 invariants;
+      do not expose pool free lists as cross-module mutation interfaces.
+- [x] Adapt MTP and add a simple n-gram proposer as a contract test. A proposer
+      requiring no target features must not pay feature-capture overhead.
+- [x] Separate scheduling policy from execution buffers/graph replay. Use
+      explicit initialization-time choices and bounded graph buckets.
+- [x] Add `CONTRIBUTING.md` and ownership/interface documentation with recipes
+      for a proposer, a kernel and a cache policy, plus their required checks.
+- [x] Declare serving dependencies, add reproducible dependency constraints,
+      and provide one-command CPU checks and opt-in GB10 checks. Introduce
+      Sharar's own small CPU CI; keep inherited workflows disabled.
+
+Definition of done: MTP and the second proposer share verification/state
+logic; changing either requires no scheduler/cache-internal changes; focused
+tests and unchanged-profile benchmarks pass. Interfaces remain small and
+hot execution paths retain their measured specialization.
+
+Implementation boundaries and contributor recipes are in
+[docs/interfaces.md](docs/interfaces.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+The hardware experiment plan is [docs/gb10-experiments.md](docs/gb10-experiments.md).
+New mechanisms must have a measured hypothesis and a condition for discarding
+them; tile sizes and launch tuning are only one part of the optimization work.
+
+Validation: **129 CPU tests passed, 9 skipped** in a fresh CPU-only install;
+**220 tests passed on GB10**, including **89 real-checkpoint cases**. The
+12-cell plain/MTP unchanged-profile comparison passed with identical outputs
+across all 72 measured runs. Largest median slowdown: **0.47%** against a
+predeclared 5% limit. Details, the retained pre-existing cold/cache diagnostic
+and raw-evidence locations are in [docs/phase7b.md](docs/phase7b.md).
+
+### Phase 7C: Workload and competitive performance gates `[planned]`
+
+Measurement and hardware research begin together here. First attribute the
+per-round synchronization and recurrent-snapshot traffic, then prototype the
+mechanism with demonstrated headroom. Do not defer all optimization ideas to
+Phase 9 or require finishing every competitor integration before a bounded
+experiment. Freeze each experiment's workload and decision threshold first.
+
+- [ ] Keep the synthetic six-cell matrix for continuity. Document its limits:
+      repetitive prompts, cold prefix cache, ignored EOS, fixed output lengths,
+      greedy decoding and thinking disabled.
+- [ ] Freeze representative coding, chat, tool/structured output and thinking
+      prompts with greedy and sampled settings. Add identical/partial-prefix
+      reuse, multi-turn sessions, mixed arrivals, cancellation, cache pressure
+      and natural stopping. Include budgets 1 through verify-width+1.
+- [ ] Triage the `hello ` ×128 cold/cached divergence recorded in
+      `docs/phase7b.md`. It reproduces on the pre-7B tree with ordinary decode;
+      compare fixed-prefix recurrent state and per-layer outputs before
+      attributing it to kernel rounding or accepting broader cache quality.
+- [ ] Measure TTFT, client-visible inter-token gaps, prefill/decode time,
+      completion time, actual emitted tokens, accepted tokens/round, cache-hit
+      length, draft reconstruction cost and peak/available memory. Bound metric
+      storage for long-running servers.
+- [ ] Refresh same-machine comparisons for SGLang plain, MTP, DSpark and
+      DFlash2 when validated, plus other relevant GB10 engines. Reproduce the
+      earlier DSpark run before using it as a current baseline.
+- [ ] Pin target/draft/tokenizer revisions, sampling, cache state, concurrency,
+      memory budget, graph settings and kernel/compiler/image identities.
+      Repeat independent runs; report sample counts and uncertainty. Five
+      tiny batches do not establish production p95/p99 latency.
+- [ ] Extend the comparator to enforce workload-specific quality, latency,
+      memory and throughput limits fixed before tuning. Require the expected
+      nonempty case set; separate kernel-cost studies from end-to-end generation
+      when differing continuations change acceptance or work performed.
+- [ ] Recompute decode byte traffic and the roofline from hot tensors and
+      measured counters. Remove the allocated-bytes-as-traffic estimate.
+- [ ] Produce the first GB10 experiment brief and ablation: device-resident
+      speculative progress versus selective recurrent checkpoints, chosen from
+      measured exposed time/traffic. Preserve a reference path, test every
+      accepted/stop position and report negative results as well as gains.
+
+Definition of done: reproducible workload manifests, comparator coverage and
+an updated `docs/comparison.md` distinguish historical observations from fresh
+comparisons, synthetic performance from local-use performance, and algorithm
+gains from kernel/engine gains. The correctness oracle stays frozen.
+
+### Phase 7D: Draft-aware caching, DSpark/DFlash2 and interactive scheduling `[planned]`
+
+Prerequisites: 7A ownership fixes, 7B interfaces and 7C workload gates. Preserve
+the current MTP path while evaluating each extension independently.
+
+- [ ] Implement selective target feature capture for prefill and verification.
+      The reviewed DSpark and DFlash2 checkpoints request layers 5/19/33/47/61;
+      pin the draft revision and read its requirements rather than hardcoding
+      these into the executor. Match feature semantics against the draft oracle.
+- [ ] Add draft-aware prefix entries keyed by target/draft identity, feature
+      schema and relevant numerical layout. Track valid draft KV/features;
+      cache hits reconstruct only missing requirements. Bound retained features
+      by a drafter's supported window and measure the total hit-path cost.
+- [ ] Reserve draft weights/KV/features, verify scratch, graph pools and
+      activation peaks before optional cache sizing. Current FP32 SSM verify
+      intermediates alone cost about 2.25/4.5/9 GiB at batch four and verify
+      width 4/8/16; increasing width must pass memory gates before allocation.
+- [ ] Add exact stochastic acceptance/rejection sampling using the actual
+      conditional proposal distribution, including selector/Markov effects.
+      Match temperature/top-k/top-p transforms and use request-local RNG.
+      Test the algorithm on tiny known distributions separately from GPU
+      numerical parity. Positive-temperature requests currently use plain decode.
+- [ ] Add validated batch/verify-width buckets, including tails and padded rows.
+      Select widths using measured round cost and expected useful emitted
+      tokens; do not optimize acceptance percentage in isolation.
+- [ ] Implement DFlash2 through the proposer interface: parallel draft,
+      candidate selector, local convolution and its attention/window semantics.
+- [ ] Implement DSpark through the same interface: parallel backbone,
+      sequential correction and confidence-scheduled verification. Calibrate
+      confidence and cost curves on this GB10 workload before enabling adaptation.
+- [ ] Compare adapters on the pinned quantized target, cold and reused prefixes,
+      greedy/sampled requests and mixed concurrency. Promote a proposer/profile
+      only when quality and measured end-to-end performance justify it.
+- [ ] Bound prefill interference using an interactive decode-latency target.
+      Measure requests arriving during generation and choose prefill budgets
+      and draft widths jointly from a bounded cost policy. Keep graph execution
+      where useful; mixed prefill/decode is an experiment, not a requirement.
+
+Sources for the reviewed requirements: [DSpark checkpoint](https://huggingface.co/RadixArk/Qwen3.8-27B-DSpark),
+[DSpark paper](https://arxiv.org/abs/2607.05147),
+[DFlash2 config](https://huggingface.co/incoai/Qwen3.8-27B-DFlash2/raw/main/config.json)
+and [DFlash2 design](https://inco.ai/blog/dflash2/). Their published hardware
+results do not predict GB10 speedups; pinned local measurements choose defaults.
+
+Definition of done: independent proposer adapters share exact acceptance and
+state logic; sampled and cache-hit paths pass correctness gates; workload
+results, scratch peaks and client-visible latency justify each enabled profile.
+
+### Phase 8: Unified memory `[planned; after 7D]`
 
 Goal: use the shared pool where it helps and prove where it does not.
 
-- [ ] Microbenchmark `cudaMalloc` versus `cudaMallocManaged` versus
-      `cudaHostRegister`-mapped memory for a 19 GB streaming read on GB10.
-      Record bandwidth and first-touch cost in `docs/unified-memory.md`.
-- [ ] Zero-copy weight load: map the safetensors, convert directly into
-      GPU-resident tensors without a host staging copy, and drop page cache
-      after materialization. Target under 30 s cold weight load.
-- [ ] Decide from the microbenchmark whether cold cache tiers (evicted radix
-      nodes) may live in mapped memory to enlarge the cache beyond the device
-      allocation budget.
-- [ ] Extend the ledger with a runtime planner: derive KV pages and state
-      slots from current `MemAvailable`, keep the 16 GiB floor, and apply
-      admission backpressure before the external guard has to act.
+Research allocation paths and prepacked layouts alongside 7C; promote capacity
+and serving changes after the draft/state planning prerequisites in 7D. Use the
+session-cache, reclaimable-slab and immutable-weight experiments in
+[the experiment plan](docs/gb10-experiments.md), including their stop criteria.
+
+- [ ] Reconcile `MemAvailable`, PyTorch allocated/reserved memory and
+      non-PyTorch allocations. Budget every draft/verify/graph/activation category
+      and allocator slack before optional capacity; extend the 7D reservations.
+- [ ] Wire internal pressure checks and admission backpressure into serving
+      before the external guard has to act. `Ledger.check_floor()` currently
+      has no serving-loop caller. Keep the 16 GiB floor and external guard.
+- [ ] Design reclaimable optional cache slabs with graph-safe addresses if
+      runtime shrinking is needed. Returning IDs to current monolithic pools
+      does not return physical DRAM. Prove reclamation under external pressure.
+- [ ] Benchmark device, managed and mapped allocation paths for GEMV/GEMM,
+      attention and state copies, including first touch, steady bandwidth,
+      CPU contention and pressure. Record `docs/unified-memory.md`; a mapped
+      tier shares the same physical pool and does not create extra capacity.
+- [ ] Attribute load time to file reads/faults, tensor materialization,
+      transfers, concatenation, quantization, swizzling and initialization.
+      Compare a versioned prepacked artifact with direct mapping and the
+      current safetensors path. Validate tensor identity, peak memory and hot
+      inference bandwidth. Under 30 s cold weight load is an experimental goal.
+- [ ] Measure cache value as saved workload time per byte, accounting for
+      recurrent snapshots, draft features/KV and reconstruction. Compare snapshot
+      placement/eviction policies and page sizes 1 versus larger blocks; useful
+      hybrid-prefix reuse matters more than raw allocated KV token count.
 - [ ] Raise the context profile: validate 65,536 and 131,072 as memory-safe
       profiles, and record prefill time and decode tok/s at each so the limit
       is documented as a latency choice.
-- [ ] Remove CPU to GPU synchronizations in the step loop: sampled tokens and
-      finish flags read through mapped memory rather than `.cpu()` copies.
+- [ ] Evaluate pinned/mapped output and completion buffers with explicit CUDA
+      completion, visibility and CPU ordering. CPU consumption still depends
+      on GPU completion; require a measured latency benefit over current copies.
 
-Definition of done: weight load time, cache capacity and longest safe context
-are all improved and documented, and the host floor is never crossed in the
-soak.
+Platform constraints: [NVIDIA CUDA porting notes](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/cuda.html)
+and [UMA memory reporting guidance](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/optimization.html).
 
-### Phase 9: SM121 kernels and AOT `[in progress]`
+Definition of done: documented load-time and useful cache-reuse improvements,
+validated context limits, allocation reconciliation and pressure/reclamation
+tests. The host floor remains intact and hot inference does not regress.
+
+### Phase 9: SM121 kernels and AOT `[partial; remaining work after 7A–8]`
 
 Goal: prefill toward the compute roofline and a runtime with no compiler.
 
+Keep the measured improvements already made. Prioritize further kernels from
+the 7C/7D profiles; finalize AOT only once supported model/draft profiles,
+prefill tails and graph/verify buckets are explicit.
+
 - [x] Speculative round in CUDA graphs: verify forward at batch 1, 2, 4 and
       every single-row draft step (`engine/spec_graphs.py`). 2026-09-04.
-- [x] Sync-free speculative round: one pinned upload per round (pending
+- [x] Reduced speculative-round synchronization: one pinned metadata upload (pending
       token, position, slot), positions derived on device, page frees from
       host ids, FlashInfer plans fed host index pointers (its `plan()` reads
       them on the CPU, so device tensors cost a sync each), phase timing
@@ -545,7 +841,9 @@ Goal: prefill toward the compute roofline and a runtime with no compiler.
       stacked over layers so committing a request's state is one strided
       copy per kind. Round wall time at batch 1 went from 119 to 109 ms with
       107 ms of GPU work; the draft step is at 6.5 ms against a 6.3 ms
-      bandwidth floor. `docs/phase7.md`. 2026-09-04.
+      measured bandwidth estimate. Acceptance still performs a host `.tolist()`
+      wait; the round is not synchronization-free. These are development
+      measurements. `docs/phase7.md`. 2026-09-04.
 - [ ] Profile prefill at 2,048 and 8,192 tokens with CUPTI on a separate
       profiling container; attribute time to NVFP4 GEMM, FP8 GEMM, GDN chunk
       kernels, attention, norms and quantization. (`sharar profile` gives the
@@ -558,26 +856,39 @@ Goal: prefill toward the compute roofline and a runtime with no compiler.
       (`sharar/kernels/nvfp4_quant.py`): 54 ms per 2K-token prefill today for
       about 7 GB of traffic; bit-trick e2m1 rounding and vectorized packing
       should bring it under 15 ms.
-- [ ] Microbenchmark FlashInfer `mm_fp4` on SM121 for the exact shapes
-      (M in {1, 2, 4, 256, 2048}, N/K from the MLP) and evaluate tile and
+- [ ] Microbenchmark FlashInfer `mm_fp4` on SM121 for decode, prefill tails
+      and B*verify-width shapes from the supported profiles, with the target
+      and draft N/K dimensions; evaluate tile and
       cluster configs in the SM120 CUTLASS path; upstream or vendor a tuned
       config.
 - [ ] Tune the GDN chunk kernels (`chunk_delta_h`, `chunk_intra`, `chunk_o`)
       block sizes and stages for SM121 SMEM and register budgets.
 - [ ] Fuse small kernels on the decode path where a trace shows launch-bound
       gaps: gating, norms, rope, quantization.
-- [ ] Build all FlashInfer JIT modules and Triton kernels ahead of time for
-      `sm_121a` into a versioned artifact directory; load from it at startup;
-      fail startup if a compile would be needed.
+- [ ] Build required FlashInfer, Triton and custom CUDA artifacts for every
+      supported batch/verify bucket and prefill specialization. Version the
+      manifest by profile, tensor layout, source/compiler/library versions and
+      validated architecture flags for each backend. Load at startup and fail
+      if any supported path would require compilation; test tail shapes too.
 - [ ] Remove `nvcc`, `cicc`, `ptxas`, CUDA headers and JIT caches from the
       runtime image; verify with a cold, offline start.
 
 Definition of done: single-stream prefill exceeds 3,500 tok/s at 8,192 tokens,
-decode does not regress, and the image never compiles.
+the realistic workload gates pass, and a cold offline image never compiles
+on any supported path. The prefill target must not sacrifice decode latency,
+cache reuse, quality or the memory floor.
+
+Research candidates, admitted only through measured hypotheses and the same
+gates: adaptive verification widths; selective GDN checkpoints plus
+accepted-prefix replay; compressed cold snapshots with quality validation;
+draft-aware cache eviction and bounded feature windows; prepacked/quantized
+draft weights; efficient vocabulary selection. Record wins and losses without
+claiming novelty or speedup before evidence.
 
 ### Phase 10: Product hardening `[planned]`
 
-- [ ] Health, readiness, profile and memory-pressure endpoints.
+- [ ] Harden the health/readiness and failure behavior introduced in 7A;
+      integrate live profile and pressure reporting from Phase 8.
 - [ ] Soak tests: cancellation storms, repeated long contexts, cache churn,
       mixed concurrency for hours with the guard active.
 - [ ] Clean shutdown and restart tests; corrupt or incomplete snapshot tests.
@@ -589,6 +900,11 @@ decode does not regress, and the image never compiles.
 
 Run gates in proportion to the change. Anything touching model math, memory
 or scheduling runs the full sequence.
+
+Documentation-only changes require a diff/link/consistency review, without
+starting the GPU runtime. Implementation promotion requires focused CPU tests
+for the changed invariants as well as the GPU/integration gates below.
+Record skipped tests and unrun gates explicitly.
 
 Fast checks:
 
@@ -619,7 +935,7 @@ python3 bench/benchmark_text_server.py --label CANDIDATE_LABEL
 python3 bench/compare_runs.py BASELINE_RUN_DIR CANDIDATE_RUN_DIR
 ```
 
-Acceptance thresholds, unchanged from the reference project:
+Existing synthetic comparison thresholds (retained for continuity):
 
 - No request failures.
 - 4/4 quality canaries.
@@ -630,6 +946,26 @@ Acceptance thresholds, unchanged from the reference project:
 - No cell regresses median TTFT by more than 15%.
 - At least 16 GiB `MemAvailable` throughout.
 - Concurrent hash drift is reported but diagnostic.
+
+Additional required gates to implement in 7A–7D:
+
+- Resource and lifecycle invariants: exactly-once release and terminal
+  publication, no active-page reuse, correct committed prefix after every
+  acceptance/stop position, preserved streamed history under retraction, bounded
+  requests and failure propagation. Test cache on/off and padded batches.
+- Exact speculative algorithm checks on known distributions, plus separate
+  numerical parity and representative coding/chat/tool/thinking quality checks.
+  Test request-local RNG independently of model rounding.
+- Realistic workload TTFT, inter-token and completion latency, useful cache-hit
+  behavior, emitted throughput and memory. Phase 7C records per-suite targets
+  and statistical confidence before tuning; its new gates do not exist yet.
+- Historical baselines stay immutable. When a verified correctness repair or
+  a deliberate numerical-path change alters serial hashes, document the cause,
+  before/after failing-case evidence, parity/quality results and workload costs
+  before adopting a new baseline. Do not reset hashes just to pass a comparator.
+
+Do not claim equivalent accuracy from four canaries or a 100-item subset.
+Use those as smoke checks and report the limits of larger quality evaluations.
 
 Maximum usable context:
 
@@ -652,40 +988,41 @@ python3 bench/benchmark_text_server.py \
 - These thresholds come from the reference's own self-agreement: SGLang with a
   512-token prefill chunk versus the serving container agrees at 86.0% of
   confident positions on the text prompt and 98.3% on random prompts, and
-  flips 4.6% of its own predictions with margins above 5 nats. A second
-  implementation of a W4A4 model cannot do better than that floor, and Sharar
-  is at it. Details and every measurement are in `docs/parity.md`.
+  flips 4.6% of its own predictions with margins above 5 nats. These are
+  empirical diagnostics for those configurations, not a universal noise floor
+  or an exemption for state bugs. Details are in `docs/parity.md`.
 - Tolerance failures are triaged per block with `sharar.parity.layerprobe`
   (which layers) and `sharar.parity.truth` (distance from an fp32 dequantized
   truth for both sides), before touching the full model.
 - Once Sharar is production, its own frozen run becomes the baseline and the
   reference dumps stay as the historical oracle.
+- Separate algorithmic exactness from kernel rounding: speculative acceptance
+  must preserve the target distribution under the defined sampling transforms.
+  Greedy verify/decode differences need controlled numerical comparisons;
+  cached state/prefix mismatches are correctness failures regardless of margins.
 
 ## 9. Risks and open questions
 
 - The ModelOpt NVFP4 scale layout expected by FlashInfer's SM120 CUTLASS path
   is reproduced exactly (bit-identical GEMM output against SGLang's wrapper,
   `tools/reference/ab_nvfp4.py`). Keep that A/B when the loader changes.
-- The canary_json prompt's greedy next token differs from the reference's
-  (code fence versus `{`) inside the measured noise floor. Phase 2 must run
-  the decoded canary through the harness's JSON check; if it fails there, the
-  fix is a quality decision (for example prompt or parser handling), not a
-  parity bug.
+- Phase 7A's repaired lifecycle/cache invariants now have maintained CPU and
+  GPU coverage. Preserve them through the proposer/state refactor; existing
+  draft-prefix validity and broader numerical/performance questions remain.
 - FP32 SSM state was required for validated quality in the reference. Any
   state dtype change is a correctness experiment.
-- FP8 KV with FlashInfer decode on SM121 is what the reference runs; confirm
-  the ragged prefill path also supports FP8 KV, otherwise prefill writes bf16
-  and quantizes on append.
-- Speculative verification over GDN layers needs the scratch-slot design to
-  hold; if the recurrent kernels cannot run k + 1 steps against a scratch copy
-  cheaply, the reference's replay-SSM kernels become necessary and add about
-  1.5K vendored lines.
+- Cold ragged attention and cached paged attention use different numerical
+  paths. Compare fixed prefixes and state boundaries when diagnosing drift.
+- Wider speculative verification increases recurrent intermediate storage.
+  Scratch limits, draft feature windows and graph buckets must be planned
+  together; neither a larger k nor a higher acceptance rate guarantees speed.
 - Managed memory on GB10 may page-fault on first touch and lose bandwidth;
   never place hot buffers there without the Phase 8 microbenchmark.
 - The reference's cold start JIT-compiles FlashInfer SM120 modules; Sharar's
   dev environment inherits that until Phase 9 builds artifacts ahead of time.
 - Dev environment drift: if torch, FlashInfer or Triton versions differ from
-  the reference image, parity failures become ambiguous. Pin them in Phase 0.
+  the reference image, parity failures become ambiguous. Preserve reproducible
+  constraints and artifact identities when experimenting with newer kernels.
 
 ## 10. Decision log
 
@@ -709,16 +1046,37 @@ python3 bench/benchmark_text_server.py \
   with it (docs/parity.md). Exact hash parity with SGLang is not a goal.
 - 2026-09-03: Development happens in a container from the reference image so
   the CUDA stack is identical; the runtime image is a Phase 6 deliverable.
+- 2026-09-04: Review at `21019b0` keeps the engine and inserts 7A–7D before
+  remaining kernel/AOT work: correctness, contribution contracts, realistic
+  competitive gates, then speculative/cache extensions.
+- 2026-09-04: Phase 7A repairs A1–A8 and records before/after, CPU, HTTP failure
+  and GB10 continuation evidence in `docs/phase7a.md`. Keep the historical
+  performance baseline and existing runtime image until separate promotion.
+- 2026-09-04: GB10 stays the hardware target; Qwen is the first curated model
+  profile. Separate model/device/profile facts without arbitrary model discovery.
+- 2026-09-04: Frozen correctness reference and evolving performance target are
+  distinct. Include the earlier DSpark results; MTP parity is insufficient.
+- 2026-09-04: Reassess the earlier 90% bandwidth estimate using actual traffic.
+  Unified-memory allocation and zero-copy loading benefits require measurements;
+  optional cache eviction alone does not reclaim monolithic allocations.
 
 ## 11. Immediate next task
 
-Phase 9, then Phase 8. The speculative round is graph-captured and free of
-host synchronizations (109 ms wall at batch 1 for 107 ms of GPU work, level
-with SGLang MTP's 111 ms; `docs/comparison.md`). What is left per round is
-GPU time: verify 88 ms (plain decode is 80 ms in its graph, so the four-row
-verify costs 8 ms over a decode step) and three 6.5 ms draft steps at their
-bandwidth floor. Next: apply the same sync audit to the plain decode step and
-the scheduler loop (`torch.tensor(list, device=...)` and `.tolist()` are
-synchronous), then the FP8 GEMV in-model gap and the NVFP4 quantizer speed.
-Phase 8's zero-copy weight load (87 s of the 96 s restart) and the
-draft-KV-aware prefix cache follow.
+Begin **7C: freeze local workloads and the first GB10 experiment brief**.
+
+1. Preserve the new ownership/proposer boundaries and the A1–A8 tests. Record
+   coding/chat/tool/thinking prompts with cache state, sampling and arrival
+   patterns, plus all source/model/image identities.
+2. Isolate the retained repetitive-prompt cold/cache divergence using fixed
+   prefixes and layer/state comparisons; do not assume it is rounding.
+3. Trace ordinary decode and MTP at batches 1 and 4. Attribute exposed host
+   synchronization and actual recurrent/KV/weight traffic. Choose the first
+   device-progress or selective-checkpoint prototype from that evidence,
+   with its workload and discard threshold frozen before implementation.
+4. Refresh competitive configurations alongside these bounded experiments.
+   Use 7D for draft-aware caching and richer proposers, 8 for validated unified
+   memory mechanisms, and 9 for further kernels and final AOT coverage.
+
+The changes are in the working tree with proof in `docs/phase7b.md`.
+Rebuilding/promoting the serving image is a separate step; the running image
+and historical competitive numbers have not been replaced.

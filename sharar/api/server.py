@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import queue
 import threading
 import time
@@ -26,11 +27,28 @@ from sharar.api.detok import Detokenizer
 from sharar.api.parsers.reasoning import ReasoningParser
 from sharar.api.parsers.tools import has_tool_call, parse_tool_calls
 from sharar.engine.request import Request
-from sharar.engine.sampler import SamplingParams
+from sharar.engine.sampler import InvalidRequest, SamplingParams
 from sharar.engine.scheduler import QueueFull, Scheduler
 from sharar.tokenizer import SnapshotTokenizer
 
 MODEL_ID = config.MODEL_ID
+
+
+class EngineUnavailable(RuntimeError):
+    pass
+
+
+def _resolve(future, value=None, error=None) -> None:
+    if not future.done():
+        future.set_exception(error) if error is not None else future.set_result(value)
+
+
+def _notify(loop, callback, *args) -> None:
+    try:
+        loop.call_soon_threadsafe(callback, *args)
+    except RuntimeError:
+        if not loop.is_closed():
+            raise
 
 
 @dataclass
@@ -54,26 +72,47 @@ class EngineLoop:
         self.inbox: queue.Queue = queue.Queue()
         self.tickets: dict[int, Ticket] = {}
         self.stop = False
+        self.failure: str | None = None
+        self._status_lock = threading.Lock()
         self.last_stats: dict = {}
         self.thread = threading.Thread(target=self._run, name="sharar-engine", daemon=True)
 
     def start(self) -> None:
         self.thread.start()
 
+    @property
+    def healthy(self) -> bool:
+        return self.failure is None and not self.stop and self.thread.is_alive()
+
+    def _enqueue(self, cmd) -> None:
+        # Serialize admission with failure/drain so no future is left in an
+        # inbox whose sole consumer has exited.
+        with self._status_lock:
+            if not self.healthy:
+                raise EngineUnavailable("engine unavailable")
+            self.inbox.put(cmd)
+
     async def submit(self, prompt_ids: list[int], params: SamplingParams) -> Ticket:
         loop = asyncio.get_running_loop()
         ticket = Ticket(queue=asyncio.Queue(), loop=loop, ready=loop.create_future())
-        self.inbox.put(("submit", prompt_ids, params, ticket))
-        await ticket.ready  # raises QueueFull if rejected
+        self._enqueue(("submit", prompt_ids, params, ticket))
+        try:
+            await ticket.ready
+        except asyncio.CancelledError:
+            self.cancel(ticket)
+            raise
         return ticket
 
     def cancel(self, ticket: Ticket) -> None:
-        self.inbox.put(("cancel", ticket))
+        try:
+            self._enqueue(("cancel", ticket))
+        except EngineUnavailable:
+            pass  # failure/shutdown owns cleanup
 
     async def flush_cache(self) -> None:
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
-        self.inbox.put(("flush", fut, loop))
+        self._enqueue(("flush", fut, loop))
         await fut
 
     def stats(self) -> dict:
@@ -86,36 +125,80 @@ class EngineLoop:
             _, ids, params, ticket = cmd
             try:
                 req = self.sched.submit(ids, params)
-            except QueueFull as exc:
-                ticket.loop.call_soon_threadsafe(ticket.ready.set_exception, exc)
+            except (QueueFull, InvalidRequest) as exc:
+                _notify(ticket.loop, _resolve, ticket.ready, None, exc)
                 return
+            except Exception:
+                _notify(ticket.loop, _resolve, ticket.ready, None, EngineUnavailable("engine unavailable"))
+                raise
             ticket.req = req
             self.tickets[req.request_id] = ticket
-            ticket.loop.call_soon_threadsafe(ticket.ready.set_result, True)
+            _notify(ticket.loop, _resolve, ticket.ready, True)
         elif kind == "cancel":
             ticket = cmd[1]
             if ticket.req is not None:
                 self.sched.cancel(ticket.req)
         elif kind == "flush":
             _, fut, loop = cmd
-            self.sched.ex.flush_cache()
-            loop.call_soon_threadsafe(fut.set_result, True)
+            try:
+                self.sched.ex.flush_cache()
+            except Exception:
+                _notify(loop, _resolve, fut, None, EngineUnavailable("engine unavailable"))
+                raise
+            _notify(loop, _resolve, fut, True)
 
     def _run(self) -> None:
-        while not self.stop:
-            # Drain commands; block briefly only when idle.
+        try:
+            while not self.stop:
+                try:
+                    cmd = self.inbox.get(timeout=0.05) if not self.sched.active else self.inbox.get_nowait()
+                    self._handle(cmd)
+                except queue.Empty:
+                    pass
+                self._publish()  # also delivers cancellation when admission is idle
+                if self.sched.active:
+                    self.sched.step()
+                self._publish()
+                self.last_stats = self.sched.stats()
+        except Exception as exc:
+            logging.exception("sharar engine failed")
+            self._fail(exc)
+        finally:
+            if self.failure is None:
+                self._fail(EngineUnavailable("engine stopped"))
+
+    def _fail(self, exc: Exception) -> None:
+        with self._status_lock:
+            self.failure = f"{type(exc).__name__}: {exc}"
+        # Notify first: even a broken CUDA context must not strand HTTP clients.
+        error = EngineUnavailable("engine unavailable")
+        for ticket in self.tickets.values():
+            _notify(ticket.loop, _resolve, ticket.ready, None, error)
+            _notify(ticket.loop, ticket.queue.put_nowait, ([], True, "error"))
+        self.tickets.clear()
+        while True:
             try:
-                timeout = None if self.sched.active else 0.05
-                cmd = self.inbox.get(timeout=timeout) if not self.sched.active else self.inbox.get_nowait()
-                self._handle(cmd)
-                while True:
-                    self._handle(self.inbox.get_nowait())
+                cmd = self.inbox.get_nowait()
             except queue.Empty:
-                pass
-            if not self.sched.active:
-                continue
-            self.sched.step()  # publishes through on_progress after each sub-step
-            self.last_stats = self.sched.stats()
+                break
+            if cmd[0] == "submit":
+                ticket = cmd[3]
+                _notify(ticket.loop, _resolve, ticket.ready, None, error)
+            elif cmd[0] == "flush":
+                _notify(cmd[2], _resolve, cmd[1], None, error)
+        for requests in (self.sched.queue, self.sched.prefilling, self.sched.running):
+            for req in requests:
+                req.cacheable = False  # a failed forward may have partially mutated state
+                req._finish("error")
+                try:
+                    if req.slot >= 0 or req.pages is not None or req.match is not None:
+                        self.sched.ex.release(req)
+                    else:
+                        req.released = True
+                except Exception:
+                    logging.exception("resource cleanup failed for request %s", req.request_id)
+            requests.clear()
+        self.last_stats = self.sched.stats()
 
     def _publish(self) -> None:
         # Hand over requests that arrived during the step, then deliver tokens.
@@ -128,7 +211,7 @@ class EngineLoop:
         for rid, t in self.tickets.items():
             new = t.req.new_tokens()
             if new or t.req.finished:
-                t.loop.call_soon_threadsafe(t.queue.put_nowait, (new, t.req.finished, t.req.finish_reason))
+                _notify(t.loop, t.queue.put_nowait, (new, t.req.finished, t.req.finish_reason))
             if t.req.finished:
                 done.append(rid)
         for rid in done:
@@ -136,32 +219,56 @@ class EngineLoop:
 
 
 def _sampling_from(body: dict, max_default: int = 512) -> SamplingParams:
-    sp = body.get("sampling_params") or {}
-    max_new = body.get("max_tokens") or body.get("max_completion_tokens") or sp.get("max_new_tokens") or max_default
+    sp = body.get("sampling_params")
+    if sp is None:
+        sp = {}
+    if not isinstance(sp, dict):
+        raise InvalidRequest("sampling_params must be an object")
+    max_new = next((x for x in (body.get("max_tokens"), body.get("max_completion_tokens"), sp.get("max_new_tokens")) if x is not None), max_default)
     temperature = body.get("temperature", sp.get("temperature", 0.0))
     top_p = body.get("top_p", sp.get("top_p", 0.95))
     top_k = body.get("top_k", sp.get("top_k", 20))
     seed = body.get("seed", sp.get("seed"))
-    return SamplingParams(
-        max_new_tokens=int(max_new),
-        temperature=float(temperature) if temperature is not None else 0.0,
-        top_p=float(top_p) if top_p is not None else 1.0,
-        top_k=int(top_k) if top_k is not None else -1,
+    params = SamplingParams(
+        max_new_tokens=max_new,
+        temperature=temperature if temperature is not None else 0.0,
+        top_p=top_p if top_p is not None else 1.0,
+        top_k=top_k if top_k is not None else -1,
         seed=seed,
-        ignore_eos=bool(sp.get("ignore_eos", body.get("ignore_eos", False))),
+        ignore_eos=sp.get("ignore_eos", body.get("ignore_eos", False)),
     )
+    params.validate()
+    return params
 
 
 def _stops(body: dict) -> list[str]:
     stop = body.get("stop") or (body.get("sampling_params") or {}).get("stop")
     if stop is None:
         return []
-    return [stop] if isinstance(stop, str) else list(stop)
+    stops = [stop] if isinstance(stop, str) else stop
+    if not isinstance(stops, list) or any(not isinstance(s, str) or not s for s in stops):
+        raise InvalidRequest("stop must be a non-empty string or a list of non-empty strings")
+    return stops
 
 
 def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, describe: dict) -> FastAPI:
     app = FastAPI(title="sharar")
     started = time.time()
+
+    @app.exception_handler(InvalidRequest)
+    async def invalid_request(http, exc):
+        return JSONResponse({"error": {"message": str(exc), "type": "invalid_request_error"}}, status_code=400)
+
+    @app.exception_handler(EngineUnavailable)
+    async def engine_unavailable(http, exc):
+        return JSONResponse({"error": {"message": "engine unavailable", "type": "server_error"}}, status_code=503)
+
+    async def _stream(events, ticket):
+        try:
+            async for event in events:
+                yield event
+        finally:
+            engine.cancel(ticket)
 
     async def _collect(ticket: Ticket, stop: list[str], http: HttpRequest | None) -> tuple[list[int], str, str]:
         """Drain a ticket to completion. Returns (ids, text, finish_reason)."""
@@ -176,6 +283,11 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                 new, finished, reason = await asyncio.wait_for(ticket.queue.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
+            except asyncio.CancelledError:
+                engine.cancel(ticket)
+                raise
+            if reason == "error":
+                raise EngineUnavailable("engine unavailable")
             ids += new
             detok.update(ids)
             if detok.stopped:
@@ -186,8 +298,9 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
     # ---- plumbing ----
     @app.get("/health")
+    @app.get("/ready")
     async def health():
-        return {"status": "ok", "uptime_seconds": time.time() - started}
+        return JSONResponse({"status": "ok" if engine.healthy else "unavailable", "uptime_seconds": time.time() - started}, status_code=200 if engine.healthy else 503)
 
     @app.get("/v1/models")
     async def models():
@@ -210,7 +323,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     @app.post("/flush_cache")
     async def flush_cache():
         await engine.flush_cache()
-        return PlainTextResponse("Cache flushed.\n")
+        return PlainTextResponse("Cache invalidated; active readers release pinned entries on completion.\n")
 
     @app.post("/v1/tokenize")
     @app.post("/tokenize")
@@ -223,8 +336,10 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     @app.post("/generate")
     async def generate(body: dict, http: HttpRequest):
         if body.get("input_ids") is not None:
-            ids = [int(t) for t in body["input_ids"]]
+            ids = body["input_ids"]
         else:
+            if not isinstance(body.get("text", ""), str):
+                raise InvalidRequest("text must be a string")
             ids = tok.encode(body.get("text", ""))
         if not ids:
             raise HTTPException(400, "empty prompt")
@@ -248,7 +363,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             }
             if req.spec_rounds:  # same meaning as SGLang's fields: tokens per verify round, accepted/proposed
                 info["spec_verify_ct"] = req.spec_rounds
-                info["spec_accept_length"] = n_out / req.spec_rounds
+                info["spec_accept_length"] = req.spec_emitted / req.spec_rounds
                 info["spec_accept_rate"] = req.spec_accepted / max(1, req.spec_proposed)
             return info
 
@@ -264,6 +379,9 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                         new, finished, reason = await asyncio.wait_for(ticket.queue.get(), timeout=0.5)
                     except asyncio.TimeoutError:
                         continue
+                    if reason == "error":
+                        yield 'data: {"error": {"message": "engine unavailable", "type": "server_error"}}\n\n'
+                        break
                     out += new
                     detok.update(out)
                     if detok.stopped:
@@ -273,7 +391,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                     if finished:
                         break
                 yield "data: [DONE]\n\n"
-            return StreamingResponse(events(), media_type="text/event-stream")
+            return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
         out, text, reason = await _collect(ticket, stop, http)
         return {"text": text, "output_ids": out, "meta_info": meta(len(out), reason)}
 
@@ -281,7 +399,12 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     @app.post("/v1/completions")
     async def completions(body: dict, http: HttpRequest):
         prompt = body.get("prompt", "")
-        ids = [int(t) for t in prompt] if isinstance(prompt, list) and prompt and isinstance(prompt[0], int) else tok.encode(prompt if isinstance(prompt, str) else prompt[0])
+        if isinstance(prompt, str):
+            ids = tok.encode(prompt)
+        elif isinstance(prompt, list) and all(type(t) is int for t in prompt):
+            ids = prompt
+        else:
+            raise InvalidRequest("prompt must be a string or one token ID list")
         params = _sampling_from(body, max_default=16)
         stop = _stops(body)
         try:
@@ -302,6 +425,9 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                         new, finished, reason = await asyncio.wait_for(ticket.queue.get(), timeout=0.5)
                     except asyncio.TimeoutError:
                         continue
+                    if reason == "error":
+                        yield 'data: {"error": {"message": "engine unavailable", "type": "server_error"}}\n\n'
+                        break
                     out += new
                     delta = detok.update(out)
                     if detok.stopped:
@@ -313,7 +439,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                     if finished:
                         break
                 yield "data: [DONE]\n\n"
-            return StreamingResponse(events(), media_type="text/event-stream")
+            return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
         out, text, reason = await _collect(ticket, stop, http)
         return {"id": cid, "object": "text_completion", "created": created, "model": MODEL_ID,
                 "choices": [{"index": 0, "text": text, "finish_reason": reason}],
@@ -362,6 +488,9 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                         new, finished, reason = await asyncio.wait_for(ticket.queue.get(), timeout=0.5)
                     except asyncio.TimeoutError:
                         continue
+                    if reason == "error":
+                        yield 'data: {"error": {"message": "engine unavailable", "type": "server_error"}}\n\n'
+                        break
                     out += new
                     delta_text = detok.update(out)
                     if detok.stopped:
@@ -400,7 +529,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                             yield f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_ID, 'choices': [], 'usage': usage(len(out))})}\n\n"
                         break
                 yield "data: [DONE]\n\n"
-            return StreamingResponse(events(), media_type="text/event-stream")
+            return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
 
         out, text, reason = await _collect(ticket, stop, http)
         rp = ReasoningParser(in_reasoning)
@@ -421,7 +550,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     return app
 
 
-def serve(host: str, port: int, log=print, spec: int = 0) -> None:
+def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp") -> None:
     import uvicorn
 
     from sharar.engine.executor import Executor
@@ -435,10 +564,11 @@ def serve(host: str, port: int, log=print, spec: int = 0) -> None:
     model = Qwen38(snap, log=log)
     ex = Executor(model, log=log)
     if spec:
-        ex.enable_spec(spec, log=log)
+        ex.enable_spec(spec, log=log, proposer=proposer)
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
-    cfg = SchedulerConfig()
+    cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=ex.profile.max_queued,
+                          chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget)
     sched = Scheduler(ex, cfg)
     describe = {
         "engine": "sharar",
@@ -452,7 +582,7 @@ def serve(host: str, port: int, log=print, spec: int = 0) -> None:
         "kv_pages": ex.kv_pool.num_pages,
         "state_slots": ex.state_pool.num_slots,
         "ledger_gib": {k: round(v / 2**30, 2) for k, v in ex.ledger.entries.items()},
-        "speculative": {"algorithm": "mtp", "num_draft_tokens": spec} if spec else None,
+        "speculative": {"algorithm": ex.spec.proposer.requirements.name, "num_draft_tokens": spec} if spec else None,
         "attention_backend": "flashinfer",
         "gdn_backend": "triton",
         "kv_cache_dtype": "float8_e4m3fn",
@@ -462,4 +592,8 @@ def serve(host: str, port: int, log=print, spec: int = 0) -> None:
     engine.start()
     app = create_app(engine, tok, tmpl, describe)
     log(f"serving on http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="warning")
+    finally:
+        engine.stop = True
+        engine.thread.join(timeout=5)

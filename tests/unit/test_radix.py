@@ -8,6 +8,10 @@ class FakePool:
         self._free = list(range(n - 1, 0, -1))
         self.freed = []
 
+    @property
+    def free_count(self):
+        return len(self._free)
+
     def alloc(self, n=1):
         if n == 1 and not isinstance(n, torch.Tensor):
             pass

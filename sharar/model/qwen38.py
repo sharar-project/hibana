@@ -15,6 +15,7 @@ import torch
 
 from sharar import config
 from sharar.engine.context import ForwardContext, scratch_prefill_context
+from sharar.engine.contracts import ForwardResult
 from sharar.kernels import ops
 from sharar.model.attention import Attention
 from sharar.model.gdn import GatedDeltaNet
@@ -56,6 +57,8 @@ class DecoderLayer:
 
 class Qwen38:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", fused_silu_quant: bool = True, log=print):
+        from sharar.memory.ledger import check_load_headroom
+        check_load_headroom(config.WEIGHT_LOAD_PEAK_BYTES)
         self.device = torch.device(device)
         cfg = config.load_model_config(snap)
         types = config.layer_types(cfg)
@@ -84,7 +87,7 @@ class Qwen38:
                 f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated")
 
     @torch.inference_mode()
-    def forward(self, input_ids: torch.Tensor, ctx: ForwardContext, capture: bool = False) -> dict:
+    def forward(self, input_ids: torch.Tensor, ctx: ForwardContext, capture: bool = False) -> ForwardResult:
         """Run one prefill sequence or one decode batch. Returns the final
         normalized hidden states and, when capture is set, per-layer tensors."""
         hidden = torch.nn.functional.embedding(input_ids, self.embed)
@@ -96,6 +99,12 @@ class Qwen38:
         residual = None
         for layer in self.layers:
             hidden, residual = layer.forward(hidden, residual, ctx)
+            if layer.index in ctx.feature_request.layers:
+                if "features" not in out:
+                    out["features"] = {}
+                # New storage: later in-place residual updates cannot overwrite
+                # a selected post-block stream. No work for unrequested layers.
+                out["features"][layer.index] = hidden + residual
             if capture:
                 out["layers"].append((hidden, residual))
         normed, pre_norm = self.final_norm.fused_add(hidden, residual)

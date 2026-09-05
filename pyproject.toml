@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools==78.1.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,16 +9,20 @@ description = "Thin single-target inference engine: Qwen3.8-27B NVFP4 on one NVI
 readme = "README.md"
 requires-python = ">=3.12"
 license = {file = "LICENSE"}
-# Versions match the reference image (torch 2.13.0+cu130, flashinfer 0.6.17,
-# Triton 3.8). Phase 0 pins exact versions once the dev environment is fixed.
+# Exact CPU and GB10 environments are recorded in constraints/.
 dependencies = [
-  "torch>=2.13",
-  "flashinfer-python>=0.6.17",
-  "triton>=3.8",
+  "torch>=2.13,<2.14",
+  "numpy>=2.3,<2.4",
   "safetensors>=0.5",
   "tokenizers>=0.21",
   "jinja2>=3.1",
+  "fastapi>=0.141,<0.142",
+  "uvicorn>=0.52,<0.53",
 ]
+
+[project.optional-dependencies]
+gpu = ["flashinfer-python==0.6.17", "triton==3.7.1", "einops==0.8.2", "numpy==2.3.5", "packaging==26.3"]
+test = ["pytest==9.1.1", "httpx==0.28.1"]
 
 [project.scripts]
 sharar = "sharar.cli:main"

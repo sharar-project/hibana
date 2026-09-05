@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import torch
 
 from sharar import config
+from sharar.engine.contracts import FeatureRequest
 from sharar.memory.kv_pool import KvPool
 from sharar.memory.state_pool import StatePool
 
@@ -61,6 +62,7 @@ class ForwardContext:
     # Parity capture keeps every layer's (hidden, residual); the residual is
     # then cloned instead of updated in place.
     capture: bool = False
+    feature_request: FeatureRequest = FeatureRequest()
 
     @property
     def query_start_loc(self) -> torch.Tensor:

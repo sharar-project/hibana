@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 import torch
 
 
-@dataclass
+@dataclass(eq=False)
 class Node:
     key: list[int]
     pages: torch.Tensor  # int32 [len(key)]
@@ -55,9 +55,13 @@ class RadixCache:
         self.root = Node(key=[], pages=torch.empty(0, dtype=torch.int32, device=device), parent=None)
         self.hits = self.misses = self.evictions = 0
         self.cached_tokens = 0
+        self.flushing = False
 
     # ---- lookup ----
     def match(self, ids: list[int]) -> Match:
+        if self.flushing:
+            self.misses += 1
+            return Match(0, self.root.pages, None, None, 0)
         node = self.root
         pos = 0
         best_node, best_len = None, 0
@@ -92,7 +96,10 @@ class RadixCache:
     def lock(self, node: Node | None, delta: int) -> None:
         while node is not None and node is not self.root:
             node.lock += delta
+            assert node.lock >= 0, "unbalanced cache release"
             node = node.parent
+        if delta < 0 and self.flushing:
+            self.flush()
 
     # ---- insertion ----
     def insert(self, ids: list[int], pages: torch.Tensor, snapshots: dict[int, int]) -> int:
@@ -104,6 +111,7 @@ class RadixCache:
         pages in `pages[:new_start]` are duplicates the caller must free (unless
         they were the cache's own prefix pages to begin with)."""
         assert len(ids) == pages.shape[0]
+        assert not self.flushing, "cannot insert while an active prefix is being flushed"
         node = self.root
         pos = 0
         boundaries = sorted(b for b in snapshots if 0 < b <= len(ids))
@@ -153,7 +161,7 @@ class RadixCache:
     def evict(self, need_pages: int = 0, need_slots: int = 0) -> None:
         """Free unlocked leaves, least recently used first, until the pools can
         satisfy the request or nothing evictable remains."""
-        while (len(self.kv_pool._free) < need_pages) or (len(self.state_pool._free) < need_slots):
+        while (self.kv_pool.free_count < need_pages) or (self.state_pool.free_count < need_slots):
             leaf = self._lru_leaf()
             if leaf is None:
                 break
@@ -180,17 +188,12 @@ class RadixCache:
         self.evictions += 1
 
     def flush(self) -> None:
-        for child in list(self.root.children.values()):
-            self._free_subtree(child)
-        self.root.children.clear()
-        self.cached_tokens = 0
-
-    def _free_subtree(self, node: Node) -> None:
-        for c in node.children.values():
-            self._free_subtree(c)
-        self.kv_pool.free(node.pages)
-        if node.snapshot_slot is not None:
-            self.state_pool.free(node.snapshot_slot)
+        # Hide the cache immediately, but retain pinned pages and snapshots
+        # until their final reader releases them. Admission bypasses the cache
+        # while that drain is pending.
+        while (leaf := self._lru_leaf()) is not None:
+            self._remove_leaf(leaf)
+        self.flushing = bool(self.root.children)
 
     def stats(self) -> dict:
-        return {"hits": self.hits, "misses": self.misses, "evictions": self.evictions, "cached_tokens": self.cached_tokens}
+        return {"hits": self.hits, "misses": self.misses, "evictions": self.evictions, "cached_tokens": self.cached_tokens, "flush_pending": self.flushing}

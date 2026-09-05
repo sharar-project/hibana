@@ -4,39 +4,50 @@ cached prefixes and state checkpoints, batched decode, CUDA graphs, generate."""
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING
 
-import flashinfer
 import torch
 
 from sharar import config
 from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import DecodeGraphs
 from sharar.engine.request import Request, State
-from sharar.engine.sampler import Sampler, SamplingParams
+from sharar.engine.sampler import InvalidRequest, Sampler, SamplingParams
 from sharar.memory.kv_pool import KV_DTYPE, KvPool
 from sharar.memory.ledger import Ledger
-from sharar.memory.radix import Match, RadixCache
+from sharar.memory.radix import RadixCache
+from sharar.memory.request_state import StateManager
+from sharar.engine.contracts import ProposerContext, Proposer
+from sharar.engine.profile import ServingProfile
 from sharar.memory.state_pool import StatePool
-from sharar.model.qwen38 import Qwen38
+if TYPE_CHECKING:
+    from sharar.model.qwen38 import Qwen38
 
 CHECKPOINT_INTERVAL = 2048  # GDN snapshots inside long prefills (multiple of 64)
 
 
 class Executor:
-    def __init__(self, model: Qwen38, num_pages: int | None = None, num_slots: int | None = None, max_batch: int = 4, use_cache: bool = True, log=None):
+    def __init__(self, model: Qwen38, num_pages: int | None = None, num_slots: int | None = None, max_batch: int = 4, use_cache: bool = True, log=None, max_context: int = config.CONTEXT_LENGTH):
+        self.profile = ServingProfile(max_context=max_context, max_batch=max_batch)
+        import flashinfer
+
+        self.max_context = max_context
         self.model = model
         self.device = model.device
         self.ledger = Ledger()
         self.ledger.record_cuda_allocated("weights")
         if num_pages is None or num_slots is None:
-            plan = self.ledger.plan(max_running=max_batch)
+            plan = self.ledger.plan(max_running=max_batch, context_len=max_context)
             num_pages = num_pages or plan.kv_tokens
             num_slots = num_slots or plan.state_slots
+        if type(num_pages) is not int or num_pages < 2 or type(num_slots) is not int or num_slots < 2:
+            raise ValueError("pools need at least one usable entry plus the reserved dummy entry")
         self.kv_pool = KvPool(num_pages, self.device)
         self.ledger.record_cuda_allocated("kv_pool")
         self.state_pool = StatePool(num_slots, self.device)
         self.ledger.record_cuda_allocated("state_pool")
-        self.cache = RadixCache(self.kv_pool, self.state_pool, self.device) if use_cache else None
+        cache = RadixCache(self.kv_pool, self.state_pool, self.device) if use_cache else None
+        self.state = StateManager(self.kv_pool, self.state_pool, cache)
         self.sampler = Sampler(self.device)
         self.max_batch = max_batch
         self._ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=self.device)
@@ -52,19 +63,54 @@ class Executor:
         if log:
             log(f"  pools: {num_pages} KV pages ({self.kv_pool.bytes / 2**30:.2f} GiB), {num_slots} state slots ({num_slots * self.state_pool.bytes_per_slot / 2**30:.2f} GiB)")
 
-    def enable_spec(self, k: int = 3, log=None) -> None:
-        """Load the MTP head and switch greedy decoding to speculative rounds."""
-        from sharar.engine.spec import SpecDecoder
-        from sharar.model.mtp import MtpHead
-        from sharar.weights.safetensors import SnapshotWeights
+    @property
+    def cache(self):
+        return self.state.cache
 
-        w = SnapshotWeights(config.snapshot_dir())
-        mtp = MtpHead(w, self.device, self.model.embed, self.model.lm_head, self.model.rope, self.kv_pool.num_pages)
-        w.close()
-        self.spec = SpecDecoder(self, mtp, k)
-        self.ledger.record_cuda_allocated("mtp_head_and_spec")
+    @cache.setter
+    def cache(self, value):
+        self.state.cache = value
+
+    def enable_spec(self, k: int = 3, log=None, *, proposer: str = "mtp") -> None:
+        """Select an adapter once at startup; MTP remains the serving default."""
+        if type(k) is not int or not 1 <= k <= 4:
+            raise ValueError("supported speculative depth is 1 through 4")
+        if self.graphs is not None or self.spec is not None:
+            raise ValueError("enable speculation once, before graph capture")
+        context = ProposerContext(self.device, self.max_batch, self.max_context)
+        if proposer == "mtp":
+            from sharar.model.mtp import MtpHead
+            from sharar.proposers.mtp import MtpProposer
+            from sharar.weights.safetensors import SnapshotWeights
+            w = SnapshotWeights(config.snapshot_dir())
+            try:
+                head = MtpHead(w, self.device, self.model.embed, self.model.lm_head, self.model.rope, self.kv_pool.num_pages)
+            finally:
+                w.close()
+            adapter = MtpProposer(head, context, k)
+        elif proposer == "ngram":
+            from sharar.proposers.ngram import NGramProposer
+            adapter = NGramProposer(context, k)
+        else:
+            raise ValueError(f"unknown proposer {proposer!r}")
+        self.set_proposer(adapter)
+        self.ledger.record_cuda_allocated("proposer_and_verify")
         if log:
-            log(f"  speculative decoding: MTP head + draft KV {mtp.bytes / 2**30:.2f} GiB, verify buffers {self.spec.bytes / 2**30:.2f} GiB, k={k}")
+            log(f"  proposer: {adapter.requirements.name}, persistent {adapter.requirements.persistent_bytes / 2**30:.2f} GiB, verify buffers {self.spec.bytes / 2**30:.2f} GiB, k={k}")
+
+    def set_proposer(self, proposer: Proposer) -> None:
+        from sharar.engine.spec import SpecDecoder
+        if self.graphs is not None or self.spec is not None:
+            raise ValueError("select a proposer once, before graph capture")
+        if proposer.context != ProposerContext(self.device, self.max_batch, self.max_context):
+            raise ValueError("proposer context does not match executor")
+        if type(proposer.k) is not int or not 1 <= proposer.k <= 4:
+            raise ValueError("unsupported proposal width")
+        if any(type(i) is not int or not 0 <= i < config.NUM_LAYERS for i in proposer.requirements.features.layers):
+            raise ValueError("invalid target feature layer")
+        if not proposer.requirements.greedy_only:
+            raise ValueError("stochastic proposal verification is not implemented")
+        self.spec = SpecDecoder(self, proposer)
 
     def capture_graphs(self, log=print) -> None:
         self.graphs = DecodeGraphs(self)
@@ -75,111 +121,59 @@ class Executor:
         self.use_graphs = True
 
     # ---- lifecycle ----
+    def validate_request(self, prompt_ids: list[int], params: SamplingParams) -> None:
+        params.validate()
+        if not isinstance(prompt_ids, list) or not prompt_ids:
+            raise InvalidRequest("prompt must be a non-empty token list")
+        if any(type(t) is not int or not 0 <= t < config.VOCAB_SIZE for t in prompt_ids):
+            raise InvalidRequest(f"token IDs must be integers in [0, {config.VOCAB_SIZE})")
+        if not isinstance(params.stop_token_ids, (tuple, list)) or any(type(t) is not int or not 0 <= t < config.VOCAB_SIZE for t in params.stop_token_ids):
+            raise InvalidRequest("invalid stop token ID")
+        if len(prompt_ids) + params.max_new_tokens > self.max_context:
+            raise InvalidRequest(f"prompt plus output budget exceeds context limit {self.max_context}")
+        # A single request must be able to finish even after all other readers
+        # leave. Full verify blocks need temporary pages beyond the output cap.
+        padding = self.spec.k if self.spec is not None and params.greedy else 0
+        if len(prompt_ids) + params.max_new_tokens + padding > self.kv_pool.num_pages - 1:
+            raise InvalidRequest("request plus speculative scratch exceeds KV pool capacity")
+
     def admit(self, prompt_ids: list[int], params: SamplingParams, req: Request | None = None) -> Request:
+        self.validate_request(prompt_ids, params)
         if req is None:
             req = Request(prompt_ids=list(prompt_ids), params=params)
-        n = len(prompt_ids)
-        if self.cache is not None:
-            # Keep at least one token to prefill so the last logits exist.
-            match = self.cache.match(prompt_ids[:-1])
-            if match.length > 0:
-                self.cache.lock(match.node, +1)
-                req.match = match
-                req.prefix_len = match.length
-        need_pages = n - req.prefix_len
-        if self.cache is not None:
-            self.cache.evict(need_pages=need_pages, need_slots=1)
-        req.slot = self.state_pool.alloc()
-        if req.prefix_len:
-            self.state_pool.copy_slot(req.match.snapshot_slot, req.slot)
-        own = self.kv_pool.alloc(need_pages)
-        req.pages = torch.cat([req.match.pages, own]) if req.prefix_len else own
-        req.prefill_pos = req.prefix_len
+        if req.generator is None and not params.greedy:
+            req.generator = self.sampler.generator(params.seed)
+        self.state.admit(req, req.prefill_ids)
         req.state = State.PREFILL
         req.t_admit = time.perf_counter()
         return req
 
     def can_admit(self, prompt_len: int, reserve_tokens: int = 0) -> bool:
-        """Enough free pages and a free slot for this prompt (after evicting cache)."""
-        need = prompt_len + reserve_tokens
-        if self.cache is not None:
-            self.cache.evict(need_pages=need, need_slots=1)
-        return len(self.kv_pool._free) >= need and len(self.state_pool._free) >= 1
+        return self.state.can_admit(prompt_len, reserve_tokens)
+
+    def admission_reserve(self, req: Request, limit: int) -> int:
+        padding = self.spec.k if self.spec is not None and req.params.greedy else 0
+        return min(limit, req.params.max_new_tokens - len(req.output_ids) + padding)
+
+    def cache_stats(self) -> dict | None:
+        return self.cache.stats() if self.cache is not None else None
 
     def retract(self, req: Request) -> None:
-        """Give a request's resources back and requeue it (memory pressure).
-        Its progress is lost except for whatever the cache still holds."""
-        if req.match is not None:
-            self.cache.lock(req.match.node, -1)
-            req.match = None
-        if req.pages is not None:
-            self.kv_pool.free(req.pages[req.prefix_len :])
-        if req.slot >= 0:
-            self.state_pool.free(req.slot)
-        for slot in req.checkpoints.values():
-            self.state_pool.free(slot)
-        req.pages = None
-        req.slot = -1
-        req.checkpoints = {}
-        req.prefix_len = 0
-        req.prefill_pos = 0
-        req.output_ids = []
-        req.stream_cursor = 0
-        req.spec_pending_tokens = None
-        req.spec_last_hidden = None
-        req.draft_pos = 0
+        self.state.retract(req)
+        if self.spec is not None:
+            self.spec.proposer.release(req)
+        req.replay_len = len(req.output_ids)
         req.state = State.QUEUED
 
     def release(self, req: Request) -> None:
-        """Return a finished request's resources; hand its sequence to the cache."""
         if req.released:
             return
-        cached = False
-        if self.cache is not None and req.slot >= 0 and req.pages is not None and req.prefill_done:
-            cached = self._insert_into_cache(req)
-        if req.match is not None:
-            self.cache.lock(req.match.node, -1)
-            req.match = None
-        if not cached:
-            if req.pages is not None:
-                self.kv_pool.free(req.pages[req.prefix_len :])
-            if req.slot >= 0:
-                self.state_pool.free(req.slot)
-            for slot in req.checkpoints.values():
-                self.state_pool.free(slot)
-        req.pages = None
-        req.slot = -1
-        req.checkpoints = {}
-        req.released = True
-
-    def _insert_into_cache(self, req: Request) -> bool:
-        # The committed slot holds the state after every token that went
-        # through the model: the prompt and all outputs but the last sampled one.
-        ids = req.prompt_ids + req.output_ids[:-1]
-        if req.pages is None or req.pages.shape[0] < len(ids):
-            return False
-        n = len(ids)
-        if n == 0 or n > req.pages.shape[0]:
-            return False
-        pages = req.pages[:n]
-        snapshots = {n: req.slot, **{p: s for p, s in req.checkpoints.items() if p < n}}
-        for p, s in req.checkpoints.items():
-            if p >= n:
-                self.state_pool.free(s)
-        new_start = self.cache.insert(ids, pages, snapshots)
-        # Own pages that duplicate an already-cached prefix go back to the pool;
-        # the cache's own prefix pages (before prefix_len) stay where they are.
-        dup_start = req.prefix_len
-        if new_start > dup_start:
-            self.kv_pool.free(req.pages[dup_start:new_start])
-        # pages beyond n (the unsampled last token's page) are unused
-        if req.pages.shape[0] > n:
-            self.kv_pool.free(req.pages[n:])
-        return True
+        self.state.release(req)
+        if self.spec is not None:
+            self.spec.proposer.release(req)
 
     def flush_cache(self) -> None:
-        if self.cache is not None:
-            self.cache.flush()
+        self.state.flush()
 
     # ---- steps ----
     def _plan_paged_prefill(self, total_pages: torch.Tensor, new_tokens: int) -> None:
@@ -216,10 +210,10 @@ class Executor:
         previous one, exactly like a cache hit. Only the final chunk samples a
         token; it is returned, otherwise None."""
         started = time.perf_counter()
-        n = len(req.prompt_ids)
+        n = req.prefill_len
         start = req.prefill_pos
         end = n if max_tokens is None else min(n, start + max_tokens)
-        new_ids = req.prompt_ids[start:end]
+        new_ids = req.prefill_ids[start:end]
         t = len(new_ids)
         assert t > 0, (start, end)
         ids = torch.tensor(new_ids, dtype=torch.int64, device=self.device)
@@ -239,33 +233,24 @@ class Executor:
             self._plan_paged_prefill(req.pages[:end], t)
             ctx.paged_prefill_wrapper = self._paged_prefill
         for pos in self._checkpoint_positions(start, end, n):
-            if not self.state_pool._free:
-                self.cache.evict(need_slots=1)
-            if not self.state_pool._free:
+            slot = self.state.checkpoint(req, pos)
+            if slot is None:
                 break
-            slot = self.state_pool.alloc()
             ctx.checkpoint_positions.append(pos)
             ctx.checkpoint_slots.append(slot)
-            req.checkpoints[pos] = slot
-        out = self.model.forward(ids, ctx)
-        req.prefill_pos = end
         if self.spec is not None:
-            self.spec.ingest_prefill(req, new_ids, start, out["norm"])
+            ctx.feature_request = self.spec.proposer.requirements.features
+        out = self.model.forward(ids, ctx)
+        self.state.commit_prefill(req, end)
+        if self.spec is not None:
+            self.spec.ingest_prefill(req, new_ids, start, out)
         token = None
         if end == n:
             logits = self.model.logits(out["norm"][-1:])
-            token = int(self.sampler.sample(logits, [req.params]).item())
+            token = int(self.sampler.sample(logits, [req.params], [req.generator]).item())
             if self.spec is not None:
                 self.spec.start(req, token)
-            if self.cache is not None:
-                # Snapshot the state after the whole prompt: the next turn of a
-                # conversation extends exactly this sequence.
-                if not self.state_pool._free:
-                    self.cache.evict(need_slots=1)
-                if self.state_pool._free:
-                    snap = self.state_pool.alloc()
-                    self.state_pool.copy_slot(req.slot, snap)
-                    req.checkpoints[n] = snap
+            self.state.checkpoint(req, n, copy=True)
         torch.cuda.synchronize()
         req.prefill_seconds += time.perf_counter() - started
         if token is not None:
@@ -286,8 +271,8 @@ class Executor:
         for si, (req, n_new) in enumerate(chunks):
             start = req.prefill_pos
             end = start + n_new
-            total = len(req.prompt_ids)
-            ids_list += req.prompt_ids[start:end]
+            total = req.prefill_len
+            ids_list += req.prefill_ids[start:end]
             pos_list += list(range(start, end))
             page_list.append(req.pages[start:end])
             cu.append(cu[-1] + n_new)
@@ -297,15 +282,12 @@ class Executor:
             prefix_lens.append(start)
             seq_lens.append(n_new)
             for pos in self._checkpoint_positions(start, end, total):
-                if not self.state_pool._free:
-                    self.cache.evict(need_slots=1)
-                if not self.state_pool._free:
+                slot = self.state.checkpoint(req, pos)
+                if slot is None:
                     break
-                slot = self.state_pool.alloc()
                 ck_pos.append(pos)
                 ck_slots.append(slot)
                 ck_seqs.append(si)
-                req.checkpoints[pos] = slot
         d = self.device
         ctx = ForwardContext(
             mode="prefill", kv_pool=self.kv_pool, state_pool=self.state_pool,
@@ -324,27 +306,26 @@ class Executor:
         )
         ctx.paged_prefill_wrapper = self._paged_prefill
         ids = torch.tensor(ids_list, dtype=torch.int64, device=d)
+        if self.spec is not None:
+            ctx.feature_request = self.spec.proposer.requirements.features
         out = self.model.forward(ids, ctx)
         last_rows = [c - 1 for c in cu[1:]]
-        finishing = [i for i, (req, n_new) in enumerate(chunks) if req.prefill_pos + n_new == len(req.prompt_ids)]
+        finishing = [i for i, (req, n_new) in enumerate(chunks) if req.prefill_pos + n_new == req.prefill_len]
         tokens = None
         if finishing:
             logits = self.model.logits(out["norm"][[last_rows[i] for i in finishing]])
-            tokens = self.sampler.sample(logits, [chunks[i][0].params for i in finishing]).tolist()
+            tokens = self.sampler.sample(logits, [chunks[i][0].params for i in finishing], [chunks[i][0].generator for i in finishing]).tolist()
         if self.spec is not None:
             for i, (req, n_new) in enumerate(chunks):
-                self.spec.ingest_prefill(req, req.prompt_ids[req.prefill_pos : req.prefill_pos + n_new], req.prefill_pos, out["norm"][cu[i] : cu[i + 1]])
+                rows = {"norm": out["norm"][cu[i]:cu[i + 1]]}
+                if "features" in out:
+                    rows["features"] = {lid: value[cu[i]:cu[i + 1]] for lid, value in out["features"].items()}
+                self.spec.ingest_prefill(req, req.prefill_ids[req.prefill_pos:req.prefill_pos + n_new], req.prefill_pos, rows)
         for i, (req, n_new) in enumerate(chunks):
-            req.prefill_pos += n_new
-        for i, tok in zip(finishing, tokens or []):
+            self.state.commit_prefill(req, req.prefill_pos + n_new)
+        for i in finishing:
             req = chunks[i][0]
-            if self.cache is not None:
-                if not self.state_pool._free:
-                    self.cache.evict(need_slots=1)
-                if self.state_pool._free:
-                    snap = self.state_pool.alloc()
-                    self.state_pool.copy_slot(req.slot, snap)
-                    req.checkpoints[len(req.prompt_ids)] = snap
+            self.state.checkpoint(req, req.prefill_len, copy=True)
         torch.cuda.synchronize()
         elapsed = time.perf_counter() - started
         for req, _ in chunks:
@@ -385,10 +366,10 @@ class Executor:
         if log:
             log("  warmup done")
 
-    def _plan_decode(self, reqs: list[Request]) -> None:
+    def _plan_decode(self, reqs: list[Request], pages: list[torch.Tensor]) -> None:
         counts = [r.context_len for r in reqs]
         indptr = torch.tensor([0] + list(torch.tensor(counts).cumsum(0).tolist()), dtype=torch.int32)
-        indices = torch.cat([r.pages for r in reqs])
+        indices = torch.cat(pages)
         last_page_len = torch.ones(len(reqs), dtype=torch.int32)
         self._decode_wrapper.plan(
             indptr, indices, last_page_len,
@@ -401,40 +382,31 @@ class Executor:
         With speculative decoding on, greedy requests go through spec rounds
         and sampled ones through the plain step."""
         assert 0 < len(reqs) <= self.max_batch
-        if self.spec is not None:
-            spec_reqs = [r for r in reqs if r.params.greedy and self.spec.ready(r)]
-            plain = [r for r in reqs if r not in spec_reqs]
-            if spec_reqs:
-                need = len(spec_reqs) * self.spec.steps
-                if len(self.kv_pool._free) < need:
-                    if self.cache is not None:
-                        self.cache.evict(need_pages=need)
-                    if len(self.kv_pool._free) < need:
-                        raise MemoryError("KV pool exhausted during verify")
-                self.spec.round(spec_reqs)
-            if not plain:
-                return [r.output_ids[-1] for r in reqs]
-            reqs = plain
-        if len(self.kv_pool._free) < len(reqs):
-            if self.cache is not None:
-                self.cache.evict(need_pages=len(reqs))
-            if len(self.kv_pool._free) < len(reqs):
-                raise MemoryError("KV pool exhausted during decode")
-        new_pages = self.kv_pool.alloc(len(reqs))
-        for i, r in enumerate(reqs):
-            r.pages = torch.cat([r.pages, new_pages[i : i + 1]])
+        spec_reqs = [r for r in reqs if self.spec is not None and r.params.greedy and self.spec.ready(r)]
+        plain = [r for r in reqs if r not in spec_reqs]
+        need = len(plain) + (len(spec_reqs) * self.spec.steps if spec_reqs else 0)
+        # Retraction retries the entire batch. Reserve both paths before either
+        # advances so memory pressure cannot replay a partly completed round.
+        self.state.ensure_pages(need)
+        if spec_reqs:
+            self.spec.round(spec_reqs)
+        if not plain:
+            return [r.output_ids[-1] for r in reqs]
+        reqs = plain
+        new_pages = self.state.reserve(reqs, 1)
+        step_pages = [self.state.step_pages(r) for r in reqs]
         if self.use_graphs and self.graphs is not None:
             logits = self.graphs.run(
                 [r.output_ids[-1] for r in reqs],
                 [r.context_len - 1 for r in reqs],
                 [r.slot for r in reqs],
                 new_pages,
-                [r.pages for r in reqs],
+                step_pages,
             )
         else:
             positions = torch.tensor([r.context_len - 1 for r in reqs], dtype=torch.int64, device=self.device)
             tokens = torch.tensor([r.output_ids[-1] for r in reqs], dtype=torch.int64, device=self.device)
-            self._plan_decode(reqs)
+            self._plan_decode(reqs, step_pages)
             ctx = ForwardContext(
                 mode="decode", kv_pool=self.kv_pool, state_pool=self.state_pool, positions=positions,
                 slots=torch.tensor([r.slot for r in reqs], dtype=torch.int32, device=self.device),
@@ -442,8 +414,9 @@ class Executor:
             )
             out = self.model.forward(tokens, ctx)
             logits = self.model.logits(out["norm"])
-        next_tokens = self.sampler.sample(logits, [r.params for r in reqs]).tolist()
+        next_tokens = self.sampler.sample(logits, [r.params for r in reqs], [r.generator for r in reqs]).tolist()
         for r, tok in zip(reqs, next_tokens):
+            self.state.commit(r, 1)
             r.push(int(tok))
         return next_tokens
 
@@ -452,6 +425,10 @@ class Executor:
         return self.generate_batch([(prompt_ids, params)])[0]
 
     def generate_batch(self, items: list[tuple[list[int], SamplingParams]]) -> list[Request]:
+        if not 1 <= len(items) <= self.max_batch:
+            raise InvalidRequest(f"batch must contain 1 through {self.max_batch} requests")
+        for ids, params in items:
+            self.validate_request(ids, params)
         reqs = [self.admit(ids, p) for ids, p in items]
         for r in reqs:
             self.prefill(r)

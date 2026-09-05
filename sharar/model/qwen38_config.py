@@ -1,0 +1,31 @@
+"""Facts for the single validated Qwen checkpoint; consumed by specialized kernels."""
+
+MODEL_ID = "RadixArk/Qwen3.8-27B-NVFP4"
+MODEL_REVISION = "319f741cce68d7914884900c138a1fbb70a42f30"
+MODEL_CACHE_KEY = "models--RadixArk--Qwen3.8-27B-NVFP4"
+MODEL_ARCHITECTURE = "Qwen3_5ForConditionalGeneration"  # Qwen3.8 reuses the 3.5 code path
+
+
+# Architecture facts (from config.json text_config; asserted at load time).
+HIDDEN_SIZE = 5120
+INTERMEDIATE_SIZE = 17408
+NUM_LAYERS = 64
+FULL_ATTENTION_INTERVAL = 4
+NUM_ATTENTION_HEADS = 24
+NUM_KV_HEADS = 4
+HEAD_DIM = 256
+PARTIAL_ROTARY_FACTOR = 0.25
+ROPE_THETA = 10_000_000.0
+LINEAR_NUM_KEY_HEADS = 16
+LINEAR_NUM_VALUE_HEADS = 48
+LINEAR_KEY_HEAD_DIM = 128
+LINEAR_VALUE_HEAD_DIM = 128
+LINEAR_CONV_KERNEL = 4
+VOCAB_SIZE = 248320
+RMS_NORM_EPS = 1e-6
+MAX_POSITION_EMBEDDINGS = 262144
+NVFP4_GROUP_SIZE = 16
+
+# Conservative startup budget, including weights and transient materialization.
+# Refine with measured load peaks; this is not a steady-state allocation total.
+WEIGHT_LOAD_PEAK_BYTES = 48 * 2**30

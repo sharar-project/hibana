@@ -19,6 +19,19 @@ class FakePool:
     def __init__(self, n):
         self._free = list(range(n))
 
+    @property
+    def free_count(self):
+        return len(self._free)
+
+    def alloc_with_ids(self, n):
+        if n > self.free_count:
+            raise MemoryError("pool exhausted")
+        pages = self.alloc(n)
+        return pages, pages.tolist()
+
+    def free_ids(self, ids):
+        self._free.extend(ids)
+
     def alloc(self, n):
         out = torch.tensor([self._free.pop() for _ in range(n)], dtype=torch.int32)
         return out
@@ -38,6 +51,15 @@ class FakeExecutor:
         self.eos_after = eos_after or {}
         self.decode_batches = []
         self.released = []
+
+    def validate_request(self, ids, params):
+        params.validate()
+
+    def cache_stats(self):
+        return None
+
+    def admission_reserve(self, req, limit):
+        return min(limit, req.params.max_new_tokens - len(req.output_ids))
 
     def can_admit(self, prompt_len, reserve_tokens=0):
         return len(self.kv_pool._free) >= prompt_len + reserve_tokens and len(self.state_pool._free) >= 1

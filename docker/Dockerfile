@@ -15,17 +15,20 @@ ENV PATH=/opt/sharar/bin:/usr/local/cuda/bin:$PATH \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64
 
 # torch and its CUDA runtime wheels from the PyTorch cu130 index
-RUN pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu130
+COPY constraints /opt/constraints
+RUN pip install -c /opt/constraints/gb10-cu130.txt torch --index-url https://download.pytorch.org/whl/cu130
 # FlashInfer with its prebuilt cu130 JIT cache (SM121 modules still JIT)
-RUN pip install flashinfer-python==0.6.17 "flashinfer-jit-cache==0.6.17+cu130" \
+RUN pip install -c /opt/constraints/gb10-cu130.txt flashinfer-python flashinfer-jit-cache \
       --extra-index-url https://flashinfer.ai/whl/cu130
-RUN pip install safetensors==0.8.0 tokenizers==0.22.2 jinja2==3.1.6 numpy==2.3.5 \
-      einops==0.8.2 packaging fastapi==0.141.1 uvicorn==0.52.4 pytest
+RUN pip install -c /opt/constraints/gb10-cu130.txt safetensors tokenizers jinja2 numpy \
+      einops packaging fastapi uvicorn pytest httpx
 
 COPY sharar /workspace/sharar/sharar
 COPY pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES.md /workspace/sharar/
 COPY tests /workspace/sharar/tests
 COPY bench /workspace/sharar/bench
+COPY tools/check.sh /workspace/sharar/tools/check.sh
+COPY constraints /workspace/sharar/constraints
 WORKDIR /workspace/sharar
 ENV PYTHONPATH=/workspace/sharar \
     HF_HUB_OFFLINE=1 \

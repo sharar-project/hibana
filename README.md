@@ -1,6 +1,7 @@
 # Sharar
 
-Sharar is a thin inference engine for exactly one target:
+Sharar is a thin GB10 inference engine. Its first and currently only validated
+model profile is:
 
 - One NVIDIA GB10 (SM 12.1) on `aarch64`, one DGX Spark-class machine with
   unified LPDDR5X memory.
@@ -72,6 +73,14 @@ sched-bench` (the six matrix cells through the scheduler). All run inside
 
 ## Layout
 
+Contributors can run CPU checks without a GPU or model:
+`bash tools/check.sh setup-cpu`. Start with [CONTRIBUTING.md](CONTRIBUTING.md)
+and [the execution/ownership interfaces](docs/interfaces.md). The MTP and
+n-gram adapters share target verification and state commit; n-gram is selectable
+with `sharar serve --spec 3 --proposer ngram` as a contract/reference adapter.
+Hardware research directions and decision criteria are in
+[the GB10 experiment plan](docs/gb10-experiments.md).
+
 | Path | Purpose |
 |---|---|
 | `sharar/` | The engine package (see the roadmap for the module plan) |
@@ -83,10 +92,15 @@ sched-bench` (the six matrix cells through the scheduler). All run inside
 
 ## Status
 
-Phases 0 to 7 are complete. The engine loads the checkpoint, prefills, and
+Phases 0 to 7, the Phase 7A correctness repairs and Phase 7B extension contracts
+are implemented. [Phase 7B evidence](docs/phase7b.md) records 129 CPU passes,
+220 passes on GB10 and an unchanged-profile comparison with identical outputs
+and at most 0.47% median slowdown across 12 cells. The next phase freezes local
+workloads and starts the GB10 mechanism experiments. Historical
+measurements below predate the repairs. The engine loads the checkpoint, prefills, and
 decodes with CUDA graphs at 12.1 tok/s single-stream and 44.6 aggregate at
-batch 4 (reference 12.7 and 46.4), passes the four quality canaries, matches
-the reference to within the model's own quantization noise floor, and keeps a
+batch 4 (reference 12.7 and 46.4), passes the four quality canaries and the
+documented numerical comparisons for the tested configurations, and keeps a
 radix prefix cache with GDN state snapshots sized from a unified-memory ledger
 (a re-sent 9.6K-token prompt goes from 4.4 s to 0.16 s to first token), and a
 continuous-batching scheduler with chunked, batched prefill (8K prompts at
@@ -99,7 +113,16 @@ the production engine on the machine (`run-sharar.sh`, its own 14 GB image)
 and decodes speculatively with the checkpoint's MTP head at about 2x the
 plain rate; [docs/comparison.md](docs/comparison.md) measures it against
 SGLang plain and SGLang MTP on the same machine, including GSM8K accuracy.
-Phase 8 (unified memory) and Phase 9 (kernels and AOT) are next.
+Phase 7A fixes terminal cleanup, speculative stop/state alignment, active
+cache flush, streamed-history retraction, RNG/accounting, request bounds and
+engine failure handling. [Fixes and proof](docs/phase7a.md): 103 CPU tests pass;
+the GB10 run passes 194 tests, including 84 real-model lifecycle cases.
+The source repairs have not been promoted to the serving image.
+Phase 7B extracts the request-state ownership and proposer interfaces, adds
+n-gram/feature-lifetime checks and contributor setup, and preserves measured
+performance. Next, broaden competitive/local-workload gates and begin GB10
+mechanism experiments (7C), then add draft-aware caching and DSpark/DFlash2
+support (7D), unified-memory mechanisms (8), and remaining kernels/AOT (9).
 Read [roadmap.md](roadmap.md) before doing anything else.
 
 ## Attribution and license

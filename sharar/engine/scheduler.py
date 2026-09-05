@@ -14,7 +14,8 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-from sharar.engine.request import Request, State
+from sharar.engine.request import Request
+from sharar.engine.contracts import ExecutionBackend
 from sharar.engine.sampler import SamplingParams
 
 
@@ -30,6 +31,13 @@ class SchedulerConfig:
     prefill_budget: int = 4096  # most prompt tokens one step spends across requests (oldest first)
     decode_steps_per_chunk: int = 1  # decode steps run after each prefill step
     reserve_tokens: int = 64  # pages kept spare per admitted request for decoding
+
+    def __post_init__(self) -> None:
+        for name in ("max_running", "max_queued", "chunk_size", "prefill_budget", "decode_steps_per_chunk"):
+            if type(getattr(self, name)) is not int or getattr(self, name) < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if type(self.reserve_tokens) is not int or self.reserve_tokens < 0:
+            raise ValueError("reserve_tokens must be a non-negative integer")
 
 
 @dataclass
@@ -61,9 +69,11 @@ class Metrics:
 
 
 class Scheduler:
-    def __init__(self, executor, cfg: SchedulerConfig | None = None, on_progress=None):
+    def __init__(self, executor: ExecutionBackend, cfg: SchedulerConfig | None = None, on_progress=None):
         self.ex = executor
         self.cfg = cfg or SchedulerConfig()
+        if self.cfg.max_running > getattr(executor, "max_batch", self.cfg.max_running):
+            raise ValueError("max_running exceeds executor batch capacity")
         # Called after every prefill step and every decode step, so a server
         # can deliver first tokens without waiting for the rest of the step,
         # and hand over requests that arrived meanwhile (they are admitted and
@@ -78,6 +88,7 @@ class Scheduler:
 
     # ---- API ----
     def submit(self, prompt_ids: list[int], params: SamplingParams) -> Request:
+        self.ex.validate_request(prompt_ids, params)
         if len(self.queue) >= self.cfg.max_queued:
             self.metrics.rejected += 1
             raise QueueFull(f"{len(self.queue)} requests queued")
@@ -87,10 +98,13 @@ class Scheduler:
         return req
 
     def cancel(self, req: Request) -> None:
+        if req.finished:
+            return
         req.cancel()
         if req in self.queue:
             self.queue.remove(req)
-            req.state = State.CANCELLED
+            req._finish("cancelled")
+            req.released = True  # queued requests own no resources
             self.metrics.cancelled += 1
 
     @property
@@ -100,8 +114,9 @@ class Scheduler:
     def stats(self) -> dict:
         d = self.metrics.summary()
         d.update({"queued": len(self.queue), "prefilling": len(self.prefilling), "running": len(self.running)})
-        if getattr(self.ex, "cache", None) is not None:
-            d["cache"] = self.ex.cache.stats()
+        cache = self.ex.cache_stats()
+        if cache is not None:
+            d["cache"] = cache
         return d
 
     # ---- loop ----
@@ -124,6 +139,7 @@ class Scheduler:
             self._decode()
         if self.on_progress:
             self.on_progress()
+        self._reap()
         self.metrics.steps += 1
         self.metrics.step_seconds += time.perf_counter() - t0
 
@@ -136,23 +152,24 @@ class Scheduler:
         for lst in (self.prefilling, self.running):
             for req in list(lst):
                 if req.finished or req.cancel_requested:
-                    lst.remove(req)
                     if req.cancel_requested and not req.finished:
-                        req.state = State.CANCELLED
-                        req.finished, req.finish_reason = True, "cancelled"
+                        req._finish("cancelled")
+                    self.ex.release(req)
+                    lst.remove(req)
+                    if req.finish_reason == "cancelled":
                         self.metrics.cancelled += 1
                     else:
                         self.metrics.finished += 1
                         self.metrics.ttfts.append(req.ttft)
-                    self.ex.release(req)
 
     def _admit(self) -> None:
         while self.queue and len(self.prefilling) + len(self.running) < self.cfg.max_running:
             req = self.queue[0]
-            if not self.ex.can_admit(len(req.prompt_ids), self.cfg.reserve_tokens):
+            reserve = self.ex.admission_reserve(req, self.cfg.reserve_tokens)
+            if not self.ex.can_admit(req.prefill_len, reserve):
                 break
-            self.queue.pop(0)
             self.ex.admit(req.prompt_ids, req.params, req)
+            self.queue.pop(0)
             self.prefilling.append(req)
             self.metrics.admitted += 1
 
@@ -164,7 +181,7 @@ class Scheduler:
         for req in self.prefilling:
             if budget <= 0:
                 break
-            n = min(budget, self.cfg.chunk_size, len(req.prompt_ids) - req.prefill_pos)
+            n = min(budget, self.cfg.chunk_size, req.prefill_len - req.prefill_pos)
             if n > 0:
                 chunks.append((req, n))
                 budget -= n
@@ -180,13 +197,15 @@ class Scheduler:
         for req, _ in chunks:
             if req.prefill_done:
                 self.prefilling.remove(req)
-                if not req.finished:
-                    self.running.append(req)
+                self.running.append(req)  # terminal requests still need to be reaped
+        self._reap()
 
     def _decode(self) -> None:
+        self._reap()
         if not self.running:
             return
         batch = list(self.running)
+        before = {r.request_id: len(r.output_ids) for r in batch}
         while batch:
             try:
                 self.ex.decode_step(batch)
@@ -196,7 +215,7 @@ class Scheduler:
                 self._retract(victim)
                 batch = [r for r in batch if r is not victim]
         self.metrics.decode_steps += 1
-        self.metrics.decode_tokens += len(batch)
+        self.metrics.decode_tokens += sum(len(r.output_ids) - before[r.request_id] for r in batch)
 
     def _retract(self, req: Request) -> None:
         for lst in (self.prefilling, self.running):

@@ -7,8 +7,13 @@ top_p 0.95) when a request does not set them; temperature 0 means greedy.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import torch
+
+
+class InvalidRequest(ValueError):
+    """Input rejected before admission or any GPU work."""
 
 
 @dataclass
@@ -21,6 +26,22 @@ class SamplingParams:
     stop_token_ids: tuple[int, ...] = (248046, 248044)  # <|im_end|>, <|endoftext|>
     ignore_eos: bool = False
 
+    def validate(self) -> None:
+        if type(self.max_new_tokens) is not int or self.max_new_tokens < 1:
+            raise InvalidRequest("max_new_tokens must be a positive integer")
+        for name, value, valid in (
+            ("temperature", self.temperature, lambda x: x >= 0),
+            ("top_p", self.top_p, lambda x: 0 < x <= 1),
+        ):
+            if type(value) not in (int, float) or not math.isfinite(value) or not valid(value):
+                raise InvalidRequest(f"invalid {name}: {value!r}")
+        if type(self.top_k) is not int or self.top_k < -1:
+            raise InvalidRequest("top_k must be an integer >= -1")
+        if self.seed is not None and (type(self.seed) is not int or not -(2**63) <= self.seed < 2**64):
+            raise InvalidRequest("seed must be an integer in [-2**63, 2**64)")
+        if type(self.ignore_eos) is not bool:
+            raise InvalidRequest("ignore_eos must be a boolean")
+
     @property
     def greedy(self) -> bool:
         return self.temperature <= 0.0
@@ -29,19 +50,13 @@ class SamplingParams:
 class Sampler:
     def __init__(self, device: torch.device):
         self.device = device
-        self._generators: dict[int, torch.Generator] = {}
 
-    def _gen(self, seed: int | None) -> torch.Generator | None:
+    def generator(self, seed: int | None) -> torch.Generator | None:
         if seed is None:
             return None
-        g = self._generators.get(seed)
-        if g is None:
-            g = torch.Generator(device=self.device)
-            g.manual_seed(seed)
-            self._generators[seed] = g
-        return g
+        return torch.Generator(device=self.device).manual_seed(seed)
 
-    def sample(self, logits: torch.Tensor, params: list[SamplingParams]) -> torch.Tensor:
+    def sample(self, logits: torch.Tensor, params: list[SamplingParams], generators: list[torch.Generator | None]) -> torch.Tensor:
         """logits: [B, V] (bf16 or fp32). Returns [B] int64 token ids."""
         if all(p.greedy for p in params):
             return logits.argmax(dim=-1)
@@ -63,5 +78,5 @@ class Sampler:
                 sorted_probs = torch.where(keep, sorted_probs, torch.zeros_like(sorted_probs))
                 probs = torch.zeros_like(probs).scatter(0, sorted_idx, sorted_probs)
                 probs = probs / probs.sum()
-            out[i] = torch.multinomial(probs, 1, generator=self._gen(p.seed))[0]
+            out[i] = torch.multinomial(probs, 1, generator=generators[i])[0]
         return out
