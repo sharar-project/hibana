@@ -132,3 +132,20 @@ a pilot snapshot; retain errors and generated outputs, review the manual rubric,
 and do not infer tail latency or broad quality equivalence from this suite.
 The current launch settings, measurements and excluded attempts are documented
 in [the competitive report](../docs/competitive.md).
+
+## Controlled verification costs
+
+`verify_cost.py` holds proposal tokens and accepted lengths fixed while running
+the real DFlash2 round. It uses 128/8,192-token contexts, batch 1/4 and accepted
+lengths 1/4/8, with prefix restoration outside timing. Separate event spans and
+traces attribute draft, target, reconstruction, commit and feedback. These are
+synthetic cost controls, not generated-answer or competitive throughput results.
+
+```bash
+python3 bench/verify_cost.py --output /path/to/new-run --dump-convolution
+```
+
+The optional dump stores real per-layer convolution inputs outside git. Run
+exclusively under the host memory guard; the host harness owns service restoration.
+The [convolution screen](../docs/verify-cost.md) documents the measurements and
+the unpromoted prototype, including the frozen integration threshold.

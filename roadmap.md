@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-05 (shared GDN prefill metadata validated; mixed serving archived; fresh competitive benchmark)
+Last updated: 2026-09-06 (controlled verification costs; compact convolution prototype screened out; curated dense/MoE guardrails)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -26,7 +26,9 @@ The finished engine has these properties:
 1. `sharar serve` is the server entry point. Hardware capabilities, immutable
    model facts and serving limits are separate, explicit profile records.
    The checkpoint above remains the only validated model today; a small
-   curated set may follow after each profile passes the same gates.
+   curated set of dense and MoE models may follow after each profile passes
+   the same gates. Model support and availability of a compatible speculative
+   draft are separate capabilities.
 2. The process contains no SGLang. All model math, memory management,
    scheduling and serving are Sharar modules with narrow interfaces and tests.
 3. MTP, n-gram, DSpark, DFlash2 and future proposers share narrow lifecycle
@@ -46,8 +48,11 @@ Multimodal, multi-GPU, multi-node, arbitrary model discovery, LoRA, generic
 hardware fallbacks and inherited CI are outside the target. Curated model
 profiles must preserve GB10 specialization and explicit kernel choices.
 
-Immediate priority: use the fresh plain/DFlash2 comparison to select the next
-measured GB10 bottleneck. One shared prefill plan now removes repeated metadata
+Immediate priority: isolate the NVFP4 projection cost at actual verification
+shapes, then choose an SM121 kernel/layout mechanism from that evidence. The
+compact-convolution prototype passes exact component checks but projects only
+1.0–1.6% whole-round savings, below its frozen 2% integration screen; it stays
+outside serving. One shared prefill plan now removes repeated metadata
 work across 48 GDN layers and improves ordinary HTTP TTFT 18–29%. Mixed target
 execution still fails arrival TTFT protection and its public serving option is
 archived. Keep useful interfaces and evidence; do not grow scheduling policy
@@ -839,6 +844,13 @@ from a broad quality, competitive-speed or production-promotion gate.
       serving option; retain useful model/verification interfaces and the
       explicitly enabled benchmark. Do not grow more scheduling policy around
       the failed experiment.
+- [x] Attribute DFlash2 rounds with fixed tokens and accepted lengths at B=1/4
+      and 128/8K contexts. Two complete model-load windows agree on frozen work.
+      The standalone fused/compact convolution passes 192 exact convolution
+      and 36 complete-state comparisons and saves 74–79% of that component.
+      Its estimated whole-round benefit is only 1.0–1.6%, below the frozen 2%
+      screen. Archive it without changing serving; NVFP4 GEMMs dominate the
+      next kernel investigation. [Cost study and decision](docs/verify-cost.md).
 - [x] Compare adapters on the pinned quantized target, cold and reused prefixes,
       greedy/sampled requests and mixed concurrency. Promote a proposer/profile
       only when quality and measured end-to-end performance justify it.
@@ -914,7 +926,7 @@ Definition of done: documented load-time and useful cache-reuse improvements,
 validated context limits, allocation reconciliation and pressure/reclamation
 tests. The host floor remains intact and hot inference does not regress.
 
-### Phase 9: SM121 kernels and AOT `[partial; remaining work after 7A–8]`
+### Phase 9: SM121 kernels and AOT `[partial; kernel studies from 7D, final AOT after 8]`
 
 Goal: prefill toward the compute roofline and a runtime with no compiler.
 
@@ -952,6 +964,11 @@ prefill tails and graph/verify buckets are explicit.
       and draft N/K dimensions; evaluate tile and
       cluster configs in the SM120 CUTLASS path; upstream or vendor a tuned
       config.
+      The 2026-09-06 controlled round traces identify 49–54 ms in NVFP4 GEMMs.
+      Isolate gate/up, down and vocabulary shapes with packed inputs/scales
+      fixed, then test weight/scale reuse and conversion/staging mechanisms
+      for small token blocks. Existing backend tuning is the baseline;
+      validate physical-traffic assumptions before claiming bandwidth gains.
 - [ ] Tune the GDN chunk kernels (`chunk_delta_h`, `chunk_intra`, `chunk_o`)
       block sizes and stages for SM121 SMEM and register budgets.
 - [ ] Fuse small kernels on the decode path where a trace shows launch-bound
@@ -1154,6 +1171,17 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
+Model-extension guardrail: retain GB10 specialization while allowing curated
+dense and MoE profiles. Before adding a second target, extract the remaining
+Qwen assumptions into a small target/state-layout contract: forward/logits,
+optional feature taps, KV-only or KV-plus-recurrent state, and graph shapes.
+Proposers declare compatible checkpoints/features; MTP requires trained heads.
+An MoE target additionally needs routing, expert dispatch and quantized expert
+kernels. Validate the boundary with a real second model before claiming general
+support. The current executor, pools and external drafts remain Qwen-specific;
+GDN optimizations stay in their model/kernel modules and impose no requirement
+that future targets contain GDN.
+
 One shared GDN prefill plan is implemented and validated. Ordinary HTTP TTFT
 falls 18–29% in the initial interleaved experiment with identical output IDs;
 full-model recurrent/checkpoint comparisons are exact. The bounded follow-up
@@ -1165,19 +1193,25 @@ has both wins and a 29% short-batch loss; its 3.2× short-single result mostly
 reflects different continuations and verification counts. Plain decoding remains
 slightly behind in five cells. This does not complete broad proposer promotion.
 
-1. **Attribute the remaining DFlash2 verification cost, then test compact
-   convolution state retention.** Hold target inputs and accepted lengths fixed
-   at B=1/4 and short/long context, and separate draft, target verification,
-   recurrent reconstruction, convolution windows and commit. The first bounded
-   candidate fuses verification convolution and retains compact pre-convolution
-   inputs so only the accepted window is constructed after acceptance. Today
-   each GDN layer materializes history concatenations and every candidate window.
-   Keep arithmetic order, FP32 recurrent state, graph ownership and the existing
-   StateManager transaction. Measure temporary storage and actual round/client
-   time separately; a smaller buffer is not automatically faster. Freeze the
-   predicted benefit and keep/remove threshold from the measured cost before
-   implementing. Preserve every stop/accept position, B=3 padding, cache,
-   cancellation and failure gates. No further mixed scheduling policy is planned.
+The [controlled verification study](docs/verify-cost.md) now completes the
+convolution investigation. The exact standalone prototype reduces that component
+74–79% and retained convolution storage by 60 MiB at B=4, but projects only
+1.0–1.6% whole-round improvement. It fails the frozen 2% integration screen and
+is archived. No serving speedup is claimed or runtime option added.
+
+1. **Isolate NVFP4 projection costs and test a kernel/layout mechanism for
+   verification's small token blocks.** Current round traces contain about
+   49–54 ms in these GEMMs; target verification spans 86–99 ms. Hold packed
+   inputs, scales and weights fixed for gate/up, down and vocabulary projections
+   at actual row counts. Separate activation packing, weight/scale reads and
+   matrix multiplication, with cold/warm cache and full-round checks. Test an
+   SM121 kernel/layout that reuses packed weights/scales across rows and removes
+   measured redundant conversion or staging. Prior backend tuning is already
+   present. Freeze the predicted benefit and promotion threshold before changing
+   serving; preserve quantization, numerical parity, graph ownership and all
+   stop/cache/failure gates. Kernel studies may proceed now; final AOT packaging
+   remains after shape/profile and unified-memory work. No further mixed
+   scheduling policy or compact-convolution serving integration is planned.
 2. Complete DFlash2/DSpark versus repaired-MTP comparisons under the common
    memory budget, including realistic long sessions, eviction, natural stopping
    and sampled quality. Repeat independent SGLang comparison windows and test

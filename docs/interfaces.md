@@ -17,6 +17,14 @@ Model facts live in `model/qwen38_config.py`, device constraints in
 performs snapshot/hardware validation. This split does not make the current
 model-specific attention or recurrent kernels generic.
 
+Curated dense and MoE profiles are intended extensions. The next target must
+make its forward/logits, optional feature taps, state layout and graph shapes
+explicit; KV-only targets must not allocate GDN state. Current executor/pool
+dimensions and external-draft backbones still specialize the pinned Qwen model.
+A compatible target does not imply a compatible trained draft or MTP head.
+Keep MoE routing/expert kernels and GDN state kernels behind the model boundary;
+prove that boundary with a second real model before advertising support.
+
 ## Request state
 
 `Request` owns logical prompt/output history, RNG, stream cursor and lifecycle.

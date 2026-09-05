@@ -219,3 +219,11 @@ temporary storage and repeated reads/writes. Keep this within GDN kernels and
 the existing StateManager commit contract. First measure its fraction of round
 time and freeze a realistic benefit threshold; capacity reduction alone does
 not establish a speedup, and tensor sizes are not physical DRAM counters.
+
+The [completed convolution screen](verify-cost.md) measures only 1.3–2.2% of a
+round in that component. A byte-exact prototype reduces convolution time
+74–79%, but estimates 1.0–1.6% whole-round savings, below the frozen 2% screen.
+Archive it without serving changes. The next kernel/layout experiment isolates
+NVFP4 gate/up, down and vocabulary projection costs at the actual verification
+row counts; current traces show 49–54 ms in these GEMMs. Measure packed-weight/
+scale reuse and conversion/staging overhead before choosing the implementation.

@@ -128,6 +128,9 @@ options. [One GDN prefill plan per forward](docs/prefill-plan.md) now removes
 repeated metadata work across 48 layers: measured ordinary TTFT falls 18–29%
 with identical output tokens. The [fresh plain/DFlash2 comparison](docs/competitive.md)
 uses the same GB10, pinned weights, workloads and memory budget for both engines.
+The [controlled verification study](docs/verify-cost.md) screens out compact
+convolution integration: its exact prototype projects only 1.0–1.6% round-time
+savings. The next speed investigation targets the larger NVFP4 projection cost.
 Broader cache-pressure and quality gates remain open; unified-memory capacity
 mechanisms (8) and remaining kernels/AOT (9) follow.
 Read [roadmap.md](roadmap.md) before doing anything else.
