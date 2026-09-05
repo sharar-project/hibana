@@ -12,6 +12,7 @@ frees the newest running request back to the queue.
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 from sharar.engine.request import Request
@@ -53,7 +54,8 @@ class Metrics:
     decode_tokens: int = 0
     steps: int = 0
     step_seconds: float = 0.0
-    ttfts: list[float] = field(default_factory=list)
+    # A long-lived local server must not retain/sort its entire request history.
+    ttfts: deque[float] = field(default_factory=lambda: deque(maxlen=2048))
 
     def summary(self) -> dict:
         ttfts = sorted(t for t in self.ttfts if t == t)  # drop NaN
@@ -65,6 +67,7 @@ class Metrics:
             "decode_steps": self.decode_steps, "decode_tokens": self.decode_tokens,
             "steps": self.steps, "avg_step_ms": 1000 * self.step_seconds / max(1, self.steps),
             "ttft_p50": p(0.5), "ttft_p95": p(0.95),
+            "ttft_window_count": len(ttfts), "ttft_window_capacity": self.ttfts.maxlen,
         }
 
 

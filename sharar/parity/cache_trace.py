@@ -1,0 +1,221 @@
+"""Locate cold/split/cache drift at an identical processed token prefix.
+
+Opt-in diagnostic: hooks clone only the last row of each layer. Measurements
+from these forwards are correctness evidence, never performance samples.
+"""
+
+from __future__ import annotations
+
+import argparse
+from contextlib import contextmanager
+import hashlib
+import json
+from pathlib import Path
+
+import torch
+
+from sharar import config
+from sharar.engine.sampler import SamplingParams
+
+
+def difference(a, b):
+    a, b = a.float().flatten(), b.float().flatten()
+    delta = (a - b).abs()
+    return {'equal': torch.equal(a, b), 'max_abs': delta.max().item(),
+            'rms': delta.square().mean().sqrt().item(),
+            'relative_rms': (delta.square().mean().sqrt() / b.square().mean().sqrt().clamp_min(1e-30)).item(),
+            'cosine': torch.nn.functional.cosine_similarity(a, b, dim=0).item()}
+
+
+@torch.inference_mode()
+def first_projection_probe(model, ids):
+    """Hold quantized operands fixed; compare both shapes to FP32 matmul.
+
+    This dequantizes only the first QKV projection, not the full checkpoint.
+    It diagnoses FP8 GEMV versus GEMM and does not change serving dispatch.
+    """
+    from sharar.kernels import ops
+    layer = model.layers[0]
+    hidden = torch.nn.functional.embedding(torch.tensor(ids, device=model.device), model.embed)
+    _, xq, _ = layer.input_norm.fused_add_quant(hidden, None, layer.mixer.input_scale, inplace=False)
+    lin = layer.mixer.in_qkv
+    wide = ops.fp8_linear(None, lin, x_q=xq)[-1:]
+    narrow = ops.fp8_linear(None, lin, x_q=xq[-1:].contiguous())
+    precision = torch.get_float32_matmul_precision()
+    try:
+        torch.set_float32_matmul_precision('highest')
+        truth = ((xq[-1:].float() * lin.input_scale) @ (lin.weight.float() * lin.weight_scale).T)
+    finally:
+        torch.set_float32_matmul_precision(precision)
+    return {'wide_m': len(ids), 'narrow_m': 1, 'operands': 'identical FP8 last input row and weights/scales',
+            'wide_vs_narrow': difference(wide, narrow),
+            'wide_vs_fp32': difference(wide, truth), 'narrow_vs_fp32': difference(narrow, truth),
+            'wide_vs_rounded_fp32': difference(wide, truth.bfloat16()),
+            'narrow_vs_rounded_fp32': difference(narrow, truth.bfloat16())}
+
+
+@contextmanager
+def last_token_trace(model, position):
+    records, originals = {}, []
+    active = [None]
+    from sharar.kernels import ops
+    # Preserve the normal kernels and shapes; observe their last output row.
+    for name in ('fp8_linear', 'nvfp4_linear'):
+        original = getattr(ops, name)
+        originals.append((ops, name, original))
+        def projection(*args, original=original, name=name, **kwargs):
+            value = original(*args, **kwargs)
+            if active[0] is not None:
+                stages = records[active[0]]['stages']
+                stages[f'{len(stages)}:{name}'] = value[-1].clone().cpu()
+            return value
+        setattr(ops, name, projection)
+    for layer in model.layers:
+        original = layer.forward
+        originals.append((layer, 'forward', original))
+        def wrapped(hidden, residual, ctx, original=original, index=layer.index):
+            # The diagnostic uses one sequence and absolute ordered positions.
+            selected = int(ctx.positions[-1]) == position
+            if selected:
+                incoming = hidden[-1].clone()
+                if residual is not None:
+                    incoming += residual[-1]
+                records[index] = {'input': incoming.cpu(), 'stages': {}}
+                active[0] = index
+            h, r = original(hidden, residual, ctx)
+            active[0] = None
+            if selected:
+                records[index]['output'] = (h[-1] + r[-1]).cpu()
+            return h, r
+        layer.forward = wrapped
+        if layer.kind == 'linear_attention':
+            original = layer.mixer._project
+            originals.append((layer.mixer, '_project', original))
+            def project(x, *args, original=original, **kwargs):
+                values = original(x, *args, **kwargs)
+                if active[0] is not None:
+                    stages = records[active[0]]['stages']
+                    stages['gdn_normalized_input'] = x[-1].clone().cpu()
+                    for name, value in zip(('qkv', 'z', 'b', 'a'), values):
+                        stages['gdn_' + name] = value[-1].clone().cpu()
+                return values
+            layer.mixer._project = project
+            original = layer.mixer._finish
+            originals.append((layer.mixer, '_finish', original))
+            def finish(core, z, t, original=original):
+                if active[0] is not None:
+                    records[active[0]]['stages']['gdn_core'] = core.reshape(t, -1)[-1].clone().cpu()
+                return original(core, z, t)
+            layer.mixer._finish = finish
+    try:
+        yield records
+    finally:
+        for obj, name, original in originals:
+            setattr(obj, name, original)
+
+
+def run(ex, ids, output: Path):
+    """Compare copies and rounding separately from kernel-shape differences."""
+    assert ex.spec is None and ex.cache is not None
+    params = SamplingParams(max_new_tokens=1)
+    traces, results, owned = {}, {}, []
+    def request(tokens):
+        req = ex.admit(tokens, params)
+        owned.append(req)
+        return req
+    def forward(name, req, limit=None):
+        with last_token_trace(ex.model, len(ids) - 1) as trace:
+            ex.prefill(req, limit)
+        if trace:
+            traces[name] = trace
+            results[name] = {'first_token': req.output_ids[-1], 'cache_prefix': req.prefix_len,
+                             'committed_len': req.committed_len}
+    try:
+        ex.flush_cache()
+        cold = request(ids)
+        forward('cold', cold)
+        # The final prompt snapshot cannot serve its own last token.
+        boundary = max(p for p in cold.checkpoints if p < len(ids))
+        checkpoint = cold.checkpoints[boundary]
+        cached_ssm = ex.state_pool.ssm_all[:, checkpoint].clone()
+        cached_conv = ex.state_pool.conv_all[:, checkpoint].clone()
+
+        live = request(ids)
+        ex.prefill(live, boundary)
+        prefix_ssm = ex.state_pool.ssm_all[:, live.slot].clone()
+        prefix_conv = ex.state_pool.conv_all[:, live.slot].clone()
+        state_rows = []
+        for i, layer in enumerate(ex.state_pool.layer_ids):
+            state_rows.append({'layer': layer, 'checkpoint_vs_live_ssm': difference(cached_ssm[i], prefix_ssm[i]),
+                               'checkpoint_vs_live_conv': difference(cached_conv[i], prefix_conv[i])})
+        forward('live_split', live)
+
+        rounded = request(ids)
+        ex.prefill(rounded, boundary)
+        ex.state_pool.ssm_all[:, rounded.slot].copy_(prefix_ssm.to(torch.bfloat16).float())
+        ex.state_pool.conv_all[:, rounded.slot].copy_(prefix_conv)
+        forward('rounded_live_split', rounded)
+
+        # A manual checkpoint restore uses the cold run's exact KV and state,
+        # without matching, locking or ownership transfer through the radix.
+        restored = request(ids)
+        for lid in ex.kv_pool.layer_ids:
+            ex.kv_pool.k[lid][restored.pages[:boundary]] = ex.kv_pool.k[lid][cold.pages[:boundary]]
+            ex.kv_pool.v[lid][restored.pages[:boundary]] = ex.kv_pool.v[lid][cold.pages[:boundary]]
+        ex.state_pool.ssm_all[:, restored.slot].copy_(cached_ssm)
+        ex.state_pool.conv_all[:, restored.slot].copy_(cached_conv)
+        ex.state.commit_prefill(restored, boundary)
+        forward('manual_restore', restored)
+        for req in (live, rounded, restored):
+            req.cacheable = False
+            ex.release(req)
+        ex.release(cold)
+        hit = request(ids)
+        assert hit.prefix_len == boundary
+        assert torch.equal(ex.state_pool.ssm_all[:, hit.slot], cached_ssm)
+        assert torch.equal(ex.state_pool.conv_all[:, hit.slot], cached_conv)
+        forward('radix_restore', hit)
+        comparisons = {}
+        for name in traces:
+            if name == 'cold':
+                continue
+            comparisons['cold_vs_' + name] = [
+                {'layer': i, 'kind': ex.model.layers[i].kind,
+                 'input': difference(traces['cold'][i]['input'], traces[name][i]['input']),
+                 'output': difference(traces['cold'][i]['output'], traces[name][i]['output']),
+                 'stages': {s: difference(v, traces[name][i]['stages'][s])
+                            for s, v in traces['cold'][i]['stages'].items()}}
+                for i in traces['cold']]
+        comparisons['manual_vs_radix'] = [
+            {'layer': i, 'output': difference(traces['manual_restore'][i]['output'], traces['radix_restore'][i]['output'])}
+            for i in traces['cold']]
+        report = {'input_ids': ids, 'input_sha256': hashlib.sha256(json.dumps(ids).encode()).hexdigest(),
+                  'boundary': boundary, 'runs': results, 'states': state_rows, 'comparisons': comparisons,
+                  'first_projection': first_projection_probe(ex.model, ids)}
+        output.write_text(json.dumps(report, indent=2) + '\n')
+        print(json.dumps({'boundary': boundary, 'runs': results}), flush=True)
+        return report
+    finally:
+        for req in owned:
+            req.cacheable = False
+            ex.release(req)
+        ex.flush_cache()
+
+
+def main():
+    from sharar.engine.executor import Executor
+    from sharar.model.qwen38 import Qwen38
+    from sharar.tokenizer import SnapshotTokenizer
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    config.check()
+    model = Qwen38(config.snapshot_dir())
+    torch.cuda.empty_cache()
+    ex = Executor(model, num_pages=35000, num_slots=16, log=print)
+    ids = SnapshotTokenizer(config.snapshot_dir()).encode('hello ' * 128)
+    run(ex, ids, args.output)
+
+
+if __name__ == '__main__':
+    main()

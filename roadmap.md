@@ -684,7 +684,7 @@ across all 72 measured runs. Largest median slowdown: **0.47%** against a
 predeclared 5% limit. Details, the retained pre-existing cold/cache diagnostic
 and raw-evidence locations are in [docs/phase7b.md](docs/phase7b.md).
 
-### Phase 7C: Workload and competitive performance gates `[planned]`
+### Phase 7C: Workload and competitive performance gates `[in progress — 2026-09-05]`
 
 Measurement and hardware research begin together here. First attribute the
 per-round synchronization and recurrent-snapshot traffic, then prototype the
@@ -692,17 +692,28 @@ mechanism with demonstrated headroom. Do not defer all optimization ideas to
 Phase 9 or require finishing every competitor integration before a bounded
 experiment. Freeze each experiment's workload and decision threshold first.
 
-- [ ] Keep the synthetic six-cell matrix for continuity. Document its limits:
+- [x] Keep the synthetic six-cell matrix for continuity. Document its limits:
       repetitive prompts, cold prefix cache, ignored EOS, fixed output lengths,
       greedy decoding and thinking disabled.
-- [ ] Freeze representative coding, chat, tool/structured output and thinking
+- [x] Freeze representative coding, chat, tool/structured output and thinking
       prompts with greedy and sampled settings. Add identical/partial-prefix
-      reuse, multi-turn sessions, mixed arrivals, cancellation, cache pressure
+      reuse, multi-turn sessions, mixed arrivals, cancellation
       and natural stopping. Include budgets 1 through verify-width+1.
-- [ ] Triage the `hello ` ×128 cold/cached divergence recorded in
+- [ ] Add cache-pressure/eviction session traces under equal physical budgets.
+- [ ] Migrate restored historical parity probes before using them as new
+      oracles; `parity.blocks` still references the former fused GDN members.
+      The current cache investigation uses the tested `parity.cache_trace`.
+- [x] Triage the `hello ` ×128 cold/cached divergence recorded in
       `docs/phase7b.md`. It reproduces on the pre-7B tree with ordinary decode;
       compare fixed-prefix recurrent state and per-layer outputs before
       attributing it to kernel rounding or accepting broader cache quality.
+      Manual/radix restoration is bit-identical at all 64 layers; a live
+      split alone reproduces the mismatch. First drift is the FP8 projection
+      shape path. Retain checkpoint-precision and broader quality limitations
+      in `docs/phase7c.md`; the diagnosis is not universal token-equivalence.
+- [x] Record actual streaming TTFT, completion, delivery bursts, emitted IDs,
+      cache-hit length and per-request speculation in the local pilot. Bound
+      server TTFT storage to 2,048 recent samples with explicit window counts.
 - [ ] Measure TTFT, client-visible inter-token gaps, prefill/decode time,
       completion time, actual emitted tokens, accepted tokens/round, cache-hit
       length, draft reconstruction cost and peak/available memory. Bound metric
@@ -720,10 +731,16 @@ experiment. Freeze each experiment's workload and decision threshold first.
       when differing continuations change acceptance or work performed.
 - [ ] Recompute decode byte traffic and the roofline from hot tensors and
       measured counters. Remove the allocated-bytes-as-traffic estimate.
-- [ ] Produce the first GB10 experiment brief and ablation: device-resident
-      speculative progress versus selective recurrent checkpoints, chosen from
-      measured exposed time/traffic. Preserve a reference path, test every
-      accepted/stop position and report negative results as well as gains.
+- [x] Trace ordinary/MTP decode at B=1/4, T=128/8,192, keeping independent
+      unprofiled samples separate. Freeze the first GB10 experiment brief:
+      compact verified recurrence inputs plus accepted-prefix state replay.
+      MTP's exposed trace gaps are small; its 2.25 GiB full-snapshot allocation
+      provides a concrete capacity target. See `docs/gb10-experiments.md`.
+- [ ] Implement that experiment and its ablation. Preserve full FP32 snapshots
+      as the control, test every accepted/stop position and report negative
+      results. Require at least 25% lower total verification snapshot storage
+      at fixed B/k and no more than 5% protected latency regression; do not
+      substitute allocated bytes for physical traffic or a measured speedup.
 
 Definition of done: reproducible workload manifests, comparator coverage and
 an updated `docs/comparison.md` distinguish historical observations from fresh
@@ -1062,21 +1079,25 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-Begin **7C: freeze local workloads and the first GB10 experiment brief**.
+Implement the **7C accepted-state reconstruction experiment** described in
+[docs/gb10-experiments.md](docs/gb10-experiments.md). The frozen pilot and
+diagnostic evidence are in [docs/phase7c.md](docs/phase7c.md).
 
-1. Preserve the new ownership/proposer boundaries and the A1–A8 tests. Record
-   coding/chat/tool/thinking prompts with cache state, sampling and arrival
-   patterns, plus all source/model/image identities.
-2. Isolate the retained repetitive-prompt cold/cache divergence using fixed
-   prefixes and layer/state comparisons; do not assume it is rounding.
-3. Trace ordinary decode and MTP at batches 1 and 4. Attribute exposed host
-   synchronization and actual recurrent/KV/weight traffic. Choose the first
-   device-progress or selective-checkpoint prototype from that evidence,
-   with its workload and discard threshold frozen before implementation.
-4. Refresh competitive configurations alongside these bounded experiments.
+1. Keep full FP32 per-token snapshots as the control. Add an experimental
+   target-verifier path that saves compact recurrence inputs and reconstructs
+   only the accepted-prefix final state before the existing commit operation.
+2. Prove bitwise committed state at every accept/EOS/budget position, B=1–4,
+   eager/graphs and cache miss/hit. Preserve A1–A8, continuation and failure
+   cleanup. Do not lower recurrent-state precision to meet the memory target.
+3. Compare fixed work and then the frozen HTTP workload. Count all retained
+   inputs, final scratch and graph/workspace allocations. Require the declared
+   25% capacity gain and <=5% protected latency regression; remove the
+   experiment if extra recurrence replay defeats these gates. Extend the local
+   comparator and independent-run evidence before promoting a speed claim.
+4. Refresh competitive configurations and cache-pressure/traffic evidence
+   alongside the bounded experiment.
    Use 7D for draft-aware caching and richer proposers, 8 for validated unified
    memory mechanisms, and 9 for further kernels and final AOT coverage.
 
-The changes are in the working tree with proof in `docs/phase7b.md`.
 Rebuilding/promoting the serving image is a separate step; the running image
 and historical competitive numbers have not been replaced.

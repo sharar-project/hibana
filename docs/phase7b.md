@@ -135,6 +135,11 @@ was not deployed; runtime promotion remains separate.
 
 ## What follows
 
+The first remote CPU workflow exposed a packaging omission: the artifact
+ignore rule had also hidden the locally present `sharar/parity` source. The
+[7C follow-up](phase7c.md) anchors that rule, tracks the package, and verifies
+both a clean exported source tree and the remote CPU workflow.
+
 Phase 7C freezes realistic local workloads and competitive baselines while
 starting hardware-specific experiments. First measure exposed round-trip
 synchronization and recurrent-snapshot traffic, then prototype device-resident

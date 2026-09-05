@@ -9,7 +9,19 @@ import torch
 
 from sharar.engine.request import Request, State
 from sharar.engine.sampler import SamplingParams
-from sharar.engine.scheduler import QueueFull, Scheduler, SchedulerConfig
+from sharar.engine.scheduler import Metrics, QueueFull, Scheduler, SchedulerConfig
+
+
+def test_latency_metrics_keep_a_bounded_recent_window():
+    metrics = Metrics(finished=3000)
+    metrics.ttfts.extend(range(3000))
+    result = metrics.summary()
+    assert result['finished'] == 3000
+    assert result['ttft_window_count'] == result['ttft_window_capacity'] == 2048
+    assert min(metrics.ttfts) == 952
+    assert result['ttft_p50'] == 1976
+    metrics.ttfts.append(float('nan'))
+    assert metrics.summary()['ttft_window_count'] == 2047
 
 PREFILL_TOKS_PER_S = 2500.0
 DECODE_STEP_S = 0.085

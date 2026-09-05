@@ -51,3 +51,52 @@ batch scheduling is not bitwise deterministic:
 ```bash
 python3 bench/compare_runs.py BASELINE_RUN_DIR CANDIDATE_RUN_DIR
 ```
+
+## Local workload pilot (Phase 7C)
+
+`workloads/local_v1.json` freezes seven local-use tasks, greedy/sampled settings,
+natural EOS, cold/repeated/session prefixes, four staggered arrivals, a client
+disconnect, and output budgets 1–5. Its coding context is a checksum-verified
+source fixture at `7aebbe6`; it never changes with the current working tree.
+The JSON repeat is an expected miss: its 46-token prompt has no interior
+64-token recurrent checkpoint. Coding/session repeats must actually hit.
+
+Against an already prepared Sharar server on the same GB10 host:
+
+```bash
+python3 bench/local_workloads.py --url http://127.0.0.1:30001 --output /path/to/new-run
+```
+
+The client saves the exact materialized token IDs, tokenizer/template hashes,
+server identity and every request/stream event. It measures client TTFT,
+completion time and delivery gaps **between SSE bursts**. Several speculative
+tokens can arrive together; it does not invent timestamps within that burst.
+Cancellation records client-consumed tokens and the server cancellation count.
+
+Automatic quality checks cover bounded clamp-function behavior, exact JSON,
+tool name/arguments and a reasoning answer. Free-form chat/session outputs have
+explicit review rubrics. These are smoke checks, not a model-quality benchmark.
+The process fails on a request or automatic-quality failure; a successful exit
+still requires rubric review. Three repetitions establish a pilot only: retain
+raw samples and do not report p95/p99 or a statistically established speedup.
+The existing synthetic comparator does not certify these workload results.
+
+For the full exclusive-memory source validation in the prepared GB10 image:
+
+```bash
+python3 bench/phase7c.py --output /path/to/new-proof
+```
+
+This driver first diagnoses cold/split/cache state, starts a temporary loopback
+HTTP server for plain and MTP k=3, and then profiles fixed-token decode at
+batch 1/4 and prefix 128/8,192. It loads the real model: stop the serving model
+before running it, keep the 16 GiB host floor guard active for the test process,
+and restore serving afterward. The driver does not deploy an image or stop a
+service itself. Host/container identity and memory/power samples belong with
+the results (see [the 7C evidence](../docs/phase7c.md)).
+
+`gb10_profile.py` saves independent unprofiled four-step timings and compressed
+Chrome traces with proposer, verifier and acceptance scopes. Device activity
+uses the union of kernel/copy intervals, not their overlapping duration sum.
+Trace gaps include profiler overhead; allocation byte counts are explicitly
+separate from physical DRAM traffic, which this profiler does not measure.

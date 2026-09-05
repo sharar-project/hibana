@@ -79,3 +79,63 @@ Each experiment records:
 Broader comparison with current SGLang, DSpark, DFlash2 and other validated
 GB10 engines belongs in 7C. The 7B unchanged-profile comparison establishes
 refactor cost; it cannot establish a competitive lead.
+
+## Selected 7C experiment: reconstruct the accepted recurrent state
+
+The corrected 7C GB10 traces put MTP k=3 device activity at 96–98% of the
+instrumented interval across B=1/4 and T=128/8,192. The independent unprofiled
+rounds take about 109–137 ms. These traces include instrumentation, so the
+remaining gap is not all removable host overhead. Removing host round trips
+alone has no evidence here for the frozen 10% completion-time target.
+
+The current verifier instead offers a concrete capacity target: 2.25 GiB of
+FP32 recurrent snapshots plus 45 MiB of convolution windows, allocated for
+B=4, k=3. Every layer computes recurrent state sequentially anyway. The
+experiment will retain compact verified recurrence inputs and reconstruct
+only the state after the accepted prefix once acceptance/EOS/budget is known.
+This is a hardware-specific state-retention experiment, not a claim that the
+algorithm is unprecedented or that its speedup is already demonstrated.
+
+- **Owner:** target verification in `engine/spec.py`, recurrence kernels in
+  `kernels/fla/`, and the existing `StateManager` commit boundary. Proposers,
+  scheduler policy and HTTP should not depend on which retention mode is used.
+- **Control:** preserve the current full FP32 per-token snapshots and graph
+  path. Add an explicit startup experiment flag; default serving stays on the
+  control until its gates pass. No BF16 state compression as a shortcut.
+- **Mechanism:** save the verified projected/gated recurrence inputs, replay
+  exactly the accepted input count from the untouched committed state into a
+  single final-state scratch buffer, then use the existing commit operation.
+  Preserve the same recurrence arithmetic/order, convolution windows, pending
+  input and selected-feature lifetimes. Choose whether to retain zero or a
+  small number of intermediate checkpoints from measured replay cost.
+- **Memory hypothesis:** one final FP32 scratch state per row rather than
+  four per-token snapshots reduces that allocation by 75% before input-stash
+  overhead. Measure the **total** retained inputs, final scratch, graph pools
+  and workspace; a smaller named tensor alone does not pass. Shared GB10 DRAM
+  makes that saved capacity available to the local process/OS only if the
+  allocation is genuinely removed, not merely marked as free IDs.
+- **Cost hypothesis:** extra accepted-prefix recurrence competes with saved
+  intermediate writes on the same GB10 memory system. Do not assume a latency
+  gain. Measure fixed inputs/acceptance positions to hold work constant, then
+  the frozen natural-output HTTP workloads. Physical DRAM counters are still
+  needed for a traffic claim; the current trace only measures time/activity.
+- **Coherence/lifetime:** all verification, replay and commit run on the
+  engine's ordered CUDA stream. Graph outputs remain borrowed until the next
+  replay. Committed state cannot change before the accepted-prefix replay has
+  read it. No new concurrent CPU access to hot state or managed-memory faulting
+  is part of this experiment.
+- **Proof before keeping:** bitwise committed FP32 SSM/convolution state for
+  every accepted/EOS/budget position, B=1/2/3/4, eager/graphs, cache miss/hit,
+  continuation, cancellation and failure cleanup. Retain A1–A8 and both
+  32K boundary cases. Check plain and MTP, including sampled fallback.
+- **Keep/remove gate, frozen in `local_v1.json`:** at least 25% reduction in
+  total verify snapshot allocation at fixed B/k, no more than 5% protected
+  completion-time regression, all quality checks and the 16 GiB floor. A
+  speed claim additionally needs the 10% selected-workload target and repeated
+  independent confirmation. Wider k and more cached sessions are separate
+  experiments; neither may substitute for an equal-profile comparison.
+
+If replay cost defeats those gates, discard this prototype and test session
+cache value or verified-prefix draft readiness next. The alternative of
+device-resident progress remains useful if later scheduling/width changes
+expose a larger host bottleneck.

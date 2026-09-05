@@ -21,6 +21,22 @@ from sharar.tokenizer import SnapshotTokenizer
 pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 checkpoint tests')
 
 
+def test_cache_restore_matches_manual_restore_at_every_layer(setup, tmp_path):
+    from sharar.parity.cache_trace import run
+    configure, _ = setup
+    ex, _ = configure(True, 'cold')
+    spec = ex.spec
+    ex.spec = None
+    try:
+        ids = SnapshotTokenizer(config.snapshot_dir()).encode('hello ' * 128)
+        report = run(ex, ids, tmp_path / 'cache-trace.json')
+        assert report['boundary'] == 128
+        assert len(report['comparisons']['manual_vs_radix']) == 64
+        assert all(row['output']['equal'] for row in report['comparisons']['manual_vs_radix'])
+    finally:
+        ex.spec = spec
+
+
 @pytest.fixture(scope='module')
 def runtime():
     from sharar.model.qwen38 import Qwen38
