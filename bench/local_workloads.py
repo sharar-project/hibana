@@ -120,7 +120,7 @@ def cache_state_error(case, variant, cached, alignment):
     return None
 
 
-def stream_request(url, case, rid, *, ids=None, sampling=None, after_tokens=None, deadline=None):
+def stream_request(url, case, rid, *, ids=None, sampling=None, after_tokens=None, deadline=None, on_first_token=None):
     if deadline is not None:
         time.sleep(max(0, deadline - time.perf_counter()))
     start = time.perf_counter()
@@ -145,7 +145,10 @@ def stream_request(url, case, rid, *, ids=None, sampling=None, after_tokens=None
                     raise RuntimeError(event['error'])
                 count = len(event['output_ids'])
                 if count > len(row['output_ids']):
+                    first = not row['events']
                     row['events'].append({'t_s': time.perf_counter() - start, 'tokens': count})
+                    if first and on_first_token is not None:
+                        on_first_token()
                 row['output_ids'], row['meta'] = event['output_ids'], event['meta_info']
                 if after_tokens is not None and count >= after_tokens:
                     row['cancelled_by_client'] = True

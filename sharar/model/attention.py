@@ -41,8 +41,11 @@ class Attention:
         return self.qkv.input_scale
 
     def _qkv(self, x: torch.Tensor, positions: torch.Tensor, x_q: torch.Tensor | None = None):
-        t = x.shape[0]
         qkv = ops.fp8_linear(x, self.qkv, x_q=x_q)
+        return self._split_qkv(qkv, positions)
+
+    def _split_qkv(self, qkv, positions):
+        t = qkv.shape[0]
         gate = qkv[:, : self.q_size * 2].view(t, self.num_heads, 2 * self.head_dim)[..., self.head_dim :]
         q, k = qk_norm_rope(
             qkv, positions, self.rope.cos_sin, self.q_norm.weight, self.k_norm.weight,
@@ -52,14 +55,19 @@ class Attention:
         return q, k, v, gate
 
     def _finish(self, attn: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
+        return ops.fp8_linear(None, self.o, x_q=self._output_input(attn, gate))
+
+    def _output_input(self, attn, gate):
         t = attn.shape[0]
         # attn * sigmoid(gate), quantized straight into o_proj's FP8 input.
-        o_in = gated_quant_fp8(attn.view(t, self.num_heads, self.head_dim), gate, self.o.input_scale)
-        return ops.fp8_linear(None, self.o, x_q=o_in)
+        return gated_quant_fp8(attn.view(t, self.num_heads, self.head_dim), gate, self.o.input_scale)
 
     def prefill(self, x: torch.Tensor, positions: torch.Tensor, ctx: ForwardContext | None = None, x_q: torch.Tensor | None = None) -> torch.Tensor:
-        t = x.shape[0]
         q, k, v, gate = self._qkv(x, positions, x_q)
+        return self._finish(self._prefill_attention(q, k, v, ctx), gate)
+
+    def _prefill_attention(self, q, k, v, ctx):
+        t = q.shape[0]
         if ctx is not None and ctx.kv_pool is not None:
             ctx.kv_pool.write(self.layer_id, ctx.pages, k, v)
         if ctx is not None and (ctx.prefix_len > 0 or ctx.batched):
@@ -67,9 +75,18 @@ class Attention:
             # prefix + new pages (FP8) with the causal mask aligned to its end.
             attn = ctx.paged_prefill_wrapper.run(q, ctx.kv_pool.cache(self.layer_id)).view(t, self.q_size)
         else:
-            self.ragged.plan([t], x.device)
+            self.ragged.plan([t], q.device)
             attn = self.ragged.run(q, k, v)
-        return self._finish(attn, gate)
+        return attn
+
+    def mixed(self, inputs, contexts, quantized):
+        sizes = [x.shape[0] for x in inputs]
+        projected = ops.fp8_linear(None, self.qkv, x_q=torch.cat(quantized)).split(sizes)
+        outputs = []
+        for qkv, ctx in zip(projected, contexts):
+            q, k, v, gate = self._split_qkv(qkv, ctx.positions)
+            outputs.append(self._output_input(self._prefill_attention(q, k, v, ctx), gate))
+        return ops.fp8_linear(None, self.o, x_q=torch.cat(outputs)).split(sizes)
 
     def decode(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
         q, k, v, gate = self._qkv(x, ctx.positions, x_q)

@@ -214,3 +214,42 @@ fits a pilot and never promotes it. `LatencyPolicy` keeps bounded local prefill
 and decode observations, caps active-step prefill work, and guarantees some
 queued progress. Its target is best effort: running GPU kernels are not
 preemptible. Fixed defaults remain available for every comparison.
+
+## Mixed prefill and verification experiment
+
+`Executor.enable_mixed("mlp" | "full")` enables a bounded two-mode target pass.
+The default is `off`. A separate 256 MiB attention-plan workspace exists only
+after enabling the experiment; both plans must remain valid throughout the
+target pass. The executor caps mixed prefill at 4,096 rows and total active
+requests at the configured batch limit. Unsupported/unready groups return
+`False` from `mixed_prefill(chunks, verifying)` before doing any work.
+
+`StateManager.authorize_mixed` checks disjoint private slots, live resources,
+prefill extents, absence of existing reservations and pending verify positions
+before reservation. Pool-pressure preflight can still retract a request. Once
+preparation starts, failure marks both groups uncacheable; `MemoryError` becomes
+non-retryable because reservation rollback cannot undo a partially written
+prefill, recurrent slot or proposer state.
+
+`SpecDecoder.prepare` owns proposal/verification metadata; `context` plans a
+caller-owned attention wrapper. `Qwen38.forward_mixed` keeps prefill and verify
+streams, residuals and selected features distinct while sharing dense work.
+MLP sharing is an ablation. Full sharing also combines FP8 mixer projections;
+GDN's small BF16 gate projection keeps its original row shape. The existing
+prefill attention/GDN cores and verify cores retain their arithmetic and state
+semantics. Verification cannot publish committed state before acceptance.
+
+The executor finishes prefill and then calls the common `SpecDecoder.finish`
+accept/commit/feedback path. Features own their storage until consumption;
+checkpoint slots and page transfers remain StateManager operations. No proposer
+API or second state manager is introduced. The benchmark's `separate` mode
+uses the same scheduling/proposal ordering with ordinary verification graphs.
+
+One successful mixed pass consumes one scheduler decode round. New requests
+whose prefill just finished join the next round: their first verification
+depends on the newly sampled token and draft initialization. One scheduler
+step performs at most one mixed pass, even if it runs two prefill chunks.
+Decode-only execution keeps its original graphs. MTP/n-gram sampled requests
+retain plain decoding; an unsupported mixed group falls back to ordinary
+prefill and decode. Mixed execution currently requires the fixed prefill policy;
+its time is not fed into the independent interactive-prefill estimator.

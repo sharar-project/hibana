@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-05 (7D direct accepted-state reconstruction implemented; promotion gates remain explicit)
+Last updated: 2026-09-05 (7D mixed forward implemented experimentally; HTTP latency/quality gates reject promotion)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -46,11 +46,13 @@ Multimodal, multi-GPU, multi-node, arbitrary model discovery, LoRA, generic
 hardware fallbacks and inherited CI are outside the target. Curated model
 profiles must preserve GB10 specialization and explicit kernel choices.
 
-Immediate priority: measure shared target projection work under mixed arrivals.
-Batched accepted feature/KV projection and direct accepted-state commit are
-implemented. Validate external drafts under equal
-memory and realistic cache pressure. Keep defaults fixed until quality and
-performance gates justify changes.
+Immediate priority: remove measured repeated prefill-metadata construction and
+synchronization through the existing forward context. Mixed target execution
+now saves time for a prefill/verify pair, but its HTTP pilot delays the arriving
+request's first token and the protection suite adds two rubric misses. It remains
+off. Validate external drafts under equal
+memory and realistic cache pressure; defaults still require quality and
+client-visible performance gates.
 
 ## 2. Relationship to the `sparklang` repository
 
@@ -809,12 +811,23 @@ from a broad quality, competitive-speed or production-promotion gate.
       and test the observed session tail. Short-prefill MLP/FP8 savings pass the
       feasibility gate; whole-request speed remains unproven. Keep distinct
       prefill/verify state and attention cores. [Experiment](docs/mixed-projection.md).
-- [ ] Build a bounded, opt-in mixed target forward through the existing model,
+- [x] Build a bounded, opt-in mixed target forward through the existing model,
       executor and StateManager boundaries. Share MLP work first as an ablation,
       then FP8 projections; prepare existing requests' proposals before the
       combined target pass. Preserve explicit row/feature ownership, graph
       padding, separate commits and the separate-forward control. Prove full
       state/EOS/cache/sampling/failure gates before measuring HTTP improvement.
+      The implemented eager path saves 24–27% on a fixed prefill/verify pair,
+      but its HTTP pilot regresses arrival TTFT 13–20%; the broader workload
+      adds two mixed-chat rubric misses. All 654 CPU/GPU checks and 16 historical
+      parity comparisons pass, which does not override these serving gates.
+      It remains off.
+      [Implementation, measurements and limits](docs/mixed-forward.md).
+- [ ] Prepare GDN prefill metadata/chunk indices once per forward instead of
+      reconstructing them across 48 layers. Profiled mixed prefill contains
+      hundreds of metadata-related synchronizations. Preserve the cold ragged
+      attention path and checkpoint semantics; measure ordinary and mixed
+      prefill separately before considering further fusion or graph capture.
 - [x] Compare adapters on the pinned quantized target, cold and reused prefixes,
       greedy/sampled requests and mixed concurrency. Promote a proposer/profile
       only when quality and measured end-to-end performance justify it.
@@ -825,9 +838,10 @@ from a broad quality, competitive-speed or production-promotion gate.
       policy. The implemented bounded policies are independent; first prove
       that enabling either improves its protected workloads.
       The 250 ms prefill pilot is rejected as a default: smaller observed stalls
-      came with much worse session TTFT/completion. The shared-projection profile
-      now supports a bounded execution prototype. Keep the existing chunk policy
-      initially; test any row-budget policy separately from projection sharing.
+      came with much worse session TTFT/completion. The implemented shared-target
+      prototype also fails first-token protection despite reducing combined work.
+      Keep the existing chunk policy; test any row-budget policy separately from
+      projection sharing. Do not relax workload gates to promote either result.
 - [ ] Complete independent quality/performance promotion of confidence and
       interactive policies. A short-context cost pilot is not a calibrated
       all-context policy; the 250 ms scheduler target is best effort.
@@ -1130,19 +1144,22 @@ python3 bench/benchmark_text_server.py \
 ## 11. Immediate next task
 
 The external draft selector, batched feature/KV feedback, direct accepted-state
-reconstruction and [mixed-projection profile](docs/mixed-projection.md) are
-complete. The next speed implementation is an **opt-in mixed target forward**.
+reconstruction and [mixed target prototype](docs/mixed-forward.md) are complete.
+Mixed execution stays off because its client first-token latency and quality
+fail the frozen gates. The next speed implementation is **one prefill metadata plan per
+forward**, shared by the existing GDN layers.
 
-1. Freeze its selected/protected HTTP cases before coding. Existing `local-v1`
-   arrivals expose useful overlap, but this profile does not prove its 10%
-   completion gate is reachable. Include short arriving prompts and cached
-   session tails with one to three already-running requests; retain the existing
-   full manifest as protection. Share per-layer MLP work first, then FP8
-   projections through the same boundary. Preserve distinct attention/GDN cores,
-   prepare proposals before the target pass and publish state/features through
-   the existing transaction. Keep the current prefill policy for the first
-   ablation. Require full correctness, quality, equal-memory and independent
-   client-visible measurements before promoting anything.
+1. Hoist immutable sequence lengths, slots, initial-state flags and chunk indices
+   out of the 48 GDN layer calls. Keep CPU metadata available without reading it
+   back from CUDA, and upload it once through the existing forward context.
+   Preserve cold versus cached attention selection, checkpoint boundaries and
+   graph ownership. Freeze an ordinary-prefill control and retain `mixed-v1`
+   and full `local-v1` protections. Measure synchronization counts and real HTTP
+   TTFT/completion independently; synchronization wait time is not all removable
+   overhead. Only after that result consider a fused verification convolution or
+   bounded mixed graphs. A failed mixed latency gate remains a failed gate;
+   archive mixed serving if the bounded metadata experiment cannot close it,
+   preserving useful interfaces and benchmark evidence without growing policy.
 2. Freeze a DFlash2/DSpark versus repaired-MTP comparison at equal total memory,
    including realistic long sessions, eviction, natural stopping and sampled
    quality. Refresh SGLang on the same pinned target and workloads. Choose a

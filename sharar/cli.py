@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default="snapshots")
     p_serve.add_argument("--interactive-target-ms", type=float, default=None)
     p_serve.add_argument("--verify-policy", default=None, help="experimental measured DSpark cost/calibration profile")
+    p_serve.add_argument("--mixed-forward", choices=("off", "mlp", "full"), default="off",
+                         help="experimental prefill/verify sharing; requires speculation")
     p_serve.add_argument("--spec", type=int, default=int(__import__("os").environ.get("SHARAR_SPEC", "0")), help="speculative decoding with k draft tokens (0 = off; --proposer selects the adapter)")
     p_prof = sub.add_parser("profile", help="kernel time breakdown for prefill or decode")
     p_prof.add_argument("--prompts", required=True)
@@ -108,7 +110,8 @@ def main(argv: list[str] | None = None) -> int:
         from sharar.api.server import serve
 
         serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state,
-              interactive_target_ms=args.interactive_target_ms, verify_policy=args.verify_policy)
+              interactive_target_ms=args.interactive_target_ms, verify_policy=args.verify_policy,
+              mixed_forward=args.mixed_forward)
         return 0
     if args.command == "sched-bench":
         from sharar.engine.run import sched_bench_cli

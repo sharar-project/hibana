@@ -1,0 +1,28 @@
+{
+  "version": "mixed-forward-v1",
+  "baseline": "0d570cf543ca58e11b161fb88dd172b413e054e3",
+  "source_manifest": "local_v1.json",
+  "target_revision": "319f741cce68d7914884900c138a1fbb70a42f30",
+  "profile": {"proposer": "dflash2", "depth": 7, "state_strategy": "reconstruct", "pages": 35000, "slots": 12, "max_running": 4, "chunk_size": 2048, "prefill_budget": 4096},
+  "selected": [
+    {"id": "short-b1", "anchor": "json", "anchor_batch": 1, "arrival": "chat", "cache": "cold"},
+    {"id": "short-b3", "anchor": "json", "anchor_batch": 3, "arrival": "chat", "cache": "cold"},
+    {"id": "tail-b1", "anchor": "json", "anchor_batch": 1, "arrival": "session", "cache": "session"},
+    {"id": "tail-b3", "anchor": "json", "anchor_batch": 3, "arrival": "session", "cache": "session"}
+  ],
+  "trigger": "Submit the arrival immediately after every anchor's first streamed token. Preserve client timing and observed engine groups. Require at least one actual mixed forward in every candidate sample; a missed overlap fails eligibility, not a removable timing outlier.",
+  "metric": "Mean completion time of the anchor requests, measured from each HTTP submission. Arrival completion, TTFT and delivery gaps are protected and reported separately.",
+  "repetitions": 3,
+  "order": ["off", "full", "full", "off"],
+  "warmup_blocks": 1,
+  "confirmation": "Repeat the complete ABBA comparison in an independent process. Preserve all samples, outputs and quality outcomes. These remain small workload-specific experiments; no tail-percentile or universal speed claim.",
+  "gates": {
+    "selected_completion_reduction": 0.10,
+    "protected_max_regression": 0.05,
+    "host_floor_gib": 16,
+    "quality": "All automatic checks and explicit rubric review pass. Never compare speed on failed quality. Natural EOS, existing sampling and output budgets remain unchanged.",
+    "correctness": "Separate-target oracle for per-request state/KV/features and sampled laws; untouched slots and cache loans; every accepted/EOS/budget position; failure poisoning and full resource recovery. Numerical shape changes require the existing parity criteria, never silent tolerance relaxation.",
+    "protection": "Full local-v1 manifest, including decode-only, long/reused contexts, sampling, cancellation and small budgets. Candidate and control retain equal optional workspace allocation during timing.",
+    "ablation": "Measure mlp-only and scheduled separate target forwards independently to distinguish projection sharing from changed scheduling. Defaults remain off."
+  }
+}

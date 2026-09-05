@@ -59,7 +59,9 @@ def test_stream_keeps_speculative_bursts_and_requires_terminal_event(monkeypatch
         return io.BytesIO((''.join('data: ' + json.dumps(e) + '\n\n' for e in events) + 'data: [DONE]\n\n').encode())
     monkeypatch.setattr(local_workloads.urllib.request, 'urlopen', lambda *a, **kw: data(True))
     case = {'id': 'case', 'input_ids': [42], 'sampling': {'max_new_tokens': 4}}
-    result = stream_request('http://example.invalid', case, 'id')
+    first = []
+    result = stream_request('http://example.invalid', case, 'id', on_first_token=lambda: first.append(True))
+    assert first == [True]
     assert result['error'] is None
     assert [e['tokens'] for e in result['events']] == [1, 4]
     assert len(result['delivery_gaps_s']) == 1

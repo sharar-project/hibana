@@ -594,7 +594,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     return app
 
 
-def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", interactive_target_ms=None, verify_policy=None) -> None:
+def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", interactive_target_ms=None, verify_policy=None, mixed_forward="off") -> None:
     import uvicorn
 
     from sharar.engine.executor import Executor
@@ -602,12 +602,18 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     from sharar.model.qwen38 import Qwen38
     from sharar.memory.spec_budget import SpecConfig
 
+    if mixed_forward != "off" and not spec:
+        raise ValueError("mixed forward requires speculation")
+    if mixed_forward != "off" and interactive_target_ms is not None:
+        raise ValueError("mixed forward currently requires the fixed prefill policy")
+
     snap = config.snapshot_dir()
     tok = SnapshotTokenizer(snap)
     tmpl = ChatTemplate(snap)
     log(f"loading {MODEL_ID}@{config.MODEL_REVISION[:8]}")
     model = Qwen38(snap, log=log)
     ex = Executor(model, log=log, spec_config=SpecConfig(proposer, spec, state_strategy) if spec else None)
+    ex.enable_mixed(mixed_forward)
     if verify_policy is not None:
         if ex.spec is None or proposer != 'dspark':
             raise ValueError('calibrated confidence scheduling currently requires DSpark')
@@ -628,6 +634,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "max_queued_requests": cfg.max_queued,
         "chunked_prefill_size": cfg.chunk_size,
         "prefill_budget": cfg.prefill_budget,
+        "mixed_forward": ex.mixed_mode,
         "kv_pages": ex.kv_pool.num_pages,
         "state_slots": ex.state_pool.num_slots,
         "ledger_gib": {k: round(v / 2**30, 2) for k, v in ex.ledger.entries.items()},

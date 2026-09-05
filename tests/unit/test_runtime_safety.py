@@ -35,9 +35,12 @@ def tiny_executor(monkeypatch, cache=False):
     ex.state_pool.conv_all = torch.zeros((1, 16, 1))
     ex.state_pool._free = list(range(15, 0, -1))
     ex.state_pool.layer_ids = [0]
+    ex.state_pool.num_slots = 16
     ex.state = StateManager(ex.kv_pool, ex.state_pool)
     ex.cache = RadixCache(ex.kv_pool, ex.state_pool, ex.device) if cache else None
     ex.spec, ex.graphs, ex.use_graphs = None, None, False
+    ex.mixed_mode = "off"
+    ex._mixed_verify_ws = ex._mixed_verify = None
     ex.sampler = Sampler(ex.device)
     ex._paged_prefill = SimpleNamespace(plan=lambda *a, **kw: None)
     ex._decode_wrapper = SimpleNamespace(plan=lambda *a, **kw: None)

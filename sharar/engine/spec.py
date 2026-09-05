@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from dataclasses import dataclass
 
 import torch
 
@@ -17,6 +18,20 @@ from sharar.engine.request import Request
 from sharar.memory.kv_pool import KV_DTYPE
 from sharar.engine.contracts import Proposer, StepInputs, VerifiedFeatures
 from sharar.engine.rejection import Proposal, distribution, verify_row
+
+
+@dataclass
+class Verification:
+    requests: list[Request]
+    proposal: Proposal
+    sampled: bool
+    tokens: torch.Tensor
+    positions: torch.Tensor
+    pages: torch.Tensor
+    slots: torch.Tensor
+    kv_pages: list[torch.Tensor]
+    started: float
+    prepared: float
 
 
 class SpecDecoder:
@@ -113,6 +128,11 @@ class SpecDecoder:
     # ---- one round ----
     @torch.inference_mode()
     def round(self, reqs: list[Request]) -> None:
+        batch = self.prepare(reqs)
+        self.verify(batch)
+
+    def prepare(self, reqs: list[Request]) -> Verification:
+        """Reserve and draft once; the target pass may run separately or mixed."""
         ex = self.ex
         if getattr(self, 'width_policy', None) is not None:
             self.verify_depth = self.width_policy.choose(reqs, self.verify_depths)
@@ -162,37 +182,62 @@ class SpecDecoder:
         for i, r in enumerate(reqs):
             kv_all.append(ex.state.step_pages(r)[:r.committed_len + s_len])
             kv_indptr.append(kv_indptr[-1] + kv_all[-1].shape[0])
-        if ex.use_graphs and self.verify_graphs is not None:
+        return Verification(list(reqs), proposal, sampled, tokens_v, positions, new_pages_flat,
+                            slots_t, kv_all, t0, t1)
+
+    def verify(self, batch: Verification) -> None:
+        b_sz, k = batch.proposal.tokens.shape
+        s_len = k + 1
+        if self.ex.use_graphs and self.verify_graphs is not None:
             graphs = self.width_graphs.get(k, self.verify_graphs)
-            norm_rows, z_flat, ctx, layers = graphs.run(tokens_v, positions, new_pages_flat, slots_t, kv_all, sampled=sampled)
+            norm_rows, z_flat, ctx, layers = graphs.run(batch.tokens, batch.positions, batch.pages,
+                                                       batch.slots, batch.kv_pages, sampled=batch.sampled)
             norm = norm_rows.view(b_sz, s_len, -1).clone() if self.proposer.requirements.features.final_norm else None
             layers = {lid: value.view(b_sz, s_len, -1).clone() for lid, value in layers.items()} if layers else None
-            z = z_flat.view(b_sz, s_len, -1) if sampled else z_flat.view(b_sz, s_len).clone()
-            self._accept(reqs, y, z, VerifiedFeatures(norm, layers), t0, t1, proposal=proposal if sampled else None, confidence=proposal.confidence)
+            z = z_flat.view(b_sz, s_len, -1) if batch.sampled else z_flat.view(b_sz, s_len).clone()
+            self._accept_batch(batch, z, VerifiedFeatures(norm, layers))
             return
-        cu = torch.arange(0, b_sz * s_len + 1, s_len, dtype=torch.int32, device=d)
+        ctx = self.context(batch, self.ex._paged_prefill)
+        self.finish(batch, self.ex.model.forward(batch.tokens, ctx))
+
+    def context(self, batch: Verification, wrapper) -> ForwardContext:
+        """Plan into a caller-owned wrapper; mixed prefill needs a distinct plan."""
+        b_sz, k = batch.proposal.tokens.shape
+        s_len, d = k + 1, self.device
+        cu_host = torch.arange(0, b_sz * s_len + 1, s_len, dtype=torch.int32)
         ctx = ForwardContext(
             feature_request=self.proposer.requirements.features,
-            mode="verify", kv_pool=ex.kv_pool, state_pool=ex.state_pool, positions=positions,
-            pages=new_pages_flat, seq_len=b_sz * s_len,
-            cu_seqlens=cu, seq_slots=slots_t,
-            seq_prefix_lens=[r.context_len - 1 for r in reqs], seq_lens=[s_len] * b_sz,
+            mode="verify", kv_pool=self.ex.kv_pool, state_pool=self.ex.state_pool, positions=batch.positions,
+            pages=batch.pages, seq_len=b_sz * s_len,
+            cu_seqlens=cu_host.to(d), seq_slots=batch.slots,
+            seq_prefix_lens=[r.context_len - 1 for r in batch.requests], seq_lens=[s_len] * b_sz,
             verify_steps=s_len, verify_scratch=torch.arange(b_sz, dtype=torch.int32, device=d), inter_ssm=self.inter_ssm,
             verify_replay=self.replay.layer_inputs if self.replay is not None else {},
             verify_conv_windows=self.conv_windows,
         )
-        ex._paged_prefill.plan(
-            torch.arange(0, b_sz * s_len + 1, s_len, dtype=torch.int32), torch.tensor(kv_indptr, dtype=torch.int32), torch.cat(kv_all), torch.ones(b_sz, dtype=torch.int32),
-            config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, 1,
-            causal=True, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
-        )
-        ctx.paged_prefill_wrapper = ex._paged_prefill
-        out = ex.model.forward(tokens_v, ctx)
+        indptr = [0]
+        for pages in batch.kv_pages:
+            indptr.append(indptr[-1] + pages.shape[0])
+        wrapper.plan(cu_host, torch.tensor(indptr, dtype=torch.int32), torch.cat(batch.kv_pages),
+                     torch.ones(b_sz, dtype=torch.int32), config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS,
+                     config.HEAD_DIM, 1, causal=True, q_data_type=torch.bfloat16,
+                     kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5)
+        ctx.paged_prefill_wrapper = wrapper
+        return ctx
+
+    def finish(self, batch: Verification, out) -> None:
+        """Accept owned target output; preserve the common stop/commit/feedback path."""
+        b_sz, k = batch.proposal.tokens.shape
+        s_len = k + 1
         norm = out["norm"].view(b_sz, s_len, -1) if self.proposer.requirements.features.final_norm else None
         layers = {lid: value.view(b_sz, s_len, -1) for lid, value in out["features"].items()} if "features" in out else None
-        logits = ex.model.logits(out["norm"])
-        z = logits.view(b_sz, s_len, -1) if sampled else logits.argmax(-1).view(b_sz, s_len)
-        self._accept(reqs, y, z, VerifiedFeatures(norm, layers), t0, t1, proposal=proposal if sampled else None, confidence=proposal.confidence)
+        logits = self.ex.model.logits(out["norm"])
+        z = logits.view(b_sz, s_len, -1) if batch.sampled else logits.argmax(-1).view(b_sz, s_len)
+        self._accept_batch(batch, z, VerifiedFeatures(norm, layers))
+
+    def _accept_batch(self, batch, z, features):
+        self._accept(batch.requests, batch.proposal.tokens, z, features, batch.started, batch.prepared,
+                     proposal=batch.proposal if batch.sampled else None, confidence=batch.proposal.confidence)
 
     def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, confidence=None) -> None:
         if self.timing:

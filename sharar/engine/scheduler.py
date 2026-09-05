@@ -56,6 +56,7 @@ class Metrics:
     prefill_tokens: int = 0
     decode_steps: int = 0
     decode_tokens: int = 0
+    mixed_steps: int = 0
     steps: int = 0
     step_seconds: float = 0.0
     # A long-lived local server must not retain/sort its entire request history.
@@ -69,6 +70,7 @@ class Metrics:
             "retractions": self.retractions, "rejected": self.rejected,
             "prefill_chunks": self.prefill_chunks, "prefill_tokens": self.prefill_tokens,
             "decode_steps": self.decode_steps, "decode_tokens": self.decode_tokens,
+            "mixed_steps": self.mixed_steps,
             "steps": self.steps, "avg_step_ms": 1000 * self.step_seconds / max(1, self.steps),
             "ttft_p50": p(0.5), "ttft_p95": p(0.95),
             "ttft_window_count": len(ttfts), "ttft_window_capacity": self.ttfts.maxlen,
@@ -81,6 +83,8 @@ class Scheduler:
         self.cfg = cfg or SchedulerConfig()
         if self.cfg.max_running > getattr(executor, "max_batch", self.cfg.max_running):
             raise ValueError("max_running exceeds executor batch capacity")
+        if self.cfg.interactive_target_ms is not None and getattr(executor, "mixed_mode", "off") != "off":
+            raise ValueError("mixed forward currently requires the fixed prefill policy")
         # Called after every prefill step and every decode step, so a server
         # can deliver first tokens without waiting for the rest of the step,
         # and hand over requests that arrived meanwhile (they are admitted and
@@ -134,15 +138,18 @@ class Scheduler:
         self._reap()
         self._admit()
         if self.prefilling:
-            self._prefill_step()
+            mixed = self._prefill_step()
             if self.on_progress:
                 self.on_progress()
             self._admit()
             if self.prefilling and not (self.latency_policy is not None and self.running):
-                self._prefill_step()
+                mixed = self._prefill_step(allow_mixed=not mixed) or mixed
                 if self.on_progress:
                     self.on_progress()
-            for _ in range(self.cfg.decode_steps_per_chunk):
+            # The mixed pass spent this step's first decode round on existing
+            # requests. Newly finished prefills join the next round; verifying
+            # them here would introduce another full target weight traversal.
+            for _ in range(self.cfg.decode_steps_per_chunk - int(mixed)):
                 self._decode()
         else:
             self._decode()
@@ -182,9 +189,12 @@ class Scheduler:
             self.prefilling.append(req)
             self.metrics.admitted += 1
 
-    def _prefill_step(self) -> None:
+    def _prefill_step(self, allow_mixed=True) -> bool:
         """Spend up to chunk_size prompt tokens on the prefilling requests,
         oldest first, in one forward."""
+        # on_progress may cancel an admitted request between the two chunks.
+        # Remove it before planning/authorizing the next mixed transaction.
+        self._reap()
         budget = self.cfg.prefill_budget
         if self.running and self.latency_policy is not None:
             budget = self.latency_policy.prefill_limit(budget)
@@ -197,13 +207,22 @@ class Scheduler:
                 chunks.append((req, n))
                 budget -= n
         if not chunks:
-            return
+            return False
         try:
             started = time.perf_counter()
-            self.ex.prefill_batch(chunks)
+            existing = list(self.running)
+            before = sum(len(r.output_ids) for r in existing)
+            run_mixed = getattr(self.ex, "mixed_prefill", None)
+            mixed = bool(allow_mixed and run_mixed and run_mixed(chunks, existing))
+            if mixed:
+                self.metrics.mixed_steps += 1
+                self.metrics.decode_steps += 1
+                self.metrics.decode_tokens += sum(len(r.output_ids) for r in existing) - before
+            else:
+                self.ex.prefill_batch(chunks)
         except MemoryError:
             self._retract(chunks[-1][0])
-            return
+            return False
         self.metrics.prefill_chunks += 1
         if self.latency_policy is not None:
             self.latency_policy.observe_prefill(sum(n for _, n in chunks), (time.perf_counter() - started) * 1000)
@@ -213,6 +232,7 @@ class Scheduler:
                 self.prefilling.remove(req)
                 self.running.append(req)  # terminal requests still need to be reaped
         self._reap()
+        return mixed
 
     def _decode(self) -> None:
         self._reap()

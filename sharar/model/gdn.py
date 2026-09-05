@@ -78,25 +78,35 @@ class GatedDeltaNet:
             x_q = quant_fp8(x, self.in_qkv.input_scale)
         mixed_qkv = ops.fp8_linear(None, self.in_qkv, x_q=x_q)
         z = ops.fp8_linear(None, self.in_z, x_q=x_q)
+        b, a = self._project_ba(x)
+        return mixed_qkv, z, b, a
+
+    def _project_ba(self, x):
         ba = x @ self.in_ba.T
         b, a = ba.split([self.num_v_heads, self.num_v_heads], dim=-1)
-        return mixed_qkv, z, b.contiguous(), a.contiguous()
+        return b.contiguous(), a.contiguous()
 
     def _finish(self, core: torch.Tensor, z: torch.Tensor, t: int) -> torch.Tensor:
+        return ops.fp8_linear(None, self.out, x_q=self._output_input(core, z, t))
+
+    def _output_input(self, core, z, t):
         core = rms_norm_gated(
             x=core.reshape(t, self.value_dim), weight=self.norm_weight, bias=None, z=z,
             eps=config.RMS_NORM_EPS, group_size=self.head_v_dim, norm_before_gate=True,
             is_rms_norm=True, activation="swish",
         )
-        return ops.fp8_linear(None, self.out, x_q=quant_fp8(core, self.out.input_scale))
+        return quant_fp8(core, self.out.input_scale)
 
     def prefill(self, x: torch.Tensor, ctx: ForwardContext | None = None, x_q: torch.Tensor | None = None) -> torch.Tensor:
         """Prefill one sequence, or several (ctx.batched) laid end to end.
         Each sequence continues from the state in its slot when it has a prefix
         (cached or earlier chunks); the chunk kernel reads the initial state
         from the pool, so fresh slots must be cleared (StatePool.alloc does)."""
-        t = x.shape[0]
-        device = x.device
+        mixed_qkv, z, b, a = self._project(x, x_q)
+        return self._finish(self._prefill_core(mixed_qkv, b, a, ctx), z, x.shape[0])
+
+    def _prefill_core(self, mixed_qkv, b, a, ctx):
+        t, device = mixed_qkv.shape[0], mixed_qkv.device
         conv_states, ssm_states = self._states(ctx)
         if ctx is not None and ctx.batched:
             query_start_loc = ctx.cu_seqlens
@@ -117,7 +127,6 @@ class GatedDeltaNet:
             prefixes = [ctx.prefix_len if ctx is not None else 0]
             ck_seqs = [0] * (len(ctx.checkpoint_positions) if ctx is not None else 0)
         checkpoints = list(ctx.checkpoint_positions) if ctx is not None else []
-        mixed_qkv, z, b, a = self._project(x, x_q)
         if checkpoints:
             # conv snapshot = the last 3 pre-conv inputs before the boundary
             for pos, cslot, si in zip(checkpoints, ctx.checkpoint_slots, ck_seqs):
@@ -157,7 +166,7 @@ class GatedDeltaNet:
                 local = pos - prefixes[si]
                 assert local % 64 == 0 and 0 < local < seq_lens[si], (pos, prefixes[si], seq_lens[si])
                 ssm_states[cslot] = h[0, chunk_offsets[si] + local // 64].to(ssm_states.dtype)
-        return self._finish(core, z, t)
+        return core
 
     def decode(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
         b_sz = x.shape[0]
@@ -187,11 +196,14 @@ class GatedDeltaNet:
         in torch from the committed window (exact, tiny); the recurrent kernel
         starts from the committed SSM state, leaves it untouched, and records
         the state after every token so the accept step can commit any prefix."""
+        mixed_qkv, z, b, a = self._project(x, x_q)
+        return self._finish(self._verify_core(mixed_qkv, b, a, ctx), z, x.shape[0])
+
+    def _verify_core(self, mixed_qkv, b, a, ctx):
         s_len = ctx.verify_steps
-        b_sz = x.shape[0] // s_len
+        b_sz = mixed_qkv.shape[0] // s_len
         conv_states = ctx.state_pool.conv[self.layer_id]
         ssm_states = ctx.state_pool.ssm[self.layer_id]
-        mixed_qkv, z, b, a = self._project(x, x_q)
         # conv over [history(3) | S tokens] per sequence
         hist = conv_states[ctx.seq_slots].transpose(1, 2)  # [B, 3, dim]
         xs = torch.cat([hist, mixed_qkv.view(b_sz, s_len, self.conv_dim)], dim=1)  # [B, 3+S, dim]
@@ -217,7 +229,20 @@ class GatedDeltaNet:
             ring_uses_scratch=bool(ctx.verify_replay),
             **ctx.verify_replay.get(self.layer_id, {}),
         )
-        return self._finish(core, z, b_sz * s_len)
+        return core
+
+    def mixed(self, inputs, contexts, quantized):
+        sizes = [x.shape[0] for x in inputs]
+        joined = torch.cat(quantized)
+        qkvs = ops.fp8_linear(None, self.in_qkv, x_q=joined).split(sizes)
+        zs = ops.fp8_linear(None, self.in_z, x_q=joined).split(sizes)
+        outputs = []
+        for x, qkv, z, ctx, core_fn in zip(inputs, qkvs, zs, contexts,
+                                          (self._prefill_core, self._verify_core)):
+            # Keep the small BF16 gate projection's original row shape.
+            b, a = self._project_ba(x)
+            outputs.append(self._output_input(core_fn(qkv, b, a, ctx), z, x.shape[0]))
+        return ops.fp8_linear(None, self.out, x_q=torch.cat(outputs)).split(sizes)
 
     def forward(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
         if ctx.mode == "prefill":

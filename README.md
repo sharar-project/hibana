@@ -121,9 +121,11 @@ the GB10 run passes 194 tests, including 84 real-model lifecycle cases.
 The source repairs have not been promoted to the serving image.
 Phase 7B extracts the request-state ownership and proposer interfaces, adds
 n-gram/feature-lifetime checks and contributor setup, and preserves measured
-performance. Next, broaden competitive/local-workload gates and begin GB10
-mechanism experiments (7C), then add draft-aware caching and DSpark/DFlash2
-support (7D), unified-memory mechanisms (8), and remaining kernels/AOT (9).
+performance. The [mixed target experiment](docs/mixed-forward.md) now shares
+prefill/verification dense work through those interfaces, but fails arrival
+first-token latency protection and stays off by default. Next, remove measured
+repeated prefill metadata work and complete equal-memory competitive gates;
+unified-memory capacity mechanisms (8) and remaining kernels/AOT (9) follow.
 Read [roadmap.md](roadmap.md) before doing anything else.
 
 ## Attribution and license

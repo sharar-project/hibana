@@ -4,6 +4,7 @@ cached prefixes and state checkpoints, batched decode, CUDA graphs, generate."""
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
@@ -24,6 +25,14 @@ if TYPE_CHECKING:
     from sharar.model.qwen38 import Qwen38
 
 CHECKPOINT_INTERVAL = 2048  # GDN snapshots inside long prefills (multiple of 64)
+
+
+@dataclass
+class PrefillBatch:
+    chunks: list[tuple[Request, int]]
+    ids: torch.Tensor
+    context: ForwardContext
+    started: float
 
 
 class Executor:
@@ -66,6 +75,8 @@ class Executor:
         self.graphs: DecodeGraphs | None = None
         self.use_graphs = False
         self.spec = None
+        self.mixed_mode = "off"
+        self._mixed_verify_ws = self._mixed_verify = None
         if log:
             log(f"  pools: {num_pages} KV pages ({self.kv_pool.bytes / 2**30:.2f} GiB), {num_slots} state slots ({num_slots * self.state_pool.bytes_per_slot / 2**30:.2f} GiB)")
         if spec_config is not None:
@@ -138,6 +149,59 @@ class Executor:
             self.spec.capture_graphs(log=log)
         self.ledger.record_cuda_allocated("cuda_graphs")
         self.use_graphs = True
+
+    def enable_mixed(self, mode="full") -> None:
+        """Allocate one distinct attention plan at startup; serving stays opt-in."""
+        if mode not in ("off", "separate", "mlp", "full"):
+            raise ValueError("unknown mixed forward mode")
+        if mode != "off" and self.spec is None:
+            raise ValueError("mixed forward requires speculation")
+        if mode != "off" and self._mixed_verify is None:
+            import flashinfer
+            from sharar.memory.ledger import check_load_headroom
+            check_load_headroom(256 * 1024 * 1024)
+            self._mixed_verify_ws = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=self.device)
+            self._mixed_verify = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self._mixed_verify_ws, "NHD")
+            self.ledger.record_cuda_allocated("mixed_workspace")
+        self.mixed_mode = mode
+
+    def mixed_prefill(self, chunks, verifying) -> bool:
+        """Try one bounded prefill + existing verify round. False means no work.
+
+        Preflight pool pressure is retryable. From preparation onward any
+        failure poisons both groups: rollback cannot undo in-place GDN writes.
+        Decode-only execution and the ordinary prefill path stay available.
+        """
+        if self.mixed_mode == "off" or not chunks or not verifying:
+            return False
+        if sum(n for _, n in chunks) > 4096 or len(chunks) + len(verifying) > self.max_batch:
+            return False
+        if any(r.finished or r.cancel_requested or not self.spec.ready(r)
+               or (not r.params.greedy and self.spec.proposer.requirements.greedy_only) for r in verifying):
+            return False
+        self.state.authorize_mixed(chunks, verifying, self.max_batch)
+        self.state.ensure_pages(len(verifying) * self.spec.steps)
+        requests = [r for r, _ in chunks] + list(verifying)
+        try:
+            prefill = self._prepare_prefill(chunks)
+            batch = self.spec.prepare(verifying)
+            if self.mixed_mode == "separate":
+                # Scheduling ablation keeps the ordinary verification graphs.
+                self._finish_prefill(prefill, self.model.forward(prefill.ids, prefill.context))
+                self.spec.verify(batch)
+                return True
+            ctx = self.spec.context(batch, self._mixed_verify)
+            out_p, out_v = self.model.forward_mixed(prefill.ids, prefill.context, batch.tokens, ctx,
+                                                   share=self.mixed_mode)
+            self._finish_prefill(prefill, out_p)
+            self.spec.finish(batch, out_v)
+        except BaseException as exc:
+            for req in requests:
+                req.cacheable = False
+            if isinstance(exc, MemoryError):
+                raise RuntimeError("mixed forward failed after preparation; requests are uncacheable") from exc
+            raise
+        return True
 
     # ---- lifecycle ----
     def validate_request(self, prompt_ids: list[int], params: SamplingParams) -> None:
@@ -226,6 +290,14 @@ class Executor:
         return sorted(positions)
 
     def prefill(self, req: Request, max_tokens: int | None = None) -> int | None:
+        batch = self._prepare_single_prefill(req, max_tokens)
+        return self._finish_prefill(batch, self.model.forward(batch.ids, batch.context))
+
+    def prefill_batch(self, chunks: list[tuple[Request, int]]) -> None:
+        batch = self._prepare_prefill(chunks)
+        self._finish_prefill(batch, self.model.forward(batch.ids, batch.context))
+
+    def _prepare_single_prefill(self, req: Request, max_tokens: int | None) -> PrefillBatch:
         """Prefill up to `max_tokens` of the remaining prompt (all of it by
         default). Each chunk continues from the state and pages left by the
         previous one, exactly like a cache hit. Only the final chunk samples a
@@ -261,30 +333,14 @@ class Executor:
             ctx.checkpoint_slots.append(slot)
         if self.spec is not None:
             ctx.feature_request = self.spec.proposer.requirements.features
-        out = self.model.forward(ids, ctx)
-        self.state.commit_prefill(req, end)
-        if self.spec is not None:
-            self.spec.ingest_prefill(req, new_ids, start, out)
-        token = None
-        if end == n:
-            logits = self.model.logits(out["norm"][-1:])
-            token = int(self.sampler.sample(logits, [req.params], [req.generator]).item())
-            if self.spec is not None:
-                self.spec.start(req, token)
-            self.state.checkpoint(req, n, copy=True)
-        torch.cuda.synchronize()
-        req.prefill_seconds += time.perf_counter() - started
-        if token is not None:
-            req.push(token)
-        return token
+        return PrefillBatch([(req, t)], ids, ctx, started)
 
-    def prefill_batch(self, chunks: list[tuple[Request, int]]) -> None:
+    def _prepare_prefill(self, chunks: list[tuple[Request, int]]) -> PrefillBatch:
         """Prefill several requests' next chunks in one forward. `chunks` is a
         list of (request, number_of_new_tokens). Requests whose prompt completes
         get their first token sampled."""
         if len(chunks) == 1:
-            self.prefill(chunks[0][0], chunks[0][1])
-            return
+            return self._prepare_single_prefill(chunks[0][0], chunks[0][1])
         started = time.perf_counter()
         ids_list, pos_list, page_list, cu, kv_indptr, kv_indices = [], [], [], [0], [0], []
         seq_slots, prefix_lens, seq_lens = [], [], []
@@ -329,7 +385,15 @@ class Executor:
         ids = torch.tensor(ids_list, dtype=torch.int64, device=d)
         if self.spec is not None:
             ctx.feature_request = self.spec.proposer.requirements.features
-        out = self.model.forward(ids, ctx)
+        return PrefillBatch(list(chunks), ids, ctx, started)
+
+    def _finish_prefill(self, batch: PrefillBatch, out) -> int | None:
+        chunks, started = batch.chunks, batch.started
+        if len(chunks) == 1:
+            return self._finish_single_prefill(batch, out)
+        cu = [0]
+        for _, n in chunks:
+            cu.append(cu[-1] + n)
         last_rows = [c - 1 for c in cu[1:]]
         finishing = [i for i, (req, n_new) in enumerate(chunks) if req.prefill_pos + n_new == req.prefill_len]
         tokens = None
@@ -355,6 +419,27 @@ class Executor:
             chunks[i][0].push(int(tok))
             if self.spec is not None:
                 self.spec.start(chunks[i][0], int(tok))
+
+    def _finish_single_prefill(self, batch, out):
+        req, t = batch.chunks[0]
+        start, n, started = req.prefill_pos, req.prefill_len, batch.started
+        end = start + t
+        new_ids = req.prefill_ids[start:end]
+        self.state.commit_prefill(req, end)
+        if self.spec is not None:
+            self.spec.ingest_prefill(req, new_ids, start, out)
+        token = None
+        if end == n:
+            logits = self.model.logits(out["norm"][-1:])
+            token = int(self.sampler.sample(logits, [req.params], [req.generator]).item())
+            if self.spec is not None:
+                self.spec.start(req, token)
+            self.state.checkpoint(req, n, copy=True)
+        torch.cuda.synchronize()
+        req.prefill_seconds += time.perf_counter() - started
+        if token is not None:
+            req.push(token)
+        return token
 
     def warmup(self, log=None) -> None:
         """Run every prefill path once so first requests do not pay backend
