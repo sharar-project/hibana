@@ -50,6 +50,7 @@ class ForwardContext:
     verify_scratch: torch.Tensor | None = None  # int32 [B]
     inter_ssm: dict = field(default_factory=dict)  # layer -> [num_scratch, steps, HV, V, K] fp32
     verify_conv_windows: dict = field(default_factory=dict)  # layer -> [max_batch, steps, dim, 3] bf16 buffer the layer fills
+    verify_replay: dict = field(default_factory=dict)  # optional compact GDN recurrence inputs
 
     @property
     def batched(self) -> bool:

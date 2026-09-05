@@ -25,12 +25,13 @@ def _prefill_wrapper(ws: torch.Tensor, st: dict) -> flashinfer.BatchPrefillWithP
 
 
 class VerifyGraphs:
-    def __init__(self, spec):
+    def __init__(self, spec, depth=None):
         self.spec = spec
         self.ex = spec.ex
         self.device = spec.device
-        self.s_len = spec.steps
-        self.max_context = spec.ex.max_context + spec.k
+        depth = spec.k if depth is None else depth
+        self.s_len = depth + 1
+        self.max_context = spec.ex.max_context + depth
         self.sizes = capture_sizes(spec.ex.max_batch)
         self._pool = torch.cuda.graph_pool_handle()
         self._ws = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=self.device)
@@ -56,6 +57,7 @@ class VerifyGraphs:
             pages=st["pages"], seq_len=b * s, cu_seqlens=st["qo_indptr"], seq_slots=st["slots"],
             seq_prefix_lens=[0] * b, seq_lens=[s] * b, verify_steps=s,
             verify_scratch=torch.arange(b, dtype=torch.int32, device=d), inter_ssm=self.spec.inter_ssm,
+            verify_replay=self.spec.replay.layer_inputs if self.spec.replay is not None else {},
             verify_conv_windows=self.spec.conv_windows, paged_prefill_wrapper=st["wrapper"],
         )
         return st
@@ -87,7 +89,10 @@ class VerifyGraphs:
                 out = self.ex.model.forward(st["tokens"], st["ctx"])
                 st["norm"] = out["norm"]
                 st["features"] = out.get("features")
-                st["argmax"] = self.ex.model.logits(out["norm"]).argmax(-1)
+                logits = self.ex.model.logits(out["norm"])
+                st["argmax"] = logits.argmax(-1)
+                if not self.spec.proposer.requirements.greedy_only:
+                    st["logits"] = logits
             self._graphs[b] = g
             torch.cuda.synchronize()
             if log:
@@ -99,7 +104,7 @@ class VerifyGraphs:
                 return s
         raise ValueError(b)
 
-    def run(self, tokens: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, slots: torch.Tensor, kv_all: list[torch.Tensor]):
+    def run(self, tokens: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, slots: torch.Tensor, kv_all: list[torch.Tensor], *, sampled=False):
         """Returns (norm rows [b*s, H], argmax [b*s]) for the real rows; padded
         rows use slot 0 and page 0."""
         b = slots.shape[0]
@@ -120,4 +125,4 @@ class VerifyGraphs:
         self._plan(st, list(kv_all) + pad_kv)
         self._graphs[size].replay()
         layers = {lid: value[:n] for lid, value in st["features"].items()} if st["features"] else None
-        return st["norm"][:n], st["argmax"][:n], st["ctx"], layers
+        return st["norm"][:n], st["logits" if sampled else "argmax"][:n], st["ctx"], layers

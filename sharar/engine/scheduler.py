@@ -12,6 +12,7 @@ frees the newest running request back to the queue.
 from __future__ import annotations
 
 import time
+import math
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -32,6 +33,7 @@ class SchedulerConfig:
     prefill_budget: int = 4096  # most prompt tokens one step spends across requests (oldest first)
     decode_steps_per_chunk: int = 1  # decode steps run after each prefill step
     reserve_tokens: int = 64  # pages kept spare per admitted request for decoding
+    interactive_target_ms: float | None = None
 
     def __post_init__(self) -> None:
         for name in ("max_running", "max_queued", "chunk_size", "prefill_budget", "decode_steps_per_chunk"):
@@ -39,6 +41,8 @@ class SchedulerConfig:
                 raise ValueError(f"{name} must be a positive integer")
         if type(self.reserve_tokens) is not int or self.reserve_tokens < 0:
             raise ValueError("reserve_tokens must be a non-negative integer")
+        if self.interactive_target_ms is not None and (not math.isfinite(self.interactive_target_ms) or self.interactive_target_ms <= 0):
+            raise ValueError("interactive target must be finite and positive")
 
 
 @dataclass
@@ -88,6 +92,8 @@ class Scheduler:
         self.running: list[Request] = []
         self.metrics = Metrics()
         self._next_id = 1
+        from sharar.engine.latency_policy import LatencyPolicy
+        self.latency_policy = LatencyPolicy(self.cfg.interactive_target_ms) if self.cfg.interactive_target_ms is not None else None
 
     # ---- API ----
     def submit(self, prompt_ids: list[int], params: SamplingParams) -> Request:
@@ -132,7 +138,7 @@ class Scheduler:
             if self.on_progress:
                 self.on_progress()
             self._admit()
-            if self.prefilling:
+            if self.prefilling and not (self.latency_policy is not None and self.running):
                 self._prefill_step()
                 if self.on_progress:
                     self.on_progress()
@@ -180,6 +186,8 @@ class Scheduler:
         """Spend up to chunk_size prompt tokens on the prefilling requests,
         oldest first, in one forward."""
         budget = self.cfg.prefill_budget
+        if self.running and self.latency_policy is not None:
+            budget = self.latency_policy.prefill_limit(budget)
         chunks: list[tuple[Request, int]] = []
         for req in self.prefilling:
             if budget <= 0:
@@ -191,11 +199,14 @@ class Scheduler:
         if not chunks:
             return
         try:
+            started = time.perf_counter()
             self.ex.prefill_batch(chunks)
         except MemoryError:
             self._retract(chunks[-1][0])
             return
         self.metrics.prefill_chunks += 1
+        if self.latency_policy is not None:
+            self.latency_policy.observe_prefill(sum(n for _, n in chunks), (time.perf_counter() - started) * 1000)
         self.metrics.prefill_tokens += sum(n for _, n in chunks)
         for req, _ in chunks:
             if req.prefill_done:
@@ -209,6 +220,7 @@ class Scheduler:
             return
         batch = list(self.running)
         before = {r.request_id: len(r.output_ids) for r in batch}
+        started = time.perf_counter()
         while batch:
             try:
                 self.ex.decode_step(batch)
@@ -218,6 +230,8 @@ class Scheduler:
                 self._retract(victim)
                 batch = [r for r in batch if r is not victim]
         self.metrics.decode_steps += 1
+        if self.latency_policy is not None:
+            self.latency_policy.observe_decode((time.perf_counter() - started) * 1000)
         self.metrics.decode_tokens += sum(len(r.output_ids) - before[r.request_id] for r in batch)
 
     def _retract(self, req: Request) -> None:

@@ -13,6 +13,7 @@ import torch
 
 from sharar import config
 from sharar.engine.context import ForwardContext
+from sharar.engine.contracts import FeatureRequest
 from sharar.engine.profile import ServingProfile
 from sharar.memory.kv_pool import KV_DTYPE
 
@@ -76,6 +77,7 @@ class DecodeGraphs:
     def _ctx(self, b: int) -> ForwardContext:
         st = self._static[b]
         return ForwardContext(
+            feature_request=self.ex.spec.proposer.requirements.features if self.ex.spec is not None else FeatureRequest(),
             mode="decode",
             kv_pool=self.ex.kv_pool,
             state_pool=self.ex.state_pool,
@@ -113,6 +115,7 @@ class DecodeGraphs:
             with torch.cuda.graph(g, pool=self._pool):
                 out = self.ex.model.forward(st["tokens"], ctx)
                 st["logits"] = self.ex.model.logits(out["norm"])
+                st["out"] = out
             self._graphs[b] = g
             torch.cuda.synchronize()
             if log:
@@ -124,7 +127,7 @@ class DecodeGraphs:
                 return s
         raise ValueError(f"batch {b} exceeds captured sizes {self.sizes}")
 
-    def run(self, tokens: list[int], positions: list[int], slots: list[int], out_pages: torch.Tensor, pages: list[torch.Tensor]) -> torch.Tensor:
+    def run(self, tokens: list[int], positions: list[int], slots: list[int], out_pages: torch.Tensor, pages: list[torch.Tensor], *, return_features=False):
         """Returns logits [b, V] for the b real rows."""
         b = len(tokens)
         size = self.pick(b)
@@ -140,4 +143,9 @@ class DecodeGraphs:
         all_pages = list(pages) + [torch.zeros(1, dtype=torch.int32, device=self.device) for _ in range(pad)]
         self._plan(size, counts, all_pages)
         self._graphs[size].replay()
+        if return_features:
+            features = {"norm": st["out"]["norm"][:b]}
+            if "features" in st["out"]:
+                features["features"] = {lid: rows[:b] for lid, rows in st["out"]["features"].items()}
+            return st["logits"][:b], features
         return st["logits"][:b]

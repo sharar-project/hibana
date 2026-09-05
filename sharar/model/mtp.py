@@ -73,6 +73,21 @@ class MtpHead:
         )
 
     @torch.inference_mode()
+    def write_kv(self, tokens: torch.Tensor, hidden: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor) -> None:
+        """Commit target-conditioned KV without running draft attention/MLP.
+
+        A full-accept bonus input has no corresponding draft forward, so it
+        also needs this write before any subsequent draft reads its page.
+        """
+        e = self.norm_e(torch.nn.functional.embedding(tokens, self.embed))
+        u = torch.cat([e, self.norm_h(hidden)], dim=-1) @ self.fc.T
+        qkv = self.input_norm(u) @ self.w_qkv.T
+        _, k = qk_norm_rope(qkv, positions, self.rope.cos_sin, self.q_norm_w, self.k_norm_w,
+                            self.num_heads, self.num_kv_heads, self.head_dim, self.rope.rotary_dim, config.RMS_NORM_EPS)
+        v = qkv[:, self.q_size * 2 + self.kv_size:].view(-1, self.num_kv_heads, self.head_dim).contiguous()
+        self.kv.write(0, write_pages, k, v)
+
+    @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, hidden: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor, qo_lens: list[int], kv_pages: list[torch.Tensor]) -> torch.Tensor:
         """tokens/hidden/positions/write_pages: [T] rows laid out per sequence
         (qo_lens); kv_pages[i] are all pages sequence i attends to (prefix and

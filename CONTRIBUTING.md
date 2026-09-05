@@ -32,16 +32,18 @@ bash tools/check.sh gpu
 
 The real-checkpoint fixture uses bounded pools: 35,000 KV pages and 12 recurrent
 slots. Keep the external memory guard active for that container. The loader
-requires 64 GiB `MemAvailable`: a conservative 48 GiB load-peak allowance plus
-the 16 GiB host floor. This is a startup estimate, not an allocator guarantee.
-Do not load a second copy beside an already large serving process. The check
-command does not stop or replace a running service.
+requires 40 GiB `MemAvailable`: a 24 GiB allowance based on the measured 21.3 GiB
+streaming-load peak plus the 16 GiB host floor. Runtime separately checks the
+prospective pool/draft budget before allocation. See [7D evidence](docs/phase7d.md).
+Performance measurements need exclusive GPU use. The check command does not
+stop or replace a running service.
 
 ## Add a proposer
 
 1. Put the adapter in `sharar/proposers/`. Implement `Proposer` and declare
    width, target-feature requirements and persistent/scratch bytes. Use
-   `ngram.py` for a feature-free example and `mtp.py` for a learned draft.
+   `ngram.py` for a feature-free example, `mtp.py` for a sequential draft, and
+   `parallel.py` for conditional DSpark/DFlash2 proposals and draft-cache handles.
 2. Own draft weights, KV, pending tokens and retained features inside the
    adapter. Declare exactly which post-block layers or final-normalized rows
    you need. Choose the adapter once with `Executor.set_proposer()` before
@@ -53,10 +55,15 @@ command does not stop or replace a running service.
    Then run the GPU continuation suite, feature lifetime checks and a fixed
    workload comparison against the unchanged adapter.
 
-The current verifier accepts flat greedy proposals, width 1–4. Sampled requests
-fall back to ordinary decoding. DSpark/DFlash2, tree proposals and stochastic
-rejection sampling need their own explicit algorithm and correctness work;
-the contract is an extension seam, not an assertion that those are implemented.
+The verifier accepts flat proposals: MTP/n-gram k≤4, DSpark/DFlash2 k≤7.
+External sampled proposals include their actual transformed conditional q,
+including selector/Markov effects. `engine/rejection.py` is the common reference
+algorithm; test tiny distributions independently of model rounding. MTP/n-gram
+sampled requests still use ordinary decode. Tree proposals are not implemented.
+Declare prospective memory in `memory/spec_budget.py`, and retain/restore draft
+features through identity-keyed metadata without taking ownership of target
+pages. Both full snapshots and accepted-state reconstruction use the same
+StateManager commit and stop/continuation tests.
 
 ## Add a GB10 kernel
 

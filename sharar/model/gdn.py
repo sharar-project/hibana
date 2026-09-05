@@ -200,7 +200,7 @@ class GatedDeltaNet:
         conv = torch.nn.functional.silu(conv.float()).to(torch.bfloat16)  # [B, S, dim]
         # window after s+1 tokens = xs rows [s+1, s+4) -> [B, S, dim, 3]
         windows = torch.stack([xs[:, s + 1 : s + 4].transpose(1, 2) for s in range(s_len)], dim=1)
-        ctx.verify_conv_windows[self.layer_id][:b_sz].copy_(windows)
+        ctx.verify_conv_windows[self.layer_id][:b_sz, :s_len].copy_(windows)
         q, k, v = torch.split(conv.reshape(1, b_sz * s_len, self.conv_dim), [self.key_dim, self.key_dim, self.value_dim], dim=-1)
         q = q.reshape(1, b_sz * s_len, self.num_k_heads, self.head_k_dim)
         k = k.reshape(1, b_sz * s_len, self.num_k_heads, self.head_k_dim)
@@ -211,9 +211,11 @@ class GatedDeltaNet:
             initial_state_source=ssm_states, initial_state_indices=ctx.seq_slots,
             use_qk_l2norm_in_kernel=True, cu_seqlens=ctx.cu_seqlens,
             disable_state_update=True,
-            intermediate_states_buffer=ctx.inter_ssm[self.layer_id],
+            intermediate_states_buffer=ctx.inter_ssm.get(self.layer_id),
             intermediate_state_indices=ctx.verify_scratch,
             cache_steps=s_len,
+            ring_uses_scratch=bool(ctx.verify_replay),
+            **ctx.verify_replay.get(self.layer_id, {}),
         )
         return self._finish(core, z, b_sz * s_len)
 

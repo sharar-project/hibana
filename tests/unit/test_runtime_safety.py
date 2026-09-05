@@ -166,7 +166,8 @@ def test_mixed_spec_plain_memory_failure_does_not_advance_any_row(monkeypatch):
     b = ex.admit([2], SamplingParams(max_new_tokens=10, temperature=1))
     ex.prefill_batch([(a, 1), (b, 1)])
     called = []
-    ex.spec = SimpleNamespace(steps=4, ready=lambda r: True, round=lambda rs: called.append(rs))
+    ex.spec = SimpleNamespace(steps=4, ready=lambda r: True, round=lambda rs: called.append(rs),
+                              proposer=SimpleNamespace(requirements=SimpleNamespace(greedy_only=True)))
     ex.kv_pool._free = ex.kv_pool._free[:4]  # enough for spec alone, not both paths
     before = [a.output_ids[:], b.output_ids[:]]
     with pytest.raises(MemoryError):

@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-05 (Phase 7B complete; Phase 7C workloads and hardware experiments next)
+Last updated: 2026-09-05 (7C workload pilot and 7D infrastructure implemented; promotion gates remain explicit)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -46,9 +46,9 @@ Multimodal, multi-GPU, multi-node, arbitrary model discovery, LoRA, generic
 hardware fallbacks and inherited CI are outside the target. Curated model
 profiles must preserve GB10 specialization and explicit kernel choices.
 
-Immediate priority: freeze local workloads and begin the GB10 mechanism
-experiments in 7C, including the retained cold/cache diagnostic.
-Keep the validated profile fixed until the workload and memory gates justify changes.
+Immediate priority: use the measured 7D results to select the next GB10 speed
+experiment and validate external drafts under equal memory and realistic cache
+pressure. Keep defaults fixed until quality and performance gates justify changes.
 
 ## 2. Relationship to the `sparklang` repository
 
@@ -747,43 +747,61 @@ an updated `docs/comparison.md` distinguish historical observations from fresh
 comparisons, synthetic performance from local-use performance, and algorithm
 gains from kernel/engine gains. The correctness oracle stays frozen.
 
-### Phase 7D: Draft-aware caching, DSpark/DFlash2 and interactive scheduling `[planned]`
+### Phase 7D: Draft-aware caching, DSpark/DFlash2 and interactive scheduling `[implemented; promotion gates open]`
 
 Prerequisites: 7A ownership fixes, 7B interfaces and 7C workload gates. Preserve
 the current MTP path while evaluating each extension independently.
 
-- [ ] Implement selective target feature capture for prefill and verification.
+Implementation and measured decisions: [docs/phase7d.md](docs/phase7d.md).
+Native adapters, shared stochastic verification, draft-aware prefix metadata,
+prospective budgets and captured width buckets are present. Defaults remain
+explicit: MTP and full snapshots; external drafts, reconstruction and adaptive
+policies are selectable experiments. A passed implementation gate is distinct
+from a broad quality, competitive-speed or production-promotion gate.
+
+- [x] Implement selective target feature capture for prefill and verification.
       The reviewed DSpark and DFlash2 checkpoints request layers 5/19/33/47/61;
       pin the draft revision and read its requirements rather than hardcoding
       these into the executor. Match feature semantics against the draft oracle.
-- [ ] Add draft-aware prefix entries keyed by target/draft identity, feature
+- [x] Add draft-aware prefix entries keyed by target/draft identity, feature
       schema and relevant numerical layout. Track valid draft KV/features;
       cache hits reconstruct only missing requirements. Bound retained features
       by a drafter's supported window and measure the total hit-path cost.
-- [ ] Reserve draft weights/KV/features, verify scratch, graph pools and
+- [x] Reserve draft weights/KV/features, verify scratch, graph pools and
       activation peaks before optional cache sizing. Current FP32 SSM verify
       intermediates alone cost about 2.25/4.5/9 GiB at batch four and verify
       width 4/8/16; increasing width must pass memory gates before allocation.
-- [ ] Add exact stochastic acceptance/rejection sampling using the actual
+- [x] Add exact stochastic acceptance/rejection sampling using the actual
       conditional proposal distribution, including selector/Markov effects.
       Match temperature/top-k/top-p transforms and use request-local RNG.
       Test the algorithm on tiny known distributions separately from GPU
-      numerical parity. Positive-temperature requests currently use plain decode.
-- [ ] Add validated batch/verify-width buckets, including tails and padded rows.
+      numerical parity. Positive-temperature MTP/n-gram requests use plain
+      decode; DSpark/DFlash2 use the shared sampled reference path.
+- [x] Add batch/verify-width buckets, including tails and padded rows.
       Select widths using measured round cost and expected useful emitted
       tokens; do not optimize acceptance percentage in isolation.
-- [ ] Implement DFlash2 through the proposer interface: parallel draft,
+- [x] Implement DFlash2 through the proposer interface: parallel draft,
       candidate selector, local convolution and its attention/window semantics.
-- [ ] Implement DSpark through the same interface: parallel backbone,
+- [x] Implement DSpark through the same interface: parallel backbone,
       sequential correction and confidence-scheduled verification. Calibrate
       confidence and cost curves on this GB10 workload before enabling adaptation.
-- [ ] Compare adapters on the pinned quantized target, cold and reused prefixes,
+- [x] Compare adapters on the pinned quantized target, cold and reused prefixes,
       greedy/sampled requests and mixed concurrency. Promote a proposer/profile
       only when quality and measured end-to-end performance justify it.
-- [ ] Bound prefill interference using an interactive decode-latency target.
-      Measure requests arriving during generation and choose prefill budgets
-      and draft widths jointly from a bounded cost policy. Keep graph execution
-      where useful; mixed prefill/decode is an experiment, not a requirement.
+- [x] Add a bounded prefill policy using an interactive decode-latency target.
+      Measure requests arriving during generation. Keep graph execution where
+      useful; mixed prefill/decode is an experiment, not a requirement.
+- [ ] Jointly choose prefill budgets and draft widths from a measured latency
+      policy. The implemented bounded policies are independent; first prove
+      that enabling either improves its protected workloads.
+      The 250 ms prefill pilot is rejected as a default: smaller observed stalls
+      came with much worse session TTFT/completion. Test shared prefill/verify
+      projection work before adding more scheduling heuristics.
+- [ ] Complete independent quality/performance promotion of confidence and
+      interactive policies. A short-context cost pilot is not a calibrated
+      all-context policy; the 250 ms scheduler target is best effort.
+- [ ] Complete equal-memory pressure/eviction and fresh competitive SGLang
+      comparisons before promoting a general-purpose proposer default.
 
 Sources for the reviewed requirements: [DSpark checkpoint](https://huggingface.co/RadixArk/Qwen3.8-27B-DSpark),
 [DSpark paper](https://arxiv.org/abs/2607.05147),
@@ -975,7 +993,8 @@ Additional required gates to implement in 7A–7D:
   Test request-local RNG independently of model rounding.
 - Realistic workload TTFT, inter-token and completion latency, useful cache-hit
   behavior, emitted throughput and memory. Phase 7C records per-suite targets
-  and statistical confidence before tuning; its new gates do not exist yet.
+  and statistical confidence before tuning; the frozen local pilot is in
+  `bench/workloads/local_v1.json`, with explicit limits in `docs/phase7c.md`.
 - Historical baselines stay immutable. When a verified correctness repair or
   a deliberate numerical-path change alters serial hashes, document the cause,
   before/after failing-case evidence, parity/quality results and workload costs
@@ -1079,25 +1098,27 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-Implement the **7C accepted-state reconstruction experiment** described in
-[docs/gb10-experiments.md](docs/gb10-experiments.md). The frozen pilot and
-diagnostic evidence are in [docs/phase7c.md](docs/phase7c.md).
+Use the [7D results](docs/phase7d.md) to choose the next speed experiment.
+Accepted-state reconstruction and native external proposers now exist; avoid
+rebuilding their infrastructure in a separate path.
 
-1. Keep full FP32 per-token snapshots as the control. Add an experimental
-   target-verifier path that saves compact recurrence inputs and reconstructs
-   only the accepted-prefix final state before the existing commit operation.
-2. Prove bitwise committed state at every accept/EOS/budget position, B=1–4,
-   eager/graphs and cache miss/hit. Preserve A1–A8, continuation and failure
-   cleanup. Do not lower recurrent-state precision to meet the memory target.
-3. Compare fixed work and then the frozen HTTP workload. Count all retained
-   inputs, final scratch and graph/workspace allocations. Require the declared
-   25% capacity gain and <=5% protected latency regression; remove the
-   experiment if extra recurrence replay defeats these gates. Extend the local
-   comparator and independent-run evidence before promoting a speed claim.
-4. Refresh competitive configurations and cache-pressure/traffic evidence
-   alongside the bounded experiment.
-   Use 7D for draft-aware caching and richer proposers, 8 for validated unified
-   memory mechanisms, and 9 for further kernels and final AOT coverage.
+1. Freeze a DFlash2/DSpark versus repaired-MTP comparison at equal total memory,
+   including realistic long sessions, eviction, natural stopping and sampled
+   quality. Refresh SGLang on the same pinned target and workloads. Choose a
+   workload-specific profile only after these gates; no universal lead is proven.
+2. Profile the best external draft path. Measure its full vocabulary projection,
+   conditional correction/selector, feature-to-KV ingestion, target verify and
+   state commit separately. Fuse the dominant repeated work while retaining the
+   existing BF16/reference arithmetic as an oracle. Optimize useful tokens per
+   unit time, not acceptance percentage.
+3. Prototype reconstruction directly into StateManager-owned committed slots
+   after validating all accepted counts, eliminating final scratch and its copy.
+   Keep untouched source-state reads and exactly-once ownership publication;
+   demand the same bitwise state/stop/cache gates and client-visible improvement.
+4. Use Phase 8 for measured prepacked weight loading and reclaimable optional
+   cache slabs. Streaming checkpoint-map release already lowers the measured
+   host load peak; it does not prove zero-copy hot inference. Keep physical
+   memory accounting and CPU contention measurements alongside each experiment.
 
 Rebuilding/promoting the serving image is a separate step; the running image
 and historical competitive numbers have not been replaced.

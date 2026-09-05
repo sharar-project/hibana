@@ -29,9 +29,9 @@ import local_workloads
 
 
 @contextmanager
-def http_server(ex, tok, snapshot, description):
+def http_server(ex, tok, snapshot, description, scheduler_config=None):
     import uvicorn
-    engine = EngineLoop(Scheduler(ex, SchedulerConfig()))
+    engine = EngineLoop(Scheduler(ex, scheduler_config or SchedulerConfig()))
     engine.start()
     app = create_app(engine, tok, ChatTemplate(snapshot), description)
     sock = socket.socket()

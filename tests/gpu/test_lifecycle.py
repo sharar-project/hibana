@@ -37,15 +37,26 @@ def test_cache_restore_matches_manual_restore_at_every_layer(setup, tmp_path):
         ex.spec = spec
 
 
-@pytest.fixture(scope='module')
-def runtime():
+@pytest.fixture(scope='module', params=['snapshots', 'reconstruct'])
+def runtime(request):
     from sharar.model.qwen38 import Qwen38
+    import gc
     config.check()
+    # Pytest drops the previous parametrized fixture's cached result after
+    # its finalizer, so collect its executor/graph cycles before the next load.
+    gc.collect()
     torch.cuda.empty_cache()
     model = Qwen38(config.snapshot_dir(), log=print)
     torch.cuda.empty_cache()
     ex = Executor(model, num_pages=35000, num_slots=12, log=print)
-    ex.enable_spec(3, log=print)
+    ex.enable_spec(3, log=print, state_strategy=request.param)
+    if request.param == 'reconstruct':
+        # Test-only reference storage: the original verify kernel writes all
+        # FP32 snapshots while the optimized path commits its reconstruction.
+        # Production reconstruction never allocates this control tensor.
+        spec = ex.spec
+        spec.inter_ssm_all = torch.empty((48, ex.max_batch, spec.steps, 48, 128, 128), dtype=torch.float32, device=ex.device)
+        spec.inter_ssm = {lid: spec.inter_ssm_all[i] for i, lid in enumerate(ex.state_pool.layer_ids)}
     torch.cuda.empty_cache()
     print('before capture:', ex.ledger.describe(), flush=True)
     ex.capture_graphs(log=print)
@@ -53,7 +64,14 @@ def runtime():
     print('after capture:', ex.ledger.describe(), flush=True)
     ex.warmup(log=print)
     torch.cuda.empty_cache()
-    return ex, build_prompts(config.snapshot_dir())
+    yield ex, build_prompts(config.snapshot_dir())
+    ex.flush_cache()
+    if request.param == 'reconstruct':
+        del spec
+    del ex, model
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 @pytest.fixture
@@ -105,7 +123,7 @@ def test_speculative_stops_commit_exact_snapshots_and_resume(setup, monkeypatch,
     original = ex.spec._accept
     checks = []
 
-    def checked_accept(rs, y, z, features, t0, t1):
+    def checked_accept(rs, y, z, features, t0, t1, **kwargs):
         y_cpu, z_cpu = y.tolist(), z.tolist()
         before = [len(r.output_ids) for r in rs]
         for i, r in enumerate(rs):
@@ -115,7 +133,7 @@ def test_speculative_stops_commit_exact_snapshots_and_resume(setup, monkeypatch,
                     a += 1
                 candidates = y_cpu[i][:a] + [z_cpu[i][a]]
                 r.params.stop_token_ids = (candidates[min(i, len(candidates) - 1)],)
-        original(rs, y, z, features, t0, t1)
+        original(rs, y, z, features, t0, t1, **kwargs)
         for i, r in enumerate(rs):
             count = len(r.output_ids) - before[i]
             assert torch.equal(ex.state_pool.ssm_all[:, r.slot], ex.spec.inter_ssm_all[:, i, count - 1])
@@ -239,6 +257,29 @@ def test_scheduler_short_budgets_and_profile_boundary(setup, graphs):
     r = sched.submit(ids, SamplingParams(max_new_tokens=2, ignore_eos=True))
     sched.run_until_idle()
     assert r.released and r.finish_reason == 'length' and len(r.output_ids) == 2
+
+
+@pytest.mark.parametrize('batched', [False, True])
+def test_unaligned_prefill_checkpoint_and_draft_cache_restore(setup, batched):
+    configure, admit = setup
+    ex, _ = configure(True, 'cold')
+    ids = random_ids(2172, 801)
+    reqs = [admit(ids, SamplingParams(max_new_tokens=2, ignore_eos=True)) for _ in range(2 if batched else 1)]
+    for i, r in enumerate(reqs):
+        ex.prefill(r, 1910 - 5 * i)
+    ex.prefill_batch([(r, r.prefill_len - r.prefill_pos) for r in reqs])
+    for i, r in enumerate(reqs):
+        start = 1910 - 5 * i
+        assert all((p - start) % 64 == 0 for p in r.checkpoints if p < len(ids))
+        assert all(torch.isfinite(ex.state_pool.ssm_all[:, slot]).all() for slot in r.checkpoints.values())
+    ex.decode_step(reqs)
+    assert all(r.finished and r.committed_len == 2173 for r in reqs)
+    for r in reqs:
+        ex.release(r)
+    before = ex.spec.proposer.cache_fallbacks
+    resumed = ex.generate(ids, SamplingParams(max_new_tokens=2, ignore_eos=True))
+    assert resumed.prefix_len > 0 and resumed.spec_rounds == 1 and resumed.released
+    assert ex.spec.proposer.cache_fallbacks == before
 
 
 @pytest.mark.parametrize('graphs', [False, True])

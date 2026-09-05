@@ -35,7 +35,9 @@ class RequestState:
     checkpoints: dict[int, int] = field(default_factory=dict)
     reservation: Reservation | None = None
     cacheable: bool = True
+    cache_enabled: bool = False
     released: bool = False
+    cache_auxiliary: dict[int, dict] = field(default_factory=dict)
 
 
 class StateManager:
@@ -84,6 +86,7 @@ class StateManager:
                 self.cache.lock(match.node, -1)
             raise
         req.match, req.slot, req.pages = match, slot, pages
+        req.cache_enabled = self.cache is not None
         req.prefix_len = req.committed_len = req.prefill_pos = prefix
 
     def checkpoint(self, req: Request, position: int, *, copy: bool = False) -> int | None:
@@ -184,6 +187,7 @@ class StateManager:
             for slot in req.checkpoints.values():
                 self.recurrent.free(slot)
         req.pages, req.slot, req.checkpoints = None, -1, {}
+        req.cache_auxiliary = {}
 
     def _insert(self, req: Request) -> bool:
         ids = req.prompt_ids + req.output_ids[:-1]
@@ -194,7 +198,7 @@ class StateManager:
         for p, slot in req.checkpoints.items():
             if p >= n:
                 self.recurrent.free(slot)
-        new_start = self.cache.insert(ids, req.pages[:n], snapshots)
+        new_start = self.cache.insert(ids, req.pages[:n], snapshots, req.cache_auxiliary)
         if new_start > req.prefix_len:
             self.kv.free(req.pages[req.prefix_len:new_start])
         if len(req.pages) > n:

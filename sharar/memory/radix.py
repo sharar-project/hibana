@@ -26,6 +26,7 @@ class Node:
     parent: "Node | None"
     children: dict[int, "Node"] = field(default_factory=dict)
     snapshot_slot: int | None = None
+    auxiliary: dict = field(default_factory=dict)  # draft identity -> metadata for these pages
     lock: int = 0
     last_access: float = field(default_factory=time.monotonic)
 
@@ -102,7 +103,7 @@ class RadixCache:
             self.flush()
 
     # ---- insertion ----
-    def insert(self, ids: list[int], pages: torch.Tensor, snapshots: dict[int, int]) -> int:
+    def insert(self, ids: list[int], pages: torch.Tensor, snapshots: dict[int, int], auxiliary: dict | None = None) -> int:
         """Insert a full sequence. `pages` are its KV pages (the cache owns the
         ones it keeps), `snapshots` maps prefix length -> state slot (owned by
         the cache from now on) and forces node boundaries there.
@@ -124,6 +125,8 @@ class RadixCache:
                     new_start = pos
                 new = Node(key=ids[pos:next_b], pages=pages[pos:next_b].clone(), parent=node)
                 new.snapshot_slot = snapshots.get(next_b)
+                if new.snapshot_slot is not None:
+                    new.auxiliary = (auxiliary or {}).get(next_b, {})
                 node.children[ids[pos]] = new
                 self.cached_tokens += next_b - pos
                 node, pos = new, next_b

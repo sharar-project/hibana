@@ -139,3 +139,43 @@ If replay cost defeats those gates, discard this prototype and test session
 cache value or verified-prefix draft readiness next. The alternative of
 device-resident progress remains useful if later scheduling/width changes
 expose a larger host bottleneck.
+
+## 7D implementation and next mechanism
+
+[The 7D experiment](phase7d.md) implements compact-input reconstruction while
+retaining full snapshots as the default control. Total verify buffers at B=4,
+k=3 fall from 2,349 to 633.28 MiB (73.04%). The initial equal-strategy HTTP
+comparison shows small latency changes, not a demonstrated 10% gain. Keep
+capacity, measured CUDA allocation and physical traffic claims separate.
+The new MTP cache/bonus-KV repairs add necessary work; their corrected baseline
+must replace the old broken path as the optimization control.
+
+Streaming checkpoint-map release is also implemented: the measured net host
+load peak falls from 39.40 to about 21.3 GiB with unchanged CUDA peaks and
+load time. It removes overlapping host mappings, not the CPU-to-CUDA copy.
+Test versioned prepacked layouts and allocation visibility before claiming
+zero-copy load or placing hot weights in mapped/managed memory.
+
+The next state-retention prototype should let StateManager authorize a fused
+reconstruction into the committed slots after every count is validated. It
+could remove the final FP32 scratch and subsequent copy. Source state must be
+read before each tile writes its result; accepted page tails and feature
+publication must still obey the shared transaction boundary. Measure it against
+the current reconstruction path, including batch padding and early stop.
+
+For speed, first profile the newly working DFlash2/DSpark graphs: parallel
+draft projection, conditional candidate selection and accepted feature-to-KV
+ingestion can expose costs absent from the MTP trace. Fuse only measured
+dominant work. Maintain an independent BF16 arithmetic oracle and the common
+exact stochastic verifier. Current fixed-width pilot costs differ only modestly,
+so confidence tuning alone is not an established large speed opportunity.
+
+The 250 ms separate-prefill feedback pilot is rejected for default use: it
+reduced observed stream stalls but more than doubled mixed-session completion
+time. A new hypothesis is to share target projections across prefill tokens
+and short verification blocks, then run their distinct recurrent operations
+and preserve their separate commits. This may amortize another weight traversal
+on bandwidth-limited GB10. First attribute the duplicated work in a mixed trace;
+then compare a bounded mixed-forward prototype with the existing separate
+forwards, at equal memory and the same arrival/quality gate. Do not replace
+clear ownership with a general scheduler framework to attempt this experiment.

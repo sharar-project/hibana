@@ -69,6 +69,7 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
     stride_beta_slot: tl.constexpr = 0,
     MAX_CACHE_LEN: tl.constexpr = 0,
     CACHE_RING: tl.constexpr = False,
+    RING_USES_SCRATCH: tl.constexpr = False,
     SPLIT_N_HV_GRID: tl.constexpr = False,
     USE_GDC: tl.constexpr = False,
 ):
@@ -227,7 +228,10 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
         # ring; the overflow steps are past the committable prefix, so drop them
         # (writing them would smash the next slot's ring).
         if CACHE_RING:
-            ring_slot = tl.load(h0_indices + i_n).to(tl.int64)
+            if RING_USES_SCRATCH:
+                ring_slot = tl.load(intermediate_state_indices + i_n).to(tl.int64)
+            else:
+                ring_slot = tl.load(h0_indices + i_n).to(tl.int64)
             if ring_slot >= 0 and step_idx < MAX_CACHE_LEN:
                 tl.store(
                     replayssm_rawv
@@ -246,7 +250,7 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
                         + step_idx * K
                         + o_k,
                         b_k.to(replayssm_rawk.dtype.element_ty),
-                        mask=mask_k,
+                        mask=mask_k & (i_hv % (HV // H) == 0),
                     )
                     # b_g follows IS_KDA: KDA loads a/dt_bias with mask_k, so the
                     # gate is a per-K vector and the ring row is K wide; GDN's is
@@ -373,6 +377,7 @@ def fused_sigmoid_gating_delta_rule_update(
     # stores pre-norm k / raw v / gate / beta into these per-slot rings,
     # replacing the eager ring-write. Off by default -> decode unchanged.
     cache_ring: bool = False,
+    ring_uses_scratch: bool = False,
     replayssm_rawv: Optional[torch.Tensor] = None,
     replayssm_rawk: Optional[torch.Tensor] = None,
     replayssm_g: Optional[torch.Tensor] = None,
@@ -523,6 +528,7 @@ def fused_sigmoid_gating_delta_rule_update(
         stride_beta_slot=stride_beta_slot,
         MAX_CACHE_LEN=max_cache_len,
         CACHE_RING=cache_ring,
+        RING_USES_SCRATCH=ring_uses_scratch,
         SPLIT_N_HV_GRID=split_n_hv_grid,
         num_warps=num_warps,
         num_stages=num_stages,

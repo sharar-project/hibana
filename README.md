@@ -76,7 +76,7 @@ sched-bench` (the six matrix cells through the scheduler). All run inside
 Contributors can run CPU checks without a GPU or model:
 `bash tools/check.sh setup-cpu`. Start with [CONTRIBUTING.md](CONTRIBUTING.md)
 and [the execution/ownership interfaces](docs/interfaces.md). The MTP and
-n-gram adapters share target verification and state commit; n-gram is selectable
+n-gram, DSpark and DFlash2 adapters share target verification and state commit; n-gram is selectable
 with `sharar serve --spec 3 --proposer ngram` as a contract/reference adapter.
 Hardware research directions and decision criteria are in
 [the GB10 experiment plan](docs/gb10-experiments.md).
@@ -92,11 +92,12 @@ Hardware research directions and decision criteria are in
 
 ## Status
 
-Phases 0 to 7, the Phase 7A correctness repairs and Phase 7B extension contracts
-are implemented. [Phase 7B evidence](docs/phase7b.md) records 129 CPU passes,
-220 passes on GB10 and an unchanged-profile comparison with identical outputs
-and at most 0.47% median slowdown across 12 cells. The next phase freezes local
-workloads and starts the GB10 mechanism experiments. Historical
+Phases 0–7D include lifecycle repairs, extension contracts, frozen local
+workloads, native DSpark/DFlash2, draft-aware caching and experimental accepted-state
+reconstruction. [Phase 7D evidence and remaining gates](docs/phase7d.md) record
+the GB10 tests, 73% smaller verify buffers, lower measured load peak and pilot
+workload comparisons. External drafts improve several tested workloads but
+have not established a universal lead or passed every promotion gate. Historical
 measurements below predate the repairs. The engine loads the checkpoint, prefills, and
 decodes with CUDA graphs at 12.1 tok/s single-stream and 44.6 aggregate at
 batch 4 (reference 12.7 and 46.4), passes the four quality canaries and the

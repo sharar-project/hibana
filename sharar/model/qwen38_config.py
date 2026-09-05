@@ -26,6 +26,7 @@ RMS_NORM_EPS = 1e-6
 MAX_POSITION_EMBEDDINGS = 262144
 NVFP4_GROUP_SIZE = 16
 
-# Conservative startup budget, including weights and transient materialization.
-# Refine with measured load peaks; this is not a steady-state allocation total.
-WEIGHT_LOAD_PEAK_BYTES = 48 * 2**30
+# GB10 measured after releasing source mappings per layer: 21.36 GiB peak
+# MemAvailable drop (20 ms samples), 19.58 GiB CUDA peak. 24 GiB retains a
+# 2.64 GiB margin; the separate 16 GiB host floor still applies. See phase7d.
+WEIGHT_LOAD_PEAK_BYTES = 24 * 2**30

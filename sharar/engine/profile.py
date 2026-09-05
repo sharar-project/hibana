@@ -7,13 +7,13 @@ from dataclasses import dataclass
 class ServingProfile:
     max_context: int = 32768
     max_batch: int = 4
-    max_spec_depth: int = 4
+    max_spec_depth: int = 7  # target verification; each adapter also limits its width
     max_queued: int = 16
     chunk_size: int = 2048
     prefill_budget: int = 4096
 
     def __post_init__(self):
-        for name, upper in (("max_context", 32768), ("max_batch", 4), ("max_spec_depth", 4)):
+        for name, upper in (("max_context", 32768), ("max_batch", 4), ("max_spec_depth", 7)):
             value = getattr(self, name)
             lower = 2 if name == "max_context" else 1
             if type(value) is not int or not lower <= value <= upper:

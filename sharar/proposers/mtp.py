@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+from sharar import config
 
 from sharar.engine.contracts import FeatureRequest, ProposerContext, ProposerRequirements
 
@@ -15,6 +16,7 @@ class MtpState:
     last_hidden: torch.Tensor | None = None
     pending_token: int | None = None
     pending_hidden: torch.Tensor | None = None
+    valid_prefix: bool = True
 
 
 class MtpProposer:
@@ -22,6 +24,8 @@ class MtpProposer:
         self.head, self.context, self.k = head, context, k
         self.requirements = ProposerRequirements("mtp", FeatureRequest(final_norm=True), persistent_bytes=head.bytes)
         self.graphs = None
+        self.cache_identity = (config.MODEL_ID, config.MODEL_REVISION, "native-mtp", "final_norm-v1", "bf16-kv-target-forced-v1")
+        self.cache_hits = self.cache_fallbacks = 0
 
     def _state(self, req) -> MtpState:
         if req.proposer_state is None:
@@ -34,6 +38,14 @@ class MtpProposer:
         state = self._state(req)
         norm_rows = result["norm"]
         n, end = len(new_ids), start + len(new_ids)
+        if start and state.last_hidden is None:
+            cached = req.match.node.auxiliary.get(self.cache_identity) if req.match is not None else None
+            if cached is not None and cached[0] == start:
+                state.last_hidden, state.draft_pos = cached[1], start
+                self.cache_hits += 1
+            else:
+                state.valid_prefix = False
+                self.cache_fallbacks += 1
         first = max(1, start)
         if start > 0 and state.last_hidden is None:
             first = start + 1
@@ -45,12 +57,21 @@ class MtpProposer:
                 hid = norm_rows[first - start - 1:n - 1]
             pos = torch.arange(first, end, dtype=torch.int64, device=self.context.device)
             pages = req.pages[first:end]
-            kv_pages = req.pages[1:end] if first == 1 or state.draft_pos >= first else req.pages[first:end]
-            self.head.forward(toks, hid, pos, pages, [end - first], [kv_pages])
+            self.head.write_kv(toks, hid, pos, pages)
             state.draft_pos = end
         else:
             state.draft_pos = max(state.draft_pos, first)
-        state.last_hidden = norm_rows[-1]
+        state.last_hidden = norm_rows[-1].clone()
+        self._checkpoint(req, start, end, norm_rows)
+
+    def _checkpoint(self, req, start, end, norm_rows):
+        state = self._state(req)
+        # Interior state checkpoints plus only the latest end feature.
+        req.cache_auxiliary = {p: value for p, value in req.cache_auxiliary.items() if p in req.checkpoints}
+        if state.valid_prefix:
+            for position in (*req.checkpoints, end):
+                if start < position <= end:
+                    req.cache_auxiliary[position] = {self.cache_identity: (position, norm_rows[position - start - 1].clone())}
 
     def start(self, req, token):
         state = self._state(req)
@@ -58,7 +79,7 @@ class MtpProposer:
         state.pending_hidden = state.last_hidden.unsqueeze(0)
 
     def ready(self, req):
-        return isinstance(req.proposer_state, MtpState) and req.proposer_state.pending_token is not None
+        return isinstance(req.proposer_state, MtpState) and req.proposer_state.valid_prefix and req.proposer_state.pending_token is not None
 
     def propose(self, requests, pages, inputs, *, graphs):
         hids, kv = [], []
@@ -86,12 +107,19 @@ class MtpProposer:
 
     def accepted(self, req, emitted, features, row):
         state = self._state(req)
+        count = len(emitted)
+        inputs = [state.pending_token] + emitted[:-1]
+        state.last_hidden = state.pending_hidden[0]
+        self.ingest_prefill(req, inputs, req.committed_len - count, {"norm": features.norm[row, :count]})
         state.pending_token = None if req.finished else int(emitted[-1])
         state.pending_hidden = None if req.finished else features.norm[row, len(emitted) - 1:len(emitted)]
         state.draft_pos = req.committed_len
 
     def release(self, req):
         req.proposer_state = None
+
+    def prepare_release(self, req):
+        pass  # features are retained at checkpoint creation/accepted commit
 
     def capture_graphs(self, log=None):
         from sharar.proposers.mtp_graphs import DraftGraphs

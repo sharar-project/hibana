@@ -85,8 +85,8 @@ def run(ex, tok, output):
     ex.cache = None
     rows = []
     try:
-        for mode in ('plain', 'mtp'):
-            ex.spec = spec if mode == 'mtp' else None
+        for mode in ('plain', spec.proposer.requirements.name):
+            ex.spec = spec if mode != 'plain' else None
             for length, batch in ((128, 1), (128, 4), (8192, 1), (8192, 4)):
                 owned = []
                 def prepare():
@@ -139,8 +139,10 @@ def run(ex, tok, output):
                            'unprofiled': unprofiled, 'median_unprofiled_ms_per_step': statistics.median(s['ms_per_step'] for s in unprofiled),
                            'trace': summary, 'available_gib': mem_available_bytes() / 2**30,
                            'allocated_gib': torch.cuda.memory_allocated() / 2**30,
-                           'verify_ssm_shape': list(spec.inter_ssm_all.shape),
-                           'verify_ssm_bytes': spec.inter_ssm_all.numel() * spec.inter_ssm_all.element_size(),
+                           'verify_ssm_shape': list(spec.inter_ssm_all.shape) if spec.inter_ssm_all is not None else None,
+                           'verify_state_strategy': spec.state_strategy,
+                           'verify_buffer_bytes': spec.bytes,
+                           'verify_ssm_bytes': spec.inter_ssm_all.numel() * spec.inter_ssm_all.element_size() if spec.inter_ssm_all is not None else 0,
                            'verify_conv_bytes': spec.conv_windows_all.numel() * spec.conv_windows_all.element_size()}
                     rows.append(row)
                     (output / 'summary.json').write_text(json.dumps(rows, indent=2) + '\n')

@@ -27,7 +27,7 @@ CHECKPOINT_INTERVAL = 2048  # GDN snapshots inside long prefills (multiple of 64
 
 
 class Executor:
-    def __init__(self, model: Qwen38, num_pages: int | None = None, num_slots: int | None = None, max_batch: int = 4, use_cache: bool = True, log=None, max_context: int = config.CONTEXT_LENGTH):
+    def __init__(self, model: Qwen38, num_pages: int | None = None, num_slots: int | None = None, max_batch: int = 4, use_cache: bool = True, log=None, max_context: int = config.CONTEXT_LENGTH, spec_config=None):
         self.profile = ServingProfile(max_context=max_context, max_batch=max_batch)
         import flashinfer
 
@@ -36,12 +36,18 @@ class Executor:
         self.device = model.device
         self.ledger = Ledger()
         self.ledger.record_cuda_allocated("weights")
+        future, extra_page = 2 * 2**30, 0
+        if spec_config is not None:
+            from sharar.memory.spec_budget import budget
+            future, extra_page = budget(spec_config, max_batch, max_context)
         if num_pages is None or num_slots is None:
-            plan = self.ledger.plan(max_running=max_batch, context_len=max_context)
+            plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future, extra_page_bytes=extra_page)
             num_pages = num_pages or plan.kv_tokens
             num_slots = num_slots or plan.state_slots
         if type(num_pages) is not int or num_pages < 2 or type(num_slots) is not int or num_slots < 2:
             raise ValueError("pools need at least one usable entry plus the reserved dummy entry")
+        from sharar.memory.ledger import check_load_headroom, KV_BYTES_PER_TOKEN, STATE_BYTES_PER_SLOT
+        check_load_headroom(num_pages * (KV_BYTES_PER_TOKEN + extra_page) + num_slots * STATE_BYTES_PER_SLOT + future + 8 * 2**30)
         self.kv_pool = KvPool(num_pages, self.device)
         self.ledger.record_cuda_allocated("kv_pool")
         self.state_pool = StatePool(num_slots, self.device)
@@ -62,6 +68,8 @@ class Executor:
         self.spec = None
         if log:
             log(f"  pools: {num_pages} KV pages ({self.kv_pool.bytes / 2**30:.2f} GiB), {num_slots} state slots ({num_slots * self.state_pool.bytes_per_slot / 2**30:.2f} GiB)")
+        if spec_config is not None:
+            self.enable_spec(spec_config.depth, log=log, proposer=spec_config.name, state_strategy=spec_config.state_strategy)
 
     @property
     def cache(self):
@@ -71,12 +79,17 @@ class Executor:
     def cache(self, value):
         self.state.cache = value
 
-    def enable_spec(self, k: int = 3, log=None, *, proposer: str = "mtp") -> None:
+    def enable_spec(self, k: int = 3, log=None, *, proposer: str = "mtp", state_strategy: str = "snapshots") -> None:
         """Select an adapter once at startup; MTP remains the serving default."""
-        if type(k) is not int or not 1 <= k <= 4:
-            raise ValueError("supported speculative depth is 1 through 4")
+        limit = 7 if proposer in ("dspark", "dflash2") else 4
+        if type(k) is not int or not 1 <= k <= limit:
+            raise ValueError(f"supported speculative depth is 1 through {limit}")
         if self.graphs is not None or self.spec is not None:
             raise ValueError("enable speculation once, before graph capture")
+        from sharar.memory.spec_budget import SpecConfig, budget
+        from sharar.memory.ledger import check_load_headroom
+        fixed, per_page = budget(SpecConfig(proposer, k, state_strategy), self.max_batch, self.max_context)
+        check_load_headroom(fixed + per_page * self.kv_pool.num_pages + 8 * 2**30)
         context = ProposerContext(self.device, self.max_batch, self.max_context)
         if proposer == "mtp":
             from sharar.model.mtp import MtpHead
@@ -91,26 +104,32 @@ class Executor:
         elif proposer == "ngram":
             from sharar.proposers.ngram import NGramProposer
             adapter = NGramProposer(context, k)
+        elif proposer in ("dspark", "dflash2"):
+            from sharar.model.parallel_draft import ParallelDraftModel
+            from sharar.proposers.parallel import ParallelProposer, PINS
+            name, revision = PINS[proposer]
+            root = config.snapshot_dir().parents[2]
+            snapshot = root / ("models--" + name.replace("/", "--")) / "snapshots" / revision
+            adapter = ParallelProposer(ParallelDraftModel(snapshot, self.model, self.max_context), context, k, proposer)
         else:
             raise ValueError(f"unknown proposer {proposer!r}")
-        self.set_proposer(adapter)
+        self.set_proposer(adapter, state_strategy=state_strategy)
         self.ledger.record_cuda_allocated("proposer_and_verify")
         if log:
             log(f"  proposer: {adapter.requirements.name}, persistent {adapter.requirements.persistent_bytes / 2**30:.2f} GiB, verify buffers {self.spec.bytes / 2**30:.2f} GiB, k={k}")
 
-    def set_proposer(self, proposer: Proposer) -> None:
+    def set_proposer(self, proposer: Proposer, *, state_strategy: str = "snapshots") -> None:
         from sharar.engine.spec import SpecDecoder
         if self.graphs is not None or self.spec is not None:
             raise ValueError("select a proposer once, before graph capture")
         if proposer.context != ProposerContext(self.device, self.max_batch, self.max_context):
             raise ValueError("proposer context does not match executor")
-        if type(proposer.k) is not int or not 1 <= proposer.k <= 4:
+        limit = 7 if proposer.requirements.name in ("dspark", "dflash2") else 4
+        if type(proposer.k) is not int or not 1 <= proposer.k <= limit:
             raise ValueError("unsupported proposal width")
         if any(type(i) is not int or not 0 <= i < config.NUM_LAYERS for i in proposer.requirements.features.layers):
             raise ValueError("invalid target feature layer")
-        if not proposer.requirements.greedy_only:
-            raise ValueError("stochastic proposal verification is not implemented")
-        self.spec = SpecDecoder(self, proposer)
+        self.spec = SpecDecoder(self, proposer, state_strategy)
 
     def capture_graphs(self, log=print) -> None:
         self.graphs = DecodeGraphs(self)
@@ -133,7 +152,7 @@ class Executor:
             raise InvalidRequest(f"prompt plus output budget exceeds context limit {self.max_context}")
         # A single request must be able to finish even after all other readers
         # leave. Full verify blocks need temporary pages beyond the output cap.
-        padding = self.spec.k if self.spec is not None and params.greedy else 0
+        padding = self.spec.k if self.spec is not None and (params.greedy or not self.spec.proposer.requirements.greedy_only) else 0
         if len(prompt_ids) + params.max_new_tokens + padding > self.kv_pool.num_pages - 1:
             raise InvalidRequest("request plus speculative scratch exceeds KV pool capacity")
 
@@ -152,7 +171,7 @@ class Executor:
         return self.state.can_admit(prompt_len, reserve_tokens)
 
     def admission_reserve(self, req: Request, limit: int) -> int:
-        padding = self.spec.k if self.spec is not None and req.params.greedy else 0
+        padding = self.spec.k if self.spec is not None and (req.params.greedy or not self.spec.proposer.requirements.greedy_only) else 0
         return min(limit, req.params.max_new_tokens - len(req.output_ids) + padding)
 
     def cache_stats(self) -> dict | None:
@@ -168,6 +187,8 @@ class Executor:
     def release(self, req: Request) -> None:
         if req.released:
             return
+        if self.spec is not None and hasattr(self.spec.proposer, "prepare_release"):
+            self.spec.proposer.prepare_release(req)
         self.state.release(req)
         if self.spec is not None:
             self.spec.proposer.release(req)
@@ -189,17 +210,17 @@ class Executor:
         )
 
     def _checkpoint_positions(self, start: int, end: int, total: int) -> list[int]:
-        """Absolute positions (multiples of 64, strictly inside this chunk's new
-        tokens (start, end)) where GDN state is snapshotted: every
-        CHECKPOINT_INTERVAL for shared long prefixes, plus the last 64-boundary
+        """Absolute positions aligned to this forward's 64-token GDN chunks.
+        Snapshot near each CHECKPOINT_INTERVAL, plus the last local boundary
         before the prompt end so an identical prompt re-sent later recomputes at
         most 64 tokens (the last token is never served from cache: its logits
         are needed)."""
         if self.cache is None:
             return []
         first = (start // CHECKPOINT_INTERVAL + 1) * CHECKPOINT_INTERVAL
-        positions = [p for p in range(first, end, CHECKPOINT_INTERVAL) if p > start]
-        last = ((total - 1) // 64) * 64
+        positions = [start + ((p - start + 63) // 64) * 64 for p in range(first, end, CHECKPOINT_INTERVAL)]
+        positions = [p for p in positions if start < p < end]
+        last = start + ((total - start - 1) // 64) * 64
         if start < last < end and last not in positions:
             positions.append(last)
         return sorted(positions)
@@ -382,7 +403,8 @@ class Executor:
         With speculative decoding on, greedy requests go through spec rounds
         and sampled ones through the plain step."""
         assert 0 < len(reqs) <= self.max_batch
-        spec_reqs = [r for r in reqs if self.spec is not None and r.params.greedy and self.spec.ready(r)]
+        spec_reqs = [r for r in reqs if self.spec is not None and self.spec.ready(r)
+                     and (r.params.greedy or not self.spec.proposer.requirements.greedy_only)]
         plain = [r for r in reqs if r not in spec_reqs]
         need = len(plain) + (len(spec_reqs) * self.spec.steps if spec_reqs else 0)
         # Retraction retries the entire batch. Reserve both paths before either
@@ -396,13 +418,18 @@ class Executor:
         new_pages = self.state.reserve(reqs, 1)
         step_pages = [self.state.step_pages(r) for r in reqs]
         if self.use_graphs and self.graphs is not None:
-            logits = self.graphs.run(
+            result = self.graphs.run(
                 [r.output_ids[-1] for r in reqs],
                 [r.context_len - 1 for r in reqs],
                 [r.slot for r in reqs],
                 new_pages,
                 step_pages,
+                return_features=self.spec is not None,
             )
+            if self.spec is not None:
+                logits, out = result
+            else:
+                logits = result
         else:
             positions = torch.tensor([r.context_len - 1 for r in reqs], dtype=torch.int64, device=self.device)
             tokens = torch.tensor([r.output_ids[-1] for r in reqs], dtype=torch.int64, device=self.device)
@@ -412,11 +439,20 @@ class Executor:
                 slots=torch.tensor([r.slot for r in reqs], dtype=torch.int32, device=self.device),
                 out_pages=new_pages, decode_wrapper=self._decode_wrapper, batch_size=len(reqs),
             )
+            if self.spec is not None:
+                ctx.feature_request = self.spec.proposer.requirements.features
             out = self.model.forward(tokens, ctx)
             logits = self.model.logits(out["norm"])
         next_tokens = self.sampler.sample(logits, [r.params for r in reqs], [r.generator for r in reqs]).tolist()
-        for r, tok in zip(reqs, next_tokens):
+        for i, (r, tok) in enumerate(zip(reqs, next_tokens)):
+            pending = r.output_ids[-1]
             self.state.commit(r, 1)
+            if self.spec is not None:
+                rows = {"norm": out["norm"][i:i + 1]}
+                if "features" in out:
+                    rows["features"] = {lid: value[i:i + 1] for lid, value in out["features"].items()}
+                self.spec.ingest_prefill(r, [pending], r.committed_len - 1, rows)
+                self.spec.start(r, int(tok))
             r.push(int(tok))
         return next_tokens
 

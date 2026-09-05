@@ -10,7 +10,9 @@ CONFIG_FILE="${SHARAR_CONFIG_FILE:-$SCRIPT_DIR/config/gb10.env}"
 IMAGE="${SHARAR_IMAGE:-sharar:qwen38-27b}"
 CONTAINER="${SHARAR_CONTAINER:-sharar-qwen38}"
 PORT="${SHARAR_PORT:-30001}"
-SPEC="${SHARAR_SPEC:-0}"   # MTP speculative decoding draft tokens (0 = off)
+SPEC="${SHARAR_SPEC:-0}"   # speculative draft tokens (0 = off)
+PROPOSER="${SHARAR_PROPOSER:-mtp}"
+VERIFY_STATE="${SHARAR_VERIFY_STATE:-snapshots}"
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
 STATE_DIR="$RESULTS_DIR/runtime-state"   # JIT caches; persists across restarts
@@ -24,7 +26,7 @@ trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; printf '%s' "${v%"${v##*[
 
 if [[ "${1:-}" == "--stop" ]]; then
   systemctl --user stop "$GUARD_UNIT" 2>/dev/null || true
-  docker stop --time 15 "$CONTAINER" >/dev/null 2>&1 || true
+  docker stop --timeout 45 "$CONTAINER" >/dev/null 2>&1 || true
   docker rm "$CONTAINER" >/dev/null 2>&1 || true
   echo "stopped $CONTAINER"
   exit 0
@@ -42,7 +44,7 @@ gpu_name="$(trim "$gpu_name")"; gpu_cc="$(trim "$gpu_cc")"; gpu_driver="$(trim "
 (( 10#${gpu_driver%%.*} >= 580 )) || fail "NVIDIA driver must be 580 or newer"
 mem_total=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo); mem_avail=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
 (( mem_total >= 120000000 )) || fail "at least 120 GB host memory is required"
-(( mem_avail >= 50000000 )) || fail "at least 48 GiB must be available before launch (have $((mem_avail / 1048576)) GiB)"
+(( mem_avail >= 41943040 )) || fail "at least 40 GiB must be available before the measured streaming load (have $((mem_avail / 1048576)) GiB); runtime checks the prospective pool/draft budget separately"
 snapshot_ok=false
 for root in "$CACHE_DIR" "$CACHE_DIR/hub"; do
   s="$root/models--RadixArk--Qwen3.8-27B-NVFP4/snapshots/$MODEL_REVISION"
@@ -57,7 +59,7 @@ Sharar preflight OK
   GPU: $gpu_name (SM $gpu_cc), driver $gpu_driver
   Model: RadixArk/Qwen3.8-27B-NVFP4@$MODEL_REVISION
   Host memory: $((mem_total / 1048576)) GiB total, $((mem_avail / 1048576)) GiB available; runtime floor $((GUARD_MIN_AVAILABLE_KIB / 1048576)) GiB
-  Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (speculative drafts: $SPEC)
+  Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (proposer: $PROPOSER, drafts: $SPEC, verify state: $VERIFY_STATE)
 EOT
 [[ "${1:-}" == "--check" ]] && exit 0
 
@@ -87,7 +89,11 @@ add_lib libnvidia-nvvm.so.4 libnvidia-nvvm.so.4; add_lib libnvidia-nvvm.so.4 lib
 add_lib libcudadebugger.so.1 libcudadebugger.so.1
 for gpucomp in "$DRIVER_LIB_DIR"/libnvidia-gpucomp.so.*; do [[ -f "$gpucomp" ]] && args+=(--mount "type=bind,src=$gpucomp,dst=$gpucomp,readonly"); done
 
-cid="$("${args[@]}" "$IMAGE" serve --host 0.0.0.0 --port "$PORT")"
+serve_args=(serve --host 0.0.0.0 --port "$PORT")
+# Default launches also work with the historical image until it is rebuilt.
+[[ "$PROPOSER" == mtp ]] || serve_args+=(--proposer "$PROPOSER")
+[[ "$VERIFY_STATE" == snapshots ]] || serve_args+=(--verify-state "$VERIFY_STATE")
+cid="$("${args[@]}" "$IMAGE" "${serve_args[@]}")"
 mkdir -p "$RESULTS_DIR"
 echo "$cid" > "$RESULTS_DIR/sharar-container-id.txt"
 if ! systemd-run --user --quiet --collect --unit "$GUARD_UNIT" --description "Sharar unified-memory guard" \

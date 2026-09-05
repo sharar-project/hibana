@@ -59,7 +59,10 @@ def main(argv: list[str] | None = None) -> int:
     p_serve = sub.add_parser("serve", help="OpenAI-compatible HTTP server")
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=30001)
-    p_serve.add_argument("--proposer", choices=("mtp", "ngram"), default="mtp")
+    p_serve.add_argument("--proposer", choices=("mtp", "ngram", "dspark", "dflash2"), default="mtp")
+    p_serve.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default="snapshots")
+    p_serve.add_argument("--interactive-target-ms", type=float, default=None)
+    p_serve.add_argument("--verify-policy", default=None, help="experimental measured DSpark cost/calibration profile")
     p_serve.add_argument("--spec", type=int, default=int(__import__("os").environ.get("SHARAR_SPEC", "0")), help="speculative decoding with k draft tokens (0 = off; --proposer selects the adapter)")
     p_prof = sub.add_parser("profile", help="kernel time breakdown for prefill or decode")
     p_prof.add_argument("--prompts", required=True)
@@ -104,7 +107,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         from sharar.api.server import serve
 
-        serve(args.host, args.port, spec=args.spec, proposer=args.proposer)
+        serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state,
+              interactive_target_ms=args.interactive_target_ms, verify_policy=args.verify_policy)
         return 0
     if args.command == "sched-bench":
         from sharar.engine.run import sched_bench_cli

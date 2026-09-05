@@ -65,6 +65,7 @@ class Qwen38:
         started = time.perf_counter()
         w = SnapshotWeights(snap)
         self.embed = w.get(f"{PREFIX}.embed_tokens.weight").to(self.device)
+        w.close()
         self.rope = PartialRotary(
             config.HEAD_DIM,
             int(config.HEAD_DIM * config.PARTIAL_ROTARY_FACTOR),
@@ -76,6 +77,11 @@ class Qwen38:
         self.layers: list[DecoderLayer] = []
         for i, kind in enumerate(types):
             self.layers.append(DecoderLayer(w, i, kind, self.device, self.rope, self.ragged, fused_silu_quant))
+            # GB10 counts source mappings and CUDA allocations against the
+            # same physical pool. No layer retains CPU checkpoint tensors.
+            # Reopen a shard on demand rather than holding every source map
+            # until the entire model is materialized.
+            w.close()
             if log and (i + 1) % 8 == 0:
                 log(f"  loaded {i + 1}/{len(types)} layers ({time.perf_counter() - started:.0f}s)")
         self.final_norm = GemmaRMSNorm(w.get(f"{PREFIX}.norm.weight").to(self.device), config.RMS_NORM_EPS)

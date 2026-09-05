@@ -52,5 +52,8 @@ class NGramProposer:
     def release(self, req):
         req.proposer_state = None
 
+    def prepare_release(self, req):
+        pass
+
     def capture_graphs(self, log=None):
         pass  # lookup runs on the CPU; it adds no target feature/graph capture

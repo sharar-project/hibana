@@ -72,6 +72,8 @@ class Ledger:
         state_slot_target: int = 96,
         kv_token_target: int = 1 << 20,
         cache_fraction: float = 0.5,
+        future_bytes: int = 0,
+        extra_page_bytes: int = 0,
     ) -> Plan:
         """Size the pools from what is available now.
 
@@ -83,17 +85,18 @@ class Ledger:
         slots, not pages, drive eviction, so the split is 40% pages / 60% slots.
         """
         available = mem_available_bytes()
-        budget = available - self.floor_bytes - prefill_reserve_bytes
-        must_kv = max_running * context_len * KV_BYTES_PER_TOKEN
+        budget = available - self.floor_bytes - prefill_reserve_bytes - future_bytes
+        page_bytes = KV_BYTES_PER_TOKEN + extra_page_bytes
+        must_kv = max_running * context_len * page_bytes
         must_state = (max_running + 1) * STATE_BYTES_PER_SLOT  # +1 dummy slot 0
         if budget < must_kv + must_state:
             raise MemoryError(
-                f"only {available / GIB:.1f} GiB available; need {(must_kv + must_state + prefill_reserve_bytes + self.floor_bytes) / GIB:.1f} GiB"
+                f"only {available / GIB:.1f} GiB available; need {(must_kv + must_state + prefill_reserve_bytes + future_bytes + self.floor_bytes) / GIB:.1f} GiB"
             )
         spare = int((budget - must_kv - must_state) * cache_fraction)
-        kv_tokens = min(kv_token_target, max_running * context_len + int(spare * 0.4) // KV_BYTES_PER_TOKEN)
+        kv_tokens = min(kv_token_target, max_running * context_len + int(spare * 0.4) // page_bytes)
         state_slots = min(state_slot_target, max_running + 1 + int(spare * 0.6) // STATE_BYTES_PER_SLOT)
-        return Plan(kv_tokens=kv_tokens, state_slots=state_slots, reserved_bytes=prefill_reserve_bytes)
+        return Plan(kv_tokens=kv_tokens, state_slots=state_slots, reserved_bytes=prefill_reserve_bytes + future_bytes)
 
     def check_floor(self) -> int:
         available = mem_available_bytes()

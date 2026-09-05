@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import secrets
 
 import torch
 
@@ -51,10 +52,8 @@ class Sampler:
     def __init__(self, device: torch.device):
         self.device = device
 
-    def generator(self, seed: int | None) -> torch.Generator | None:
-        if seed is None:
-            return None
-        return torch.Generator(device=self.device).manual_seed(seed)
+    def generator(self, seed: int | None) -> torch.Generator:
+        return torch.Generator(device=self.device).manual_seed(secrets.randbits(64) if seed is None else seed)
 
     def sample(self, logits: torch.Tensor, params: list[SamplingParams], generators: list[torch.Generator | None]) -> torch.Tensor:
         """logits: [B, V] (bf16 or fp32). Returns [B] int64 token ids."""
