@@ -199,3 +199,23 @@ Keep attention and GDN state kernels distinct; share MLP work first as an
 ablation, then FP8 projections. Include graph padding and row packing, preserve
 the existing chunk policy initially, and require client-visible evidence:
 the projection-only savings do not establish a whole-request speedup.
+
+The [implemented mixed forward](mixed-forward.md) failed arrival TTFT
+protection. Its bounded follow-up, [one GDN prefill plan per forward](prefill-plan.md),
+removes repeated metadata construction across 48 layers and improves ordinary
+prefill TTFT by 18–29% with exact output/state comparisons. Mixed arrival TTFT
+still regresses 16.9–24.4%, so public mixed serving is archived. Preserve the
+useful interfaces and negative evidence; additional mixed scheduling policy is
+not the next experiment.
+
+The [fresh competitive comparison](competitive.md) separates plain/DFlash2,
+fixed work and naturally stopping requests at a common host memory budget.
+Use the remaining measured gap to select the next bounded implementation.
+Verification convolution and candidate-window materialization are candidates:
+today each layer constructs history concatenations and every possible accepted
+convolution window before the accepted length is known. A fused verifier plus
+compact inputs from which only the accepted window is built could remove
+temporary storage and repeated reads/writes. Keep this within GDN kernels and
+the existing StateManager commit contract. First measure its fraction of round
+time and freeze a realistic benefit threshold; capacity reduction alone does
+not establish a speedup, and tensor sizes are not physical DRAM counters.

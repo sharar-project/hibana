@@ -15,6 +15,7 @@ import torch
 
 from sharar import config
 from sharar.engine.context import ForwardContext, scratch_prefill_context
+from sharar.model.gdn_plan import prepare_gdn_prefill
 from sharar.engine.contracts import ForwardResult
 from sharar.kernels import ops
 from sharar.model.attention import Attention
@@ -121,6 +122,7 @@ class Qwen38:
             raise ValueError("mixed forward requires prefill then verify contexts")
         if share == "separate":
             return self.forward(prefill_ids, prefill_ctx), self.forward(verify_ids, verify_ctx)
+        prepare_gdn_prefill(prefill_ctx, len(prefill_ids), prefill_ids.device)
         contexts = (prefill_ctx, verify_ctx)
         ids = (prefill_ids, verify_ids)
         streams = [(torch.nn.functional.embedding(tokens, self.embed), None) for tokens in ids]
@@ -138,6 +140,8 @@ class Qwen38:
     def forward(self, input_ids: torch.Tensor, ctx: ForwardContext, capture: bool = False) -> ForwardResult:
         """Run one prefill sequence or one decode batch. Returns the final
         normalized hidden states and, when capture is set, per-layer tensors."""
+        if ctx.mode == "prefill":
+            prepare_gdn_prefill(ctx, len(input_ids), input_ids.device)
         hidden = torch.nn.functional.embedding(input_ids, self.embed)
         ctx.capture = capture
         out: dict = {"input_ids": input_ids, "positions": ctx.positions}

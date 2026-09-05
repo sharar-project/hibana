@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-05 (7D mixed forward implemented experimentally; HTTP latency/quality gates reject promotion)
+Last updated: 2026-09-05 (shared GDN prefill metadata validated; mixed serving archived; fresh competitive benchmark)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -46,13 +46,13 @@ Multimodal, multi-GPU, multi-node, arbitrary model discovery, LoRA, generic
 hardware fallbacks and inherited CI are outside the target. Curated model
 profiles must preserve GB10 specialization and explicit kernel choices.
 
-Immediate priority: remove measured repeated prefill-metadata construction and
-synchronization through the existing forward context. Mixed target execution
-now saves time for a prefill/verify pair, but its HTTP pilot delays the arriving
-request's first token and the protection suite adds two rubric misses. It remains
-off. Validate external drafts under equal
-memory and realistic cache pressure; defaults still require quality and
-client-visible performance gates.
+Immediate priority: use the fresh plain/DFlash2 comparison to select the next
+measured GB10 bottleneck. One shared prefill plan now removes repeated metadata
+work across 48 GDN layers and improves ordinary HTTP TTFT 18–29%. Mixed target
+execution still fails arrival TTFT protection and its public serving option is
+archived. Keep useful interfaces and evidence; do not grow scheduling policy
+around that failed experiment. External-draft defaults still require broader
+quality, cache-pressure and client-visible performance gates.
 
 ## 2. Relationship to the `sparklang` repository
 
@@ -725,6 +725,9 @@ experiment. Freeze each experiment's workload and decision threshold first.
 - [ ] Refresh same-machine comparisons for SGLang plain, MTP, DSpark and
       DFlash2 when validated, plus other relevant GB10 engines. Reproduce the
       earlier DSpark run before using it as a current baseline.
+      The fresh plain/DFlash2 matrix and natural-request pilot are in
+      [the competitive report](docs/competitive.md). MTP/DSpark, eviction
+      pressure and independent comparison windows remain open.
 - [ ] Pin target/draft/tokenizer revisions, sampling, cache state, concurrency,
       memory budget, graph settings and kernel/compiler/image identities.
       Repeat independent runs; report sample counts and uncertainty. Five
@@ -740,11 +743,14 @@ experiment. Freeze each experiment's workload and decision threshold first.
       compact verified recurrence inputs plus accepted-prefix state replay.
       MTP's exposed trace gaps are small; its 2.25 GiB full-snapshot allocation
       provides a concrete capacity target. See `docs/gb10-experiments.md`.
-- [ ] Implement that experiment and its ablation. Preserve full FP32 snapshots
+- [x] Implement that experiment and its ablation. Preserve full FP32 snapshots
       as the control, test every accepted/stop position and report negative
       results. Require at least 25% lower total verification snapshot storage
       at fixed B/k and no more than 5% protected latency regression; do not
       substitute allocated bytes for physical traffic or a measured speedup.
+      [7D](docs/phase7d.md) measures 73.04% smaller verify buffers and retains
+      the control; [direct accepted state](docs/direct-state.md) removes the
+      final scratch copy. Broad speed/quality promotion remains separate.
 
 Definition of done: reproducible workload manifests, comparator coverage and
 an updated `docs/comparison.md` distinguish historical observations from fresh
@@ -821,13 +827,18 @@ from a broad quality, competitive-speed or production-promotion gate.
       but its HTTP pilot regresses arrival TTFT 13–20%; the broader workload
       adds two mixed-chat rubric misses. All 654 CPU/GPU checks and 16 historical
       parity comparisons pass, which does not override these serving gates.
-      It remains off.
+      This is the initial pilot; the metadata follow-up below archives public serving.
       [Implementation, measurements and limits](docs/mixed-forward.md).
-- [ ] Prepare GDN prefill metadata/chunk indices once per forward instead of
-      reconstructing them across 48 layers. Profiled mixed prefill contains
-      hundreds of metadata-related synchronizations. Preserve the cold ragged
-      attention path and checkpoint semantics; measure ordinary and mixed
-      prefill separately before considering further fusion or graph capture.
+- [x] Prepare GDN prefill metadata/chunk indices once per forward. CPU lengths
+      and a context-owned plan replace reconstruction across 48 layers. The
+      129-token control drops from 290 to 7 stream synchronizations; ordinary
+      HTTP TTFT improves 18–29% with identical output IDs and exact recurrent
+      state/checkpoints. [Implementation and proof](docs/prefill-plan.md).
+- [x] Apply the bounded mixed-serving cutoff. After metadata planning, arrival
+      TTFT still regresses 16.9–24.4% against a 5% limit. Remove the public
+      serving option; retain useful model/verification interfaces and the
+      explicitly enabled benchmark. Do not grow more scheduling policy around
+      the failed experiment.
 - [x] Compare adapters on the pinned quantized target, cold and reused prefixes,
       greedy/sampled requests and mixed concurrency. Promote a proposer/profile
       only when quality and measured end-to-end performance justify it.
@@ -1143,31 +1154,44 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-The external draft selector, batched feature/KV feedback, direct accepted-state
-reconstruction and [mixed target prototype](docs/mixed-forward.md) are complete.
-Mixed execution stays off because its client first-token latency and quality
-fail the frozen gates. The next speed implementation is **one prefill metadata plan per
-forward**, shared by the existing GDN layers.
+One shared GDN prefill plan is implemented and validated. Ordinary HTTP TTFT
+falls 18–29% in the initial interleaved experiment with identical output IDs;
+full-model recurrent/checkpoint comparisons are exact. The bounded follow-up
+still fails mixed arrival TTFT protection, so public mixed serving is archived.
+The [fresh plain/DFlash2 benchmark](docs/competitive.md) supplies the current
+competitive snapshot: coding/tool answers match exactly and finish 6.5%/7.8%
+sooner than the faster measured SGLang DFlash2 setting. The forced-output matrix
+has both wins and a 29% short-batch loss; its 3.2× short-single result mostly
+reflects different continuations and verification counts. Plain decoding remains
+slightly behind in five cells. This does not complete broad proposer promotion.
 
-1. Hoist immutable sequence lengths, slots, initial-state flags and chunk indices
-   out of the 48 GDN layer calls. Keep CPU metadata available without reading it
-   back from CUDA, and upload it once through the existing forward context.
-   Preserve cold versus cached attention selection, checkpoint boundaries and
-   graph ownership. Freeze an ordinary-prefill control and retain `mixed-v1`
-   and full `local-v1` protections. Measure synchronization counts and real HTTP
-   TTFT/completion independently; synchronization wait time is not all removable
-   overhead. Only after that result consider a fused verification convolution or
-   bounded mixed graphs. A failed mixed latency gate remains a failed gate;
-   archive mixed serving if the bounded metadata experiment cannot close it,
-   preserving useful interfaces and benchmark evidence without growing policy.
-2. Freeze a DFlash2/DSpark versus repaired-MTP comparison at equal total memory,
-   including realistic long sessions, eviction, natural stopping and sampled
-   quality. Refresh SGLang on the same pinned target and workloads. Choose a
-   workload-specific profile only after these gates; no universal lead is proven.
+1. **Attribute the remaining DFlash2 verification cost, then test compact
+   convolution state retention.** Hold target inputs and accepted lengths fixed
+   at B=1/4 and short/long context, and separate draft, target verification,
+   recurrent reconstruction, convolution windows and commit. The first bounded
+   candidate fuses verification convolution and retains compact pre-convolution
+   inputs so only the accepted window is constructed after acceptance. Today
+   each GDN layer materializes history concatenations and every candidate window.
+   Keep arithmetic order, FP32 recurrent state, graph ownership and the existing
+   StateManager transaction. Measure temporary storage and actual round/client
+   time separately; a smaller buffer is not automatically faster. Freeze the
+   predicted benefit and keep/remove threshold from the measured cost before
+   implementing. Preserve every stop/accept position, B=3 padding, cache,
+   cancellation and failure gates. No further mixed scheduling policy is planned.
+2. Complete DFlash2/DSpark versus repaired-MTP comparisons under the common
+   memory budget, including realistic long sessions, eviction, natural stopping
+   and sampled quality. Repeat independent SGLang comparison windows and test
+   CPU contention on shared DRAM. Choose workload-specific profiles only after
+   these gates; a small fixed-work matrix cannot establish a universal lead.
 3. Use Phase 8 for measured prepacked weight loading and reclaimable optional
    cache slabs. Streaming checkpoint-map release already lowers the measured
-   host load peak; it does not prove zero-copy hot inference. Keep physical
-   memory accounting and CPU contention measurements alongside each experiment.
+   host load peak; it does not prove zero-copy hot inference. Compare allocation
+   visibility, first touch, steady bandwidth and physical memory recovery under
+   pressure. Keep graph references and active cache loans explicit.
 
-Rebuilding/promoting the serving image is a separate step; the running image
-and historical competitive numbers have not been replaced.
+The larger speed objective remains more useful accepted tokens per target
+weight traversal and less state movement through GB10's shared DRAM. The current
+prefill result removes exposed host work; it does not demonstrate a large
+steady-state decoding gain. Each next mechanism needs its own measured proof.
+Rebuilding/promoting production remains separate; the original serving image
+and memory guard are restored after the benchmark windows.

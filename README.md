@@ -123,9 +123,13 @@ Phase 7B extracts the request-state ownership and proposer interfaces, adds
 n-gram/feature-lifetime checks and contributor setup, and preserves measured
 performance. The [mixed target experiment](docs/mixed-forward.md) now shares
 prefill/verification dense work through those interfaces, but fails arrival
-first-token latency protection and stays off by default. Next, remove measured
-repeated prefill metadata work and complete equal-memory competitive gates;
-unified-memory capacity mechanisms (8) and remaining kernels/AOT (9) follow.
+first-token latency protection and has been removed from the public serving
+options. [One GDN prefill plan per forward](docs/prefill-plan.md) now removes
+repeated metadata work across 48 layers: measured ordinary TTFT falls 18–29%
+with identical output tokens. The [fresh plain/DFlash2 comparison](docs/competitive.md)
+uses the same GB10, pinned weights, workloads and memory budget for both engines.
+Broader cache-pressure and quality gates remain open; unified-memory capacity
+mechanisms (8) and remaining kernels/AOT (9) follow.
 Read [roadmap.md](roadmap.md) before doing anything else.
 
 ## Attribution and license

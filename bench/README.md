@@ -100,3 +100,35 @@ Chrome traces with proposer, verifier and acceptance scopes. Device activity
 uses the union of kernel/copy intervals, not their overlapping duration sum.
 Trace gaps include profiler overhead; allocation byte counts are explicitly
 separate from physical DRAM traffic, which this profiler does not measure.
+
+
+## Pinned Sharar / SGLang comparison
+
+`competitive.py` uses `workloads/competitive_v1.json`: identical token inputs,
+256-token fixed-work cells at input 128/2,048/8,192 and concurrency 1/4, followed
+by natural `local-v1` requests and a primed session. It reports aggregate tokens
+per client batch makespan, TTFT, completion and throughput after the first SSE
+burst. The fixed-work matrix ignores EOS and is a throughput diagnostic; the
+natural requests retain their original stopping, sampling and quality rubric.
+SGLang uses `sampling_seed` for the same seed Sharar calls `seed`.
+
+Freeze once and reuse the same file for every engine/profile:
+
+```bash
+python3 -m bench.competitive --freeze /path/to/inputs.json
+python3 -m bench.competitive --inputs /path/to/inputs.json \
+  --url http://127.0.0.1:30000 --profile sglang-dflash2 --output /path/to/new-run
+```
+
+Use exclusive GPU windows with the same host memory budget and record the
+server/image/source identities and memory samples. Run the client in a separate
+process for each engine. The SGLang DFlash2 matrix includes prefill sizes 2,048
+and 8,192; preserve both results and label any best-of-two comparison. Check
+actual running capacity: SGLang uses several recurrent-state slots per request,
+so matching Sharar's internal slot count can silently restrict concurrency.
+A cgroup memory limit alone does not account for CUDA allocations on GB10.
+Three repetitions per cell are
+a pilot snapshot; retain errors and generated outputs, review the manual rubric,
+and do not infer tail latency or broad quality equivalence from this suite.
+The current launch settings, measurements and excluded attempts are documented
+in [the competitive report](../docs/competitive.md).

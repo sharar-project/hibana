@@ -1,0 +1,65 @@
+{
+  "version": "competitive-gb10-v1",
+  "target": "RadixArk/Qwen3.8-27B-NVFP4",
+  "revision": "319f741cce68d7914884900c138a1fbb70a42f30",
+  "draft": "incoai/Qwen3.8-27B-DFlash2",
+  "draft_revision": "dedf8df68adfb1afeaf7b7480c0a0243108177b4",
+  "profiles": [
+    "sharar-plain",
+    "sglang-plain",
+    "sglang-dflash2",
+    "sglang-dflash2-prefill8192",
+    "sharar-dflash2"
+  ],
+  "limits": {
+    "physical_memory_budget_gib": 64,
+    "host_floor_gib": 16,
+    "context": 32768,
+    "target_kv_tokens": 35000,
+    "max_running": 4,
+    "cpu_cores": 8,
+    "omp_threads": 4,
+    "sharar_state_slots": 12,
+    "sglang_mamba_states": 24
+  },
+  "fixed_work": {
+    "prompt_lengths": [
+      128,
+      2048,
+      8192
+    ],
+    "concurrency": [
+      1,
+      4
+    ],
+    "output_tokens": 256,
+    "warmups": 1,
+    "repetitions": 3,
+    "temperature": 0,
+    "ignore_eos": true,
+    "cache": "flush before every batch; distinct request prefixes"
+  },
+  "natural": {
+    "source": "local_v1.json",
+    "cases": [
+      "chat",
+      "coding",
+      "tool",
+      "json",
+      "reasoning",
+      "sampled_chat",
+      "session"
+    ],
+    "warmups": 1,
+    "repetitions": 3,
+    "cache": "cold for all; additionally prime session prefix before session-hit"
+  },
+  "reporting": "Report each fixed-work cell separately, aggregate output tokens / client batch makespan, TTFT and decode throughput. Forced output after EOS is an engine throughput diagnostic, not a quality claim. Natural requests retain local-v1 stopping, sampling, budgets and quality rubric. Preserve every sample and error; no p95/p99, universal lead or quality-equivalence claim from this small benchmark. Measure both SGLang DFlash2 prefill sizes; report both or explicitly label a per-cell best-of-two baseline. Do not silently select the weaker configuration.",
+  "memory_accounting": "Exclusive GPU windows. Apply the same 64 GiB host MemAvailable-drop budget relative to each pre-launch baseline, a 16 GiB absolute floor, and a 64 GiB cgroup cap. The host delta includes other processes and cache reclamation; the cgroup alone does not contain CUDA unified allocations. Report observed minimum MemAvailable and engine allocations separately; do not add overlapping RSS and CUDA counts. Abort rather than claim equal memory if a profile exceeds the budget.",
+  "sglang_prefill_sizes": [
+    2048,
+    8192
+  ],
+  "state_capacity_note": "Internal recurrent slots are not comparable across engines. SGLang requires several per active request; 24 allows four active requests. Sharar uses 12. Both remain subject to the same total memory budget. This clarification followed the excluded capacity smoke; the completed Sharar plain run used the identical inputs, sampling and its unchanged 12-slot configuration.",
+  "text_model_only": true
+}

@@ -1,15 +1,18 @@
 # Mixed target forward on GB10
 
-The shared-projection experiment now has an opt-in serving implementation.
-It combines an arriving prefill with independent, already-ready speculative
-verification requests. **It is not promoted: HTTP first-token latency and
-quality protection fail.** Dense-work savings alone were insufficient.
+The shared-projection serving experiment is **archived**. It combines an
+arriving prefill with independent, already-ready speculative verification
+requests. The bounded [prefill metadata optimization](prefill-plan.md) improves
+ordinary latency, but mixed execution still fails first-token protection.
+The serving CLI option has been removed. Model/executor interfaces and the
+explicit benchmark remain available for research; further mixed scheduling
+policy is not on the active speed path.
 
 ## Implementation and ownership
 
-`sharar serve --spec 7 --proposer dflash2 --verify-state reconstruct
---mixed-forward full` enables the experiment. `mlp` shares only MLP work;
-`off` is the default. The executor allocates one additional 256 MiB attention
+`bench/mixed_forward.py` enables the retained experiment directly through
+`Executor.enable_mixed()`. `mlp` shares only MLP work. Ordinary serving always
+leaves mixed execution off. The executor allocates one additional 256 MiB attention
 workspace on enablement. Turning the mode off retains this workspace so the
 benchmark can compare equal persistent pools/workspaces and report temporary
 allocation peaks separately. A server started with `off` never
@@ -169,24 +172,27 @@ includes waiting for previously queued GPU work. That number must not be
 reported as a potential 52.66 ms speedup. CPU-scope accounting filters out
 duplicate GPU annotation events; raw traces are retained.
 
-## Next speed task
+## Bounded follow-up and archive decision
 
-Prepare and upload immutable prefill metadata once per forward, then reuse it
-across the 48 GDN layers. Carry CPU sequence lengths and chunk indices through
-the existing context so layer code does not reconstruct them through GPU-to-CPU
-reads. Preserve the cold single-sequence attention path: setting the current
-`cu_seqlens` field changes `ctx.batched` and would silently switch numerics.
+The [one-plan metadata change](prefill-plan.md) improves ordinary TTFT by
+18–29% with unchanged output IDs. Repeating the frozen mixed-v1 comparison
+still fails its 5% protection limit. Six measured samples per mode/cell give:
 
-Measure ordinary prefill and the mixed path independently, with unchanged
-tokens, state/checkpoint boundaries and workload gates. Only then consider
-fusing the verification convolution/window operations or adding bounded graph
-capture. Neither kernel fusion nor another graph cache is justified solely by
-the projection microbenchmark. Keep mixed execution off until client latency
-and quality pass. If the bounded metadata experiment still fails the HTTP gate,
-archive mixed serving rather than building more scheduling policy around it;
-retain reusable planning/verification interfaces and the reproducible benchmark.
-Equal-memory proposer and fresh SGLang comparisons remain
-open; this experiment establishes no competitive lead.
+| Case | Existing-request completion reduction | Arrival completion change | Arrival TTFT change |
+|---|---:|---:|---:|
+| Short, one existing request | 12.3% | −7.5% | +18.3% |
+| Short, three existing requests | 12.1% | −0.3% | +21.8% |
+| Cached tail, one existing request | 11.4% | +2.0% | +16.9% |
+| Cached tail, three existing requests | 5.8% | −0.6% | +24.4% |
+
+All four arrival TTFT gates fail; the final cell also misses the 10%
+existing-request completion target. Faster ordinary prefill is retained.
+The `--mixed-forward` serving option is removed, and no further scheduling
+policy is planned around this prototype. Its reusable model/verification
+interfaces, state tests and explicitly enabled HTTP benchmark remain.
+
+Fresh equal-budget SGLang measurements are separate from this experiment.
+Projection-sharing savings alone establish no competitive lead.
 
 ## Reproduction and evidence
 

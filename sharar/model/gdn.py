@@ -22,6 +22,7 @@ from sharar.kernels.fla.fused_sigmoid_gating_recurrent import fused_sigmoid_gati
 from sharar.kernels.fla.layernorm_gated import rms_norm_gated
 from sharar.kernels.fp8_quant import quant_fp8
 from sharar.memory.state_pool import CONV_DIM, CONV_STATE_LEN
+from sharar.model.gdn_plan import prepare_gdn_prefill
 from sharar.weights.modelopt import Fp8Linear, load_fp8_linear
 from sharar.weights.safetensors import SnapshotWeights
 
@@ -108,40 +109,20 @@ class GatedDeltaNet:
     def _prefill_core(self, mixed_qkv, b, a, ctx):
         t, device = mixed_qkv.shape[0], mixed_qkv.device
         conv_states, ssm_states = self._states(ctx)
-        if ctx is not None and ctx.batched:
-            query_start_loc = ctx.cu_seqlens
-            cache_indices = ctx.seq_slots
-            seq_lens = ctx.seq_lens
-            has_init = torch.tensor([p > 0 for p in ctx.seq_prefix_lens], device=device)
-            starts = [int(v) for v in ctx.cu_seqlens[:-1].tolist()]
-            prefixes = ctx.seq_prefix_lens
-            ck_seqs = ctx.checkpoint_seqs
-        else:
-            slot = ctx.slot if (ctx is not None and ctx.state_pool is not None) else 0
-            query_start_loc = torch.tensor([0, t], dtype=torch.int32, device=device)
-            cache_indices = torch.tensor([slot], dtype=torch.int32, device=device)
-            seq_lens = [t]
-            has_prefix = ctx is not None and ctx.prefix_len > 0
-            has_init = torch.tensor([has_prefix], device=device)
-            starts = [0]
-            prefixes = [ctx.prefix_len if ctx is not None else 0]
-            ck_seqs = [0] * (len(ctx.checkpoint_positions) if ctx is not None else 0)
-        checkpoints = list(ctx.checkpoint_positions) if ctx is not None else []
-        if checkpoints:
-            # conv snapshot = the last 3 pre-conv inputs before the boundary
-            for pos, cslot, si in zip(checkpoints, ctx.checkpoint_slots, ck_seqs):
-                local = starts[si] + (pos - prefixes[si])
-                conv_states[cslot] = mixed_qkv[local - CONV_STATE_LEN : local].transpose(0, 1)
+        plan = prepare_gdn_prefill(ctx, t, device)
+        # Snapshot the last three pre-convolution inputs at each boundary.
+        for slot, end, _ in plan.checkpoints:
+            conv_states[slot] = mixed_qkv[end - CONV_STATE_LEN:end].transpose(0, 1)
         mixed_qkv = causal_conv1d_fn(
             mixed_qkv.transpose(0, 1),
             self.conv_weight,
             None,
             activation="silu",
             conv_states=conv_states,
-            has_initial_state=has_init,
-            cache_indices=cache_indices,
-            query_start_loc=query_start_loc,
-            seq_lens_cpu=seq_lens,
+            has_initial_state=plan.has_initial_state,
+            cache_indices=plan.cache_indices,
+            query_start_loc=plan.query_start_loc,
+            seq_lens_cpu=plan.seq_lens,
         ).transpose(0, 1)[:t]
         q, k, v = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
         q = q.reshape(1, t, self.num_k_heads, self.head_k_dim)
@@ -151,21 +132,16 @@ class GatedDeltaNet:
         core, _, h = chunk_gated_delta_rule(
             q=q, k=k, v=v, g=g, beta=beta,
             initial_state=ssm_states,
-            initial_state_indices=cache_indices,
-            cu_seqlens=query_start_loc,
+            initial_state_indices=plan.cache_indices,
+            cu_seqlens=plan.query_start_loc,
+            chunk_indices=plan.chunk_indices,
+            chunk_offsets=plan.chunk_offsets,
             head_first=False,
             use_qk_l2norm_in_kernel=True,
         )
-        if checkpoints:
-            # h[0, c] is the state entering chunk c. With several sequences the
-            # chunks are laid out per sequence: offset_i = sum_j<i ceil(len_j/64).
-            chunk_offsets = [0]
-            for n_tok in seq_lens[:-1]:
-                chunk_offsets.append(chunk_offsets[-1] + (n_tok + 63) // 64)
-            for pos, cslot, si in zip(checkpoints, ctx.checkpoint_slots, ck_seqs):
-                local = pos - prefixes[si]
-                assert local % 64 == 0 and 0 < local < seq_lens[si], (pos, prefixes[si], seq_lens[si])
-                ssm_states[cslot] = h[0, chunk_offsets[si] + local // 64].to(ssm_states.dtype)
+        # h[0, c] is the state entering chunk c, laid out per sequence.
+        for slot, _, chunk in plan.checkpoints:
+            ssm_states[slot] = h[0, chunk].to(ssm_states.dtype)
         return core
 
     def decode(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:

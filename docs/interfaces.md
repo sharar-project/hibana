@@ -61,6 +61,17 @@ runtime; swapping owners while requests hold loans violates their lifetime.
 
 ## Forward features and lifetimes
 
+`ForwardContext.gdn_plan` belongs to one immutable prefill request layout.
+`model/gdn_plan.py` derives sequence starts, initial-state flags, 64-token
+chunk indices/offsets and checkpoint locations from CPU metadata once; all
+GDN layers share the resulting tensors. Create a new context when lengths,
+slots, prefixes or checkpoints change. Layers must not reconstruct this plan
+or read lengths back from CUDA. Planning does not set `ctx.cu_seqlens` for a
+cold single request, because that would change `ctx.batched` and select a
+different attention path. Standalone chunk callers may omit the prepared
+metadata and use the existing fallback. See [the exact-state and timing
+evidence](prefill-plan.md).
+
 For `T` flattened tokens and hidden size `H`, `ForwardResult['norm']` is BF16
 `[T,H]`: the final Gemma RMSNorm output consumed by the target LM head.
 The target needs it even when no proposer requests features.
@@ -216,6 +227,11 @@ queued progress. Its target is best effort: running GPU kernels are not
 preemptible. Fixed defaults remain available for every comparison.
 
 ## Mixed prefill and verification experiment
+
+This serving experiment is archived after failing the bounded latency gate.
+The following interfaces remain for the reproducible benchmark and model
+research; the serving CLI cannot enable mixed execution. See
+[prefill-plan.md](prefill-plan.md).
 
 `Executor.enable_mixed("mlp" | "full")` enables a bounded two-mode target pass.
 The default is `off`. A separate 256 MiB attention-plan workspace exists only

@@ -77,6 +77,12 @@ and latency. A faster isolated kernel is insufficient if it adds transfers or
 slows prefill/verification. Version the artifact inputs once the profile is
 ready for AOT.
 
+Prefill sequence metadata belongs in `model/gdn_plan.py`, once per forward.
+Keep CPU lengths available and pass the prepared plan through `ForwardContext`;
+layer kernels should not read GPU lengths back or rebuild metadata. The plan's
+lifetime is one immutable request layout. Preserve the separate attention-mode
+choice and check exact checkpoint/committed state when changing this path.
+
 ## Add a cache policy
 
 Policy chooses admission, snapshot placement and eviction candidates inside

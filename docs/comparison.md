@@ -1,5 +1,10 @@
 # Sharar versus SGLang on the same machine, model and harness
 
+This is the historical MTP comparison, before the lifecycle and draft-cache
+repairs. Use [the current plain/DFlash2 benchmark](competitive.md) for the
+2026-09-05 source. The old prompts, engine versions and memory settings differ;
+do not combine rows from the two experiments into a speedup claim.
+
 Measured on 2026-09-04 on one DGX Spark (GB10, driver 580.95.05) with
 `RadixArk/Qwen3.8-27B-NVFP4` at the pinned revision, the frozen
 `bench/benchmark_text_server.py` matrix (256 output tokens, 5 measured batches
@@ -44,8 +49,8 @@ round on these prompts; Sharar's server-side statistics over its matrix show
 | SGLang MTP | 95 / 100 | 105.6 |
 | Sharar MTP | 94 / 100 | 94.6 |
 
-The three accuracies are within the sampling noise of a 100-problem subset
-(one problem is one point); the engines agree on the task. The result files
+The three scores are close on this 100-problem subset (one problem is one
+point); this small sample does not establish accuracy equivalence. The result files
 are `${SHARAR_RESULTS}/parity/gsm8k_*.json`.
 
 ## Reading
@@ -58,7 +63,7 @@ are `${SHARAR_RESULTS}/parity/gsm8k_*.json`.
   14.4 s against 20.6 s). Where both targets produce the same kind of
   continuation the acceptance is the same (see below); the remaining gap at
   batch 1 is about 8 ms per round of engine cost.
-- Accuracy is equivalent across engines and modes.
+- The observed GSM8K scores are close; broader quality equivalence is unproven.
 
 ## Where the 2,048 x 1 gap comes from
 
