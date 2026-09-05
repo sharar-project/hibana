@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-05 (7D batched accepted-feature feedback implemented; promotion gates remain explicit)
+Last updated: 2026-09-05 (7D direct accepted-state reconstruction implemented; promotion gates remain explicit)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -46,9 +46,9 @@ Multimodal, multi-GPU, multi-node, arbitrary model discovery, LoRA, generic
 hardware fallbacks and inherited CI are outside the target. Curated model
 profiles must preserve GB10 specialization and explicit kernel choices.
 
-Immediate priority: prototype direct accepted-state commit, then measure shared
-target projection work under mixed arrivals. Batched accepted feature/KV
-projection is implemented and measured. Validate external drafts under equal
+Immediate priority: measure shared target projection work under mixed arrivals.
+Batched accepted feature/KV projection and direct accepted-state commit are
+implemented. Validate external drafts under equal
 memory and realistic cache pressure. Keep defaults fixed until quality and
 performance gates justify changes.
 
@@ -798,9 +798,12 @@ from a broad quality, competitive-speed or production-promotion gate.
       arithmetic stays unchanged; interleaved B=4 round time falls 4.3–4.4%
       with identical fixed-work outputs. BF16 projection changes pass a pinned
       FP32 oracle; all 497 GB10 checks pass. [Evidence and limits](docs/accepted-batch.md).
-- [ ] Prototype StateManager-authorized direct accepted-state reconstruction;
-      remove the final FP32 scratch/copy only after every count is validated.
-      The current B=4 commit copies cost about 5 ms. Preserve the bitwise oracle.
+- [x] Implement StateManager-authorized direct accepted-state reconstruction;
+      validate all counts against the current verified width before mutation.
+      Remove 576 MiB of FP32 scratch at B=4 and the following SSM copy. Preserve
+      the bitwise oracle; all 548 GB10 checks pass, including stop/cache recovery.
+      Interleaved B=4 round time falls 3.6–3.9%; B=1 results are mixed.
+      [Evidence and measurements](docs/direct-state.md).
 - [x] Compare adapters on the pinned quantized target, cold and reused prefixes,
       greedy/sampled requests and mixed concurrency. Promote a proposer/profile
       only when quality and measured end-to-end performance justify it.

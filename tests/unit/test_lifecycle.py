@@ -67,9 +67,10 @@ def test_idle_engine_publishes_queued_cancellation():
 @pytest.mark.parametrize('accepted', range(4))
 @pytest.mark.parametrize('budget', range(1, 5))
 @pytest.mark.parametrize('stop_kind', ['length', 'eos'])
-def test_speculative_commit_matches_returned_prefix(accepted, budget, stop_kind):
+@pytest.mark.parametrize('strategy', ['snapshots', 'reconstruct'])
+def test_speculative_commit_matches_returned_prefix(accepted, budget, stop_kind, strategy):
     # Marker j+1 represents the state after processing j+1 verify input tokens.
-    pool = SimpleNamespace(ssm_all=torch.zeros((1, 2, 1)), conv_all=torch.zeros((1, 2, 1)))
+    pool = SimpleNamespace(ssm_all=torch.zeros((1, 2, 1)), conv_all=torch.zeros((1, 2, 1)), num_slots=2)
     freed = []
     ex = SimpleNamespace(state_pool=pool, kv_pool=SimpleNamespace(free_ids=freed.extend))
     ex.state = StateManager(ex.kv_pool, pool)
@@ -78,6 +79,11 @@ def test_speculative_commit_matches_returned_prefix(accepted, budget, stop_kind)
     spec.proposer = SimpleNamespace(accepted_batch=lambda *args: None)
     spec.inter_ssm_all = torch.arange(1, 5).reshape(1, 1, 4, 1).float()
     spec.conv_windows_all = spec.inter_ssm_all.clone()
+    if strategy == 'reconstruct':
+        def replay(pool, slots, counts):
+            for row, (slot, count) in enumerate(zip(slots, counts)):
+                pool.ssm_all[:, slot] = spec.inter_ssm_all[:, row, count - 1]
+        spec.replay = SimpleNamespace(batch=1, steps=4, run=replay)
     spec.reset_stats()
     draft = [20, 30, 40]
     target = draft + [50]

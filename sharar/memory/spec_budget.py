@@ -45,7 +45,7 @@ def verify_bytes(batch, steps, strategy):
     if strategy == 'snapshots':
         return ssm * steps + conv
     compact = 48 * batch * steps * ((16 * 128 + 48 * 128) * 2 + 48 * 2 * 4)
-    return ssm + compact + conv
+    return compact + conv
 
 
 def budget(spec, batch, context):

@@ -37,8 +37,8 @@ def test_reconstruction_budget_includes_all_retained_inputs_and_conv():
     full = verify_bytes(4, 4, 'snapshots')
     compact = verify_bytes(4, 4, 'reconstruct')
     assert full == 2.25 * 2**30 + 45 * 2**20
-    assert compact > .25 * 2.25 * 2**30 + 45 * 2**20
-    assert compact < .3 * full
+    assert compact == 45 * 2**20 + 48 * 4 * 4 * ((16 * 128 + 48 * 128) * 2 + 48 * 2 * 4)
+    assert compact < .03 * full
 
 
 def test_selector_lattice_conditions_on_anchor_then_previous_candidate():

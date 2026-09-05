@@ -140,7 +140,54 @@ class StateManager:
         if ssm is not None:
             self.recurrent.ssm_all[:, req.slot].copy_(ssm)
             self.recurrent.conv_all[:, req.slot].copy_(conv)
-        self.kv.free_ids(pending.ids[count:])
+        self._publish(req, count, pages)
+
+    def commit_reconstructed(self, requests, counts, replay, conv_windows, *, verified_steps: int) -> None:
+        """Validate the whole batch before allowing reconstruction into private slots.
+
+        Prepare retained page tensors before mutation. A failed in-place commit
+        poisons every affected request; rollback can free pages but cannot undo
+        recurrent writes. Publication and proposer feedback follow all writes.
+        """
+        batch = len(requests)
+        if (not 1 <= batch <= replay.batch or len(counts) != batch
+                or type(verified_steps) is not int or not 1 <= verified_steps <= replay.steps):
+            raise ValueError("invalid reconstruction batch")
+        slots = [r.slot for r in requests]
+        if len(set(slots)) != batch or any(not 0 < slot < self.recurrent.num_slots for slot in slots):
+            raise ValueError("reconstruction requires unique private slots")
+        conv = self.recurrent.conv_all
+        if (conv_windows.ndim != conv.ndim + 1 or conv_windows.shape[0] != conv.shape[0]
+                or conv_windows.shape[1] < batch or conv_windows.shape[3:] != conv.shape[2:]
+                or conv_windows.dtype != conv.dtype or conv_windows.device != conv.device):
+            raise ValueError("invalid reconstruction convolution windows")
+        for req, count in zip(requests, counts):
+            pending = req.reservation
+            if (req.finished or req.released or req.pages is None or len(req.pages) != req.committed_len
+                    or pending is None or type(count) is not int
+                    or not 1 <= count <= min(len(pending.ids), verified_steps, conv_windows.shape[2])):
+                raise ValueError("reconstruction commit outside reservation")
+        pages = [r.reservation.full_pages if count == len(r.reservation.ids) and r.reservation.full_pages is not None
+                 else torch.cat([r.pages, r.reservation.pages[:count]]) for r, count in zip(requests, counts)]
+        metadata = torch.tensor([slots, counts], dtype=torch.int32, pin_memory=conv.device.type == "cuda")
+        metadata = metadata.to(conv.device, non_blocking=True)
+        try:
+            replay.run(self.recurrent, metadata[0], metadata[1])
+            for row, (req, count) in enumerate(zip(requests, counts)):
+                conv[:, req.slot].copy_(conv_windows[:, row, count - 1])
+            for req, count, retained in zip(requests, counts, pages):
+                self._publish(req, count, retained)
+        except BaseException as exc:
+            for req in requests:
+                req.cacheable = False
+            if isinstance(exc, MemoryError):
+                # The scheduler retries pool-pressure MemoryError. A partially
+                # written recurrent slot requires failure cleanup instead.
+                raise RuntimeError("reconstruction failed after state mutation") from exc
+            raise
+
+    def _publish(self, req, count, pages) -> None:
+        self.kv.free_ids(req.reservation.ids[count:])
         req.pages = pages
         req.committed_len += count
         req.reservation = None
@@ -148,8 +195,9 @@ class StateManager:
     def rollback(self, req: Request) -> None:
         """Discard pages, not in-place kernel writes; retract before retrying.
 
-        Verification preserves the committed slot. A failed ordinary forward
-        may have changed it, so an abandoned transaction must never be cached.
+        Verification preserves the committed slot until acceptance. A failed
+        decode or direct reconstruction may have changed it, so an abandoned
+        transaction must never be cached.
         """
         if req.reservation is not None:
             req.cacheable = False

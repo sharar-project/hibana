@@ -189,9 +189,22 @@ release monolithic physical allocations; reclaimable slabs remain Phase 8.
 
 `snapshots` retains every FP32 verify state. `reconstruct` retains compact
 recurrence inputs, replays exactly the stop/budget-truncated accepted prefix
-from untouched committed state, and passes one final FP32 state to
-`StateManager.commit`. Both preserve the same ownership boundary. No CPU reads
-of hot state, BF16 state compression or managed-memory faults are introduced.
+from untouched committed state, and writes directly into the private committed
+slots authorized by `StateManager.commit_reconstructed`. The manager validates
+all counts against the current verified width, unique non-dummy slots and
+convolution bounds before any mutation;
+it also prepares retained page tensors before launching reconstruction. Each
+kernel program reads its entire K-by-V-tile state before overwriting that tile.
+Convolution copies and page/prefix publication follow on the same stream, then
+the engine publishes emitted tokens and calls proposer feedback.
+
+No final FP32 output buffer is retained. A failure after mutation marks every
+affected request uncacheable. Post-write `MemoryError` becomes a non-retryable
+failure so pool-pressure retry cannot reuse partially advanced recurrent state.
+Rollback frees reservations; it does not undo in-place writes. Full snapshots
+remain the default and bitwise control. No CPU reads of hot state, BF16 state
+compression or managed-memory faults are introduced. See the
+[direct reconstruction evidence](direct-state.md).
 
 `WidthPolicy` consumes pinned measured cost/calibration profiles and previous
 round confidence, avoiding a new barrier between proposal and verification.

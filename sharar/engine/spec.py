@@ -243,21 +243,18 @@ class SpecDecoder:
             assert count > 0 and not r.finished
             outputs.append(emitted)
         replay = getattr(self, "replay", None)
-        final = None
         if replay is not None:
-            # Stop/budget decisions are known now. One upload and one kernel
-            # reconstruct every layer/row; committed slots remain read-only.
-            metadata = torch.tensor([[r.slot for r in reqs], [len(o) for o in outputs]], dtype=torch.int32)
-            if self.device.type == "cuda":
-                metadata = metadata.pin_memory()
-            metadata = metadata.to(self.device, non_blocking=True)
-            final = replay.run(ex.state_pool, metadata[0], metadata[1])
+            # StateManager validates every stop-truncated count before one
+            # upload/kernel updates the private committed slots directly.
+            ex.state.commit_reconstructed(reqs, [len(o) for o in outputs], replay, self.conv_windows_all,
+                                          verified_steps=s_len)
         for i, (r, emitted) in enumerate(zip(reqs, outputs)):
             a, count = acc[i], len(emitted)
             # The last emitted token is still unprocessed. Commit exactly the
             # inputs that produced the visible outputs, including early stops.
-            ex.state.commit(r, count, ssm=final[:, i] if final is not None else self.inter_ssm_all[:, i, count - 1],
-                            conv=self.conv_windows_all[:, i, count - 1])
+            if replay is None:
+                ex.state.commit(r, count, ssm=self.inter_ssm_all[:, i, count - 1],
+                                conv=self.conv_windows_all[:, i, count - 1])
             for tok in emitted:
                 r.push(int(tok))
             self.proposed += self.k

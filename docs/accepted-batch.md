@@ -1,5 +1,9 @@
 # Batched accepted-feature feedback
 
+The next [direct accepted-state reconstruction experiment](direct-state.md)
+removes the final FP32 output scratch and commit copies. Measurements below
+remain the preceding feature-batching baseline.
+
 This follow-up shares DSpark/DFlash2 feature and context-KV projections across
 the requests in a completed speculative round. It applies the same 350 MiB of
 BF16 projection weights in one batch instead of four separate calls at B=4.

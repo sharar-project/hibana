@@ -156,12 +156,13 @@ load time. It removes overlapping host mappings, not the CPU-to-CUDA copy.
 Test versioned prepacked layouts and allocation visibility before claiming
 zero-copy load or placing hot weights in mapped/managed memory.
 
-The next state-retention prototype should let StateManager authorize a fused
-reconstruction into the committed slots after every count is validated. It
-could remove the final FP32 scratch and subsequent copy. Source state must be
-read before each tile writes its result; accepted page tails and feature
-publication must still obey the shared transaction boundary. Measure it against
-the current reconstruction path, including batch padding and early stop.
+The [direct accepted-state follow-up](direct-state.md) lets StateManager
+authorize reconstruction into committed slots after every count is validated
+against the current verified width. It removes the final 576 MiB FP32 scratch
+at B=4 and the subsequent SSM copy. Each program reads its complete source tile
+before overwriting it; accepted page tails and feature publication stay within
+the shared transaction boundary. The separate-output and full-snapshot paths
+remain test controls, including batch padding and early stop.
 
 For speed, first profile the newly working DFlash2/DSpark graphs: parallel
 draft projection, conditional candidate selection and accepted feature-to-KV
@@ -181,8 +182,9 @@ next weight-reuse experiment: feedback cost falls from about 8.1 to 2.2 ms
 at B=4, with one shared feature/KV projection pass. A pinned FP32 oracle checks
 BF16 shape changes; private rings, endpoint snapshots and single-row arithmetic
 retain their contracts. This establishes a small measured step before a larger
-mixed target forward. Direct reconstruction into validated
-committed slots remains the complementary capacity/copy experiment above.
+mixed target forward. Direct reconstruction into validated committed slots is
+the complementary capacity/copy experiment above. Next, profile shared target
+projections under mixed prefill/verification before adding scheduling heuristics.
 
 The 250 ms separate-prefill feedback pilot is rejected for default use: it
 reduced observed stream stalls but more than doubled mixed-session completion

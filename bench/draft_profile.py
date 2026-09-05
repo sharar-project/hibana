@@ -40,6 +40,7 @@ def measurements(ex, records):
                (ex.state, 'commit', 'commit')]
     if spec.replay is not None:
         methods.append((spec.replay, 'run', 'reconstruct'))
+        methods.append((ex.state, 'commit_reconstructed', 'direct_commit'))
     originals = []
     for obj, method, label in methods:
         original = getattr(obj, method)
@@ -92,6 +93,8 @@ def main():
                          help='alternate candidate/control/control/candidate fixed-work timing against this frozen source')
     compare.add_argument('--compare-accepted', type=Path,
                          help='compare batched feedback with the frozen per-request accepted method')
+    compare.add_argument('--compare-state', type=Path,
+                         help='compare direct state commit with scratch/copy from this frozen source tree')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     root = Path(config.__file__).resolve().parents[1]
@@ -111,11 +114,13 @@ def main():
             ex.enable_spec(7, proposer=args.name, state_strategy='reconstruct', log=print)
         with measure_stage(report, 'graphs'):
             ex.capture_graphs(log=print)
+        report['verify_buffer_bytes'] = ex.spec.bytes
         tok = SnapshotTokenizer(config.snapshot_dir())
         ids = tok.encode(PARAGRAPH * 256)
         cache, ex.cache = ex.cache, None
-        method = 'accepted_batch' if args.compare_accepted else 'propose'
-        current = getattr(ex.spec.proposer, method)
+        obj = ex.state if args.compare_state else ex.spec.proposer
+        method = 'commit_reconstructed' if args.compare_state else ('accepted_batch' if args.compare_accepted else 'propose')
+        current = getattr(obj, method)
         control = None
         control_path = args.compare_proposer or args.compare_accepted
         if control_path:
@@ -132,6 +137,32 @@ def main():
                 control = module.ParallelProposer.propose.__get__(ex.spec.proposer)
             report['control_proposer_sha256'] = local_workloads.digest(control_path.read_bytes())
             report['compared_method'] = method
+        if args.compare_state:
+            modules = {}
+            report['control_state_sources'] = {}
+            for name, relative in (('replay', 'sharar/kernels/fla/accepted_state.py'),
+                                   ('state', 'sharar/memory/request_state.py')):
+                path = args.compare_state / relative
+                module_spec = importlib.util.spec_from_file_location('sharar_control_' + name, path)
+                module = importlib.util.module_from_spec(module_spec)
+                sys.modules[module_spec.name] = module
+                module_spec.loader.exec_module(module)
+                modules[name] = module
+                report['control_state_sources'][relative] = local_workloads.digest(path.read_bytes())
+            previous_commit = modules['state'].StateManager.commit.__get__(ex.state)
+            replay = ex.spec.replay
+            # Share verified inputs. Keep the old output allocated in BOTH modes
+            # for equal-allocation timing; separate-process profiles measure RAM.
+            final = torch.empty((len(ex.state_pool.layer_ids), ex.max_batch, *ex.state_pool.ssm_all.shape[2:]),
+                                dtype=torch.float32, device=ex.device)
+            def control(requests, counts, replay, conv_windows, *, verified_steps):
+                metadata = torch.tensor([[r.slot for r in requests], counts], dtype=torch.int32).pin_memory().to(ex.device, non_blocking=True)
+                modules['replay'].reconstruct(ex.state_pool.ssm_all, replay.raw_k, replay.raw_v, replay.gates,
+                                             replay.betas, metadata[0], metadata[1], final)
+                for row, (req, count) in enumerate(zip(requests, counts)):
+                    previous_commit(req, count, ssm=final[:, row], conv=conv_windows[:, row, count - 1])
+            report['compared_method'] = method
+            report['control_scratch_bytes'] = final.numel() * final.element_size()
         for length, batch in (() if args.workloads_only else ((128, 1), (128, 4), (8192, 1), (8192, 4))):
             def prepare():
                 reqs = [ex.admit(ids[:length], SamplingParams(max_new_tokens=256, ignore_eos=True)) for _ in range(batch)]
@@ -148,7 +179,7 @@ def main():
                 compared = []
                 for repeat in range(4):
                     for mode in ('candidate', 'control', 'control', 'candidate'):
-                        setattr(ex.spec.proposer, method, current if mode == 'candidate' else control)
+                        setattr(obj, method, current if mode == 'candidate' else control)
                         reqs = prepare()
                         torch.cuda.synchronize()
                         started = time.perf_counter()
@@ -225,7 +256,7 @@ def main():
             print(json.dumps({k: row[k] for k in ('context', 'batch', 'median_ms_per_round', 'phases', 'components')}), flush=True)
             ex.ledger.check_floor()
         ex.cache = cache
-        setattr(ex.spec.proposer, method, current)
+        setattr(obj, method, current)
         if args.workloads or args.workloads_only:
             frozen = local_workloads.materialize(local_workloads.DEFAULT_MANIFEST, config.snapshot_dir())
             with http_server(ex, tok, config.snapshot_dir(), {'experiment': 'draft-profile'}) as url:
