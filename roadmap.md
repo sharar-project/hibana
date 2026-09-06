@@ -58,7 +58,10 @@ between windows. Controlled prefill partitions reproduce different first tokens
 and long acceptance tails. The [fixed-token trace](docs/agent-context.md) now
 locates early recurrent-layer rounding sensitivity. Long-session cache repairs
 pass 584 clean-image checks; a near-32K scheduler retry falls from 14.48 s to
-0.145 s TTFT in the bounded study. Extend to held-out agent workloads and repair
+0.145 s TTFT in the bounded study. The [agent-shaped study](docs/agent-workloads.md)
+now records a modest, workload-dependent generation lead and failed structured
+turns in both engines. Three general candidate-path screens fail; a narrower
+single-agent coverage hypothesis requires fresh cost/quality validation. Repair
 the quality evaluation prospectively before default promotion. Mixed forwarding,
 latency policy and confidence-based width policy are archived in Git history.
 Capture only the selected verify width during normal startup. Preserve accepted
@@ -924,20 +927,33 @@ remaining 7D trace bounded; a noisy short synthetic cell must not hold up this w
       eviction. Cache-aware admission and independent snapshot reclamation keep
       useful history under slot pressure. The fourth appended turn now completes;
       near-32K retries recompute at most 64 tokens. [Repair and proof](docs/agent-context.md).
-- [ ] Freeze a growing-history agent workload at 8K, 16K and near 32K: repeated
-      tool turns, 512–1,024-token generations, pauses, cache churn and concurrent
-      agents. Record per-request TTFT, sustained decode tokens/s, turn completion,
-      acceptance, actual input/output counts and physical memory. The initial
-      fixed-paragraph study covers 512 outputs at 8K/16K/32K plus four appended
-      turns; task quality, pauses, concurrent agents and external pressure remain
-      open. Separate fixed work from task-quality evaluation and use matched
-      SGLang profiles.
-- [ ] Profile sustained generation as history grows. Screen attention/KV traffic,
-      recurrent-state movement and useful accepted tokens per target traversal.
-      GB10-specific algorithms and memory layouts are eligible; add no runtime
-      policy or framework until a bounded experiment passes its quality, state,
-      memory and latency gates. Validate longer 64K/128K profiles before claiming
-      support; the existing near-32K two-output check is only a boundary test.
+- [x] Freeze and run an agent-shaped pilot at 8K/16K/near-32K against matched
+      SGLang DFlash2: 512/1,024-token fixed work, pauses, shared-history concurrent
+      branches, simulated tool turns and cache churn. Record 244 measured requests
+      plus 84 warmup/priming/churn requests. Retain SGLang's four clipped boundary
+      outputs and a separate equal-output headroom correction. The corrected
+      task checks pass 8/12 in Sharar and 6/12 in SGLang; neither has an all-pass
+      episode. This is not a quality-qualified whole-agent speedup.
+      [Protocol, results and limits](docs/agent-workloads.md).
+- [x] Profile sustained generation at all three contexts and batch 1/4. Target
+      verification spans 88–109 ms, draft work 19–22 ms and reconstruction
+      1.4–5.4 ms. Retain the failed one-shot priming setup and corrected six-cell
+      run. Three frozen general candidate-path screens fail; no serving hook
+      is added. Kernel durations are attribution, not physical DRAM counters.
+- [ ] Measure a narrower single-agent two-path hypothesis prospectively. The
+      observed +23.15% B=1 coverage excludes extra verification cost and is not
+      a speed result; B=4 gains only 7.19% and fails the general screen. First
+      measure target cost at physical batch 1 versus 2 and repeat coverage on
+      full 512/1,024-token held-out continuations. Share immutable prefix resources
+      and account for winner-only state commit before any implementation. Require
+      fresh quality/state/memory/latency evidence and protected concurrency-four
+      behavior; keep its current verification capacity.
+- [ ] Establish agent output/tool-choice contracts. The chat handler currently
+      ignores `tool_choice` and `response_format`. Reject unsupported non-default
+      controls explicitly before clients rely on them, then implement and test
+      enforcement with speculative acceptance and constraint-state rollback.
+      Extend the pilot to actual tool execution, independent growing histories
+      and CPU/tool contention. Preserve the unconstrained task failures.
 - [ ] Reconcile `MemAvailable`, PyTorch allocated/reserved memory and
       non-PyTorch allocations. Budget every draft/verify/graph/activation category
       and allocator slack before optional capacity; extend the 7D reservations.
@@ -1222,6 +1238,13 @@ python3 bench/benchmark_text_server.py \
 - 2026-09-04: Reassess the earlier 90% bandwidth estimate using actual traffic.
   Unified-memory allocation and zero-copy loading benefits require measurements;
   optional cache eviction alone does not reclaim monolithic allocations.
+- 2026-09-06: The agent-shaped DFlash2 comparison has a modest generation lead,
+  larger exact-retry benefits and structured-turn failures in both engines.
+  Preserve failed tool-template setup and clipped output counts; use separate
+  prospective corrections. No whole-agent quality or universal speed claim.
+- 2026-09-06: All three general draft-path coverage screens fail. The two-path
+  single-agent observation motivates fresh cost/coverage measurement under a
+  narrower protocol, not a retroactive pass or a new runtime policy.
 
 ## 11. Immediate next task
 
@@ -1234,25 +1257,34 @@ Runtime pruning, the MTP repair, clean-image correctness and the repeat matrix
 are complete ([proof](docs/promotion.md)). Full raw evidence stays under `$SHARAR_RESULTS`,
 with compact manifests and report summaries in Git.
 
-1. Continue Phase 8 with a held-out growing-history agent workload and matched
-   SGLang DFlash2 runs at 8K/16K/32K. Include real tool turns, 512–1,024-token
-   generations, pauses, branching, cache churn and concurrent agents. The initial
-   fixed-work study and cache repairs are complete: 584 clean-image checks,
-   19 identical before/after direct input/output traces, near-32K scheduler TTFT
-   14.48 → 0.145 s, and four completed appended turns. [Proof](docs/agent-context.md).
-2. Profile sustained generation on those workloads and screen the dominant
-   attention/KV and verification costs. Measure useful accepted tokens per target
-   traversal, state movement, turn completion and memory. Alternative candidate
-   coverage in otherwise unused verify rows remains a standalone algorithmic
-   hypothesis. Add a serving mechanism only after a repeatable quality/state/
-   latency/memory win; validate 64K/128K profiles before raising supported limits.
+The [agent-shaped comparison and generation profile](docs/agent-workloads.md)
+are complete. Serving source remains unchanged. Sharar leads most fixed-work
+cells modestly, but SGLang wins 16K/1,024-output cold generation; structured-task
+failures prevent a whole-agent quality-qualified speed claim.
+
+1. Fix the API contract gap: reject unsupported non-default `tool_choice` and
+   `response_format` instead of silently ignoring them. Test rejection before
+   submission and document the honored subset. Typed-output/tool-choice
+   enforcement needs its own speculative constraint-state tests.
+2. For speed, freeze a **new single-agent two-path cost/coverage study**. Keep
+   both complete draft chains and measure the existing target graphs at physical
+   batch 1 versus 2 before implementing a verifier. Repeat coverage over full
+   held-out 512/1,024-token continuations at 8K/16K/near-32K. The observed +23.15%
+   single-agent coverage has no measured speedup and the general B=1/4 screen
+   failed. Use shared immutable history and accepted-state reconstruction as
+   the design basis; account for KV/state ownership and winner-only commit.
+   Require fresh evidence for at least 10% useful-turn completion reduction,
+   quality/state correctness, the memory floor and protected concurrency-four
+   behavior before adding serving code. Keep the failed screens visible.
 3. Keep the remaining 7D work bounded and parallel in scope: fixed-b/a numerical
    controls for batch-shape sensitivity, and a prospective quality evaluation.
    The target-prefill trace is complete, including corrected attention controls;
    no favorable synthetic partition is forced. Preserve the failed generic
-   cache-miss rubric, align new prompts/rubrics, freeze held-out outputs and
-   obtain independent review before default promotion. The earlier 40 MTP
-   performance gates do not establish a universal SGLang lead.
+   cache-miss rubric and new unconstrained task failures, align new prompts/rubrics
+   and output contracts, then obtain independent review before default promotion.
+   Initial unwanted tool calls begin with the target prefill token; they do not
+   establish a speculative rejection bug. The earlier 40 MTP performance gates
+   do not establish a universal SGLang lead.
 4. Follow with physical-memory pressure/admission checks, reclaimable optional
    cache slabs and measured allocation/prepacked-loading experiments. Current
    snapshot eviction reuses slots; it does not release physical DRAM. Measure

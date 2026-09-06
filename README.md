@@ -52,6 +52,8 @@ Streaming (`"stream": true`), thinking (`enable_thinking` true, returned as
 strings, `/v1/completions`, `/v1/tokenize`, `/flush_cache` and the SGLang-style
 `/generate` are supported. The frozen benchmark harness runs against it with
 `python3 bench/benchmark_text_server.py --base-url http://127.0.0.1:30001 --container <name>`.
+`tool_choice` and `response_format` are currently ignored; explicit validation
+and enforcement are tracked as agent-readiness work in the roadmap.
 
 This loads the model (about 90 s), captures the decode CUDA graphs, and gives
 an interactive `you>` prompt. Replies stream token by token and every turn ends
@@ -92,13 +94,23 @@ Hardware research directions and decision criteria are in
 
 ## Status
 
+The [agent workload study](docs/agent-workloads.md) compares matched DFlash2
+profiles at 8K/16K/near-32K with growing turns, shared-history branches and cache
+churn. For 512-output cold requests, sustained decode is 34.24 / 30.74 / 28.00
+tokens/s per request versus SGLang's 29.08 / 28.22 / 27.32. Cached retries benefit
+more, but generation has no universal lead: SGLang wins the 16K/1,024-output cell.
+Corrected task-format checks pass 8/12 in Sharar and 6/12 in SGLang; neither has
+an all-pass agent episode. This is measurement work, with unchanged serving code
+and no DFlash2 default promotion.
+
 The [long-session cache work](docs/agent-context.md) passes 584 clean-image
 CPU/GPU checks. With the same 12 state slots, a near-32K repeated prompt through
 the serving scheduler falls from 14.48 s to 0.145 s TTFT; the fourth appended
 agent turn now completes without exhausting snapshots. The 512-output study
-measures roughly 68–71 decode tokens/s per request, with little generation-rate
-change. Phase 8 now prioritizes held-out agent workloads and sustained generation
-before physical-memory reclamation and final packaging.
+uses a repeated paragraph and measures roughly 68–71 decode tokens/s per request,
+with little generation-rate change. It is distinct from the agent-shaped review
+workload above. Phase 8 prioritizes sustained generation before physical-memory
+reclamation and final packaging.
 
 The earlier [clean-image repeat review](docs/promotion.md) records:
 414 measured requests, all 40 performance gates against repaired MTP passed,
