@@ -955,20 +955,26 @@ prefill tails and graph/verify buckets are explicit.
       isolation for the same kernel (`sharar/kernels/csrc/fp8_gemv.cu`).
       Candidates: TLB/page locality of the FP8 weights, clock behavior under
       sustained load, and fusing the norm-quant producer into the GEMV.
-- [ ] Make the NVFP4 activation quantizer memory bound
-      (`sharar/kernels/nvfp4_quant.py`): 54 ms per 2K-token prefill today for
-      about 7 GB of traffic; bit-trick e2m1 rounding and vectorized packing
-      should bring it under 15 ms.
+- [ ] Remeasure NVFP4 packing at large prefill shapes before further work in
+      `sharar/kernels/nvfp4_quant.py`. The Phase 2 54 ms/2K-token figure is
+      historical. Current verification packing, including fused SiLU, costs
+      only 0.4–0.9 ms for 130 calls in the isolated replay; it does not justify
+      another small-row packing optimization by itself.
 - [ ] Microbenchmark FlashInfer `mm_fp4` on SM121 for decode, prefill tails
       and B*verify-width shapes from the supported profiles, with the target
       and draft N/K dimensions; evaluate tile and
       cluster configs in the SM120 CUTLASS path; upstream or vendor a tuned
       config.
-      The 2026-09-06 controlled round traces identify 49–54 ms in NVFP4 GEMMs.
-      Isolate gate/up, down and vocabulary shapes with packed inputs/scales
-      fixed, then test weight/scale reuse and conversion/staging mechanisms
-      for small token blocks. Existing backend tuning is the baseline;
-      validate physical-traffic assumptions before claiming bandwidth gains.
+      The [2026-09-06 real-input study](docs/nvfp4-cost.md) completes the
+      M=7/8/28/32 screen: gate/up, down and vocabulary costs, flushed/repeated
+      addresses, three backends, narrow live MMA/scale-staging variants and
+      a whole-round dispatch ablation. Both tile variants are exact on 520
+      captured outputs each but fail the speed gate. cuDNN-through-32 saves
+      only 1.3–1.6% in natural B=4 rounds, below the frozen 2% gate. Archive
+      the experiments; no serving change. Other widths and large-prefill
+      tails remain unmeasured here. Nsight system-memory fills into L2 are
+      1.000–1.012× one packed weight/scale footprint in 16 sampled launches;
+      physical LPDDR controller traffic/peak utilization remain unmeasured.
 - [ ] Tune the GDN chunk kernels (`chunk_delta_h`, `chunk_intra`, `chunk_o`)
       block sizes and stages for SM121 SMEM and register budgets.
 - [ ] Fuse small kernels on the decode path where a trace shows launch-bound
@@ -1199,29 +1205,38 @@ convolution investigation. The exact standalone prototype reduces that component
 1.0–1.6% whole-round improvement. It fails the frozen 2% integration screen and
 is archived. No serving speedup is claimed or runtime option added.
 
-1. **Isolate NVFP4 projection costs and test a kernel/layout mechanism for
-   verification's small token blocks.** Current round traces contain about
-   49–54 ms in these GEMMs; target verification spans 86–99 ms. Hold packed
-   inputs, scales and weights fixed for gate/up, down and vocabulary projections
-   at actual row counts. Separate activation packing, weight/scale reads and
-   matrix multiplication, with cold/warm cache and full-round checks. Test an
-   SM121 kernel/layout that reuses packed weights/scales across rows and removes
-   measured redundant conversion or staging. Prior backend tuning is already
-   present. Freeze the predicted benefit and promotion threshold before changing
-   serving; preserve quantization, numerical parity, graph ownership and all
-   stop/cache/failure gates. Kernel studies may proceed now; final AOT packaging
-   remains after shape/profile and unified-memory work. No further mixed
-   scheduling policy or compact-convolution serving integration is planned.
-2. Complete DFlash2/DSpark versus repaired-MTP comparisons under the common
+The [NVFP4 verification study](docs/nvfp4-cost.md) is also complete for the
+current k=7 row counts. Narrow live MMA tiles with unchanged packed weights
+and scale blocks fail the frozen speed screen despite exact captured outputs.
+A separate cuDNN dispatch ablation saves only 1.3–1.6% in complete natural B=4
+rounds, below its 2% threshold. Serving remains unchanged. Keep these small
+effects as measured evidence for a future combined change, not new flags or a
+vendored kernel. Packing is under 1 ms in this replay and is not the next
+verification bottleneck to optimize.
+Hardware counters now show approximately one packed weight/scale footprint
+fetched from system memory into L2 for each sampled GEMM. They do not establish
+physical LPDDR peak utilization, but supply no large redundant-read multiplier
+for a layout change to remove. Prioritize useful tokens per traversal.
+
+1. **Complete DFlash2/DSpark versus repaired-MTP comparisons under the common
    memory budget, including realistic long sessions, eviction, natural stopping
-   and sampled quality. Repeat independent SGLang comparison windows and test
+   and sampled quality.** Measure useful accepted tokens per target round,
+   target rounds per completed answer, draft cost and cache restoration time.
+   Use these to select the next bounded speed mechanism: reduce expensive target
+   weight traversals or preserve useful draft/session state under pressure.
+   Freeze a concrete implementation hypothesis from that evidence. Repeat
+   independent SGLang comparison windows and test
    CPU contention on shared DRAM. Choose workload-specific profiles only after
    these gates; a small fixed-work matrix cannot establish a universal lead.
-3. Use Phase 8 for measured prepacked weight loading and reclaimable optional
+2. Use Phase 8 for measured prepacked weight loading and reclaimable optional
    cache slabs. Streaming checkpoint-map release already lowers the measured
    host load peak; it does not prove zero-copy hot inference. Compare allocation
    visibility, first touch, steady bandwidth and physical memory recovery under
    pressure. Keep graph references and active cache loans explicit.
+
+Kernel experiments remain allowed whenever a profile identifies removable work.
+Final AOT packaging follows supported shapes/profiles and unified-memory work.
+No further mixed scheduling or compact-convolution serving integration is planned.
 
 The larger speed objective remains more useful accepted tokens per target
 weight traversal and less state movement through GB10's shared DRAM. The current

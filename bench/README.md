@@ -149,3 +149,20 @@ The optional dump stores real per-layer convolution inputs outside git. Run
 exclusively under the host memory guard; the host harness owns service restoration.
 The [convolution screen](../docs/verify-cost.md) documents the measurements and
 the unpromoted prototype, including the frozen integration threshold.
+
+## NVFP4 projection experiments
+
+`nvfp4_cost.py` captures all 130 packed projection inputs from a real DFlash2
+round, with checkpoint revision and input/scale/output hashes. It times packing,
+the distinct-weight projection families, flushed/repeated addresses and three
+backends at the actual M=7/8/28/32 row counts. Raw tensors stay outside git.
+`nvfp4_tiles.py` replays those inputs through isolated narrow-tile adapters;
+`nvfp4_round.py` screens the small-M dispatch change with interleaved complete
+rounds, natural acceptance and forced counts, and exact work/output accounting.
+
+Use the commands and exclusive-memory procedure in [the NVFP4 report](../docs/nvfp4-cost.md).
+The tile adapters use private APIs in the pinned FlashInfer runtime. The direct
+variant needs `--retain-full-scale-block`; without it, the original upstream
+scale-layout assertion is deliberately reproducible. These experiments failed
+their frozen speed gates and expose no serving options. Component timing and
+synthetic acceptances are not useful-output throughput claims.

@@ -130,7 +130,10 @@ with identical output tokens. The [fresh plain/DFlash2 comparison](docs/competit
 uses the same GB10, pinned weights, workloads and memory budget for both engines.
 The [controlled verification study](docs/verify-cost.md) screens out compact
 convolution integration: its exact prototype projects only 1.0–1.6% round-time
-savings. The next speed investigation targets the larger NVFP4 projection cost.
+savings. The [NVFP4 follow-up](docs/nvfp4-cost.md) measures real packed inputs,
+rejects narrow-tile kernels, and finds only 1.3–1.6% natural-round benefit from
+a dispatch change, below its frozen gate. Serving remains unchanged. The next
+step compares useful acceptance and session reuse across DFlash2/DSpark/MTP.
 Broader cache-pressure and quality gates remain open; unified-memory capacity
 mechanisms (8) and remaining kernels/AOT (9) follow.
 Read [roadmap.md](roadmap.md) before doing anything else.

@@ -223,7 +223,16 @@ not establish a speedup, and tensor sizes are not physical DRAM counters.
 The [completed convolution screen](verify-cost.md) measures only 1.3–2.2% of a
 round in that component. A byte-exact prototype reduces convolution time
 74–79%, but estimates 1.0–1.6% whole-round savings, below the frozen 2% screen.
-Archive it without serving changes. The next kernel/layout experiment isolates
-NVFP4 gate/up, down and vocabulary projection costs at the actual verification
-row counts; current traces show 49–54 ms in these GEMMs. Measure packed-weight/
-scale reuse and conversion/staging overhead before choosing the implementation.
+Archive it without serving changes. The [NVFP4 follow-up](nvfp4-cost.md) now
+isolates gate/up, down and both vocabulary projections on real packed inputs.
+Narrow MMA tiles with full scale blocks preserve all tested outputs but fail
+the speed screen. A separate cuDNN-through-32 dispatch change reduces complete
+natural B=4 rounds by only 1.3–1.6%, below its frozen 2% gate. No kernel fork or
+serving option is retained. Activation packing is under 1 ms in that replay.
+
+Next compare DFlash2, DSpark and repaired MTP on completed natural answers and
+long cached sessions under pressure. Record useful accepted tokens per target
+weight traversal, draft cost and restoration/eviction cost. Select a concrete
+speculative or session-state mechanism from that evidence, while Phase 8 tests
+prepacked loading and actual reclamation of optional cache slabs. Kernel work
+can resume when measurements identify a larger removable cost.
