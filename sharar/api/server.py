@@ -284,6 +284,16 @@ def _stops(body: dict) -> list[str]:
     return stops
 
 
+def _validate_chat_controls(body: dict) -> None:
+    """Accept only unconstrained output; fail before rendering or admission."""
+    choice = body.get("tool_choice")
+    if choice is not None and choice != "auto":
+        raise InvalidRequest("tool_choice supports only null or 'auto'; forced or disabled tool calls are not supported")
+    response_format = body.get("response_format")
+    if response_format is not None and response_format != {"type": "text"}:
+        raise InvalidRequest('response_format supports only null or {"type":"text"}; constrained output is not supported')
+
+
 def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, describe: dict) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app):
@@ -492,6 +502,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     # ---- OpenAI chat ----
     @app.post("/v1/chat/completions")
     async def chat(body: dict, http: HttpRequest):
+        _validate_chat_controls(body)
         messages = body.get("messages") or []
         if not messages:
             raise HTTPException(400, "messages required")

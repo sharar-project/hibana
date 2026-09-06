@@ -52,8 +52,10 @@ Streaming (`"stream": true`), thinking (`enable_thinking` true, returned as
 strings, `/v1/completions`, `/v1/tokenize`, `/flush_cache` and the SGLang-style
 `/generate` are supported. The frozen benchmark harness runs against it with
 `python3 bench/benchmark_text_server.py --base-url http://127.0.0.1:30001 --container <name>`.
-`tool_choice` and `response_format` are currently ignored; explicit validation
-and enforcement are tracked as agent-readiness work in the roadmap.
+Chat accepts omitted/null `tool_choice` or `"auto"`, and omitted/null
+`response_format` or `{"type":"text"}`. Other values return HTTP 400 before
+prompt rendering or engine admission. Forced/disabled tool calls and constrained
+JSON output require enforcement that is still tracked in the roadmap.
 
 This loads the model (about 90 s), captures the decode CUDA graphs, and gives
 an interactive `you>` prompt. Replies stream token by token and every turn ends
