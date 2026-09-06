@@ -55,8 +55,11 @@ promotion remains withheld by a frozen quality-rubric failure. Against SGLang,
 five fixed cells win in both windows and qualifying natural answers finish
 4.7–13.3% sooner; the 128-input / 256-output / concurrency-four cell reverses
 between windows. Controlled prefill partitions reproduce different first tokens
-and long acceptance tails. Trace that target-prefill difference next, and repair
-the quality workload prospectively before default promotion. Mixed forwarding,
+and long acceptance tails. The [fixed-token trace](docs/agent-context.md) now
+locates early recurrent-layer rounding sensitivity. Long-session cache repairs
+pass 584 clean-image checks; a near-32K scheduler retry falls from 14.48 s to
+0.145 s TTFT in the bounded study. Extend to held-out agent workloads and repair
+the quality evaluation prospectively before default promotion. Mixed forwarding,
 latency policy and confidence-based width policy are archived in Git history.
 Capture only the selected verify width during normal startup. Preserve accepted
 state reconstruction, selective features, draft-aware prefix caching and the
@@ -887,9 +890,12 @@ from a broad quality, competitive-speed or production-promotion gate.
       HTTP batches and repeated direct prefill partitions. Slow batches add
       51–84 B=1 rounds. First tokens can differ before speculative decoding;
       waiting for all four admissions does not remove the tail.
-- [ ] Trace fixed-token target prefill across the observed partitions: logits,
-      margins, first divergent layer/state and draft features. Fix a demonstrated
-      error if found; otherwise retain the numerical limits explicitly. Screen
+- [x] Trace fixed-token target prefill across the observed partitions: logits,
+      margins, first divergent layer/state and draft features. Repeated traces
+      locate early drift in recurrent layers; fixed operands expose shape-sensitive
+      BF16 b/a projection rounding. Corrected paged-attention controls preserve
+      the first-token differences. [Evidence and limits](docs/agent-context.md).
+- [ ] Isolate fixed-b/a numerical controls before changing target arithmetic. Screen
       greater candidate coverage per weight traversal in a standalone benchmark
       before adding a serving mechanism.
 
@@ -897,15 +903,41 @@ Definition of done: one declared production proposer/profile passes all quality,
 state, memory and protected latency gates on a clean image in repeated windows.
 An implementation pass or a fixed-work speed win alone does not promote it.
 
-### Phase 8: Unified memory `[planned; after 7D]`
+### Phase 8: Long-session inference and unified memory `[started; bounded 7D follow-ups alongside]`
 
-Goal: use the shared pool where it helps and prove where it does not.
+Goal: reduce useful agent-turn completion time as history grows, with bounded
+physical memory on GB10. Long-context prefill and sustained generation are
+first-class work here, not deferred until final kernel packaging.
 
 Research allocation paths and prepacked layouts alongside 7C; promote capacity
 and serving changes after the draft/state planning prerequisites in 7D. Use the
 session-cache, reclaimable-slab and immutable-weight experiments in
 [the experiment plan](docs/gb10-experiments.md), including their stop criteria.
 
+Work order: checkpoint retention and agent-turn evidence first, sustained decode
+second, physical-memory pressure and allocation experiments third. Keep the
+remaining 7D trace bounded; a noisy short synthetic cell must not hold up this work.
+
+- [x] Retain useful near-end checkpoints within the existing state-slot budget.
+      Keep target KV, recurrent state and draft features at the same boundary;
+      cover identical retries, appended tool turns, branching, active loans and
+      eviction. Cache-aware admission and independent snapshot reclamation keep
+      useful history under slot pressure. The fourth appended turn now completes;
+      near-32K retries recompute at most 64 tokens. [Repair and proof](docs/agent-context.md).
+- [ ] Freeze a growing-history agent workload at 8K, 16K and near 32K: repeated
+      tool turns, 512–1,024-token generations, pauses, cache churn and concurrent
+      agents. Record per-request TTFT, sustained decode tokens/s, turn completion,
+      acceptance, actual input/output counts and physical memory. The initial
+      fixed-paragraph study covers 512 outputs at 8K/16K/32K plus four appended
+      turns; task quality, pauses, concurrent agents and external pressure remain
+      open. Separate fixed work from task-quality evaluation and use matched
+      SGLang profiles.
+- [ ] Profile sustained generation as history grows. Screen attention/KV traffic,
+      recurrent-state movement and useful accepted tokens per target traversal.
+      GB10-specific algorithms and memory layouts are eligible; add no runtime
+      policy or framework until a bounded experiment passes its quality, state,
+      memory and latency gates. Validate longer 64K/128K profiles before claiming
+      support; the existing near-32K two-output check is only a boundary test.
 - [ ] Reconcile `MemAvailable`, PyTorch allocated/reserved memory and
       non-PyTorch allocations. Budget every draft/verify/graph/activation category
       and allocator slack before optional capacity; extend the 7D reservations.
@@ -1202,30 +1234,31 @@ Runtime pruning, the MTP repair, clean-image correctness and the repeat matrix
 are complete ([proof](docs/promotion.md)). Full raw evidence stays under `$SHARAR_RESULTS`,
 with compact manifests and report summaries in Git.
 
-1. Trace the target-prefill difference behind the short-batch tail. With four
-   requests present before the first decode and no cache hits, prefill groups
-   4 / 1+3 / 2+2 / 3+1 consistently take 13.22 / 4.79 / 14.24 / 10.41 seconds.
-   Some first output tokens differ. Compare fixed-token logits, margins and
-   layer/state traces before treating this as a scheduler or draft-model bug.
-   Keep request contents and work explicit; do not force a favorable synthetic
-   continuation. The next algorithmic screen should reduce repeated target
-   weight traversals on a low-acceptance tail. Alternative candidate coverage
-   in otherwise unused verification rows is a benchmark hypothesis, not a new
-   runtime hook.
-2. Resolve the promotion quality blocker prospectively. The frozen generic
-   cache-miss prompt accepts lookup analogies semantically, while its rubric
-   requires recomputation; all profiles miss that requirement. Preserve this
-   failure, align the new prompt/rubric, and freeze held-out workloads before
-   measuring and independently reviewing their outputs. All 40 performance
-   checks against repaired MTP passed; that does not establish a stable lead
-   over SGLang in the short batched cell.
-3. Phase 8 follows with measured prepacked loading and reclaimable optional cache
-   slabs. Measure first touch and physical memory recovery on shared DRAM while
-   keeping graph references and active cache loans explicit. The 12-slot
-   boundary check reuses only a 20,480-token checkpoint on a 32,766-token repeat;
-   investigate endpoint retention before claiming efficient long-session reuse.
-   Final AOT follows
-   supported shapes and memory mechanisms.
+1. Continue Phase 8 with a held-out growing-history agent workload and matched
+   SGLang DFlash2 runs at 8K/16K/32K. Include real tool turns, 512–1,024-token
+   generations, pauses, branching, cache churn and concurrent agents. The initial
+   fixed-work study and cache repairs are complete: 584 clean-image checks,
+   19 identical before/after direct input/output traces, near-32K scheduler TTFT
+   14.48 → 0.145 s, and four completed appended turns. [Proof](docs/agent-context.md).
+2. Profile sustained generation on those workloads and screen the dominant
+   attention/KV and verification costs. Measure useful accepted tokens per target
+   traversal, state movement, turn completion and memory. Alternative candidate
+   coverage in otherwise unused verify rows remains a standalone algorithmic
+   hypothesis. Add a serving mechanism only after a repeatable quality/state/
+   latency/memory win; validate 64K/128K profiles before raising supported limits.
+3. Keep the remaining 7D work bounded and parallel in scope: fixed-b/a numerical
+   controls for batch-shape sensitivity, and a prospective quality evaluation.
+   The target-prefill trace is complete, including corrected attention controls;
+   no favorable synthetic partition is forced. Preserve the failed generic
+   cache-miss rubric, align new prompts/rubrics, freeze held-out outputs and
+   obtain independent review before default promotion. The earlier 40 MTP
+   performance gates do not establish a universal SGLang lead.
+4. Follow with physical-memory pressure/admission checks, reclaimable optional
+   cache slabs and measured allocation/prepacked-loading experiments. Current
+   snapshot eviction reuses slots; it does not release physical DRAM. Measure
+   first touch and physical recovery under CPU/tool contention while preserving
+   graph references, active loans and the host floor. Targeted SM121 kernels
+   accompany these measurements; final AOT follows stable profiles.
 
 The shared GDN prefill plan improves ordinary TTFT 18–29% in the original study.
 Compact convolution and narrow NVFP4 tiles failed their integration screens.

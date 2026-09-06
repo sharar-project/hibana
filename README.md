@@ -92,13 +92,22 @@ Hardware research directions and decision criteria are in
 
 ## Status
 
-The [clean-image repeat review](docs/promotion.md) is the current result:
+The [long-session cache work](docs/agent-context.md) passes 584 clean-image
+CPU/GPU checks. With the same 12 state slots, a near-32K repeated prompt through
+the serving scheduler falls from 14.48 s to 0.145 s TTFT; the fourth appended
+agent turn now completes without exhausting snapshots. The 512-output study
+measures roughly 68–71 decode tokens/s per request, with little generation-rate
+change. Phase 8 now prioritizes held-out agent workloads and sustained generation
+before physical-memory reclamation and final packaging.
+
+The earlier [clean-image repeat review](docs/promotion.md) records:
 414 measured requests, all 40 performance gates against repaired MTP passed,
 and DFlash2 promotion withheld by the frozen quality rubric. Qualifying natural
 answers finish 4.7–13.3% sooner than native SGLang DFlash2 in two windows; the
 short four-request cell has no stable lead. Its controlled prefill partitions
-change first tokens and acceptance tails. The next speed task traces that
-target-prefill difference. Production remains on the verified original image.
+change first tokens and acceptance tails. The new trace locates early
+recurrent-projection rounding sensitivity; a numerical control remains open.
+Production remains on the verified original image.
 
 Phases 0–7D include lifecycle repairs, extension contracts, frozen local
 workloads, native DSpark/DFlash2, draft-aware caching and experimental accepted-state
