@@ -45,10 +45,18 @@ target KV and the recurrent slot describe exactly
 `prompt_ids + output_ids[:-1]`. That length is `committed_len`. A cache entry
 may publish only that same prefix and its matching snapshot.
 
-- `admit` locks a matched prefix, allocates the request's suffix and slot, and
+- `can_admit(prompt_ids, reserve_tokens)` takes actual prefill IDs, including
+  replayed output history. It budgets the uncached suffix plus reserve while
+  temporarily protecting the matching path. This probe does not increment
+  cache-hit counters. Admission follows on the same owner thread.
+- `admit` secures state capacity before locking a matched prefix, allocates the request's suffix and slot, and
   copies the matched recurrent snapshot. Allocation failure returns the slot
   and cache loan. Prompt pages are reserved before prefill has processed them.
-- `checkpoint` reserves an optional recurrent snapshot at a prefill boundary;
+- `prefill_checkpoints` gives each row its latest interior boundary first,
+  then reserves earlier intervals round-robin. `checkpoint` may recycle only
+  that request's older completed snapshots; destinations beyond `committed_len`
+  are pending kernel writes and cannot be recycled. An exact prompt-end copy
+  preserves the latest interior boundary needed by identical retries.
   `commit_prefill` publishes the successfully processed extent.
 - `reserve(requests, width)` attaches one disjoint pending reservation per
   request. `step_pages` borrows committed pages plus the reservation. Callers
@@ -65,6 +73,14 @@ may publish only that same prefix and its matching snapshot.
 - `release` is idempotent. It transfers a valid prefix into the cache or frees
   the request's suffix, slot and checkpoints, then unlocks the borrowed prefix.
   Active cache flush defers reclamation until the last loan is released.
+
+When only recurrent capacity is exhausted, the radix cache can drop an unlocked
+interior snapshot and its matching draft metadata while retaining KV pages and
+newer resume points. `snapshot_evictions` counts these separately from leaf
+evictions. This returns a state slot to the allocator; it does not release the
+monolithic pool's physical DRAM. Locked paths remain protected. A new snapshot
+attached to an existing node must bring its own matching auxiliary metadata;
+discarding a duplicate snapshot must preserve the existing metadata as well.
 
 The runtime is single-threaded at this boundary. Calls are ordered on its
 current CUDA stream; callbacks must not free/reuse buffers on another stream.

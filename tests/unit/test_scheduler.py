@@ -73,8 +73,8 @@ class FakeExecutor:
     def admission_reserve(self, req, limit):
         return min(limit, req.params.max_new_tokens - len(req.output_ids))
 
-    def can_admit(self, prompt_len, reserve_tokens=0):
-        return len(self.kv_pool._free) >= prompt_len + reserve_tokens and len(self.state_pool._free) >= 1
+    def can_admit(self, prompt_ids, reserve_tokens=0):
+        return len(self.kv_pool._free) >= len(prompt_ids) + reserve_tokens and len(self.state_pool._free) >= 1
 
     def admit(self, ids, params, req=None):
         req = req or Request(prompt_ids=list(ids), params=params)

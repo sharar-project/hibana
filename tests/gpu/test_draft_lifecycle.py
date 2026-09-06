@@ -79,3 +79,23 @@ def test_selection_preserves_real_outputs_and_cache(draft_runtime, monkeypatch, 
         ex.flush_cache()
         ex.use_graphs = True
         ex.spec.verify_depth = ex.spec.k
+
+
+@torch.inference_mode()
+def test_long_batched_prefill_retains_each_rows_endpoint(draft_runtime):
+    from sharar.engine.sampler import SamplingParams
+    ex, tape = draft_runtime
+    ex.flush_cache()
+    reqs = [ex.admit([100 + i] + (tape * 16)[:8189], SamplingParams(max_new_tokens=8, ignore_eos=True))
+            for i in range(4)]
+    ex.prefill_batch([(r, len(r.prompt_ids)) for r in reqs])
+    endpoints = [r.checkpoints[8128] for r in reqs]
+    assert len(set(endpoints)) == 4 and not set(endpoints) & {r.slot for r in reqs}
+    while active := [r for r in reqs if not r.finished]:
+        ex.decode_step(active)
+    for req in reqs:
+        assert req.committed_len == 8197 and len(req.output_ids) == 8 and req.spec_rounds > 0
+        ex.release(req)
+    ex.flush_cache()
+    assert ex.kv_pool.free_count == 34999 and ex.state_pool.free_count == 11
+    assert len(ex.spec.proposer.free_slots) == 4

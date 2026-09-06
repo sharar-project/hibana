@@ -55,13 +55,14 @@ class RadixCache:
         self.device = device
         self.root = Node(key=[], pages=torch.empty(0, dtype=torch.int32, device=device), parent=None)
         self.hits = self.misses = self.evictions = 0
+        self.snapshot_evictions = 0
         self.cached_tokens = 0
         self.flushing = False
 
     # ---- lookup ----
-    def match(self, ids: list[int]) -> Match:
+    def match(self, ids: list[int], *, touch: bool = True) -> Match:
         if self.flushing:
-            self.misses += 1
+            self.misses += int(touch)
             return Match(0, self.root.pages, None, None, 0)
         node = self.root
         pos = 0
@@ -85,13 +86,14 @@ class RadixCache:
                 best_node, best_len = child, pos
         raw = pos
         if best_node is None or best_len == 0:
-            self.misses += 1
+            self.misses += int(touch)
             return Match(0, torch.empty(0, dtype=torch.int32, device=self.device), None, None, raw)
         pages = torch.cat([n.pages for n in path[: path.index(best_node) + 1]])
-        now = time.monotonic()
-        for n in path[: path.index(best_node) + 1]:
-            n.last_access = now
-        self.hits += 1
+        if touch:
+            now = time.monotonic()
+            for n in path[: path.index(best_node) + 1]:
+                n.last_access = now
+            self.hits += 1
         return Match(best_len, pages, best_node.snapshot_slot, best_node, raw)
 
     def lock(self, node: Node | None, delta: int) -> None:
@@ -144,6 +146,7 @@ class RadixCache:
             if pos in snapshots:
                 if node.snapshot_slot is None:
                     node.snapshot_slot = snapshots[pos]
+                    node.auxiliary = (auxiliary or {}).get(pos, {})
                 else:
                     self.state_pool.free(snapshots[pos])
         if new_start is None:
@@ -165,20 +168,35 @@ class RadixCache:
         """Free unlocked leaves, least recently used first, until the pools can
         satisfy the request or nothing evictable remains."""
         while (self.kv_pool.free_count < need_pages) or (self.state_pool.free_count < need_slots):
-            leaf = self._lru_leaf()
+            if self.kv_pool.free_count >= need_pages and (node := self._lru_candidate(snapshot_only=True)) is not None:
+                # Recurrent capacity can run out while KV capacity is ample.
+                # Drop an optional interior snapshot, retaining the radix path
+                # and its newer resume points. Locked loans remain untouched.
+                self.state_pool.free(node.snapshot_slot)
+                node.snapshot_slot = None
+                node.auxiliary = {}
+                self.snapshot_evictions += 1
+                continue
+            leaf = self._lru_candidate()
             if leaf is None:
                 break
             self._remove_leaf(leaf)
 
-    def _lru_leaf(self) -> Node | None:
+    def _lru_candidate(self, snapshot_only: bool = False) -> Node | None:
         best = None
         stack = [self.root]
         while stack:
             n = stack.pop()
             stack.extend(n.children.values())
-            if n is self.root or n.children or n.lock > 0:
+            if n is self.root or n.lock > 0:
                 continue
-            if best is None or n.last_access < best.last_access:
+            if snapshot_only:
+                if not n.children or n.snapshot_slot is None:
+                    continue
+            elif n.children:
+                continue
+            if (best is None or n.last_access < best.last_access
+                    or (snapshot_only and n.last_access == best.last_access and n.depth < best.depth)):
                 best = n
         return best
 
@@ -194,9 +212,10 @@ class RadixCache:
         # Hide the cache immediately, but retain pinned pages and snapshots
         # until their final reader releases them. Admission bypasses the cache
         # while that drain is pending.
-        while (leaf := self._lru_leaf()) is not None:
+        while (leaf := self._lru_candidate()) is not None:
             self._remove_leaf(leaf)
         self.flushing = bool(self.root.children)
 
     def stats(self) -> dict:
-        return {"hits": self.hits, "misses": self.misses, "evictions": self.evictions, "cached_tokens": self.cached_tokens, "flush_pending": self.flushing}
+        return {"hits": self.hits, "misses": self.misses, "evictions": self.evictions,
+                "snapshot_evictions": self.snapshot_evictions, "cached_tokens": self.cached_tokens, "flush_pending": self.flushing}

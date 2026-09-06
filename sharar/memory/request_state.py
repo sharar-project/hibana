@@ -47,11 +47,20 @@ class StateManager:
         self.cache = cache
 
 
-    def can_admit(self, prompt_len: int, reserve: int = 0) -> bool:
-        need = prompt_len + reserve
-        if self.cache is not None:
-            self.cache.evict(need_pages=need, need_slots=1)
-        return self.kv.free_count >= need and self.recurrent.free_count >= 1
+    def can_admit(self, ids: list[int], reserve: int = 0) -> bool:
+        if self.cache is None:
+            return self.kv.free_count >= len(ids) + reserve and self.recurrent.free_count >= 1
+        # Obtain a private slot before pinning a path that might otherwise own
+        # every state slot. Budget only the uncached suffix and decode reserve.
+        self.cache.evict(need_slots=1)
+        match = self.cache.match(ids[:-1], touch=False)
+        self.cache.lock(match.node, 1)
+        try:
+            need = len(ids) - match.length + reserve
+            self.cache.evict(need_pages=need)
+            return self.kv.free_count >= need and self.recurrent.free_count >= 1
+        finally:
+            self.cache.lock(match.node, -1)
 
     def ensure_pages(self, count: int) -> None:
         if self.kv.free_count < count and self.cache is not None:
@@ -65,6 +74,7 @@ class StateManager:
         match, slot, own = None, -1, None
         try:
             if self.cache is not None:
+                self.cache.evict(need_slots=1)
                 match = self.cache.match(ids[:-1])  # last token must produce logits
                 if match.length:
                     self.cache.lock(match.node, 1)
@@ -93,15 +103,46 @@ class StateManager:
     def checkpoint(self, req: Request, position: int, *, copy: bool = False) -> int | None:
         if self.cache is None:
             return None
+        if position in req.checkpoints:
+            return req.checkpoints[position]
         if not self.recurrent.free_count:
             self.cache.evict(need_slots=1)
         if not self.recurrent.free_count:
-            return None
+            # Only recycle this request's completed snapshots. Positions beyond
+            # committed_len are destinations of the upcoming forward; reusing
+            # them would alias two kernel writes. Cache loans are never ours.
+            candidates = [p for p in req.checkpoints if p <= req.committed_len and p < position]
+            if copy and candidates:
+                # An exact prompt-end copy must not displace the last interior
+                # boundary needed by an identical retry (which needs logits).
+                candidates = [p for p in candidates if p != max(req.checkpoints)]
+            if not candidates:
+                return None
+            oldest = min(candidates)
+            self.recurrent.free(req.checkpoints.pop(oldest))
+            req.cache_auxiliary.pop(oldest, None)
         slot = self.recurrent.alloc()
         req.checkpoints[position] = slot
         if copy:
             self.recurrent.copy_slot(req.slot, slot)
         return slot
+
+    def prefill_checkpoints(self, boundaries: list[tuple[Request, list[int]]]) -> list[tuple[int, int, int]]:
+        """Reserve (row, position, slot), giving each row its latest boundary first.
+
+        Then fill earlier intervals round-robin. The fixed pool bounds retention;
+        allocation cannot let one long prompt consume every row's endpoint.
+        """
+        priorities = [positions[-1:] + positions[:-1] for _, positions in boundaries]
+        planned = []
+        for rank in range(max(map(len, priorities), default=0)):
+            for row, ((req, _), positions) in enumerate(zip(boundaries, priorities)):
+                if rank < len(positions):
+                    pos = positions[rank]
+                    slot = self.checkpoint(req, pos)
+                    if slot is not None:
+                        planned.append((row, pos, slot))
+        return planned
 
     def commit_prefill(self, req: Request, end: int) -> None:
         if not req.committed_len <= end <= len(req.pages):

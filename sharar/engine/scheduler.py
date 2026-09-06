@@ -170,7 +170,7 @@ class Scheduler:
         while self.queue and len(self.prefilling) + len(self.running) < self.cfg.max_running:
             req = self.queue[0]
             reserve = self.ex.admission_reserve(req, self.cfg.reserve_tokens)
-            if not self.ex.can_admit(req.prefill_len, reserve):
+            if not self.ex.can_admit(req.prefill_ids, reserve):
                 break
             self.ex.admit(req.prompt_ids, req.params, req)
             self.queue.pop(0)

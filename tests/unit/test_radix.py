@@ -94,3 +94,40 @@ def test_divergent_branch_splits_and_evicts_lru():
     cache.lock(mb.node, -1)
     cache.flush()
     assert cache.cached_tokens == 0 and len(st._free) == 19
+
+
+def test_new_snapshot_on_existing_prefix_keeps_its_matching_auxiliary():
+    cache, kv, st = make()
+    ids = [1, 2, 3, 4]
+    cache.insert(ids, kv.alloc(4), {4: st.alloc_slot()}, {4: {'draft': 'end'}})
+    slot = st.alloc_slot()
+    pages = kv.alloc(4)
+    duplicate = cache.insert(ids, pages, {2: slot}, {2: {'draft': 'middle'}})
+    kv.free(pages[:duplicate])
+    match = cache.match([1, 2, 9])
+    assert match.snapshot_slot == slot and match.node.auxiliary == {'draft': 'middle'}
+    # Discarding a duplicate snapshot must also discard its different features.
+    pages = kv.alloc(4)
+    duplicate = cache.insert(ids, pages, {2: st.alloc_slot()}, {2: {'draft': 'wrong'}})
+    kv.free(pages[:duplicate])
+    assert cache.match([1, 2, 9]).node.auxiliary == {'draft': 'middle'}
+    cache.flush()
+    assert st.free_count == 19 and kv.free_count == 999
+
+
+def test_snapshot_pressure_preserves_kv_and_locked_resume_states():
+    cache, kv, st = make()
+    ids = [1, 2, 3, 4]
+    first, last = st.alloc_slot(), st.alloc_slot()
+    cache.insert(ids, kv.alloc(4), {2: first, 4: last}, {2: {'draft': 'old'}, 4: {'draft': 'new'}})
+    match = cache.match(ids)
+    cache.lock(match.node, 1)
+    cache.evict(need_slots=19)
+    assert first not in st.freed and last not in st.freed
+    cache.lock(match.node, -1)
+    cache.evict(need_slots=18)
+    assert first in st.freed and last not in st.freed
+    assert cache.cached_tokens == 4 and cache.snapshot_evictions == 1 and cache.evictions == 0
+    assert cache.match(ids).node.auxiliary == {'draft': 'new'}
+    cache.flush()
+    assert st.free_count == 19 and kv.free_count == 999

@@ -154,8 +154,8 @@ class Executor:
         req.t_admit = time.perf_counter()
         return req
 
-    def can_admit(self, prompt_len: int, reserve_tokens: int = 0) -> bool:
-        return self.state.can_admit(prompt_len, reserve_tokens)
+    def can_admit(self, prompt_ids: list[int], reserve_tokens: int = 0) -> bool:
+        return self.state.can_admit(prompt_ids, reserve_tokens)
 
     def admission_reserve(self, req: Request, limit: int) -> int:
         padding = self.spec.k if self.spec is not None and (req.params.greedy or not self.spec.proposer.requirements.greedy_only) else 0
@@ -248,10 +248,7 @@ class Executor:
         if start:
             self._plan_paged_prefill(req.pages[:end], t)
             ctx.paged_prefill_wrapper = self._paged_prefill
-        for pos in self._checkpoint_positions(start, end, n):
-            slot = self.state.checkpoint(req, pos)
-            if slot is None:
-                break
+        for _, pos, slot in self.state.prefill_checkpoints([(req, self._checkpoint_positions(start, end, n))]):
             ctx.checkpoint_positions.append(pos)
             ctx.checkpoint_slots.append(slot)
         if self.spec is not None:
@@ -267,7 +264,7 @@ class Executor:
         started = time.perf_counter()
         ids_list, pos_list, page_list, cu, kv_indptr, kv_indices = [], [], [], [0], [0], []
         seq_slots, prefix_lens, seq_lens = [], [], []
-        ck_pos, ck_slots, ck_seqs = [], [], []
+        boundaries = []
         for si, (req, n_new) in enumerate(chunks):
             start = req.prefill_pos
             end = start + n_new
@@ -281,13 +278,8 @@ class Executor:
             seq_slots.append(req.slot)
             prefix_lens.append(start)
             seq_lens.append(n_new)
-            for pos in self._checkpoint_positions(start, end, total):
-                slot = self.state.checkpoint(req, pos)
-                if slot is None:
-                    break
-                ck_pos.append(pos)
-                ck_slots.append(slot)
-                ck_seqs.append(si)
+            boundaries.append((req, self._checkpoint_positions(start, end, total)))
+        checkpoints = self.state.prefill_checkpoints(boundaries)
         d = self.device
         ctx = ForwardContext(
             mode="prefill", kv_pool=self.kv_pool, state_pool=self.state_pool,
@@ -296,7 +288,9 @@ class Executor:
             cu_seqlens=torch.tensor(cu, dtype=torch.int32, device=d),
             seq_slots=torch.tensor(seq_slots, dtype=torch.int32, device=d),
             seq_prefix_lens=prefix_lens, seq_lens=seq_lens,
-            checkpoint_positions=ck_pos, checkpoint_slots=ck_slots, checkpoint_seqs=ck_seqs,
+            checkpoint_positions=[p for _, p, _ in checkpoints],
+            checkpoint_slots=[s for _, _, s in checkpoints],
+            checkpoint_seqs=[i for i, _, _ in checkpoints],
         )
         self._paged_prefill.plan(
             torch.tensor(cu, dtype=torch.int32), torch.tensor(kv_indptr, dtype=torch.int32), torch.cat(kv_indices),
