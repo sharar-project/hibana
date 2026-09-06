@@ -1288,6 +1288,22 @@ kernel sources are unchanged. The two-path cost/coverage screen fails its 10%
 completion gate, so it adds no serving mechanism. Sharar's existing generation
 lead remains workload-dependent, with no quality-qualified whole-agent claim.
 
+The [FP8 verifier follow-up](docs/atlas-verifier-study.md) also fails its
+frozen promotion gates: combined full-round savings are 1.97–2.90% at B=1
+and 0.70–0.99% at B=4. It adds no serving kernel or experimental switch.
+The next speed mechanism must increase useful accepted tokens per target
+traversal or demonstrate a larger measured reduction in state movement.
+
+The same study adds a frozen HTTP comparison and audits Atlas's DFlash2 path
+on our checkpoint. Atlas's recorded rates remain diagnostics: chunked capture
+uses the wrong feature offset, cached draft history is incomplete, and its
+requested 2K draft window is not applied. Qualifying that implementation would
+require separate repairs and GPU validation. Keep that work outside Sharar;
+use the matched Sharar–SGLang repeat results to assess our current speed gap.
+The four-sample coding matrix puts cold single-request decode between 4.2%
+slower and 9.6% faster, and shared-prefix B4 throughput 7.7–17.6% higher.
+That is a modest lead; a larger useful-turn gain still needs a new mechanism.
+
 1. For speed, freeze a **16-target-row tree coverage study** on fresh held-out
    full continuations: one anchor, seven greedy nodes and eight alternatives.
    Keep the complete greedy path, spread the remaining budget
