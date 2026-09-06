@@ -1,0 +1,89 @@
+{
+  "schema": 2,
+  "summary_document": "promotion.md",
+  "full_evidence": {
+    "path": "reviews/2026-09-06/promotion/full-evidence.json",
+    "sha256": "9876c76be9d4a13f0df749442d7b62c5510f15233defc615b3463b13a2f13a13",
+    "bytes": 129473
+  },
+  "summary": {
+    "implementation_commit": "395feb17aa8d7763ac2cbc1cdcb22460e8c81fb5",
+    "measured_requests": 414,
+    "promotion": {
+      "promoted": false,
+      "correctness_passed": true,
+      "performance_passed": true,
+      "candidate_frozen_quality_passed": false,
+      "independent_human_quality_signoff": false,
+      "selected_natural_improvement_passed": true,
+      "performance_failures": [],
+      "selected_natural_cells": [
+        {
+          "cell": "chat-cold",
+          "completion_reductions_per_window": [
+            -0.027299789580833345,
+            -0.03153717241043963
+          ],
+          "passes_10_percent_in_both": false
+        },
+        {
+          "cell": "coding-cold",
+          "completion_reductions_per_window": [
+            0.38175123938038724,
+            0.3845721636484999
+          ],
+          "passes_10_percent_in_both": true
+        },
+        {
+          "cell": "tool-cold",
+          "completion_reductions_per_window": [
+            0.32628095435654425,
+            0.3324109738604064
+          ],
+          "passes_10_percent_in_both": true
+        },
+        {
+          "cell": "json-cold",
+          "completion_reductions_per_window": [
+            0.4306186662344804,
+            0.4331157147907999
+          ],
+          "passes_10_percent_in_both": true
+        },
+        {
+          "cell": "reasoning-cold",
+          "completion_reductions_per_window": [
+            0.5520206874315132,
+            0.5505557265141232
+          ],
+          "passes_10_percent_in_both": true
+        },
+        {
+          "cell": "session-cold",
+          "completion_reductions_per_window": [
+            0.13398361406139148,
+            0.13404390735978544
+          ],
+          "passes_10_percent_in_both": true
+        },
+        {
+          "cell": "session-session",
+          "completion_reductions_per_window": [
+            0.2276387903849404,
+            0.22722666930199598
+          ],
+          "passes_10_percent_in_both": true
+        }
+      ],
+      "rule": "DFlash2 is only promoted if all applicable gates pass; no source/deployment default change on a failed gate."
+    },
+    "restored_production": {
+      "checked_at_utc": "2026-09-06T05:55:10.806784+00:00",
+      "container": "sharar-qwen38",
+      "image": "sha256:b893cdc2e3171bc2b977949305535e1cc62ebb41cee7d607638d628588d50b1b",
+      "running": true,
+      "memory_guard": "active",
+      "verification_log": "Sharar READY at http://127.0.0.1:30001\n"
+    }
+  }
+}

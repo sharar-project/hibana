@@ -92,6 +92,14 @@ Hardware research directions and decision criteria are in
 
 ## Status
 
+The [clean-image repeat review](docs/promotion.md) is the current result:
+414 measured requests, all 40 performance gates against repaired MTP passed,
+and DFlash2 promotion withheld by the frozen quality rubric. Qualifying natural
+answers finish 4.7–13.3% sooner than native SGLang DFlash2 in two windows; the
+short four-request cell has no stable lead. Its controlled prefill partitions
+change first tokens and acceptance tails. The next speed task traces that
+target-prefill difference. Production remains on the verified original image.
+
 Phases 0–7D include lifecycle repairs, extension contracts, frozen local
 workloads, native DSpark/DFlash2, draft-aware caching and experimental accepted-state
 reconstruction. [Phase 7D evidence and remaining gates](docs/phase7d.md) record
@@ -131,9 +139,8 @@ The [controlled verification study](docs/verify-cost.md) screens out compact
 convolution integration: its exact prototype projects only 1.0–1.6% round-time
 savings. The [NVFP4 follow-up](docs/nvfp4-cost.md) measures real packed inputs,
 rejects narrow-tile kernels, and finds only 1.3–1.6% natural-round benefit from
-a dispatch change, below its frozen gate. Serving remains unchanged. The next
-step validates the clean DFlash2 candidate against repeated promotion gates,
-then addresses the short four-request speed gap. The [runtime cleanup and MTP
+a dispatch change, below its frozen gate. Serving remains unchanged.
+The [runtime cleanup and MTP
 repair](docs/promotion.md) remove failed serving hooks, externalize raw evidence
 and reduce natural MTP B=4 round cost 2.76–3.75% with exact state comparisons.
 Broader cache-pressure and quality gates remain open; unified-memory capacity

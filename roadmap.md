@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-06 (runtime pruning, MTP feedback repair and clean-image promotion validation)
+Last updated: 2026-09-06 (clean-image repeats complete; promotion withheld; short-batch tail attributed)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -49,9 +49,14 @@ hardware fallbacks and inherited CI are outside the target. Additional model
 profiles are deferred until the current single-model default is proven.
 
 Runtime pruning and the MTP feedback repair are complete with
-[measured proof](docs/promotion.md). Immediate priority: evaluate the clean
-DFlash2 candidate under repeated quality/performance gates, then attack the
-128-input / 256-output / concurrency-four gap. Mixed forwarding,
+[measured proof](docs/promotion.md). The clean-image matrix completes 414 measured
+requests and passes all 40 performance checks against repaired MTP. DFlash2
+promotion remains withheld by a frozen quality-rubric failure. Against SGLang,
+five fixed cells win in both windows and qualifying natural answers finish
+4.7–13.3% sooner; the 128-input / 256-output / concurrency-four cell reverses
+between windows. Controlled prefill partitions reproduce different first tokens
+and long acceptance tails. Trace that target-prefill difference next, and repair
+the quality workload prospectively before default promotion. Mixed forwarding,
 latency policy and confidence-based width policy are archived in Git history.
 Capture only the selected verify width during normal startup. Preserve accepted
 state reconstruction, selective features, draft-aware prefix caching and the
@@ -762,7 +767,7 @@ an updated `docs/comparison.md` distinguish historical observations from fresh
 comparisons, synthetic performance from local-use performance, and algorithm
 gains from kernel/engine gains. The correctness oracle stays frozen.
 
-### Phase 7D: Draft-aware caching and speculative decoding `[implemented; promotion gates open]`
+### Phase 7D: Draft-aware caching and speculative decoding `[implemented; promotion withheld after repeat evaluation]`
 
 Prerequisites: 7A ownership fixes, 7B interfaces and 7C workload gates. Preserve
 the current MTP path while evaluating each extension independently.
@@ -869,13 +874,24 @@ from a broad quality, competitive-speed or production-promotion gate.
       checks, 269 final focused checks after pruning the KV graph prototype,
       16 historical parity gates and DFlash2 eviction/replay/context checks.
       [Details and limits](docs/promotion.md).
-- [ ] Complete clean-image DFlash2 promotion against repaired MTP: repeated
+- [x] Complete clean-image DFlash2 evaluation against repaired MTP: repeated
       fixed/natural requests, cache restoration and eviction, pressure, stopping,
       cancellation, sampled correctness and equal memory budgets. Retain every
-      failed quality/performance cell. A candidate image is not a deployed default.
-- [ ] Attribute and improve 128 input / 256 output at concurrency four, including
-      request acceptance, target/draft work and the final straggler. Use useful
-      answers and useful tokens per target traversal as the objective.
+      failed quality/performance cell. Two windows complete 414 measured requests;
+      all 40 MTP performance checks pass. The sampled-chat rubric still fails,
+      so the candidate is not a deployed default. [Results](docs/promotion.md).
+- [ ] Reconcile the generic cache-miss prompt with its recomputation rubric,
+      freeze a new held-out quality evaluation, and obtain independent review
+      before promoting DFlash2. Preserve the failed frozen result.
+- [x] Attribute 128 input / 256 output at concurrency four with nine measured
+      HTTP batches and repeated direct prefill partitions. Slow batches add
+      51–84 B=1 rounds. First tokens can differ before speculative decoding;
+      waiting for all four admissions does not remove the tail.
+- [ ] Trace fixed-token target prefill across the observed partitions: logits,
+      margins, first divergent layer/state and draft features. Fix a demonstrated
+      error if found; otherwise retain the numerical limits explicitly. Screen
+      greater candidate coverage per weight traversal in a standalone benchmark
+      before adding a serving mechanism.
 
 Definition of done: one declared production proposer/profile passes all quality,
 state, memory and protected latency gates on a clean image in repeated windows.
@@ -1182,16 +1198,27 @@ or add dense/MoE models before DFlash2 promotion. Proposer construction lives in
 `proposers/factory.py`; execution consumes features and capacity requirements.
 StateManager owns target state/cache loans; proposers own their draft state.
 
-Runtime pruning, the MTP repair and clean-image correctness checks are complete
-([proof](docs/promotion.md)). Full raw evidence stays under `$SHARAR_RESULTS`,
+Runtime pruning, the MTP repair, clean-image correctness and the repeat matrix
+are complete ([proof](docs/promotion.md)). Full raw evidence stays under `$SHARAR_RESULTS`,
 with compact manifests and report summaries in Git.
 
-1. Run the repeated DFlash2/MTP/SGLang promotion matrix on the clean image. Include natural output quality, sampled correctness, long/cached
-   sessions, eviction, cancellation and equal memory budgets. Promote only if
-   the predeclared gates pass; record failures without relaxing the criteria.
-2. Attribute and attack 128 input / 256 output tokens per request at concurrency
-   four. Separate acceptance and continuation changes from round execution cost;
-   count target traversals, draft work and tail time before choosing a mechanism.
+1. Trace the target-prefill difference behind the short-batch tail. With four
+   requests present before the first decode and no cache hits, prefill groups
+   4 / 1+3 / 2+2 / 3+1 consistently take 13.22 / 4.79 / 14.24 / 10.41 seconds.
+   Some first output tokens differ. Compare fixed-token logits, margins and
+   layer/state traces before treating this as a scheduler or draft-model bug.
+   Keep request contents and work explicit; do not force a favorable synthetic
+   continuation. The next algorithmic screen should reduce repeated target
+   weight traversals on a low-acceptance tail. Alternative candidate coverage
+   in otherwise unused verification rows is a benchmark hypothesis, not a new
+   runtime hook.
+2. Resolve the promotion quality blocker prospectively. The frozen generic
+   cache-miss prompt accepts lookup analogies semantically, while its rubric
+   requires recomputation; all profiles miss that requirement. Preserve this
+   failure, align the new prompt/rubric, and freeze held-out workloads before
+   measuring and independently reviewing their outputs. All 40 performance
+   checks against repaired MTP passed; that does not establish a stable lead
+   over SGLang in the short batched cell.
 3. Phase 8 follows with measured prepacked loading and reclaimable optional cache
    slabs. Measure first touch and physical memory recovery on shared DRAM while
    keeping graph references and active cache loans explicit. The 12-slot
