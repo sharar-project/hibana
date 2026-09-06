@@ -1,0 +1,24 @@
+{
+  "schema": 2,
+  "summary_document": "tree-coverage-study.md",
+  "full_evidence": {
+    "path": "reviews/2026-09-06/tree-coverage/artifact-index.json",
+    "sha256": "219448825e265351352351429302390af4478c78d9c2c9906a27a66c8bc4e525",
+    "bytes": 11317,
+    "files": 67,
+    "indexed_bytes": 16293653
+  },
+  "summary": {
+    "path": "reviews/2026-09-06/tree-coverage/compact-summary.json",
+    "sha256": "cc4b9a83b19b57cddafccfcaa6ec94d3482e386147899534bd4b77418c998652",
+    "bytes": 7741,
+    "baseline_source": "763de77e7addb4532de95066551996ef0175121c",
+    "cost_coverage_screen_passed": false,
+    "actual_tree_rollout_measured": false,
+    "serving_changes": false,
+    "generation_runs": 48,
+    "cpu_passed": 330,
+    "gpu_only_skipped": 6,
+    "production_restored": true
+  }
+}

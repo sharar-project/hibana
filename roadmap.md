@@ -899,9 +899,14 @@ from a broad quality, competitive-speed or production-promotion gate.
       locate early drift in recurrent layers; fixed operands expose shape-sensitive
       BF16 b/a projection rounding. Corrected paged-attention controls preserve
       the first-token differences. [Evidence and limits](docs/agent-context.md).
-- [ ] Isolate fixed-b/a numerical controls before changing target arithmetic. Screen
-      greater candidate coverage per weight traversal in a standalone benchmark
-      before adding a serving mechanism.
+- [x] Screen greater candidate coverage per weight traversal in standalone
+      benchmarks. The two-path and [16-row tree](docs/tree-coverage-study.md)
+      full-continuation screens fail their completion gates; neither adds a
+      serving mechanism. The tree gains 18.87% coverage but estimates only
+      7.71% / 7.68% completion improvement with the frozen overhead allowance.
+- [ ] Isolate fixed-b/a prefill controls and the repeated eight/sixteen-row
+      verifier numerical difference before changing target arithmetic. A changed
+      first-chain emission is not proof that either shape is more accurate.
 
 Definition of done: one declared production proposer/profile passes all quality,
 state, memory and protected latency gates on a clean image in repeated windows.
@@ -1269,6 +1274,13 @@ python3 bench/benchmark_text_server.py \
 - 2026-09-06: Chat now rejects unsupported output controls before prompt work
   or submission. Forty-two HTTP cases pass; actual constraint enforcement and
   deployment through a validated image remain separate work.
+- 2026-09-06: The 16-row tree study completes 48 generations and 8,852 native
+  speculative request-rounds, with exact control/capture output and committed
+  state comparisons. Coverage improves 18.87%, including 14.39% after token 512,
+  but projected completion gains of 7.71% / 7.68% fail the frozen 10% gate.
+  Add no tree serving hook. An 8K first-chain emission change under physical
+  eight/sixteen-row verification repeats in both loads; extend the pending
+  numerical controls before changing arithmetic. [Proof](docs/tree-coverage-study.md).
 
 ## 11. Immediate next task
 
@@ -1304,28 +1316,36 @@ The four-sample coding matrix puts cold single-request decode between 4.2%
 slower and 9.6% faster, and shared-prefix B4 throughput 7.7–17.6% higher.
 That is a modest lead; a larger useful-turn gain still needs a new mechanism.
 
-1. For speed, freeze a **16-target-row tree coverage study** on fresh held-out
-   full continuations: one anchor, seven greedy nodes and eight alternatives.
-   Keep the complete greedy path, spread the remaining budget
-   across likely corrections and share prefix nodes. The measured batch-1/2
-   target cost leaves room for more useful tokens per weight pass, but two full
-   paths do not recover enough on sustained generation. This is a new hypothesis,
-   not a pass for the failed two-path rule. A convincing coverage screen must
-   precede an isolated tree verifier with measured attention/recurrent cost,
-   winner-only KV/state commit, correct draft feedback and actual full-rollout
-   speed. Require at least 10% useful-turn completion reduction, quality/state
-   checks, the memory floor and protected concurrency-four behavior before
-   serving integration. Keep candidate selection and resource ownership separate,
-   with GPU selection and reusable buffers preserving the existing host-round-trip
-   budget.
+The [16-target-row tree study](docs/tree-coverage-study.md) is now complete.
+It preserves the full greedy chain and spends eight extra nodes on draft-scored
+prefixes. Coverage rises 18.87%, but estimated completion falls only 7.71% /
+7.68% with the frozen overhead allowance. Even the optimistic projection leaves
+only 0.60–0.66 ms per round for additional tree work to retain a 10% gain.
+The screen fails; it adds no tree verifier, selector policy or serving flag.
+These are native-trajectory estimates, not measured alternative-rollout speed.
+
+1. Complete a **fixed-operand numerical control study** before another verifier
+   arithmetic change. Extend the pending fixed-b/a prefill control with the
+   tree study's repeated eight/sixteen-row case: at 8K, the same first chain
+   emits a different sequence under the larger physical shape. Capture the
+   first divergent layer, projections, target state and logits; hold b/a gates,
+   attention dispatch and vocabulary row shape fixed separately, with an
+   independent arithmetic reference. Determine the cause without selecting a
+   favorable partition by its benchmark answer. This establishes whether a
+   future shape/traffic optimization preserves the intended numerical profile;
+   it does not promise a speed gain. Greater useful coverage or reduced state
+   movement still needs a fresh mechanism and prospective cost/quality gates.
+   Any future tree proposal must demonstrate actual full-rollout improvement
+   of at least 10%, correct winner-only KV/recurrent commit and draft feedback,
+   task quality, the memory floor and protected B4 behavior before integration.
 2. Release the API validation repair through a validated image, then implement
    output/tool-choice enforcement with request-owned constraint state and
    explicit speculative acceptance/rollback tests. Validation currently
    accepts only unconstrained defaults; the prior structured-task failures remain
    failures. These experiment windows restore production's original image and
    do not deploy that change.
-3. Keep the remaining 7D work bounded and parallel in scope: fixed-b/a numerical
-   controls for batch-shape sensitivity, and a prospective quality evaluation.
+3. Complete the remaining 7D prospective quality evaluation after the numerical
+   controls above.
    The target-prefill trace is complete, including corrected attention controls;
    no favorable synthetic partition is forced. Preserve the failed generic
    cache-miss rubric and new unconstrained task failures, align new prompts/rubrics
