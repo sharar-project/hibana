@@ -169,6 +169,14 @@ synthetic acceptances are not useful-output throughput claims.
 
 ## Evidence storage and archived experiments
 
+`agent_workloads.py` freezes agent-shaped repository/log inputs for matched
+DFlash2 HTTP runs at 8K/16K/near-32K. It separates fixed 512/1,024-token output
+work from strict JSON/tool-call episodes, and records paused retries, shared
+history branches, actual growing inputs and cache churn. `agent_profile.py`
+attributes native generation on the same frozen inputs. Its instrumented phase
+events/traces are separate from HTTP throughput. See the
+[protocol and results](../docs/agent-workloads.md) for resource matching and limits.
+
 Raw JSON, traces, output tokens, embedded sources and model tensors belong under
 `$SHARAR_RESULTS`, outside Git. Commit a concise Markdown report and an evidence
 manifest with the full bundle's relative path, size and SHA-256. Each committed
