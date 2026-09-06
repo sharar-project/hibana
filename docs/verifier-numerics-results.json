@@ -1,0 +1,54 @@
+{
+  "schema": 2,
+  "summary_document": "verifier-numerics.md",
+  "full_evidence": {
+    "path": "reviews/2026-09-06/verifier-numerics/artifact-index.json",
+    "sha256": "6c0564fab186737d981908646b2946ee44041b6a4d90423c48cc82e1232fd627",
+    "bytes": 47445,
+    "files": 281,
+    "indexed_bytes": 29941237483
+  },
+  "summary": {
+    "path": "reviews/2026-09-06/verifier-numerics/compact-summary.json",
+    "sha256": "e800bcd714e764c694fff0664c0f86d824ec93f2f5877f33e3420bdeb7d7f93f",
+    "bytes": 1273,
+    "baseline_source": "47cd3702c97395716c36fff4045b0390fd278891",
+    "image": "sha256:4a7206b66ead662a1dd2a5de811ef270f4dd7a27926273b2e5b812bbe0bade9b",
+    "contexts": [
+      8192,
+      16384,
+      31616
+    ],
+    "counts": {
+      "verify_forwards": 168,
+      "prefill_batches": 88,
+      "prefill_requests": 160,
+      "attention_evaluations": 54
+    },
+    "verifier_first_difference": "03/attention.output",
+    "common_attention_removes_recorded_verifier_drift": true,
+    "linear_shape_controls_remove_verifier_drift": false,
+    "fixed_split_and_unsplit_attention_batch_invariant_in_tested_cases": true,
+    "fixed_split_current_B4_graph_plan_failed": true,
+    "alternative_graph_replay_lifetime_validated": false,
+    "fixed_ba_restores_tested_prefill_first_tokens": true,
+    "fixed_ba_restores_all_prefill_endpoint_states": false,
+    "cross_window_matches": {
+      "verifier_traces": 42,
+      "verifier_results": 42,
+      "prefill_traces": 10,
+      "prefill_state": 10
+    },
+    "cpu_passed": 338,
+    "gpu_only_skipped": 6,
+    "serving_changes": false,
+    "speed_measured": false,
+    "new_numerical_profile_promoted": false,
+    "production_restored": true,
+    "detailed_summaries": [
+      "study-summary.json",
+      "attention-summary.json"
+    ],
+    "failed_attempt_correction": "attention-attempt-audit.json"
+  }
+}

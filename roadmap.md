@@ -904,9 +904,16 @@ from a broad quality, competitive-speed or production-promotion gate.
       full-continuation screens fail their completion gates; neither adds a
       serving mechanism. The tree gains 18.87% coverage but estimates only
       7.71% / 7.68% completion improvement with the frozen overhead allowance.
-- [ ] Isolate fixed-b/a prefill controls and the repeated eight/sixteen-row
-      verifier numerical difference before changing target arithmetic. A changed
-      first-chain emission is not proof that either shape is more accurate.
+- [x] Isolate fixed-b/a prefill controls and the repeated eight/sixteen-row
+      verifier difference. [Numerical controls](docs/verifier-numerics.md) locate
+      verifier drift at layer 3 attention; fixed reduction geometry removes
+      batch dependence in isolated attention. The b/a prefill clamp restores
+      first tokens but leaves some late state drift. No arithmetic change is
+      promoted; fixed-split B4 planning fails the current graph capacity.
+- [ ] Validate graph-safe stable attention reduction geometry across growing
+      KV lengths and B1/B2/B4, then measure complete-round/workload cost. Keep
+      a shape-stable b/a candidate and residual prefill trace separate, with
+      independent numerical references and prospective quality checks.
 
 Definition of done: one declared production proposer/profile passes all quality,
 state, memory and protected latency gates on a clean image in repeated windows.
@@ -1281,6 +1288,14 @@ python3 bench/benchmark_text_server.py \
   Add no tree serving hook. An 8K first-chain emission change under physical
   eight/sixteen-row verification repeats in both loads; extend the pending
   numerical controls before changing arithmetic. [Proof](docs/tree-coverage-study.md).
+- 2026-09-06: Repeated verifier controls locate the first shape difference at
+  layer 3 FA2 attention with identical Q/K/V. Stable reduction geometry removes
+  isolated attention batch dependence, but fixed splitting fails B4 planning
+  on the current graph buffers. FP64 references support reduction rounding;
+  no KV/state corruption is found. Fixed b/a restores prefill first tokens
+  with residual late state differences. Keep serving unchanged and validate
+  graph-safe geometry before measuring a new speed path.
+  [Proof](docs/verifier-numerics.md).
 
 ## 11. Immediate next task
 
@@ -1324,20 +1339,29 @@ only 0.60–0.66 ms per round for additional tree work to retain a 10% gain.
 The screen fails; it adds no tree verifier, selector policy or serving flag.
 These are native-trajectory estimates, not measured alternative-rollout speed.
 
-1. Complete a **fixed-operand numerical control study** before another verifier
-   arithmetic change. Extend the pending fixed-b/a prefill control with the
-   tree study's repeated eight/sixteen-row case: at 8K, the same first chain
-   emits a different sequence under the larger physical shape. Capture the
-   first divergent layer, projections, target state and logits; hold b/a gates,
-   attention dispatch and vocabulary row shape fixed separately, with an
-   independent arithmetic reference. Determine the cause without selecting a
-   favorable partition by its benchmark answer. This establishes whether a
-   future shape/traffic optimization preserves the intended numerical profile;
-   it does not promise a speed gain. Greater useful coverage or reduced state
-   movement still needs a fresh mechanism and prospective cost/quality gates.
-   Any future tree proposal must demonstrate actual full-rollout improvement
-   of at least 10%, correct winner-only KV/recurrent commit and draft feedback,
-   task quality, the memory floor and protected B4 behavior before integration.
+The [numerical control study](docs/verifier-numerics.md) is complete: 168 verifier
+forwards, 160 request prefills and 54 complete attention reference evaluations.
+Verifier drift starts at layer 3 attention with identical Q/K/V; a common
+single-chain attention wrapper removes all recorded downstream differences.
+Fixed-split and unsplit attention are batch-invariant on the isolated cases,
+with FP64 error consistent with reduction rounding. Fixed b/a restores prefill
+first-token choices but leaves some late tensor/state drift. This does not
+promote a new arithmetic profile or establish a speed gain.
+
+1. Study **graph-safe stable attention reduction geometry**. Fixed splitting
+   cannot simply be enabled: the current B4 graph plan exceeds its padded
+   batch capacity, and changing KV lengths can change the launched work.
+   Provision and validate the geometry across context growth and B1/B2/B4,
+   shared prefixes, private suffixes and graph replay. Compare native, fixed
+   and unsplit controls against eager/reference outputs before measuring
+   complete verifier rounds and completed workload time. Keep shape-stable
+   b/a arithmetic and the residual prefill trace separate. Any numerical-path
+   change needs prospective quality validation; do not select a favorable
+   partition by its benchmark token. Greater useful coverage or less state/KV
+   movement still needs a fresh mechanism and cost/quality gates. Future trees
+   must demonstrate actual full-rollout improvement of at least 10%, correct
+   winner-only KV/recurrent commit and draft feedback, task quality, the memory
+   floor and protected B4 behavior before integration.
 2. Release the API validation repair through a validated image, then implement
    output/tool-choice enforcement with request-owned constraint state and
    explicit speculative acceptance/rollback tests. Validation currently
