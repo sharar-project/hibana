@@ -60,8 +60,9 @@ locates early recurrent-layer rounding sensitivity. Long-session cache repairs
 pass 584 clean-image checks; a near-32K scheduler retry falls from 14.48 s to
 0.145 s TTFT in the bounded study. The [agent-shaped study](docs/agent-workloads.md)
 now records a modest, workload-dependent generation lead and failed structured
-turns in both engines. Three general candidate-path screens fail; a narrower
-single-agent coverage hypothesis requires fresh cost/quality validation. Repair
+turns in both engines. Three general candidate-path screens and the full-length
+two-path completion screen fail. A fixed 16-target-row tree is the next coverage
+hypothesis and requires fresh evidence before implementation. Repair
 the quality evaluation prospectively before default promotion. Mixed forwarding,
 latency policy and confidence-based width policy are archived in Git history.
 Capture only the selected verify width during normal startup. Preserve accepted
@@ -940,18 +941,33 @@ remaining 7D trace bounded; a noisy short synthetic cell must not hold up this w
       1.4–5.4 ms. Retain the failed one-shot priming setup and corrected six-cell
       run. Three frozen general candidate-path screens fail; no serving hook
       is added. Kernel durations are attribution, not physical DRAM counters.
-- [ ] Measure a narrower single-agent two-path hypothesis prospectively. The
-      observed +23.15% B=1 coverage excludes extra verification cost and is not
-      a speed result; B=4 gains only 7.19% and fails the general screen. First
-      measure target cost at physical batch 1 versus 2 and repeat coverage on
-      full 512/1,024-token held-out continuations. Share immutable prefix resources
-      and account for winner-only state commit before any implementation. Require
-      fresh quality/state/memory/latency evidence and protected concurrency-four
-      behavior; keep its current verification capacity.
-- [ ] Establish agent output/tool-choice contracts. The chat handler currently
-      ignores `tool_choice` and `response_format`. Reject unsupported non-default
-      controls explicitly before clients rely on them, then implement and test
-      enforcement with speculative acceptance and constraint-state rollback.
+- [x] Measure the narrower single-agent two-path cost/coverage hypothesis over
+      full 512/1,024-token held-out continuations at 8K/16K/near-32K, with two
+      independently loaded windows. The extra path costs about 2–3 ms and eight
+      writable target KV entries (256 KiB); both paths read unchanged shared
+      history without a second committed recurrent slot. The optimistic
+      completion estimate fails the 10% gate. [Protocol and proof](docs/two-path-study.md).
+      The earlier +23.15% short-screen coverage is not a sustained speed result.
+- [ ] Screen a fixed 16-target-row tree on fresh held-out full continuations:
+      one anchor, seven greedy nodes and eight alternatives. Allocate the latter across
+      likely corrections, sharing common prefixes. The measured low incremental
+      target cost motivates better coverage; it does not validate tree attention
+      or recurrent execution. Freeze selection and gates before new outputs.
+      Require enough coverage to cover actual tree/state/selection overhead and
+      at least 10% useful-turn completion reduction before serving integration.
+      Keep winner-only KV/state publication in StateManager and candidate
+      selection in the proposer; preserve the existing concurrency-four path.
+      Selection must stay on the GPU with bounded reusable buffers and no extra
+      per-round host synchronization or allocation.
+- [x] Make chat output-control validation explicit. `tool_choice` accepts only
+      omitted/null/`auto`; `response_format` accepts only omitted/null/`{"type":"text"}`.
+      Other values return HTTP 400 before rendering, tokenization or submission.
+      Forty-two HTTP checks cover streaming/non-streaming and accepted defaults.
+      [Repair and proof](docs/two-path-study.md). Production retains its original
+      image during these studies; this code change does not promote DFlash2.
+- [ ] Implement and test output/tool-choice enforcement with speculative
+      acceptance and constraint-state rollback. Explicit rejection establishes
+      the supported API subset; it does not repair unconstrained task failures.
       Extend the pilot to actual tool execution, independent growing histories
       and CPU/tool contention. Preserve the unconstrained task failures.
 - [ ] Reconcile `MemAvailable`, PyTorch allocated/reserved memory and
@@ -1245,6 +1261,14 @@ python3 bench/benchmark_text_server.py \
 - 2026-09-06: All three general draft-path coverage screens fail. The two-path
   single-agent observation motivates fresh cost/coverage measurement under a
   narrower protocol, not a retroactive pass or a new runtime policy.
+- 2026-09-06: The full-length two-path follow-up completes 48 generations and
+  10,304 native speculative request-rounds. Extra target cost is 2–3 ms with
+  unchanged shared history, but estimated completion reductions of 6.39% and
+  6.47% fail the 10% gate. Add no two-path serving hook; screen a fixed 16-row
+  candidate tree prospectively. [Proof](docs/two-path-study.md).
+- 2026-09-06: Chat now rejects unsupported output controls before prompt work
+  or submission. Forty-two HTTP cases pass; actual constraint enforcement and
+  deployment through a validated image remain separate work.
 
 ## 11. Immediate next task
 
@@ -1258,24 +1282,32 @@ are complete ([proof](docs/promotion.md)). Full raw evidence stays under `$SHARA
 with compact manifests and report summaries in Git.
 
 The [agent-shaped comparison and generation profile](docs/agent-workloads.md)
-are complete. Serving source remains unchanged. Sharar leads most fixed-work
-cells modestly, but SGLang wins 16K/1,024-output cold generation; structured-task
-failures prevent a whole-agent quality-qualified speed claim.
+and [two-path follow-up](docs/two-path-study.md) are complete. The chat handler now
+rejects unsupported output controls before admission. Target/executor/proposer/
+kernel sources are unchanged. The two-path cost/coverage screen fails its 10%
+completion gate, so it adds no serving mechanism. Sharar's existing generation
+lead remains workload-dependent, with no quality-qualified whole-agent claim.
 
-1. Fix the API contract gap: reject unsupported non-default `tool_choice` and
-   `response_format` instead of silently ignoring them. Test rejection before
-   submission and document the honored subset. Typed-output/tool-choice
-   enforcement needs its own speculative constraint-state tests.
-2. For speed, freeze a **new single-agent two-path cost/coverage study**. Keep
-   both complete draft chains and measure the existing target graphs at physical
-   batch 1 versus 2 before implementing a verifier. Repeat coverage over full
-   held-out 512/1,024-token continuations at 8K/16K/near-32K. The observed +23.15%
-   single-agent coverage has no measured speedup and the general B=1/4 screen
-   failed. Use shared immutable history and accepted-state reconstruction as
-   the design basis; account for KV/state ownership and winner-only commit.
-   Require fresh evidence for at least 10% useful-turn completion reduction,
-   quality/state correctness, the memory floor and protected concurrency-four
-   behavior before adding serving code. Keep the failed screens visible.
+1. For speed, freeze a **16-target-row tree coverage study** on fresh held-out
+   full continuations: one anchor, seven greedy nodes and eight alternatives.
+   Keep the complete greedy path, spread the remaining budget
+   across likely corrections and share prefix nodes. The measured batch-1/2
+   target cost leaves room for more useful tokens per weight pass, but two full
+   paths do not recover enough on sustained generation. This is a new hypothesis,
+   not a pass for the failed two-path rule. A convincing coverage screen must
+   precede an isolated tree verifier with measured attention/recurrent cost,
+   winner-only KV/state commit, correct draft feedback and actual full-rollout
+   speed. Require at least 10% useful-turn completion reduction, quality/state
+   checks, the memory floor and protected concurrency-four behavior before
+   serving integration. Keep candidate selection and resource ownership separate,
+   with GPU selection and reusable buffers preserving the existing host-round-trip
+   budget.
+2. Release the API validation repair through a validated image, then implement
+   output/tool-choice enforcement with request-owned constraint state and
+   explicit speculative acceptance/rollback tests. Validation currently
+   accepts only unconstrained defaults; the prior structured-task failures remain
+   failures. These experiment windows restore production's original image and
+   do not deploy that change.
 3. Keep the remaining 7D work bounded and parallel in scope: fixed-b/a numerical
    controls for batch-shape sensitivity, and a prospective quality evaluation.
    The target-prefill trace is complete, including corrected attention controls;

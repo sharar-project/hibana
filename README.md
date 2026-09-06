@@ -96,6 +96,12 @@ Hardware research directions and decision criteria are in
 
 ## Status
 
+The [two-path follow-up](docs/two-path-study.md) measures only 2–3 ms extra
+target cost for a second candidate path with shared immutable history. Full
+512/1,024-token continuations still fail the 10% completion-improvement screen,
+so no two-path serving policy is added. Unsupported chat output controls now
+return HTTP 400 explicitly; constrained-output enforcement remains separate work.
+
 The [agent workload study](docs/agent-workloads.md) compares matched DFlash2
 profiles at 8K/16K/near-32K with growing turns, shared-history branches and cache
 churn. For 512-output cold requests, sustained decode is 34.24 / 30.74 / 28.00

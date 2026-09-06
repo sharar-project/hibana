@@ -177,6 +177,13 @@ attributes native generation on the same frozen inputs. Its instrumented phase
 events/traces are separate from HTTP throughput. See the
 [protocol and results](../docs/agent-workloads.md) for resource matching and limits.
 
+`two_path_study.py` measures physical batch 1/2 target verification against a
+shared immutable prefix and records two-path coverage over full native
+512/1,024-token continuations. Freeze its protocol and new inputs before GPU
+execution. Each captured continuation must match a separate uninstrumented
+control. Coverage and estimated costs cannot establish actual alternative-rollout
+speed or winner-only state correctness. This driver exposes no serving option.
+
 Raw JSON, traces, output tokens, embedded sources and model tensors belong under
 `$SHARAR_RESULTS`, outside Git. Commit a concise Markdown report and an evidence
 manifest with the full bundle's relative path, size and SHA-256. Each committed

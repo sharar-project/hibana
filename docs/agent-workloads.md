@@ -184,10 +184,11 @@ These are unconstrained `/generate` requests with simulated tool responses.
 
 Both engines begin the failed initial summary format with the target prefill
 token, before speculative verification. This does not establish a rejection
-algorithm bug. A separate code audit finds that Sharar's chat endpoint currently
-does not consume `tool_choice` or `response_format`; the benchmark did not send
-these fields. Reject unsupported controls explicitly before clients rely on
-them, then validate enforcement with speculative state/acceptance semantics.
+algorithm bug. At serving source `ba77a5f`, a separate code audit found that
+Sharar's chat endpoint did not consume `tool_choice` or `response_format`; the
+benchmark did not send these fields. The [follow-up repair](two-path-study.md)
+rejects unsupported controls explicitly. Enforcement with speculative
+state/acceptance semantics remains separate work.
 
 The original noncanonical fixture remains in the evidence: Sharar passes
 18/24 turn checks across the two windows; SGLang passes 12/24. Do not pool
@@ -262,6 +263,9 @@ reconstruction is the relevant building block. Do not implement a new serving
 mechanism unless fresh cost/coverage evidence supports at least 10% useful-turn
 completion reduction, all quality/state/memory checks and protected concurrency-four
 behavior. Four running agents keep their existing verification capacity.
+
+The [full-continuation follow-up](two-path-study.md) measures that narrower
+two-path hypothesis and records its failed completion-improvement gate.
 
 ## Validation and memory
 
