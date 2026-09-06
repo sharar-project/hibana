@@ -50,11 +50,17 @@ def main():
             ids = [cell['input_ids']] if batch == 1 else cell['branches']
             if batch == 4:
                 prime = ex.admit(cell['shared_ids'], SamplingParams(max_new_tokens=1, ignore_eos=True))
-                ex.prefill(prime)
+                # Match the serving primer's chunking. A single long forward
+                # retains many interior snapshots; borrowing that whole path
+                # can pin the small pool before four private slots are admitted.
+                while prime.prefill_pos < prime.prefill_len:
+                    ex.prefill_batch([(prime, min(2048, prime.prefill_len - prime.prefill_pos))])
                 ex.release(prime)
             reqs = []
             try:
                 for tokens in ids:
+                    if not ex.can_admit(tokens, reserve_tokens=512 + ex.spec.k):
+                        raise RuntimeError('profile setup cannot admit its declared batch')
                     reqs.append(ex.admit(tokens, SamplingParams(max_new_tokens=512, ignore_eos=True)))
                 while any(r.prefill_pos < r.prefill_len for r in reqs):
                     ex.prefill_batch([(r, min(2048, r.prefill_len - r.prefill_pos)) for r in reqs if r.prefill_pos < r.prefill_len])
