@@ -170,3 +170,16 @@ from sharar.api.server import EngineLoop
 '''
     result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('depth', [1, 3])
+@pytest.mark.parametrize('budget', [2, 4, 8])
+def test_short_verify_releases_entire_unverified_reservation(monkeypatch, depth, budget):
+    ex = tiny_executor(monkeypatch)
+    expected = ex.generate([7, 7, 7], SamplingParams(max_new_tokens=budget)).output_ids
+    ex.set_proposer(NGramProposer(ProposerContext(ex.device, 4, 512), k=3))
+    ex.spec.verify_depths = (1, 3)
+    ex.spec.verify_depth = depth
+    requests = ex.generate_batch([([7, 7, 7], SamplingParams(max_new_tokens=budget)) for _ in range(4)])
+    assert all(r.output_ids == expected and r.committed_len == r.context_len - 1 for r in requests)
+    assert ex.kv_pool.free_count == 1024 and ex.state_pool.free_count == 15

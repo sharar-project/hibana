@@ -49,7 +49,6 @@ class DraftState:
     end: int = 0
     valid: bool = True
     pending: int | None = None
-    confidence: list[float] | None = None
 
 
 class ParallelProposer:
@@ -67,7 +66,7 @@ class ParallelProposer:
         self.features = torch.empty((context.max_batch + 1, self.window, 5120), dtype=torch.bfloat16, device=device)
         self.feature_cache = FeatureCache(context.max_batch * self.window * 5120 * 2)
         self.requirements = ProposerRequirements(name, FeatureRequest(layers=model.features),
-                                                persistent_bytes=self.bytes, greedy_only=False)
+                                                persistent_bytes=self.bytes, greedy_only=False, max_depth=7)
         self.workspace = torch.empty(128 * 2**20, dtype=torch.uint8, device=device)
         self.attention = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self.workspace, 'NHD')
         self.graphs = None

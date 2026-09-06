@@ -1,16 +1,19 @@
+> Archived experiment: reproduce from commit `56605f0`. Its model, executor,
+> scheduler hooks and benchmark runner have been removed from the current tree.
+
 # Mixed target forward on GB10
 
 The shared-projection serving experiment is **archived**. It combines an
 arriving prefill with independent, already-ready speculative verification
 requests. The bounded [prefill metadata optimization](prefill-plan.md) improves
 ordinary latency, but mixed execution still fails first-token protection.
-The serving CLI option has been removed. Model/executor interfaces and the
-explicit benchmark remain available for research; further mixed scheduling
-policy is not on the active speed path.
+The CLI option, model/executor hooks and benchmark runner have been removed
+from the current tree. The implementation below describes the archived commit;
+further mixed scheduling is not on the active speed path.
 
 ## Implementation and ownership
 
-`bench/mixed_forward.py` enables the retained experiment directly through
+At the archived commit, `bench/mixed_forward.py` enables the experiment through
 `Executor.enable_mixed()`. `mlp` shares only MLP work. Ordinary serving always
 leaves mixed execution off. The executor allocates one additional 256 MiB attention
 workspace on enablement. Turning the mode off retains this workspace so the
@@ -204,9 +207,9 @@ including failed quality and missed overlap. Runtime dependencies are unchanged.
 Raw frozen sources, commands, images, test logs, model numerics, HTTP outputs,
 rubric reviews, traces and host memory/clock samples are under
 `$SHARAR_RESULTS/reviews/2026-09-05/mixed-forward/`.
-[Portable results](mixed-forward-results.json) retain timing samples, grouped
-membership, deduplicated outputs, reviews, numerical results, fingerprints and
-the diagnostic reproduction script.
+The [evidence manifest](mixed-forward-results.json) records the full external bundle
+location and SHA-256; detailed samples, sources and outputs stay outside Git.
+
 
 The standalone candidate image is
 `sha256:d1a67054a02bf836668adec5e281f27a5f8a82627bad375b03af0a3585e2845e`,

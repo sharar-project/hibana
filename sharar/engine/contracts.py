@@ -39,6 +39,7 @@ class ProposerRequirements:
     persistent_bytes: int = 0
     scratch_bytes: int = 0
     greedy_only: bool = True
+    max_depth: int = 4
 
 
 @dataclass(frozen=True)
@@ -85,13 +86,6 @@ class ExecutionBackend(Protocol):
 
     max_batch: int
 
-    def mixed_prefill(self, chunks: list[tuple[Request, int]], verifying: list[Request]) -> bool:
-        """Optional capability: False means no work; True includes one verify round.
-
-        The scheduler consumes one decode round and lets newly completed
-        prefills join its next round. Failures after preparation are not retryable.
-        """
-        ...
     def validate_request(self, prompt_ids: list[int], params: SamplingParams) -> None: ...
     def admission_reserve(self, req: Request, limit: int) -> int: ...
     def can_admit(self, prompt_len: int, reserve_tokens: int = 0) -> bool: ...

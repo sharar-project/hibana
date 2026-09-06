@@ -166,3 +166,18 @@ variant needs `--retain-full-scale-block`; without it, the original upstream
 scale-layout assertion is deliberately reproducible. These experiments failed
 their frozen speed gates and expose no serving options. Component timing and
 synthetic acceptances are not useful-output throughput claims.
+
+## Evidence storage and archived experiments
+
+Raw JSON, traces, output tokens, embedded sources and model tensors belong under
+`$SHARAR_RESULTS`, outside Git. Commit a concise Markdown report and an evidence
+manifest with the full bundle's relative path, size and SHA-256. Each committed
+results manifest is limited to 32 KiB; CI checks this rule. Existing large bundles
+were preserved under `reviews/2026-09-06/promotion/archive/` before replacement.
+Removing current-tree copies does not rewrite or shrink Git history.
+
+Mixed target execution, latency scheduling and confidence-width scheduling are
+archived at commit `56605f0`. Reproduce those experiments in a checkout of that
+commit; they have no current serving hooks. Standalone kernel studies remain in
+`bench/`. MTP feedback proof uses `bench/mtp_feedback.py` with the original MTP
+adapter exported from that commit and an external output directory.

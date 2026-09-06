@@ -121,10 +121,9 @@ the GB10 run passes 194 tests, including 84 real-model lifecycle cases.
 The source repairs have not been promoted to the serving image.
 Phase 7B extracts the request-state ownership and proposer interfaces, adds
 n-gram/feature-lifetime checks and contributor setup, and preserves measured
-performance. The [mixed target experiment](docs/mixed-forward.md) now shares
-prefill/verification dense work through those interfaces, but fails arrival
-first-token latency protection and has been removed from the public serving
-options. [One GDN prefill plan per forward](docs/prefill-plan.md) now removes
+performance. The [mixed target experiment](docs/mixed-forward.md) failed arrival
+first-token latency protection; its runtime hooks and failed scheduling policies
+are archived in Git history. [One GDN prefill plan per forward](docs/prefill-plan.md) now removes
 repeated metadata work across 48 layers: measured ordinary TTFT falls 18–29%
 with identical output tokens. The [fresh plain/DFlash2 comparison](docs/competitive.md)
 uses the same GB10, pinned weights, workloads and memory budget for both engines.
@@ -133,7 +132,10 @@ convolution integration: its exact prototype projects only 1.0–1.6% round-time
 savings. The [NVFP4 follow-up](docs/nvfp4-cost.md) measures real packed inputs,
 rejects narrow-tile kernels, and finds only 1.3–1.6% natural-round benefit from
 a dispatch change, below its frozen gate. Serving remains unchanged. The next
-step compares useful acceptance and session reuse across DFlash2/DSpark/MTP.
+step validates the clean DFlash2 candidate against repeated promotion gates,
+then addresses the short four-request speed gap. The [runtime cleanup and MTP
+repair](docs/promotion.md) remove failed serving hooks, externalize raw evidence
+and reduce natural MTP B=4 round cost 2.76–3.75% with exact state comparisons.
 Broader cache-pressure and quality gates remain open; unified-memory capacity
 mechanisms (8) and remaining kernels/AOT (9) follow.
 Read [roadmap.md](roadmap.md) before doing anything else.

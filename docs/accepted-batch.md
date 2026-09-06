@@ -146,8 +146,7 @@ method and new batch callback on a fresh model, candidate/control/control/
 candidate, with three measured blocks after warmup. It asserts equal fixed-work
 outputs. `--name dspark --workloads-only` runs the shared adapter's HTTP gate.
 
-The portable [results](accepted-batch-results.json) retain raw sample summaries
-and proof hashes. Full local evidence is under
+The [evidence manifest](accepted-batch-results.json) links the full archived bundle by SHA-256. Full local evidence is under
 `/home/yke/sharar-results/reviews/2026-09-05/accepted-batch/`, including source
 snapshots, commands, memory/power logs, numerical reports, test XML, raw HTTP
 outputs and review decisions. Run GPU commands in isolation with the 16 GiB

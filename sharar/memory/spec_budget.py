@@ -15,8 +15,8 @@ class SpecConfig:
     state_strategy: str = 'snapshots'
 
     def __post_init__(self):
-        limit = 7 if self.name in ('dspark', 'dflash2') else 4
-        if self.name not in ('mtp', 'ngram', 'dspark', 'dflash2') or type(self.depth) is not int or not 1 <= self.depth <= limit:
+        from sharar.proposers.factory import MAX_DEPTHS
+        if type(self.depth) is not int or not 1 <= self.depth <= MAX_DEPTHS.get(self.name, 0):
             raise ValueError('unsupported proposer/depth')
         if self.state_strategy not in ('snapshots', 'reconstruct'):
             raise ValueError('unsupported verify state strategy')

@@ -1,5 +1,9 @@
 # Phase 7D: native drafts and GB10 state retention
 
+Historical report: the width/latency policies and their commands below are
+archived at commit `56605f0`. They were subsequently removed from the shipped
+runtime; the draft, cache and accepted-state interfaces remain supported.
+
 The subsequent [DFlash2 profiling and selection optimization](draft-selection.md)
 records the next measured speed change; the measurements below remain the 7D baseline.
 

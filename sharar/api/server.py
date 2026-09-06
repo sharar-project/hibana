@@ -594,7 +594,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     return app
 
 
-def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", interactive_target_ms=None, verify_policy=None) -> None:
+def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots") -> None:
     import uvicorn
 
     from sharar.engine.executor import Executor
@@ -608,16 +608,10 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     log(f"loading {MODEL_ID}@{config.MODEL_REVISION[:8]}")
     model = Qwen38(snap, log=log)
     ex = Executor(model, log=log, spec_config=SpecConfig(proposer, spec, state_strategy) if spec else None)
-    if verify_policy is not None:
-        if ex.spec is None or proposer != 'dspark':
-            raise ValueError('calibrated confidence scheduling currently requires DSpark')
-        from sharar.engine.width_policy import WidthPolicy
-        ex.spec.width_policy = WidthPolicy.load(verify_policy, proposer, state_strategy)
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
     cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=ex.profile.max_queued,
-                          chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget,
-                          interactive_target_ms=interactive_target_ms)
+                          chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget)
     sched = Scheduler(ex, cfg)
     describe = {
         "engine": "sharar",
@@ -628,7 +622,6 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "max_queued_requests": cfg.max_queued,
         "chunked_prefill_size": cfg.chunk_size,
         "prefill_budget": cfg.prefill_budget,
-        "mixed_forward": ex.mixed_mode,
         "kv_pages": ex.kv_pool.num_pages,
         "state_slots": ex.state_pool.num_slots,
         "ledger_gib": {k: round(v / 2**30, 2) for k, v in ex.ledger.entries.items()},

@@ -167,10 +167,9 @@ The minimum host `MemAvailable` across the completed measurements is 80.45 GiB.
 The exact original serving image, memory guard and health/model/canary checks
 are restored after every GPU window.
 
-[Portable evidence](nvfp4-cost-results.json) includes frozen hypotheses, raw
-samples and work hashes, both initial experimental sources, final-adapter checks,
-counter rows, runtime source hashes, guard records and raw-file hashes. Initial
-direct compilation and three profiler-setup failures are retained and excluded
+The [evidence manifest](nvfp4-cost-results.json) records the full external bundle
+location and SHA-256; detailed samples, sources and outputs stay outside Git.
+Initial direct compilation and three profiler-setup failures are retained and excluded
 from performance claims. The successful profiler run uses a temporary cache,
 root's counter capability and the actual evidence group; it changes no host
 driver policy. The GPU adapters use CuTe/FlashInfer, and the recorded CUDA

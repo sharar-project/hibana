@@ -207,18 +207,6 @@ class GatedDeltaNet:
         )
         return core
 
-    def mixed(self, inputs, contexts, quantized):
-        sizes = [x.shape[0] for x in inputs]
-        joined = torch.cat(quantized)
-        qkvs = ops.fp8_linear(None, self.in_qkv, x_q=joined).split(sizes)
-        zs = ops.fp8_linear(None, self.in_z, x_q=joined).split(sizes)
-        outputs = []
-        for x, qkv, z, ctx, core_fn in zip(inputs, qkvs, zs, contexts,
-                                          (self._prefill_core, self._verify_core)):
-            # Keep the small BF16 gate projection's original row shape.
-            b, a = self._project_ba(x)
-            outputs.append(self._output_input(core_fn(qkv, b, a, ctx), z, x.shape[0]))
-        return ops.fp8_linear(None, self.out, x_q=torch.cat(outputs)).split(sizes)
 
     def forward(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
         if ctx.mode == "prefill":

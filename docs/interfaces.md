@@ -17,13 +17,19 @@ Model facts live in `model/qwen38_config.py`, device constraints in
 performs snapshot/hardware validation. This split does not make the current
 model-specific attention or recurrent kernels generic.
 
-Curated dense and MoE profiles are intended extensions. The next target must
-make its forward/logits, optional feature taps, state layout and graph shapes
-explicit; KV-only targets must not allocate GDN state. Current executor/pool
-dimensions and external-draft backbones still specialize the pinned Qwen model.
-A compatible target does not imply a compatible trained draft or MTP head.
-Keep MoE routing/expert kernels and GDN state kernels behind the model boundary;
-prove that boundary with a second real model before advertising support.
+The shipped scope stays Qwen on GB10 until DFlash2 promotion. Additional target
+models and MoE implementation are deferred. Keep these existing seams clear;
+extract another model contract only when a second real target requires it.
+Checkpoint construction lives in `proposers/factory.py`. `max_depth` and feature
+requirements let the executor validate an adapter without knowing its name.
+
+MTP accepted feedback owns bounded pinned token staging and a copy-completion
+event. The ordinary target acceptance download completes the previous copy;
+direct callers also get an event lifetime check before staging reuse. One upload
+feeds per-request KV correction at the original projection row shape, preserving
+BF16 rounding and target-conditioned bonus-input KV. Required writes are queued
+on the executor's CUDA stream. An additional graph-capture prototype showed no
+consistent gain beyond pinned transport and remains in the benchmark only.
 
 ## Request state
 
@@ -204,7 +210,7 @@ bytes include reserved feature-cache capacity; they need not equal current
 CUDA allocations. The host floor remains 16 GiB. Reclaiming cache IDs does not
 release monolithic physical allocations; reclaimable slabs remain Phase 8.
 
-## Recurrent retention and scheduling experiments
+## Recurrent retention
 
 `snapshots` retains every FP32 verify state. `reconstruct` retains compact
 recurrence inputs, replays exactly the stop/budget-truncated accepted prefix
@@ -225,55 +231,8 @@ remain the default and bitwise control. No CPU reads of hot state, BF16 state
 compression or managed-memory faults are introduced. See the
 [direct reconstruction evidence](direct-state.md).
 
-`WidthPolicy` consumes pinned measured cost/calibration profiles and previous
-round confidence, avoiding a new barrier between proposal and verification.
-It changes verified width, not maximum draft work. Missing history/calibration
-uses the maximum configured width. Profiles are opt-in; `bench/calibrate_width.py`
-fits a pilot and never promotes it. `LatencyPolicy` keeps bounded local prefill
-and decode observations, caps active-step prefill work, and guarantees some
-queued progress. Its target is best effort: running GPU kernels are not
-preemptible. Fixed defaults remain available for every comparison.
-
-## Mixed prefill and verification experiment
-
-This serving experiment is archived after failing the bounded latency gate.
-The following interfaces remain for the reproducible benchmark and model
-research; the serving CLI cannot enable mixed execution. See
-[prefill-plan.md](prefill-plan.md).
-
-`Executor.enable_mixed("mlp" | "full")` enables a bounded two-mode target pass.
-The default is `off`. A separate 256 MiB attention-plan workspace exists only
-after enabling the experiment; both plans must remain valid throughout the
-target pass. The executor caps mixed prefill at 4,096 rows and total active
-requests at the configured batch limit. Unsupported/unready groups return
-`False` from `mixed_prefill(chunks, verifying)` before doing any work.
-
-`StateManager.authorize_mixed` checks disjoint private slots, live resources,
-prefill extents, absence of existing reservations and pending verify positions
-before reservation. Pool-pressure preflight can still retract a request. Once
-preparation starts, failure marks both groups uncacheable; `MemoryError` becomes
-non-retryable because reservation rollback cannot undo a partially written
-prefill, recurrent slot or proposer state.
-
-`SpecDecoder.prepare` owns proposal/verification metadata; `context` plans a
-caller-owned attention wrapper. `Qwen38.forward_mixed` keeps prefill and verify
-streams, residuals and selected features distinct while sharing dense work.
-MLP sharing is an ablation. Full sharing also combines FP8 mixer projections;
-GDN's small BF16 gate projection keeps its original row shape. The existing
-prefill attention/GDN cores and verify cores retain their arithmetic and state
-semantics. Verification cannot publish committed state before acceptance.
-
-The executor finishes prefill and then calls the common `SpecDecoder.finish`
-accept/commit/feedback path. Features own their storage until consumption;
-checkpoint slots and page transfers remain StateManager operations. No proposer
-API or second state manager is introduced. The benchmark's `separate` mode
-uses the same scheduling/proposal ordering with ordinary verification graphs.
-
-One successful mixed pass consumes one scheduler decode round. New requests
-whose prefill just finished join the next round: their first verification
-depends on the newly sampled token and draft initialization. One scheduler
-step performs at most one mixed pass, even if it runs two prefill chunks.
-Decode-only execution keeps its original graphs. MTP/n-gram sampled requests
-retain plain decoding; an unsupported mixed group falls back to ordinary
-prefill and decode. Mixed execution currently requires the fixed prefill policy;
-its time is not fed into the independent interactive-prefill estimator.
+Rejected width/latency policies and mixed prefill/verification execution are
+archived at commit `56605f0`, including their benchmark runner. They expose no
+current runtime hooks. Scheduler performs bounded ordinary prefill and separate
+decode rounds. Verification preparation, acceptance and state ownership remain
+explicit so future experiments can be developed outside the serving path.

@@ -138,8 +138,7 @@ The original production image and memory guard were restored afterward;
 health/model/canary checks passed.
 The final standalone image is
 `sha256:051f5dd546def8616227e79c9897fb1d69be27330cc936b42825f0c0514da60a`.
-The portable [results](direct-state-results.json) retain raw timing samples,
-source/image identities, output hashes, test XML hashes and review summaries.
+The [evidence manifest](direct-state-results.json) links the full archived bundle by SHA-256.
 
 ## Next mechanism
 

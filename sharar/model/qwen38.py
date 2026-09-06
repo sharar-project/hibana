@@ -55,21 +55,6 @@ class DecoderLayer:
         """Stand-alone prefill without pools (parity tools)."""
         return self.forward(hidden, residual, scratch_prefill_context(hidden.shape[0], hidden.device))
 
-    def mixed(self, streams, contexts, *, share):
-        """Disjoint prefill/verify streams share dense work, never state cores."""
-        normalized = [self.input_norm.fused_add_quant(h, r, self.mixer.input_scale,
-                                                     inplace=not ctx.capture)
-                      for (h, r), ctx in zip(streams, contexts)]
-        if share == "full":
-            mixed = self.mixer.mixed([n[0] for n in normalized], contexts, [n[1] for n in normalized])
-        else:
-            mixed = [self.mixer.forward(n[0], ctx, n[1]) for n, ctx in zip(normalized, contexts)]
-        post = [self.post_norm.fused_add(h, n[2], inplace=not ctx.capture)
-                for h, n, ctx in zip(mixed, normalized, contexts)]
-        sizes = [h.shape[0] for h, _ in post]
-        outputs = self.mlp(torch.cat([h for h, _ in post])).split(sizes)
-        return [(h, r) for h, (_, r) in zip(outputs, post)]
-
 
 class Qwen38:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", fused_silu_quant: bool = True, log=print):
@@ -108,33 +93,6 @@ class Qwen38:
             log(f"  weights loaded in {time.perf_counter() - started:.0f}s, "
                 f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated")
 
-    @torch.inference_mode()
-    def forward_mixed(self, prefill_ids, prefill_ctx, verify_ids, verify_ctx, *, share="full"):
-        """Bounded two-mode forward. Inputs/outputs are ordered prefill, verify.
-
-        The executor authorizes distinct slots/pages and owns final publication.
-        Features get owned storage before a later in-place residual update.
-        The separate path is an execution-order/numerical ablation.
-        """
-        if share not in ("separate", "mlp", "full"):
-            raise ValueError("unknown mixed sharing mode")
-        if prefill_ctx.mode != "prefill" or verify_ctx.mode != "verify":
-            raise ValueError("mixed forward requires prefill then verify contexts")
-        if share == "separate":
-            return self.forward(prefill_ids, prefill_ctx), self.forward(verify_ids, verify_ctx)
-        prepare_gdn_prefill(prefill_ctx, len(prefill_ids), prefill_ids.device)
-        contexts = (prefill_ctx, verify_ctx)
-        ids = (prefill_ids, verify_ids)
-        streams = [(torch.nn.functional.embedding(tokens, self.embed), None) for tokens in ids]
-        results = [{"input_ids": tokens, "positions": ctx.positions} for tokens, ctx in zip(ids, contexts)]
-        for layer in self.layers:
-            streams = layer.mixed(streams, contexts, share=share)
-            for (hidden, residual), ctx, out in zip(streams, contexts, results):
-                if layer.index in ctx.feature_request.layers:
-                    out.setdefault("features", {})[layer.index] = hidden + residual
-        for (hidden, residual), out in zip(streams, results):
-            out["norm"], out["pre_norm"] = self.final_norm.fused_add(hidden, residual)
-        return tuple(results)
 
     @torch.inference_mode()
     def forward(self, input_ids: torch.Tensor, ctx: ForwardContext, capture: bool = False) -> ForwardResult:

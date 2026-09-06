@@ -22,7 +22,6 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--strategy', choices=('snapshots', 'reconstruct'), required=True)
     parser.add_argument('--profiles-only', action='store_true')
-    parser.add_argument('--interactive-target-ms', type=float)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     snapshot = config.snapshot_dir()
@@ -62,12 +61,6 @@ def main():
         ex.spec = spec
         report['draft_cache'] = {'hits': spec.proposer.cache_hits, 'fallbacks': spec.proposer.cache_fallbacks}
         gb10_profile.run(ex, tok, args.output / 'profiles')
-        if args.interactive_target_ms is not None:
-            from sharar.engine.scheduler import SchedulerConfig
-            cfg = SchedulerConfig(interactive_target_ms=args.interactive_target_ms)
-            ex.flush_cache()
-            with http_server(ex, tok, snapshot, {'strategy': args.strategy, 'interactive_target_ms': args.interactive_target_ms}, cfg) as url:
-                report['workloads']['mtp-interactive'] = local_workloads.run(url, frozen, tok, args.output / 'mtp-interactive')
         if any(s['automatic_failures'] or s['request_failures'] for s in report['workloads'].values()):
             raise RuntimeError('frozen workload gate failed')
     finally:

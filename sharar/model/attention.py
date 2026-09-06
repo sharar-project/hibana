@@ -79,14 +79,6 @@ class Attention:
             attn = self.ragged.run(q, k, v)
         return attn
 
-    def mixed(self, inputs, contexts, quantized):
-        sizes = [x.shape[0] for x in inputs]
-        projected = ops.fp8_linear(None, self.qkv, x_q=torch.cat(quantized)).split(sizes)
-        outputs = []
-        for qkv, ctx in zip(projected, contexts):
-            q, k, v, gate = self._split_qkv(qkv, ctx.positions)
-            outputs.append(self._output_input(self._prefill_attention(q, k, v, ctx), gate))
-        return ops.fp8_linear(None, self.o, x_q=torch.cat(outputs)).split(sizes)
 
     def decode(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
         q, k, v, gate = self._qkv(x, ctx.positions, x_q)

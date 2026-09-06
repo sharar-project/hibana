@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-06 (controlled verification costs; compact convolution prototype screened out; curated dense/MoE guardrails)
+Last updated: 2026-09-06 (runtime pruning, MTP feedback repair and clean-image promotion validation)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -25,10 +25,10 @@ The finished engine has these properties:
 
 1. `sharar serve` is the server entry point. Hardware capabilities, immutable
    model facts and serving limits are separate, explicit profile records.
-   The checkpoint above remains the only validated model today; a small
-   curated set of dense and MoE models may follow after each profile passes
-   the same gates. Model support and availability of a compatible speculative
-   draft are separate capabilities.
+   Hold implementation to the pinned Qwen model on GB10 until the DFlash2
+   default passes promotion. Preserve narrow contribution seams; defer second
+   models, MoE kernels and generic target abstractions. A compatible trained
+   draft remains a separate requirement from target-model support.
 2. The process contains no SGLang. All model math, memory management,
    scheduling and serving are Sharar modules with narrow interfaces and tests.
 3. MTP, n-gram, DSpark, DFlash2 and future proposers share narrow lifecycle
@@ -45,19 +45,19 @@ The finished engine has these properties:
    workload, latency, quality and memory budgets, with reproducible comparisons.
 
 Multimodal, multi-GPU, multi-node, arbitrary model discovery, LoRA, generic
-hardware fallbacks and inherited CI are outside the target. Curated model
-profiles must preserve GB10 specialization and explicit kernel choices.
+hardware fallbacks and inherited CI are outside the target. Additional model
+profiles are deferred until the current single-model default is proven.
 
-Immediate priority: isolate the NVFP4 projection cost at actual verification
-shapes, then choose an SM121 kernel/layout mechanism from that evidence. The
-compact-convolution prototype passes exact component checks but projects only
-1.0–1.6% whole-round savings, below its frozen 2% integration screen; it stays
-outside serving. One shared prefill plan now removes repeated metadata
-work across 48 GDN layers and improves ordinary HTTP TTFT 18–29%. Mixed target
-execution still fails arrival TTFT protection and its public serving option is
-archived. Keep useful interfaces and evidence; do not grow scheduling policy
-around that failed experiment. External-draft defaults still require broader
-quality, cache-pressure and client-visible performance gates.
+Runtime pruning and the MTP feedback repair are complete with
+[measured proof](docs/promotion.md). Immediate priority: evaluate the clean
+DFlash2 candidate under repeated quality/performance gates, then attack the
+128-input / 256-output / concurrency-four gap. Mixed forwarding,
+latency policy and confidence-based width policy are archived in Git history.
+Capture only the selected verify width during normal startup. Preserve accepted
+state reconstruction, selective features, draft-aware prefix caching and the
+shared GDN prefill plan. The compact convolution and narrow NVFP4 tile studies
+are complete and failed their frozen integration screens. Their evidence points
+toward more useful tokens per target weight traversal as the next speed direction.
 
 ## 2. Relationship to the `sparklang` repository
 
@@ -762,16 +762,17 @@ an updated `docs/comparison.md` distinguish historical observations from fresh
 comparisons, synthetic performance from local-use performance, and algorithm
 gains from kernel/engine gains. The correctness oracle stays frozen.
 
-### Phase 7D: Draft-aware caching, DSpark/DFlash2 and interactive scheduling `[implemented; promotion gates open]`
+### Phase 7D: Draft-aware caching and speculative decoding `[implemented; promotion gates open]`
 
 Prerequisites: 7A ownership fixes, 7B interfaces and 7C workload gates. Preserve
 the current MTP path while evaluating each extension independently.
 
 Implementation and measured decisions: [docs/phase7d.md](docs/phase7d.md).
 Native adapters, shared stochastic verification, draft-aware prefix metadata,
-prospective budgets and captured width buckets are present. Defaults remain
-explicit: MTP and full snapshots; external drafts, reconstruction and adaptive
-policies are selectable experiments. A passed implementation gate is distinct
+prospective budgets and fixed-width CUDA graphs are present. MTP and full
+snapshots remain the source defaults until the promotion gates pass. External
+drafts and reconstruction are supported candidates. Rejected adaptive policies
+and mixed target execution have been removed from the shipped runtime. A passed implementation gate is distinct
 from a broad quality, competitive-speed or production-promotion gate.
 
 - [x] Implement selective target feature capture for prefill and verification.
@@ -793,13 +794,13 @@ from a broad quality, competitive-speed or production-promotion gate.
       numerical parity. Positive-temperature MTP/n-gram requests use plain
       decode; DSpark/DFlash2 use the shared sampled reference path.
 - [x] Add batch/verify-width buckets, including tails and padded rows.
-      Select widths using measured round cost and expected useful emitted
-      tokens; do not optimize acceptance percentage in isolation.
+      Select the fixed startup width from measured useful emitted tokens and
+      cost. Additional width captures are restricted to controlled benchmarks.
 - [x] Implement DFlash2 through the proposer interface: parallel draft,
       candidate selector, local convolution and its attention/window semantics.
 - [x] Implement DSpark through the same interface: parallel backbone,
-      sequential correction and confidence-scheduled verification. Calibrate
-      confidence and cost curves on this GB10 workload before enabling adaptation.
+      sequential correction. Confidence-based width scheduling was investigated
+      and is now archived; no adaptive serving option remains.
 - [x] Profile DFlash2's graph, vocabulary/selector and accepted feature/KV work;
       remove measured greedy predecessor scalar transfers with a small exact
       device traversal. Interleaved confirmation reduces round time 2.8–5.4%
@@ -841,9 +842,9 @@ from a broad quality, competitive-speed or production-promotion gate.
       state/checkpoints. [Implementation and proof](docs/prefill-plan.md).
 - [x] Apply the bounded mixed-serving cutoff. After metadata planning, arrival
       TTFT still regresses 16.9–24.4% against a 5% limit. Remove the public
-      serving option; retain useful model/verification interfaces and the
-      explicitly enabled benchmark. Do not grow more scheduling policy around
-      the failed experiment.
+      serving option, followed by the internal executor/scheduler/model hooks.
+      Reproduce the archived experiment at commit 56605f0; preserve its evidence
+      outside Git and retain the useful ordinary prefill improvement.
 - [x] Attribute DFlash2 rounds with fixed tokens and accepted lengths at B=1/4
       and 128/8K contexts. Two complete model-load windows agree on frozen work.
       The standalone fused/compact convolution passes 192 exact convolution
@@ -857,29 +858,28 @@ from a broad quality, competitive-speed or production-promotion gate.
 - [x] Add a bounded prefill policy using an interactive decode-latency target.
       Measure requests arriving during generation. Keep graph execution where
       useful; mixed prefill/decode is an experiment, not a requirement.
-- [ ] Jointly choose prefill budgets and draft widths from a measured latency
-      policy. The implemented bounded policies are independent; first prove
-      that enabling either improves its protected workloads.
-      The 250 ms prefill pilot is rejected as a default: smaller observed stalls
-      came with much worse session TTFT/completion. The implemented shared-target
-      prototype also fails first-token protection despite reducing combined work.
-      Keep the existing chunk policy; test any row-budget policy separately from
-      projection sharing. Do not relax workload gates to promote either result.
-- [ ] Complete independent quality/performance promotion of confidence and
-      interactive policies. A short-context cost pilot is not a calibrated
-      all-context policy; the 250 ms scheduler target is best effort.
-- [ ] Complete equal-memory pressure/eviction and fresh competitive SGLang
-      comparisons before promoting a general-purpose proposer default.
+- [x] Archive rejected mixed-forward, latency and confidence-width policies.
+      Consolidate proposer construction at startup; expose maximum depth through
+      the proposer contract instead of adapter names in generic execution.
+- [x] Batch MTP accepted-token uploads through owned pinned staging. Preserve
+      required target-conditioned KV writes. All 480 controlled round/state
+      comparisons match; native B=4 round time falls 2.76–3.75%. Archive the
+      extra KV graph prototype, whose additional benefit is inconsistent.
+- [x] Build clean pinned dependencies and validate the candidate: 573 full-suite
+      checks, 269 final focused checks after pruning the KV graph prototype,
+      16 historical parity gates and DFlash2 eviction/replay/context checks.
+      [Details and limits](docs/promotion.md).
+- [ ] Complete clean-image DFlash2 promotion against repaired MTP: repeated
+      fixed/natural requests, cache restoration and eviction, pressure, stopping,
+      cancellation, sampled correctness and equal memory budgets. Retain every
+      failed quality/performance cell. A candidate image is not a deployed default.
+- [ ] Attribute and improve 128 input / 256 output at concurrency four, including
+      request acceptance, target/draft work and the final straggler. Use useful
+      answers and useful tokens per target traversal as the objective.
 
-Sources for the reviewed requirements: [DSpark checkpoint](https://huggingface.co/RadixArk/Qwen3.8-27B-DSpark),
-[DSpark paper](https://arxiv.org/abs/2607.05147),
-[DFlash2 config](https://huggingface.co/incoai/Qwen3.8-27B-DFlash2/raw/main/config.json)
-and [DFlash2 design](https://inco.ai/blog/dflash2/). Their published hardware
-results do not predict GB10 speedups; pinned local measurements choose defaults.
-
-Definition of done: independent proposer adapters share exact acceptance and
-state logic; sampled and cache-hit paths pass correctness gates; workload
-results, scratch peaks and client-visible latency justify each enabled profile.
+Definition of done: one declared production proposer/profile passes all quality,
+state, memory and protected latency gates on a clean image in repeated windows.
+An implementation pass or a fixed-work speed win alone does not promote it.
 
 ### Phase 8: Unified memory `[planned; after 7D]`
 
@@ -1177,70 +1177,34 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-Model-extension guardrail: retain GB10 specialization while allowing curated
-dense and MoE profiles. Before adding a second target, extract the remaining
-Qwen assumptions into a small target/state-layout contract: forward/logits,
-optional feature taps, KV-only or KV-plus-recurrent state, and graph shapes.
-Proposers declare compatible checkpoints/features; MTP requires trained heads.
-An MoE target additionally needs routing, expert dispatch and quantized expert
-kernels. Validate the boundary with a real second model before claiming general
-support. The current executor, pools and external drafts remain Qwen-specific;
-GDN optimizations stay in their model/kernel modules and impose no requirement
-that future targets contain GDN.
+Hold the shipped engine to Qwen on GB10. Do not extract a generic target layout
+or add dense/MoE models before DFlash2 promotion. Proposer construction lives in
+`proposers/factory.py`; execution consumes features and capacity requirements.
+StateManager owns target state/cache loans; proposers own their draft state.
 
-One shared GDN prefill plan is implemented and validated. Ordinary HTTP TTFT
-falls 18–29% in the initial interleaved experiment with identical output IDs;
-full-model recurrent/checkpoint comparisons are exact. The bounded follow-up
-still fails mixed arrival TTFT protection, so public mixed serving is archived.
-The [fresh plain/DFlash2 benchmark](docs/competitive.md) supplies the current
-competitive snapshot: coding/tool answers match exactly and finish 6.5%/7.8%
-sooner than the faster measured SGLang DFlash2 setting. The forced-output matrix
-has both wins and a 29% short-batch loss; its 3.2× short-single result mostly
-reflects different continuations and verification counts. Plain decoding remains
-slightly behind in five cells. This does not complete broad proposer promotion.
+Runtime pruning, the MTP repair and clean-image correctness checks are complete
+([proof](docs/promotion.md)). Full raw evidence stays under `$SHARAR_RESULTS`,
+with compact manifests and report summaries in Git.
 
-The [controlled verification study](docs/verify-cost.md) now completes the
-convolution investigation. The exact standalone prototype reduces that component
-74–79% and retained convolution storage by 60 MiB at B=4, but projects only
-1.0–1.6% whole-round improvement. It fails the frozen 2% integration screen and
-is archived. No serving speedup is claimed or runtime option added.
+1. Run the repeated DFlash2/MTP/SGLang promotion matrix on the clean image. Include natural output quality, sampled correctness, long/cached
+   sessions, eviction, cancellation and equal memory budgets. Promote only if
+   the predeclared gates pass; record failures without relaxing the criteria.
+2. Attribute and attack 128 input / 256 output tokens per request at concurrency
+   four. Separate acceptance and continuation changes from round execution cost;
+   count target traversals, draft work and tail time before choosing a mechanism.
+3. Phase 8 follows with measured prepacked loading and reclaimable optional cache
+   slabs. Measure first touch and physical memory recovery on shared DRAM while
+   keeping graph references and active cache loans explicit. The 12-slot
+   boundary check reuses only a 20,480-token checkpoint on a 32,766-token repeat;
+   investigate endpoint retention before claiming efficient long-session reuse.
+   Final AOT follows
+   supported shapes and memory mechanisms.
 
-The [NVFP4 verification study](docs/nvfp4-cost.md) is also complete for the
-current k=7 row counts. Narrow live MMA tiles with unchanged packed weights
-and scale blocks fail the frozen speed screen despite exact captured outputs.
-A separate cuDNN dispatch ablation saves only 1.3–1.6% in complete natural B=4
-rounds, below its 2% threshold. Serving remains unchanged. Keep these small
-effects as measured evidence for a future combined change, not new flags or a
-vendored kernel. Packing is under 1 ms in this replay and is not the next
-verification bottleneck to optimize.
-Hardware counters now show approximately one packed weight/scale footprint
-fetched from system memory into L2 for each sampled GEMM. They do not establish
-physical LPDDR peak utilization, but supply no large redundant-read multiplier
-for a layout change to remove. Prioritize useful tokens per traversal.
+The shared GDN prefill plan improves ordinary TTFT 18–29% in the original study.
+Compact convolution and narrow NVFP4 tiles failed their integration screens.
+Measured GEMM fills are approximately one packed weight/scale footprint into L2;
+this is not proof of physical LPDDR saturation. Prioritize useful accepted tokens
+per target traversal and less state movement, with exact work and state evidence.
 
-1. **Complete DFlash2/DSpark versus repaired-MTP comparisons under the common
-   memory budget, including realistic long sessions, eviction, natural stopping
-   and sampled quality.** Measure useful accepted tokens per target round,
-   target rounds per completed answer, draft cost and cache restoration time.
-   Use these to select the next bounded speed mechanism: reduce expensive target
-   weight traversals or preserve useful draft/session state under pressure.
-   Freeze a concrete implementation hypothesis from that evidence. Repeat
-   independent SGLang comparison windows and test
-   CPU contention on shared DRAM. Choose workload-specific profiles only after
-   these gates; a small fixed-work matrix cannot establish a universal lead.
-2. Use Phase 8 for measured prepacked weight loading and reclaimable optional
-   cache slabs. Streaming checkpoint-map release already lowers the measured
-   host load peak; it does not prove zero-copy hot inference. Compare allocation
-   visibility, first touch, steady bandwidth and physical memory recovery under
-   pressure. Keep graph references and active cache loans explicit.
-
-Kernel experiments remain allowed whenever a profile identifies removable work.
-Final AOT packaging follows supported shapes/profiles and unified-memory work.
-No further mixed scheduling or compact-convolution serving integration is planned.
-
-The larger speed objective remains more useful accepted tokens per target
-weight traversal and less state movement through GB10's shared DRAM. The current
-prefill result removes exposed host work; it does not demonstrate a large
-steady-state decoding gain. Each next mechanism needs its own measured proof.
-Rebuilding/promoting production remains separate; the original serving image
-and memory guard are restored after the benchmark windows.
+Production changes require a completed promotion result. Validation windows
+restore the original image and memory guard after testing.

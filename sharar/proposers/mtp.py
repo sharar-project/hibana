@@ -24,6 +24,10 @@ class MtpProposer:
         self.head, self.context, self.k = head, context, k
         self.requirements = ProposerRequirements("mtp", FeatureRequest(final_norm=True), persistent_bytes=head.bytes)
         self.graphs = None
+        self._host_tokens = torch.empty(context.max_batch * (k + 1), dtype=torch.int64,
+                                        pin_memory=context.device.type == "cuda")
+        self._upload_done = torch.cuda.Event() if context.device.type == "cuda" else None
+        self._upload_pending = False
         self.cache_identity = (config.MODEL_ID, config.MODEL_REVISION, "native-mtp", "final_norm-v1", "bf16-kv-target-forced-v1")
         self.cache_hits = self.cache_fallbacks = 0
 
@@ -106,15 +110,48 @@ class MtpProposer:
         return hidden, self.head.logits(hidden).argmax(-1)
 
     def accepted_batch(self, requests, emitted, features):
+        # The normal acceptance download completes the preceding upload. Keep
+        # the staging lifetime safe for direct callers too, without a device
+        # barrier on the serving path.
+        if self._upload_pending and not self._upload_done.query():
+            self._upload_done.synchronize()
+        if not 0 < len(requests) == len(emitted) <= self.context.max_batch:
+            raise ValueError("invalid MTP feedback batch")
+        offset = 0
         for row, (req, tokens) in enumerate(zip(requests, emitted)):
-            self._accepted(req, tokens, features, row)
+            state = self._state(req)
+            count = len(tokens)
+            if (not 1 <= count <= self.k + 1 or state.pending_token is None
+                    or state.pending_hidden is None or not state.valid_prefix
+                    or state.draft_pos != req.committed_len - count
+                    or features.norm is None or features.norm.shape[0] <= row
+                    or features.norm.shape[1] < count):
+                raise ValueError("MTP feedback does not follow the pending input")
+            self._host_tokens[offset] = state.pending_token
+            for j, token in enumerate(tokens[:-1], 1):
+                self._host_tokens[offset + j] = token
+            offset += count
+        device_tokens = self._host_tokens[:offset].to(self.context.device, non_blocking=True)
+        if self._upload_done is not None:
+            self._upload_done.record()
+            self._upload_pending = True
+        offset = 0
+        for row, (req, tokens) in enumerate(zip(requests, emitted)):
+            self._accepted(req, tokens, features, row, device_tokens[offset:offset + len(tokens)])
+            offset += len(tokens)
 
-    def _accepted(self, req, emitted, features, row):
+    def _accepted(self, req, emitted, features, row, inputs):
         state = self._state(req)
         count = len(emitted)
-        inputs = [state.pending_token] + emitted[:-1]
-        state.last_hidden = state.pending_hidden[0]
-        self.ingest_prefill(req, inputs, req.committed_len - count, {"norm": features.norm[row, :count]})
+        start, end = req.committed_len - count, req.committed_len
+        norm = features.norm[row, :count]
+        hidden = torch.cat([state.pending_hidden, norm[:count - 1]])
+        positions = torch.arange(start, end, dtype=torch.int64, device=self.context.device)
+        # Preserve each row's projection shape/rounding. Accepted draft KV must
+        # be target-conditioned, including the fully accepted bonus input.
+        self.head.write_kv(inputs, hidden, positions, req.pages[start:end])
+        state.last_hidden = norm[-1].clone()
+        self._checkpoint(req, start, end, norm)
         state.pending_token = None if req.finished else int(emitted[-1])
         state.pending_hidden = None if req.finished else features.norm[row, len(emitted) - 1:len(emitted)]
         state.draft_pos = req.committed_len

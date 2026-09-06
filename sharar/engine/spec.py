@@ -7,7 +7,6 @@ this driver owns target verify buffers, graph replay and acceptance metrics.
 from __future__ import annotations
 
 import time
-from collections import deque
 from dataclasses import dataclass
 
 import torch
@@ -43,11 +42,8 @@ class SpecDecoder:
         self.k = proposer.k
         self.steps = proposer.k + 1
         self.verify_depth = self.k
-        self.verify_depths = tuple(sorted({n for n in (1, 3, 7) if n <= self.k} | {self.k})) if proposer.requirements.name in ('dspark', 'dflash2') else (self.k,)
+        self.verify_depths = (self.k,)  # benchmarks may explicitly capture narrower widths
         self.width_graphs = {}
-        self.width_policy = None
-        self.collect_acceptance = False
-        self.acceptance_trace = deque(maxlen=4096)
         self.device = executor.device
         n = executor.max_batch
         ssm_shape = executor.state_pool.ssm_all.shape[2:]
@@ -132,10 +128,8 @@ class SpecDecoder:
         self.verify(batch)
 
     def prepare(self, reqs: list[Request]) -> Verification:
-        """Reserve and draft once; the target pass may run separately or mixed."""
+        """Reserve and draft one target verification batch."""
         ex = self.ex
-        if getattr(self, 'width_policy', None) is not None:
-            self.verify_depth = self.width_policy.choose(reqs, self.verify_depths)
         k = getattr(self, 'verify_depth', self.k)
         if k not in getattr(self, 'verify_depths', (self.k,)):
             raise ValueError('uncaptured verification depth')
@@ -201,7 +195,7 @@ class SpecDecoder:
         self.finish(batch, self.ex.model.forward(batch.tokens, ctx))
 
     def context(self, batch: Verification, wrapper) -> ForwardContext:
-        """Plan into a caller-owned wrapper; mixed prefill needs a distinct plan."""
+        """Plan the eager verification attention wrapper."""
         b_sz, k = batch.proposal.tokens.shape
         s_len, d = k + 1, self.device
         cu_host = torch.arange(0, b_sz * s_len + 1, s_len, dtype=torch.int32)
@@ -237,9 +231,9 @@ class SpecDecoder:
 
     def _accept_batch(self, batch, z, features):
         self._accept(batch.requests, batch.proposal.tokens, z, features, batch.started, batch.prepared,
-                     proposal=batch.proposal if batch.sampled else None, confidence=batch.proposal.confidence)
+                     proposal=batch.proposal if batch.sampled else None)
 
-    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, confidence=None) -> None:
+    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None) -> None:
         if self.timing:
             torch.cuda.synchronize()
         t2 = time.perf_counter()
@@ -268,13 +262,6 @@ class SpecDecoder:
                 target[a] = correction
                 z_l.append(target)
                 acc.append(a)
-        if confidence is not None and (self.width_policy is not None or self.collect_acceptance):
-            for i, values in enumerate(confidence.tolist()):
-                reqs[i].proposer_state.confidence = values
-                if self.collect_acceptance:
-                    self.acceptance_trace.append({'confidence': values, 'accepted': acc[i], 'verified_depth': k,
-                                                  'sampled': not reqs[i].params.greedy, 'batch': len(reqs),
-                                                  'context': reqs[i].committed_len})
         outputs = []
         for i, r in enumerate(reqs):
             a = acc[i]

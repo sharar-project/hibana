@@ -118,9 +118,8 @@ python3 bench/verify_cost.py --output /path/to/new-run --dump-convolution
 ```
 
 The optional dump retains real per-layer inputs outside git for the standalone
-prototype. [Portable evidence](verify-cost-results.json) includes both controlled
-reports, all timings, frozen work, prototype code/checks, the pre-implementation
-hypothesis, launch/guard code, image/source identities and raw-file hashes.
+prototype. The [evidence manifest](verify-cost-results.json) records the full external bundle
+location and SHA-256; detailed samples, sources and outputs stay outside Git.
 Raw evidence is under `$SHARAR_RESULTS/reviews/2026-09-06/verify-conv/`.
 
 The initial incomplete run is retained and excluded: its benchmark setup

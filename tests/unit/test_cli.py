@@ -3,7 +3,8 @@ import pytest
 from sharar.cli import main
 
 
-def test_failed_mixed_serving_experiment_cannot_be_enabled():
+@pytest.mark.parametrize('option,value', [('--mixed-forward', 'full'), ('--interactive-target-ms', '250'), ('--verify-policy', 'policy.json')])
+def test_failed_serving_experiments_cannot_be_enabled(option, value):
     with pytest.raises(SystemExit) as exc:
-        main(['serve', '--spec', '7', '--mixed-forward', 'full'])
+        main(['serve', '--spec', '7', option, value])
     assert exc.value.code == 2

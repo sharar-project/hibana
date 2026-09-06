@@ -216,9 +216,8 @@ python3 -m bench.competitive --inputs /path/to/inputs.json \
 ```
 
 The [manifest](../bench/workloads/competitive_v1.json) defines workload policy.
-The [portable evidence](competitive-results.json) includes the guarded matrix
-runner and per-profile launcher, so the exact flags and restoration procedure
-are reviewable. Adapt host paths and device mounts to the local installation.
+The [evidence manifest](competitive-results.json) locates and hashes the
+external bundle containing the guarded matrix runner and per-profile launcher. Adapt host paths and device mounts to the local installation.
 Raw results and excluded attempts are under
 `$SHARAR_RESULTS/reviews/2026-09-05/competitive/`.
 

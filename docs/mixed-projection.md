@@ -134,9 +134,9 @@ needed. The complete CPU suite passes **240 tests**, with six GPU-only skips.
 The new CPU cases check eligibility/dependencies, partition-sensitive numerical
 gates, nonfinite rejection and executed-versus-active padding rows.
 
-[Portable results](mixed-projection-results.json) contain every timing sample,
-source fingerprints, numerical summaries, final raw HTTP outputs/phases and
-rubric reviews. Full operation checks, frozen briefs/source trees, reports,
+The [evidence manifest](mixed-projection-results.json) records the full external bundle
+location and SHA-256; detailed samples, sources and outputs stay outside Git.
+Full operation checks, frozen briefs/source trees, reports,
 memory samples and clocks/power logs are under
 `$SHARAR_RESULTS/reviews/2026-09-05/mixed-projection/`. The first-pilot grading
 mistake remains visible there; the confirmation uses the corrected text path.

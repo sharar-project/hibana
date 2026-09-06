@@ -56,7 +56,6 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--workloads', action='store_true')
     parser.add_argument('--extended', action='store_true')
-    parser.add_argument('--verify-policy', type=Path)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     report = {'name': args.name, 'draft_pin': PINS[args.name], 'target': config.MODEL_REVISION}
@@ -119,6 +118,7 @@ def main():
         ex.release(req)
         ex.flush_cache()
         with measure_stage(report, 'graphs'):
+            ex.spec.verify_depths = (1, 3, 7)
             ex.capture_graphs(log=print)
         records = []
         for depth, batch, temperature in ((d, b, t) for d in ex.spec.verify_depths for b, t in ((1, 0.), (2, 0.), (3, .7), (4, 0.))):
@@ -154,19 +154,11 @@ def main():
             report['boundaries'] = boundaries
             ex.use_graphs = True
         ex.spec.verify_depth = ex.spec.k
-        if args.verify_policy is not None:
-            from sharar.engine.width_policy import WidthPolicy
-            ex.spec.width_policy = WidthPolicy.load(args.verify_policy, args.name, 'reconstruct')
-            report['verify_policy'] = json.loads(args.verify_policy.read_text())
-        ex.spec.collect_acceptance = args.name == 'dspark'
         if args.workloads:
             frozen = local_workloads.materialize(local_workloads.DEFAULT_MANIFEST, config.snapshot_dir())
             with http_server(ex, tok, config.snapshot_dir(), {'proposer': args.name}) as url:
                 report['workloads'] = local_workloads.run(url, frozen, tok, args.output / 'workloads')
             assert not report['workloads']['automatic_failures'] and not report['workloads']['request_failures']
-        report['acceptance_trace'] = list(ex.spec.acceptance_trace)
-        ex.spec.collect_acceptance = False
-        ex.spec.width_policy = None
         # Synchronize only at the boundaries of independent timing samples.
         # Retain token work alongside costs; short context is a pilot profile.
         costs = []

@@ -78,11 +78,11 @@ request or automatic-check failures. Manual review gives 22 passes and four
 existing sampled-chat rubric misses per mode. The earlier additional mixed-chat
 misses do not recur in this run. Arrival TTFT nevertheless regresses **16.9–24.4%**
 in every selected mixed case, against a 5% limit. The public serving option is
-removed; the model/verification interfaces and explicitly enabled benchmark
-remain. See [the archive decision](mixed-forward.md).
+removed. The remaining mixed runtime hooks were subsequently archived at
+commit 56605f0; current serving retains the ordinary prefill improvement. See [the archive decision](mixed-forward.md).
 
-[Portable results](prefill-plan-results.json) retain state hashes, all request
-timings, deduplicated outputs, reviews, source fingerprints and runner details.
+The [evidence manifest](prefill-plan-results.json) records the full external bundle
+location and SHA-256; detailed samples, sources and outputs stay outside Git.
 Raw traces and attempts are under
 `$SHARAR_RESULTS/reviews/2026-09-05/prefill-plan/`; the corrected parity run is
 also under the adjacent `competitive/` directory. The lowest sampled available
@@ -99,8 +99,10 @@ with exclusive model memory and the host guard active:
 ```bash
 python3 bench/prefill_plan.py --reference /path/to/control --output /path/to/new-run
 python3 -m pytest tests/unit tests/gpu -q -p no:cacheprovider
-python3 bench/mixed_forward.py --output /path/to/mixed-gate --protected
 ```
+
+For the archived mixed gate, check out commit `56605f0` and run
+`python3 bench/mixed_forward.py --output /path/to/mixed-gate --protected`.
 
 The benchmark writes every sample, frozen prompt IDs, reference file hashes,
 per-layer state hashes and separate profiler traces. The host harness records

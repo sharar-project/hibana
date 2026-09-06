@@ -46,24 +46,6 @@ class StateManager:
         self.recurrent = state_pool
         self.cache = cache
 
-    def authorize_mixed(self, chunks, verifying, max_batch):
-        """Validate both destinations before any mixed-pass reservation/write."""
-        requests = [r for r, _ in chunks] + list(verifying)
-        if not chunks or not verifying or len(requests) > max_batch:
-            raise ValueError("invalid mixed request count")
-        if len({id(r) for r in requests}) != len(requests) or len({r.slot for r in requests}) != len(requests):
-            raise ValueError("mixed requests must own distinct slots")
-        for req in requests:
-            if (req.released or req.finished or req.cancel_requested or req.reservation is not None
-                    or req.pages is None or type(req.slot) is not int or not 0 < req.slot < self.recurrent.num_slots):
-                raise ValueError("mixed request has no available private state")
-        for req, count in chunks:
-            if (type(count) is not int or count < 1 or req.prefill_pos + count > req.prefill_len
-                    or req.committed_len != req.prefill_pos or len(req.pages) < req.prefill_pos + count):
-                raise ValueError("invalid mixed prefill extent")
-        for req in verifying:
-            if not req.prefill_done or not req.output_ids or req.committed_len != req.context_len - 1:
-                raise ValueError("mixed verify pending input does not follow committed state")
 
     def can_admit(self, prompt_len: int, reserve: int = 0) -> bool:
         need = prompt_len + reserve

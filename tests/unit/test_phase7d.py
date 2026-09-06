@@ -202,20 +202,6 @@ def test_mtp_bonus_and_cached_prefix_never_read_unwritten_draft_kv(monkeypatch):
     assert ex.kv_pool.free_count == 1024
 
 
-def test_interactive_policy_budgets_the_whole_prefill_forward():
-    from sharar.engine.latency_policy import LatencyPolicy
-    policy = LatencyPolicy(250)
-    assert policy.prefill_limit(4096) == 64
-    policy.observe_prefill(256, 128)
-    policy.observe_decode(110)
-    assert policy.prefill_limit(4096) == 256
-    policy.observe_decode(230)
-    assert policy.prefill_limit(4096) == 64  # progress remains possible
-    for _ in range(100):
-        policy.observe_prefill(512, 100)
-    assert len(policy.prefills) == 32 and policy.prefill_limit(4096) <= 512
-
-
 def test_prefill_checkpoints_align_to_each_forward_not_absolute_positions(monkeypatch):
     ex = tiny_executor(monkeypatch, cache=True)
     assert ex._checkpoint_positions(1910, 2172, 2172) == [2102, 2166]

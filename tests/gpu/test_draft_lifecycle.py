@@ -22,6 +22,7 @@ def draft_runtime():
         torch.cuda.empty_cache()
         ex = Executor(model, num_pages=35000, num_slots=12)
         ex.enable_spec(7, proposer='dflash2', state_strategy='reconstruct')
+        ex.spec.verify_depths = (1, 3, 7)
         ex.capture_graphs(log=print)
         ids = SnapshotTokenizer(config.snapshot_dir()).encode(PARAGRAPH * 16)[:512]
         yield ex, ids

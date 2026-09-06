@@ -75,8 +75,6 @@ class Executor:
         self.graphs: DecodeGraphs | None = None
         self.use_graphs = False
         self.spec = None
-        self.mixed_mode = "off"
-        self._mixed_verify_ws = self._mixed_verify = None
         if log:
             log(f"  pools: {num_pages} KV pages ({self.kv_pool.bytes / 2**30:.2f} GiB), {num_slots} state slots ({num_slots * self.state_pool.bytes_per_slot / 2**30:.2f} GiB)")
         if spec_config is not None:
@@ -92,9 +90,6 @@ class Executor:
 
     def enable_spec(self, k: int = 3, log=None, *, proposer: str = "mtp", state_strategy: str = "snapshots") -> None:
         """Select an adapter once at startup; MTP remains the serving default."""
-        limit = 7 if proposer in ("dspark", "dflash2") else 4
-        if type(k) is not int or not 1 <= k <= limit:
-            raise ValueError(f"supported speculative depth is 1 through {limit}")
         if self.graphs is not None or self.spec is not None:
             raise ValueError("enable speculation once, before graph capture")
         from sharar.memory.spec_budget import SpecConfig, budget
@@ -102,28 +97,8 @@ class Executor:
         fixed, per_page = budget(SpecConfig(proposer, k, state_strategy), self.max_batch, self.max_context)
         check_load_headroom(fixed + per_page * self.kv_pool.num_pages + 8 * 2**30)
         context = ProposerContext(self.device, self.max_batch, self.max_context)
-        if proposer == "mtp":
-            from sharar.model.mtp import MtpHead
-            from sharar.proposers.mtp import MtpProposer
-            from sharar.weights.safetensors import SnapshotWeights
-            w = SnapshotWeights(config.snapshot_dir())
-            try:
-                head = MtpHead(w, self.device, self.model.embed, self.model.lm_head, self.model.rope, self.kv_pool.num_pages)
-            finally:
-                w.close()
-            adapter = MtpProposer(head, context, k)
-        elif proposer == "ngram":
-            from sharar.proposers.ngram import NGramProposer
-            adapter = NGramProposer(context, k)
-        elif proposer in ("dspark", "dflash2"):
-            from sharar.model.parallel_draft import ParallelDraftModel
-            from sharar.proposers.parallel import ParallelProposer, PINS
-            name, revision = PINS[proposer]
-            root = config.snapshot_dir().parents[2]
-            snapshot = root / ("models--" + name.replace("/", "--")) / "snapshots" / revision
-            adapter = ParallelProposer(ParallelDraftModel(snapshot, self.model, self.max_context), context, k, proposer)
-        else:
-            raise ValueError(f"unknown proposer {proposer!r}")
+        from sharar.proposers.factory import create
+        adapter = create(proposer, k, self.model, context, self.kv_pool.num_pages)
         self.set_proposer(adapter, state_strategy=state_strategy)
         self.ledger.record_cuda_allocated("proposer_and_verify")
         if log:
@@ -135,7 +110,7 @@ class Executor:
             raise ValueError("select a proposer once, before graph capture")
         if proposer.context != ProposerContext(self.device, self.max_batch, self.max_context):
             raise ValueError("proposer context does not match executor")
-        limit = 7 if proposer.requirements.name in ("dspark", "dflash2") else 4
+        limit = proposer.requirements.max_depth
         if type(proposer.k) is not int or not 1 <= proposer.k <= limit:
             raise ValueError("unsupported proposal width")
         if any(type(i) is not int or not 0 <= i < config.NUM_LAYERS for i in proposer.requirements.features.layers):
@@ -150,58 +125,6 @@ class Executor:
         self.ledger.record_cuda_allocated("cuda_graphs")
         self.use_graphs = True
 
-    def enable_mixed(self, mode="full") -> None:
-        """Allocate one distinct attention plan at startup; serving stays opt-in."""
-        if mode not in ("off", "separate", "mlp", "full"):
-            raise ValueError("unknown mixed forward mode")
-        if mode != "off" and self.spec is None:
-            raise ValueError("mixed forward requires speculation")
-        if mode != "off" and self._mixed_verify is None:
-            import flashinfer
-            from sharar.memory.ledger import check_load_headroom
-            check_load_headroom(256 * 1024 * 1024)
-            self._mixed_verify_ws = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=self.device)
-            self._mixed_verify = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self._mixed_verify_ws, "NHD")
-            self.ledger.record_cuda_allocated("mixed_workspace")
-        self.mixed_mode = mode
-
-    def mixed_prefill(self, chunks, verifying) -> bool:
-        """Try one bounded prefill + existing verify round. False means no work.
-
-        Preflight pool pressure is retryable. From preparation onward any
-        failure poisons both groups: rollback cannot undo in-place GDN writes.
-        Decode-only execution and the ordinary prefill path stay available.
-        """
-        if self.mixed_mode == "off" or not chunks or not verifying:
-            return False
-        if sum(n for _, n in chunks) > 4096 or len(chunks) + len(verifying) > self.max_batch:
-            return False
-        if any(r.finished or r.cancel_requested or not self.spec.ready(r)
-               or (not r.params.greedy and self.spec.proposer.requirements.greedy_only) for r in verifying):
-            return False
-        self.state.authorize_mixed(chunks, verifying, self.max_batch)
-        self.state.ensure_pages(len(verifying) * self.spec.steps)
-        requests = [r for r, _ in chunks] + list(verifying)
-        try:
-            prefill = self._prepare_prefill(chunks)
-            batch = self.spec.prepare(verifying)
-            if self.mixed_mode == "separate":
-                # Scheduling ablation keeps the ordinary verification graphs.
-                self._finish_prefill(prefill, self.model.forward(prefill.ids, prefill.context))
-                self.spec.verify(batch)
-                return True
-            ctx = self.spec.context(batch, self._mixed_verify)
-            out_p, out_v = self.model.forward_mixed(prefill.ids, prefill.context, batch.tokens, ctx,
-                                                   share=self.mixed_mode)
-            self._finish_prefill(prefill, out_p)
-            self.spec.finish(batch, out_v)
-        except BaseException as exc:
-            for req in requests:
-                req.cacheable = False
-            if isinstance(exc, MemoryError):
-                raise RuntimeError("mixed forward failed after preparation; requests are uncacheable") from exc
-            raise
-        return True
 
     # ---- lifecycle ----
     def validate_request(self, prompt_ids: list[int], params: SamplingParams) -> None:
