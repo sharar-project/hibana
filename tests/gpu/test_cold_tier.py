@@ -43,7 +43,8 @@ def test_park_and_restore_round_trip_is_exact():
     _fill_random(kv, st, pages, slot, 1)
     before = _snapshot(kv, st, pages, slot)
     seen = {}
-    cache.tier.register_codec("draft", lambda v: ("payload", v), lambda p: seen.setdefault("imported", p[1]))
+    feats = torch.arange(64 * 8, device="cuda", dtype=torch.bfloat16).view(64, 8)
+    cache.tier.register_codec("draft", lambda v: (v, 7, feats), lambda p: seen.setdefault("imported", (p[0], p[1], p[2].clone())))
     cache.insert(ids, pages, {len(ids): slot}, {len(ids): {"draft": 42}})
     free_pages, free_slots = kv.free_count, st.free_count
     cache.evict(need_pages=kv.num_pages)  # forces the leaf out
@@ -61,7 +62,8 @@ def test_park_and_restore_round_trip_is_exact():
     for (k0, v0), (k1, v1) in zip(before[0], after[0]):
         assert torch.equal(k0.view(torch.uint8), k1.view(torch.uint8)) and torch.equal(v0.view(torch.uint8), v1.view(torch.uint8))
     assert torch.equal(before[1], after[1]) and torch.equal(before[2], after[2])
-    assert seen["imported"] == 42 and m.node.auxiliary == {"draft": 42}
+    assert seen["imported"][:2] == (42, 7) and torch.equal(seen["imported"][2], feats)
+    assert m.node.auxiliary == {"draft": seen["imported"]}
     assert cache.tier.stats()["entries"] == 0 and cache.tier.stats()["restores"] == 1
 
 

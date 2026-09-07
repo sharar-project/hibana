@@ -70,3 +70,41 @@ def test_sampled_proposals_use_request_rng_and_shared_stop_aware_commit(monkeypa
     batch = ex.generate_batch([([1, 2, 3], params) for _ in range(4)])
     assert all(r.output_ids == single and r.spec_rounds > 0 and r.committed_len == 13 for r in batch)
     assert ex.kv_pool.free_count == 1024 and ex.state_pool.free_count == 15
+
+
+def test_vectorized_verify_matches_sequential_reference_in_distribution():
+    """verify_rows draws differently from verify_row (all k uniforms at once) but
+    must agree in distribution: acceptance counts and correction tokens."""
+    from collections import Counter
+
+    from sharar.engine.rejection import verify_rows
+
+    torch.manual_seed(0)
+    k, v = 3, 6
+    p = torch.softmax(torch.randn(k + 1, v) * 2, -1)
+    q = torch.softmax(torch.randn(k, v) * 2, -1)
+    tokens = torch.tensor([1, 4, 2])
+    n = 4000
+    ref, vec = Counter(), Counter()
+    for seed in range(n):
+        a, c = verify_row(tokens, p, q, None, torch.Generator().manual_seed(seed))
+        ref[(a, c)] += 1
+        a_t, c_t = verify_rows(tokens, p, q, None, torch.Generator().manual_seed(10_000 + seed))
+        vec[(int(a_t), int(c_t))] += 1
+    for key in set(ref) | set(vec):
+        # binomial tolerance: 4 sigma of n*p*(1-p) with p up to 1/2 is ~130 counts
+        assert abs(ref[key] - vec[key]) <= 130, (key, ref[key], vec[key])
+    assert sum(vec.values()) == n
+
+
+def test_vectorized_verify_deterministic_draft_and_sparse_support():
+    from sharar.engine.rejection import verify_rows
+
+    p = torch.tensor([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.3, 0.3, 0.4]])
+    tokens = torch.tensor([0, 1])
+    a, c = verify_rows(tokens, p, None, None, torch.Generator().manual_seed(3))
+    assert 0 <= int(a) <= 2 and 0 <= int(c) < 3
+    support = torch.tensor([[0, 2], [1, 2]])
+    q = torch.tensor([[0.9, 0.1], [0.6, 0.4]])
+    a, c = verify_rows(tokens, p, q, support, torch.Generator().manual_seed(3))
+    assert 0 <= int(a) <= 2 and 0 <= int(c) < 3

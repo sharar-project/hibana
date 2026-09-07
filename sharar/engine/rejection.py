@@ -70,3 +70,38 @@ def verify_row(tokens, p, q, support, generator):
             residual = corrected_distribution(p[j], row)
             return j, int(torch.multinomial(residual, 1, generator=generator))
     return len(tokens), int(torch.multinomial(p[-1], 1, generator=generator))
+
+
+def verify_rows(tokens, p, q, support, generator):
+    """Vectorized rejection sampling for one request without host syncs.
+
+    Same acceptance rule as `verify_row` (accept y_j with probability
+    min(1, p_j[y_j] / q_j[y_j]), then sample the residual max(p-q, 0) at the
+    first rejection or the bonus from p_k after k acceptances) but the k
+    uniform draws are taken at once and the correction/bonus comes from one
+    categorical draw over the selected law, so the request's generator is
+    consumed identically whatever the outcome. Returns device scalars
+    (accepted count, correction token) for the caller to download in one
+    batch. Unlike `verify_row` this path is not bit-identical to the
+    sequential reference for a fixed seed; it is equal in distribution.
+    """
+    k = tokens.shape[0]
+    idx = torch.arange(k, device=p.device)
+    if q is None:  # deterministic draft: acceptance p[y], residual p without y
+        q_rows = torch.zeros_like(p[:k]).scatter(1, tokens[:, None], 1.0)
+    else:
+        q_rows = q
+        if support is not None:
+            q_rows = torch.zeros_like(p[:k]).scatter(1, support, q)
+    q_y = q_rows[idx, tokens]
+    p_y = p[idx, tokens]
+    threshold = (p_y / q_y.clamp_min(1e-30)).clamp_max(1)
+    threshold = torch.where(q_y > 0, threshold, torch.zeros_like(threshold))
+    u = torch.rand(k, device=p.device, generator=generator)
+    accepted = torch.cumprod((u < threshold).to(torch.int64), dim=0).sum()
+    residual = corrected_distribution(p[:k], q_rows)
+    residual = torch.where(residual.isfinite(), residual, torch.zeros_like(residual))
+    laws = torch.cat([residual, p[k:k + 1]], dim=0)  # law at rejection position a, or the bonus law
+    law = laws.index_select(0, accepted.reshape(1))
+    correction = torch.multinomial(law, 1, generator=generator).reshape(())
+    return accepted, correction

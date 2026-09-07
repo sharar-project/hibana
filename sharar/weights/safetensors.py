@@ -28,7 +28,11 @@ class SnapshotWeights:
         if handle is None:
             handle = safe_open(str(self.snap / shard), framework="pt", device="cpu")
             self._handles[shard] = handle
-        return handle.get_tensor(name)
+        # safetensors returns a view of the file mapping; copying that to the
+        # device page-faults the file in through the DMA staging path at a
+        # few hundred MB/s on GB10 (105 s of a 108 s load). A memcpy into RAM
+        # first runs at 25 GB/s and the device copy then at 18 GB/s.
+        return handle.get_tensor(name).clone()
 
     def close(self) -> None:
         self._handles.clear()

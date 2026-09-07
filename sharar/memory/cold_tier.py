@@ -151,7 +151,20 @@ class ColdTier:
         if any(len(e.key) >= own and e.key[:own] == key for e in self.entries):
             self.rejects += 1  # already covered by a parked descendant
             return False
-        nbytes = own * self._kv_row_bytes() + self._state_bytes()
+        # Auxiliary payloads: (identity, tuple of scalars, list of device tensors). Copied into the arena too.
+        aux_items = []
+        for identity, value in (auxiliary or {}).items():
+            codec = self.codecs.get(identity)
+            if codec is None:
+                continue
+            payload = codec[0](value)
+            if payload is None:
+                continue
+            scalars = tuple(x for x in payload if not torch.is_tensor(x))
+            tensors = [x for x in payload if torch.is_tensor(x)]
+            aux_items.append((identity, scalars, tensors))
+        aux_bytes = sum((x.numel() * x.element_size() + 255) // 256 * 256 for _, _, ts in aux_items for x in ts)
+        nbytes = own * self._kv_row_bytes() + self._state_bytes() + aux_bytes
         if nbytes > self.arena.nbytes:
             self.rejects += 1
             return False
@@ -171,16 +184,21 @@ class ColdTier:
         sp = self.state_pool
         conv_n = sp.conv_all[:, 0].numel() * sp.conv_all.element_size()
         conv = self.arena.view(base, conv_n, sp.conv_all.dtype, tuple(sp.conv_all[:, 0].shape))
-        ssm = self.arena.view(base + conv_n, sp.ssm_all[:, 0].numel() * sp.ssm_all.element_size(), sp.ssm_all.dtype, tuple(sp.ssm_all[:, 0].shape))
+        ssm_n = sp.ssm_all[:, 0].numel() * sp.ssm_all.element_size()
+        ssm = self.arena.view(base + conv_n, ssm_n, sp.ssm_all.dtype, tuple(sp.ssm_all[:, 0].shape))
         conv.copy_(sp.conv_all[:, slot])
         ssm.copy_(sp.ssm_all[:, slot])
+        cursor = base + conv_n + ssm_n
         aux = {}
-        for identity, value in (auxiliary or {}).items():
-            codec = self.codecs.get(identity)
-            if codec is not None:
-                payload = codec[0](value)
-                if payload is not None:
-                    aux[identity] = payload
+        for identity, scalars, tensors in aux_items:
+            views = []
+            for x in tensors:
+                n = x.numel() * x.element_size()
+                v = self.arena.view(cursor, n, x.dtype, tuple(x.shape))
+                v.copy_(x)
+                views.append(v)
+                cursor += (n + 255) // 256 * 256
+            aux[identity] = (scalars, views)
         ev = torch.cuda.Event()
         ev.record()
         self.entries.append(Parked(list(key), own, offset, nbytes, kv, conv, ssm, aux, ev))
@@ -231,10 +249,10 @@ class ColdTier:
         sp.conv_all[:, slot].copy_(entry.conv)
         sp.ssm_all[:, slot].copy_(entry.ssm)
         aux = {}
-        for identity, payload in entry.auxiliary.items():
+        for identity, (scalars, views) in entry.auxiliary.items():
             codec = self.codecs.get(identity)
             if codec is not None:
-                value = codec[1](payload)
+                value = codec[1]((*scalars, *views))
                 if value is not None:
                     aux[identity] = value
         torch.cuda.current_stream().synchronize()  # the arena chunk is freed below; make sure the reads landed

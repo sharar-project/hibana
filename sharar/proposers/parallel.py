@@ -143,12 +143,12 @@ class ParallelProposer:
         handle) for the cold tier: the projected feature window travels with
         the parked session so a restored request keeps speculating."""
         def export(handle):
-            value = self.feature_cache.get(handle)
-            return None if value is None else (value[0], value[1], value[2].to("cpu"))
+            value = self.feature_cache.get(handle)  # (start, end, features on the device); the tier copies the tensor
+            return None if value is None else (value[0], value[1], value[2])
 
         def import_(payload):
-            start, end, features = payload
-            return self.feature_cache.put(start, end, features.to(self.context.device))
+            start, end, features = payload  # features is a view into the tier's arena; put() clones it
+            return self.feature_cache.put(start, end, features)
 
         return self.cache_identity, export, import_
 
@@ -192,16 +192,20 @@ class ParallelProposer:
             return Proposal(greedy_lattice(candidates, scores))
         all_tokens, all_q = [], []
         for row, req in enumerate(requests):
-            previous, local = inputs.tokens[row:row + 1], 0
+            # The lattice walk is sequential, but every step stays on the
+            # device: indices are 1-element tensors used with index_select, so
+            # no step converts a CUDA scalar to a Python int (a host sync).
+            previous = inputs.tokens[row:row + 1]
+            local = torch.zeros(1, dtype=torch.int64, device=device)
             chosen, laws = [], []
             for j in range(self.k):
                 if self.name == 'dflash2':
-                    logits = scores[row, j, local]
+                    logits = scores[row, j].index_select(0, local)[0]
                 else:
                     logits = self.model.markov(base_logits[row:row + 1, j], previous, hidden[row:row + 1, j])[0]
                 law = distribution(logits, req.params)
-                index = law.argmax() if req.params.greedy else torch.multinomial(law, 1, generator=req.generator)[0]
-                token = candidates[row, j, index] if self.name == 'dflash2' else index
+                index = law.argmax().reshape(1) if req.params.greedy else torch.multinomial(law, 1, generator=req.generator)
+                token = candidates[row, j].index_select(0, index)[0] if self.name == 'dflash2' else index[0]
                 previous = token.reshape(1)
                 local = index
                 chosen.append(token)

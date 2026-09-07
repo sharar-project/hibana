@@ -153,8 +153,9 @@ Since 2026-09-07 it serves with the pinned DFlash2 draft (15 proposals per
 round, 16 verify rows) and accepted-state reconstruction by default, about
 8x the plain decode rate on easy text and 2.5x on hard text, plus a
 unified-memory cold tier that parks evicted sessions so a 30K-token history
-resumes in 0.15 s instead of 18 s; the checkpoint's MTP head remains
-available (`SHARAR_PROPOSER=mtp`). [docs/default-dflash2.md](docs/default-dflash2.md)
+resumes in 0.15 s instead of 18 s, and restarts in about 30 s (weights
+load in seconds; [docs/restart-and-syncs.md](docs/restart-and-syncs.md));
+the checkpoint's MTP head remains available (`SHARAR_PROPOSER=mtp`). [docs/default-dflash2.md](docs/default-dflash2.md)
 records the promotion, [docs/cold-tier.md](docs/cold-tier.md) the wide block and the tier; [docs/comparison.md](docs/comparison.md) is the older
 MTP comparison against SGLang, including GSM8K accuracy.
 Phase 7A fixes terminal cleanup, speculative stop/state alignment, active

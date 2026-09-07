@@ -16,7 +16,7 @@ from sharar.engine.context import ForwardContext
 from sharar.engine.request import Request
 from sharar.memory.kv_pool import KV_DTYPE
 from sharar.engine.contracts import Proposer, StepInputs, VerifiedFeatures
-from sharar.engine.rejection import Proposal, distribution, verify_row
+from sharar.engine.rejection import Proposal, distribution, verify_rows
 
 
 @dataclass
@@ -248,20 +248,31 @@ class SpecDecoder:
             z_l = [row[k:2 * k + 1] for row in packed]
             acc = [row[-1] for row in packed]
         else:
-            y_l, z_l, acc = y.tolist(), [], []
+            # Sampled batch: acceptance and the correction/bonus token are
+            # computed on the device per row (vectorized rejection sampling,
+            # `rejection.verify_rows`) and downloaded once with the drafts.
+            acc_rows, corr_rows = [], []
             for i, req in enumerate(reqs):
                 if req.params.greedy:
-                    target_ids = z[i].argmax(-1).tolist()
-                    a = next((j for j in range(k) if y_l[i][j] != target_ids[j]), k)
-                    correction = target_ids[a]
+                    target_ids = z[i].argmax(-1)
+                    match = (y[i] == target_ids[:k]).to(torch.int64)
+                    a_t = torch.cumprod(match, dim=0).sum()
+                    acc_rows.append(a_t)
+                    corr_rows.append(target_ids.index_select(0, a_t.reshape(1)).reshape(()))
                 else:
-                    a, correction = verify_row(y[i], distribution(z[i], req.params),
-                                               proposal.probabilities[i] if proposal.probabilities is not None else None,
-                                               proposal.support[i] if proposal.support is not None else None, req.generator)
+                    a_t, c_t = verify_rows(y[i], distribution(z[i], req.params),
+                                           proposal.probabilities[i] if proposal.probabilities is not None else None,
+                                           proposal.support[i] if proposal.support is not None else None, req.generator)
+                    acc_rows.append(a_t)
+                    corr_rows.append(c_t)
+            packed = torch.cat([y, torch.stack(acc_rows).unsqueeze(1).to(y.dtype), torch.stack(corr_rows).unsqueeze(1).to(y.dtype)], dim=1).tolist()
+            y_l = [row[:k] for row in packed]
+            acc = [row[k] for row in packed]
+            z_l = []
+            for row in packed:
                 target = [0] * s_len
-                target[a] = correction
+                target[row[k]] = row[k + 1]
                 z_l.append(target)
-                acc.append(a)
         outputs = []
         for i, r in enumerate(reqs):
             a = acc[i]

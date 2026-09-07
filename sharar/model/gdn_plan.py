@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from sharar.engine.upload import upload
+
 if TYPE_CHECKING:
     from sharar.engine.context import ForwardContext
 
@@ -43,8 +45,8 @@ def prepare_gdn_prefill(ctx: ForwardContext | None, tokens: int, device: torch.d
         lengths = (tokens,)
         prefixes = (ctx.prefix_len if ctx is not None else 0,)
         slot = ctx.slot if ctx is not None and ctx.state_pool is not None else 0
-        cu = torch.tensor([0, tokens], dtype=torch.int32, device=device)
-        slots = torch.tensor([slot], dtype=torch.int32, device=device)
+        cu = upload([0, tokens], torch.int32, device)
+        slots = upload([slot], torch.int32, device)
         checkpoint_seqs = [0] * (len(ctx.checkpoint_positions) if ctx is not None else 0)
     if not lengths or any(n <= 0 for n in lengths) or sum(lengths) != tokens or len(prefixes) != len(lengths):
         raise ValueError("GDN prefill needs positive CPU sequence lengths covering all tokens")
@@ -61,9 +63,9 @@ def prepare_gdn_prefill(ctx: ForwardContext | None, tokens: int, device: torch.d
                 raise ValueError("GDN checkpoint must be an interior 64-token boundary")
             checkpoints.append((slot, starts[i] + local, offsets[i] + local // 64))
     plan = GdnPrefillPlan(
-        cu, slots, torch.tensor([p > 0 for p in prefixes], dtype=torch.bool, device=device), lengths,
-        torch.tensor(indices, dtype=cu.dtype, device=device),
-        torch.tensor(offsets, dtype=torch.int64, device=device), tuple(checkpoints),
+        cu, slots, upload([p > 0 for p in prefixes], torch.bool, device), lengths,
+        upload(indices, cu.dtype, device),
+        upload(offsets, torch.int64, device), tuple(checkpoints),
     )
     if ctx is not None:
         ctx.gdn_plan = plan

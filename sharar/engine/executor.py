@@ -20,6 +20,7 @@ from sharar.memory.radix import RadixCache
 from sharar.memory.request_state import StateManager
 from sharar.engine.contracts import ProposerContext, Proposer
 from sharar.engine.profile import ServingProfile
+from sharar.engine.upload import upload
 from sharar.memory.state_pool import StatePool
 if TYPE_CHECKING:
     from sharar.model.qwen38 import Qwen38
@@ -269,7 +270,7 @@ class Executor:
         new_ids = req.prefill_ids[start:end]
         t = len(new_ids)
         assert t > 0, (start, end)
-        ids = torch.tensor(new_ids, dtype=torch.int64, device=self.device)
+        ids = upload(new_ids, torch.int64, self.device)
         positions = torch.arange(start, end, dtype=torch.int64, device=self.device)
         ctx = ForwardContext(
             mode="prefill",
@@ -320,10 +321,10 @@ class Executor:
         d = self.device
         ctx = ForwardContext(
             mode="prefill", kv_pool=self.kv_pool, state_pool=self.state_pool,
-            positions=torch.tensor(pos_list, dtype=torch.int64, device=d),
+            positions=upload(pos_list, torch.int64, d),
             pages=torch.cat(page_list), seq_len=cu[-1],
-            cu_seqlens=torch.tensor(cu, dtype=torch.int32, device=d),
-            seq_slots=torch.tensor(seq_slots, dtype=torch.int32, device=d),
+            cu_seqlens=upload(cu, torch.int32, d),
+            seq_slots=upload(seq_slots, torch.int32, d),
             seq_prefix_lens=prefix_lens, seq_lens=seq_lens,
             checkpoint_positions=[p for _, p, _ in checkpoints],
             checkpoint_slots=[s for _, _, s in checkpoints],
@@ -336,7 +337,7 @@ class Executor:
             causal=True, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
         )
         ctx.paged_prefill_wrapper = self._paged_prefill
-        ids = torch.tensor(ids_list, dtype=torch.int64, device=d)
+        ids = upload(ids_list, torch.int64, d)
         if self.spec is not None:
             ctx.feature_request = self.spec.proposer.requirements.features
         return PrefillBatch(list(chunks), ids, ctx, started)
@@ -472,12 +473,12 @@ class Executor:
             else:
                 logits = result
         else:
-            positions = torch.tensor([r.context_len - 1 for r in reqs], dtype=torch.int64, device=self.device)
-            tokens = torch.tensor([r.output_ids[-1] for r in reqs], dtype=torch.int64, device=self.device)
+            positions = upload([r.context_len - 1 for r in reqs], torch.int64, self.device)
+            tokens = upload([r.output_ids[-1] for r in reqs], torch.int64, self.device)
             self._plan_decode(reqs, step_pages)
             ctx = ForwardContext(
                 mode="decode", kv_pool=self.kv_pool, state_pool=self.state_pool, positions=positions,
-                slots=torch.tensor([r.slot for r in reqs], dtype=torch.int32, device=self.device),
+                slots=upload([r.slot for r in reqs], torch.int32, self.device),
                 out_pages=new_pages, decode_wrapper=self._decode_wrapper, batch_size=len(reqs),
             )
             if self.spec is not None:

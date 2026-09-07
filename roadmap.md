@@ -1312,10 +1312,16 @@ draft block (k=15: 3.04 to 4.42 accepted tokens per round offline, 40.8 to
 and the unified-memory cold tier (an evicted 30K session resumes in 0.15 s
 instead of 18.5 s). The prefill kernel study shows every GEMM, the quantizer
 and the norm at this GB10's practical rate; the cuDNN fused-epilogue attempt
-crashes on SM121, so that 12% stays a CUTLASS project. Next, in order: the
-tier's 149 ms park cost (gather straight into managed memory measured 93 GB/s;
-the path is 7 GB/s), the 128 x 4 low-acceptance tail, the plain-decode sync
-audit, the GEMM-epilogue quantization, then Phase 8's zero-copy weight load.
+crashes on SM121, so that 12% stays a CUTLASS project. [docs/restart-and-syncs.md](docs/restart-and-syncs.md) then closed the
+follow-ups: weight load 108 s to 10.5 s (production restart 30 s; the
+safetensors mmap-to-device copy was the whole cost), the tier's park is
+0.6 ms of host time, the sampled path lost its ~40 hidden scalar syncs per
+round (vectorized rejection sampling; sampled chat 3.73 to 3.28 s), prefill
+uploads are pinned and non-blocking, and the 128 x 4 tail is recorded as a
+harness artifact. Next: the GEMM-epilogue quantization as a CUTLASS project
+(the cuDNN route crashes on SM121), the conv-kernel q/k/v layout, then
+Phase 8's unified-memory planner and a prepacked weight artifact so cold
+restarts also take seconds.
 
 Hold the shipped engine to Qwen on GB10. Do not extract a generic target layout
 or add dense/MoE models. Proposer construction lives in
