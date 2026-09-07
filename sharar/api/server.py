@@ -621,6 +621,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     ex = Executor(model, log=log, spec_config=SpecConfig(proposer, spec, state_strategy) if spec else None)
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
+    ex.enable_cold_tier(log=log)
     cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=ex.profile.max_queued,
                           chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget)
     sched = Scheduler(ex, cfg)

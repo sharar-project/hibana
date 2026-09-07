@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-07 (DFlash2 k=7 with accepted-state reconstruction is the production default; prefill kernel study complete)
+Last updated: 2026-09-07 (DFlash2 k=15 with accepted-state reconstruction and the unified-memory cold tier are the production default)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -1305,14 +1305,17 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-DFlash2 is promoted (2026-09-07, [docs/default-dflash2.md](docs/default-dflash2.md)).
-The prefill kernel study in the same note shows every GEMM, the quantizer and
-the norm at this GB10's practical rate; only structural fusion moves prefill
-(SiLU+NVFP4 quantization in the gate/up GEMM epilogue, about 12%; conv
-writing q/k/v in the GDN layout, about 2%). Next, in order: an adaptive draft
-block (verify 16 rows when recent rounds accepted all 7, for easy text), the
-128 x 4 low-acceptance tail, the GEMM-epilogue quantization as a CUTLASS
-project, then Phase 8's zero-copy weight load and unified-memory planner.
+DFlash2 is promoted (2026-09-07, [docs/default-dflash2.md](docs/default-dflash2.md)),
+and the same day [docs/cold-tier.md](docs/cold-tier.md) added the 16-row
+draft block (k=15: 3.04 to 4.42 accepted tokens per round offline, 40.8 to
+46.8 tok/s end to end on the mixed set, 101 tok/s at 128 x 1 in production)
+and the unified-memory cold tier (an evicted 30K session resumes in 0.15 s
+instead of 18.5 s). The prefill kernel study shows every GEMM, the quantizer
+and the norm at this GB10's practical rate; the cuDNN fused-epilogue attempt
+crashes on SM121, so that 12% stays a CUTLASS project. Next, in order: the
+tier's 149 ms park cost (gather straight into managed memory measured 93 GB/s;
+the path is 7 GB/s), the 128 x 4 low-acceptance tail, the plain-decode sync
+audit, the GEMM-epilogue quantization, then Phase 8's zero-copy weight load.
 
 Hold the shipped engine to Qwen on GB10. Do not extract a generic target layout
 or add dense/MoE models. Proposer construction lives in

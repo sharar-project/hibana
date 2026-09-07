@@ -58,6 +58,60 @@ class RadixCache:
         self.snapshot_evictions = 0
         self.cached_tokens = 0
         self.flushing = False
+        self.tier = None  # optional ColdTier: evicted leaves are parked in unified memory and restored on demand
+
+    # ---- cold tier ----
+    def full_key(self, node: Node) -> list[int]:
+        parts = []
+        while node is not None and node is not self.root:
+            parts.append(node.key)
+            node = node.parent
+        return [t for key in reversed(parts) for t in key]
+
+    def _walk(self, key: list[int]) -> tuple[Node, torch.Tensor] | None:
+        """Exact path for `key` (node boundaries must align); None if absent."""
+        node, length, pages = self._present_prefix(key)
+        return (node, pages) if length == len(key) else None
+
+    def _present_prefix(self, key: list[int]) -> tuple[Node, int, torch.Tensor]:
+        """Deepest node whose full path is a prefix of `key`, its length and pages."""
+        node, pos, pages = self.root, 0, []
+        while pos < len(key):
+            child = node.children.get(key[pos])
+            if child is None or key[pos : pos + len(child.key)] != child.key:
+                break
+            pos += len(child.key)
+            pages.append(child.pages)
+            node = child
+        empty = torch.empty(0, dtype=torch.int32, device=self.device)
+        return node, pos, (torch.cat(pages) if pages else empty)
+
+    def restore_parked(self, ids: list[int]) -> int:
+        """Bring back every parked leaf that is a prefix of `ids`, shortest
+        first, so a later turn of a parked session matches as if it had never
+        been evicted. Returns the number of leaves restored."""
+        if self.tier is None or self.flushing or not self.tier.entries:
+            return 0
+        restored = 0
+        for entry in self.tier.find(ids):
+            if self._walk(entry.key) is not None:  # present again already
+                self.tier.discard(entry)
+                continue
+            present, present_len, present_pages = self._present_prefix(entry.key)
+            missing = len(entry.key) - present_len
+            self.lock(present, 1)  # the surviving prefix must outlive the eviction below
+            try:
+                self.evict(need_pages=missing, need_slots=1)
+                if self.kv_pool.free_count < missing or self.state_pool.free_count < 1:
+                    continue
+                pages = self.kv_pool.alloc(missing)
+                slot = self.state_pool.alloc()
+                auxiliary = self.tier.restore(entry, pages, slot, start=present_len)
+                self.insert(entry.key, torch.cat([present_pages, pages]), {len(entry.key): slot}, {len(entry.key): auxiliary})
+                restored += 1
+            finally:
+                self.lock(present, -1)
+        return restored
 
     # ---- lookup ----
     def match(self, ids: list[int], *, touch: bool = True) -> Match:
@@ -200,7 +254,14 @@ class RadixCache:
                 best = n
         return best
 
-    def _remove_leaf(self, leaf: Node) -> None:
+    def _remove_leaf(self, leaf: Node, park: bool = True) -> None:
+        if park and self.tier is not None and leaf.snapshot_slot is not None:
+            # The whole path is parked (self-contained entry) while it is still
+            # linked; copies run before the frees below, on the same stream as
+            # any later reuse of the pages.
+            key = self.full_key(leaf)
+            _, path_pages = self._walk(key)
+            self.tier.park(key, path_pages, leaf.snapshot_slot, leaf.auxiliary)
         del leaf.parent.children[leaf.key[0]]
         self.kv_pool.free(leaf.pages)
         if leaf.snapshot_slot is not None:
@@ -212,10 +273,15 @@ class RadixCache:
         # Hide the cache immediately, but retain pinned pages and snapshots
         # until their final reader releases them. Admission bypasses the cache
         # while that drain is pending.
+        if self.tier is not None:
+            self.tier.clear()  # a flush invalidates parked sessions too
         while (leaf := self._lru_candidate()) is not None:
-            self._remove_leaf(leaf)
+            self._remove_leaf(leaf, park=False)
         self.flushing = bool(self.root.children)
 
     def stats(self) -> dict:
-        return {"hits": self.hits, "misses": self.misses, "evictions": self.evictions,
-                "snapshot_evictions": self.snapshot_evictions, "cached_tokens": self.cached_tokens, "flush_pending": self.flushing}
+        out = {"hits": self.hits, "misses": self.misses, "evictions": self.evictions,
+               "snapshot_evictions": self.snapshot_evictions, "cached_tokens": self.cached_tokens, "flush_pending": self.flushing}
+        if self.tier is not None:
+            out["cold_tier"] = self.tier.stats()
+        return out

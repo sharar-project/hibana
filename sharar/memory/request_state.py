@@ -52,6 +52,7 @@ class StateManager:
             return self.kv.free_count >= len(ids) + reserve and self.recurrent.free_count >= 1
         # Obtain a private slot before pinning a path that might otherwise own
         # every state slot. Budget only the uncached suffix and decode reserve.
+        self.cache.restore_parked(ids[:-1])  # a parked session comes back before it is matched
         self.cache.evict(need_slots=1)
         match = self.cache.match(ids[:-1], touch=False)
         self.cache.lock(match.node, 1)
@@ -74,6 +75,7 @@ class StateManager:
         match, slot, own = None, -1, None
         try:
             if self.cache is not None:
+                self.cache.restore_parked(ids[:-1])
                 self.cache.evict(need_slots=1)
                 match = self.cache.match(ids[:-1])  # last token must produce logits
                 if match.length:

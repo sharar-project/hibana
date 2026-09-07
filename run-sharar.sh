@@ -10,7 +10,7 @@ CONFIG_FILE="${SHARAR_CONFIG_FILE:-$SCRIPT_DIR/config/gb10.env}"
 IMAGE="${SHARAR_IMAGE:-sharar:qwen38-27b}"
 CONTAINER="${SHARAR_CONTAINER:-sharar-qwen38}"
 PORT="${SHARAR_PORT:-30001}"
-SPEC="${SHARAR_SPEC:-7}"   # draft tokens per round (0 = off); 7 is DFlash2's validated depth
+SPEC="${SHARAR_SPEC:-15}"   # draft tokens per round (0 = off); 15 is DFlash2's validated depth (16 verify rows)
 PROPOSER="${SHARAR_PROPOSER:-dflash2}"
 VERIFY_STATE="${SHARAR_VERIFY_STATE:-reconstruct}"
 DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"   # incoai/Qwen3.8-27B-DFlash2

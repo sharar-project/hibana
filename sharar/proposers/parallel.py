@@ -66,7 +66,7 @@ class ParallelProposer:
         self.features = torch.empty((context.max_batch + 1, self.window, 5120), dtype=torch.bfloat16, device=device)
         self.feature_cache = FeatureCache(context.max_batch * self.window * 5120 * 2)
         self.requirements = ProposerRequirements(name, FeatureRequest(layers=model.features),
-                                                persistent_bytes=self.bytes, greedy_only=False, max_depth=7)
+                                                persistent_bytes=self.bytes, greedy_only=False, max_depth=15 if name == 'dflash2' else 7)
         self.workspace = torch.empty(128 * 2**20, dtype=torch.uint8, device=device)
         self.attention = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self.workspace, 'NHD')
         self.graphs = None
@@ -137,6 +137,20 @@ class ParallelProposer:
     def ready(self, req):
         state = req.proposer_state
         return isinstance(state, DraftState) and state.valid and state.pending is not None
+
+    def auxiliary_codec(self):
+        """Export/import of this adapter's cache auxiliary (a feature-cache
+        handle) for the cold tier: the projected feature window travels with
+        the parked session so a restored request keeps speculating."""
+        def export(handle):
+            value = self.feature_cache.get(handle)
+            return None if value is None else (value[0], value[1], value[2].to("cpu"))
+
+        def import_(payload):
+            start, end, features = payload
+            return self.feature_cache.put(start, end, features.to(self.context.device))
+
+        return self.cache_identity, export, import_
 
     def _plan(self, wrapper, histories, batch):
         s = self.noise_steps

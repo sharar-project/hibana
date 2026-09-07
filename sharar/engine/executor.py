@@ -166,6 +166,41 @@ class Executor:
     def cache_stats(self) -> dict | None:
         return self.cache.stats() if self.cache is not None else None
 
+    def enable_cold_tier(self, budget_gib: float | None = None, log=None) -> None:
+        """Park evicted prefix-cache leaves in a unified-memory arena instead of
+        dropping them (`memory/cold_tier.py`). Budget: SHARAR_COLD_TIER_GIB, else
+        what is available now beyond the host floor, the prefill reserve and a
+        4 GiB margin, capped at 24 GiB. Call after the proposer exists so its
+        auxiliary state travels with parked sessions."""
+        import os
+        from sharar.memory.cold_tier import ColdTier
+        from sharar.memory.ledger import GIB, mem_available_bytes
+
+        if self.cache is None or self.cache.tier is not None:
+            return
+        if budget_gib is None:
+            env = os.environ.get("SHARAR_COLD_TIER_GIB")
+            if env is not None:
+                budget_gib = float(env)
+            else:
+                spare = mem_available_bytes() - self.ledger.floor_bytes - 8 * GIB - 4 * GIB
+                budget_gib = min(24.0, spare / GIB)
+        if budget_gib < 1.0:
+            if log:
+                log("  cold tier: disabled (less than 1 GiB spare)")
+            return
+        try:
+            self.cache.tier = ColdTier(self.kv_pool, self.state_pool, int(budget_gib * GIB), self.device, log=log)
+        except (RuntimeError, MemoryError, OSError, ImportError) as exc:
+            if log:
+                log(f"  cold tier: disabled ({exc})")
+            return
+        proposer = self.spec.proposer if self.spec is not None else None
+        codec = getattr(proposer, "auxiliary_codec", None)
+        if codec is not None:
+            self.cache.tier.register_codec(*codec())
+        self.ledger.record_cuda_allocated("cold_tier")
+
     def retract(self, req: Request) -> None:
         self.state.retract(req)
         if self.spec is not None:

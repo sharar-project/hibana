@@ -41,6 +41,7 @@ def _load(graphs: bool = True, spec: int = 0) -> tuple[Qwen38, Executor, Snapsho
     started = time.perf_counter()
     ex.warmup()
     print(f"  warmup {time.perf_counter() - started:.1f}s")
+    ex.enable_cold_tier(log=print)
     ex.timing = True  # CLI benchmarks report synchronized prefill/decode wall time
     return model, ex, SnapshotTokenizer(snap)
 

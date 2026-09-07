@@ -1,7 +1,7 @@
 """Checkpoint-specific construction at startup; the executor consumes contracts."""
 from sharar import config
 
-MAX_DEPTHS = {"mtp": 4, "ngram": 4, "dspark": 7, "dflash2": 7}
+MAX_DEPTHS = {"mtp": 4, "ngram": 4, "dspark": 7, "dflash2": 15}
 
 
 def create(proposer, k, model, context, num_pages):
