@@ -93,6 +93,54 @@ What would move prefill, in order of size, and why it was not done here:
    to take three output pointers.
 3. A retuned fused norm+quantizer (above): about 12 ms (2%).
 
-## Results
+## Validation and promotion
 
-RESULTS_PENDING
+Image built from the working tree with the pinned constraints; **661
+CPU/GPU checks pass** on that image (`tests/unit` plus `tests/gpu`, real
+checkpoint, 16 minutes), plain canaries are token-identical to the frozen
+reference, and 343 unit tests pass on the host. Production
+(`sharar-qwen38`, port 30001) was relaunched from it at 02:08 with
+`proposer: dflash2, drafts: 7, verify state: reconstruct`; `tools/verify-sharar.sh`
+passes. Evidence: `${SHARAR_RESULTS}/reviews/2026-09-07/`.
+
+Frozen local workloads (`bench/local_workloads.py`, 156 requests, runtime
+image client against the production server): **0 request failures, 0
+automatic quality failures**. The sampled-chat answer under the reconciled
+rubric, identical across the three seeded repetitions:
+
+> Think of a cache miss like looking for a book in your hand but realizing you
+> left it on the shelf; you have to pause and walk over to get it instead of
+> grabbing it instantly. This extra step takes more time than if the book had
+> been right there, causing a slight delay in your work.
+
+Median completion (s) on the natural cases: chat 3.66, coding 0.67 (repeat
+0.65), tool call 0.82, JSON 0.55, reasoning 1.11, sampled chat 2.65, session
+cold 3.06 / repeat 2.59 / prior-turn prefix 2.37; TTFT 0.10 to 0.15 s cold
+except the 2,172-token session (0.82 s cold, 0.12 s with the cached prefix).
+
+## Speed: production before and after (same six-cell harness, same machine)
+
+Aggregate output tok/s, median of five batches (range in parentheses),
+256 output tokens per request, EOS ignored, cache flushed per batch.
+
+| Input x conc | Production 09-04 (MTP k=3) | Production 09-07 (DFlash2 k=7) | Change | SGLang MTP | SGLang DFlash2 best |
+|---|---:|---:|---:|---:|---:|
+| 128 x 1 | 32.7 | 65.9 (61-66) | 2.0x | 34.8 | 20.1 |
+| 128 x 4 | 105.1 | 119.9 (80-206) | 1.14x | 115.5 | 135.6 |
+| 2,048 x 1 | 22.8 | 27.7 (21-53) | 1.2x | 31.0* | 53.1 |
+| 2,048 x 4 | 61.8 | 61.9 (58-79) | 1.0x | 65.6 | 98.5 |
+| 8,192 x 1 | 19.5 | 32.3 (18-38) | 1.66x | 21.2 | 25.7 |
+| 8,192 x 4 | 38.5 | 42.3 (36-46) | 1.10x | 32.5 | 41.4 |
+
+Median TTFT (s): 0.13 / 0.31 / 0.72 / 2.31 / 3.04 / 10.26 (p95 13.8 at 8K x 4).
+Quality canaries 4/4. Minimum MemAvailable 56.1 GiB. Run
+`controlled-27b-sharar-dflash2-default-20260907T011226Z`.
+
+*SGLang's 2,048 x 1 figure is its chunked-prefill-size artifact (`comparison.md`).
+
+The 2,048-token cells are where this harness's prompts make the target
+"reply" instead of continuing the filler, so acceptance drops to 3.4 to 4.2
+tokens per round and the batches vary 2x; the natural workloads above are
+the better guide for real requests. The SGLang DFlash2 numbers come from the
+`competitive.md` windows (its 2K and 8K prefill settings, best per cell), not
+from this run.

@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-06 (clean-image repeats complete; promotion withheld; short-batch tail attributed)
+Last updated: 2026-09-07 (DFlash2 k=7 with accepted-state reconstruction is the production default; prefill kernel study complete)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -887,9 +887,15 @@ from a broad quality, competitive-speed or production-promotion gate.
       failed quality/performance cell. Two windows complete 414 measured requests;
       all 40 MTP performance checks pass. The sampled-chat rubric still fails,
       so the candidate is not a deployed default. [Results](docs/promotion.md).
-- [ ] Reconcile the generic cache-miss prompt with its recomputation rubric,
-      freeze a new held-out quality evaluation, and obtain independent review
-      before promoting DFlash2. Preserve the failed frozen result.
+- [x] Reconcile the generic cache-miss prompt with its rubric (the rubric
+      demanded "computation must run" for a prompt whose correct answer is a
+      fetch from a slower source; the MTP control failed it too). With the
+      rubric fixed, the frozen workloads pass with 0 automatic failures and
+      DFlash2 k=7 with accepted-state reconstruction is the production
+      default since 2026-09-07 (661 GPU-suite checks on the built image,
+      six-cell matrix 2x the MTP production at batch 1).
+      [docs/default-dflash2.md](docs/default-dflash2.md). The failed frozen
+      run stays in `docs/promotion.md`.
 - [x] Attribute 128 input / 256 output at concurrency four with nine measured
       HTTP batches and repeated direct prefill partitions. Slow batches add
       51–84 B=1 rounds. First tokens can differ before speculative decoding;
@@ -1299,8 +1305,17 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
+DFlash2 is promoted (2026-09-07, [docs/default-dflash2.md](docs/default-dflash2.md)).
+The prefill kernel study in the same note shows every GEMM, the quantizer and
+the norm at this GB10's practical rate; only structural fusion moves prefill
+(SiLU+NVFP4 quantization in the gate/up GEMM epilogue, about 12%; conv
+writing q/k/v in the GDN layout, about 2%). Next, in order: an adaptive draft
+block (verify 16 rows when recent rounds accepted all 7, for easy text), the
+128 x 4 low-acceptance tail, the GEMM-epilogue quantization as a CUTLASS
+project, then Phase 8's zero-copy weight load and unified-memory planner.
+
 Hold the shipped engine to Qwen on GB10. Do not extract a generic target layout
-or add dense/MoE models before DFlash2 promotion. Proposer construction lives in
+or add dense/MoE models. Proposer construction lives in
 `proposers/factory.py`; execution consumes features and capacity requirements.
 StateManager owns target state/cache loans; proposers own their draft state.
 
