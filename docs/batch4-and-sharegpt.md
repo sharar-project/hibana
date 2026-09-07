@@ -95,9 +95,19 @@ in seconds and mean time per output token in ms:
 
 Reading: Sharar leads SGLang in seven of nine cells by 9 to 15% and has the
 lowest TTFT everywhere; Atlas is 2 to 3x behind both. The two cells SGLang
-wins are short prompts at concurrency 4 and 8, by 34 and 28%. There the
-acceptance on chat text is 2 to 3 tokens per round and Sharar verifies 16
-rows per request (64 rows per round, 137 ms) where SGLang verifies 8 (32
-rows), so the wide block costs more than it returns in that regime.
+wins are short prompts at concurrency 4 and 8, by 34 and 28%. The wide
+block is not the reason: rerunning the short and medium buckets with k=7
+gives 57.9 and 107.1 tok/s at concurrency 4 (k=15: 56.5 and 109.4). The
+reason is the batch-4 round itself. Measured with CUDA events around 12
+rounds, the round's wall time equals its GPU span at both batch sizes
+(114 ms at B=1, 136 ms at B=4), so there is no host overhead to remove; the
+extra 22 ms at B=4 is GPU time: the 64-row draft forward (11 ms), accepted-
+state reconstruction (5.4 ms), the GDN verify kernel (6.4 ms) and launch gaps
+between the few hundred small kernels of the accept path that run outside
+the graphs (about 16 ms between the 120 ms of kernel time and the 136 ms
+span). SGLang's batch-4 round on the same text is about 105 ms. Capturing
+the accept path (feature projection, ring writes, reconstruction) as a
+fixed-shape graph with masked rows is the next engine item for this cell;
+it is worth about 10% of every batched round.
 Evidence: `${SHARAR_RESULTS}/reviews/2026-09-07h-sharegpt/` (per-request
 JSONL with every output text and timing).

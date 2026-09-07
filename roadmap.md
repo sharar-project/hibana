@@ -1305,28 +1305,19 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-DFlash2 is promoted (2026-09-07, [docs/default-dflash2.md](docs/default-dflash2.md)),
-and the same day [docs/cold-tier.md](docs/cold-tier.md) added the 16-row
-draft block (k=15: 3.04 to 4.42 accepted tokens per round offline, 40.8 to
-46.8 tok/s end to end on the mixed set, 101 tok/s at 128 x 1 in production)
-and the unified-memory cold tier (an evicted 30K session resumes in 0.15 s
-instead of 18.5 s). The prefill kernel study shows every GEMM, the quantizer
-and the norm at this GB10's practical rate; the cuDNN fused-epilogue attempt
-crashes on SM121, so that 12% stays a CUTLASS project. [docs/restart-and-syncs.md](docs/restart-and-syncs.md) then closed the
-follow-ups: weight load 108 s to 10.5 s (production restart 30 s; the
-safetensors mmap-to-device copy was the whole cost), the tier's park is
-0.6 ms of host time, the sampled path lost its ~40 hidden scalar syncs per
-round (vectorized rejection sampling; sampled chat 3.73 to 3.28 s), prefill
-uploads are pinned and non-blocking, and the 128 x 4 tail is recorded as a
-harness artifact. The second pass (same note) took the restart to 12 s
-(the DFlash2 draft had the same mmap copy problem), turned the tier's arena
-into prefetched 2 GiB slabs allocated on demand and released when empty,
-with a backoff that refuses to grow within 4 GiB of the guard's floor, and
-moved every page free to host ids. Next: the GEMM-epilogue quantization as
-a CUTLASS project (the cuDNN route crashes on SM121), the conv-kernel q/k/v
-layout, then Phase 8's unified-memory planner. A prepacked weight artifact
-is no longer worth it for warm restarts (weights load in 4 s); it would only
-help a cold page cache.
+[docs/batch4-and-sharegpt.md](docs/batch4-and-sharegpt.md) closes this
+round: the batch-4 verify round is GPU-bound (136 ms, kernels at their
+floors, about 16 ms of launch gaps in the accept path), cuDNN serves NVFP4
+GEMMs up to 64 rows, and the ShareGPT comparison against SGLang DFlash2 and
+Atlas DFlash2 is recorded (Sharar leads 7 of 9 cells, lowest TTFT
+everywhere, loses short prompts at concurrency 4 and 8 by about 30%).
+Next, in order: capture the accept path (draft feature projection, ring
+writes, accepted-state reconstruction) as a fixed-shape CUDA graph with
+masked rows (about 10% of every batched round, the short x 4 gap); the
+GEMM-epilogue NVFP4 quantization as a CUTLASS project (two-GEMM design with
+an auxiliary-input epilogue, about 6% of prefill); the conv-kernel q/k/v
+layout (2% of prefill); then draft quality on hard text, which is training
+work and the only remaining 2x.
 
 Hold the shipped engine to Qwen on GB10. Do not extract a generic target layout
 or add dense/MoE models. Proposer construction lives in
