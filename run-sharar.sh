@@ -10,9 +10,10 @@ CONFIG_FILE="${SHARAR_CONFIG_FILE:-$SCRIPT_DIR/config/gb10.env}"
 IMAGE="${SHARAR_IMAGE:-sharar:qwen38-27b}"
 CONTAINER="${SHARAR_CONTAINER:-sharar-qwen38}"
 PORT="${SHARAR_PORT:-30001}"
-SPEC="${SHARAR_SPEC:-0}"   # speculative draft tokens (0 = off)
-PROPOSER="${SHARAR_PROPOSER:-mtp}"
-VERIFY_STATE="${SHARAR_VERIFY_STATE:-snapshots}"
+SPEC="${SHARAR_SPEC:-7}"   # draft tokens per round (0 = off); 7 is DFlash2's validated depth
+PROPOSER="${SHARAR_PROPOSER:-dflash2}"
+VERIFY_STATE="${SHARAR_VERIFY_STATE:-reconstruct}"
+DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"   # incoai/Qwen3.8-27B-DFlash2
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
 STATE_DIR="$RESULTS_DIR/runtime-state"   # JIT caches; persists across restarts
@@ -51,6 +52,14 @@ for root in "$CACHE_DIR" "$CACHE_DIR/hub"; do
   [[ -f "$s/config.json" && -f "$s/model.safetensors.index.json" ]] && snapshot_ok=true
 done
 $snapshot_ok || fail "pinned model revision $MODEL_REVISION is incomplete in $CACHE_DIR"
+if [[ "$PROPOSER" == dflash2 && "$SPEC" != 0 ]]; then
+  draft_ok=false
+  for root in "$CACHE_DIR/hub" "$CACHE_DIR"; do
+    d="$root/models--incoai--Qwen3.8-27B-DFlash2/snapshots/$DRAFT_REVISION"
+    [[ -f "$d/config.json" ]] && draft_ok=true
+  done
+  $draft_ok || fail "pinned DFlash2 draft revision $DRAFT_REVISION is missing in $CACHE_DIR (set SHARAR_PROPOSER=mtp to serve without it)"
+fi
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image is missing: $IMAGE (build with docker/build.sh)"
 [[ "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "io.sharar.engine"}}')" == "sharar" ]] || fail "image is not a Sharar image"
 
@@ -89,10 +98,7 @@ add_lib libnvidia-nvvm.so.4 libnvidia-nvvm.so.4; add_lib libnvidia-nvvm.so.4 lib
 add_lib libcudadebugger.so.1 libcudadebugger.so.1
 for gpucomp in "$DRIVER_LIB_DIR"/libnvidia-gpucomp.so.*; do [[ -f "$gpucomp" ]] && args+=(--mount "type=bind,src=$gpucomp,dst=$gpucomp,readonly"); done
 
-serve_args=(serve --host 0.0.0.0 --port "$PORT")
-# Default launches also work with the historical image until it is rebuilt.
-[[ "$PROPOSER" == mtp ]] || serve_args+=(--proposer "$PROPOSER")
-[[ "$VERIFY_STATE" == snapshots ]] || serve_args+=(--verify-state "$VERIFY_STATE")
+serve_args=(serve --host 0.0.0.0 --port "$PORT" --proposer "$PROPOSER" --verify-state "$VERIFY_STATE" --spec "$SPEC")
 cid="$("${args[@]}" "$IMAGE" "${serve_args[@]}")"
 mkdir -p "$RESULTS_DIR"
 echo "$cid" > "$RESULTS_DIR/sharar-container-id.txt"

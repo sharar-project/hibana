@@ -27,6 +27,11 @@ from sharar.weights.modelopt import load_nvfp4_linear
 from sharar.weights.safetensors import SnapshotWeights
 
 PREFIX = "model.language_model"
+# Opt-in: post-attention norm emits the MLP input as NVFP4 directly. Bit-identical
+# to the two-kernel path, but the one-program-per-row kernel is slower than the
+# standalone quantizer (2K prefill 681 vs 684 ms, 8K 3898 vs 3653 ms), so the
+# saved bf16 round trip does not pay until that kernel is retuned.
+FUSED_NORM_NVFP4 = __import__("os").environ.get("SHARAR_FUSED_NORM_NVFP4", "0") == "1"
 
 
 class DecoderLayer:
@@ -47,8 +52,13 @@ class DecoderLayer:
         # Input norm also emits the FP8 input of the mixer's first projection.
         hidden, hidden_q, residual = self.input_norm.fused_add_quant(hidden, residual, self.mixer.input_scale, inplace=inplace)
         hidden = self.mixer.forward(hidden, ctx, hidden_q)
-        hidden, residual = self.post_norm.fused_add(hidden, residual, inplace=inplace)
-        hidden = self.mlp(hidden)
+        if FUSED_NORM_NVFP4:
+            # Post norm writes the MLP input directly as NVFP4 (no bf16 round trip).
+            pre, residual = self.post_norm.fused_add_nvfp4(hidden, residual, self.mlp.gate_up.input_scale_inv, inplace=inplace)
+            hidden = self.mlp.forward_prequantized(pre)
+        else:
+            hidden, residual = self.post_norm.fused_add(hidden, residual, inplace=inplace)
+            hidden = self.mlp(hidden)
         return hidden, residual
 
     def prefill(self, hidden: torch.Tensor, residual: torch.Tensor | None, positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

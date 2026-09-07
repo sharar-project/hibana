@@ -176,17 +176,15 @@ class ParallelProposer:
         if self.name == 'dflash2' and not sampled:
             from sharar.kernels.draft_selection import greedy_lattice
             return Proposal(greedy_lattice(candidates, scores))
-        all_tokens, all_q, all_confidence = [], [], []
+        all_tokens, all_q = [], []
         for row, req in enumerate(requests):
             previous, local = inputs.tokens[row:row + 1], 0
-            chosen, laws, confidence_rows = [], [], []
+            chosen, laws = [], []
             for j in range(self.k):
                 if self.name == 'dflash2':
                     logits = scores[row, j, local]
                 else:
-                    logits, confidence = self.model.markov(base_logits[row:row + 1, j], previous, hidden[row:row + 1, j])
-                    logits = logits[0]
-                    confidence_rows.append(confidence[0])
+                    logits = self.model.markov(base_logits[row:row + 1, j], previous, hidden[row:row + 1, j])[0]
                 law = distribution(logits, req.params)
                 index = law.argmax() if req.params.greedy else torch.multinomial(law, 1, generator=req.generator)[0]
                 token = candidates[row, j, index] if self.name == 'dflash2' else index
@@ -196,13 +194,10 @@ class ParallelProposer:
                 if sampled:
                     laws.append(law)
             all_tokens.append(torch.stack(chosen))
-            if confidence_rows:
-                all_confidence.append(torch.stack(confidence_rows))
             if sampled:
                 all_q.append(torch.stack(laws))
         return Proposal(torch.stack(all_tokens), torch.stack(all_q) if sampled else None,
-                        candidates if sampled and self.name == 'dflash2' else None,
-                        torch.stack(all_confidence) if all_confidence else None)
+                        candidates if sampled and self.name == 'dflash2' else None)
 
     def accepted_batch(self, requests, emitted, features):
         """Project committed rows together, then scatter into private rings.

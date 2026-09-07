@@ -124,3 +124,27 @@ def test_silu_mul_nvfp4_quantize_matches_two_step():
     # fp32 product vs bf16-rounded product: a few blocks round differently
     assert (sf.view(torch.uint8) == sf_ref.view(torch.uint8)).float().mean().item() > 0.98
     assert (q == q_ref).float().mean().item() > 0.97
+
+
+@cuda
+def test_fused_norm_nvfp4_matches_two_kernels():
+    """Norm + NVFP4 quantization in one kernel must be bit-identical to
+    gemma_rmsnorm followed by nvfp4_quantize (same math, same bf16 rounding)."""
+    from sharar.kernels.fused_norm import gemma_rmsnorm
+    from sharar.kernels.fused_norm_nvfp4 import gemma_rmsnorm_nvfp4
+    from sharar.kernels.nvfp4_quant import nvfp4_quantize
+
+    torch.manual_seed(0)
+    for m in (1, 7, 129, 300):
+        x = torch.randn(m, 5120, device="cuda", dtype=torch.bfloat16)
+        r = torch.randn(m, 5120, device="cuda", dtype=torch.bfloat16)
+        w = torch.randn(5120, device="cuda", dtype=torch.bfloat16) * 0.1
+        gs = torch.tensor(380.0, device="cuda")
+        r1, r2 = r.clone(), r.clone()
+        out, _ = gemma_rmsnorm(x, w, 1e-6, residual=r1)
+        q_ref, sf_ref = nvfp4_quantize(out, gs)
+        q_ref, sf_ref = q_ref.clone(), sf_ref.clone()  # the scale buffer is shared per shape
+        q, sf = gemma_rmsnorm_nvfp4(x, w, 1e-6, gs, residual=r2)
+        assert torch.equal(r1, r2)
+        assert torch.equal(q, q_ref), (q != q_ref).float().mean().item()
+        assert torch.equal(sf.view(torch.uint8), sf_ref.view(torch.uint8))

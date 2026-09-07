@@ -161,7 +161,7 @@ class SpecDecoder:
             raise ValueError("proposer must return int64 [batch, k] on the target device")
         y = y[:, :k]
         proposal = Proposal(y, proposal.probabilities[:, :k] if proposal.probabilities is not None else None,
-                            proposal.support[:, :k] if proposal.support is not None else None, proposal.confidence)
+                            proposal.support[:, :k] if proposal.support is not None else None)
         new_pages_flat = new_pages[:, :s_len].reshape(-1)
         if timing:
             torch.cuda.synchronize()

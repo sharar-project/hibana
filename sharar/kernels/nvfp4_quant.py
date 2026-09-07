@@ -71,15 +71,35 @@ def _nvfp4_quant_kernel(
     tl.store(sf_ptr + off, sf, mask=c < (K // 16))
 
 
+def _scale_buffer(m: int, k: int, device: torch.device) -> torch.Tensor:
+    """Swizzled block-scale buffer [M_pad128, (K/16)_pad4]. The kernel writes
+    every scale of the M real rows; the padding rows and columns only feed
+    the GEMM's discarded tiles, so they are zeroed once and the buffer is
+    reused per shape instead of being zero-filled on every call."""
+    m_pad = (m + 127) // 128 * 128
+    k_pad_groups = (k // 16 + 3) // 4 * 4
+    key = (m_pad, k_pad_groups, device)
+    buf = _SCALE_BUFFERS.get(key)
+    if buf is None:
+        # Never evicted: CUDA graphs capture these addresses, and the key space
+        # is bounded (M rounded to 128 up to the prefill budget, two K values).
+        buf = torch.zeros((m_pad, k_pad_groups), dtype=torch.float8_e4m3fn, device=device)
+        _SCALE_BUFFERS[key] = buf
+    return buf
+
+
+_SCALE_BUFFERS: dict = {}
+
+
 def nvfp4_quantize(x: torch.Tensor, global_scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """x: [M, K] bf16 (K % 16 == 0). Returns (packed [M, K/2] uint8, sf [M_pad128, (K/16)_pad4] fp8 swizzled)."""
+    """x: [M, K] bf16 (K % 16 == 0). Returns (packed [M, K/2] uint8, sf [M_pad128, (K/16)_pad4] fp8 swizzled).
+    The scale buffer is shared per shape: consume it before the next quantize of the same shape."""
     m, k = x.shape
     assert k % 16 == 0 and x.stride(1) == 1
-    m_pad = (m + 127) // 128 * 128
     groups = k // 16
     k_pad_groups = (groups + 3) // 4 * 4
     q = torch.empty((m, k // 2), dtype=torch.uint8, device=x.device)
-    sf = torch.zeros((m_pad, k_pad_groups), dtype=torch.float8_e4m3fn, device=x.device)
+    sf = _scale_buffer(m, k, x.device)
     block_k = min(1024, triton.next_power_of_2(k))
     _nvfp4_quant_kernel[(m, triton.cdiv(k, block_k))](
         x, global_scale, q, sf, m, k, k_pad_groups, x.stride(0), BLOCK_K=block_k, SILU_MUL=False, num_warps=4,
@@ -92,11 +112,10 @@ def silu_mul_nvfp4_quantize(gate_up: torch.Tensor, global_scale: torch.Tensor) -
     m, two_i = gate_up.shape
     k = two_i // 2
     assert k % 16 == 0 and gate_up.stride(1) == 1
-    m_pad = (m + 127) // 128 * 128
     groups = k // 16
     k_pad_groups = (groups + 3) // 4 * 4
     q = torch.empty((m, k // 2), dtype=torch.uint8, device=gate_up.device)
-    sf = torch.zeros((m_pad, k_pad_groups), dtype=torch.float8_e4m3fn, device=gate_up.device)
+    sf = _scale_buffer(m, k, gate_up.device)
     block_k = min(1024, triton.next_power_of_2(k))
     _nvfp4_quant_kernel[(m, triton.cdiv(k, block_k))](
         gate_up, global_scale, q, sf, m, k, k_pad_groups, gate_up.stride(0), BLOCK_K=block_k, SILU_MUL=True, num_warps=4,

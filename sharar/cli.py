@@ -59,9 +59,9 @@ def main(argv: list[str] | None = None) -> int:
     p_serve = sub.add_parser("serve", help="OpenAI-compatible HTTP server")
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=30001)
-    p_serve.add_argument("--proposer", choices=("mtp", "ngram", "dspark", "dflash2"), default="mtp")
-    p_serve.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default="snapshots")
-    p_serve.add_argument("--spec", type=int, default=int(__import__("os").environ.get("SHARAR_SPEC", "0")), help="speculative decoding with k draft tokens (0 = off; --proposer selects the adapter)")
+    p_serve.add_argument("--proposer", choices=("mtp", "ngram", "dspark", "dflash2"), default="dflash2")
+    p_serve.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default="reconstruct")
+    p_serve.add_argument("--spec", type=int, default=None, help="draft tokens per round (0 = off; default: SHARAR_SPEC, else the proposer's validated depth)")
     p_prof = sub.add_parser("profile", help="kernel time breakdown for prefill or decode")
     p_prof.add_argument("--prompts", required=True)
     p_prof.add_argument("--name", default="rand2048")
@@ -103,8 +103,14 @@ def main(argv: list[str] | None = None) -> int:
 
         return canaries_cli(args.reference, args.max_new_tokens, args.batch, graphs=not args.eager, spec=args.spec)
     if args.command == "serve":
-        from sharar.api.server import serve
+        import os
 
+        from sharar.api.server import serve
+        from sharar.proposers.factory import MAX_DEPTHS
+
+        if args.spec is None:
+            env = os.environ.get("SHARAR_SPEC")
+            args.spec = int(env) if env not in (None, "", "auto") else {"mtp": 3}.get(args.proposer, MAX_DEPTHS[args.proposer])
         serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state)
         return 0
     if args.command == "sched-bench":

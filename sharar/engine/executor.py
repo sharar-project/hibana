@@ -36,6 +36,8 @@ class PrefillBatch:
 
 
 class Executor:
+    timing = False  # benchmarks set True: synchronize to attribute prefill wall time (class attribute: test executors skip __init__)
+
     def __init__(self, model: Qwen38, num_pages: int | None = None, num_slots: int | None = None, max_batch: int = 4, use_cache: bool = True, log=None, max_context: int = config.CONTEXT_LENGTH, spec_config=None):
         self.profile = ServingProfile(max_context=max_context, max_batch=max_batch)
         import flashinfer
@@ -328,7 +330,8 @@ class Executor:
         for i in finishing:
             req = chunks[i][0]
             self.state.checkpoint(req, req.prefill_len, copy=True)
-        torch.cuda.synchronize()
+        if self.timing:  # benchmarks: wall time to completion; serving keeps the GPU queue full
+            torch.cuda.synchronize()
         elapsed = time.perf_counter() - started
         for req, _ in chunks:
             req.prefill_seconds += elapsed
@@ -352,7 +355,8 @@ class Executor:
             if self.spec is not None:
                 self.spec.start(req, token)
             self.state.checkpoint(req, n, copy=True)
-        torch.cuda.synchronize()
+        if self.timing:
+            torch.cuda.synchronize()
         req.prefill_seconds += time.perf_counter() - started
         if token is not None:
             req.push(token)

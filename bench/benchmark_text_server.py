@@ -120,7 +120,8 @@ def exact_prompt_ids(
 
 def flush_cache(base_url: str) -> None:
     response = http_json(f"{base_url}/flush_cache", payload={}, timeout=30.0)
-    if not isinstance(response, str) or "Cache flushed" not in response:
+    # SGLang answers "Cache flushed."; Sharar's deferred flush answers "Cache invalidated; ..."
+    if not isinstance(response, str) or not ("Cache flushed" in response or "Cache invalidated" in response):
         raise RuntimeError(f"Cache flush did not succeed: {response!r}")
 
 

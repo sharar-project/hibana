@@ -146,7 +146,4 @@ class ParallelDraftModel:
 
     def markov(self, logits, previous, hidden):
         latent = self.weights['markov_head.markov_w1.weight'][previous]
-        corrected = logits + latent @ self.weights['markov_head.markov_w2.weight'].T
-        confidence_input = torch.cat([hidden, latent], dim=-1)
-        confidence = torch.sigmoid(confidence_input @ self.weights['confidence_head.proj.weight'].T + self.weights['confidence_head.proj.bias'])
-        return corrected, confidence.squeeze(-1)
+        return logits + latent @ self.weights['markov_head.markov_w2.weight'].T

@@ -36,6 +36,17 @@ class GemmaRMSNorm:
         out, _ = gemma_rmsnorm(x, self.weight, self.eps, residual=residual)
         return out, residual
 
+    def fused_add_nvfp4(self, x: torch.Tensor, residual: torch.Tensor, global_scale: torch.Tensor, inplace: bool = False):
+        """residual <- x + residual (bf16); return (NVFP4 (packed, scales) of
+        norm(residual), residual). The normalized bf16 tensor is never
+        materialized: it only fed the NVFP4 gate/up projection."""
+        from sharar.kernels.fused_norm_nvfp4 import gemma_rmsnorm_nvfp4
+
+        if not inplace:
+            residual = residual.clone()
+        pre = gemma_rmsnorm_nvfp4(x, self.weight, self.eps, global_scale, residual=residual)
+        return pre, residual
+
     def fused_add_quant(self, x: torch.Tensor, residual: torch.Tensor | None, fp8_scale: torch.Tensor, inplace: bool = False):
         """Like fused_add but also returns the FP8-quantized output. With
         residual None (first layer) the residual becomes x itself."""

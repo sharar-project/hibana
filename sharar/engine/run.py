@@ -41,6 +41,7 @@ def _load(graphs: bool = True, spec: int = 0) -> tuple[Qwen38, Executor, Snapsho
     started = time.perf_counter()
     ex.warmup()
     print(f"  warmup {time.perf_counter() - started:.1f}s")
+    ex.timing = True  # CLI benchmarks report synchronized prefill/decode wall time
     return model, ex, SnapshotTokenizer(snap)
 
 
@@ -178,6 +179,7 @@ def _profile_one(ex, ids, mode, steps, top):
         req = ex.admit(ids, params)
         ex.prefill(req)  # warm
         ex.release(req)
+        ex.flush_cache()  # measure a cold prefill, not a prefix-cache hit on the warm run
         torch.cuda.synchronize()
         with profile(activities=[ProfilerActivity.CUDA, ProfilerActivity.CPU]) as prof:
             req = ex.admit(ids, params)

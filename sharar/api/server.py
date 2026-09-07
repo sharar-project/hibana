@@ -287,8 +287,8 @@ def _stops(body: dict) -> list[str]:
 def _validate_chat_controls(body: dict) -> None:
     """Accept only unconstrained output; fail before rendering or admission."""
     choice = body.get("tool_choice")
-    if choice is not None and choice != "auto":
-        raise InvalidRequest("tool_choice supports only null or 'auto'; forced or disabled tool calls are not supported")
+    if choice is not None and choice not in ("auto", "none"):
+        raise InvalidRequest("tool_choice supports only null, 'auto' or 'none'; forced tool calls are not supported")
     response_format = body.get("response_format")
     if response_format is not None and response_format != {"type": "text"}:
         raise InvalidRequest('response_format supports only null or {"type":"text"}; constrained output is not supported')
@@ -508,7 +508,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             raise HTTPException(400, "messages required")
         kwargs = dict(body.get("chat_template_kwargs") or {})
         thinking = bool(kwargs.pop("enable_thinking", True))
-        tools = body.get("tools")
+        tools = None if body.get("tool_choice") == "none" else body.get("tools")  # "none": generate without tool schemas
         rendered = tmpl.render(messages, enable_thinking=thinking, tools=tools, **kwargs)
         ids = tok.encode(rendered)
         params = _sampling_from(body, max_default=512)

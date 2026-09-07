@@ -16,7 +16,6 @@ class Proposal:
     tokens: torch.Tensor  # int64 [B, k]
     probabilities: torch.Tensor | None = None  # FP32 [B, k, V] or sparse support
     support: torch.Tensor | None = None  # int64 [B, k, C], unique per row
-    confidence: torch.Tensor | None = None  # optional learned accept prediction [B, maximum k]
 
 
 def distribution(logits: torch.Tensor, params: SamplingParams) -> torch.Tensor:

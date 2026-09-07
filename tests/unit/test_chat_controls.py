@@ -11,7 +11,7 @@ from sharar.api.server import create_app
 
 @pytest.mark.parametrize('stream', [False, True])
 @pytest.mark.parametrize('field,value', [
-    ('tool_choice', 'none'), ('tool_choice', 'required'),
+    ('tool_choice', 'required'),
     ('tool_choice', {'type': 'function', 'function': {'name': 'run'}}),
     ('tool_choice', {}), ('tool_choice', []), ('tool_choice', False),
     ('tool_choice', 1), ('tool_choice', 'AUTO'),

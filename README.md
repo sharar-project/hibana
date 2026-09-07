@@ -42,7 +42,8 @@ packages, no SGLang) and launch it with the preflight and the memory guard:
 ```bash
 docker/build.sh                 # -> sharar:qwen38-27b
 ./run-sharar.sh --check         # host, GPU, driver, memory and snapshot preflight
-SHARAR_SPEC=3 ./run-sharar.sh   # container sharar-qwen38 on 127.0.0.1:30001 + guard, MTP speculative decoding
+./run-sharar.sh                 # container sharar-qwen38 on 127.0.0.1:30001 + guard; DFlash2 speculative decoding (7 drafts)
+SHARAR_PROPOSER=mtp SHARAR_SPEC=3 ./run-sharar.sh   # the checkpoint's MTP head instead (no external draft needed)
 tools/verify-sharar.sh
 ./run-sharar.sh --stop
 ```
@@ -147,10 +148,13 @@ and 31.7 s). See [docs/parity.md](docs/parity.md),
 [docs/phase2.md](docs/phase2.md), [docs/phase3.md](docs/phase3.md),
 [docs/phase4.md](docs/phase4.md), [docs/phase5.md](docs/phase5.md),
 [docs/phase6.md](docs/phase6.md), [docs/phase7.md](docs/phase7.md). Sharar is
-the production engine on the machine (`run-sharar.sh`, its own 14 GB image)
-and decodes speculatively with the checkpoint's MTP head at about 2x the
-plain rate; [docs/comparison.md](docs/comparison.md) measures it against
-SGLang plain and SGLang MTP on the same machine, including GSM8K accuracy.
+the production engine on the machine (`run-sharar.sh`, its own 14 GB image).
+Since 2026-09-07 it serves with the pinned DFlash2 draft (7 proposals per
+round) and accepted-state reconstruction by default, about 5x the plain
+decode rate on easy text and 2.5x on hard text; the checkpoint's MTP head
+remains available (`SHARAR_PROPOSER=mtp`). [docs/default-dflash2.md](docs/default-dflash2.md)
+records the promotion; [docs/comparison.md](docs/comparison.md) is the older
+MTP comparison against SGLang, including GSM8K accuracy.
 Phase 7A fixes terminal cleanup, speculative stop/state alignment, active
 cache flush, streamed-history retraction, RNG/accounting, request bounds and
 engine failure handling. [Fixes and proof](docs/phase7a.md): 103 CPU tests pass;

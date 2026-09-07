@@ -217,7 +217,7 @@
       ],
       "quality": {
         "kind": "manual",
-        "rubric": "Explain that the reusable data was unavailable and computation must run; coherent two-sentence answer."
+        "rubric": "Explain that the requested data was not in the cache, so it had to be fetched or computed from a slower source; coherent answer of about two sentences."
       }
     },
     {
