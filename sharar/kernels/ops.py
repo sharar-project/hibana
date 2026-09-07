@@ -26,7 +26,7 @@ FP8_GEMV_MAX_M = 4
 # down GEMM at prefill (+8%) and for small M; cutlass is the parity oracle.
 FP4_GEMM_BACKEND = "cutlass"
 FP4_QUANT_BACKEND = "cuda"
-FP4_SMALL_M = 16
+FP4_SMALL_M = 64  # cuDNN beats b12x up to 64 rows (gate/up at M=64: 0.51 vs 0.62 ms); b12x wins at prefill M
 
 
 def fp4_backend(m: int, n: int, k: int) -> str:

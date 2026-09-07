@@ -148,3 +148,4 @@ def test_fused_norm_nvfp4_matches_two_kernels():
         assert torch.equal(r1, r2)
         assert torch.equal(q, q_ref), (q != q_ref).float().mean().item()
         assert torch.equal(sf.view(torch.uint8), sf_ref.view(torch.uint8))
+
