@@ -21,6 +21,16 @@ class FakePool:
     def alloc_slot(self):
         return self._free.pop()
 
+    def alloc_with_ids(self, n):
+        if n > self.free_count:
+            raise MemoryError("pool exhausted")
+        pages = self.alloc(n)
+        return pages, pages.tolist()
+
+    def free_ids(self, ids):
+        self._free.extend(int(v) for v in ids)
+        self.freed.extend(int(v) for v in ids)
+
     def free(self, x):
         if isinstance(x, torch.Tensor):
             self._free.extend(int(v) for v in x.tolist())

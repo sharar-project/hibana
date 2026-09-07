@@ -93,13 +93,19 @@ def test_parked_child_needs_its_parent_and_lru_drop_frees_arena():
     assert cache.restore_parked(b) == 1
     assert kv.free_count == free_before - (len(b) - len(a))  # only the suffix was allocated
     assert cache.match(b, touch=False).length == len(b)
-    # LRU drop when the arena cannot fit a new entry
+    # LRU drop when the arena cannot fit a new entry: a fresh tier whose single slab holds one leaf
+    from sharar.memory.cold_tier import ColdTier
     one = cache.tier._kv_row_bytes() * len(b) + cache.tier._state_bytes()
-    cache.tier.arena.nbytes = one + 4096
-    c = list(range(300, 364)); pc, sc = kv.alloc(64), st.alloc(); _fill_random(kv, st, pc, sc, 5)
+    cache.tier = ColdTier(kv, st, one + 4096, cache.device)
+    cache.tier.arena.SLAB = one + 4096
+    pb2, sb2 = kv.alloc(len(b) - len(a)), st.alloc(); _fill_random(kv, st, pb2, sb2, 6)
+    cache.evict(need_pages=kv.num_pages)  # clears the tree (parks b into the fresh tier)
+    cache.insert(b, torch.cat([kv.alloc(len(a)), pb2]), {len(b): sb2})
+    c = list(range(300, 428)); pc, sc = kv.alloc(len(c)), st.alloc(); _fill_random(kv, st, pc, sc, 5)
     cache.insert(c, pc, {len(c): sc})
     cache.evict(need_pages=kv.num_pages)
-    assert cache.tier.stats()["drops"] >= 1
+    stats = cache.tier.stats()
+    assert stats["drops"] >= 1 and stats["entries"] == 1 and stats["slab_gib"] > 0
 
 
 def test_flush_clears_parked_entries():

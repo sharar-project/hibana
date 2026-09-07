@@ -34,6 +34,7 @@ class RequestState:
     match: Match | None = None
     checkpoints: dict[int, int] = field(default_factory=dict)
     reservation: Reservation | None = None
+    page_ids: list[int] = field(default_factory=list)  # host ids of the request-owned pages (after prefix_len), in order
     cacheable: bool = True
     cache_enabled: bool = False
     released: bool = False
@@ -88,17 +89,18 @@ class StateManager:
             slot = self.recurrent.alloc()
             if match is not None:
                 self.recurrent.copy_slot(match.snapshot_slot, slot)
-            own = self.kv.alloc(len(ids) - prefix)
+            own, own_ids = self.kv.alloc_with_ids(len(ids) - prefix)
             pages = torch.cat([match.pages, own]) if match is not None else own
         except Exception:
             if own is not None:
-                self.kv.free(own)
+                self.kv.free_ids(own_ids)
             if slot >= 0:
                 self.recurrent.free(slot)
             if match is not None:
                 self.cache.lock(match.node, -1)
             raise
         req.match, req.slot, req.pages = match, slot, pages
+        req.page_ids = list(own_ids)
         req.cache_enabled = self.cache is not None
         req.prefix_len = req.committed_len = req.prefill_pos = prefix
 
@@ -232,6 +234,7 @@ class StateManager:
 
     def _publish(self, req, count, pages) -> None:
         self.kv.free_ids(req.reservation.ids[count:])
+        req.page_ids += req.reservation.ids[:count]
         req.pages = pages
         req.committed_len += count
         req.reservation = None
@@ -273,12 +276,13 @@ class StateManager:
             req.match = None
         if not cached:
             if req.pages is not None:
-                self.kv.free(req.pages[req.prefix_len:])
+                self.kv.free_ids(req.page_ids)  # host ids: no device read-back
             if req.slot >= 0:
                 self.recurrent.free(req.slot)
             for slot in req.checkpoints.values():
                 self.recurrent.free(slot)
         req.pages, req.slot, req.checkpoints = None, -1, {}
+        req.page_ids = []
         req.cache_auxiliary = {}
 
     def _insert(self, req: Request) -> bool:
@@ -290,11 +294,13 @@ class StateManager:
         for p, slot in req.checkpoints.items():
             if p >= n:
                 self.recurrent.free(slot)
-        new_start = self.cache.insert(ids, req.pages[:n], snapshots, req.cache_auxiliary)
+        ids_full = [-1] * req.prefix_len + req.page_ids  # -1: cache-owned prefix pages (never freed here)
+        new_start = self.cache.insert(ids, req.pages[:n], snapshots, req.cache_auxiliary, page_ids=ids_full[:n])
         if new_start > req.prefix_len:
-            self.kv.free(req.pages[req.prefix_len:new_start])
+            self.kv.free_ids(ids_full[req.prefix_len:new_start])
         if len(req.pages) > n:
-            self.kv.free(req.pages[n:])
+            self.kv.free_ids(ids_full[n:])
+        req.page_ids = []  # ownership moved to the cache
         return True
 
     def flush(self) -> None:

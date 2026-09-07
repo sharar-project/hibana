@@ -65,46 +65,105 @@ class _ManagedBlock:
 
 
 class ManagedArena:
-    """One CUDA-managed allocation carved into variable-size chunks."""
+    """CUDA-managed memory in slabs, allocated on demand up to a budget and
+    released when empty. Chunks never span slabs. A slab is prefetched to the
+    GPU when created (1 ms; a fill kernel instead page-faults the whole slab
+    and leaves it reading 5x slower, measured on this GB10)."""
+
+    SLAB = 2 * GIB
 
     def __init__(self, nbytes: int, device: torch.device):
         self.nbytes = int(nbytes)
         self.device = device
-        block = _ManagedBlock(self.nbytes)
-        self.buffer = torch.as_tensor(block, device=device)  # zero-copy view of the managed memory
-        self._keep = block
-        self.buffer.fill_(0)  # first touch now, not on the eviction path
-        self._used: list[tuple[int, int]] = []  # (offset, size) sorted by offset
+        self.slabs: list[dict] = []  # {"block", "buffer", "used": [(offset, size)]}
+        self.floor_bytes = 16 * GIB  # keep the host guard's floor plus a margin available
 
-    def alloc(self, size: int) -> int | None:
-        size = (size + 255) // 256 * 256
-        cursor = 0
-        for i, (off, sz) in enumerate(self._used):
-            if off - cursor >= size:
-                self._used.insert(i, (cursor, size))
-                return cursor
-            cursor = off + sz
-        if self.nbytes - cursor >= size:
-            self._used.append((cursor, size))
-            return cursor
-        return None
-
-    def free(self, offset: int) -> None:
-        self._used = [(o, s) for o, s in self._used if o != offset]
+    @property
+    def slab_bytes(self) -> int:
+        return len(self.slabs) * self.SLAB
 
     @property
     def used_bytes(self) -> int:
-        return sum(s for _, s in self._used)
+        return sum(s for slab in self.slabs for _, s in slab["used"])
 
-    def view(self, offset: int, nbytes: int, dtype: torch.dtype, shape: tuple[int, ...]) -> torch.Tensor:
-        return self.buffer[offset : offset + nbytes].view(dtype).view(*shape)
+    def _new_slab(self) -> dict | None:
+        if self.slab_bytes + self.SLAB > max(self.nbytes, self.SLAB):
+            return None
+        from sharar.memory.ledger import mem_available_bytes
+
+        if mem_available_bytes() - self.SLAB < self.floor_bytes + 4 * GIB:
+            return None  # the host is tight: do not grow the tier
+        block = _ManagedBlock(self.SLAB)
+        block.rt.cudaMemPrefetchAsync(block.ptr, ctypes_size(self.SLAB), ctypes_int(0), ctypes_ptr(0))
+        slab = {"block": block, "buffer": torch.as_tensor(block, device=self.device), "used": []}
+        self.slabs.append(slab)
+        return slab
+
+    def alloc(self, size: int) -> tuple[int, int] | None:
+        """Returns (slab index, offset) or None when nothing fits."""
+        size = (size + 255) // 256 * 256
+        if size > self.SLAB:
+            return None
+        for i, slab in enumerate(self.slabs):
+            cursor = 0
+            for j, (off, sz) in enumerate(slab["used"]):
+                if off - cursor >= size:
+                    slab["used"].insert(j, (cursor, size))
+                    return i, cursor
+                cursor = off + sz
+            if self.SLAB - cursor >= size:
+                slab["used"].append((cursor, size))
+                return i, cursor
+        slab = self._new_slab()
+        if slab is None:
+            return None
+        slab["used"].append((0, size))
+        return len(self.slabs) - 1, 0
+
+    def free(self, handle: tuple[int, int]) -> None:
+        i, offset = handle
+        slab = self.slabs[i]
+        slab["used"] = [(o, s) for o, s in slab["used"] if o != offset]
+
+    def release_empty(self) -> int:
+        """Drop empty slabs (except the first) so the host gets the memory back."""
+        keep, released = [], 0
+        for i, slab in enumerate(self.slabs):
+            if slab["used"] or i == 0:
+                keep.append(slab)
+            else:
+                released += 1
+        # handles are (slab index, offset): renumbering is only safe when the
+        # dropped slabs are the trailing ones, so drop only those.
+        while len(self.slabs) > 1 and not self.slabs[-1]["used"]:
+            self.slabs.pop()
+        return released
+
+    def view(self, handle: tuple[int, int], nbytes: int, dtype: torch.dtype, shape: tuple[int, ...]) -> torch.Tensor:
+        i, offset = handle
+        return self.slabs[i]["buffer"][offset : offset + nbytes].view(dtype).view(*shape)
+
+
+def ctypes_size(n):
+    import ctypes
+    return ctypes.c_size_t(n)
+
+
+def ctypes_int(n):
+    import ctypes
+    return ctypes.c_int(n)
+
+
+def ctypes_ptr(n):
+    import ctypes
+    return ctypes.c_void_p(n)
 
 
 @dataclass
 class Parked:
     key: list[int]  # full token prefix from the root
     own: int  # tokens owned by the parked leaf (the last `own` of key)
-    offset: int
+    offset: tuple[int, int]  # arena handle (slab, offset)
     nbytes: int
     kv: torch.Tensor  # [layers, own, ...] view into the arena
     conv: torch.Tensor | None
@@ -121,9 +180,10 @@ class ColdTier:
         self.entries: list[Parked] = []
         self.codecs: dict = {}  # identity -> (export, import)
         self.parks = self.restores = self.drops = self.rejects = 0
+        self.last_reject = None
         self.park_seconds = self.restore_seconds = 0.0
         if log:
-            log(f"  cold tier: {budget_bytes / GIB:.1f} GiB managed arena for evicted sessions")
+            log(f"  cold tier: up to {budget_bytes / GIB:.1f} GiB of managed memory for evicted sessions (2 GiB slabs on demand)")
 
     # ---- sizes ----
     def _kv_row_bytes(self) -> int:
@@ -147,9 +207,11 @@ class ColdTier:
         own = int(pages.shape[0])
         if own == 0 or slot is None or own != len(key):
             self.rejects += 1
+            self.last_reject = f"shape: pages {own}, key {len(key)}, slot {slot}"
             return False
         if any(len(e.key) >= own and e.key[:own] == key for e in self.entries):
             self.rejects += 1  # already covered by a parked descendant
+            self.last_reject = "covered"
             return False
         # Auxiliary payloads: (identity, tuple of scalars, list of device tensors). Copied into the arena too.
         aux_items = []
@@ -165,27 +227,33 @@ class ColdTier:
             aux_items.append((identity, scalars, tensors))
         aux_bytes = sum((x.numel() * x.element_size() + 255) // 256 * 256 for _, _, ts in aux_items for x in ts)
         nbytes = own * self._kv_row_bytes() + self._state_bytes() + aux_bytes
-        if nbytes > self.arena.nbytes:
+        if nbytes > self.arena.nbytes or nbytes > self.arena.SLAB:
             self.rejects += 1
+            self.last_reject = f"too large: {nbytes / GIB:.2f} GiB"
             return False
         while (offset := self.arena.alloc(nbytes)) is None:
+            if not self.entries:
+                self.rejects += 1  # nothing to drop and the host or the budget refuses a slab
+                self.last_reject = f"no slab: {nbytes / GIB:.2f} GiB, slabs {len(self.arena.slabs)}"
+                return False
             self._drop_lru()
         t0 = time.perf_counter()
         kvp = self.kv_pool
         layers = kvp.layer_ids
         k0 = kvp.k[layers[0]]
         per_layer = k0[0].numel() * k0.element_size()
+        slab_i, base0 = offset
         kv = self.arena.view(offset, own * per_layer * 2 * len(layers), k0.dtype, (len(layers), 2, own, *k0.shape[1:]))
         idx = pages.to(torch.int64)
         for j, lid in enumerate(layers):
             torch.index_select(kvp.k[lid], 0, idx, out=kv[j, 0])
             torch.index_select(kvp.v[lid], 0, idx, out=kv[j, 1])
-        base = offset + own * per_layer * 2 * len(layers)
+        base = base0 + own * per_layer * 2 * len(layers)
         sp = self.state_pool
         conv_n = sp.conv_all[:, 0].numel() * sp.conv_all.element_size()
-        conv = self.arena.view(base, conv_n, sp.conv_all.dtype, tuple(sp.conv_all[:, 0].shape))
+        conv = self.arena.view((slab_i, base), conv_n, sp.conv_all.dtype, tuple(sp.conv_all[:, 0].shape))
         ssm_n = sp.ssm_all[:, 0].numel() * sp.ssm_all.element_size()
-        ssm = self.arena.view(base + conv_n, ssm_n, sp.ssm_all.dtype, tuple(sp.ssm_all[:, 0].shape))
+        ssm = self.arena.view((slab_i, base + conv_n), ssm_n, sp.ssm_all.dtype, tuple(sp.ssm_all[:, 0].shape))
         conv.copy_(sp.conv_all[:, slot])
         ssm.copy_(sp.ssm_all[:, slot])
         cursor = base + conv_n + ssm_n
@@ -194,7 +262,7 @@ class ColdTier:
             views = []
             for x in tensors:
                 n = x.numel() * x.element_size()
-                v = self.arena.view(cursor, n, x.dtype, tuple(x.shape))
+                v = self.arena.view((slab_i, cursor), n, x.dtype, tuple(x.shape))
                 v.copy_(x)
                 views.append(v)
                 cursor += (n + 255) // 256 * 256
@@ -224,6 +292,7 @@ class ColdTier:
             entry.ready.synchronize()  # the arena bytes are reused: the park copy must have landed
         self.entries.remove(entry)
         self.arena.free(entry.offset)
+        self.arena.release_empty()
         self.drops += 1
 
     # ---- find / restore ----
@@ -258,6 +327,7 @@ class ColdTier:
         torch.cuda.current_stream().synchronize()  # the arena chunk is freed below; make sure the reads landed
         self.entries.remove(entry)
         self.arena.free(entry.offset)
+        self.arena.release_empty()
         self.restores += 1
         self.restore_seconds += time.perf_counter() - t0
         return aux
@@ -265,8 +335,9 @@ class ColdTier:
     def stats(self) -> dict:
         return {
             "entries": len(self.entries), "parked_tokens": sum(e.own for e in self.entries),
-            "used_gib": round(self.arena.used_bytes / GIB, 3), "budget_gib": round(self.arena.nbytes / GIB, 3),
+            "used_gib": round(self.arena.used_bytes / GIB, 3), "slab_gib": round(self.arena.slab_bytes / GIB, 3), "budget_gib": round(self.arena.nbytes / GIB, 3),
             "parks": self.parks, "restores": self.restores, "drops": self.drops, "rejects": self.rejects,
+            "last_reject": self.last_reject,
             "park_ms_avg": round(1000 * self.park_seconds / max(1, self.parks), 2),
             "restore_ms_avg": round(1000 * self.restore_seconds / max(1, self.restores), 2),
         }

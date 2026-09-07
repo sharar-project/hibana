@@ -71,7 +71,10 @@ class ParallelDraftModel:
         self.window = cfg['sliding_window'] or max_context
         self.cos, self.sin = frequencies(cfg, max_context + 32, self.device)
         with safe_open(str(snapshot / 'model.safetensors'), framework='pt', device='cpu') as source:
-            self.weights = {key: source.get_tensor(key).to(self.device) for key in source.keys()}
+            # clone() reads the mmap view into RAM first: copying the view to the
+            # device page-faults the file through DMA staging at ~200 MB/s on GB10
+            # (19 s for this draft); memcpy plus a device copy takes about a second.
+            self.weights = {key: source.get_tensor(key).clone().to(self.device) for key in source.keys()}
         # Fuse the equal-input projections once; original storage is released.
         for layer in range(cfg['num_hidden_layers']):
             prefix = f'layers.{layer}.'

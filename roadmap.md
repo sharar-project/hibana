@@ -1318,10 +1318,15 @@ safetensors mmap-to-device copy was the whole cost), the tier's park is
 0.6 ms of host time, the sampled path lost its ~40 hidden scalar syncs per
 round (vectorized rejection sampling; sampled chat 3.73 to 3.28 s), prefill
 uploads are pinned and non-blocking, and the 128 x 4 tail is recorded as a
-harness artifact. Next: the GEMM-epilogue quantization as a CUTLASS project
-(the cuDNN route crashes on SM121), the conv-kernel q/k/v layout, then
-Phase 8's unified-memory planner and a prepacked weight artifact so cold
-restarts also take seconds.
+harness artifact. The second pass (same note) took the restart to 12 s
+(the DFlash2 draft had the same mmap copy problem), turned the tier's arena
+into prefetched 2 GiB slabs allocated on demand and released when empty,
+with a backoff that refuses to grow within 4 GiB of the guard's floor, and
+moved every page free to host ids. Next: the GEMM-epilogue quantization as
+a CUTLASS project (the cuDNN route crashes on SM121), the conv-kernel q/k/v
+layout, then Phase 8's unified-memory planner. A prepacked weight artifact
+is no longer worth it for warm restarts (weights load in 4 s); it would only
+help a cold page cache.
 
 Hold the shipped engine to Qwen on GB10. Do not extract a generic target layout
 or add dense/MoE models. Proposer construction lives in

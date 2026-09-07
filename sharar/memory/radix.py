@@ -27,6 +27,7 @@ class Node:
     children: dict[int, "Node"] = field(default_factory=dict)
     snapshot_slot: int | None = None
     auxiliary: dict = field(default_factory=dict)  # draft identity -> metadata for these pages
+    page_ids: list[int] | None = None  # host ids of `pages` (frees without a device read-back)
     lock: int = 0
     last_access: float = field(default_factory=time.monotonic)
 
@@ -104,10 +105,11 @@ class RadixCache:
                 self.evict(need_pages=missing, need_slots=1)
                 if self.kv_pool.free_count < missing or self.state_pool.free_count < 1:
                     continue
-                pages = self.kv_pool.alloc(missing)
+                pages, page_ids = self.kv_pool.alloc_with_ids(missing)
                 slot = self.state_pool.alloc()
                 auxiliary = self.tier.restore(entry, pages, slot, start=present_len)
-                self.insert(entry.key, torch.cat([present_pages, pages]), {len(entry.key): slot}, {len(entry.key): auxiliary})
+                self.insert(entry.key, torch.cat([present_pages, pages]), {len(entry.key): slot}, {len(entry.key): auxiliary},
+                            page_ids=[-1] * present_len + page_ids)
                 restored += 1
             finally:
                 self.lock(present, -1)
@@ -159,7 +161,7 @@ class RadixCache:
             self.flush()
 
     # ---- insertion ----
-    def insert(self, ids: list[int], pages: torch.Tensor, snapshots: dict[int, int], auxiliary: dict | None = None) -> int:
+    def insert(self, ids: list[int], pages: torch.Tensor, snapshots: dict[int, int], auxiliary: dict | None = None, page_ids: list[int] | None = None) -> int:
         """Insert a full sequence. `pages` are its KV pages (the cache owns the
         ones it keeps), `snapshots` maps prefix length -> state slot (owned by
         the cache from now on) and forces node boundaries there.
@@ -180,6 +182,9 @@ class RadixCache:
                 if new_start is None:
                     new_start = pos
                 new = Node(key=ids[pos:next_b], pages=pages[pos:next_b].clone(), parent=node)
+                if page_ids is not None:
+                    new.page_ids = list(page_ids[pos:next_b])
+                    assert -1 not in new.page_ids, "new cache node must own its pages"
                 new.snapshot_slot = snapshots.get(next_b)
                 if new.snapshot_slot is not None:
                     new.auxiliary = (auxiliary or {}).get(next_b, {})
@@ -210,6 +215,8 @@ class RadixCache:
     def _split(self, node: Node, n: int) -> Node:
         """Split `node` so that its first n tokens become a new parent node."""
         head = Node(key=node.key[:n], pages=node.pages[:n], parent=node.parent, lock=node.lock, last_access=node.last_access)
+        if node.page_ids is not None:
+            head.page_ids, node.page_ids = node.page_ids[:n], node.page_ids[n:]
         node.key = node.key[n:]
         node.pages = node.pages[n:]
         node.parent.children[head.key[0]] = head
@@ -263,7 +270,10 @@ class RadixCache:
             _, path_pages = self._walk(key)
             self.tier.park(key, path_pages, leaf.snapshot_slot, leaf.auxiliary)
         del leaf.parent.children[leaf.key[0]]
-        self.kv_pool.free(leaf.pages)
+        if leaf.page_ids is not None:
+            self.kv_pool.free_ids(leaf.page_ids)
+        else:
+            self.kv_pool.free(leaf.pages)
         if leaf.snapshot_slot is not None:
             self.state_pool.free(leaf.snapshot_slot)
         self.cached_tokens -= len(leaf.key)

@@ -87,7 +87,32 @@ common continuation would be cheating the benchmark. On real workloads the
 equivalent is "one hard request in a batch", which is the batch-1 hard-text
 rate. No change; the cell keeps its 2x range in the tables.
 
-## 5. Results
+## 5. Second pass: the draft load, the arena, and page frees
+
+The production restart timeline (container start to `serving on`) after the
+weight-load fix still showed 30 s: imports 2.2 s, target weights 4 s, pools
+1.2 s, **DFlash2 draft load 19.3 s**, cuDNN handle and graph capture 2.5 s,
+warmup 1.3 s. The draft loader had the same mmap-to-device copy; the same
+`clone()` fixes it.
+
+The cold tier's arena was zero-filled from the GPU at startup to avoid page
+faults on the eviction path. Measured on a 4 GiB managed block: the fill
+takes 3.0 s and leaves the pages reading 5x slower afterwards than pages
+touched by `cudaMemPrefetchAsync` (1 ms to issue) or by their first write.
+The arena is now built from 2 GiB slabs allocated on demand, each prefetched
+to the GPU when created, released when empty, and never grown when host
+`MemAvailable` would fall within 4 GiB of the guard's floor. The 24 GiB
+budget therefore costs nothing until sessions are parked, and the tier backs
+off instead of pushing the host into the memory guard.
+
+Page frees no longer read the device: requests carry the host ids of the
+pages they own (`RequestState.page_ids`, appended on admission and on every
+published reservation), cache nodes carry the ids of their pages, and the
+tier restores through `alloc_with_ids`. Every free on the serving path
+(release, retraction, cache insertion duplicates, leaf eviction) is now a
+host list operation; `KvPool.free(tensor)` remains for tests only.
+
+## 6. Results of the first pass
 
 - Plain and MTP canaries token-identical to the frozen reference after the
   loader change; **666 CPU/GPU checks** pass in the built image.
@@ -104,3 +129,22 @@ rate. No change; the cell keeps its 2x range in the tables.
   means the specific piece of data you need isn't on that sticky note,
   forcing you to pause and retrieve it from ..." which meets the rubric.
 - Evidence: `${SHARAR_RESULTS}/reviews/2026-09-07f/`.
+
+## 7. Results of the second pass
+
+- **666 CPU/GPU checks** pass in the built image; frozen workloads 0
+  failures, completion times unchanged (coding 0.57 s, JSON 0.45 s, tool
+  0.73 s, chat 3.79 s, sampled chat 3.29 s, session cold 2.84 / repeat 2.20 s).
+- Production restart, `run-sharar.sh` to `/health` ready: **12.0 s**
+  (weights 4 s, pools 1.2 s, draft 0.5 s, graphs and warmup 4.3 s). The
+  first chat request after the restart answers in 0.48 s, the second in
+  0.45 s: no page-fault storm from the arena.
+- Restart history: 130 s (September 4) -> 30 s (this morning) -> 12 s.
+- Cold tier on the slab arena (idle machine, 4 GiB budget): the evicted 30K
+  session resumes in **0.147 s** (cold prefill 18.6 s), restore 14.6 ms,
+  park 0.47 ms of host time, two slabs allocated on demand. Run beside an
+  idle production instance the tier refused to grow (`last_reject: no slab`)
+  because host `MemAvailable` was within 4 GiB of the guard's floor, which
+  is the intended backoff: the tier never pushes the host into the memory
+  guard. `spec_stats`/`cache` now report `last_reject` for that case.
+- Relaunch after the A/B: ready in 14.1 s, verify passes.
