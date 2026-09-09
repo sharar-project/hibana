@@ -4,7 +4,7 @@ from sharar import config
 MAX_DEPTHS = {"mtp": 4, "ngram": 4, "dspark": 7, "dflash2": 15}
 
 
-def create(proposer, k, model, context, num_pages):
+def create(proposer, k, model, context, num_pages, *, draft_precision='bf16'):
     if proposer == "mtp":
         from sharar.model.mtp import MtpHead
         from sharar.proposers.mtp import MtpProposer
@@ -24,7 +24,7 @@ def create(proposer, k, model, context, num_pages):
         name, revision = PINS[proposer]
         root = config.snapshot_dir().parents[2]
         snapshot = root / ("models--" + name.replace("/", "--")) / "snapshots" / revision
-        adapter = ParallelProposer(ParallelDraftModel(snapshot, model, context.max_context), context, k, proposer)
+        adapter = ParallelProposer(ParallelDraftModel(snapshot, model, context.max_context, precision=draft_precision), context, k, proposer)
     else:
         raise ValueError(f"unknown proposer {proposer!r}")
     return adapter

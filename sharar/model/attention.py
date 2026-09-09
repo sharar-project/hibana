@@ -1,8 +1,7 @@
 """Full attention layer: FP8 QKV/O projections, gated output, q/k Gemma norm, partial RoPE.
 
-Prefill uses FlashInfer ragged causal attention over bf16 K/V (the reference's
-no-prefix path) and writes K/V into the FP8 pages. Decode reads the FP8 pages
-through FlashInfer paged decode.
+Prefill attends to new K/V in BF16 and merges that result with attention over
+the FP8 cached prefix. Verification and decode read the FP8 pages.
 """
 
 from __future__ import annotations
@@ -68,6 +67,21 @@ class Attention:
 
     def _prefill_attention(self, q, k, v, ctx):
         t = q.shape[0]
+        if ctx is None or ctx.mode == "prefill":
+            self.ragged.plan(ctx.seq_lens if ctx is not None and ctx.batched else [t], q.device)
+            if ctx is not None and ctx.paged_prefill_wrapper is not None:
+                from flashinfer.cascade import merge_state
+
+                new_out, new_lse = self.ragged.run_return_lse(q, k, v)
+                prefix_out, prefix_lse = ctx.paged_prefill_wrapper.run(
+                    q, ctx.kv_pool.cache(self.layer_id), return_lse=True,
+                )
+                attn, _ = merge_state(new_out, new_lse, prefix_out, prefix_lse)
+            else:
+                attn = self.ragged.run(q, k, v)
+            if ctx is not None and ctx.kv_pool is not None:
+                ctx.kv_pool.write(self.layer_id, ctx.pages, k, v)
+            return attn.view(t, self.q_size)
         if ctx is not None and ctx.kv_pool is not None:
             ctx.kv_pool.write(self.layer_id, ctx.pages, k, v)
         if ctx is not None and (ctx.prefix_len > 0 or ctx.batched):

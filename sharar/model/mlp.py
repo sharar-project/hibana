@@ -28,8 +28,8 @@ class Mlp:
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         gate_up = ops.nvfp4_linear(x, self.gate_up)
         if self.fused_silu_quant:
-            # silu(gate) * up in fp32, quantized straight to NVFP4 (Triton; the
-            # FlashInfer experts kernel it replaces ran at ~120 GB/s here).
+            # Compute in FP32, preserve the BF16 product boundary, then pack
+            # directly to NVFP4 without a materialized activation tensor.
             pre = silu_mul_nvfp4_quantize(gate_up, self.down.input_scale_inv)
             return ops.nvfp4_linear(None, self.down, prequantized=pre)
         return ops.nvfp4_linear(ops.silu_and_mul(gate_up), self.down)

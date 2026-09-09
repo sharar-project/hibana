@@ -1,15 +1,33 @@
 """Gemma-style RMSNorm: out = x / rms(x) * (1 + weight), computed in fp32.
 
-The fused Triton kernel (sharar.kernels.fused_norm) does the residual add, the
-norm and optionally the FP8 static quantization of the output in one pass. The
-torch path is kept as the readable reference for tests.
+The native CUDA norm preserves the FP32 residual sum and reduction order used
+by this checkpoint's reference runtime. FP8 quantization consumes its BF16
+output. Verification preserves the pinned compiled reference's separate
+variance/numerator precision in kernels.verify_norm. The torch path is kept
+as a readable numerical reference for tests.
 """
 
 from __future__ import annotations
 
 import torch
 
-from sharar.kernels.fused_norm import gemma_rmsnorm
+def gemma_rmsnorm(x, weight, eps, residual=None, fp8_scale=None, *, verify=False):
+    from flashinfer.norm import gemma_rmsnorm as native_norm, gemma_fused_add_rmsnorm
+    from sharar.kernels.fp8_quant import quant_fp8
+
+    if residual is None:
+        if verify:
+            from sharar.kernels.verify_norm import verify_input_norm
+            out = verify_input_norm(x, weight, eps)
+        else:
+            out = native_norm(x, weight, eps)
+    elif verify:
+        from sharar.kernels.verify_norm import verify_add_norm
+        out = verify_add_norm(x, residual, weight, eps)
+    else:
+        out = x.clone()
+        gemma_fused_add_rmsnorm(out, residual, weight, eps)
+    return out, quant_fp8(out, fp8_scale) if fp8_scale is not None else None
 
 
 class GemmaRMSNorm:
@@ -29,31 +47,28 @@ class GemmaRMSNorm:
             return gemma_rmsnorm(x.reshape(-1, x.shape[-1]), self.weight, self.eps)[0].view(x.shape)
         return gemma_rmsnorm(x, self.weight, self.eps)[0]
 
-    def fused_add(self, x: torch.Tensor, residual: torch.Tensor, inplace: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
-        """residual <- x + residual (bf16); return (norm(residual), residual)."""
+    def fused_add(self, x: torch.Tensor, residual: torch.Tensor, inplace: bool = False, *, verify: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+        """Normalize the FP32 sum, with the compiled numerator when verifying."""
         if not inplace:
             residual = residual.clone()
-        out, _ = gemma_rmsnorm(x, self.weight, self.eps, residual=residual)
+        out, _ = gemma_rmsnorm(x, self.weight, self.eps, residual=residual, verify=verify)
         return out, residual
 
-    def fused_add_nvfp4(self, x: torch.Tensor, residual: torch.Tensor, global_scale: torch.Tensor, inplace: bool = False):
-        """residual <- x + residual (bf16); return (NVFP4 (packed, scales) of
-        norm(residual), residual). The normalized bf16 tensor is never
-        materialized: it only fed the NVFP4 gate/up projection."""
-        from sharar.kernels.fused_norm_nvfp4 import gemma_rmsnorm_nvfp4
+    def fused_add_nvfp4(self, x: torch.Tensor, residual: torch.Tensor, global_scale: torch.Tensor, inplace: bool = False, *, verify: bool = False):
+        """Normalize with the same arithmetic and quantize the BF16 result."""
+        from sharar.kernels.nvfp4_quant import nvfp4_quantize
 
-        if not inplace:
-            residual = residual.clone()
-        pre = gemma_rmsnorm_nvfp4(x, self.weight, self.eps, global_scale, residual=residual)
+        out, residual = self.fused_add(x, residual, inplace=inplace, verify=verify)
+        pre = nvfp4_quantize(out, global_scale)
         return pre, residual
 
-    def fused_add_quant(self, x: torch.Tensor, residual: torch.Tensor | None, fp8_scale: torch.Tensor, inplace: bool = False):
+    def fused_add_quant(self, x: torch.Tensor, residual: torch.Tensor | None, fp8_scale: torch.Tensor, inplace: bool = False, *, verify: bool = False):
         """Like fused_add but also returns the FP8-quantized output. With
         residual None (first layer) the residual becomes x itself."""
         if residual is None:
-            out, fp8 = gemma_rmsnorm(x, self.weight, self.eps, fp8_scale=fp8_scale)
+            out, fp8 = gemma_rmsnorm(x, self.weight, self.eps, fp8_scale=fp8_scale, verify=verify)
             return out, fp8, x
         if not inplace:
             residual = residual.clone()
-        out, fp8 = gemma_rmsnorm(x, self.weight, self.eps, residual=residual, fp8_scale=fp8_scale)
+        out, fp8 = gemma_rmsnorm(x, self.weight, self.eps, residual=residual, fp8_scale=fp8_scale, verify=verify)
         return out, fp8, residual

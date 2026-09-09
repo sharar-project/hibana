@@ -61,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--port", type=int, default=30001)
     p_serve.add_argument("--proposer", choices=("mtp", "ngram", "dspark", "dflash2"), default="dflash2")
     p_serve.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default="reconstruct")
+    p_serve.add_argument("--draft-precision", choices=("bf16", "fp8"), default="bf16", help="parallel draft matrix precision")
     p_serve.add_argument("--spec", type=int, default=None, help="draft tokens per round (0 = off; default: SHARAR_SPEC, else the proposer's validated depth)")
     p_prof = sub.add_parser("profile", help="kernel time breakdown for prefill or decode")
     p_prof.add_argument("--prompts", required=True)
@@ -105,13 +106,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         import os
 
-        from sharar.api.server import serve
         from sharar.proposers.factory import MAX_DEPTHS
 
         if args.spec is None:
             env = os.environ.get("SHARAR_SPEC")
             args.spec = int(env) if env not in (None, "", "auto") else {"mtp": 3}.get(args.proposer, MAX_DEPTHS[args.proposer])
-        serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state)
+        if args.draft_precision == 'fp8' and (not args.spec or args.proposer not in ('dspark', 'dflash2')):
+            parser.error('--draft-precision fp8 requires an enabled parallel draft')
+        from sharar.api.server import serve
+        serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state,
+              draft_precision=args.draft_precision)
         return 0
     if args.command == "sched-bench":
         from sharar.engine.run import sched_bench_cli

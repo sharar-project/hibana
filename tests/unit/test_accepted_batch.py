@@ -27,6 +27,7 @@ class MarkedModel:
 
 def setup(batch, checkpoint=False):
     p = ParallelProposer.__new__(ParallelProposer)
+    p.feedback_graphs, p._feedback_enabled = None, False
     p.model, p.k, p.window, p.pitch = MarkedModel(), 7, 8, 16
     p.context = ProposerContext(torch.device('cpu'), 4, 128)
     p.features = torch.arange(5 * 8 * 3).reshape(5, 8, 3).float()
@@ -98,3 +99,21 @@ def test_invalid_accepted_batch_fails_before_private_writes(failure):
         p.accepted_batch(reqs, emitted, features)
     assert torch.equal(p.features, before)
     assert p.model.projections == p.model.kv_writes == 0
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('interior', [False, True])
+def test_feedback_graph_dispatch_preserves_interior_checkpoint_fallback(enabled, interior):
+    p, reqs, emitted, features = setup(2, checkpoint=interior)
+    calls = []
+    p._feedback_enabled = enabled
+    p.feedback_graphs = SimpleNamespace(graphs={5: object()}, run=lambda *args: calls.append(args))
+    p._accepted(reqs[1], emitted[1], features, 1)
+    if enabled and not interior:
+        assert calls == [(reqs[1], emitted[1], features, 1)]
+        assert p.model.projections == 0
+    else:
+        assert not calls
+        assert p.model.projections == 1
+        assert reqs[1].proposer_state.end == reqs[1].committed_len
+        assert reqs[1].committed_len in reqs[1].cache_auxiliary

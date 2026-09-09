@@ -467,10 +467,19 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             raise HTTPException(429, str(exc))
         cid = f"cmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
+        include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
+        return_token_ids = bool(body.get("return_token_ids"))
+
+        def usage(n_out: int) -> dict:
+            return {"prompt_tokens": len(ids), "completion_tokens": n_out,
+                    "total_tokens": len(ids) + n_out,
+                    "prompt_tokens_details": {"cached_tokens": ticket.req.prefix_len}}
+
         if body.get("stream"):
             async def events():
                 detok = Detokenizer(tok, stop)
                 out: list[int] = []
+                sent_prompt_ids = False
                 while True:
                     if await http.is_disconnected():
                         engine.cancel(ticket)
@@ -489,15 +498,24 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                         finished, reason = True, "stop"
                     chunk = {"id": cid, "object": "text_completion", "created": created, "model": MODEL_ID,
                              "choices": [{"index": 0, "text": delta, "finish_reason": reason if finished else None}]}
+                    if return_token_ids:
+                        chunk["choices"][0]["token_ids"] = new
+                        if not sent_prompt_ids:
+                            chunk["choices"][0]["prompt_token_ids"] = ids
+                            sent_prompt_ids = True
                     yield f"data: {json.dumps(chunk)}\n\n"
                     if finished:
+                        if include_usage:
+                            yield f"data: {json.dumps({'id': cid, 'object': 'text_completion', 'created': created, 'model': MODEL_ID, 'choices': [], 'usage': usage(len(out))})}\n\n"
                         break
                 yield "data: [DONE]\n\n"
             return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
         out, text, reason = await _collect(ticket, stop, http)
+        choice = {"index": 0, "text": text, "finish_reason": reason}
+        if return_token_ids:
+            choice.update(token_ids=out, prompt_token_ids=ids)
         return {"id": cid, "object": "text_completion", "created": created, "model": MODEL_ID,
-                "choices": [{"index": 0, "text": text, "finish_reason": reason}],
-                "usage": {"prompt_tokens": len(ids), "completion_tokens": len(out), "total_tokens": len(ids) + len(out)}}
+                "choices": [choice], "usage": usage(len(out))}
 
     # ---- OpenAI chat ----
     @app.post("/v1/chat/completions")
@@ -605,20 +623,24 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     return app
 
 
-def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots") -> None:
+def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16') -> None:
+    from sharar.memory.spec_budget import SpecConfig
+
+    if not spec and draft_precision != 'bf16':
+        raise ValueError('draft precision requires speculation')
+    spec_config = SpecConfig(proposer, spec, state_strategy, draft_precision) if spec else None
     import uvicorn
 
     from sharar.engine.executor import Executor
     from sharar.engine.scheduler import SchedulerConfig
     from sharar.model.qwen38 import Qwen38
-    from sharar.memory.spec_budget import SpecConfig
 
     snap = config.snapshot_dir()
     tok = SnapshotTokenizer(snap)
     tmpl = ChatTemplate(snap)
     log(f"loading {MODEL_ID}@{config.MODEL_REVISION[:8]}")
     model = Qwen38(snap, log=log)
-    ex = Executor(model, log=log, spec_config=SpecConfig(proposer, spec, state_strategy) if spec else None)
+    ex = Executor(model, log=log, spec_config=spec_config)
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
     ex.enable_cold_tier(log=log)
@@ -637,7 +659,8 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "kv_pages": ex.kv_pool.num_pages,
         "state_slots": ex.state_pool.num_slots,
         "ledger_gib": {k: round(v / 2**30, 2) for k, v in ex.ledger.entries.items()},
-        "speculative": {"algorithm": ex.spec.proposer.requirements.name, "num_draft_tokens": spec} if spec else None,
+        "speculative": {"algorithm": ex.spec.proposer.requirements.name, "num_draft_tokens": spec,
+                        "draft_precision": draft_precision} if spec else None,
         "attention_backend": "flashinfer",
         "gdn_backend": "triton",
         "kv_cache_dtype": "float8_e4m3fn",

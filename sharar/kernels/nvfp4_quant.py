@@ -1,8 +1,11 @@
-"""NVFP4 activation quantization (Triton), bit-compatible with FlashInfer's
-fp4_quantize(is_sf_swizzled_layout=True, sf_vec_size=16).
+"""NVFP4 activation quantization in FlashInfer's swizzled block-scale layout.
+
+E2M1 ties round to even and preserve signed zero. Full quantizer agreement
+also depends on the reciprocal evaluation order and the BF16 SiLU/product
+boundary. Preserve both to match the CUDA quantizer used by this checkpoint.
 
 Per 16-value block: sf = e4m3(global_scale * amax / 6); the block is scaled by
-global_scale / sf and rounded to e2m1 (round-to-nearest-even, saturating at 6).
+reciprocal(sf * reciprocal(global_scale)) and rounded to e2m1 (round-to-nearest-even, saturating at 6).
 Values are packed two per byte (element 2i in the low nibble). Block scales are
 written in the 128x4 swizzled layout the CUTLASS SM120 GEMM reads:
   rows in tiles of 128 (4 groups of 32), columns in groups of 4:
@@ -15,6 +18,12 @@ from __future__ import annotations
 import torch
 import triton
 import triton.language as tl
+from triton.language.extra.cuda import libdevice
+
+
+@triton.jit
+def rcp_approx_ftz(x):
+    return tl.inline_asm_elementwise("rcp.approx.ftz.f32 $0, $1;", constraints="=f,f", args=[x], dtype=tl.float32, is_pure=True, pack=1)
 
 
 @triton.jit
@@ -33,31 +42,34 @@ def _nvfp4_quant_kernel(
         # x holds [gate | up] with K values each; quantize silu(gate) * up.
         g = tl.load(x_ptr + row * stride_xm + cols, mask=mask, other=0.0).to(tl.float32)
         u = tl.load(x_ptr + row * stride_xm + K + cols, mask=mask, other=0.0).to(tl.float32)
-        x = g * tl.sigmoid(g) * u
+        # The fused path preserves the BF16 activation boundary of the MLP.
+        x = (tl.div_rn(g, 1.0 + libdevice.exp(-g)) * u).to(tl.bfloat16).to(tl.float32)
     else:
         x = tl.load(x_ptr + row * stride_xm + cols, mask=mask, other=0.0).to(tl.float32)
     xb = tl.reshape(x, (NB, 16))
     amax = tl.max(tl.abs(xb), axis=1)  # [NB]
     gs = tl.load(gs_ptr)
-    sf = (gs * (amax * (1.0 / 6.0))).to(tl.float8e4nv)
+    sf = (gs * (amax * rcp_approx_ftz(tl.full((), 6.0, tl.float32)))).to(tl.float8e4nv)
     sf_f = sf.to(tl.float32)
-    inv = tl.where(sf_f != 0.0, gs / sf_f, 0.0)
+    # Algebraically gs/sf, but its floating-point rounding differs at FP4 ties.
+    inv = tl.where(amax != 0.0, rcp_approx_ftz(sf_f * rcp_approx_ftz(gs)), 0.0)
     v = xb * inv[:, None]
     # e2m1 round-to-nearest-even over magnitudes {0, .5, 1, 1.5, 2, 3, 4, 6}, saturate at 6
     a = tl.minimum(tl.abs(v), 6.0)
     # candidates by range; ties go to even mantissa
-    q = tl.where(a < 0.25, 0.0,
+    q = tl.where(a <= 0.25, 0.0,
         tl.where(a < 0.75, 0.5,
         tl.where(a <= 1.25, 1.0,  # 1.25 tie -> 1.0 (even)
         tl.where(a < 1.75, 1.5,
         tl.where(a <= 2.5, 2.0,   # 2.5 tie -> 2.0 (even)
         tl.where(a < 3.5, 3.0,
         tl.where(a <= 5.0, 4.0, 6.0)))))))  # 5.0 tie -> 4.0 (even)
-    # ties at 0.25 -> 0 (even) and 0.75 -> 1.0 (even): fix those two boundaries
-    q = tl.where(a == 0.75, 1.0, q)
+    # The inclusive first boundary rounds 0.25 to even zero. At 0.75 the
+    # strict second comparison falls through to even 1.0.
     code = tl.where(q == 0.0, 0, tl.where(q == 0.5, 1, tl.where(q == 1.0, 2, tl.where(q == 1.5, 3,
            tl.where(q == 2.0, 4, tl.where(q == 3.0, 5, tl.where(q == 4.0, 6, 7))))))).to(tl.int32)
-    code = tl.where(v < 0.0, code | 8, code)
+    # E2M1 preserves the sign of zero, including inputs that underflow to zero.
+    code = tl.where(v.to(tl.int32, bitcast=True) < 0, code | 8, code)
     code = tl.reshape(code, (BLOCK_K,))
     lo = tl.reshape(code, (BLOCK_K // 2, 2))
     packed = (tl.sum(lo * tl.reshape(tl.where(tl.arange(0, BLOCK_K) % 2 == 0, 1, 16), (BLOCK_K // 2, 2)), axis=1)).to(tl.uint8)

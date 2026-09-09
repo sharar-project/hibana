@@ -55,6 +55,8 @@ class ParallelProposer:
     def __init__(self, model, context, k, name):
         import flashinfer
         self.model, self.context, self.k, self.name = model, context, k, name
+        self.feedback_graphs = None
+        self._feedback_enabled = False
         self.noise_steps = k if name == 'dspark' else k + 1
         self.window = model.window
         self.pitch = self.window + self.noise_steps
@@ -75,7 +77,9 @@ class ParallelProposer:
     @property
     def bytes(self):
         tensors = [self.features, *(t for pair in self.caches for t in pair)]
-        return self.model.bytes + sum(t.numel() * t.element_size() for t in tensors) + self.feature_cache.capacity + 128 * 2**20
+        feedback_bytes = self.feedback_graphs.bytes if self.feedback_graphs is not None else 0
+        return (self.model.bytes + sum(t.numel() * t.element_size() for t in tensors)
+                + self.feature_cache.capacity + 128 * 2**20 + feedback_bytes)
 
     def _state(self, req):
         if req.proposer_state is None:
@@ -162,6 +166,7 @@ class ParallelProposer:
                      sm_scale=128**-.5, window_left=self.window - 1 if self.name == 'dflash2' else -1)
 
     def propose(self, requests, pages, inputs, *, graphs):
+        self._feedback_enabled = graphs
         batch, s, device = len(requests), self.noise_steps, self.context.device
         tokens = torch.full((batch, s), 248070, device=device, dtype=torch.int64)
         tokens[:, 0] = inputs.tokens
@@ -222,7 +227,8 @@ class ParallelProposer:
 
         The target has already committed all rows. Temporary work is bounded
         by max_batch * (k + 1), independent of context/cache capacity. Single
-        rows and unusual interior checkpoints retain the sequential oracle.
+        requests use exact-count graphs when available; interior checkpoints
+        retain the sequential oracle.
         """
         if not 1 <= len(requests) <= self.context.max_batch or len(requests) != len(emitted):
             raise ValueError('invalid accepted batch')
@@ -261,6 +267,11 @@ class ParallelProposer:
 
     def _accepted(self, req, emitted, features, row):
         count = len(emitted)
+        start = req.committed_len - count
+        if (self.feedback_graphs is not None and self._feedback_enabled and count in self.feedback_graphs.graphs
+                and not any(start < point < req.committed_len for point in req.checkpoints)):
+            self.feedback_graphs.run(req, emitted, features, row)
+            return
         self.ingest_prefill(req, emitted, req.committed_len - count,
                             {'features': {lid: rows[row, :count] for lid, rows in features.layers.items()}})
         self._state(req).pending = None if req.finished else emitted[-1]
@@ -276,5 +287,8 @@ class ParallelProposer:
 
     def capture_graphs(self, log=None):
         from sharar.proposers.parallel_graphs import ParallelGraphs
+        from sharar.proposers.parallel_feedback import FeedbackGraphs
         self.graphs = ParallelGraphs(self)
         self.graphs.capture(log=log)
+        self.feedback_graphs = FeedbackGraphs(self)
+        self.feedback_graphs.capture(log=log)

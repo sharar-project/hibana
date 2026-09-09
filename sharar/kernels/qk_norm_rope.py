@@ -25,12 +25,12 @@ def _norm_rope_kernel(
     cols = tl.arange(0, D)
     x = tl.load(base + cols).to(tl.float32)
     w = tl.load(w_ptr + cols).to(tl.float32)
-    rstd = 1.0 / tl.sqrt(tl.sum(x * x, axis=0) / D + eps)
+    rstd = tl.rsqrt(tl.sum(x * x, axis=0) / D + eps)
     y = (x * rstd * (1.0 + w)).to(tl.bfloat16).to(tl.float32)
     out = out_ptr + t * stride_ot + h * stride_oh
     # dims >= R pass through
     tl.store(out + cols, y.to(tl.bfloat16), mask=cols >= R)
-    # rope on dims < R, NeoX pairing (i, i + R/2); cos/sin are bf16 like the cache
+    # rope on dims < R, NeoX pairing (i, i + R/2); cache and rotary products remain FP32 until the output store
     lane = tl.arange(0, HALF)
     pos = tl.load(pos_ptr + t)
     cos = tl.load(cos_sin_ptr + pos * R + lane).to(tl.float32)
@@ -41,8 +41,8 @@ def _norm_rope_kernel(
     w2 = tl.load(w_ptr + HALF + lane).to(tl.float32)
     y1 = (x1 * rstd * (1.0 + w1)).to(tl.bfloat16).to(tl.float32)
     y2 = (x2 * rstd * (1.0 + w2)).to(tl.bfloat16).to(tl.float32)
-    o1 = (y1 * cos).to(tl.bfloat16).to(tl.float32) - (y2 * sin).to(tl.bfloat16).to(tl.float32)
-    o2 = (y2 * cos).to(tl.bfloat16).to(tl.float32) + (y1 * sin).to(tl.bfloat16).to(tl.float32)
+    o1 = y1 * cos - y2 * sin
+    o2 = y2 * cos + y1 * sin
     tl.store(out + lane, o1.to(tl.bfloat16))
     tl.store(out + HALF + lane, o2.to(tl.bfloat16))
 

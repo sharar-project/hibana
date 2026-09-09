@@ -81,7 +81,8 @@ class Executor:
         if log:
             log(f"  pools: {num_pages} KV pages ({self.kv_pool.bytes / 2**30:.2f} GiB), {num_slots} state slots ({num_slots * self.state_pool.bytes_per_slot / 2**30:.2f} GiB)")
         if spec_config is not None:
-            self.enable_spec(spec_config.depth, log=log, proposer=spec_config.name, state_strategy=spec_config.state_strategy)
+            self.enable_spec(spec_config.depth, log=log, proposer=spec_config.name, state_strategy=spec_config.state_strategy,
+                             draft_precision=spec_config.draft_precision)
 
     @property
     def cache(self):
@@ -91,17 +92,17 @@ class Executor:
     def cache(self, value):
         self.state.cache = value
 
-    def enable_spec(self, k: int = 3, log=None, *, proposer: str = "mtp", state_strategy: str = "snapshots") -> None:
-        """Select an adapter once at startup; MTP remains the serving default."""
+    def enable_spec(self, k: int = 3, log=None, *, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16') -> None:
+        """Select the adapter and its numerical profile once, before capture."""
         if self.graphs is not None or self.spec is not None:
             raise ValueError("enable speculation once, before graph capture")
         from sharar.memory.spec_budget import SpecConfig, budget
         from sharar.memory.ledger import check_load_headroom
-        fixed, per_page = budget(SpecConfig(proposer, k, state_strategy), self.max_batch, self.max_context)
+        fixed, per_page = budget(SpecConfig(proposer, k, state_strategy, draft_precision), self.max_batch, self.max_context)
         check_load_headroom(fixed + per_page * self.kv_pool.num_pages + 8 * 2**30)
         context = ProposerContext(self.device, self.max_batch, self.max_context)
         from sharar.proposers.factory import create
-        adapter = create(proposer, k, self.model, context, self.kv_pool.num_pages)
+        adapter = create(proposer, k, self.model, context, self.kv_pool.num_pages, draft_precision=draft_precision)
         self.set_proposer(adapter, state_strategy=state_strategy)
         self.ledger.record_cuda_allocated("proposer_and_verify")
         if log:
@@ -222,16 +223,16 @@ class Executor:
         self.state.flush()
 
     # ---- steps ----
-    def _plan_paged_prefill(self, total_pages: torch.Tensor, new_tokens: int) -> None:
+    def _plan_paged_prefill(self, prefix_pages: torch.Tensor, new_tokens: int) -> None:
         # Host index pointers: FlashInfer's plan() reads them on the CPU, so
         # device tensors would cost a synchronization per plan.
         qo_indptr = torch.tensor([0, new_tokens], dtype=torch.int32)
-        kv_indptr = torch.tensor([0, total_pages.shape[0]], dtype=torch.int32)
+        kv_indptr = torch.tensor([0, prefix_pages.shape[0]], dtype=torch.int32)
         last_page_len = torch.ones(1, dtype=torch.int32)
         self._paged_prefill.plan(
-            qo_indptr, kv_indptr, total_pages, last_page_len,
+            qo_indptr, kv_indptr, prefix_pages, last_page_len,
             config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, self.kv_pool.page_size,
-            causal=True, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
+            causal=False, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
         )
 
     def _checkpoint_positions(self, start: int, end: int, total: int) -> list[int]:
@@ -284,7 +285,7 @@ class Executor:
             prefix_pages=req.pages[:start] if start else None,
         )
         if start:
-            self._plan_paged_prefill(req.pages[:end], t)
+            self._plan_paged_prefill(req.pages[:start], t)
             ctx.paged_prefill_wrapper = self._paged_prefill
         for _, pos, slot in self.state.prefill_checkpoints([(req, self._checkpoint_positions(start, end, n))]):
             ctx.checkpoint_positions.append(pos)
@@ -311,8 +312,8 @@ class Executor:
             pos_list += list(range(start, end))
             page_list.append(req.pages[start:end])
             cu.append(cu[-1] + n_new)
-            kv_indices.append(req.pages[:end])
-            kv_indptr.append(kv_indptr[-1] + end)
+            kv_indices.append(req.pages[:start])
+            kv_indptr.append(kv_indptr[-1] + start)
             seq_slots.append(req.slot)
             prefix_lens.append(start)
             seq_lens.append(n_new)
@@ -330,13 +331,14 @@ class Executor:
             checkpoint_slots=[s for _, _, s in checkpoints],
             checkpoint_seqs=[i for i, _, _ in checkpoints],
         )
-        self._paged_prefill.plan(
-            torch.tensor(cu, dtype=torch.int32), torch.tensor(kv_indptr, dtype=torch.int32), torch.cat(kv_indices),
-            torch.ones(len(chunks), dtype=torch.int32),
-            config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, self.kv_pool.page_size,
-            causal=True, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
-        )
-        ctx.paged_prefill_wrapper = self._paged_prefill
+        if any(prefix_lens):
+            self._paged_prefill.plan(
+                torch.tensor(cu, dtype=torch.int32), torch.tensor(kv_indptr, dtype=torch.int32), torch.cat(kv_indices),
+                torch.ones(len(chunks), dtype=torch.int32),
+                config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, self.kv_pool.page_size,
+                causal=False, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
+            )
+            ctx.paged_prefill_wrapper = self._paged_prefill
         ids = upload(ids_list, torch.int64, d)
         if self.spec is not None:
             ctx.feature_request = self.spec.proposer.requirements.features
