@@ -1355,6 +1355,16 @@ surviving mixed-precision candidates with whole-model
 quality and long continuations. Retain separate cold-request and warm-session
 latency goals. Launcher support now makes FP8 an explicit environment option.
 
+The [request-cache study and API proposal](docs/request-cache-policy.md) finds
+a separate agent-session performance cliff: target KV/GDN remains cached while
+draft features are evicted. Reusing duplicate checkpoint handles preserves the
+tested 10K/1K retry after one intervening request at the original 80 MiB feature
+budget: 11.40 -> 42.38 decode TPS, 87.76 -> 23.68 s completion. Fixed outputs
+match the immediate speculative control, while the old ordinary-decode
+fallback produces a different continuation. Joint KV/recurrent/draft retention,
+per-request reuse/store modes, namespaces, expiring priority and latest/branch
+checkpoint policies remain to implement. This does not close the cold TPS goal.
+
 The preceding [TPS validation](docs/gb10-tps.md) measures the repaired target with
 the explicit FP8 draft option at 37.65 / 30.14 / 46.09 output tokens/s including
 prefill for code / design / reasoning. AIPerf uses exact 10K input and 1K output

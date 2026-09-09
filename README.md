@@ -189,6 +189,12 @@ matrix candidate on code; that target remains open.
   reclamation while respecting the host memory floor. Build on the
   [existing managed-memory tier](docs/restart-and-syncs.md) to overlap restoration
   with useful work and retain more sessions without re-prefilling them.
+  The [request-cache proposal](docs/request-cache-policy.md) adds per-request
+  reuse/store modes, namespaces and expiring retention hints. First align
+  target KV/GDN snapshots with draft-feature retention. Removing duplicate
+  checkpoint saves keeps the tested interleaved 10K/1K retry speculative:
+  11.40 → 42.38 decode TPS at the same 80 MiB feature budget. Larger working
+  sets can still lose draft features despite retained target KV/GDN state.
 - [ ] **Cache prepared weights on SSD.** Persist engine-ready packed weights,
   keyed by checkpoint, precision and packing version, to avoid repeated
   conversion at startup. Measure cold and warm filesystem-cache loading

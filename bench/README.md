@@ -131,6 +131,28 @@ python3 -m bench.gb10_tree_screen --captures /proof/native-fp8 \
   --policy protected --budgets 32 64 128 --output /proof/protected-tree.json
 ```
 
+The [prefix-policy study](../docs/request-cache-policy.md) diagnoses retained
+target snapshots whose draft features were evicted. On frozen 10K prompts,
+it interleaves unrelated requests before repeating the code prompt:
+
+```bash
+python3 -m bench.gb10_prefix_policy --inputs /proof/frozen-inputs.json \
+  --output /proof/prefix-pilot
+python3 -m bench.gb10_prefix_policy --inputs /proof/frozen-inputs.json \
+  --output /proof/prefix-full --output-tokens 1000 --gaps 1 --warm-control
+python3 -m bench.gb10_prefix_policy --inputs /proof/frozen-inputs.json \
+  --output /proof/prefix-fixed --output-tokens 1000 --gaps 1 --warm-control \
+  --order native native --expect-speculation
+```
+
+`retained` only increases the benchmark's draft-feature budget; `native` uses
+the checked-out runtime's ordinary budget, including the duplicate-save fix
+when present. Neither benchmark mode implements request-level policy. Record output IDs and
+fallbacks: plain and speculative decoding may produce different continuations.
+These cached-request timings are separate from the cold 10K/1K benchmark.
+The fallback baseline uses runtime `38d1b7c`; the evidence bundle retains its
+benchmark source. Commands against current source include checkpoint deduplication.
+
 The optional CPU selector screen trains on code/design and evaluates reasoning
 once, using a fixed eight-feature residual ranker:
 

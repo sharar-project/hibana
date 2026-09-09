@@ -103,6 +103,13 @@ class ParallelProposer:
             return
         req.cache_auxiliary = {p: value for p, value in req.cache_auxiliary.items() if p in req.checkpoints}
         start = max(0, position - self.window)
+        # Prompt completion and release can save the same immutable prefix.
+        # Reuse its live handle so a duplicate window does not evict another
+        # checkpoint's features while the target snapshot is still cached.
+        handle = req.cache_auxiliary.get(position, {}).get(self.cache_identity)
+        cached = self.feature_cache.get(handle)
+        if cached is not None and cached[:2] == (start, position):
+            return
         ring = torch.arange(start, position, device=self.context.device) % self.window
         handle = self.feature_cache.put(start, position, self.features[state.slot, ring])
         if handle is not None:

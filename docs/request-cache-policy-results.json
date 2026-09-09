@@ -1,0 +1,106 @@
+{
+  "schema": 2,
+  "summary_document": "request-cache-policy.md",
+  "full_evidence": {
+    "path": "reviews/2026-09-09-prefix-policy/results.json",
+    "bytes": 3911,
+    "sha256": "fdeb406162083f63dfdd7b68a32cbf365b581847610cea52c7e66f4e1ed10c73"
+  },
+  "summary": {
+    "baseline": {
+      "samples": 2,
+      "mean": {
+        "decode_tps": 11.396596313294637,
+        "e2e_tps": 11.394287022096043,
+        "ttft_s": 0.10552798490971327,
+        "decode_s": 87.6579545661807,
+        "total_s": 87.76348255109042
+      },
+      "sample_total_s": [
+        87.63008666224778,
+        87.89687843993306
+      ],
+      "spec_rounds": [
+        0,
+        0
+      ],
+      "draft_fallbacks": [
+        1,
+        1
+      ],
+      "output_ids_equal_spec_control": false,
+      "emitted_work_equal_spec_control": false,
+      "first_different_output_index": 11
+    },
+    "larger_budget": {
+      "samples": 2,
+      "mean": {
+        "decode_tps": 42.36326628486127,
+        "e2e_tps": 42.20880564223707,
+        "ttft_s": 0.10998829966410995,
+        "decode_s": 23.58175176428631,
+        "total_s": 23.69174006395042
+      },
+      "sample_total_s": [
+        23.686353868804872,
+        23.697126259095967
+      ],
+      "spec_rounds": [
+        220,
+        220
+      ],
+      "draft_fallbacks": [
+        0,
+        0
+      ],
+      "output_ids_equal_spec_control": true,
+      "emitted_work_equal_spec_control": true,
+      "first_different_output_index": null
+    },
+    "deduplicated": {
+      "samples": 2,
+      "mean": {
+        "decode_tps": 42.379051313498266,
+        "e2e_tps": 42.22539113385085,
+        "ttft_s": 0.10946694016456604,
+        "decode_s": 23.572988900355995,
+        "total_s": 23.68245584052056
+      },
+      "sample_total_s": [
+        23.659241292625666,
+        23.705670388415456
+      ],
+      "spec_rounds": [
+        220,
+        220
+      ],
+      "draft_fallbacks": [
+        0,
+        0
+      ],
+      "output_ids_equal_spec_control": true,
+      "emitted_work_equal_spec_control": true,
+      "first_different_output_index": null
+    }
+  },
+  "speedup_ratio_mean_latency": 3.7058438171318175,
+  "feature_capacity_bytes": {
+    "baseline": 83886080,
+    "larger_budget": 482344960,
+    "deduplicated": 83886080
+  },
+  "validation": {
+    "cpu_passed": 403,
+    "cpu_skipped": 8,
+    "gpu_passed": 22,
+    "minimum_mem_available_gib": 74.44350051879883,
+    "health": 200
+  },
+  "limitations": [
+    "Cache-warm interleaving results; cold 1.5x-2x TPS goal remains open.",
+    "Fallback and speculative outputs differ at index 11; fixed outputs match the preserved immediate speculative control.",
+    "Deduplication validated at full length for one intervening request; joint retention remains unresolved.",
+    "Request-level cache-control API is proposed, not implemented.",
+    "Production restored; source fix is not deployed to its image."
+  ]
+}
