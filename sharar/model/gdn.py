@@ -21,6 +21,7 @@ from sharar.kernels.fla.fused_recurrent import fused_recurrent_gated_delta_rule_
 from sharar.kernels.fla.fused_sigmoid_gating_recurrent import fused_sigmoid_gating_delta_rule_update
 from sharar.kernels.fla.layernorm_gated import rms_norm_gated
 from sharar.kernels.fp8_quant import quant_fp8
+from sharar.kernels.verify_conv import verify_convolve
 from sharar.memory.state_pool import CONV_DIM, CONV_STATE_LEN
 from sharar.model.gdn_plan import prepare_gdn_prefill
 from sharar.weights.modelopt import Fp8Linear, load_fp8_linear
@@ -40,7 +41,7 @@ class GatedDeltaNet:
         self.conv_dim = 2 * self.key_dim + self.value_dim
         assert self.conv_dim == CONV_DIM
         # The reference fuses [q | k | v | z] into one FP8 projection whose shards
-        # are requantized to a shared scale. Keep those exact weights but run
+        # are requantized to a shared scale. Keep that layout but run
         # two GEMMs so both outputs are contiguous with no copy.
         fused = load_fp8_linear(w, [f"{prefix}.in_proj_qkv", f"{prefix}.in_proj_z"], device)
         self.in_qkvz = fused
@@ -85,12 +86,17 @@ class GatedDeltaNet:
     def _project_ba(self, x):
         ba = x @ self.in_ba.T
         b, a = ba.split([self.num_v_heads, self.num_v_heads], dim=-1)
-        return b.contiguous(), a.contiguous()
+        # Every gating/recurrent kernel consumes the token strides explicitly.
+        return b, a
 
-    def _finish(self, core: torch.Tensor, z: torch.Tensor, t: int) -> torch.Tensor:
-        return ops.fp8_linear(None, self.out, x_q=self._output_input(core, z, t))
+    def _finish(self, core: torch.Tensor, z: torch.Tensor, t: int, *, verify: bool = False) -> torch.Tensor:
+        return ops.fp8_linear(None, self.out, x_q=self._output_input(core, z, t, verify=verify))
 
-    def _output_input(self, core, z, t):
+    def _output_input(self, core, z, t, *, verify=False):
+        if verify:
+            from sharar.kernels.verify_norm import verify_gated_norm
+            normalized = verify_gated_norm(core, z, self.norm_weight, config.RMS_NORM_EPS, self.head_v_dim)
+            return quant_fp8(normalized.reshape(t, self.value_dim), self.out.input_scale)
         core = rms_norm_gated(
             x=core.reshape(t, self.value_dim), weight=self.norm_weight, bias=None, z=z,
             eps=config.RMS_NORM_EPS, group_size=self.head_v_dim, norm_before_gate=True,
@@ -168,27 +174,20 @@ class GatedDeltaNet:
         return self._finish(out, z, b_sz)
 
     def verify(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
-        """Speculative verify: B sequences of S = k+1 tokens each. The conv runs
-        in torch from the committed window (exact, tiny); the recurrent kernel
+        """Speculative verify: B sequences of S = k+1 tokens each. Fused conv
+        reads the committed window and records candidate windows; the recurrent kernel
         starts from the committed SSM state, leaves it untouched, and records
         the state after every token so the accept step can commit any prefix."""
         mixed_qkv, z, b, a = self._project(x, x_q)
-        return self._finish(self._verify_core(mixed_qkv, b, a, ctx), z, x.shape[0])
+        return self._finish(self._verify_core(mixed_qkv, b, a, ctx), z, x.shape[0], verify=True)
 
     def _verify_core(self, mixed_qkv, b, a, ctx):
         s_len = ctx.verify_steps
         b_sz = mixed_qkv.shape[0] // s_len
         conv_states = ctx.state_pool.conv[self.layer_id]
         ssm_states = ctx.state_pool.ssm[self.layer_id]
-        # conv over [history(3) | S tokens] per sequence
-        hist = conv_states[ctx.seq_slots].transpose(1, 2)  # [B, 3, dim]
-        xs = torch.cat([hist, mixed_qkv.view(b_sz, s_len, self.conv_dim)], dim=1)  # [B, 3+S, dim]
-        w = self.conv_weight  # [dim, 4]
-        conv = (xs[:, 0:s_len] * w[:, 0] + xs[:, 1:s_len + 1] * w[:, 1] + xs[:, 2:s_len + 2] * w[:, 2] + xs[:, 3:s_len + 3] * w[:, 3])
-        conv = torch.nn.functional.silu(conv.float()).to(torch.bfloat16)  # [B, S, dim]
-        # window after s+1 tokens = xs rows [s+1, s+4) -> [B, S, dim, 3]
-        windows = torch.stack([xs[:, s + 1 : s + 4].transpose(1, 2) for s in range(s_len)], dim=1)
-        ctx.verify_conv_windows[self.layer_id][:b_sz, :s_len].copy_(windows)
+        conv = verify_convolve(mixed_qkv, conv_states, self.conv_weight, ctx.seq_slots,
+                               ctx.verify_conv_windows[self.layer_id], s_len)
         q, k, v = torch.split(conv.reshape(1, b_sz * s_len, self.conv_dim), [self.key_dim, self.key_dim, self.value_dim], dim=-1)
         q = q.reshape(1, b_sz * s_len, self.num_k_heads, self.head_k_dim)
         k = k.reshape(1, b_sz * s_len, self.num_k_heads, self.head_k_dim)

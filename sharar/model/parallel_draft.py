@@ -14,9 +14,16 @@ import torch.nn.functional as F
 from safetensors import safe_open
 
 
-def rms(x, weight, eps=1e-6):
+def rms_reference(x, weight, eps=1e-6):
     value = x.float()
     return (value * torch.rsqrt(value.square().mean(-1, keepdim=True) + eps)).to(x.dtype) * weight
+
+
+def rms(x, weight, eps=1e-6):
+    if x.is_cuda and x.dtype == weight.dtype == torch.bfloat16:
+        from sharar.kernels.draft_norm import rms_bf16
+        return rms_bf16(x, weight, eps)
+    return rms_reference(x, weight, eps)
 
 
 def frequencies(cfg, capacity, device):
@@ -38,14 +45,30 @@ def frequencies(cfg, capacity, device):
     return angles.cos() * magnitude, angles.sin() * magnitude
 
 
-def rotate(x, positions, cos, sin):
+def rotate_reference(x, positions, cos, sin):
     # HF computes rotations with cos/sin cast to the activation dtype.
     c, s = cos[positions].to(x.dtype)[:, None], sin[positions].to(x.dtype)[:, None]
     a, b = x.chunk(2, dim=-1)
     return torch.cat([a * c - b * s, b * c + a * s], dim=-1)
 
 
-def convolve(x, coefficients, base):
+def rotate(x, positions, cos, sin):
+    if x.is_cuda and x.dtype == torch.bfloat16:
+        from sharar.kernels.draft_rope import rotate_bf16
+        return rotate_bf16(x, positions, cos, sin)
+    return rotate_reference(x, positions, cos, sin)
+
+
+def rotate_and_cache(k, v, positions, cos, sin, caches, pages):
+    if k.is_cuda and k.dtype == v.dtype == torch.bfloat16:
+        from sharar.kernels.draft_rope import rotate_bf16
+        rotate_bf16(k, positions, cos, sin, values=v, caches=caches, pages=pages)
+    else:
+        caches[0][pages, 0] = rotate_reference(k, positions, cos, sin)
+        caches[1][pages, 0] = v
+
+
+def convolve_reference(x, coefficients, base):
     """Block-local two-tap convolution; the anchor's predecessor is zero."""
     batch, steps, hidden = x.shape
     grouped = x.view(batch, steps, hidden // 16, 16)
@@ -57,8 +80,18 @@ def convolve(x, coefficients, base):
     return output.flatten(-2)
 
 
+def convolve(x, coefficients, base):
+    if x.is_cuda and x.dtype == coefficients.dtype == base.dtype == torch.bfloat16:
+        from sharar.kernels.draft_conv import convolve_bf16
+        return convolve_bf16(x, coefficients, base)
+    return convolve_reference(x, coefficients, base)
+
+
 class ParallelDraftModel:
-    def __init__(self, snapshot, target, max_context):
+    def __init__(self, snapshot, target, max_context, *, precision='bf16'):
+        if precision not in ('bf16', 'fp8'):
+            raise ValueError('unsupported draft precision')
+        self.precision, self.fp8_weights = precision, {}
         self.cfg = json.loads((snapshot / 'config.json').read_text())
         cfg = self.cfg
         self.kind = cfg['architectures'][0]
@@ -81,10 +114,22 @@ class ParallelDraftModel:
             for output, members in [('self_attn.kv', ('self_attn.k_proj.weight', 'self_attn.v_proj.weight')),
                                     ('mlp.gate_up', ('mlp.gate_proj.weight', 'mlp.up_proj.weight'))]:
                 self.weights[prefix + output] = torch.cat([self.weights.pop(prefix + name) for name in members])
+        if precision == 'fp8':
+            from sharar.model.draft_linear import DraftFp8Linear
+            for name in list(self.weights):
+                if name.endswith(('self_attn.q_proj.weight', 'self_attn.o_proj.weight',
+                                  'mlp.gate_up', 'mlp.down_proj.weight')):
+                    self.fp8_weights[name] = DraftFp8Linear.from_bf16(self.weights.pop(name))
+
+    def _linear(self, x, name):
+        if name in self.fp8_weights:
+            return self.fp8_weights[name](x)
+        return x @ self.weights[name].T
 
     @property
     def bytes(self):
-        return sum(t.numel() * t.element_size() for t in (*self.weights.values(), self.cos, self.sin))
+        return (sum(t.numel() * t.element_size() for t in (*self.weights.values(), self.cos, self.sin))
+                + sum(w.bytes for w in self.fp8_weights.values()))
 
     def project_features(self, features):
         joined = torch.cat([features[i] for i in self.features], dim=-1)
@@ -95,8 +140,7 @@ class ParallelDraftModel:
             p = f'layers.{layer}.self_attn.'
             k, v = (hidden @ self.weights[p + 'kv'].T).chunk(2, dim=-1)
             k = rms(k.view(-1, 8, 128), self.weights[p + 'k_norm.weight'])
-            keys[pages, 0] = rotate(k, positions, self.cos, self.sin)
-            values[pages, 0] = v.view(-1, 8, 128)
+            rotate_and_cache(k, v.view(-1, 8, 128), positions, self.cos, self.sin, (keys, values), pages)
 
     def _prepare_conv(self, hidden, name):
         if name + '.base_kernel' not in self.weights:
@@ -117,20 +161,19 @@ class ParallelDraftModel:
             x = rms(hidden, self.weights[p + 'input_layernorm.weight'])
             x, coefficients = self._prepare_conv(x, p + 'attention_conv')
             flat = x.view(-1, 5120)
-            q = rms((flat @ self.weights[p + 'self_attn.q_proj.weight'].T).view(-1, 32, 128), self.weights[p + 'self_attn.q_norm.weight'])
+            q = rms(self._linear(flat, p + 'self_attn.q_proj.weight').view(-1, 32, 128), self.weights[p + 'self_attn.q_norm.weight'])
             k, v = (flat @ self.weights[p + 'self_attn.kv'].T).chunk(2, dim=-1)
             k = rms(k.view(-1, 8, 128), self.weights[p + 'self_attn.k_norm.weight'])
-            q, k = rotate(q, positions, self.cos, self.sin), rotate(k, positions, self.cos, self.sin)
-            caches[layer][0][pages, 0] = k
-            caches[layer][1][pages, 0] = v.view(-1, 8, 128)
+            q = rotate(q, positions, self.cos, self.sin)
+            rotate_and_cache(k, v.view(-1, 8, 128), positions, self.cos, self.sin, caches[layer], pages)
             attended = attention.run(q, caches[layer]).reshape(batch, steps, 4096)
-            projected = attended @ self.weights[p + 'self_attn.o_proj.weight'].T
+            projected = self._linear(attended, p + 'self_attn.o_proj.weight')
             hidden = residual + self._finish_conv(projected, coefficients, p + 'attention_conv')
             residual = hidden
             x = rms(hidden, self.weights[p + 'post_attention_layernorm.weight'])
             x, coefficients = self._prepare_conv(x, p + 'mlp_conv')
-            gate, up = (x @ self.weights[p + 'mlp.gate_up'].T).chunk(2, dim=-1)
-            x = (F.silu(gate) * up) @ self.weights[p + 'mlp.down_proj.weight'].T
+            gate, up = self._linear(x, p + 'mlp.gate_up').chunk(2, dim=-1)
+            x = self._linear(F.silu(gate) * up, p + 'mlp.down_proj.weight')
             hidden = residual + self._finish_conv(x, coefficients, p + 'mlp_conv')
         return rms(hidden, self.weights['norm.weight'])
 

@@ -19,22 +19,14 @@ from sharar.weights.modelopt import FP8_MAX, Fp8Linear, Nvfp4Linear
 # docs/phase2.md); the streaming GEMV is used up to this many rows.
 FP8_GEMV_MAX_M = 4
 
-# The reference resolves fp4_gemm_runner_backend=auto to flashinfer_cutlass on
-# SM121 and quantizes activations with FlashInfer's "cuda" fp4_quantize. Here
-# the backend is chosen per shape from tools/bench_gemm_backends.py (cold L2,
-# GB10): b12x wins for the wide gate/up GEMM at prefill (+10%), cudnn for the
-# down GEMM at prefill (+8%) and for small M; cutlass is the parity oracle.
+# CUTLASS preserves the pinned target's arithmetic. Faster backend candidates
+# must also preserve full target outputs before replacing this dispatch.
 FP4_GEMM_BACKEND = "cutlass"
 FP4_QUANT_BACKEND = "cuda"
-FP4_SMALL_M = 64  # cuDNN beats b12x up to 64 rows (gate/up at M=64: 0.51 vs 0.62 ms); b12x wins at prefill M
 
 
 def fp4_backend(m: int, n: int, k: int) -> str:
-    if m <= FP4_SMALL_M:
-        return "cudnn"
-    if n > k:  # gate/up: N=34816, K=5120
-        return "b12x"
-    return "cudnn"
+    return FP4_GEMM_BACKEND
 
 
 def fp4_quantize(x: torch.Tensor, input_scale_inv: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -117,8 +109,7 @@ def fp8_linear(x: torch.Tensor | None, lin: Fp8Linear, x_q: torch.Tensor | None 
 
 
 class RaggedAttention:
-    """FlashInfer causal ragged prefill (bf16 K/V), as the reference uses for
-    prefill without a cached prefix."""
+    """Causal prefill over the new BF16 K/V, with optional prefix merging."""
 
     def __init__(self, device: torch.device, num_qo_heads: int, num_kv_heads: int, head_dim: int):
         self._workspace = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=device)
@@ -153,3 +144,6 @@ class RaggedAttention:
             k.view(t, self.num_kv_heads, self.head_dim),
             v.view(t, self.num_kv_heads, self.head_dim),
         ).view(t, self.num_qo_heads * self.head_dim)
+
+    def run_return_lse(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
+        return self._wrapper.run(q, k, v, return_lse=True)

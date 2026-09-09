@@ -4,7 +4,8 @@ Ported in spirit from SGLang's ModelOptFp8LinearMethod / ModelOptFp4LinearMethod
 (Apache-2.0); only the pieces this checkpoint uses. Fused projections (q/k/v,
 qkv/z, gate/up) are concatenated along the output dimension exactly as the
 reference does: FP8 shards are requantized to the maximum weight scale, NVFP4
-shards are required to share one global scale.
+shards are required to share one global scale. FP8 dequantization passes
+through FP16 before requantization, including single-shard projections.
 """
 
 from __future__ import annotations
@@ -57,10 +58,9 @@ def load_fp8_linear(w: SnapshotWeights, prefixes: list[str], device: torch.devic
     parts = []
     for wt, sc in zip(weights, scales):
         wt = wt.to(device)
-        if len(prefixes) > 1 and not torch.equal(sc, max_scale):
-            # Same as SGLang requantize_with_max_scale: dequantize with the
-            # shard scale, requantize with the shared maximum.
-            wt = _to_fp8(wt.float() * sc.to(device), max_scale.to(device))
+        # The checkpoint's reference loader rounds the dequantized values to
+        # FP16. Skipping this boundary changes packed weights in fused shards.
+        wt = _to_fp8(wt.half() * sc.to(device), max_scale.to(device))
         parts.append(wt)
     weight = torch.cat(parts, dim=0).contiguous()
     return Fp8Linear(

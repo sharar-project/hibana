@@ -17,7 +17,7 @@ import torch
 import triton
 import triton.language as tl
 
-from sharar.kernels.nvfp4_quant import _scale_buffer
+from sharar.kernels.nvfp4_quant import _scale_buffer, rcp_approx_ftz
 
 
 @triton.jit
@@ -25,7 +25,7 @@ def _gemma_rmsnorm_nvfp4_kernel(
     x_ptr, res_ptr, w_ptr, gs_ptr, q_ptr, sf_ptr,
     stride_x, stride_res,
     N, K_PAD_GROUPS, eps,
-    HAS_RES: tl.constexpr, BLOCK_N: tl.constexpr,
+    HAS_RES: tl.constexpr, FP32_RESIDUAL_SUM: tl.constexpr, BLOCK_N: tl.constexpr,
 ):
     row = tl.program_id(0)
     cols = tl.arange(0, BLOCK_N)
@@ -33,9 +33,11 @@ def _gemma_rmsnorm_nvfp4_kernel(
     x = tl.load(x_ptr + row * stride_x + cols, mask=mask, other=0.0).to(tl.float32)
     if HAS_RES:
         r = tl.load(res_ptr + row * stride_res + cols, mask=mask, other=0.0).to(tl.float32)
-        s = (x + r).to(tl.bfloat16)  # bf16 residual stream, rounded like the reference's bf16 add
-        tl.store(res_ptr + row * stride_res + cols, s, mask=mask)
-        x = s.to(tl.float32)
+        # Use the same arithmetic choice as the separate norm + quant path.
+        x = x + r
+        tl.store(res_ptr + row * stride_res + cols, x.to(tl.bfloat16), mask=mask)
+        if not FP32_RESIDUAL_SUM:
+            x = x.to(tl.bfloat16).to(tl.float32)
     var = tl.sum(x * x, axis=0) / N
     rstd = 1.0 / tl.sqrt(var + eps)
     w = tl.load(w_ptr + cols, mask=mask, other=0.0).to(tl.float32)
@@ -46,22 +48,21 @@ def _gemma_rmsnorm_nvfp4_kernel(
     xb = tl.reshape(y, (NB, 16))
     amax = tl.max(tl.abs(xb), axis=1)
     gs = tl.load(gs_ptr)
-    sf = (gs * (amax * (1.0 / 6.0))).to(tl.float8e4nv)
+    sf = (gs * (amax * rcp_approx_ftz(tl.full((), 6.0, tl.float32)))).to(tl.float8e4nv)
     sf_f = sf.to(tl.float32)
-    inv = tl.where(sf_f != 0.0, gs / sf_f, 0.0)
+    inv = tl.where(amax != 0.0, rcp_approx_ftz(sf_f * rcp_approx_ftz(gs)), 0.0)
     v = xb * inv[:, None]
     a = tl.minimum(tl.abs(v), 6.0)
-    q = tl.where(a < 0.25, 0.0,
+    q = tl.where(a <= 0.25, 0.0,
         tl.where(a < 0.75, 0.5,
         tl.where(a <= 1.25, 1.0,
         tl.where(a < 1.75, 1.5,
         tl.where(a <= 2.5, 2.0,
         tl.where(a < 3.5, 3.0,
         tl.where(a <= 5.0, 4.0, 6.0)))))))
-    q = tl.where(a == 0.75, 1.0, q)
     code = tl.where(q == 0.0, 0, tl.where(q == 0.5, 1, tl.where(q == 1.0, 2, tl.where(q == 1.5, 3,
            tl.where(q == 2.0, 4, tl.where(q == 3.0, 5, tl.where(q == 4.0, 6, 7))))))).to(tl.int32)
-    code = tl.where(v < 0.0, code | 8, code)
+    code = tl.where(v.to(tl.int32, bitcast=True) < 0, code | 8, code)
     code = tl.reshape(code, (BLOCK_N,))
     lo = tl.reshape(code, (BLOCK_N // 2, 2))
     packed = (tl.sum(lo * tl.reshape(tl.where(tl.arange(0, BLOCK_N) % 2 == 0, 1, 16), (BLOCK_N // 2, 2)), axis=1)).to(tl.uint8)
@@ -76,6 +77,7 @@ def _gemma_rmsnorm_nvfp4_kernel(
 
 def gemma_rmsnorm_nvfp4(
     x: torch.Tensor, weight: torch.Tensor, eps: float, global_scale: torch.Tensor, residual: torch.Tensor | None = None,
+    *, fp32_residual_sum: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Normalize rows of x (adding `residual` in place first when given) and
     return the NVFP4 activation (packed [M, N/2] uint8, swizzled scales)."""
@@ -92,6 +94,6 @@ def gemma_rmsnorm_nvfp4(
         x, residual if residual is not None else x, weight, global_scale, q, sf,
         x.stride(0), residual.stride(0) if residual is not None else 0,
         n, sf.shape[1], eps,
-        HAS_RES=residual is not None, BLOCK_N=block_n, num_warps=num_warps,
+        HAS_RES=residual is not None, FP32_RESIDUAL_SUM=fp32_residual_sum, BLOCK_N=block_n, num_warps=num_warps,
     )
     return q, sf

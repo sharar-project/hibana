@@ -1,0 +1,271 @@
+{
+  "schema": 2,
+  "summary_document": "gb10-acceptance-parity.md",
+  "full_evidence": {
+    "path": "reviews/2026-09-09-tps/docs-original/gb10-acceptance-results.json",
+    "sha256": "003a0c56c504b96244e800bd23579d91f71d7342ce27e0ec77dc6617a1fdf4f3",
+    "bytes": 7993
+  },
+  "summary": {
+    "date": "2026-09-08",
+    "scope": "one pinned GB10, Qwen3.8-27B, 10k input IDs / 1k output IDs, B1",
+    "result": "No quality-qualified new serving speedup; retain existing target and draft arithmetic defaults.",
+    "reference_target_revision": "319f741cce68d7914884900c138a1fbb70a42f30",
+    "reference_draft_revision": "dedf8df68adfb1afeaf7b7480c0a0243108177b4",
+    "inputs_sha256": "18d9ba496776eb57316b5d765846305baa9020e76814370f6a29981a3d9bc6c0",
+    "teacher_reference_sha256": "7239a589264f7132a119f12177564841e19449c801e4e39b9f84171ad1a0c7e6",
+    "teacher_forced": {
+      "bf16": {
+        "histories": 128,
+        "sharar_prefix_matches": 481,
+        "reference_prefix_matches": 489,
+        "sharar_tokens_with_correction": 609,
+        "reference_tokens_with_correction": 617,
+        "native_target_matches": 596,
+        "native_target_positions": 617,
+        "better_histories": 10,
+        "worse_histories": 13,
+        "equal_histories": 105
+      },
+      "fp32": {
+        "histories": 128,
+        "sharar_prefix_matches": 477,
+        "reference_prefix_matches": 489,
+        "sharar_tokens_with_correction": 605,
+        "reference_tokens_with_correction": 617,
+        "native_target_matches": 592,
+        "native_target_positions": 617,
+        "better_histories": 9,
+        "worse_histories": 17,
+        "equal_histories": 102
+      }
+    },
+    "http_candidate": {
+      "planned_load_order": [
+        "legacy",
+        "fp32",
+        "fp32",
+        "legacy"
+      ],
+      "completed_load_order": [
+        "legacy",
+        "fp32"
+      ],
+      "paired_experiment_completed": false,
+      "stop_reason": "FP32 norm load failed strict JSON canary",
+      "legacy": {
+        "seconds": {
+          "code": 35.48071584571153,
+          "design": 34.625169868581,
+          "reasoning": 24.10647137183696
+        },
+        "canaries": {
+          "exact_instruction": true,
+          "arithmetic": true,
+          "json": true,
+          "long_context_needle": true
+        }
+      },
+      "fp32": {
+        "seconds": {
+          "code": 32.4895672686398,
+          "design": 33.307829149998724,
+          "reasoning": 26.20742646791041
+        },
+        "canaries": {
+          "exact_instruction": true,
+          "arithmetic": true,
+          "json": false,
+          "long_context_needle": true
+        }
+      },
+      "latency_change_fraction": {
+        "code": -0.08430350137462794,
+        "design": -0.03804575468025739,
+        "reasoning": 0.08715315749313457
+      }
+    },
+    "quality": {
+      "bf16": {
+        "requests": 78,
+        "automatic_failures": [],
+        "request_failures": [],
+        "manual_rubric_requests": [
+          "chat-cold--1",
+          "chat-cold-0",
+          "chat-cold-1",
+          "chat-cold-2",
+          "sampled_chat-cold--1",
+          "sampled_chat-cold-0",
+          "sampled_chat-cold-1",
+          "sampled_chat-cold-2",
+          "session-cold--1",
+          "session-cold-0",
+          "session-cold-1",
+          "session-cold-2",
+          "session-repeat--1",
+          "session-repeat-0",
+          "session-repeat-1",
+          "session-repeat-2",
+          "session-session--1",
+          "session-session-0",
+          "session-session-1",
+          "session-session-2",
+          "mixed-chat-0",
+          "mixed-session-0",
+          "mixed-chat-1",
+          "mixed-session-1",
+          "mixed-chat-2",
+          "mixed-session-2"
+        ],
+        "canaries": {
+          "exact_instruction": true,
+          "arithmetic": true,
+          "json": true,
+          "long_context_needle": true
+        }
+      },
+      "fp32": {
+        "requests": 78,
+        "automatic_failures": [
+          "coding-repeat--1",
+          "coding-repeat-0",
+          "coding-repeat-1",
+          "coding-repeat-2",
+          "json-cold--1",
+          "json-cold-0",
+          "json-cold-1",
+          "json-cold-2",
+          "json-repeat--1",
+          "json-repeat-0",
+          "json-repeat-1",
+          "json-repeat-2"
+        ],
+        "request_failures": [],
+        "manual_rubric_requests": [
+          "chat-cold--1",
+          "chat-cold-0",
+          "chat-cold-1",
+          "chat-cold-2",
+          "sampled_chat-cold--1",
+          "sampled_chat-cold-0",
+          "sampled_chat-cold-1",
+          "sampled_chat-cold-2",
+          "session-cold--1",
+          "session-cold-0",
+          "session-cold-1",
+          "session-cold-2",
+          "session-repeat--1",
+          "session-repeat-0",
+          "session-repeat-1",
+          "session-repeat-2",
+          "session-session--1",
+          "session-session-0",
+          "session-session-1",
+          "session-session-2",
+          "mixed-chat-0",
+          "mixed-session-0",
+          "mixed-chat-1",
+          "mixed-session-1",
+          "mixed-chat-2",
+          "mixed-session-2"
+        ],
+        "canaries": {
+          "exact_instruction": true,
+          "arithmetic": true,
+          "json": false,
+          "long_context_needle": true
+        }
+      }
+    },
+    "validation": {
+      "cpu-final": {
+        "tests": "357",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "8",
+        "time": "9.838"
+      },
+      "replay-cpu-final": {
+        "tests": "8",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "time": "0.016"
+      },
+      "gpu-final": {
+        "tests": "108",
+        "failures": "0",
+        "errors": "0",
+        "skipped": "0",
+        "time": "150.203"
+      }
+    },
+    "limitations": [
+      "Reference-history agreement is from 128 histories of one code continuation, not universal parity.",
+      "Teacher forcing is not a generation latency benchmark.",
+      "The HTTP candidate sequence stopped on quality failure: one sample per arithmetic/workload.",
+      "Free-generation engines produce different continuations; raw speed is not identical-output throughput.",
+      "No model-quality, p95/p99 or statistically significant speedup claim.",
+      "Early replay-report large-tensor FP32 cosine values exceeding one are excluded from conclusions."
+    ],
+    "sglang_refresh": {
+      "samples_s": [
+        30.351893125101924,
+        30.6574585204944
+      ],
+      "mean_s": 30.504675822798163,
+      "requests": [
+        {
+          "completion_tokens": 1000,
+          "cached_tokens": 0,
+          "success": true,
+          "spec_verify_count": 201,
+          "response_sha256": "a631bc48e8b6dbc26e965d67e1f7f5d6f6f3ff8672e9df77390f42f361d7367c"
+        },
+        {
+          "completion_tokens": 1000,
+          "cached_tokens": 0,
+          "success": true,
+          "spec_verify_count": 201,
+          "response_sha256": "a631bc48e8b6dbc26e965d67e1f7f5d6f6f3ff8672e9df77390f42f361d7367c"
+        }
+      ],
+      "legacy_sharar_completion_overhead": 0.1631238454005941
+    },
+    "resource_minimum_gib": {
+      "regression-before-resources.jsonl": 112.96845626831055,
+      "checks-final-resources.jsonl": 74.94386672973633,
+      "reference-final-resources.jsonl": 63.25413131713867,
+      "correction-screen-resources.jsonl": 80.35324096679688,
+      "sg-capture-v2-resources.jsonl": 63.051353454589844,
+      "sg-capture-resources.jsonl": 64.05352401733398,
+      "validation-after-resources.jsonl": 75.04065704345703,
+      "replay-verified-resources.jsonl": 80.19605255126953,
+      "teacher-replay-resources.jsonl": 78.61268615722656,
+      "http-paired-resources.jsonl": 80.35740280151367,
+      "quality-final-resources.jsonl": 79.92939758300781,
+      "replay-resources.jsonl": 79.5531234741211,
+      "norm-screen-resources.jsonl": 80.43447875976562
+    },
+    "service_restoration": {
+      "time_utc": "2026-09-08T19:16:23.013431+00:00",
+      "container_id": "f08bb8d135068b819d4fb0a6f406d8aa5be8958fbba862a7491dd6cba07d4018",
+      "image_id": "sha256:0d849f3f7ebd1309d1ab0828f00d4eaffe410126dd7db8ea31d226095655130a",
+      "running": true,
+      "health_status": 200,
+      "memory_guard_active": true,
+      "available_gib": 56.97032165527344,
+      "verify_sharar_script_passed": true,
+      "image_rebuilt_or_deployed": false
+    },
+    "evidence_archive": {
+      "path": "${SHARAR_RESULTS}/reviews/2026-09-08-acceptance-parity.tar.zst",
+      "sha256": "8379835b95caa7e15cd2abfd8aa0883984dac4c3487ffc2181998425fe0bc65f",
+      "bytes": 2182873128,
+      "zstd_integrity_checked": true,
+      "per_file_manifest": "2026-09-08-acceptance-parity/SHA256SUMS",
+      "files_checksummed": 4857
+    }
+  }
+}

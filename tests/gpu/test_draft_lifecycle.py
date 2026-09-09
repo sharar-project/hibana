@@ -7,8 +7,8 @@ import torch
 pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 checkpoint tests')
 
 
-@pytest.fixture(scope='module')
-def draft_runtime():
+@pytest.fixture(scope='module', params=['bf16', 'fp8'])
+def draft_runtime(request):
     import gc
     from sharar import config
     from sharar.engine.executor import Executor
@@ -21,7 +21,7 @@ def draft_runtime():
         model = Qwen38(config.snapshot_dir(), log=print)
         torch.cuda.empty_cache()
         ex = Executor(model, num_pages=35000, num_slots=12)
-        ex.enable_spec(7, proposer='dflash2', state_strategy='reconstruct')
+        ex.enable_spec(7, proposer='dflash2', state_strategy='reconstruct', draft_precision=request.param)
         ex.spec.verify_depths = (1, 3, 7)
         ex.capture_graphs(log=print)
         ids = SnapshotTokenizer(config.snapshot_dir()).encode(PARAGRAPH * 16)[:512]

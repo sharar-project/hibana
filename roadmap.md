@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-07 (DFlash2 k=15 with accepted-state reconstruction and the unified-memory cold tier are the production default)
+Last updated: 2026-09-09 (GB10 target repairs and optional FP8 drafting are validated in source; production remains unchanged)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -1305,6 +1305,65 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
+The latest [TPS validation](docs/gb10-tps.md) measures the repaired target with
+the explicit FP8 draft option at 37.65 / 30.14 / 46.09 output tokens/s including
+prefill for code / design / reasoning. AIPerf uses exact 10K input and 1K output
+IDs, greedy decoding, concurrency one and five timed requests per task/engine.
+Gains versus the fastest task mean across three pinned SGLang loads are
+20.71% / 3.30% / 13.46%. All 36 requests pass the raw-stream count audit;
+373 CPU tests pass, and the preceding 128 targeted GPU tests cover identical
+source. FP8 remains opt-in and production retains its original image.
+
+The [complete target repairs](docs/gb10-target-fix.md) supersede the partial
+norm/weight ablations below. They establish exact target and committed-state
+agreement for 65 common-history blocks / 307 accepted rows, while independent
+greedy outputs still differ. SGLang itself varies across fresh processes.
+The next correctness work is to isolate the remaining full-generation gap
+and expand held-out answer-quality coverage. Four passing canaries do not
+establish equal overall quality; [the distinction is documented here](docs/greedy-quality.md).
+The following investigation entries retain their historical results.
+
+The [SGLang acceptance investigation](docs/gb10-acceptance-parity.md) corrects
+the earlier acceptance diagnosis: the 264/266-versus-205 round comparison
+follows different continuations. On 128 identical SGLang histories, original
+Sharar matches 481 draft prefix tokens versus 489, or 609 versus 617 including
+correction tokens. This does not support a large selector porting defect or
+make retraining the next priority. Target norm and weight-loading differences
+were isolated and executed; matching more reference arithmetic does not yield
+a quality-qualified speedup. The FP32 residual-sum variant fails strict JSON
+and regresses reasoning. Its benchmark-only switch defaults off; existing
+serving arithmetic and the production image are preserved. Use the new
+teacher-forced replay to evaluate future parity changes before attributing
+free-generation round counts to draft accuracy.
+
+The [GB10 implementation follow-up](docs/gb10-optimization-results.md) adds
+an exact fused BF16 draft convolution and an explicit `--draft-precision fp8`
+profile with two-kernel activation packing and released BF16 matrix storage
+(1.44 GiB less live allocation). The paired 10k/1k HTTP run reduces B1 code
+time 4.50%, B4 code batch time 5.83%, and design time 6.52%; reasoning regresses
+2.51%. BF16 remains the default: the primary code result misses the frozen
+5% gate. An eight-row FP8 profile cuts B4 code time 8.67% and design time
+16.92% but regresses reasoning 3.01%. Selector FP32 arithmetic fails the
+held-out regression limit; it stays out of serving. The target-FP4 layerwise
+screen measures 1.4–1.7× local projection speedups, but five of ten sampled
+projections exceed the 5% numerical-error threshold. Target conversion stays
+disabled. The fixed-history study finds most first-rejection targets inside
+the existing top-16 support, with almost no improvement from FP32 score
+addition. Better draft selection remains a research option, but the later
+reference-history comparison does not establish it as the cause of the
+SGLang gap. Properly calibrated target quantization remains a potential way
+to reduce per-round traffic. The production image has not been rebuilt.
+
+The [original exact 10k/1k audit](docs/gb10-10k1k-audit.md) supplies the kernel
+and bandwidth evidence. B1 code emits about 3.8 tokens per target traversal,
+with no full sixteen-token rounds. Trace gaps are only a few milliseconds,
+so the older short-input 16 ms acceptance-gap estimate below is not a 10k
+speedup prediction. Its matched B1 control was 35.41 s versus SGLang-16's
+30.89 s, with 3.79 versus 4.88 emitted tokens per round. The apparent B4
+reference gap includes a delayed fourth admission and is not a certified
+saturated-B4 advantage. The implementation follow-up replaces the initial
+single-sample FP8 feasibility result with paired HTTP and held-out evidence.
+
 [docs/batch4-and-sharegpt.md](docs/batch4-and-sharegpt.md) closes this
 round: the batch-4 verify round is GPU-bound (136 ms, kernels at their
 floors, about 16 ms of launch gaps in the accept path), cuDNN serves NVFP4
@@ -1412,3 +1471,50 @@ per target traversal and less state movement, with exact work and state evidence
 
 Production changes require a completed promotion result. Validation windows
 restore the original image and memory guard after testing.
+
+### Exact-arithmetic GB10 fusions — 2026-09-08
+
+The [paired AIPerf follow-up](docs/gb10-engine-speedups.md) implements fused
+GDN verification convolution/SiLU/state-window writes, strided B/A projection
+views, draft RMS/RoPE/KV fusions and exact-count accepted-feedback graphs.
+Code 10k/1k latency falls from 35.144 to 33.803 s (3.82%); design improves
+3.82% and reasoning 3.36%. All 24 final requests, including warmups, preserve
+Sharar's previous 1,000 output IDs and text. Code remains at 264 verify rounds;
+its effective round cost falls from 118.920 to 113.880 ms. The combined change
+passes its predeclared 3% primary gate without relaxing earlier standalone
+kernel gates. Target FP8 tiles changed text and remain an unqualified screen.
+
+Validation passes 373 CPU tests, 83 focused GPU checks, 22 real-model lifecycle
+tests and all 16 final quality canaries. SiLU matches Torch for every finite
+BF16 input. Graph tests cover varying accepted counts, private rings, retained
+input storage and checkpoint/eager fallbacks. Extra warmed CUDA allocation is
+under 1 MiB. The original production image and memory guard are restored;
+these results exercise the updated source in isolated benchmark containers.
+
+The earlier SGLang code result is 30.904 s: updated Sharar remains 9.38% slower
+on code, and cross-engine greedy-output parity remains unresolved. A wide win
+is still open. Preserve exact-output checks when pursuing target arithmetic
+alignment, better learned proposals or calibrated target compression.
+
+### GB10 target arithmetic and remaining cost — 2026-09-08
+
+The [target-path diagnosis](docs/gb10-target-path.md) repairs E2M1 quarter-tie
+rounding and signed zero in both NVFP4 quantizers. Exact boundary tests now
+cover the standalone and fused-normalization paths. The existing SiLU test
+also freezes expected scale bytes before the reusable buffer is overwritten.
+Validation passes 373 CPU tests and 22 retained-kernel GPU tests; another
+16 GPU tests validate a diagnostic SiLU candidate. Production is restored
+with its original image and memory guard after every window.
+
+Fresh profiling is 96.82% GPU-active, with GEMMs accounting for approximately
+92.65% of GPU activity. AIPerf audits 27 fixed-token requests across three
+profiles. QKV/Z fusion preserves complete corrected-baseline IDs/text but
+saves only 0.58% on code, below its 3% gate. It remains outside the engine.
+
+An actual-operand comparison isolates the missing BF16 product boundary in
+the fused SiLU/FP4 path: 0.81% of packed bytes and 1.76% of scale bytes differ
+from CUDA. Restoring that boundary matches the sampled native bytes exactly
+and passes all canaries, but changes continuations: code improves 9.27%,
+design regresses 9.91%, and reasoning regresses 21.80%. That partial arithmetic
+alignment is not promoted. Complete target intermediate parity before
+treating a changed continuation's acceptance gain as an engine speedup.
