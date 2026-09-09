@@ -95,6 +95,57 @@ Hardware research directions and decision criteria are in
 | `config/` | Host-local paths (`gb10.env` is ignored by git) |
 | `docs/` | Design notes that outlive a single phase |
 
+## GB10 performance TODOs
+
+Prioritize fresh 10K-input / 1K-output greedy inference on one Spark. These
+are experiments to measure against the [current AIPerf baseline](docs/gb10-tps.md);
+track startup and session-resume improvements separately from generation TPS.
+
+- [ ] **Profile the optimized FP8 draft configuration.** Capture CPU/GPU
+  timelines and kernel counters where available; separate prefill, drafting,
+  target verification, state reconstruction and host stalls. Measure memory
+  traffic and occupancy before choosing kernels to optimize. Validate each
+  candidate with repeated AIPerf runs against SGLang using identical 10,000-token
+  inputs and exactly 1,000 output tokens; report TTFT, end-to-end/decode TPS,
+  accepted tokens per round and output-ID differences.
+- [ ] **Tune matrix kernels for SM 12.1.** Sweep tiles, register usage and TMA
+  pipeline depth for GB10's 48 SMs and our small verification batches. Optimize
+  the existing FP4/FP8 paths using measured whole-round savings; preserve the
+  target's rounding behavior.
+- [ ] **Fuse intermediate and recurrent-state work.** Explore fused
+  activation/quantization epilogues and accepted-state reconstruction inside
+  the next GDN verification pass to reduce memory writes and rereads. Check
+  committed-state correctness and register pressure as well as kernel time.
+- [ ] **Increase accepted tokens per weight traversal.** Test a trained draft
+  selector on held-out tasks and current target histories. Better proposals
+  can amortize target weight reads over more output tokens; include selector
+  overhead when measuring the gain. See the [speed priorities](docs/gb10-next-speedups.md).
+- [ ] **Evaluate calibrated target compression.** Test NVFP4 for remaining hot
+  FP8 projections using representative calibration data and held-out quality
+  evaluation. Reduced weight traffic is promising on shared LPDDR5x, but this
+  changes the numerical model and needs its own quality/performance comparison.
+- [ ] **Test performance-core placement and CPU contention.** Pin the engine
+  scheduling/launch thread to a GB10 performance core, isolate tokenizer/HTTP
+  workers and tune CPU thread counts. Compare idle and CPU-busy runs because
+  CPU and GPU share memory bandwidth; measure latency tails too.
+- [ ] **Extend the unified-memory session cache.** Replace blocking restore
+  synchronization with CUDA events and deferred frees, and improve slab
+  reclamation while respecting the host memory floor. Build on the
+  [existing managed-memory tier](docs/restart-and-syncs.md) to overlap restoration
+  with useful work and retain more sessions without re-prefilling them.
+- [ ] **Cache prepared weights on SSD.** Persist engine-ready packed weights,
+  keyed by checkpoint, precision and packing version, to avoid repeated
+  conversion at startup. Measure cold and warm filesystem-cache loading
+  separately, building on the existing mmap staging fix.
+- [ ] **Persist cold sessions on SSD.** Add a storage tier beneath the managed
+  RAM cache for KV, recurrent and draft state, with compatible model/version
+  checks and asynchronous read-ahead. Measure restored-session latency under
+  memory pressure. Spark supports GPUDirect Storage only in
+  [compatibility mode](https://docs.nvidia.com/gpudirect-storage/release-notes/index.html).
+
+The [GB10 audit](docs/gb10-10k1k-audit.md) records hardware limits, previous
+profiles and experiments to use when selecting these changes.
+
 ## Status
 
 The [two-path follow-up](docs/two-path-study.md) measures only 2–3 ms extra
