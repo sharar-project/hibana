@@ -76,6 +76,43 @@ soak --prompts /results/parity/prompts.json` (memory soak), `python3 -m sharar
 sched-bench` (the six matrix cells through the scheduler). All run inside
 `tools/dev-shell.sh`.
 
+## Benchmark TPS
+
+With a server built from the current source running on port 30001, run from
+the repository:
+
+```bash
+tools/benchmark.sh                              # coding workload, 10K in / 1K out
+tools/benchmark.sh --workload all               # code, design and reasoning
+tools/benchmark.sh --output-tokens 256 --repeats 1  # shorter iteration check
+```
+
+The installed command is **`sharar benchmark`**; `python3 -m sharar benchmark`
+also works. The client prints **end-to-end output TPS**, **decode TPS**, TTFT
+and request latency. Defaults are greedy decoding, concurrency one, one
+excluded warmup and three timed requests, with a prefix-cache flush before
+each request. The coding fixture matches the recorded 10K/1K AIPerf baseline.
+
+AIPerf 0.12.0 is discovered on `PATH`, in `.venv-aiperf`, or in the existing
+`$SHARAR_RESULTS/aiperf-venv`. To install it once in an isolated environment:
+
+```bash
+python3 -m venv .venv-aiperf
+.venv-aiperf/bin/pip install aiperf==0.12.0
+```
+
+The client reads benchmark paths from `config/gb10.env`. Keep the pinned
+tokenizer in that model cache; AIPerf runs offline. Results go to a new
+timestamped directory under `$SHARAR_RESULTS/aiperf` by default, including
+`summary.json`, frozen input IDs, per-request audits and raw AIPerf responses.
+
+For SGLang, use `--url http://127.0.0.1:30000`. Benchmark each server in its
+own GPU window. Reuse one run's `frozen-inputs.json` with `--inputs` and compare
+against its directory with `--baseline` to print TPS changes and output-ID
+agreement. These are fixed-work speed measurements; generated code is not
+executed or scored. See [the benchmark guide](bench/README.md#quick-tps-command)
+for comparison commands and the TPS formulas.
+
 ## Layout
 
 Contributors can run CPU checks without a GPU or model:

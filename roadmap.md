@@ -73,6 +73,12 @@ toward more useful tokens per target weight traversal as the next speed directio
 
 ## 2. Relationship to the `sparklang` repository
 
+The packaged `sharar benchmark` command (or `tools/benchmark.sh` from a
+checkout) provides the AIPerf iteration path: built-in frozen coding/design/
+reasoning workloads, exact token audits, end-to-end and decode TPS, and
+optional baseline comparisons. It targets an already running server and saves
+raw evidence outside Git. See [the quick benchmark guide](bench/README.md#quick-tps-command).
+
 `sparklang` (github.com/yahya010/sparklang, branch `gb10-engine`) contains a
 full SGLang checkout, the flattened reference image
 `sparklang-gb10-engine:qwen38-27b`, and the launcher/verify/guard scripts. It
