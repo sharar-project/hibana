@@ -1,5 +1,83 @@
 # GB10 text-serving baseline
 
+For the 10,000-input / 1,000-output native-generation audit, run
+`python3 -m bench.gb10_audit --output /results/new-gb10-audit` inside the
+pinned GPU image with exclusive GPU use and the host memory guard. It saves
+exact inputs, full continuations, per-round counts, a logical weight inventory,
+and independent phase/kernel traces. `--depth 7 --cases code` is the width
+control. This is a component diagnostic; use HTTP measurements for serving
+latency. See [the audit and optimization priorities](../docs/gb10-10k1k-audit.md).
+
+The latest [TPS validation](../docs/gb10-tps.md) repeats the exact-ID AIPerf
+comparison with five timed requests per task and engine. It reports output TPS
+including prefill and decode TPS separately, retains SGLang reload variation,
+and documents the recommendation to submit a review PR with FP8 kept opt-in.
+
+The preceding [target arithmetic repairs](../docs/gb10-target-fix.md) cover native
+quantization boundaries, prefill KV precision, rotary precision and the pinned
+compiled verification norms. The report separates AIPerf latency from exact
+same-history target/state comparisons and full-generation token parity.
+The explicit FP8 draft configuration measures 26.561 / 33.111 / 21.660 s for
+code / design / reasoning, with exact 10K input and 1K output token counts.
+These are 17.16% / 4.69% / 12.01% below the faster SGLang mean per task from
+two fresh loads; full cross-engine greedy text still differs. Both current
+draft precisions pass the quality canaries and lifecycle tests.
+
+The earlier [target-path diagnosis](../docs/gb10-target-path.md) repairs FP4 tie
+rounding and audits 27 additional AIPerf requests. It records a 0.58% QKV/Z
+fusion screen and a SiLU precision candidate that improves code but regresses
+the other prompts; neither performance candidate is promoted. Reproduction
+scripts, raw responses and CUDA traces are indexed in the linked manifest.
+
+The earlier [exact-arithmetic fusion results](../docs/gb10-engine-speedups.md)
+use AIPerf 0.12.0, fresh baseline/optimized/optimized/baseline loads, cache
+flushing and exact returned token-ID audits. Code latency falls 3.82%, design
+3.82% and reasoning 3.36%; all 24 requests preserve the old baseline output.
+The fusions apply automatically in the current source. Production retains its
+original image, and SGLang greedy-output parity is still unresolved.
+
+The implementation follow-up is in
+[GB10 optimization results](../docs/gb10-optimization-results.md). Its explicit
+FP8 draft option is `sharar serve --draft-precision fp8`; BF16 remains the
+default. The fused BF16 draft convolution is automatic. Results include full
+10k/1k continuations, held-out task families, failed selector/quantization
+screens and numerical limitations.
+
+To reproduce an optimization cell in an exclusive guarded GPU container,
+mount the follow-up evidence directory at `/proof` (it contains the frozen
+input IDs and original selector source), then use a fresh output directory:
+
+```bash
+python3 -m bench.gb10_optimize --profile fp8 --mode http --cases code design reasoning --batches 1 4 --repeats 2 --quality --output /proof/new-fp8-http
+```
+
+Use separate processes for `control`, `fused`, `selector`, `fp8` and
+`fp8_selector`. `fp8_rowwise` is a separate exploratory weight-scaling screen.
+`bf16_f32_math` and `fp8_f32_math` are unpromoted normalization/convolution
+rounding ablations; they do not establish SGLang arithmetic parity.
+`--depth 7` tests eight physical verify rows; `--depth 15` tests sixteen.
+`bench.gb10_acceptance` records fixed-history diagnostics outside timing, and
+`bench.gb10_target_fp4` performs layerwise calibration/cost screening without
+changing the target serving profile. Full native and HTTP timings remain
+separate measurements.
+
+The [acceptance parity follow-up](../docs/gb10-acceptance-parity.md) compares
+proposals on a reference engine's identical histories and verification
+boundaries. Its validated JSON trace is retained in the dated evidence folder:
+
+```bash
+python3 -m bench.gb10_acceptance_replay --reference /proof/reference-code.json --output /proof/new-replay.json --rounds 128
+```
+
+This is teacher forcing, not a latency benchmark or ordinary generation.
+`--target-residual-sum native` is now the default in both tools and uses current
+serving arithmetic. Explicit `bf16` and `fp32` select historical norm ablations;
+they do not reproduce an older complete engine after other source changes.
+Reproducing a dated result requires its recorded source snapshot. The old
+FP32-only ablation failed a JSON canary; the complete current repair is a
+separate profile. Use separate processes for each mode. Neither benchmark
+changes serving defaults or imports SGLang.
+
 `benchmark_text_server.py` captures a reproducible, text-only serving baseline
 for a single DGX Spark/GB10. It records the host, container, model and repository
 configuration before running the matrix.
@@ -196,3 +274,29 @@ archived at commit `56605f0`. Reproduce those experiments in a checkout of that
 commit; they have no current serving hooks. Standalone kernel studies remain in
 `bench/`. MTP feedback proof uses `bench/mtp_feedback.py` with the original MTP
 adapter exported from that commit and an external output directory.
+
+## Exact-ID AIPerf comparison
+
+See the [measured results and token-parity audit](../docs/gb10-aiperf-results.md).
+
+`gb10_aiperf.py` drives NVIDIA AIPerf 0.12.0 against an exclusively owned,
+already started server. It uses `/v1/completions` with frozen token-ID prompts,
+temperature zero, fixed seed, and ignored EOS to enforce 10,000 input / 1,000
+output tokens. Every trial flushes the cache before a separate one-request
+AIPerf invocation. Full-generation warmups are marked and excluded by analysis.
+
+```bash
+HF_HUB_CACHE=/path/to/existing/huggingface/cache python -m bench.gb10_aiperf \
+  --url http://127.0.0.1:30000 --aiperf /path/to/aiperf \
+  --inputs /path/to/frozen-inputs.json --output /path/to/new/results \
+  --cases code design reasoning --repeats 2
+```
+
+Both servers must support `return_token_ids` and streaming
+`stream_options.include_usage`. The client validates the actual AIPerf payload,
+returned prompt IDs, output IDs, reported usage, finish reason and zero cached
+tokens. It retains all raw responses and metrics, and fails on missing or
+inconsistent token evidence. Compare output IDs across engines separately;
+greedy sampling alone does not establish exact numerical parity. The Sharar
+completions reporting change is in the working source; an older production
+image does not acquire it until rebuilt.

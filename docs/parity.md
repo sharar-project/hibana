@@ -1,5 +1,16 @@
 # Parity findings (Phase 1)
 
+For the current distinction between text equality, deterministic execution and
+task quality, see [Greedy text parity and answer quality](greedy-quality.md).
+
+The [2026-09-09 target repair](gb10-target-fix.md) supersedes the broad
+attribution of cross-engine differences to quantization noise below. Actual
+operand comparisons found repairable quantization, normalization, rotary and
+prefill-attention differences. After those repairs, all accepted layer outputs,
+top-10 logits and committed states match exactly in a 65-block common-history
+replay. Independent full generations still differ. The following measurements
+and interpretations are retained as the historical Phase 1 record.
+
 Measured on 2026-09-03 against the frozen reference container
 `sparklang-gb10-qwen38-nvfp4` (SGLang, image `sparklang-gb10-engine:qwen38-27b`).
 Raw evidence lives under `${SHARAR_RESULTS}/parity/`; nothing here is derived
@@ -86,9 +97,12 @@ canary will judge the decoded text.
 ## Consequences for later gates
 
 - Serial-output hashes in the controlled matrix must be Sharar's own frozen
-  hashes. Hash equality with the reference is not achievable by any second
-  implementation of this W4A4 checkpoint, including SGLang itself under a
-  different chunk size.
+  hashes. Hash equality with the reference was not achieved by the tested
+  numerical implementations; even SGLang changed its continuation under a
+  different chunk size. This is evidence of sensitivity, not a proof that
+  exact agreement is impossible. An explicit cross-engine token-equality
+  requirement remains a separate gate, and these tolerance checks do not
+  satisfy it.
 - Quality canaries remain a semantic check (4/4 must pass) and the throughput,
   TTFT and memory thresholds are unchanged.
 - Bit-level determinism of Sharar against itself is a separate test
