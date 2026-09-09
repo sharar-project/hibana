@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-09 (GB10 target repairs and optional FP8 drafting are validated in source; production remains unchanged)
+Last updated: 2026-09-09 (fresh FP8 profiles, candidate captures and held-out selector/FP4 screens; production remains unchanged)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -1035,7 +1035,7 @@ tests. The host floor remains intact and hot inference does not regress.
 Goal: prefill toward the compute roofline and a runtime with no compiler.
 
 Keep the measured improvements already made. Prioritize further kernels from
-the 7C/7D profiles; finalize AOT only once supported model/draft profiles,
+the [current FP8 profile](docs/gb10-fp8-profile.md); finalize AOT only once supported model/draft profiles,
 prefill tails and graph/verify buckets are explicit.
 
 - [x] Speculative round in CUDA graphs: verify forward at batch 1, 2, 4 and
@@ -1051,6 +1051,13 @@ prefill tails and graph/verify buckets are explicit.
       measured bandwidth estimate. Acceptance still performs a host `.tolist()`
       wait; the round is not synchronization-free. These are development
       measurements. `docs/phase7.md`. 2026-09-04.
+- [x] Profile the optimized FP8-draft 10K/1K workload with independent native
+      timing, early/middle/late CUPTI traces and full candidate captures.
+      Target verification is about 90 ms, drafting 12.3 ms and reconstruction
+      1.4–1.5 ms per approximately 107 ms complete round. GPU activity is
+      95.4–97.5% in instrumented spans; this is not DRAM utilization.
+      Code prefill's kernel time is about 54.7% matrix operations, unlike
+      decode's approximately 91%. Physical counters remain a separate task.
 - [ ] Profile prefill at 2,048 and 8,192 tokens with CUPTI on a separate
       profiling container; attribute time to NVFP4 GEMM, FP8 GEMM, GDN chunk
       kernels, attention, norms and quantization. (`sharar profile` gives the
@@ -1311,7 +1318,32 @@ python3 bench/benchmark_text_server.py \
 
 ## 11. Immediate next task
 
-The latest [TPS validation](docs/gb10-tps.md) measures the repaired target with
+The [FP8 profile and follow-up experiments](docs/gb10-fp8-profile.md) now
+complete the immediate profiling task. Native 10K/1K B1 decode reproduces
+44.32 / 34.16 / 56.31 TPS for code / design / reasoning. Full-generation
+candidate-support ceilings are 7.85 / 7.29 / 9.66 emitted tokens per round
+on captured native histories; reaching 100 decode TPS at current cost needs
+about 10.7. These ceilings are diagnostics, not achievable policies.
+
+Fresh three-repeat AIPerf measures 37.61 / 30.11 / 46.06 end-to-end TPS
+(44.15 / 34.16 / 56.31 decode TPS). Gains versus the fastest task means
+across four pinned SGLang loads are 20.58% / 2.61% / 13.39%, with different
+cross-engine outputs and draft precisions. All 24 requests pass raw-stream
+audits, 397 CPU tests pass with 8 skipped, and all four Sharar canaries pass.
+The original service and memory guard are restored.
+
+The fixed eight-feature selector failed held-out reasoning coverage (-1.62%)
+and is not integrated. Expanded FP4 calibration still passes only five of
+ten sampled projections; later layers fail the 5% held-out error screen.
+Do not repeat score/rank-only fitting or uniform target conversion without
+a changed mechanism. Next, collect repository-separated target/draft
+supervision, test richer prefix-length training and candidate support, and
+profile the 16-row target matrices with physical counters before another
+kernel sweep. Validate surviving mixed-precision candidates with whole-model
+quality and long continuations. Retain separate cold-request and warm-session
+latency goals. Launcher support now makes FP8 an explicit environment option.
+
+The preceding [TPS validation](docs/gb10-tps.md) measures the repaired target with
 the explicit FP8 draft option at 37.65 / 30.14 / 46.09 output tokens/s including
 prefill for code / design / reasoning. AIPerf uses exact 10K input and 1K output
 IDs, greedy decoding, concurrency one and five timed requests per task/engine.

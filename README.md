@@ -43,6 +43,7 @@ packages, no SGLang) and launch it with the preflight and the memory guard:
 docker/build.sh                 # -> sharar:qwen38-27b
 ./run-sharar.sh --check         # host, GPU, driver, memory and snapshot preflight
 ./run-sharar.sh                 # container sharar-qwen38 on 127.0.0.1:30001 + guard; DFlash2 speculative decoding (15 drafts, 16 verify rows)
+SHARAR_DRAFT_PRECISION=fp8 ./run-sharar.sh  # optimized parallel draft; build the current image first
 SHARAR_PROPOSER=mtp SHARAR_SPEC=3 ./run-sharar.sh   # the checkpoint's MTP head instead (no external draft needed)
 tools/verify-sharar.sh
 ./run-sharar.sh --stop
@@ -135,32 +136,40 @@ Hardware research directions and decision criteria are in
 ## GB10 performance TODOs
 
 Prioritize fresh 10K-input / 1K-output greedy inference on one Spark. These
-are experiments to measure against the [current AIPerf baseline](docs/gb10-tps.md);
+are experiments to measure against the [FP8 profile and AIPerf baseline](docs/gb10-fp8-profile.md);
 track startup and session-resume improvements separately from generation TPS.
 
-- [ ] **Profile the optimized FP8 draft configuration.** Capture CPU/GPU
-  timelines and kernel counters where available; separate prefill, drafting,
-  target verification, state reconstruction and host stalls. Measure memory
-  traffic and occupancy before choosing kernels to optimize. Validate each
-  candidate with repeated AIPerf runs against SGLang using identical 10,000-token
-  inputs and exactly 1,000 output tokens; report TTFT, end-to-end/decode TPS,
-  accepted tokens per round and output-ID differences.
+- [x] **Profile the optimized FP8 draft configuration.** Complete native
+  generations and separate early/middle/late CPU/CUDA traces put target
+  verification at about 90 ms and drafting at 12.3 ms per 107 ms round.
+  Full candidate captures reproduce the native output IDs. See the
+  [profile and follow-up screens](docs/gb10-fp8-profile.md).
+- [ ] **Measure physical traffic and occupancy.** The current CUPTI traces
+  measure activity and kernel time; the driver restricts hardware counters
+  to administrators. Collect DRAM, L2, occupancy and stall counters before
+  attributing matrix time to bandwidth saturation or choosing new tiles.
 - [ ] **Tune matrix kernels for SM 12.1.** Sweep tiles, register usage and TMA
   pipeline depth for GB10's 48 SMs and our small verification batches. Optimize
   the existing FP4/FP8 paths using measured whole-round savings; preserve the
   target's rounding behavior.
-- [ ] **Fuse intermediate and recurrent-state work.** Explore fused
-  activation/quantization epilogues and accepted-state reconstruction inside
-  the next GDN verification pass to reduce memory writes and rereads. Check
+- [ ] **Fuse intermediate and recurrent-state work.** Prioritize measured
+  activation/quantization costs. Reconstruction now costs only 1.4–1.5 ms
+  per round, so further fusion there has a small total budget. Check
   committed-state correctness and register pressure as well as kernel time.
 - [ ] **Increase accepted tokens per weight traversal.** Test a trained draft
   selector on held-out tasks and current target histories. Better proposals
   can amortize target weight reads over more output tokens; include selector
-  overhead when measuring the gain. See the [speed priorities](docs/gb10-next-speedups.md).
+  overhead when measuring the gain. The eight-feature score/rank selector
+  failed its held-out screen (-1.6% prefix coverage); richer target-specific
+  training needs new task/repository splits and hidden-state supervision.
+  Current candidate-support ceilings also leave a backbone-quality problem.
 - [ ] **Evaluate calibrated target compression.** Test NVFP4 for remaining hot
   FP8 projections using representative calibration data and held-out quality
   evaluation. Reduced weight traffic is promising on shared LPDDR5x, but this
   changes the numerical model and needs its own quality/performance comparison.
+  The expanded calibration screen passed five early-layer projections and
+  rejected five later-layer projections. A layer error screen does not
+  establish whole-model quality or justify uniform FP4 conversion.
 - [ ] **Test performance-core placement and CPU contention.** Pin the engine
   scheduling/launch thread to a GB10 performance core, isolate tokenizer/HTTP
   workers and tune CPU thread counts. Compare idle and CPU-busy runs because

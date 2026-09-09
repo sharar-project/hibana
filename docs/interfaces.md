@@ -137,9 +137,10 @@ metadata. `accepted` is the callback whose graph feature tensors are owned clone
 An adapter receives `ProposerContext(device, max_batch, max_context)`, a fixed
 width `k` and immutable `ProposerRequirements`. Install once before capturing
 graphs. The executor rejects unsupported width/context/features before
-allocating shared verify buffers. MTP/n-gram support k=1–4; the pinned external
-drafts support k=1–7. Target verify graphs have B=1/2/4 buckets and external
-drafts have verify-depth buckets 1/3/7 up to their configured maximum.
+allocating shared verify buffers. MTP/n-gram support k=1–4, DSpark k=1–7,
+and DFlash2 k=1–15. Target verify graphs have B=1/2/4
+buckets. Normal startup captures the selected verification depth; benchmarks
+can explicitly capture additional supported depths.
 
 `ingest_prefill(req, ids, start, result)` consumes each freshly computed chunk;
 `start(req, token)` publishes its first emitted token. `ready(req)` selects

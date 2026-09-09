@@ -13,6 +13,7 @@ PORT="${SHARAR_PORT:-30001}"
 SPEC="${SHARAR_SPEC:-15}"   # draft tokens per round (0 = off); 15 is DFlash2's validated depth (16 verify rows)
 PROPOSER="${SHARAR_PROPOSER:-dflash2}"
 VERIFY_STATE="${SHARAR_VERIFY_STATE:-reconstruct}"
+DRAFT_PRECISION="${SHARAR_DRAFT_PRECISION:-bf16}" # fp8 selects the measured optimized parallel draft
 DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"   # incoai/Qwen3.8-27B-DFlash2
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
@@ -31,6 +32,11 @@ if [[ "${1:-}" == "--stop" ]]; then
   docker rm "$CONTAINER" >/dev/null 2>&1 || true
   echo "stopped $CONTAINER"
   exit 0
+fi
+
+[[ "$DRAFT_PRECISION" == bf16 || "$DRAFT_PRECISION" == fp8 ]] || fail "SHARAR_DRAFT_PRECISION must be bf16 or fp8"
+if [[ "$DRAFT_PRECISION" == fp8 && ( "$SPEC" == 0 || ( "$PROPOSER" != dflash2 && "$PROPOSER" != dspark ) ) ]]; then
+  fail "FP8 draft precision requires enabled DFlash2 or DSpark speculation"
 fi
 
 # ---- preflight (same facts sharar check enforces inside) ----
@@ -68,7 +74,7 @@ Sharar preflight OK
   GPU: $gpu_name (SM $gpu_cc), driver $gpu_driver
   Model: RadixArk/Qwen3.8-27B-NVFP4@$MODEL_REVISION
   Host memory: $((mem_total / 1048576)) GiB total, $((mem_avail / 1048576)) GiB available; runtime floor $((GUARD_MIN_AVAILABLE_KIB / 1048576)) GiB
-  Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (proposer: $PROPOSER, drafts: $SPEC, verify state: $VERIFY_STATE)
+  Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (proposer: $PROPOSER, drafts: $SPEC, draft precision: $DRAFT_PRECISION, verify state: $VERIFY_STATE)
 EOT
 [[ "${1:-}" == "--check" ]] && exit 0
 
@@ -99,6 +105,9 @@ add_lib libcudadebugger.so.1 libcudadebugger.so.1
 for gpucomp in "$DRIVER_LIB_DIR"/libnvidia-gpucomp.so.*; do [[ -f "$gpucomp" ]] && args+=(--mount "type=bind,src=$gpucomp,dst=$gpucomp,readonly"); done
 
 serve_args=(serve --host 0.0.0.0 --port "$PORT" --proposer "$PROPOSER" --verify-state "$VERIFY_STATE" --spec "$SPEC")
+if [[ "$DRAFT_PRECISION" != bf16 ]]; then
+  serve_args+=(--draft-precision "$DRAFT_PRECISION")
+fi
 cid="$("${args[@]}" "$IMAGE" "${serve_args[@]}")"
 mkdir -p "$RESULTS_DIR"
 echo "$cid" > "$RESULTS_DIR/sharar-container-id.txt"

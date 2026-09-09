@@ -55,7 +55,7 @@ stop or replace a running service.
    Then run the GPU continuation suite, feature lifetime checks and a fixed
    workload comparison against the unchanged adapter.
 
-The verifier accepts flat proposals: MTP/n-gram k≤4, DSpark/DFlash2 k≤7.
+The verifier accepts flat proposals: MTP/n-gram k≤4, DSpark k≤7, DFlash2 k≤15.
 External sampled proposals include their actual transformed conditional q,
 including selector/Markov effects. `engine/rejection.py` is the common reference
 algorithm; test tiny distributions independently of model rounding. MTP/n-gram

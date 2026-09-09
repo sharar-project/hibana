@@ -11,6 +11,13 @@ Before publishing a novelty claim, compare the mechanism with current engine
 implementations and relevant papers. Preserve the simple reference path so
 each experiment can be accepted or discarded independently.
 
+The [2026-09-09 FP8 profile](gb10-fp8-profile.md) is the current starting
+point: target verification takes about 90 ms per 107 ms round; accepted-state
+reconstruction already exists and costs only 1.4–1.5 ms. Full candidate capture,
+the failed eight-feature selector, and the five-of-ten target-FP4 layer screen
+update the priorities below. Historical MTP capacity examples are not the
+current DFlash2 reconstruction layout.
+
 ## Hardware facts we must respect
 
 GB10 shares physical DRAM between CPU and GPU. That does not mean every CUDA
@@ -30,7 +37,7 @@ optimization guidance](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/optim
 | Experiment | Hypothesis and implementation seam | Evidence needed to continue |
 |---|---|---|
 | Device-resident speculative progress | Keep proposal acceptance, processed lengths, page-tail selection and recurrent commit metadata on the device; notify the CPU through bounded completion records. `SpecDecoder` and `StateManager` expose the transaction to replace. This could remove a CPU dependency from every round and reduce repeated metadata preparation. | A trace attributes exposed time to the current acceptance transfer/host launch path. A prototype removes that dependency, preserves EOS/cancel/replay semantics and improves client-visible gaps/completion time. Reject if completion visibility, launch planning or polling consumes the gain. |
-| Selective recurrent checkpoints | Current verification materializes recurrent snapshots for every candidate position. Compare selective checkpoints plus bounded replay/recomputation, or a fused accept-and-state-selection design, while retaining FP32 state. `SpecDecoder` owns the intermediate buffers and `StateManager.commit` owns publication. | Measure bytes actually written/read, not allocated capacity. Preserve the exact snapshot at every possible stop/accept position. Continue only if saved bandwidth and capacity exceed replay/extra synchronization costs across short budgets and real acceptance lengths. |
+| Recurrent commit fusion | The optimized path already reconstructs only the accepted recurrent state. Further fusion into verification or the following round must beat its measured 1.4–1.5 ms cost while retaining FP32 state. `SpecDecoder` owns the intermediate buffers and `StateManager` owns publication. | Measure bytes actually written/read, not allocated capacity. Preserve the exact state at every possible stop/accept position. Continue only if whole-round savings exceed extra work, register pressure or synchronization across real acceptance lengths. |
 | Session cache optimized for saved time per byte | Choose target recurrent snapshots, target KV, draft features/KV and reconstruction checkpoints jointly. A long prefix is useful only if its recurrent and draft state can be restored cheaply. `memory/` owns policy; proposers declare retained state needs. | Replay multi-turn coding/chat sessions under equal physical memory budgets. Count end-to-end time saved, draft reconstruction, misses and eviction cost. Compare with the existing radix policy; larger cached token counts alone do not pass. |
 | Reclaimable unified-memory slabs | Split optional cached state into reclaimable slabs while keeping captured graph references valid through explicit indirection/lifetime rules. Shared DRAM may support a larger useful session working set, but returning IDs to current pools does not release it. | Demonstrate physical memory recovery under external pressure, correct active loans and graph replay, and acceptable hit latency. Compare device, managed and mapped paths, including first touch, CPU contention and steady bandwidth. Reject a hot tier that loses the inference gain. |
 | Prepacked immutable weight layout | Prepare the final NVFP4/FP8 layout once, then compare direct loading and registered/mapped access to the artifact. Eliminate redundant materialization/swizzling where the allocation path permits. `weights/` owns the layout and versioned identity. | Bitwise weight identity, lower load peak and startup time, and unchanged hot GEMM/GEMV bandwidth. Measure reads, faults, transformation, registration and first inference separately; shared memory alone is not proof that a copy disappears. |

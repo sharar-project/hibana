@@ -1,0 +1,290 @@
+{
+  "schema": 2,
+  "summary_document": "gb10-fp8-profile.md",
+  "full_evidence": {
+    "path": "reviews/2026-09-09-fp8-profile/results.json",
+    "sha256": "ac97932ac8ff7beb30b69998a810d4ab66f9f39ba546813398f734449704a0b9",
+    "bytes": 212834
+  },
+  "summary": {
+    "protocol": {
+      "goal": "Current FP8 DFlash2 profile, full-generation support, selector feasibility and target compression screen",
+      "primary_cases": [
+        "code",
+        "design",
+        "reasoning"
+      ],
+      "input_tokens": 10000,
+      "output_tokens": 1000,
+      "width": 16,
+      "batch": 1,
+      "max_batch": 4,
+      "warmups": 1,
+      "repeats": 2,
+      "profile_positions": [
+        32,
+        384,
+        768
+      ],
+      "profile_rounds": 4,
+      "service_restore": true,
+      "minimum_available_gib": 16,
+      "selector_training": "Fit only code and design captures; reasoning held out before tuning. Small pilot, not generalization claim.",
+      "selector_advancement": "At least 10% fixed-history prefix improvement on held-out reasoning before native candidate generation; train improvements alone insufficient.",
+      "target_compression": "Calibration code/design; held-out reasoning; per-layer screen <=5% normalized RMS error; no serving promotion from layer tolerance.",
+      "selector_fit": {
+        "features": 8,
+        "epochs": 200,
+        "lr": 0.03,
+        "l2": 0.01,
+        "prefix_discount": 0.9,
+        "seed": 42,
+        "heldout_used_for_tuning": false
+      }
+    },
+    "aiperf": {
+      "sharar": {
+        "code": {
+          "decode_tps": 44.14988500563474,
+          "output_tps": 37.610669524362116,
+          "ttft_s": 3.9607344036666667,
+          "latency_s": 26.588199908333333,
+          "emitted_tokens_per_round": 4.734597156398104,
+          "rounds": [
+            211,
+            211,
+            211
+          ],
+          "repeatable_output": true
+        },
+        "design": {
+          "decode_tps": 34.15693509179904,
+          "output_tps": 30.11136442242231,
+          "ttft_s": 3.962697907666666,
+          "latency_s": 33.210052722,
+          "emitted_tokens_per_round": 3.672794117647059,
+          "rounds": [
+            272,
+            272,
+            272
+          ],
+          "repeatable_output": true
+        },
+        "reasoning": {
+          "decode_tps": 56.30851672686417,
+          "output_tps": 46.06095488581917,
+          "ttft_s": 3.9688183803333335,
+          "latency_s": 21.710361899333332,
+          "emitted_tokens_per_round": 6.054545454545455,
+          "rounds": [
+            165,
+            165,
+            165
+          ],
+          "repeatable_output": true
+        }
+      },
+      "sglang": {
+        "code": {
+          "decode_tps": 25.079107453949177,
+          "output_tps": 22.702652185644624,
+          "ttft_s": 4.213763566333333,
+          "latency_s": 44.04771706066666,
+          "emitted_tokens_per_round": 3.286184210526316,
+          "rounds": [
+            304,
+            304,
+            304
+          ],
+          "repeatable_output": true
+        },
+        "design": {
+          "decode_tps": 33.45119245023937,
+          "output_tps": 29.346010545775012,
+          "ttft_s": 4.211775901333334,
+          "latency_s": 34.076182125,
+          "emitted_tokens_per_round": 4.362445414847161,
+          "rounds": [
+            229,
+            229,
+            229
+          ],
+          "repeatable_output": true
+        },
+        "reasoning": {
+          "decode_tps": 44.734044686410975,
+          "output_tps": 37.65569590110647,
+          "ttft_s": 4.224422699666666,
+          "latency_s": 26.556407366000002,
+          "emitted_tokens_per_round": 5.842105263157895,
+          "rounds": [
+            171,
+            171,
+            171
+          ],
+          "repeatable_output": true
+        }
+      }
+    },
+    "comparisons": {
+      "code": {
+        "end_to_end_gain_pct": 65.6664129671341,
+        "decode_gain_pct": 76.04248909856044,
+        "first_different_output_id": 103,
+        "fastest_sglang_task_mean_across_four_loads": 31.19043262191987,
+        "gain_vs_fastest_sglang_task_mean_pct": 20.583994394262618
+      },
+      "design": {
+        "end_to_end_gain_pct": 2.6080338090707977,
+        "decode_gain_pct": 2.1097682619521274,
+        "first_different_output_id": 41,
+        "fastest_sglang_task_mean_across_four_loads": 29.346010545775012,
+        "gain_vs_fastest_sglang_task_mean_pct": 2.6080338090707977
+      },
+      "reasoning": {
+        "end_to_end_gain_pct": 22.321348161476216,
+        "decode_gain_pct": 25.87396718001047,
+        "first_different_output_id": 208,
+        "fastest_sglang_task_mean_across_four_loads": 40.62226373084028,
+        "gain_vs_fastest_sglang_task_mean_pct": 13.388449228273448
+      }
+    },
+    "profile": {
+      "draft_ms_range": [
+        12.2685,
+        12.3234
+      ],
+      "target_verify_ms_range": [
+        89.898,
+        90.3201
+      ],
+      "reconstruction_ms_range": [
+        1.4043,
+        1.5144
+      ],
+      "target_nvfp4_kernel_mean_ms": 48.01362,
+      "target_other_gemm_kernel_mean_ms": 36.52754,
+      "physical_dram_counters_collected": false
+    },
+    "acceptance": {
+      "code": {
+        "rounds": 210,
+        "mean_native_emitted": 4.742857142857143,
+        "mean_oracle_emitted": 7.852380952380952,
+        "native_emitted_histogram": {
+          "1": 63,
+          "2": 36,
+          "3": 21,
+          "4": 13,
+          "5": 5,
+          "6": 11,
+          "7": 8,
+          "8": 4,
+          "9": 7,
+          "10": 7,
+          "11": 10,
+          "12": 11,
+          "13": 5,
+          "14": 8,
+          "15": 1
+        },
+        "first_rejection_missing_support": 61,
+        "rejected_rounds": 210
+      },
+      "design": {
+        "rounds": 268,
+        "mean_native_emitted": 3.6828358208955225,
+        "mean_oracle_emitted": 7.294776119402985,
+        "native_emitted_histogram": {
+          "1": 65,
+          "2": 61,
+          "3": 36,
+          "4": 33,
+          "5": 17,
+          "6": 10,
+          "7": 15,
+          "8": 10,
+          "9": 4,
+          "10": 5,
+          "11": 6,
+          "12": 2,
+          "13": 2,
+          "14": 2
+        },
+        "first_rejection_missing_support": 46,
+        "rejected_rounds": 268
+      },
+      "reasoning": {
+        "rounds": 160,
+        "mean_native_emitted": 6.1625,
+        "mean_oracle_emitted": 9.65625,
+        "native_emitted_histogram": {
+          "1": 29,
+          "2": 11,
+          "3": 26,
+          "4": 17,
+          "5": 12,
+          "6": 9,
+          "7": 6,
+          "8": 5,
+          "9": 4,
+          "10": 4,
+          "11": 6,
+          "12": 6,
+          "13": 2,
+          "14": 6,
+          "15": 3,
+          "16": 14
+        },
+        "first_rejection_missing_support": 27,
+        "rejected_rounds": 146
+      }
+    },
+    "selector_screen": {
+      "passed": false,
+      "evaluation": {
+        "code": {
+          "rounds": 210,
+          "native_emitted_sum": 996,
+          "candidate_emitted_sum": 987,
+          "oracle_emitted_sum": 1649,
+          "fixed_history_improvement_pct": -0.9036144578313254
+        },
+        "design": {
+          "rounds": 268,
+          "native_emitted_sum": 987,
+          "candidate_emitted_sum": 983,
+          "oracle_emitted_sum": 1955,
+          "fixed_history_improvement_pct": -0.4052684903748771
+        },
+        "reasoning": {
+          "rounds": 160,
+          "native_emitted_sum": 986,
+          "candidate_emitted_sum": 970,
+          "oracle_emitted_sum": 1545,
+          "fixed_history_improvement_pct": -1.6227180527383367
+        }
+      }
+    },
+    "target_compression": {
+      "passed": 5,
+      "screened": 10,
+      "whole_model_quality_validated": false
+    },
+    "validation": {
+      "cpu_passed": 397,
+      "cpu_skipped": 8,
+      "quality_canaries_passed": 4,
+      "instrumented_native_output_match": true,
+      "all_aiperf_requests_audited": 24,
+      "original_service_restored": true,
+      "minimum_available_gib": 61.77657699584961
+    },
+    "limitations": [
+      "Three fixed prompts, one selector/calibration holdout; not broad generalization.",
+      "SGLang uses BF16 draft; free-running cross-engine outputs differ.",
+      "Oracle support and isolated projection timings are not measured policy speedups.",
+      "No target conversion or learned selector was installed in serving."
+    ]
+  }
+}

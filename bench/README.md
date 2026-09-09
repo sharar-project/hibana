@@ -77,6 +77,46 @@ point remains available for historical commands and uses the shared auditor.
 
 ## Detailed profiling and historical studies
 
+Profile the optimized FP8 draft on the same frozen inputs as the TPS client:
+
+```bash
+python3 -m bench.gb10_audit --draft-precision fp8 \
+  --inputs /results/benchmark-run/frozen-inputs.json \
+  --output /results/new-fp8-profile --cases code design reasoning \
+  --batches 1 --warmups 1 --repeats 2 --capture-candidates
+```
+
+Run inside an exclusive, guarded GPU window. FP8 is the profiler default;
+`--draft-precision bf16` selects the control. It records complete native
+generations separately from CPU/CUDA traces at output positions 32, 384 and
+768, plus full-generation candidate support when requested. Terminal windows
+without a complete proposal/bonus horizon are excluded from support ceilings.
+Candidate captures and instrumented traces are diagnostics, not HTTP TPS.
+The launcher accepts `SHARAR_DRAFT_PRECISION=fp8`; its default remains BF16.
+Both require an image built from source containing the FP8 serving option.
+
+The optional CPU selector screen trains on code/design and evaluates reasoning
+once, using a fixed eight-feature residual ranker:
+
+```bash
+python3 -m bench.gb10_selector_fit --captures /results/new-fp8-profile \
+  --output /results/new-selector-screen
+```
+
+The target compression screen now uses code/design calibration and held-out
+reasoning decode blocks at the same early/middle/late positions:
+
+```bash
+python3 -m bench.gb10_target_fp4 --draft-precision fp8 \
+  --inputs /results/benchmark-run/frozen-inputs.json \
+  --output /results/new-target-compression
+```
+
+This screens ten projections with both prefill and decode calibration. It
+validates every held-out block against a 5% normalized RMS threshold and times
+the 16-row shape. It does not change target serving weights or establish
+whole-model quality. The new default protocol differs from historical runs.
+
 For the 10,000-input / 1,000-output native-generation audit, run
 `python3 -m bench.gb10_audit --output /results/new-gb10-audit` inside the
 pinned GPU image with exclusive GPU use and the host memory guard. It saves

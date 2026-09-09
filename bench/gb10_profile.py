@@ -49,6 +49,44 @@ def trace_summary(trace):
             'limitation': 'Instrumented queue gaps include Python and profiler overhead. Kernel duration sums may overlap; union is used for activity. No DRAM hardware counters.'}
 
 
+def kernel_breakdown(trace):
+    """Attribute kernels through CUPTI launch correlation and nested CPU scopes.
+
+CUDA graph kernels share their replay launch correlation, so their delayed GPU
+timestamps must not be compared directly with CPU method-entry timestamps.
+"""
+    events = trace['traceEvents']
+    scopes = [e for e in events if e.get('ph') == 'X' and e.get('name', '').startswith('sharar.')]
+    launches = {e['args']['correlation']: e for e in events
+                if e.get('cat') in ('cuda_runtime', 'cuda_driver') and 'correlation' in e.get('args', {})}
+    totals, counts = Counter(), Counter()
+    all_ms = 0.
+    for event in events:
+        if event.get('cat') != 'kernel' or event.get('ph') != 'X':
+            continue
+        launch = launches.get(event.get('args', {}).get('correlation'))
+        parents = [scope for scope in scopes if launch and scope.get('tid') == launch.get('tid')
+                   and scope['ts'] <= launch['ts'] < scope['ts'] + scope['dur']]
+        owner = min(parents, key=lambda e: e['dur'])['name'] if parents else 'unattributed'
+        name = event['name'].lower()
+        if 'blockscaled' in name or 'block_scaled' in name:
+            family = 'nvfp4_gemm'
+        elif 'nvjet' in name or 'gemm' in name:
+            family = 'other_gemm'
+        elif 'prefillwith' in name or 'attention' in name:
+            family = 'attention'
+        else:
+            family = 'other'
+        key = (owner, family)
+        totals[key] += event['dur'] / 1000
+        counts[key] += 1
+        all_ms += event['dur'] / 1000
+    return {'kernel_sum_ms': all_ms,
+            'groups': [{'owner': owner, 'family': family, 'kernel_ms': value, 'calls': counts[owner, family]}
+                       for (owner, family), value in totals.most_common()],
+            'limitation': 'Diagnostic kernel-duration sums, not additive phase spans or measured DRAM traffic. Other GEMM includes FP8 and small BF16 projections.'}
+
+
 @contextmanager
 def phase_scopes(ex):
     import torch
