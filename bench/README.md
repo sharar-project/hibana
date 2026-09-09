@@ -95,6 +95,42 @@ Candidate captures and instrumented traces are diagnostics, not HTTP TPS.
 The launcher accepts `SHARAR_DRAFT_PRECISION=fp8`; its default remains BF16.
 Both require an image built from source containing the FP8 serving option.
 
+The [current 16-row matrix study](../docs/gb10-verifier16.md) uses raw native
+reference output IDs in a JSON object keyed by `code`, `design`, and
+`reasoning`. Capture operands first, then validate/tune against those captures:
+
+```bash
+python3 -m bench.gb10_matrix capture --inputs /proof/frozen-inputs.json \
+  --reference /proof/reference-ids.json --output /proof/capture
+python3 -m bench.gb10_matrix screen --captures /proof/capture --output /proof/screen
+python3 -m bench.gb10_matrix family --captures /proof/capture --output /proof/family
+python3 -m bench.gb10_fp4_pipeline --captures /proof/capture --output /proof/fp4-screen
+python3 -m bench.gb10_fp4_pipeline --family --captures /proof/capture --output /proof/fp4-family
+python3 -m bench.gb10_fp8_tactics --expand --captures /proof/capture --output /proof/fp8-tactics
+python3 -m bench.gb10_quant_pack --captures /proof/capture --output /proof/quant-pack
+python3 -m bench.gb10_matrix native --fp4-mlp --cases code --batches 1 \
+  --inputs /proof/frozen-inputs.json --reference /proof/reference-ids.json \
+  --output /proof/combined-native
+python3 -m bench.gb10_verify_width --inputs /proof/frozen-inputs.json --output /proof/width-cost
+```
+
+Use the exclusive guarded GPU window. Output directories must be new.
+`gb10_matrix profile` replays eight labeled matrix calls inside a CUDA profiler
+range for Nsight Compute. FP4 pipeline tuning uses private CuTe APIs;
+cuBLASLt tuning builds a benchmark-only C++ extension. No tactic is selected
+automatically for serving. Matrix/quantizer/flat-path measurements do not
+replace complete generation timing, correctness or task-quality checks.
+
+Tree coverage can be reproduced on CPU from the preceding full candidate
+captures. Neither policy receives future target tokens during selection:
+
+```bash
+python3 -m bench.gb10_tree_screen --captures /proof/native-fp8 \
+  --policy probability --budgets 16 32 64 --output /proof/probability-tree.json
+python3 -m bench.gb10_tree_screen --captures /proof/native-fp8 \
+  --policy protected --budgets 32 64 128 --output /proof/protected-tree.json
+```
+
 The optional CPU selector screen trains on code/design and evaluates reasoning
 once, using a fixed eight-feature residual ranker:
 

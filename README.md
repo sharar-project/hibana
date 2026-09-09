@@ -138,20 +138,26 @@ Hardware research directions and decision criteria are in
 Prioritize fresh 10K-input / 1K-output greedy inference on one Spark. These
 are experiments to measure against the [FP8 profile and AIPerf baseline](docs/gb10-fp8-profile.md);
 track startup and session-resume improvements separately from generation TPS.
+The current target is **1.5×–2× faster TPS**. The latest
+[16-row engine study](docs/gb10-verifier16.md) measures only a 1.014× combined
+matrix candidate on code; that target remains open.
 
 - [x] **Profile the optimized FP8 draft configuration.** Complete native
   generations and separate early/middle/late CPU/CUDA traces put target
   verification at about 90 ms and drafting at 12.3 ms per 107 ms round.
   Full candidate captures reproduce the native output IDs. See the
   [profile and follow-up screens](docs/gb10-fp8-profile.md).
-- [ ] **Measure physical traffic and occupancy.** The current CUPTI traces
-  measure activity and kernel time; the driver restricts hardware counters
-  to administrators. Collect DRAM, L2, occupancy and stall counters before
-  attributing matrix time to bandwidth saturation or choosing new tiles.
+- [x] **Collect current matrix occupancy and memory counters.** Nsight records
+  eight real-operand calls. L2 system-memory fills are near one weight
+  footprint per call; these are not physical LPDDR byte counters. See the
+  [counter evidence](docs/gb10-verifier16.md).
 - [ ] **Tune matrix kernels for SM 12.1.** Sweep tiles, register usage and TMA
   pipeline depth for GB10's 48 SMs and our small verification batches. Optimize
   the existing FP4/FP8 paths using measured whole-round savings; preserve the
   target's rounding behavior.
+  Shape-specific FP8 QKV dispatch and larger FP4 K tiles pass captured-operand
+  checks but give only 1.4% combined decode gain in the code pilot. A 940-tactic
+  cuBLASLt screen finds no larger win; all remain benchmark candidates.
 - [ ] **Fuse intermediate and recurrent-state work.** Prioritize measured
   activation/quantization costs. Reconstruction now costs only 1.4–1.5 ms
   per round, so further fusion there has a small total budget. Check
@@ -163,6 +169,10 @@ track startup and session-resume improvements separately from generation TPS.
   failed its held-out screen (-1.6% prefix coverage); richer target-specific
   training needs new task/repository splits and hidden-state supervision.
   Current candidate-support ceilings also leave a backbone-quality problem.
+  Engine-side row allocation is also measured: a 32-row probability tree
+  covers 19–32% more tokens on frozen histories, before real branching cost.
+  Flat verification costs about 94 ms versus 90 ms at 16 rows, with observed
+  cross-shape numerical differences. Tree execution and quality are unproven.
 - [ ] **Evaluate calibrated target compression.** Test NVFP4 for remaining hot
   FP8 projections using representative calibration data and held-out quality
   evaluation. Reduced weight traffic is promising on shared LPDDR5x, but this

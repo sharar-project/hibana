@@ -1057,7 +1057,14 @@ prefill tails and graph/verify buckets are explicit.
       1.4–1.5 ms per approximately 107 ms complete round. GPU activity is
       95.4–97.5% in instrumented spans; this is not DRAM utilization.
       Code prefill's kernel time is about 54.7% matrix operations, unlike
-      decode's approximately 91%. Physical counters remain a separate task.
+      decode's approximately 91%. The subsequent 16-row study collects L2
+      system-memory fills, occupancy and stalls; physical LPDDR counters
+      remain unavailable.
+- [x] Complete the [current 16-row matrix study](docs/gb10-verifier16.md):
+      nine real-operand captures, eight Nsight calls, FP4 pipeline tuning,
+      940 cuBLASLt tactics and exact FP4 encoder screens. Attention-QKV and
+      K512 MLP candidates preserve 144/1,152 captured matrices; their combined
+      code pilot is only 1.014x faster in decode. No serving promotion.
 - [ ] Profile prefill at 2,048 and 8,192 tokens with CUPTI on a separate
       profiling container; attribute time to NVFP4 GEMM, FP8 GEMM, GDN chunk
       kernels, attention, norms and quantization. (`sharar profile` gives the
@@ -1336,10 +1343,15 @@ The fixed eight-feature selector failed held-out reasoning coverage (-1.62%)
 and is not integrated. Expanded FP4 calibration still passes only five of
 ten sampled projections; later layers fail the 5% held-out error screen.
 Do not repeat score/rank-only fitting or uniform target conversion without
-a changed mechanism. Next, collect repository-separated target/draft
-supervision, test richer prefix-length training and candidate support, and
-profile the 16-row target matrices with physical counters before another
-kernel sweep. Validate surviving mixed-precision candidates with whole-model
+a changed mechanism. The [16-row engine follow-up](docs/gb10-verifier16.md)
+now completes the counter and matrix studies. The requested 1.5x–2x goal
+remains open: the combined matrix pilot improves code decode by only 1.4%.
+A 32-row probability-tree screen adds 19–32% fixed-history coverage, while
+flat verifier cost rises from about 90 to 94 ms. Actual branching cost,
+winner commit and cross-shape numerical behavior remain unresolved.
+Continue engine verification/fusion work alongside repository-separated
+target/draft supervision and richer prefix-length training. Validate
+surviving mixed-precision candidates with whole-model
 quality and long continuations. Retain separate cold-request and warm-session
 latency goals. Launcher support now makes FP8 an explicit environment option.
 
