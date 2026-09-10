@@ -11,7 +11,7 @@ import torch
 from torch.utils.cpp_extension import load
 
 from bench.gb10_matrix import apply, digest, error, linears, load_capture, save
-from bench.nvfp4_cost import capture_graph, time_graph
+from bench.support.cuda import capture_graph, time_graph
 from sharar import config
 from sharar.model.qwen38 import Qwen38
 

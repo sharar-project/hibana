@@ -68,7 +68,7 @@ def test_driver_launch_is_attributed_to_innermost_scope():
 
 def test_residual_selector_zero_weights_reproduce_conditional_native_walk():
     import torch
-    from bench.gb10_selector_fit import evaluate
+    from bench.archive.gb10_selector_fit import evaluate
 
     row = {'output_offset': 1, 'proposal_ids': [20, 40],
            'candidates': [[10, 20], [30, 40]],

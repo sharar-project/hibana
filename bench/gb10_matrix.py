@@ -16,7 +16,7 @@ import time
 import torch
 import flashinfer
 
-from bench.nvfp4_cost import capture_graph, time_graph
+from bench.support.cuda import capture_graph, time_graph
 from sharar import config
 from sharar.engine.executor import Executor
 from sharar.engine.sampler import SamplingParams

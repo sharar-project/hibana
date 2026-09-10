@@ -79,9 +79,11 @@ def test_builtin_workloads_match_frozen_aiperf_baseline(snapshot, case, expected
 
 
 def test_packaged_source_fixture_stays_frozen():
-    fixture = Path(__file__).resolve().parents[2] / 'bench/workloads/request_state_7aebbe6.txt'
-    packaged = Path(benchmark.__file__).parent / 'benchmark_data' / fixture.name
-    assert packaged.read_bytes() == fixture.read_bytes()
+    import hashlib
+    from sharar.benchmark_workloads import frozen_source
+    manifest = Path(__file__).resolve().parents[2] / 'bench/workloads/local_v1.json'
+    expected = json.loads(manifest.read_text())['fixtures']['request_state']['sha256']
+    assert hashlib.sha256(frozen_source().encode()).hexdigest() == expected
 
 
 def test_cli_end_to_end_writes_summary_and_reuses_inputs(tmp_path, monkeypatch, capsys):

@@ -9,10 +9,15 @@ WORKLOADS = ('code', 'design', 'reasoning')
 VERSION = 'gb10-coding-v1'
 
 
+def frozen_source():
+    """Historical source fixture shared by packaged and source-tree clients."""
+    return files('sharar').joinpath('benchmark_data/request_state_7aebbe6.txt').read_text()
+
+
 def materialize(encode, case, length):
     if case == 'code':
         prefix = '<|im_start|>user\nReview task 0. Here is historical inference-engine source:\n'
-        body = files('sharar').joinpath('benchmark_data/request_state_7aebbe6.txt').read_text()
+        body = frozen_source()
         question = ('Explain the ownership and rollback invariants in this code. '
                     'Then write a complete Python implementation of a transactional '
                     'range allocator with reserve, commit, rollback and release, '

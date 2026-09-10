@@ -4,7 +4,7 @@ Sharar specializes in local inference on one GB10. Keep the current Qwen
 checkpoint and numerical profile fixed unless a change explicitly validates a
 new one. Favor a small implementation with explicit tensor ownership over a
 registry or framework. Read [the interfaces](docs/interfaces.md),
-[the roadmap](roadmap.md), and [the 7A invariants](docs/phase7a.md).
+[the roadmap](roadmap.md), and [request ownership](docs/phase7a.md).
 
 ## Run checks
 
@@ -22,6 +22,16 @@ already prepared environment. Sharar's small GitHub CPU workflow uses the same
 setup command. Dependency constraints are in `constraints/`; the GB10 image
 uses `gb10-cu130.txt`, CUDA 13.0.3 and the pinned checkpoint revision.
 
+Also run `python3 tools/check_evidence.py` for recursive evidence/link checks,
+and `.venv-cpu/bin/python tools/check_distribution.py` to build an sdist and
+wheel and probe installed runtime assets outside the checkout. CI runs these
+checks; a source-only or editable installation does not validate packaging.
+
+Use [operations](docs/operations.md) for the current container setup. Shared
+benchmark infrastructure lives in `bench/support/`; completed experiments
+live in `bench/archive/`. Preserve frozen workload content and checksums when
+moving readers. Dated reports and manifests stay together in `docs/archive/`.
+
 Inside a prepared GB10 container with the snapshot, frozen parity artifacts
 at `$SHARAR_RESULTS/parity`, writable compilation cache and exclusive model
 memory, run:
@@ -34,7 +44,7 @@ The real-checkpoint fixture uses bounded pools: 35,000 KV pages and 12 recurrent
 slots. Keep the external memory guard active for that container. The loader
 requires 40 GiB `MemAvailable`: a 24 GiB allowance based on the measured 21.3 GiB
 streaming-load peak plus the 16 GiB host floor. Runtime separately checks the
-prospective pool/draft budget before allocation. See [7D evidence](docs/phase7d.md).
+prospective pool/draft budget before allocation. See [7D evidence](docs/archive/studies/phase7d.md).
 Performance measurements need exclusive GPU use. The check command does not
 stop or replace a running service.
 

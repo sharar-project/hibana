@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from bench.gb10_bs4_engine import work_summary
-from bench.gb10_bs4_http import request
+from bench.support.recording import work_summary
+from bench.support.http import request
 
 
 def test_work_summary_accounts_for_partial_batch_and_stop_truncation():
@@ -35,7 +35,7 @@ def test_empty_work_has_no_throughput():
 @pytest.mark.parametrize('spec_count', [0, 3, 4])
 def test_recorder_separates_fallback_rows_from_verification(spec_count):
     from types import SimpleNamespace
-    from bench.gb10_bs4_engine import Recorder
+    from bench.support.recording import Recorder
     class Request:
         def __init__(self, index):
             self.request_id = index
@@ -64,7 +64,7 @@ def test_recorder_separates_fallback_rows_from_verification(spec_count):
                                                           (True, 64, False, False), (True, 64, True, True),
                                                           (False, 64, True, False)])
 def test_http_client_requires_complete_uncached_token_stream(monkeypatch, complete, cached, allow_cached, ok):
-    from bench import gb10_bs4_http
+    from bench.support import http as gb10_bs4_http
     class Response:
         status = 200
         def __init__(self):

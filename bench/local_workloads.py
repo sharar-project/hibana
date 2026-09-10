@@ -15,6 +15,7 @@ from pathlib import Path
 import statistics
 import time
 import urllib.request
+from sharar.benchmark_workloads import frozen_source
 
 DEFAULT_MANIFEST = Path(__file__).parent / 'workloads/local_v1.json'
 
@@ -34,7 +35,10 @@ def materialize(path, snapshot):
         fixture = (path.parent / info['path']).resolve()
         if not fixture.is_relative_to(path.parent.resolve()):
             raise ValueError('fixture escapes the workload directory')
-        data = fixture.read_bytes()
+        # Preserve the built-in manifest's bytes/checksum with one packaged
+        # historical fixture. External manifests still own their local files.
+        packaged = path.resolve() == DEFAULT_MANIFEST.resolve() and info['path'] == 'request_state_7aebbe6.txt'
+        data = frozen_source().encode() if packaged else fixture.read_bytes()
         if digest(data) != info['sha256']:
             raise ValueError(f'fixture checksum changed: {name}')
         fixtures[name] = data.decode()

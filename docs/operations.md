@@ -1,0 +1,88 @@
+# Build and operate Sharar
+
+## Profile and prerequisites
+
+Use one NVIDIA GB10 (SM 12.1), `aarch64`, about 128 GB unified memory, NVIDIA
+driver 580 or newer, Docker and a working user systemd manager for the guard.
+The pinned target is `RadixArk/Qwen3.8-27B-NVFP4` at
+`319f741cce68d7914884900c138a1fbb70a42f30`. Model, tokenizer and chat-template
+files must already be cached locally; serving runs offline.
+
+Copy [the environment example](../config/gb10.env.example) to the ignored
+`config/gb10.env` and set `SHARAR_HF_CACHE` and `SHARAR_RESULTS`.
+The DFlash2 snapshot is `incoai/Qwen3.8-27B-DFlash2` at
+`dedf8df68adfb1afeaf7b7480c0a0243108177b4`.
+
+## Build and launch
+
+```bash
+docker/build.sh
+./run-sharar.sh --check
+./run-sharar.sh
+tools/verify-sharar.sh
+```
+
+The launcher binds `127.0.0.1:30001`, uses container `sharar-qwen38`, and starts
+`sharar-memory-guard.service`. The guard protects a 16 GiB `MemAvailable` floor.
+Startup needs at least 40 GiB available and checks the prospective pool/draft
+budget separately. Automatic KV capacity depends on available memory.
+
+| Setting | Launcher default | Override |
+|---|---|---|
+| Proposer | DFlash2 | `SHARAR_PROPOSER` |
+| Draft proposals | 15 (16 target verification rows) | `SHARAR_SPEC` |
+| Draft precision | BF16 | `SHARAR_DRAFT_PRECISION=fp8` |
+| Accepted state | Reconstruction | `SHARAR_VERIFY_STATE` |
+| Image | `sharar:qwen38-27b` | `SHARAR_IMAGE` |
+| Container / port | `sharar-qwen38` / 30001 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
+
+The optimized measured profile uses FP8 DFlash2 with 15 proposals:
+
+```bash
+SHARAR_DRAFT_PRECISION=fp8 ./run-sharar.sh
+```
+
+For MTP without the external draft, use
+`SHARAR_PROPOSER=mtp SHARAR_SPEC=3 ./run-sharar.sh`. Set `SHARAR_SPEC=0` for
+ordinary decode. `sharar serve --help` lists CLI choices; the launcher also
+owns container and guard setup.
+
+Before replacing an existing container, use `./run-sharar.sh --stop` and
+launch the intended configuration. Updating Git or rebuilding a tag does not
+replace a running container. Validate the chosen image/profile before a
+production rollout; source benchmark qualification is separate from deployment.
+No production rollout is part of the September 11 maintenance cleanup.
+
+Inspect `docker logs sharar-qwen38`, `/health` and `/get_server_info` for status.
+The latter reports draft precision, scheduler settings, KV/state geometry and
+cache statistics. `cache.draft_features` reports retained features and fallbacks.
+At 96 slots, DFlash2 feature retention reserves up to 1,900 MiB before planning
+KV. The cold tier uses the same physical DRAM; it adds no physical memory.
+
+## Development and checks
+
+CPU development needs Python 3.12:
+
+```bash
+bash tools/check.sh setup-cpu
+.venv-cpu/bin/python tools/check_distribution.py
+python3 tools/check_evidence.py
+```
+
+The runtime image is built from pinned [constraints](../constraints/gb10-cu130.txt).
+It still includes the compiler needed for SM121 JIT kernels. CPU distributions
+include the CUDA source; executing those kernels still requires the GPU stack.
+The source-only `SHARAR_FUSED_NORM_NVFP4` switch remains an unpromoted numerical
+experiment, off by default. Its reference kernel/tests are retained; it is not
+part of the measured default configuration or a launcher optimization option.
+
+`tools/dev-shell.sh` mounts current source and local caches into a development
+container. Its historical default is the frozen SGLang reference image. Set
+`SHARAR_DEV_IMAGE=sharar:qwen38-27b` explicitly for the current Sharar stack.
+Reserve an exclusive GPU window and arrange an active memory guard before
+loading a model or running `bash tools/check.sh gpu`. The development helper
+does not stop production or start the guard automatically. Use
+`--with-reference` only for the isolated reference tools.
+
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for numerical/lifecycle checks and
+[historical environment details](archive/studies/env.md) for old reference runs.

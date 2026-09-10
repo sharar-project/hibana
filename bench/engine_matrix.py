@@ -16,6 +16,7 @@ import urllib.request
 
 from bench.agent_workloads import materialize, sha
 from bench.local_workloads import stream_request
+from sharar.benchmark_workloads import frozen_source
 
 
 PROTOCOL = {
@@ -47,8 +48,7 @@ def freeze(snapshot):
     code_ids = tok.encode(code)
     # This is an EOS-respecting coding workload. The original review fixture
     # often ended with a tool call, which cannot supply equal output budgets.
-    historical = Path(__file__).parent / 'workloads/request_state_7aebbe6.txt'
-    history_ids = tok.encode(historical.read_text() + '\nHistorical test records:\n' + '\n'.join(
+    history_ids = tok.encode(frozen_source() + '\nHistorical test records:\n' + '\n'.join(
         json.dumps({'historical_run': i, 'passed': 37+i%23, 'failed': i%5,
                     'suite': ('cache', 'rollback', 'admission')[i%3]}) for i in range(1800)))
     task = ('This is a standalone coding exercise; no tools are available. Do not call tools or access files. '

@@ -26,27 +26,17 @@ name and the source hashes so the comparison is reproducible.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib
 import json
 import math
-import os
-import platform
-import subprocess
 import sys
 import time
 from pathlib import Path
 
+from bench.support.evidence import sha_file, save, clear, identity
+
 EOS_IDS = (248046, 248044)  # <|im_end|>, <|endoftext|>
 SPLITS = ('train', 'validation', 'test', 'benchmark')
-
-
-def sha_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def save(path: Path, value) -> None:
-    path.write_text(json.dumps(value, indent=2) + '\n')
 
 
 # ---------------------------------------------------------------- metrics (pure)
@@ -239,15 +229,6 @@ def load_hook(spec: str | None):
     return getattr(importlib.import_module(module), name)
 
 
-def clear(ex) -> None:
-    ex.flush_cache()
-    assert ex.kv_pool.free_count == ex.kv_pool.num_pages - 1, ex.kv_pool.free_count
-    assert ex.state_pool.free_count == ex.state_pool.num_slots - 1, ex.state_pool.free_count
-    proposer = ex.spec.proposer
-    assert len(proposer.free_slots) == ex.max_batch, proposer.free_slots
-    # Flushing the radix cache on main does not drop the proposer's byte-bounded
-    # LRU of projected draft features; distinct cold prompts cannot hit it, and
-    # every task additionally records draft_cache_hits (must be 0).
 
 
 def run_one(ex, ids: list[int], count: int, chunk: int) -> dict:
@@ -285,20 +266,6 @@ def run_one(ex, ids: list[int], count: int, chunk: int) -> dict:
     torch.cuda.synchronize()
     result['metrics'] = task_metrics(result)
     return result
-
-
-def identity(args) -> dict:
-    import torch
-    root = Path(__file__).resolve().parents[1]
-    sources = {str(p.relative_to(root)): sha_file(p) for p in sorted((root / 'sharar').rglob('*.py'))}
-    sources['bench/gb10_family_eval.py'] = sha_file(Path(__file__))
-    try:
-        head = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=10).stdout.strip() or None
-    except (OSError, subprocess.SubprocessError):
-        head = None
-    return {'git_head': head, 'source_sha256': sources, 'torch': torch.__version__, 'cuda': torch.version.cuda,
-            'device': torch.cuda.get_device_name(0), 'python': platform.python_version(),
-            'argv': sys.argv[1:], 'hostname': platform.node(), 'env': {k: v for k, v in os.environ.items() if k.startswith('SHARAR_')}}
 
 
 def cmd_run(args) -> int:

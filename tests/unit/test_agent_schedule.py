@@ -3,7 +3,7 @@ import time
 
 import torch
 
-from bench.agent_schedule import AgentScheduler, prefix_length
+from bench.archive.agent_schedule import AgentScheduler, prefix_length
 from sharar.engine.sampler import SamplingParams
 from sharar.engine.scheduler import SchedulerConfig
 from tests.unit.test_radix import make

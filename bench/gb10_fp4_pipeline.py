@@ -15,7 +15,7 @@ from flashinfer.gemm.gemm_mm_fp4_cute_dsl import _compile_block_scaled_gemm
 from flashinfer.gemm.kernels.dense_blockscaled_gemm_sm120_b12x import DenseGemmKernel
 
 from bench.gb10_matrix import apply, digest, error, linears, load_capture, save
-from bench.nvfp4_cost import capture_graph, time_graph
+from bench.support.cuda import capture_graph, time_graph
 from sharar import config
 from sharar.model.qwen38 import Qwen38
 

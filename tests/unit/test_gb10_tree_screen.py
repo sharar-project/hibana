@@ -3,7 +3,7 @@ import math
 
 import pytest
 
-from bench.gb10_tree_screen import probability_tree
+from bench.archive.gb10_tree_screen import probability_tree
 
 
 def test_best_first_tree_matches_exhaustive_conditional_mass():

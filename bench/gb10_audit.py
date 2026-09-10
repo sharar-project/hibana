@@ -24,7 +24,7 @@ from sharar.engine.executor import Executor
 from sharar.engine.sampler import SamplingParams
 from sharar.model.qwen38 import Qwen38
 from sharar.tokenizer import SnapshotTokenizer
-from sharar.benchmark_workloads import materialize
+from sharar.benchmark_workloads import frozen_source, materialize
 from sharar.proposers.parallel import PINS
 from sharar.weights.modelopt import Fp8Linear, Nvfp4Linear
 
@@ -34,7 +34,7 @@ def sha(value):
 
 
 def inputs(tok, length, batch):
-    source = (Path(__file__).parent / 'workloads/request_state_7aebbe6.txt').read_text()
+    source = frozen_source()
     cases = {}
     for name in ('filler', 'code'):
         rows = []

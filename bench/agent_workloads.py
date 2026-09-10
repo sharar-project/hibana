@@ -14,6 +14,7 @@ from pathlib import Path
 import time
 
 from bench import competitive, local_workloads as client
+from sharar.benchmark_workloads import frozen_source
 
 
 PROTOCOL = {
@@ -40,8 +41,7 @@ def materialize(snapshot):
     from sharar.api.chat_template import ChatTemplate
     from sharar.tokenizer import SnapshotTokenizer
     template, tok = ChatTemplate(snapshot), SnapshotTokenizer(snapshot)
-    fixture = Path(__file__).parent / 'workloads/request_state_7aebbe6.txt'
-    source = fixture.read_text()
+    source = frozen_source()
     # Varied repository/test records; this is a deterministic incident fixture.
     logs = '\n'.join(json.dumps({'run': 41000 + i, 'suite': ('cache', 'admission', 'rollback', 'stream')[i % 4],
         'file': ('memory/request_state.py', 'engine/scheduler.py', 'api/server.py')[i % 3],

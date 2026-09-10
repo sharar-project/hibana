@@ -11,7 +11,7 @@ Before publishing a novelty claim, compare the mechanism with current engine
 implementations and relevant papers. Preserve the simple reference path so
 each experiment can be accepted or discarded independently.
 
-The [2026-09-09 FP8 profile](gb10-fp8-profile.md) is the current starting
+The [2026-09-09 FP8 profile](archive/studies/gb10-fp8-profile.md) is the current starting
 point: target verification takes about 90 ms per 107 ms round; accepted-state
 reconstruction already exists and costs only 1.4–1.5 ms. Full candidate capture,
 the failed eight-feature selector, and the five-of-ten target-FP4 layer screen
@@ -149,7 +149,7 @@ expose a larger host bottleneck.
 
 ## 7D implementation and next mechanism
 
-[The 7D experiment](phase7d.md) implements compact-input reconstruction while
+[The 7D experiment](archive/studies/phase7d.md) implements compact-input reconstruction while
 retaining full snapshots as the default control. Total verify buffers at B=4,
 k=3 fall from 2,349 to 633.28 MiB (73.04%). The initial equal-strategy HTTP
 comparison shows small latency changes, not a demonstrated 10% gain. Keep
@@ -163,7 +163,7 @@ load time. It removes overlapping host mappings, not the CPU-to-CUDA copy.
 Test versioned prepacked layouts and allocation visibility before claiming
 zero-copy load or placing hot weights in mapped/managed memory.
 
-The [direct accepted-state follow-up](direct-state.md) lets StateManager
+The [direct accepted-state follow-up](archive/studies/direct-state.md) lets StateManager
 authorize reconstruction into committed slots after every count is validated
 against the current verified width. It removes the final 576 MiB FP32 scratch
 at B=4 and the subsequent SSM copy. Each program reads its complete source tile
@@ -178,20 +178,20 @@ dominant work. Maintain an independent BF16 arithmetic oracle and the common
 exact stochastic verifier. Current fixed-width pilot costs differ only modestly,
 so confidence tuning alone is not an established large speed opportunity.
 
-The [DFlash2 follow-up](draft-selection.md) now supplies that profile. An exact
+The [DFlash2 follow-up](archive/studies/draft-selection.md) now supplies that profile. An exact
 device traversal removes 52 proposer stream synchronizations per B=4 round;
 interleaved confirmation lowers fixed-work round time 2.8–5.4%, with all HTTP
 token outputs unchanged in the separate pilot. The vocabulary top-k itself is
 only 0.14 ms at B=4, so it is not the next priority.
 
-The [accepted-feature batching follow-up](accepted-batch.md) implements the
+The [accepted-feature batching follow-up](archive/studies/accepted-batch.md) implements the
 next weight-reuse experiment: feedback cost falls from about 8.1 to 2.2 ms
 at B=4, with one shared feature/KV projection pass. A pinned FP32 oracle checks
 BF16 shape changes; private rings, endpoint snapshots and single-row arithmetic
 retain their contracts. This establishes a small measured step before a larger
 mixed target forward. Direct reconstruction into validated committed slots is
 the complementary capacity/copy experiment above. The
-[mixed-projection profile](mixed-projection.md) now measures the next opportunity.
+[mixed-projection profile](archive/studies/mixed-projection.md) now measures the next opportunity.
 
 The 250 ms separate-prefill feedback pilot is rejected for default use: it
 reduced observed stream stalls but more than doubled mixed-session completion
@@ -207,15 +207,15 @@ ablation, then FP8 projections. Include graph padding and row packing, preserve
 the existing chunk policy initially, and require client-visible evidence:
 the projection-only savings do not establish a whole-request speedup.
 
-The [implemented mixed forward](mixed-forward.md) failed arrival TTFT
-protection. Its bounded follow-up, [one GDN prefill plan per forward](prefill-plan.md),
+The [implemented mixed forward](archive/studies/mixed-forward.md) failed arrival TTFT
+protection. Its bounded follow-up, [one GDN prefill plan per forward](archive/studies/prefill-plan.md),
 removes repeated metadata construction across 48 layers and improves ordinary
 prefill TTFT by 18–29% with exact output/state comparisons. Mixed arrival TTFT
 still regresses 16.9–24.4%, so public mixed serving is archived. Preserve the
 useful interfaces and negative evidence; additional mixed scheduling policy is
 not the next experiment.
 
-The [fresh competitive comparison](competitive.md) separates plain/DFlash2,
+The [fresh competitive comparison](archive/studies/competitive.md) separates plain/DFlash2,
 fixed work and naturally stopping requests at a common host memory budget.
 Use the remaining measured gap to select the next bounded implementation.
 Verification convolution and candidate-window materialization are candidates:
@@ -227,10 +227,10 @@ the existing StateManager commit contract. First measure its fraction of round
 time and freeze a realistic benefit threshold; capacity reduction alone does
 not establish a speedup, and tensor sizes are not physical DRAM counters.
 
-The [completed convolution screen](verify-cost.md) measures only 1.3–2.2% of a
+The [completed convolution screen](archive/studies/verify-cost.md) measures only 1.3–2.2% of a
 round in that component. A byte-exact prototype reduces convolution time
 74–79%, but estimates 1.0–1.6% whole-round savings, below the frozen 2% screen.
-Archive it without serving changes. The [NVFP4 follow-up](nvfp4-cost.md) now
+Archive it without serving changes. The [NVFP4 follow-up](archive/studies/nvfp4-cost.md) now
 isolates gate/up, down and both vocabulary projections on real packed inputs.
 Narrow MMA tiles with full scale blocks preserve all tested outputs but fail
 the speed screen. A separate cuDNN-through-32 dispatch change reduces complete
