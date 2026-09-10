@@ -1,13 +1,10 @@
 # Sharar
 
 Sharar is a local text-inference engine for one NVIDIA GB10 (SM 12.1), on an
-`aarch64` DGX Spark with unified memory. The supported target is
-`RadixArk/Qwen3.8-27B-NVFP4`, revision
-`319f741cce68d7914884900c138a1fbb70a42f30`.
+`aarch64` DGX Spark with unified memory. 
 
 It serves offline, OpenAI-compatible streaming chat and completions with
-prefix caching and speculative decoding. Sharar runs independently of SGLang;
-the separate frozen reference is used for numerical and performance comparisons.
+prefix caching and speculative decoding.
 
 ## Run
 
@@ -44,7 +41,7 @@ the supported output controls. Forced tool calls and constrained JSON output
 are not implemented. The supported context limit is 32,768 tokens and maximum
 concurrent batch is four.
 
-## Measure
+## Benchmark
 
 With a server already running and exclusive GPU use:
 
