@@ -14,6 +14,7 @@ from sharar.kernels.fp8_gemv_cuda import fp8_gemv_cuda
 from sharar.kernels.fp8_quant import quant_fp8
 from sharar.kernels.nvfp4_quant import nvfp4_quantize
 from sharar.weights.modelopt import FP8_MAX, Fp8Linear, Nvfp4Linear
+from sharar.kernels import verify_gemm
 
 # cuBLAS FP8 GEMM reaches ~60% of DRAM bandwidth at M<=4 on SM121 (profile in
 # docs/phase2.md); the streaming GEMV is used up to this many rows.
@@ -23,6 +24,10 @@ FP8_GEMV_MAX_M = 4
 # must also preserve full target outputs before replacing this dispatch.
 FP4_GEMM_BACKEND = "cutlass"
 FP4_QUANT_BACKEND = "cuda"
+
+# Validated 16-row target shapes only. Benchmarks may disable this before
+# graph capture to retain the original CUTLASS/cuBLAS arithmetic oracle.
+VERIFY_GEMM_ENABLED = True
 
 
 def fp4_backend(m: int, n: int, k: int) -> str:
@@ -51,6 +56,9 @@ def nvfp4_linear(x: torch.Tensor, lin: Nvfp4Linear, prequantized: tuple[torch.Te
         x_fp4, x_sf = prequantized
         m = x_fp4.shape[0]
         out_dtype = torch.bfloat16
+    if (VERIFY_GEMM_ENABLED and FP4_GEMM_BACKEND == "cutlass" and out_dtype == torch.bfloat16
+            and verify_gemm.is_mlp(m, lin.out_features, lin.in_features)):
+        return verify_gemm.fp4_mlp(x_fp4, x_sf, lin)
     out = _mm_fp4(
         x_fp4,
         lin.weight.T,
@@ -97,6 +105,9 @@ def fp8_linear(x: torch.Tensor | None, lin: Fp8Linear, x_q: torch.Tensor | None 
     m = x_q.shape[0]
     if m <= FP8_GEMV_MAX_M:
         out = fp8_gemv_cuda(x_q, lin.weight, lin.alpha)
+    elif VERIFY_GEMM_ENABLED and verify_gemm.is_attention_qkv(m, lin.out_features, lin.weight.shape[1]):
+        out = flashinfer.bmm_fp8(x_q[None], lin.weight.t()[None], lin.input_scale,
+                                lin.weight_scale, torch.bfloat16, backend="cublas")[0]
     else:
         out = torch._scaled_mm(
             x_q,

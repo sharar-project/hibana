@@ -138,9 +138,12 @@ Hardware research directions and decision criteria are in
 Prioritize fresh 10K-input / 1K-output greedy inference on one Spark. These
 are experiments to measure against the [FP8 profile and AIPerf baseline](docs/gb10-fp8-profile.md);
 track startup and session-resume improvements separately from generation TPS.
-The current target is **1.5×–2× faster TPS**. The latest
-[16-row engine study](docs/gb10-verifier16.md) measures only a 1.014× combined
-matrix candidate on code; that target remains open.
+The current target is **1.5×–2× faster TPS**. The
+[BS1 implementation study](docs/gb10-bs1-speedups.md) integrates the exact
+16-row QKV/MLP bundle: 1.0143× decode throughput across 18 task families.
+The larger target remains open; see the [revised BS1 plan](docs/gb10-1p5x-plan.md).
+The next priority is [engine work for BS1 and BS4](docs/gb10-engine-next.md),
+with draft training deferred.
 
 - [x] **Profile the optimized FP8 draft configuration.** Complete native
   generations and separate early/middle/late CPU/CUDA traces put target
@@ -155,9 +158,11 @@ matrix candidate on code; that target remains open.
   pipeline depth for GB10's 48 SMs and our small verification batches. Optimize
   the existing FP4/FP8 paths using measured whole-round savings; preserve the
   target's rounding behavior.
-  Shape-specific FP8 QKV dispatch and larger FP4 K tiles pass captured-operand
-  checks but give only 1.4% combined decode gain in the code pilot. A 940-tactic
-  cuBLASLt screen finds no larger win; all remain benchmark candidates.
+  Shape-specific FP8 QKV dispatch and larger FP4 K tiles are integrated after
+  real-weight, graph and committed-state checks. Their family decode gain is
+  1.43%. The numerical Triton FP8 replacement saves about 2 ms per round,
+  but its family throughput interval includes no improvement and it remains
+  experimental. The earlier 6 ms isolated estimate did not reproduce.
 - [ ] **Fuse intermediate and recurrent-state work.** Prioritize measured
   activation/quantization costs. Reconstruction now costs only 1.4–1.5 ms
   per round, so further fusion there has a small total budget. Check

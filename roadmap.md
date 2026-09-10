@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-09 (fresh FP8 profiles, candidate captures and held-out selector/FP4 screens; production remains unchanged)
+Last updated: 2026-09-10 (BS1 exact kernel integration, family evaluations and paired HTTP validation; production retains its original image)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -1324,6 +1324,21 @@ python3 bench/benchmark_text_server.py \
   [Proof](docs/verifier-numerics.md).
 
 ## 11. Immediate next task
+
+The [BS1 implementation study](docs/gb10-bs1-speedups.md) supersedes the
+unmeasured kernel stack in the original 1.5x plan. Exact M=16 attention QKV
+and K512 MLP dispatch is integrated: family decode improves 1.43%
+[1.37%, 1.49%], with all 21 outputs identical. The integrated source passes
+53 GPU tests and 1,296 captured-matrix comparisons. The report records the
+paired HTTP result and quality canaries. The numerical FP8, two compressed
+draft and top-32 candidates do not establish reliable family throughput gains
+and remain experimental. A full real-weight FP8 sequence saves 2.04 ms,
+not the isolated estimate's 6 ms; shape tuning adds only 0.033 ms.
+The user's next priority is [engine work for BS1 and BS4](docs/gb10-engine-next.md),
+with training deferred: first measure useful verification work, width choices
+and scheduling at BS4. BS1 host overlap has about 1% round-time headroom.
+No large engine-only cold BS1 gain or 1.5x result is established. The completed
+study did not measure BS4 throughput.
 
 The [FP8 profile and follow-up experiments](docs/gb10-fp8-profile.md) now
 complete the immediate profiling task. Native 10K/1K B1 decode reproduces
