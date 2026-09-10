@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Last updated: 2026-09-10 (BS1 exact kernel integration, family evaluations and paired HTTP validation; production retains its original image)
+Last updated: 2026-09-11 (checkpoint-owned draft features and warm-session benchmarks; production retains its original image)
 
 This is the durable handoff for humans and coding agents working on Sharar. It
 records the goal, the facts that constrain the design, the architecture, every
@@ -1380,9 +1380,26 @@ draft features are evicted. Reusing duplicate checkpoint handles preserves the
 tested 10K/1K retry after one intervening request at the original 80 MiB feature
 budget: 11.40 -> 42.38 decode TPS, 87.76 -> 23.68 s completion. Fixed outputs
 match the immediate speculative control, while the old ordinary-decode
-fallback produces a different continuation. Joint KV/recurrent/draft retention,
-per-request reuse/store modes, namespaces, expiring priority and latest/branch
-checkpoint policies remain to implement. This does not close the cold TPS goal.
+fallback produces a different continuation. The subsequent
+[checkpoint-retention study](docs/gb10-agent-retention.md) binds draft features
+to the exact recurrent slot, including free/recycle and cold-tier restore.
+Two independent loads per variant recover resumed BS1 completion throughput
+from 11.34 to 36.73 TPS (3.24×), with all 12 candidate probes matching their
+healthy immediate-hit oracles. At 96 slots, four concurrent simulated
+conversations improve from 28.78 to 78.48 TPS (2.73×), measured in two timed
+blocks per implementation in one fresh process each. Cold throughput is
+essentially unchanged. These recoveries are not additive to the earlier repair.
+
+The feature cap grows to one window per usable recurrent slot: 460 MiB at
+24 slots and 1,900 MiB at 96 slots, reserved before automatic KV planning.
+An enlarged independent LRU also recovers the tested warm throughput;
+checkpoint ownership makes lifetime and reclamation predictable. Target-state
+pressure can still evict a whole prefix. The scheduler experiment reduces
+mixed throughput 7.27% and worsens streaming gaps, so it stays in `bench/`.
+Validation passes 447 CPU tests (eight skipped), 45 affected GPU tests and
+32 HTTP canaries. Production retains its original image. Per-request
+reuse/store modes, namespaces, expiring priority and latest/branch checkpoint
+policies remain to implement. This does not close the cold TPS goal.
 
 The preceding [TPS validation](docs/gb10-tps.md) measures the repaired target with
 the explicit FP8 draft option at 37.65 / 30.14 / 46.09 output tokens/s including

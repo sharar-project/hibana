@@ -209,16 +209,30 @@ Radix auxiliary metadata is keyed by target/draft revisions, feature schema,
 layout and window. Metadata follows the exact node endpoint and is never
 attached to another node's retained target pages during duplicate insertion.
 `prepare_release(req)` runs before target ownership transfers. `release(req)`
-releases the active draft slot; optional radix features have independent,
-bounded ownership. Stale/evicted/foreign metadata makes the draft unready and
+releases the active draft ring slot. In a cached executor, parallel-draft
+feature handles share the lifetime of their owning target recurrent slot.
+Stale/evicted/foreign metadata makes the draft unready and
 uses ordinary decoding without reading uninitialized KV.
 
 MTP retains endpoint target norms and writes all teacher-forced committed draft
 KV, including the bonus input on full acceptance. External drafts own private
-KV rings and a byte-bounded projected-feature LRU; radix entries hold handles.
+KV rings; radix entries hold projected-feature handles. `CheckpointFeatureCache`
+reserves one maximum-size feature window per usable recurrent slot, with
+allocations made only for saved checkpoints. `StatePool.free()` invalidates the
+associated handle before recycling its slot. Radix eviction, duplicate snapshot
+insertion, cancellation, retraction and flush therefore reclaim matching feature
+payloads through the same slot lifetime. The standalone `FeatureCache` LRU remains
+a benchmark control and a fallback for adapters outside a cached executor.
+
+At release, endpoint features must belong to the committed slot being transferred,
+not the duplicate prompt-end checkpoint that `StateManager` frees. Cold-tier codecs
+import with `slot=` naming the newly allocated target slot. Copies and frees remain
+on the engine stream. Prospective allocation checks include the feature-window cap
+and gather/replacement temporaries before sizing optional target pools; dropping
+feature tensors returns allocator capacity, not a promise to release DRAM to the OS.
 DSpark retains the supported target context, DFlash2 a 2,048-token window.
-Restoration projects only draft K/V from saved features. Current eviction is
-bounded LRU, not an optimized saved-time-per-byte policy.
+Restoration projects only draft K/V from saved features. Target-snapshot eviction
+uses bounded LRU, not an optimized saved-time-per-byte policy.
 
 Pass `SpecConfig` to `Executor` at startup to reserve checkpoint-derived draft
 weight/KV/feature costs and verify buffers before optional target cache sizing.

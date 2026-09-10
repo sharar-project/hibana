@@ -44,7 +44,7 @@ def test_park_and_restore_round_trip_is_exact():
     before = _snapshot(kv, st, pages, slot)
     seen = {}
     feats = torch.arange(64 * 8, device="cuda", dtype=torch.bfloat16).view(64, 8)
-    cache.tier.register_codec("draft", lambda v: (v, 7, feats), lambda p: seen.setdefault("imported", (p[0], p[1], p[2].clone())))
+    cache.tier.register_codec("draft", lambda v: (v, 7, feats), lambda p, *, slot: seen.setdefault("imported", (p[0], p[1], p[2].clone())))
     cache.insert(ids, pages, {len(ids): slot}, {len(ids): {"draft": 42}})
     free_pages, free_slots = kv.free_count, st.free_count
     cache.evict(need_pages=kv.num_pages)  # forces the leaf out
@@ -117,3 +117,30 @@ def test_flush_clears_parked_entries():
     assert cache.tier.stats()["entries"] == 1
     cache.flush()
     assert cache.tier.stats()["entries"] == 0 and cache.tier.arena.used_bytes == 0
+
+
+def test_checkpoint_features_follow_park_restore_and_slot_reuse():
+    from sharar.proposers.parallel import CheckpointFeatureCache
+    kv, st, cache = _pools()
+    features = CheckpointFeatureCache(st, 1024)
+    data = torch.arange(512, device='cuda', dtype=torch.bfloat16).reshape(64, 8)
+    cache.tier.register_codec('features', features.get,
+                              lambda payload, *, slot: features.put(*payload, slot=slot))
+    ids = list(range(6000, 6064))
+    pages, slot = kv.alloc(64), st.alloc()
+    handle = features.put(0, 64, data, slot=slot)
+    cache.insert(ids, pages, {64: slot}, {64: {'features': handle}})
+    cache.evict(need_pages=kv.num_pages)
+    assert features.get(handle) is None and features.bytes == 0
+    assert cache.tier.stats()['entries'] == 1
+    reused = st.alloc()
+    replacement = features.put(0, 64, data + 10, slot=reused)
+    assert cache.restore_parked(ids) == 1
+    match = cache.match(ids, touch=False)
+    restored = match.node.auxiliary['features']
+    assert features.slots[match.snapshot_slot] == restored
+    assert torch.equal(features.get(restored)[2], data)
+    assert torch.equal(features.get(replacement)[2], data + 10)
+    cache.flush()
+    st.free(reused)
+    assert features.bytes == 0 and not features.entries

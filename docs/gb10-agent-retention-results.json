@@ -1,0 +1,53 @@
+{
+  "schema": 2,
+  "summary_document": "gb10-agent-retention.md",
+  "full_evidence": {
+    "path": "reviews/2026-09-10-agent-retention/results.json",
+    "bytes": 38530,
+    "sha256": "d7badc45d5c40cf594611fc3251e5701de1a96abc1ec794266fb9b6acdf9d38b"
+  },
+  "summary": {
+    "warm_bs1": {
+      "baseline_tps": 11.337247799047189,
+      "retention_tps": 36.733217349231076,
+      "ratio": 3.2400471437449068
+    },
+    "four_session_conversations_96_slots": {
+      "baseline_tps": 28.778863859152803,
+      "retention_tps": 78.48156039085339,
+      "ratio": 2.7270555493417503,
+      "independent_loads_per_variant": 1,
+      "timed_blocks_per_load": 2
+    },
+    "cold_native_percent": {
+      "cold_bs1/code": -0.12126631452167302,
+      "cold_bs1/design": 0.05507281916585782,
+      "cold_bs1/reasoning": -0.13773295299683852,
+      "cold_bs4/families": -0.09590976901652226
+    },
+    "scheduler_mixed_throughput_percent": -7.274121621307284
+  },
+  "validation": {
+    "cpu_passed": 447,
+    "cpu_skipped": 8,
+    "affected_gpu_passed": 45,
+    "http_canaries_passed": 32,
+    "http_canaries_total": 32,
+    "minimum_mem_available_gib": 65.92417526245117
+  },
+  "decision": {
+    "checkpoint_retention": "included in cached executor; warm throughput recovery confirmed",
+    "scheduler": "not promoted: mixed throughput -7.27%, long streaming gaps",
+    "cold_throughput": "no material change",
+    "deployment": "original production restored after benchmarking; source publication does not deploy a new image"
+  },
+  "limitations": [
+    "Warm-cache improvement, not a cold-kernel gain.",
+    "Feature cap increases to one window per usable recurrent slot; automatic KV capacity may decrease.",
+    "24-slot trace exposed one full target-prefix miss under recurrent pressure.",
+    "Repeated tool-text stress results are not real-agent throughput.",
+    "96-slot non-repetitive conversation check has two timed blocks in one fresh process per implementation, fixed 128-output turns, and simulated user-relayed reports.",
+    "HTTP continuations and batch membership may differ; native fixed-partition controls match complete healthy-oracle outputs.",
+    "Natural-stop canaries do not test execution of generated agent code."
+  ]
+}

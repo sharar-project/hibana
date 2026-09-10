@@ -56,9 +56,20 @@ def errors(actual, expected):
     return result
 
 
+@pytest.fixture
+def checkpoint_slots(runtime):
+    pool = runtime[0].state_pool
+    slots = [pool.alloc() for _ in range(4)]
+    try:
+        yield slots
+    finally:
+        for slot in slots:
+            pool.free(slot)
+
+
 @pytest.mark.parametrize('batch', [1, 2, 3, 4])
 @torch.inference_mode()
-def test_real_projections_against_fp32_oracle_and_private_ring_boundaries(runtime, batch, tmp_path):
+def test_real_projections_against_fp32_oracle_and_private_ring_boundaries(runtime, batch, tmp_path, checkpoint_slots):
     from sharar.model.parallel_draft import rms, rotate
     ex, _, source = runtime
     p, model = ex.spec.proposer, ex.spec.proposer.model
@@ -95,7 +106,7 @@ def test_real_projections_against_fp32_oracle_and_private_ring_boundaries(runtim
             p.features[slot, :min(p.window, start + count)].fill_(.25)
             reqs.append(SimpleNamespace(proposer_state=DraftState(slot, end=start, pending=77),
                         committed_len=start + count, finished=row % 2 == 0, cache_enabled=True,
-                        checkpoints={start + count: 1}, cache_auxiliary={}))
+                        checkpoints={start + count: checkpoint_slots[row]}, cache_auxiliary={}))
         for keys, values in p.caches:
             keys[guards] = -37
             values[guards] = 37

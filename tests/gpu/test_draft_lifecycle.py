@@ -99,3 +99,28 @@ def test_long_batched_prefill_retains_each_rows_endpoint(draft_runtime):
     ex.flush_cache()
     assert ex.kv_pool.free_count == 34999 and ex.state_pool.free_count == 11
     assert len(ex.spec.proposer.free_slots) == 4
+
+
+@torch.inference_mode()
+def test_branch_from_prompt_end_keeps_draft_after_longer_completion(draft_runtime):
+    from sharar import config
+    from sharar.engine.sampler import SamplingParams
+    ex, ids = draft_runtime
+    ex.flush_cache()
+    p = ex.spec.proposer
+    before = p.cache_fallbacks
+    seed = ex.generate(ids, SamplingParams(max_new_tokens=32, ignore_eos=True))
+    # Diverge immediately after the original prompt, so the completion's newer
+    # endpoint cannot conceal a missing feature window at the prompt boundary.
+    branch_ids = ids + [(seed.output_ids[0] + 1) % config.VOCAB_SIZE, 42]
+    match = ex.cache.match(branch_ids[:-1], touch=False)
+    assert match.length == len(ids)
+    handle = match.node.auxiliary[p.cache_identity]
+    assert p.feature_cache.slots[match.snapshot_slot] == handle
+    assert p.feature_cache.get(handle)[1] == len(ids)
+    results = [ex.generate(branch_ids, SamplingParams(max_new_tokens=16, ignore_eos=True)) for _ in range(2)]
+    assert all(r.spec_rounds > 0 for r in results)
+    assert results[0].output_ids == results[1].output_ids
+    assert p.cache_fallbacks == before
+    ex.flush_cache()
+    assert p.feature_cache.bytes == 0

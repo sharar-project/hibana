@@ -51,7 +51,7 @@ class Executor:
         future, extra_page = 2 * 2**30, 0
         if spec_config is not None:
             from sharar.memory.spec_budget import budget
-            future, extra_page = budget(spec_config, max_batch, max_context)
+            future, extra_page = budget(spec_config, max_batch, max_context, cache_slots=num_slots or 96)
         if num_pages is None or num_slots is None:
             plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future, extra_page_bytes=extra_page)
             num_pages = num_pages or plan.kv_tokens
@@ -98,7 +98,8 @@ class Executor:
             raise ValueError("enable speculation once, before graph capture")
         from sharar.memory.spec_budget import SpecConfig, budget
         from sharar.memory.ledger import check_load_headroom
-        fixed, per_page = budget(SpecConfig(proposer, k, state_strategy, draft_precision), self.max_batch, self.max_context)
+        fixed, per_page = budget(SpecConfig(proposer, k, state_strategy, draft_precision), self.max_batch, self.max_context,
+                                 cache_slots=self.state_pool.num_slots)
         check_load_headroom(fixed + per_page * self.kv_pool.num_pages + 8 * 2**30)
         context = ProposerContext(self.device, self.max_batch, self.max_context)
         from sharar.proposers.factory import create
@@ -119,6 +120,9 @@ class Executor:
             raise ValueError("unsupported proposal width")
         if any(type(i) is not int or not 0 <= i < config.NUM_LAYERS for i in proposer.requirements.features.layers):
             raise ValueError("invalid target feature layer")
+        bind = getattr(proposer, 'bind_checkpoint_cache', None)
+        if bind is not None and self.cache is not None:
+            bind(self.state_pool)
         self.spec = SpecDecoder(self, proposer, state_strategy)
 
     def capture_graphs(self, log=print) -> None:
@@ -166,7 +170,16 @@ class Executor:
         return min(limit, req.params.max_new_tokens - len(req.output_ids) + padding)
 
     def cache_stats(self) -> dict | None:
-        return self.cache.stats() if self.cache is not None else None
+        if self.cache is None:
+            return None
+        stats = self.cache.stats()
+        features = getattr(self.spec.proposer, 'feature_cache', None) if self.spec is not None else None
+        if features is not None:
+            stats['draft_features'] = {'entries': len(features.entries), 'bytes': features.bytes,
+                                       'capacity_bytes': features.capacity,
+                                       'hits': self.spec.proposer.cache_hits,
+                                       'fallbacks': self.spec.proposer.cache_fallbacks}
+        return stats
 
     def enable_cold_tier(self, budget_gib: float | None = None, log=None) -> None:
         """Park evicted prefix-cache leaves in a unified-memory arena instead of
@@ -390,9 +403,11 @@ class Executor:
         if end == n:
             logits = self.model.logits(out["norm"][-1:])
             token = int(self.sampler.sample(logits, [req.params], [req.generator]).item())
+            # Allocate the immutable endpoint before the proposer attaches its
+            # features; the active committed slot continues advancing in decode.
+            self.state.checkpoint(req, n, copy=True)
             if self.spec is not None:
                 self.spec.start(req, token)
-            self.state.checkpoint(req, n, copy=True)
         if self.timing:
             torch.cuda.synchronize()
         req.prefill_seconds += time.perf_counter() - started

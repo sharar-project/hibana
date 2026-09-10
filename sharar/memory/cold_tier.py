@@ -195,6 +195,7 @@ class ColdTier:
         return sp.conv_all[:, 0].numel() * sp.conv_all.element_size() + sp.ssm_all[:, 0].numel() * sp.ssm_all.element_size()
 
     def register_codec(self, identity, export, import_) -> None:
+        """Import receives ``slot=`` naming the newly owned recurrent slot."""
         self.codecs[identity] = (export, import_)
 
     # ---- park ----
@@ -321,7 +322,7 @@ class ColdTier:
         for identity, (scalars, views) in entry.auxiliary.items():
             codec = self.codecs.get(identity)
             if codec is not None:
-                value = codec[1]((*scalars, *views))
+                value = codec[1]((*scalars, *views), slot=slot)
                 if value is not None:
                     aux[identity] = value
         torch.cuda.current_stream().synchronize()  # the arena chunk is freed below; make sure the reads landed

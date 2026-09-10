@@ -32,8 +32,38 @@ def test_empty_work_has_no_throughput():
     assert work['full_batch_tps'] is work['committed_row_fraction'] is None
 
 
-@pytest.mark.parametrize('complete,cached,ok', [(True, 0, True), (False, 0, False), (True, 64, False)])
-def test_http_client_requires_complete_uncached_token_stream(monkeypatch, complete, cached, ok):
+@pytest.mark.parametrize('spec_count', [0, 3, 4])
+def test_recorder_separates_fallback_rows_from_verification(spec_count):
+    from types import SimpleNamespace
+    from bench.gb10_bs4_engine import Recorder
+    class Request:
+        def __init__(self, index):
+            self.request_id = index
+            self.spec_rounds = self.spec_accepted = 0
+            self.output_ids = []
+    reqs = [Request(i) for i in range(4)]
+    def decode(reqs):
+        for i, req in enumerate(reqs):
+            speculative = i < spec_count
+            req.spec_rounds += speculative
+            req.output_ids.extend([42] * (3 if speculative else 1))
+    graph = SimpleNamespace(pick=lambda n: next(b for b in (1, 2, 4) if b >= n))
+    ex = SimpleNamespace(decode_step=decode, prefill_batch=None, use_graphs=True, graphs=graph,
+                         spec=SimpleNamespace(k=15, width_graphs={15: graph}))
+    with Recorder(ex) as recorder:
+        ex.decode_step(reqs)
+    work = work_summary(recorder.events)
+    assert work['physical_verify_rows'] == (64 if spec_count else 0)
+    assert work['physical_plain_rows'] == (4 if spec_count == 0 else 1 if spec_count == 3 else 0)
+    assert work['emitted_plain_tokens'] == 4 - spec_count
+    assert work['uncommitted_real_rows'] == 13 * spec_count
+    assert work['emitted_decode_tokens'] == 3 * spec_count + 4 - spec_count
+
+
+@pytest.mark.parametrize('complete,cached,allow_cached,ok', [(True, 0, False, True), (False, 0, False, False),
+                                                          (True, 64, False, False), (True, 64, True, True),
+                                                          (False, 64, True, False)])
+def test_http_client_requires_complete_uncached_token_stream(monkeypatch, complete, cached, allow_cached, ok):
     from bench import gb10_bs4_http
     class Response:
         status = 200
@@ -53,6 +83,6 @@ def test_http_client_requires_complete_uncached_token_stream(monkeypatch, comple
         def close(self):
             pass
     monkeypatch.setattr(gb10_bs4_http.http.client, 'HTTPConnection', Connection)
-    row = request('http://127.0.0.1:1234', {'id': 'test', 'input_ids': [11], 'output_tokens': 2}, 0.)
+    row = request('http://127.0.0.1:1234', {'id': 'test', 'input_ids': [11], 'output_tokens': 2}, 0., allow_cached=allow_cached)
     assert row['ok'] is ok
     assert row['output_ids'] == [101, 102]

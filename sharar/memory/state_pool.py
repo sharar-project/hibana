@@ -37,6 +37,7 @@ class StatePool:
         # Slot 0 is the dummy slot for padded batch rows; scratch slots follow the committed ones.
         self._free = list(range(num_slots - 1, 0, -1))
         self.scratch = list(range(num_slots, total))
+        self.on_free = []  # optional auxiliary owners tied to a committed slot
 
     @property
     def free_count(self) -> int:
@@ -54,7 +55,13 @@ class StatePool:
         self.clear(slot)
         return slot
 
+    def is_allocated(self, slot: int) -> bool:
+        """Whether a non-dummy committed slot has a current owner (CPU only)."""
+        return type(slot) is int and 0 < slot < self.num_slots and slot not in self._free
+
     def free(self, slot: int) -> None:
+        for callback in self.on_free:
+            callback(slot)
         self._free.append(slot)
 
     def clear(self, slot: int) -> None:

@@ -1,5 +1,11 @@
 # Request cache policy for agent sessions
 
+The subsequent [checkpoint-retention study](gb10-agent-retention.md) implements
+joint feature/recurrent-slot lifetime and prospective capacity accounting.
+The measurements below document the earlier duplicate-save repair; they are
+not additional gains from the new implementation. Request-level cache modes,
+namespaces and retention priorities remain proposals.
+
 The cache experiment reproduces a large cached-request performance loss and
 fixes duplicate draft checkpoint saves without increasing the cache budget.
 Request-level API fields below remain a design proposal, not implemented
@@ -11,7 +17,7 @@ the analogous state-cache problem. A token match can resume only at a retained
 recurrent snapshot, and fast DFlash2 continuation also needs compatible draft
 features at that boundary.
 
-## Current behavior and an immediate performance gap
+## Baseline behavior and the original performance gap
 
 `RadixCache` is a single token-keyed tree. It evicts unlocked leaves by LRU;
 when only recurrent slots are exhausted, it first discards unlocked interior
@@ -30,8 +36,8 @@ position; the accompanying fix reuses a live handle for that request's same
 immutable checkpoint. Evicted handles are saved again, and different requests
 never share features merely because their token positions are equal.
 
-The broader next step is to make retained target and draft state share a
-budget and eviction policy. Merely adding a request
+The subsequent implementation binds draft features to retained recurrent
+slots, so snapshot deletion also releases its feature window. Merely adding a request
 priority to radix nodes would not protect the draft payload. An experimental
 larger feature budget diagnoses this mismatch; it is not itself a complete
 ownership or priority implementation.
@@ -152,9 +158,10 @@ must not be presented as a cold-kernel speedup. Different execution paths
 must retain their actual output IDs and receive quality checks.
 
 1. Reproduce and repair the target/draft retention mismatch with bounded
-   ownership and ledger accounting. Duplicate-save removal is complete; joint
-   retention remains open. Also compare using a slightly earlier complete
-   checkpoint against falling back for an entire long continuation.
+   ownership and ledger accounting. Duplicate-save removal and the subsequent
+   slot-bound retention implementation are documented separately. An earlier complete
+   checkpoint remains a possible recovery policy when compatible draft state
+   is unavailable for reasons other than independent feature eviction.
 2. Add reuse/store modes and namespaces with lifecycle and endpoint tests.
 3. Add expiring retention priority and session checkpoint policy; compare
    against unchanged LRU on held-out agent traces.

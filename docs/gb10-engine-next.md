@@ -9,6 +9,11 @@ Keep the current FP8 DFlash2 k=15 source baseline and the exact BS1 QKV/MLP
 integration. The restored production container still uses the BF16 draft;
 source validation and production deployment are separate.
 
+The subsequent [agent checkpoint-retention study](gb10-agent-retention.md)
+implements coupled draft-feature and recurrent-slot lifetime with explicit
+memory accounting. It evaluates warm-session recovery separately from cold
+decode, and keeps its short-resume scheduler experiment in `bench/`.
+
 ## What the BS4 study decided
 
 - Keep 16 verifier rows per request. Across five groups covering 18 families,
@@ -40,12 +45,12 @@ independent HTTP loads, natural-stop checks and the limits of the measurements.
    total latency and TTFT. The completed fixed-client-lane trace includes its
    drain and workload imbalance; its underfilled rounds are not all recoverable
    scheduler waste. This is a measurement prerequisite, not a promised gain.
-2. **For warm agent sessions, coordinate cache retention.** Target KV,
-   recurrent state and draft features need compatible lifetimes, budget
-   accounting, joint eviction and fallback to an earlier complete checkpoint.
-   Follow [the cache plan](request-cache-policy.md). The duplicate-save repair
-   is already on main; its historical 11.40 → 42.38 TPS rescue is not a new
-   remaining 3.7x gain and must not be counted as cold throughput.
+2. **For warm agent sessions, build on checkpoint retention.** The subsequent
+   study binds draft features to recurrent slots, including eviction, flush
+   and cold-tier restore. Follow [the cache plan](request-cache-policy.md)
+   for request modes, namespaces and expiring retention policy. The historical
+   duplicate-save repair's 11.40 → 42.38 TPS rescue and recovery on a larger
+   working set are related cache-fallback repairs, not additive cold gains.
 3. **Keep BS1 host overlap a small project.** Device-side stop-aware acceptance,
    pinned asynchronous download and queued reconstruction can target the
    measured 0.7–1.3 ms gap. That is about 1% round-time headroom, not a large

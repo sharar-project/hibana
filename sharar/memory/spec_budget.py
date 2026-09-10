@@ -51,7 +51,7 @@ def verify_bytes(batch, steps, strategy):
     return compact + conv
 
 
-def budget(spec, batch, context):
+def budget(spec, batch, context, *, cache_slots=96):
     """Return fixed future bytes and extra bytes per target KV page.
 
     Header-derived weights, exact persistent tensor shapes, plus explicit
@@ -70,8 +70,11 @@ def budget(spec, batch, context):
         weights, largest = tensor_bytes(snapshot)
         cfg = json.loads((snapshot / 'config.json').read_text())
         window = cfg['sliding_window'] or context
-        # Active rings (+dummy), cached features, and one gather/clone temporary.
-        fixed += (2 * batch + 2) * window * 5120 * 2
+        # Active rings (+dummy), one feature window per usable recurrent slot,
+        # and two temporaries while gathering and replacing a retained window.
+        # Automatic pool sizing caps recurrent slots at 96; explicit pools pass
+        # their actual count before allocation. This is a prospective cap.
+        fixed += (batch + cache_slots + 2) * window * 5120 * 2
         fixed += 5 * (batch + 1) * (window + spec.depth + 1) * 2 * 8 * 128 * 2
         fixed += weights + 2 * largest + 128 * 2**20
     # Graph/workspace growth and allocator slack kept separate from live tensors.

@@ -26,6 +26,7 @@ def work_summary(events):
     seconds = sum(sizes.values())
     physical = sum(r['physical_rows'] for r in decode)
     emitted = sum(sum(r['emitted']) for r in decode)
+    plain_emitted = sum(r.get('plain_emitted', 0) for r in decode)
     return {
         'decode_rounds': len(decode), 'decode_host_s': seconds,
         'prefill_forwards': len(prefill), 'prefill_host_s': sum(r['seconds'] for r in prefill),
@@ -34,9 +35,11 @@ def work_summary(events):
         'prefill_forwards_by_batch': dict(sorted(Counter(r['batch'] for r in prefill).items())),
         'full_batch_time_fraction': sizes[4] / seconds if seconds else None,
         'physical_verify_rows': physical, 'emitted_decode_tokens': emitted,
+        'physical_plain_rows': sum(r.get('physical_plain_rows', 0) for r in decode),
+        'emitted_plain_tokens': plain_emitted,
         'padded_rows': sum(r['padded_rows'] for r in decode),
-        'uncommitted_real_rows': sum(r['real_rows'] - sum(r['emitted']) for r in decode),
-        'committed_row_fraction': emitted / physical if physical else None,
+        'uncommitted_real_rows': sum(r['real_rows'] - sum(r['emitted']) + r.get('plain_emitted', 0) for r in decode),
+        'committed_row_fraction': (emitted - plain_emitted) / physical if physical else None,
         'full_batch_tps': (sum(sum(r['emitted']) for r in decode if r['batch'] == 4) / sizes[4]
                            if sizes[4] else None),
     }
@@ -68,12 +71,18 @@ class Recorder:
         start = time.perf_counter()
         result = self.decode(reqs)
         end = time.perf_counter()
-        physical = graph.pick(len(reqs)) * (depth + 1)
+        spec_mask = [r.spec_rounds > n for r, n in zip(reqs, rounds)]
+        spec_count, plain_count = sum(spec_mask), len(reqs) - sum(spec_mask)
+        physical = graph.pick(spec_count) * (depth + 1) if spec_count else 0
+        plain_physical = (ex.graphs.pick(plain_count) if ex.use_graphs else plain_count) if plain_count else 0
+        emitted = [len(r.output_ids) - n for r, n in zip(reqs, before)]
         event = {'kind': 'decode', 'at_s': start - self.started, 'seconds': end - start,
                  'batch': len(reqs), 'request_ids': [r.request_id for r in reqs],
-                 'depth': depth, 'physical_rows': physical, 'real_rows': len(reqs) * (depth + 1),
-                 'padded_rows': physical - len(reqs) * (depth + 1),
-                 'emitted': [len(r.output_ids) - n for r, n in zip(reqs, before)],
+                 'depth': depth, 'physical_rows': physical, 'real_rows': spec_count * (depth + 1),
+                 'padded_rows': physical - spec_count * (depth + 1),
+                 'physical_plain_rows': plain_physical,
+                 'plain_emitted': sum(n for n, speculative in zip(emitted, spec_mask) if not speculative),
+                 'emitted': emitted,
                  'accepted': [r.spec_accepted - n for r, n in zip(reqs, accepted)],
                  'spec_rounds': [r.spec_rounds - n for r, n in zip(reqs, rounds)]}
         self.events.append(event)

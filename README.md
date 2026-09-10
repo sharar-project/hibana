@@ -148,6 +148,13 @@ scheduler candidate wins. The runtime-count kernel prototype removes first-use
 compilation stalls but fails to establish a warm HTTP gain and stays experimental.
 See [the next engine work](docs/gb10-engine-next.md); draft training remains deferred.
 
+The [checkpoint-retention study](docs/gb10-agent-retention.md) recovers warm
+throughput on the FP8 draft profile: resumed BS1 rises from 11.34 to 36.73 TPS
+(3.24×), and four concurrent simulated conversations from 28.78 to 78.48 TPS
+(2.73×). Cold throughput is essentially unchanged. The feature-memory cap grows
+with recurrent slots and may reduce automatically planned KV capacity; these
+results do not establish a gain on arbitrary agent traffic.
+
 - [x] **Profile the optimized FP8 draft configuration.** Complete native
   generations and separate early/middle/late CPU/CUDA traces put target
   verification at about 90 ms and drafting at 12.3 ms per 107 ms round.
@@ -192,17 +199,20 @@ See [the next engine work](docs/gb10-engine-next.md); draft training remains def
   scheduling/launch thread to a GB10 performance core, isolate tokenizer/HTTP
   workers and tune CPU thread counts. Compare idle and CPU-busy runs because
   CPU and GPU share memory bandwidth; measure latency tails too.
+- [x] **Retain draft features with target checkpoints.** Feature lifetime now
+  follows recurrent-slot ownership, including eviction, flush and cold-tier
+  restore. The [retention study](docs/gb10-agent-retention.md) records the warm
+  recovery, memory tradeoff and unchanged cold controls. Recurrent-state
+  pressure can still evict an entire target checkpoint and require prefill.
 - [ ] **Extend the unified-memory session cache.** Replace blocking restore
   synchronization with CUDA events and deferred frees, and improve slab
   reclamation while respecting the host memory floor. Build on the
   [existing managed-memory tier](docs/restart-and-syncs.md) to overlap restoration
   with useful work and retain more sessions without re-prefilling them.
   The [request-cache proposal](docs/request-cache-policy.md) adds per-request
-  reuse/store modes, namespaces and expiring retention hints. First align
-  target KV/GDN snapshots with draft-feature retention. Removing duplicate
-  checkpoint saves keeps the tested interleaved 10K/1K retry speculative:
-  11.40 → 42.38 decode TPS at the same 80 MiB feature budget. Larger working
-  sets can still lose draft features despite retained target KV/GDN state.
+  reuse/store modes, namespaces and expiring retention hints. Build these
+  policies on the coupled target and draft checkpoint lifetime, and measure
+  target-cache misses and streaming tails under session pressure.
 - [ ] **Cache prepared weights on SSD.** Persist engine-ready packed weights,
   keyed by checkpoint, precision and packing version, to avoid repeated
   conversion at startup. Measure cold and warm filesystem-cache loading

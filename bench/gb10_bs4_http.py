@@ -72,7 +72,7 @@ def await_idle(url):
         time.sleep(.05)
 
 
-def request(url, item, origin):
+def request(url, item, origin, *, allow_cached=False):
     parsed = urlsplit(url)
     connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=300)
     body = json.dumps({'rid': item['id'], 'input_ids': item['input_ids'], 'stream': True,
@@ -110,7 +110,7 @@ def request(url, item, origin):
             'output_ids': output, 'meta': meta, 'error': error,
             'ok': (error is None and done and len(output) == item['output_tokens']
                    and meta.get('completion_tokens') == item['output_tokens']
-                   and meta.get('cached_tokens', 0) == 0)}
+                   and (allow_cached or meta.get('cached_tokens', 0) == 0))}
 
 
 def run_trace(ex, url, trace):

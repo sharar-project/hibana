@@ -1,11 +1,12 @@
 """DSpark/DFlash2 adapters with bounded context KV and feature restoration.
 
 Target pages and recurrent state remain owned by StateManager. This adapter
-owns a separate, fixed-size draft ring per active request and a byte-bounded
-LRU of projected features. Radix entries contain identity-keyed handles only.
+owns a fixed-size draft ring per active request. Cached projected features
+are bound to recurrent-slot lifetime when installed in a cached executor.
+Radix entries contain identity-keyed handles only.
 """
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 
@@ -20,11 +21,12 @@ PINS = {
 
 
 class FeatureCache:
+    """Independent LRU reference for standalone adapters and benchmark controls."""
     def __init__(self, capacity):
         self.capacity, self.bytes, self.serial = capacity, 0, 0
         self.entries = OrderedDict()
 
-    def put(self, start, end, features):
+    def put(self, start, end, features, *, slot=None):
         size = features.numel() * features.element_size()
         if size > self.capacity:
             return None
@@ -41,6 +43,40 @@ class FeatureCache:
         if value is not None:
             self.entries.move_to_end(handle)
         return value
+
+
+class CheckpointFeatureCache(FeatureCache):
+    """Feature handles share the lifetime of their target recurrent slot.
+
+    No independent eviction: each usable slot can retain one window. Freeing
+    or recycling the target slot invalidates its handle, including duplicate
+    radix insertion, cancellation, snapshot eviction and flush.
+    """
+    def __init__(self, pool, window_bytes):
+        super().__init__((pool.num_slots - 1) * window_bytes)
+        self.pool, self.window_bytes, self.slots = pool, window_bytes, {}
+        pool.on_free.append(self.drop_slot)
+
+    def drop_slot(self, slot):
+        handle = self.slots.pop(slot, None)
+        value = self.entries.pop(handle, None)
+        if value is not None:
+            self.bytes -= value[2].numel() * value[2].element_size()
+
+    def put(self, start, end, features, *, slot=None):
+        if not self.pool.is_allocated(slot):
+            raise ValueError('features require an owned recurrent slot')
+        size = features.numel() * features.element_size()
+        if size > self.window_bytes:
+            raise ValueError('checkpoint features exceed the reserved window')
+        value = features.clone()
+        self.drop_slot(slot)
+        self.serial += 1
+        self.entries[self.serial] = (start, end, value)
+        self.slots[slot] = self.serial
+        self.bytes += size
+        assert self.bytes <= self.capacity
+        return self.serial
 
 
 @dataclass
@@ -74,6 +110,12 @@ class ParallelProposer:
         self.graphs = None
         self.cache_hits = self.cache_fallbacks = 0
 
+    def bind_checkpoint_cache(self, pool):
+        if self.feature_cache.entries:
+            raise ValueError('bind checkpoint retention before serving requests')
+        self.feature_cache = CheckpointFeatureCache(pool, self.window * 5120 * 2)
+        self.requirements = replace(self.requirements, persistent_bytes=self.bytes)
+
     @property
     def bytes(self):
         tensors = [self.features, *(t for pair in self.caches for t in pair)]
@@ -97,21 +139,25 @@ class ParallelProposer:
         self.model.context_kv(hidden, positions, self.caches, state.slot * self.pitch + ring)
         state.end = start + len(hidden)
 
-    def _save(self, req, position):
+    def _save(self, req, position, *, slot=None):
         state = self._state(req)
         if not state.valid or not req.cache_enabled:
             return
         req.cache_auxiliary = {p: value for p, value in req.cache_auxiliary.items() if p in req.checkpoints}
         start = max(0, position - self.window)
+        if slot is None:
+            slot = req.checkpoints.get(position, getattr(req, 'slot', None))
         # Prompt completion and release can save the same immutable prefix.
         # Reuse its live handle so a duplicate window does not evict another
         # checkpoint's features while the target snapshot is still cached.
         handle = req.cache_auxiliary.get(position, {}).get(self.cache_identity)
         cached = self.feature_cache.get(handle)
-        if cached is not None and cached[:2] == (start, position):
+        same_slot = (not isinstance(self.feature_cache, CheckpointFeatureCache)
+                     or self.feature_cache.slots.get(slot) == handle)
+        if cached is not None and cached[:2] == (start, position) and same_slot:
             return
         ring = torch.arange(start, position, device=self.context.device) % self.window
-        handle = self.feature_cache.put(start, position, self.features[state.slot, ring])
+        handle = self.feature_cache.put(start, position, self.features[state.slot, ring], slot=slot)
         if handle is not None:
             req.cache_auxiliary[position] = {self.cache_identity: handle}
 
@@ -157,9 +203,9 @@ class ParallelProposer:
             value = self.feature_cache.get(handle)  # (start, end, features on the device); the tier copies the tensor
             return None if value is None else (value[0], value[1], value[2])
 
-        def import_(payload):
+        def import_(payload, *, slot=None):
             start, end, features = payload  # features is a view into the tier's arena; put() clones it
-            return self.feature_cache.put(start, end, features)
+            return self.feature_cache.put(start, end, features, slot=slot)
 
         return self.cache_identity, export, import_
 
@@ -285,7 +331,9 @@ class ParallelProposer:
 
     def prepare_release(self, req):
         if isinstance(req.proposer_state, DraftState) and req.cacheable and req.reservation is None:
-            self._save(req, req.committed_len)
+            # StateManager transfers the committed slot at the endpoint and
+            # frees any duplicate endpoint checkpoint before radix insertion.
+            self._save(req, req.committed_len, slot=req.slot)
 
     def release(self, req):
         if isinstance(req.proposer_state, DraftState):
