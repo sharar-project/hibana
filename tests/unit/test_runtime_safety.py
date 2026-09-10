@@ -8,7 +8,9 @@ import pytest
 import torch
 
 from sharar import config
-from sharar.api.server import EngineLoop, EngineUnavailable, _sampling_from, create_app
+from sharar.engine.loop import EngineLoop, EngineUnavailable
+from sharar.api.validation import _sampling_from
+from sharar.api.server import create_app
 from sharar.engine.executor import Executor
 from sharar.engine.graphs import capture_sizes, check_context_capacity
 from sharar.engine.request import Request

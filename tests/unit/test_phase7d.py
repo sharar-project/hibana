@@ -11,7 +11,8 @@ import pytest
 import torch
 import httpx
 
-from sharar.api.server import EngineLoop, EngineUnavailable, _sampling_from
+from sharar.engine.loop import EngineLoop, EngineUnavailable
+from sharar.api.validation import _sampling_from
 from sharar.engine.sampler import SamplingParams
 from sharar.engine.scheduler import Scheduler
 from sharar.engine.contracts import ProposerContext

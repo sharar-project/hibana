@@ -18,7 +18,8 @@ import torch
 
 from sharar import config
 from sharar.api.chat_template import ChatTemplate
-from sharar.api.server import EngineLoop, create_app
+from sharar.engine.loop import EngineLoop
+from sharar.api.server import create_app
 from sharar.engine.executor import Executor
 from sharar.engine.scheduler import Scheduler, SchedulerConfig
 from sharar.model.qwen38 import Qwen38

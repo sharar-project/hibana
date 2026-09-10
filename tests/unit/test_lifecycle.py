@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.api.server import EngineLoop, Ticket
+from sharar.engine.loop import EngineLoop, Ticket
 from sharar.engine.request import Request, State
 from sharar.engine.sampler import SamplingParams
 from sharar.engine.scheduler import Scheduler
@@ -66,7 +66,7 @@ def test_idle_engine_publishes_queued_cancellation():
 
 @pytest.mark.parametrize('reason', ['length', 'stop', 'cancelled'])
 def test_terminal_notification_observes_retired_ticket(monkeypatch, reason):
-    from sharar.api import server
+    from sharar.engine import loop as server
 
     async def scenario():
         engine = EngineLoop(Scheduler(FakeExecutor()))
