@@ -238,12 +238,15 @@ class EngineLoop:
         done = []
         for rid, t in self.tickets.items():
             new = t.req.new_tokens()
-            if new or t.req.finished:
-                _notify(t.loop, t.queue.put_nowait, (new, t.req.finished, t.req.finish_reason))
             if t.req.finished:
-                done.append(rid)
-        for rid in done:
+                done.append((rid, t, new))
+            elif new:
+                _notify(t.loop, t.queue.put_nowait, (new, False, t.req.finish_reason))
+        for rid, t, new in done:
+            # The HTTP loop may consume the final event immediately, so retire
+            # its ticket before handing completion across the thread boundary.
             self.tickets.pop(rid, None)
+            _notify(t.loop, t.queue.put_nowait, (new, True, t.req.finish_reason))
 
 
 def _sampling_from(body: dict, max_default: int = 512) -> SamplingParams:

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.api.server import EngineLoop
+from sharar.api.server import EngineLoop, Ticket
 from sharar.engine.request import Request, State
 from sharar.engine.sampler import SamplingParams
 from sharar.engine.scheduler import Scheduler
@@ -61,6 +61,46 @@ def test_idle_engine_publishes_queued_cancellation():
         finally:
             engine.stop = True
             await asyncio.to_thread(engine.thread.join, 2)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('reason', ['length', 'stop', 'cancelled'])
+def test_terminal_notification_observes_retired_ticket(monkeypatch, reason):
+    from sharar.api import server
+
+    async def scenario():
+        engine = EngineLoop(Scheduler(FakeExecutor()))
+        loop = asyncio.get_running_loop()
+        finished = engine.sched.submit([1], SamplingParams(max_new_tokens=1, stop_token_ids=(7,)))
+        active = engine.sched.submit([2], SamplingParams(max_new_tokens=8))
+        tickets = [Ticket(queue=asyncio.Queue(), loop=loop, ready=loop.create_future(), req=req)
+                   for req in (finished, active)]
+        engine.tickets.update((t.req.request_id, t) for t in tickets)
+        if reason == 'cancelled':
+            engine.sched.cancel(finished)
+        else:
+            finished.push(7 if reason == 'stop' else 8)
+        active.push(9)
+        notify = server._notify
+
+        def observe_notification(event_loop, callback, event):
+            # The HTTP loop can consume a notification as soon as it is posted.
+            # Inspect that boundary directly instead of relying on thread timing.
+            if event[1]:
+                assert finished.request_id not in engine.tickets
+            assert active.request_id in engine.tickets
+            notify(event_loop, callback, event)
+
+        monkeypatch.setattr(server, '_notify', observe_notification)
+        engine._publish()
+        tokens = [] if reason == 'cancelled' else [7 if reason == 'stop' else 8]
+        assert await asyncio.wait_for(tickets[0].queue.get(), 2) == (tokens, True, reason)
+        assert await asyncio.wait_for(tickets[1].queue.get(), 2) == ([9], False, '')
+        engine._publish()
+        await asyncio.sleep(0)  # execute any erroneously repeated notification
+        assert all(t.queue.empty() for t in tickets)
+        assert engine.tickets == {active.request_id: tickets[1]}
+
     asyncio.run(scenario())
 
 
