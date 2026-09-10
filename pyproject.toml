@@ -33,3 +33,4 @@ include = ["sharar*"]
 
 [tool.setuptools.package-data]
 sharar = ["benchmark_data/*.txt"]
+"sharar.kernels" = ["csrc/*.cu"]

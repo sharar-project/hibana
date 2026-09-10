@@ -13,3 +13,4 @@ jobs:
           python-version: '3.12'
       - run: python3 tools/check_evidence.py
       - run: bash tools/check.sh setup-cpu
+      - run: .venv-cpu/bin/python tools/check_distribution.py

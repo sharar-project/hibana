@@ -40,7 +40,7 @@ def test_unsupported_controls_rejected_before_render_and_submit(stream, field, v
 
 @pytest.mark.parametrize('stream', [False, True])
 @pytest.mark.parametrize('controls', [{}, {'tool_choice': None, 'response_format': None},
-    {'tool_choice': 'auto', 'response_format': {'type': 'text'}}])
+    {'tool_choice': 'auto', 'response_format': {'type': 'text'}}, {'tool_choice': 'none'}])
 @pytest.mark.parametrize('tools', [None, [{'type': 'function', 'function': {
     'name': 'run', 'parameters': {'type': 'object', 'properties': {}}}}]])
 def test_unconstrained_chat_still_submits_and_returns_output(stream, controls, tools):
@@ -57,7 +57,8 @@ def test_unconstrained_chat_still_submits_and_returns_output(stream, controls, t
                 'tools': tools, **controls})
         assert response.status_code == 200
         engine.submit.assert_awaited_once()
-        assert template.render.call_args.kwargs['tools'] == tools
+        expected_tools = None if controls.get('tool_choice') == 'none' else tools
+        assert template.render.call_args.kwargs['tools'] == expected_tools
         if stream:
             assert '"content": "ok"' in response.text and '[DONE]' in response.text
         else:
