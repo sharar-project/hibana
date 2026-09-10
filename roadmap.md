@@ -1334,11 +1334,15 @@ paired HTTP result and quality canaries. The numerical FP8, two compressed
 draft and top-32 candidates do not establish reliable family throughput gains
 and remain experimental. A full real-weight FP8 sequence saves 2.04 ms,
 not the isolated estimate's 6 ms; shape tuning adds only 0.033 ms.
-The user's next priority is [engine work for BS1 and BS4](docs/gb10-engine-next.md),
-with training deferred: first measure useful verification work, width choices
-and scheduling at BS4. BS1 host overlap has about 1% round-time headroom.
-No large engine-only cold BS1 gain or 1.5x result is established. The completed
-study did not measure BS4 throughput.
+The [BS4 study](docs/gb10-bs4-engine.md) completes width and scheduling measurements:
+16 / 8 / 4 verifier rows give 132.70 / 129.25 / 104.80 pooled family decode TPS.
+The larger prefill budget and four-decode-step policies lose their HTTP screens.
+Runtime-count normalization/RoPE removes first-use compilation stalls and passes
+135 GPU checks with all 27 fixed native outputs preserved, but its warm HTTP
+point estimates are lower; it remains in the frozen experimental source.
+No BS4 serving change is promoted. Continue with [engine-only work](docs/gb10-engine-next.md),
+with training deferred. BS1 host overlap has about 1% round-time headroom;
+no large cold BS1/BS4 engine gain or 1.5x result is established.
 
 The [FP8 profile and follow-up experiments](docs/gb10-fp8-profile.md) now
 complete the immediate profiling task. Native 10K/1K B1 decode reproduces

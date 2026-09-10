@@ -4,6 +4,10 @@
 at both BS1 and BS4. Follow [the engine-only next steps](gb10-engine-next.md)
 first. The training sequence below remains a deferred research option.
 
+The [completed BS4 study](gb10-bs4-engine.md) keeps k=15 and the scheduler
+defaults. Narrower verification and the scheduling candidates do not establish
+a throughput improvement; the runtime-count kernel prototype remains experimental.
+
 2026-09-10. **BS1 focus.** Updated after the family evaluations, integrated
 GPU validation and final HTTP comparison. The [implementation report](gb10-bs1-speedups.md)
 records **+1.13–1.27% HTTP decode** and **+0.99–1.05% end-to-end throughput**,

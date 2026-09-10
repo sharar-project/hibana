@@ -142,8 +142,11 @@ The current target is **1.5×–2× faster TPS**. The
 [BS1 implementation study](docs/gb10-bs1-speedups.md) integrates the exact
 16-row QKV/MLP bundle: 1.0143× decode throughput across 18 task families.
 The larger target remains open; see the [revised BS1 plan](docs/gb10-1p5x-plan.md).
-The next priority is [engine work for BS1 and BS4](docs/gb10-engine-next.md),
-with draft training deferred.
+The [BS4 width and scheduling study](docs/gb10-bs4-engine.md) keeps k=15 and
+the scheduler defaults: smaller widths reduce family throughput, and neither
+scheduler candidate wins. The runtime-count kernel prototype removes first-use
+compilation stalls but fails to establish a warm HTTP gain and stays experimental.
+See [the next engine work](docs/gb10-engine-next.md); draft training remains deferred.
 
 - [x] **Profile the optimized FP8 draft configuration.** Complete native
   generations and separate early/middle/late CPU/CUDA traces put target

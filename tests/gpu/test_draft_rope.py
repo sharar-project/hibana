@@ -7,7 +7,7 @@ import torch
 pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 tests')
 
 
-@pytest.mark.parametrize('tokens', [1, 3, 16, 64, 2048])
+@pytest.mark.parametrize('tokens', [1, 3, 16, 31, 37, 47, 64, 2048])
 @pytest.mark.parametrize('heads', [8, 32])
 def test_rotation_matches_bf16_reference(tokens, heads):
     from sharar.model.parallel_draft import rotate, rotate_reference
@@ -21,7 +21,7 @@ def test_rotation_matches_bf16_reference(tokens, heads):
     assert torch.equal(rotate(x, positions, cos, sin), rotate_reference(x, positions, cos, sin))
 
 
-@pytest.mark.parametrize('tokens', [1, 3, 16, 64, 2048])
+@pytest.mark.parametrize('tokens', [1, 3, 16, 31, 37, 47, 64, 2048])
 def test_fused_scatter_preserves_other_slots_and_replays(tokens):
     from sharar.model.parallel_draft import rotate_and_cache, rotate_reference
     torch.manual_seed(127)
@@ -44,5 +44,15 @@ def test_fused_scatter_preserves_other_slots_and_replays(tokens):
         rotate_and_cache(k, v, positions, cos, sin, caches, pages)
     for c in caches:
         c.fill_(-17.)
+    graph.replay()
+    assert all(torch.equal(a, b) for a, b in zip(caches, reference))
+    # Captured runtime extents still obey masks with new values and ring pages.
+    kv.normal_()
+    positions.add_(73)
+    pages.copy_(positions % 2048 + 2064)
+    for c in (*caches, *reference):
+        c.fill_(-17.)
+    reference[0][pages, 0] = rotate_reference(k, positions, cos, sin)
+    reference[1][pages, 0] = v
     graph.replay()
     assert all(torch.equal(a, b) for a, b in zip(caches, reference))
