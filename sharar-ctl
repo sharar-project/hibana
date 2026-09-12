@@ -195,7 +195,8 @@ def cmd_chat(args, env, dry) -> int:
     if args.system:
         messages.append({"role": "system", "content": args.system})
     think = args.think
-    print(f"chatting with Sharar on {url} (thinking {'on' if think else 'off'}; /reset, /think, /quit)", flush=True)
+    max_tokens = args.max_tokens
+    print(f"chatting with Sharar on {url} (thinking {'on' if think else 'off'}, budget {max_tokens} tokens; /reset, /think, /max N, /quit)", flush=True)
     while True:
         try:
             line = input("\nyou> ")
@@ -215,8 +216,15 @@ def cmd_chat(args, env, dry) -> int:
             think = not think if text == "/think" else text.split()[-1] == "on"
             print(f"(thinking {'on' if think else 'off'})")
             continue
+        if text.startswith("/max"):
+            try:
+                max_tokens = int(text.split()[1])
+                print(f"(reply budget {max_tokens} tokens)")
+            except (IndexError, ValueError):
+                print("usage: /max N")
+            continue
         messages.append({"role": "user", "content": text})
-        body = {"model": "sharar", "messages": messages, "stream": True, "max_tokens": args.max_tokens,
+        body = {"model": "sharar", "messages": messages, "stream": True, "max_tokens": max_tokens,
                 "temperature": args.temperature, "chat_template_kwargs": {"enable_thinking": think},
                 "stream_options": {"include_usage": True}}
         if args.no_trace:
@@ -224,7 +232,7 @@ def cmd_chat(args, env, dry) -> int:
         request = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
         started = time.perf_counter()
         first = None
-        reply, reasoning, usage = [], [], None
+        reply, reasoning, usage, finish = [], [], None, None
         try:
             with urllib.request.urlopen(request, timeout=args.timeout) as response:
                 print("sharar> ", end="", flush=True)
@@ -239,6 +247,7 @@ def cmd_chat(args, env, dry) -> int:
                     if event.get("usage"):
                         usage = event["usage"]
                     for choice in event.get("choices") or []:
+                        finish = choice.get("finish_reason") or finish
                         delta = choice.get("delta") or {}
                         if delta.get("reasoning_content"):
                             if first is None:
@@ -266,6 +275,9 @@ def cmd_chat(args, env, dry) -> int:
         ttft = f"{first - started:.2f}s to first token, " if first else ""
         rate = f"{completion / max(elapsed - (first - started if first else 0), 1e-6):.1f} tok/s" if completion else ""
         print(f"\n[{completion or '?'} tokens, {ttft}{rate}{', thinking hidden' if reasoning and not args.show_thinking else ''}]")
+        if finish == "length":
+            what = "while still thinking; no answer was produced" if reasoning and not answer else "before the reply finished"
+            print(f"(stopped at the {max_tokens}-token budget {what}: /max N raises it, /think off skips thinking)")
 
 
 def cmd_logs(args, env, dry) -> int:
@@ -295,7 +307,7 @@ def main(argv=None) -> int:
     p.add_argument("--think", action="store_true", help="enable the model's thinking mode")
     p.add_argument("--show-thinking", action="store_true", help="print thinking content as it streams")
     p.add_argument("--system", default=None)
-    p.add_argument("--max-tokens", type=int, default=2048)
+    p.add_argument("--max-tokens", type=int, default=8192, help="reply budget, thinking included (context is 32K)")
     p.add_argument("--temperature", type=float, default=0.0, help="0 = greedy")
     p.add_argument("--no-trace", action="store_true", help="do not record this conversation")
     p.add_argument("--timeout", type=float, default=600)
