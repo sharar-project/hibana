@@ -67,6 +67,7 @@ Python; it drives the launchers below):
 ./sharar-ctl train stop     # final held-out evaluation, promote if better, serve again
 ./sharar-ctl draft list     # runs, their held-out gains, the current draft
 ./sharar-ctl traces         # what has been recorded
+./sharar-ctl chat           # talk to the running server in the terminal
 ```
 
 `serve --no-traces`, `serve --pinned`, `serve --draft DIR`, `serve --fp8`,

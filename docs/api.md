@@ -1,6 +1,6 @@
 # HTTP API
 
-The launcher exposes the API at `http://127.0.0.1:30001`. The supported target
+The launcher exposes the API at `http://127.0.0.1:30001`; `./sharar-ctl chat` is a terminal client for it. The supported target
 context is 32,768 tokens, with at most four running and 16 queued requests.
 Admission also checks the output budget and speculative scratch capacity.
 

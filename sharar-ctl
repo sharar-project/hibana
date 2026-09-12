@@ -13,6 +13,7 @@ container launchers `run-sharar.sh` and `run-sharar-train.sh`.
   sharar-ctl draft list | use RUN | pinned
   sharar-ctl traces
   sharar-ctl logs [--train] [-n LINES]
+  sharar-ctl chat [--think] [--max-tokens N] [--temperature T] [--no-trace]
 
 Tracing is on by default under this command (traces land in
 $SHARAR_RESULTS/traces): the loop exists to train on your own traffic.
@@ -25,6 +26,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -183,6 +185,89 @@ def cmd_traces(args, env, dry) -> int:
                 "--entrypoint", "python3", image, "-m", "sharar", "traces", "--dir", "/traces"], env, dry)
 
 
+def cmd_chat(args, env, dry) -> int:
+    """Streaming multi-turn chat against the running server; /reset, /think, /quit."""
+    import time
+    url = f"http://127.0.0.1:{env.get('SHARAR_PORT', '30001')}/v1/chat/completions"
+    if server_info(env.get("SHARAR_PORT", "30001")) is None:
+        sys.exit("serving is not up (sharar-ctl serve)")
+    messages = []
+    if args.system:
+        messages.append({"role": "system", "content": args.system})
+    think = args.think
+    print(f"chatting with Sharar on {url} (thinking {'on' if think else 'off'}; /reset, /think, /quit)", flush=True)
+    while True:
+        try:
+            line = input("\nyou> ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        text = line.strip()
+        if not text:
+            continue
+        if text in ("/quit", "/exit"):
+            return 0
+        if text == "/reset":
+            messages = messages[:1] if messages and messages[0]["role"] == "system" else []
+            print("(history cleared)")
+            continue
+        if text.startswith("/think"):
+            think = not think if text == "/think" else text.split()[-1] == "on"
+            print(f"(thinking {'on' if think else 'off'})")
+            continue
+        messages.append({"role": "user", "content": text})
+        body = {"model": "sharar", "messages": messages, "stream": True, "max_tokens": args.max_tokens,
+                "temperature": args.temperature, "chat_template_kwargs": {"enable_thinking": think},
+                "stream_options": {"include_usage": True}}
+        if args.no_trace:
+            body["trace"] = False
+        request = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        started = time.perf_counter()
+        first = None
+        reply, reasoning, usage = [], [], None
+        try:
+            with urllib.request.urlopen(request, timeout=args.timeout) as response:
+                print("sharar> ", end="", flush=True)
+                for raw in response:
+                    raw = raw.decode().strip()
+                    if not raw.startswith("data:"):
+                        continue
+                    data = raw[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    event = json.loads(data)
+                    if event.get("usage"):
+                        usage = event["usage"]
+                    for choice in event.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        if delta.get("reasoning_content"):
+                            if first is None:
+                                first = time.perf_counter()
+                            reasoning.append(delta["reasoning_content"])
+                            if args.show_thinking:
+                                print(delta["reasoning_content"], end="", flush=True)
+                        if delta.get("content"):
+                            if first is None:
+                                first = time.perf_counter()
+                            reply.append(delta["content"])
+                            print(delta["content"], end="", flush=True)
+        except KeyboardInterrupt:
+            print("\n(interrupted)")
+            messages.pop()
+            continue
+        except urllib.error.URLError as exc:
+            print(f"\nrequest failed: {exc}")
+            messages.pop()
+            continue
+        elapsed = time.perf_counter() - started
+        answer = "".join(reply)
+        messages.append({"role": "assistant", "content": answer})
+        completion = (usage or {}).get("completion_tokens")
+        ttft = f"{first - started:.2f}s to first token, " if first else ""
+        rate = f"{completion / max(elapsed - (first - started if first else 0), 1e-6):.1f} tok/s" if completion else ""
+        print(f"\n[{completion or '?'} tokens, {ttft}{rate}{', thinking hidden' if reasoning and not args.show_thinking else ''}]")
+
+
 def cmd_logs(args, env, dry) -> int:
     name = env.get("SHARAR_TRAIN_CONTAINER", "sharar-train") if args.train else env.get("SHARAR_CONTAINER", "sharar-qwen38")
     return run(["docker", "logs", "--tail", str(args.lines)] + (["--follow"] if args.follow else []) + [name], env, dry)
@@ -206,6 +291,14 @@ def main(argv=None) -> int:
     p.add_argument("action", choices=("list", "use", "pinned"))
     p.add_argument("run", nargs="?", help="with use: a run directory name from `draft list`")
     sub.add_parser("traces", help="summarize the recorded traces")
+    p = sub.add_parser("chat", help="chat with the running server in the terminal")
+    p.add_argument("--think", action="store_true", help="enable the model's thinking mode")
+    p.add_argument("--show-thinking", action="store_true", help="print thinking content as it streams")
+    p.add_argument("--system", default=None)
+    p.add_argument("--max-tokens", type=int, default=2048)
+    p.add_argument("--temperature", type=float, default=0.0, help="0 = greedy")
+    p.add_argument("--no-trace", action="store_true", help="do not record this conversation")
+    p.add_argument("--timeout", type=float, default=600)
     p = sub.add_parser("logs", help="container logs")
     p.add_argument("--train", action="store_true")
     p.add_argument("-n", "--lines", type=int, default=50)
@@ -213,7 +306,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     env = load_env()
     handler = {"serve": cmd_serve, "stop": cmd_stop, "status": cmd_status, "train": cmd_train,
-               "draft": cmd_draft, "traces": cmd_traces, "logs": cmd_logs}[args.command]
+               "draft": cmd_draft, "traces": cmd_traces, "logs": cmd_logs, "chat": cmd_chat}[args.command]
     return handler(args, env, args.dry_run)
 
 
