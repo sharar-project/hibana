@@ -93,6 +93,7 @@ class ParallelDraftModel:
             raise ValueError('unsupported draft precision')
         self.precision, self.fp8_weights = precision, {}
         self.cfg = json.loads((snapshot / 'config.json').read_text())
+        self.source = str(snapshot)  # identifies trained checkpoints in cache identities
         cfg = self.cfg
         self.kind = cfg['architectures'][0]
         if self.kind not in ('DSparkDraftModel', 'DFlash2DraftModel'):

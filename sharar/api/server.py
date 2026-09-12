@@ -361,12 +361,19 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     return app
 
 
-def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16') -> None:
+def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
+          traces: str | None = None, traces_max_mib: int = 8192, draft_dir: str | None = None) -> None:
     from sharar.memory.spec_budget import SpecConfig
 
     if not spec and draft_precision != 'bf16':
         raise ValueError('draft precision requires speculation')
-    spec_config = SpecConfig(proposer, spec, state_strategy, draft_precision) if spec else None
+    if draft_dir is not None and not spec:
+        raise ValueError('a draft directory requires speculation')
+    spec_config = SpecConfig(proposer, spec, state_strategy, draft_precision, draft_dir) if spec else None
+    if spec_config is not None:
+        from sharar.proposers.factory import draft_snapshot
+        if proposer in ('dspark', 'dflash2'):
+            draft_snapshot(proposer, draft_dir)  # fail before loading the target
     import uvicorn
 
     from sharar.engine.executor import Executor
@@ -385,6 +392,13 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=ex.profile.max_queued,
                           chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget)
     sched = Scheduler(ex, cfg)
+    sink = None
+    if traces:
+        from sharar.engine.traces import TraceSink
+
+        sink = TraceSink(traces, max_bytes=traces_max_mib * 2**20)
+        sched.sink = sink
+        log(f"recording opt-in request traces under {sink.directory} (cap {traces_max_mib} MiB)")
     describe = {
         "engine": "sharar",
         "model_path": MODEL_ID,
@@ -398,11 +412,13 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "state_slots": ex.state_pool.num_slots,
         "ledger_gib": {k: round(v / 2**30, 2) for k, v in ex.ledger.entries.items()},
         "speculative": {"algorithm": ex.spec.proposer.requirements.name, "num_draft_tokens": spec,
-                        "draft_precision": draft_precision} if spec else None,
+                        "draft_precision": draft_precision, "draft": getattr(ex.spec.proposer.model, "source", None)
+                        if hasattr(ex.spec.proposer, "model") else None} if spec else None,
         "attention_backend": "flashinfer",
         "gdn_backend": "triton",
         "kv_cache_dtype": "float8_e4m3fn",
         "mamba_ssm_dtype": "float32",
+        "traces": {"dir": str(sink.directory), "max_mib": traces_max_mib} if sink is not None else None,
     }
     engine = EngineLoop(sched)
     engine.start()
@@ -413,3 +429,5 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     finally:
         engine.drain(timeout=5)
         engine.thread.join(timeout=6)
+        if sink is not None:
+            sink.close()

@@ -97,7 +97,8 @@ class ParallelProposer:
         self.window = model.window
         self.pitch = self.window + self.noise_steps
         self.free_slots = list(range(context.max_batch, 0, -1))
-        self.cache_identity = (config.MODEL_REVISION, *PINS[name], model.features, 'projected-bf16-kv-v1', self.window)
+        self.cache_identity = (config.MODEL_REVISION, *PINS[name], model.features, 'projected-bf16-kv-v1', self.window,
+                               getattr(model, 'source', None))
         device = context.device
         shape = ((context.max_batch + 1) * self.pitch, 1, 8, 128)
         self.caches = [(torch.empty(shape, dtype=torch.bfloat16, device=device), torch.empty(shape, dtype=torch.bfloat16, device=device)) for _ in range(5)]
@@ -185,6 +186,19 @@ class ParallelProposer:
             if limit in req.checkpoints:
                 self._save(req, limit)
             offset = limit
+
+    def projected_rows(self, req, start, count):
+        """Projected context rows for positions [start, start + count) as the draft attends to them.
+
+        Only the last window of committed positions is retained in the ring.
+        """
+        state = req.proposer_state
+        if not isinstance(state, DraftState) or not state.valid:
+            raise ValueError('no draft context for this request')
+        if count < 0 or start < max(0, state.end - self.window) or start + count > state.end:
+            raise ValueError('positions outside the retained draft context')
+        positions = torch.arange(start, start + count, device=self.context.device)
+        return self.features[state.slot, positions % self.window]
 
     def start(self, req, token):
         state = self._state(req)

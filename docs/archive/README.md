@@ -16,6 +16,7 @@ gates. Historical commands may require the recorded source revision.
 | Two-path/trees did not qualify a serving policy | [Two path](studies/two-path-study.md), [tree coverage](studies/tree-coverage-study.md) |
 | Narrow NVFP4 tiles failed their integration screen | [NVFP4](studies/nvfp4-cost.md) |
 | Fixed-output agent traces do not establish task success | [Agent workloads](studies/agent-workloads.md), [quality](studies/greedy-quality.md) |
+| Train the drafter on recorded serving features; target prefill numerics are shape-dependent | [Draft training](studies/gb10-draft-training.md) |
 
 The exact pre-cleanup tree is tagged `archive/pre-cleanup-2026-09-11`.
 Create a separate checkout with `git worktree add --detach /tmp/sharar-history

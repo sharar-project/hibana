@@ -35,6 +35,8 @@ budget separately. Automatic KV capacity depends on available memory.
 | Accepted state | Reconstruction | `SHARAR_VERIFY_STATE` |
 | Image | `sharar:qwen38-27b` | `SHARAR_IMAGE` |
 | Container / port | `sharar-qwen38` / 30001 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
+| Request traces | Off | `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 8192) |
+| Draft checkpoint | `draft-runs/current` when promoted, else pinned | `SHARAR_DRAFT=/dir` or `SHARAR_DRAFT=pinned` |
 
 The optimized measured profile uses FP8 DFlash2 with 15 proposals:
 
@@ -52,6 +54,62 @@ launch the intended configuration. Updating Git or rebuilding a tag does not
 replace a running container. Validate the chosen image/profile before a
 production rollout; source benchmark qualification is separate from deployment.
 No production rollout is part of the September 11 maintenance cleanup.
+
+## Training the drafter on this machine's traffic
+
+`./sharar-ctl` is the host-side command for the whole loop (standard-library
+Python; it drives the launchers below):
+
+```bash
+./sharar-ctl serve          # serve and record traces under $SHARAR_RESULTS/traces
+./sharar-ctl status         # serving, training, current draft, trace directory
+./sharar-ctl train          # stop serving, train the drafter until told to stop
+./sharar-ctl train stop     # final held-out evaluation, promote if better, serve again
+./sharar-ctl draft list     # runs, their held-out gains, the current draft
+./sharar-ctl traces         # what has been recorded
+./sharar-ctl chat           # talk to the running server in the terminal
+```
+
+`serve --no-traces`, `serve --pinned`, `serve --draft DIR`, `serve --fp8`,
+`draft use RUN` and `draft pinned` cover the exceptions. Underneath,
+`run-sharar-train.sh start` stops serving and trains the DFlash2 drafter on
+every recorded request, continuing from the current promoted checkpoint if
+there is one, with the newest requests held out until they cover about 20K
+output tokens (at least four requests, at most a fifth of them). Tokens per
+round is measured over rounds, so the held-out budget is output tokens rather
+than a share of requests. It evaluates held-out tokens per round every 100
+steps and after `stop`, and promotes a checkpoint only when that improves;
+promotion updates `$SHARAR_RESULTS/draft-runs/current`. `stop` waits for the
+final evaluation (up to 20 minutes) and relaunches serving. The serving
+launcher follows `draft-runs/current` whenever it resolves to a checkpoint;
+`SHARAR_DRAFT=pinned` forces the publisher draft and `SHARAR_DRAFT=/dir`
+serves any checkpoint saved by `sharar train`. `/get_server_info` reports the
+directory under `speculative.draft`. Training and serving never share the
+GPU: the trainer refuses to start beside a running server on this machine
+(`--keep-serving` is for a second machine with a synced trace directory).
+Trained weights change speed only; the target's own shape-dependent numerics
+can still change greedy continuations when round boundaries move, as they do
+for any change of verification width or batch shape.
+
+## Request traces
+
+Setting `SHARAR_TRACES` mounts that host directory at `/traces` and starts the
+server with `--traces`. Each finished request is then appended as one JSON line:
+prompt and output token IDs, sampling parameters, the cached prefix length and,
+for speculative requests, every verification round with the accepted count, the
+draft's proposals and the target's argmax rows (sampled rows keep only the
+correction token). DFlash2 requests also store the projected context features
+the drafter attended to, copied from the proposer's ring as they are written:
+the last 2,048 prompt positions and every committed output position, 10 KiB
+per row as raw BF16 under `features/<trace file>/<id>.bin`. No text or client
+metadata is stored. Files rotate at 64 MiB and the oldest trace file is
+deleted together with its feature directory above the cap (default 8 GiB).
+Writing happens on a separate thread and never blocks the engine: feature rows
+go through pinned staging chunks with CUDA events; a full queue or disk counts
+as `dropped` in `/get_server_info` under `traces`. Any request can opt out with
+`"trace": false`. `sharar traces --dir DIR` summarizes a directory. The traces
+are the input for [draft adaptation](draft-adaptation.md); they are the user's
+prompts and stay on this machine unless the user copies them elsewhere.
 
 Inspect `docker logs sharar-qwen38`, `/health` and `/get_server_info` for status.
 The latter reports draft precision, scheduler settings, KV/state geometry and

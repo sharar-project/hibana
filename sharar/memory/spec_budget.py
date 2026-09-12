@@ -14,6 +14,7 @@ class SpecConfig:
     depth: int = 3
     state_strategy: str = 'snapshots'
     draft_precision: str = 'bf16'
+    draft_dir: str | None = None  # a trained DFlash2/DSpark checkpoint directory instead of the pinned snapshot
 
     def __post_init__(self):
         from sharar.proposers.factory import MAX_DEPTHS
@@ -21,6 +22,8 @@ class SpecConfig:
             raise ValueError('unsupported proposer/depth')
         if self.state_strategy not in ('snapshots', 'reconstruct'):
             raise ValueError('unsupported verify state strategy')
+        if self.draft_dir is not None and self.name not in ('dspark', 'dflash2'):
+            raise ValueError('a draft directory applies to parallel drafts only')
         if self.draft_precision not in ('bf16', 'fp8') or (self.draft_precision == 'fp8' and self.name not in ('dspark', 'dflash2')):
             raise ValueError('FP8 draft precision requires a parallel draft')
 

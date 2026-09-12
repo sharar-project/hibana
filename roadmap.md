@@ -25,6 +25,29 @@ See [operations](docs/operations.md) and [performance](docs/performance.md).
 - Documentation, benchmark support, distribution contents and stale contracts
   were cleaned up. The pre-cleanup tree is tagged `archive/pre-cleanup-2026-09-11`.
 
+## Draft adaptation track
+
+Started 2026-09-11 on `feat/draft-traces`; see [the design](docs/draft-adaptation.md).
+The served target, head and verification stay fixed; only the DFlash2 drafter
+changes, so outputs remain the target's own and the gates are speed, TTFT and
+memory. Done in this branch: (1) opt-in request traces (`SHARAR_TRACES`,
+per-request `trace: false`, `sharar traces`); (2) SpecForge studied and used as
+the numerical reference rather than as the pipeline, since its Qwen3.8 recipe
+needs patched SGLang capture servers; (3) `sharar train`: DFlash2 training in
+Sharar against the NVFP4 target with held-out tokens-per-round evaluation and
+`best/` promotion, checked against the serving proposer, the publisher's
+reference model and SpecForge's objective by `bench/dflash2_reference.py`.
+Trained checkpoints are served with `SHARAR_DRAFT=/run/best` (`sharar serve
+--draft`). On a repository-coding proxy workload, 300 steps on 359 traced
+requests raised held-out tokens per round 5.367 -> 5.739 and served throughput
+46.3 -> 52.3 tokens/s (+12.9%) on the held-out prompts at batch one
+([report](docs/archive/studies/gb10-draft-training.md)). Held-out data is
+always the user's own newest traces. Next: (4) record real traffic and repeat
+the measurement on it; an in-place reload between rounds and a collapse check
+on the general workload set; (5) user-started training with an engine-busy
+pause and multi-machine transport. Training never runs beside serving on the
+same GPU.
+
 ## Next work, in order
 
 1. **Restore CI availability.** GitHub refused the previous run before any job

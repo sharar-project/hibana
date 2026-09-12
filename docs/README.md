@@ -17,6 +17,7 @@ to the source recorded in each report.
 | [Engine experiments](gb10-engine-next.md) | Bounded next BS1/BS4 measurements |
 | [Experiment criteria](gb10-experiments.md) | Methodology and advancement gates |
 | [Cache-policy proposal](request-cache-policy.md) | Unimplemented request-level cache controls |
+| [Draft adaptation](draft-adaptation.md) | Request traces and the plan for workload-trained DFlash2 drafters |
 | [Archive and decisions](archive/README.md) | Historical studies, manifests and rejected experiments |
 | [September 11 cleanup](maintenance.md) | Completed maintenance, validation and archive provenance |
 

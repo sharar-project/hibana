@@ -117,6 +117,20 @@ class SpecDecoder:
 
     def start(self, req, token) -> None:
         self.proposer.start(req, token)
+        self._trace_features(req, req.committed_len - min(req.committed_len, getattr(self.proposer, "window", 0)), req.committed_len)
+
+    def _trace_features(self, req, start: int, end: int) -> None:
+        """Copy the projected context rows the draft just received into the request's trace recorder."""
+        recorder = req.trace_features
+        if recorder is None or end <= start:
+            return
+        rows_for = getattr(self.proposer, "projected_rows", None)
+        if rows_for is None or not self.proposer.ready(req) and not req.finished:
+            return
+        try:
+            recorder.append(rows_for(req, start, end - start), start)
+        except ValueError:
+            recorder.valid = False
 
     def ready(self, req) -> bool:
         return self.proposer.ready(req)
@@ -251,7 +265,7 @@ class SpecDecoder:
             # Sampled batch: acceptance and the correction/bonus token are
             # computed on the device per row (vectorized rejection sampling,
             # `rejection.verify_rows`) and downloaded once with the drafts.
-            acc_rows, corr_rows = [], []
+            acc_rows, corr_rows, target_rows = [], [], []
             for i, req in enumerate(reqs):
                 if req.params.greedy:
                     target_ids = z[i].argmax(-1)
@@ -259,20 +273,20 @@ class SpecDecoder:
                     a_t = torch.cumprod(match, dim=0).sum()
                     acc_rows.append(a_t)
                     corr_rows.append(target_ids.index_select(0, a_t.reshape(1)).reshape(()))
+                    target_rows.append(target_ids)  # greedy rows keep every argmax for traces
                 else:
                     a_t, c_t = verify_rows(y[i], distribution(z[i], req.params),
                                            proposal.probabilities[i] if proposal.probabilities is not None else None,
                                            proposal.support[i] if proposal.support is not None else None, req.generator)
                     acc_rows.append(a_t)
                     corr_rows.append(c_t)
-            packed = torch.cat([y, torch.stack(acc_rows).unsqueeze(1).to(y.dtype), torch.stack(corr_rows).unsqueeze(1).to(y.dtype)], dim=1).tolist()
+                    target_rows.append(torch.full((s_len,), -1, dtype=y.dtype, device=y.device).index_put_((a_t.reshape(1),), c_t.reshape(1)))
+            packed = torch.cat([y, torch.stack(acc_rows).unsqueeze(1).to(y.dtype), torch.stack(corr_rows).unsqueeze(1).to(y.dtype),
+                                torch.stack(target_rows).to(y.dtype)], dim=1).tolist()
             y_l = [row[:k] for row in packed]
             acc = [row[k] for row in packed]
-            z_l = []
-            for row in packed:
-                target = [0] * s_len
-                target[row[k]] = row[k + 1]
-                z_l.append(target)
+            # Sampled rows carry only their correction at index a (-1 elsewhere).
+            z_l = [row[k + 2:] for row in packed]
         outputs = []
         for i, r in enumerate(reqs):
             a = acc[i]
@@ -285,6 +299,10 @@ class SpecDecoder:
             count = len(emitted)
             assert count > 0 and not r.finished
             outputs.append(emitted)
+            if r.trace_rounds is not None:
+                # Greedy rows carry every target argmax; sampled rows only
+                # realize the correction token, so their z is omitted.
+                r.trace_rounds.append({"a": a, "y": y_l[i], "z": z_l[i] if proposal is None or r.params.greedy else None, "c": z_l[i][a]})
         replay = getattr(self, "replay", None)
         if replay is not None:
             # StateManager validates every stop-truncated count before one
@@ -308,6 +326,9 @@ class SpecDecoder:
             r.spec_accepted += a
             r.spec_emitted += count
         self.proposer.accepted_batch(reqs, outputs, features)
+        for r, emitted in zip(reqs, outputs):
+            if r.trace_features is not None:
+                self._trace_features(r, r.committed_len - len(emitted), r.committed_len)
         self.rounds += 1
         if self.timing:
             torch.cuda.synchronize()

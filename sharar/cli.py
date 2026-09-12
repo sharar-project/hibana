@@ -66,6 +66,33 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default="reconstruct")
     p_serve.add_argument("--draft-precision", choices=("bf16", "fp8"), default="bf16", help="parallel draft matrix precision")
     p_serve.add_argument("--spec", type=int, default=None, help="draft tokens per round (0 = off; default: SHARAR_SPEC, else the proposer's validated depth)")
+    p_serve.add_argument("--draft", default=None, help="trained DFlash2/DSpark checkpoint directory to serve instead of the pinned draft (default: SHARAR_DRAFT)")
+    p_serve.add_argument("--traces", default=None, help="directory for opt-in request traces (default: SHARAR_TRACES; unset disables recording)")
+    p_serve.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: SHARAR_TRACES_MAX_MIB or 8192)")
+    p_traces = sub.add_parser("traces", help="summarize a request trace directory")
+    p_traces.add_argument("--dir", default=None, help="trace directory (default: SHARAR_TRACES)")
+    p_train = sub.add_parser("train", help="fine-tune the DFlash2 drafter on request traces (GPU, nothing else served)")
+    p_train.add_argument("--traces", default=None, help="trace directory (default: SHARAR_TRACES)")
+    p_train.add_argument("--output", required=True, help="run directory: log.jsonl, manifest.json, step-*/ and best/ checkpoints")
+    p_train.add_argument("--draft", default=None, help="draft checkpoint directory to start from (default: the pinned publisher draft)")
+    p_train.add_argument("--steps", type=int, default=200, help="0 trains until stopped (SIGTERM), then evaluates once more")
+    p_train.add_argument("--promote-to", default=None, help="symlink kept pointing at the promoted checkpoint, e.g. /runs/current")
+    p_train.add_argument("--continue-from", default=None, help="a 'current' symlink: start from its checkpoint when it resolves (default: the pinned draft)")
+    p_train.add_argument("--sequences-per-step", type=int, default=2)
+    p_train.add_argument("--anchors", type=int, default=128, help="random anchors per sequence")
+    p_train.add_argument("--anchor-chunk", type=int, default=32)
+    p_train.add_argument("--block", type=int, default=16, help="block size: serving's k proposals plus the anchor")
+    p_train.add_argument("--gamma", type=float, default=7.0, help="position weight decay exp(-(k-1)/gamma)")
+    p_train.add_argument("--selector-alpha", type=float, default=1.0)
+    p_train.add_argument("--lr", type=float, default=5e-5)
+    p_train.add_argument("--warmup-steps", type=int, default=10)
+    p_train.add_argument("--max-grad-norm", type=float, default=1.0)
+    p_train.add_argument("--max-length", type=int, default=8192)
+    p_train.add_argument("--holdout-tokens", type=int, default=20000, help="newest requests held out until they cover this many output tokens")
+    p_train.add_argument("--eval-every", type=int, default=50)
+    p_train.add_argument("--greedy-only", action="store_true")
+    p_train.add_argument("--train-context", action="store_true", help=argparse.SUPPRESS)  # needs raw target features; not recorded
+    p_train.add_argument("--seed", type=int, default=0)
     p_prof = sub.add_parser("profile", help="kernel time breakdown for prefill or decode")
     p_prof.add_argument("--prompts", required=True)
     p_prof.add_argument("--name", default="rand2048")
@@ -121,9 +148,57 @@ def main(argv: list[str] | None = None) -> int:
             args.spec = int(env) if env not in (None, "", "auto") else {"mtp": 3}.get(args.proposer, MAX_DEPTHS[args.proposer])
         if args.draft_precision == 'fp8' and (not args.spec or args.proposer not in ('dspark', 'dflash2')):
             parser.error('--draft-precision fp8 requires an enabled parallel draft')
+        traces = args.traces or os.environ.get("SHARAR_TRACES") or None
+        draft_dir = args.draft or os.environ.get("SHARAR_DRAFT") or None
+        if draft_dir and (not args.spec or args.proposer not in ('dspark', 'dflash2')):
+            parser.error('--draft requires an enabled parallel draft')
+        max_mib = args.traces_max_mib if args.traces_max_mib is not None else int(os.environ.get("SHARAR_TRACES_MAX_MIB") or 8192)
+        if max_mib < 1:
+            parser.error("--traces-max-mib must be a positive integer")
         from sharar.api.server import serve
         serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state,
-              draft_precision=args.draft_precision)
+              draft_precision=args.draft_precision, traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir)
+        return 0
+    if args.command == "train":
+        import os
+
+        from pathlib import Path
+
+        from sharar.train.trainer import StopRequest, TrainConfig, load_runtime, resolve_draft, run
+
+        traces = args.traces or os.environ.get("SHARAR_TRACES")
+        if not traces:
+            parser.error("give --traces or set SHARAR_TRACES")
+        draft = args.draft
+        if draft is None and args.continue_from:
+            resolved = resolve_draft(Path(args.continue_from))
+            draft = str(resolved) if resolved is not None else None
+            print(f"continuing from {draft}" if draft else f"{args.continue_from} does not resolve to a checkpoint; starting from the pinned draft", flush=True)
+        cfg = TrainConfig(traces=traces, output=args.output, draft=draft, steps=args.steps, promote_to=args.promote_to,
+                          sequences_per_step=args.sequences_per_step, anchors_per_sequence=args.anchors,
+                          anchor_chunk=args.anchor_chunk, block=args.block, gamma=args.gamma,
+                          selector_alpha=args.selector_alpha, learning_rate=args.lr, warmup_steps=args.warmup_steps,
+                          max_grad_norm=args.max_grad_norm, max_length=args.max_length, holdout_tokens=args.holdout_tokens,
+                          eval_every=args.eval_every, greedy_only=args.greedy_only,
+                          train_context=args.train_context, seed=args.seed)
+        draft, pinned = load_runtime(cfg)
+        stop = StopRequest()
+        stop.install()
+        try:
+            result = run(cfg, draft, pinned, stop=stop)
+        finally:
+            stop.restore()
+        print(json.dumps(result))
+        return 0
+    if args.command == "traces":
+        import os
+
+        from sharar.engine.traces import summarize
+
+        directory = args.dir or os.environ.get("SHARAR_TRACES")
+        if not directory:
+            parser.error("give --dir or set SHARAR_TRACES")
+        print(json.dumps(summarize(directory), indent=2))
         return 0
     if args.command == "sched-bench":
         from sharar.engine.run import sched_bench_cli

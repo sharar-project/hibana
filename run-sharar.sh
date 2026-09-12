@@ -14,6 +14,9 @@ SPEC="${SHARAR_SPEC:-15}"   # draft tokens per round (0 = off); 15 is DFlash2's 
 PROPOSER="${SHARAR_PROPOSER:-dflash2}"
 VERIFY_STATE="${SHARAR_VERIFY_STATE:-reconstruct}"
 DRAFT_PRECISION="${SHARAR_DRAFT_PRECISION:-bf16}" # fp8 selects the measured optimized parallel draft
+TRACES_DIR="${SHARAR_TRACES:-}"                    # opt-in request traces for draft adaptation (unset = off)
+DRAFT_DIR="${SHARAR_DRAFT:-}"                      # trained draft checkpoint directory; unset follows draft-runs/current; 'pinned' forces the publisher draft
+TRACES_MAX_MIB="${SHARAR_TRACES_MAX_MIB:-8192}"
 DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"   # incoai/Qwen3.8-27B-DFlash2
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
@@ -21,6 +24,13 @@ STATE_DIR="$RESULTS_DIR/runtime-state"   # JIT caches; persists across restarts
 GUARD_UNIT="sharar-memory-guard.service"
 GUARD_MIN_AVAILABLE_KIB="${SHARAR_MIN_AVAILABLE_KIB:-16777216}"
 MODEL_REVISION="319f741cce68d7914884900c138a1fbb70a42f30"
+RUNS_DIR="${SHARAR_DRAFT_RUNS:-$RESULTS_DIR/draft-runs}"
+if [[ "$DRAFT_DIR" == pinned ]]; then
+  DRAFT_DIR=""
+elif [[ -z "$DRAFT_DIR" && -L "$RUNS_DIR/current" ]]; then
+  current="$(readlink -f "$RUNS_DIR/current")"
+  [[ -f "$current/config.json" && -f "$current/model.safetensors" ]] && DRAFT_DIR="$current"
+fi
 DRIVER_LIB_DIR="/usr/lib/aarch64-linux-gnu"
 
 fail() { echo "sharar launch failed: $*" >&2; exit 1; }
@@ -67,6 +77,10 @@ if [[ "$PROPOSER" == dflash2 && "$SPEC" != 0 ]]; then
   $draft_ok || fail "pinned DFlash2 draft revision $DRAFT_REVISION is missing in $CACHE_DIR (set SHARAR_PROPOSER=mtp to serve without it)"
 fi
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image is missing: $IMAGE (build with docker/build.sh)"
+if [[ -n "$TRACES_DIR" || -n "$DRAFT_DIR" ]]; then
+  docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--traces" \
+    || fail "image $IMAGE predates trace recording and trained drafts; rebuild it with docker/build.sh"
+fi
 [[ "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "io.sharar.engine"}}')" == "sharar" ]] || fail "image is not a Sharar image"
 
 cat <<EOT
@@ -75,6 +89,8 @@ Sharar preflight OK
   Model: RadixArk/Qwen3.8-27B-NVFP4@$MODEL_REVISION
   Host memory: $((mem_total / 1048576)) GiB total, $((mem_avail / 1048576)) GiB available; runtime floor $((GUARD_MIN_AVAILABLE_KIB / 1048576)) GiB
   Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (proposer: $PROPOSER, drafts: $SPEC, draft precision: $DRAFT_PRECISION, verify state: $VERIFY_STATE)
+  Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}
+  Draft: ${DRAFT_DIR:-pinned $DRAFT_REVISION}
 EOT
 [[ "${1:-}" == "--check" ]] && exit 0
 
@@ -107,6 +123,18 @@ for gpucomp in "$DRIVER_LIB_DIR"/libnvidia-gpucomp.so.*; do [[ -f "$gpucomp" ]] 
 serve_args=(serve --host 0.0.0.0 --port "$PORT" --proposer "$PROPOSER" --verify-state "$VERIFY_STATE" --spec "$SPEC")
 if [[ "$DRAFT_PRECISION" != bf16 ]]; then
   serve_args+=(--draft-precision "$DRAFT_PRECISION")
+fi
+if [[ -n "$DRAFT_DIR" ]]; then
+  [[ -f "$DRAFT_DIR/config.json" && -f "$DRAFT_DIR/model.safetensors" ]] || fail "SHARAR_DRAFT=$DRAFT_DIR needs config.json and model.safetensors"
+  [[ "$PROPOSER" == dflash2 || "$PROPOSER" == dspark ]] && [[ "$SPEC" != 0 ]] || fail "SHARAR_DRAFT requires an enabled parallel draft"
+  args+=(--volume "$DRAFT_DIR:/draft:ro")
+  serve_args+=(--draft /draft)
+fi
+if [[ -n "$TRACES_DIR" ]]; then
+  [[ "$TRACES_MAX_MIB" =~ ^[1-9][0-9]*$ ]] || fail "SHARAR_TRACES_MAX_MIB must be a positive integer"
+  mkdir -p "$TRACES_DIR"
+  args+=(--volume "$TRACES_DIR:/traces")
+  serve_args+=(--traces /traces --traces-max-mib "$TRACES_MAX_MIB")
 fi
 cid="$("${args[@]}" "$IMAGE" "${serve_args[@]}")"
 mkdir -p "$RESULTS_DIR"

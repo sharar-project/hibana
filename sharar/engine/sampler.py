@@ -26,6 +26,7 @@ class SamplingParams:
     seed: int | None = None
     stop_token_ids: tuple[int, ...] = (248046, 248044)  # <|im_end|>, <|endoftext|>
     ignore_eos: bool = False
+    trace: bool = True  # may this request be written to the opt-in trace sink
 
     def validate(self) -> None:
         if type(self.max_new_tokens) is not int or self.max_new_tokens < 1:
@@ -42,6 +43,8 @@ class SamplingParams:
             raise InvalidRequest("seed must be an integer in [-2**63, 2**64)")
         if type(self.ignore_eos) is not bool:
             raise InvalidRequest("ignore_eos must be a boolean")
+        if type(self.trace) is not bool:
+            raise InvalidRequest("trace must be a boolean")
 
     @property
     def greedy(self) -> bool:

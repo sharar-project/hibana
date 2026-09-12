@@ -107,3 +107,12 @@ or numerical helpers; moving them wholesale would hide an active dependency.
 See the [decision archive](../docs/archive/README.md) for historical studies and
 the [old command guide](../docs/archive/benchmark-guide-2026-09-11.md) for commands
 at their original revisions. Raw tensors, outputs and traces stay outside Git.
+
+## Draft adaptation tools
+
+`bench/trace_corpus.py` replays ShareGPT prompts over HTTP against a server
+started with `--traces` (greedy, thinking off, a sampled share, one opt-out
+request). `bench/dflash2_reference.py` runs inside the runtime container on an
+exclusive GPU and checks the training forward against the serving proposer and
+the publisher's reference model, and the objective against SpecForge, then runs
+a short training smoke; see [draft adaptation](../docs/draft-adaptation.md).

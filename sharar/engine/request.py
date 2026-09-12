@@ -47,6 +47,9 @@ class Request(RequestState):
     spec_proposed: int = 0  # draft tokens proposed for this request
     spec_accepted: int = 0  # draft tokens accepted for this request
     spec_emitted: int = 0  # outputs actually emitted by verify rounds (excludes prefill)
+    # opt-in trace sink (engine/traces.py): per-round records while recording, else None
+    trace_rounds: list[dict] | None = None
+    trace_features: object = None  # FeatureRecorder while recording projected draft context, else None
 
     @property
     def prefill_len(self) -> int:
