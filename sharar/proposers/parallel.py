@@ -186,6 +186,19 @@ class ParallelProposer:
                 self._save(req, limit)
             offset = limit
 
+    def projected_rows(self, req, start, count):
+        """Projected context rows for positions [start, start + count) as the draft attends to them.
+
+        Only the last window of committed positions is retained in the ring.
+        """
+        state = req.proposer_state
+        if not isinstance(state, DraftState) or not state.valid:
+            raise ValueError('no draft context for this request')
+        if count < 0 or start < max(0, state.end - self.window) or start + count > state.end:
+            raise ValueError('positions outside the retained draft context')
+        positions = torch.arange(start, start + count, device=self.context.device)
+        return self.features[state.slot, positions % self.window]
+
     def start(self, req, token):
         state = self._state(req)
         state.pending = token

@@ -30,6 +30,7 @@ Admission also checks the output budget and speculative scratch capacity.
 | `tool_choice` omitted/null/`auto` | Unconstrained model choice |
 | `tool_choice: "none"` | Omit tool schemas from the prompt and tool-call parsing |
 | `response_format` omitted/null/`{"type":"text"}` | Ordinary text output |
+| `trace` | `false` excludes this request from the opt-in [trace sink](operations.md#request-traces); accepted on every generation route |
 
 Forced/named/required tool choices and constrained JSON formats return HTTP
 400 before rendering or admission. `none` does not install a token constraint;

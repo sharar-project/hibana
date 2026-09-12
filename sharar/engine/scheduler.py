@@ -83,6 +83,8 @@ class Scheduler:
         # prefilled before the decode step, like the reference's prefill-first
         # policy, bounded by one extra prefill step).
         self.on_progress = on_progress
+        # Optional engine/traces.py sink; recording is decided per request at submission.
+        self.sink = None
         self.queue: list[Request] = []
         self.prefilling: list[Request] = []
         self.running: list[Request] = []
@@ -98,6 +100,9 @@ class Scheduler:
             raise QueueFull(f"{len(self.queue)} requests queued")
         req = Request(prompt_ids=list(prompt_ids), params=params, request_id=self._next_id)
         self._next_id += 1
+        if self.sink is not None and params.trace:
+            req.trace_rounds = []
+            req.trace_features = self.sink.recorder()
         self.queue.append(req)
         return req
 
@@ -121,6 +126,8 @@ class Scheduler:
         cache = self.ex.cache_stats()
         if cache is not None:
             d["cache"] = cache
+        if self.sink is not None:
+            d["traces"] = self.sink.stats()
         return d
 
     # ---- loop ----
@@ -160,6 +167,8 @@ class Scheduler:
                         req._finish("cancelled")
                     self.ex.release(req)
                     lst.remove(req)
+                    if req.trace_rounds is not None and self.sink is not None and req.output_ids:
+                        self.sink.record(req)
                     if req.finish_reason == "cancelled":
                         self.metrics.cancelled += 1
                     else:

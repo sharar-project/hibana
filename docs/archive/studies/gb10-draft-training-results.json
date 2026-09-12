@@ -1,0 +1,49 @@
+{
+ "schema": 2,
+ "summary_document": "gb10-draft-training.md",
+ "full_evidence": {
+  "path": "reviews/2026-09-11-draft-traces/results.json",
+  "sha256": "3e73049d7647a245dcff8b79eb567ff038be6086a38bee15dd3bb123a875721c",
+  "bytes": 9716
+ },
+ "summary": {
+  "branch": "feat/draft-traces",
+  "serving_changed": false,
+  "reference_checks_failed": [],
+  "serving_forward_relative_rms": 0.012592609971761703,
+  "oracle_forward_relative_rms": 0.015185415744781494,
+  "recorded_vs_ring_relative_rms": 0.0,
+  "teacher_forced_proposal_agreement": 0.9333333333333333,
+  "dflash_loss": {
+   "mine": 2.1021828651428223,
+   "specforge_naive": 2.1021833770474077
+  },
+  "selector_scores_relative_rms": 0.0,
+  "corpus": {
+   "requests": 599,
+   "output_tokens": 353879,
+   "spec_rounds": 92769,
+   "tokens_per_round": 3.8210824736711615,
+   "feature_rows": 435756
+  },
+  "train": {
+   "steps": 150,
+   "train_requests": 533,
+   "holdout_requests": 59,
+   "eval_requests": 24,
+   "trainable_parameters": 1740897920,
+   "holdout_tokens_per_round": {
+    "0": 3.870983935742972,
+    "50": 3.8954,
+    "100": 3.9122,
+    "150": 3.9261710794297353
+   },
+   "median_step_seconds": 4.41,
+   "min_available_gib": 63.9
+  },
+  "target_prefill_shape_dependence": {
+   "prefix_26_vs_27_final_norm_relative_rms": 0.32002,
+   "prefix_26_vs_27_argmax_agreement": 0.884615421295166
+  }
+ }
+}

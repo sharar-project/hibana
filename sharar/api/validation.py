@@ -25,6 +25,7 @@ def _sampling_from(body: dict, max_default: int = 512) -> SamplingParams:
         top_k=integer(top_k) if top_k is not None else -1,
         seed=integer(seed),
         ignore_eos=sp.get("ignore_eos", body.get("ignore_eos", False)),
+        trace=body.get("trace", sp.get("trace", True)),
     )
     params.validate()
     return params

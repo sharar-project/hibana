@@ -25,6 +25,22 @@ See [operations](docs/operations.md) and [performance](docs/performance.md).
 - Documentation, benchmark support, distribution contents and stale contracts
   were cleaned up. The pre-cleanup tree is tagged `archive/pre-cleanup-2026-09-11`.
 
+## Draft adaptation track
+
+Started 2026-09-11 on `feat/draft-traces`; see [the design](docs/draft-adaptation.md).
+The served target, head and verification stay fixed; only the DFlash2 drafter
+changes, so outputs remain the target's own and the gates are speed, TTFT and
+memory. Done in this branch: (1) opt-in request traces (`SHARAR_TRACES`,
+per-request `trace: false`, `sharar traces`); (2) SpecForge studied and used as
+the numerical reference rather than as the pipeline, since its Qwen3.8 recipe
+needs patched SGLang capture servers; (3) `sharar train`: DFlash2 training in
+Sharar against the NVFP4 target with held-out tokens-per-round evaluation and
+`best/` promotion, checked against the serving proposer, the publisher's
+reference model and SpecForge's objective by `bench/dflash2_reference.py`.
+Next: (4) in-place draft reload in the engine and the 18-family collapse check;
+(5) user-started training with an engine-busy pause and multi-machine
+transport. Training never runs beside serving on the same GPU.
+
 ## Next work, in order
 
 1. **Restore CI availability.** GitHub refused the previous run before any job

@@ -35,6 +35,7 @@ budget separately. Automatic KV capacity depends on available memory.
 | Accepted state | Reconstruction | `SHARAR_VERIFY_STATE` |
 | Image | `sharar:qwen38-27b` | `SHARAR_IMAGE` |
 | Container / port | `sharar-qwen38` / 30001 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
+| Request traces | Off | `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 8192) |
 
 The optimized measured profile uses FP8 DFlash2 with 15 proposals:
 
@@ -52,6 +53,26 @@ launch the intended configuration. Updating Git or rebuilding a tag does not
 replace a running container. Validate the chosen image/profile before a
 production rollout; source benchmark qualification is separate from deployment.
 No production rollout is part of the September 11 maintenance cleanup.
+
+## Request traces
+
+Setting `SHARAR_TRACES` mounts that host directory at `/traces` and starts the
+server with `--traces`. Each finished request is then appended as one JSON line:
+prompt and output token IDs, sampling parameters, the cached prefix length and,
+for speculative requests, every verification round with the accepted count, the
+draft's proposals and the target's argmax rows (sampled rows keep only the
+correction token). DFlash2 requests also store the projected context features
+the drafter attended to, copied from the proposer's ring as they are written:
+the last 2,048 prompt positions and every committed output position, 10 KiB
+per row as raw BF16 under `features/<trace file>/<id>.bin`. No text or client
+metadata is stored. Files rotate at 64 MiB and the oldest trace file is
+deleted together with its feature directory above the cap (default 8 GiB).
+Writing happens on a separate thread and never blocks the engine: feature rows
+go through pinned staging chunks with CUDA events; a full queue or disk counts
+as `dropped` in `/get_server_info` under `traces`. Any request can opt out with
+`"trace": false`. `sharar traces --dir DIR` summarizes a directory. The traces
+are the input for [draft adaptation](draft-adaptation.md); they are the user's
+prompts and stay on this machine unless the user copies them elsewhere.
 
 Inspect `docker logs sharar-qwen38`, `/health` and `/get_server_info` for status.
 The latter reports draft precision, scheduler settings, KV/state geometry and

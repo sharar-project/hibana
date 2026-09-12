@@ -78,6 +78,7 @@ class Executor:
         self.graphs: DecodeGraphs | None = None
         self.use_graphs = False
         self.spec = None
+        self.feature_request = None  # explicit target features when no proposer is installed (draft training)
         if log:
             log(f"  pools: {num_pages} KV pages ({self.kv_pool.bytes / 2**30:.2f} GiB), {num_slots} state slots ({num_slots * self.state_pool.bytes_per_slot / 2**30:.2f} GiB)")
         if spec_config is not None:
@@ -91,6 +92,13 @@ class Executor:
     @cache.setter
     def cache(self, value):
         self.state.cache = value
+
+    def _features_wanted(self):
+        """Target features to compute: the proposer's, or an explicit request
+        (draft training extracts features without a proposer)."""
+        if self.spec is not None:
+            return self.spec.proposer.requirements.features
+        return getattr(self, "feature_request", None)  # test doubles bypass __init__
 
     def enable_spec(self, k: int = 3, log=None, *, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16') -> None:
         """Select the adapter and its numerical profile once, before capture."""
@@ -303,8 +311,8 @@ class Executor:
         for _, pos, slot in self.state.prefill_checkpoints([(req, self._checkpoint_positions(start, end, n))]):
             ctx.checkpoint_positions.append(pos)
             ctx.checkpoint_slots.append(slot)
-        if self.spec is not None:
-            ctx.feature_request = self.spec.proposer.requirements.features
+        if self._features_wanted() is not None:
+            ctx.feature_request = self._features_wanted()
         return PrefillBatch([(req, t)], ids, ctx, started)
 
     def _prepare_prefill(self, chunks: list[tuple[Request, int]]) -> PrefillBatch:
@@ -353,8 +361,8 @@ class Executor:
             )
             ctx.paged_prefill_wrapper = self._paged_prefill
         ids = upload(ids_list, torch.int64, d)
-        if self.spec is not None:
-            ctx.feature_request = self.spec.proposer.requirements.features
+        if self._features_wanted() is not None:
+            ctx.feature_request = self._features_wanted()
         return PrefillBatch(list(chunks), ids, ctx, started)
 
     def _finish_prefill(self, batch: PrefillBatch, out) -> int | None:
@@ -498,8 +506,8 @@ class Executor:
                 slots=upload([r.slot for r in reqs], torch.int32, self.device),
                 out_pages=new_pages, decode_wrapper=self._decode_wrapper, batch_size=len(reqs),
             )
-            if self.spec is not None:
-                ctx.feature_request = self.spec.proposer.requirements.features
+            if self._features_wanted() is not None:
+                ctx.feature_request = self._features_wanted()
             out = self.model.forward(tokens, ctx)
             logits = self.model.logits(out["norm"])
         next_tokens = self.sampler.sample(logits, [r.params for r in reqs], [r.generator for r in reqs]).tolist()

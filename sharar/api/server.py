@@ -361,7 +361,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     return app
 
 
-def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16') -> None:
+def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
+          traces: str | None = None, traces_max_mib: int = 1024) -> None:
     from sharar.memory.spec_budget import SpecConfig
 
     if not spec and draft_precision != 'bf16':
@@ -385,6 +386,13 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=ex.profile.max_queued,
                           chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget)
     sched = Scheduler(ex, cfg)
+    sink = None
+    if traces:
+        from sharar.engine.traces import TraceSink
+
+        sink = TraceSink(traces, max_bytes=traces_max_mib * 2**20)
+        sched.sink = sink
+        log(f"recording opt-in request traces under {sink.directory} (cap {traces_max_mib} MiB)")
     describe = {
         "engine": "sharar",
         "model_path": MODEL_ID,
@@ -403,6 +411,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "gdn_backend": "triton",
         "kv_cache_dtype": "float8_e4m3fn",
         "mamba_ssm_dtype": "float32",
+        "traces": {"dir": str(sink.directory), "max_mib": traces_max_mib} if sink is not None else None,
     }
     engine = EngineLoop(sched)
     engine.start()
@@ -413,3 +422,5 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     finally:
         engine.drain(timeout=5)
         engine.thread.join(timeout=6)
+        if sink is not None:
+            sink.close()
