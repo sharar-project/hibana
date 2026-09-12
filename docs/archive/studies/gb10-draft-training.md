@@ -215,6 +215,35 @@ about 750 of the 1,000 requests and the oldest block was pruned during block
 32 GiB. On a real workload the pool of distinct requests is far larger than
 150, so the stage-2 effect should be weaker, but the fixes above stand.
 
+## Candidate masking to the user's vocabulary
+
+Restricting the drafter's candidates to the vocabulary the workload uses was
+proposed as a way to gain acceptance through specialization. The vocabulary
+from the loop's 715 training requests has 15,667 tokens and covers 99.4% of
+held-out output tokens. Masking the head's logits to it before the top-16 in
+the replay evaluation lowered tokens per round in every cell: pinned draft
+4.859 to 4.807 on the test set and 5.471 to 5.397 on the held-out slice;
+stage-4 draft 5.130 to 5.078 on the test set. Rare tokens do not crowd the
+candidate set, so the mask only removes the 0.6% of positions where an
+out-of-vocabulary token was right. Not adopted; the remaining benefits would
+be draft-head compute (a 3% ceiling) and a 15% cheaper training step.
+
+## Draft precision for trained checkpoints
+
+The same stage-4 checkpoint and the pinned draft on the test set at batch one:
+
+| Draft | Precision | Tokens/s | Tokens per round |
+|---|---|---:|---:|
+| pinned | BF16 | 42.48 | 4.822 |
+| pinned | FP8 | 45.38 | 4.884 |
+| stage 4 | BF16 | 44.53 | 5.086 |
+| stage 4 | FP8 | 46.48 | 4.988 |
+
+FP8 remains the faster serving profile for trained drafts, but it keeps less
+of their acceptance gain (5.086 to 4.988) than the replay evaluation shows in
+BF16; the FP8 per-tensor scales are computed at load from weights the profile
+was validated on. Recalibrating them for trained weights is a small follow-up.
+
 ## Serving path with tracing off
 
 Before merging, the standard benchmark (`sharar benchmark --workload all`,

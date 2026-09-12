@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Updated 2026-09-12. This is the current work order. Historical milestones and
+Updated 2026-09-13. This is the current work order. Historical milestones and
 their original gates are in the [archived roadmap](docs/archive/roadmap-2026-09-11.md).
 
 ## Supported baseline
@@ -40,8 +40,12 @@ and [draft adaptation](docs/draft-adaptation.md).
 2. **Harden promotion.** Use a smaller learning rate when continuing from an
    adapted draft, and add a fixed general regression set to the promotion
    gate so a draft that fits the newest traffic cannot regress everything else.
-   Then use the recorded on-policy rows (the target's argmax after a rejected
-   proposal) as additional supervision.
+   Record the target's top-16 logits per verified row and distill over the
+   candidate lattice (soft labels), then use the recorded on-policy rows as
+   additional supervision; train a parameter subset or adapters rather than
+   all 1.7B parameters. Candidate masking to the user's vocabulary was
+   measured and rejected (it loses about 1% acceptance); FP8 scales for
+   trained drafts deserve recalibration.
 3. **Reload without a restart.** An engine command that copies a promoted
    draft into the serving weights between rounds, including the FP8
    conversion, so `train stop` does not relaunch the container.
