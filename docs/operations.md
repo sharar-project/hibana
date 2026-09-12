@@ -36,7 +36,7 @@ budget separately. Automatic KV capacity depends on available memory.
 | Image | `sharar:qwen38-27b` | `SHARAR_IMAGE` |
 | Container / port | `sharar-qwen38` / 30001 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
 | Request traces | Off | `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 8192) |
-| Draft checkpoint | Pinned publisher draft | `SHARAR_DRAFT=/dir` (a `sharar train` checkpoint: `config.json` + `model.safetensors`) |
+| Draft checkpoint | `draft-runs/current` when promoted, else pinned | `SHARAR_DRAFT=/dir` or `SHARAR_DRAFT=pinned` |
 
 The optimized measured profile uses FP8 DFlash2 with 15 proposals:
 
@@ -55,16 +55,25 @@ replace a running container. Validate the chosen image/profile before a
 production rollout; source benchmark qualification is separate from deployment.
 No production rollout is part of the September 11 maintenance cleanup.
 
-## Trained draft checkpoints
+## Training the drafter on this machine's traffic
 
-`SHARAR_DRAFT=/path/to/run/best` mounts a checkpoint saved by `sharar train`
-read-only at `/draft` and starts the server with `--draft /draft`. The
-directory must hold the draft `config.json` and `model.safetensors` in the
-publisher's layout; the launcher and `sharar serve` refuse anything else
-before loading the target. FP8 draft precision applies to the trained
-weights the same way. `/get_server_info` reports the directory under
-`speculative.draft`. A trained draft changes only speed: verification is
-unchanged, so outputs are still the target's own.
+Serve with `SHARAR_TRACES=/dir` so requests are recorded (below). When the
+machine is free, `./run-sharar-train.sh start` stops serving and trains the
+DFlash2 drafter on every recorded request, newest tenth held out, continuing
+from the current promoted checkpoint if there is one. It evaluates held-out
+tokens per round every 100 steps and after `./run-sharar-train.sh stop`, and
+promotes a checkpoint only when that improves; promotion updates
+`$SHARAR_RESULTS/draft-runs/current`. `stop` waits for the final evaluation
+(up to 20 minutes) and relaunches serving. `status` shows both. The serving
+launcher follows `draft-runs/current` whenever it resolves to a checkpoint;
+`SHARAR_DRAFT=pinned` forces the publisher draft and `SHARAR_DRAFT=/dir`
+serves any checkpoint saved by `sharar train`. `/get_server_info` reports the
+directory under `speculative.draft`. Training and serving never share the
+GPU: the trainer refuses to start beside a running server on this machine
+(`--keep-serving` is for a second machine with a synced trace directory).
+Trained weights change speed only; the target's own shape-dependent numerics
+can still change greedy continuations when round boundaries move, as they do
+for any change of verification width or batch shape.
 
 ## Request traces
 

@@ -6,7 +6,9 @@ uses as ground truth (``tests/test_utils/test_dflash_losses.py``:
 """
 
 import json
+import os
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -237,3 +239,108 @@ def test_samples_carry_recorded_context_features(tmp_path):
     t = cut[0]
     assert t.length == 30 and t.features["skip"] == 51 - 30 and t.features["start"] == 0
     assert t.context("cpu")[0, 0].item() == 21 and summary(cut)["with_features"] == 2
+
+
+def test_promote_link_is_relative_and_atomic(tmp_path):
+    from sharar.train.trainer import promote_link, resolve_draft
+    runs = tmp_path / "runs"
+    best = runs / "run-1" / "best"
+    best.mkdir(parents=True)
+    link = runs / "current"
+    assert resolve_draft(link) is None
+    promote_link(link, best)
+    assert link.is_symlink() and os.readlink(link) == "run-1/best"
+    assert resolve_draft(link) is None  # not a complete checkpoint yet
+    (best / "config.json").write_text("{}")
+    (best / "model.safetensors").write_bytes(b"")
+    assert resolve_draft(link) == best.resolve()
+    other = runs / "run-2" / "best"
+    other.mkdir(parents=True)
+    promote_link(link, other)
+    assert os.readlink(link) == "run-2/best" and not (runs / ".current.tmp").exists()
+
+
+def test_run_trains_until_stopped_then_evaluates_and_promotes(tmp_path, monkeypatch):
+    from sharar.train import trainer as module
+    _write_traces(tmp_path / "traces", 6, features=True)
+    events = []
+
+    class FakeTrainer:
+        def __init__(self, cfg, draft, log):
+            self.cfg, self.output = cfg, Path(cfg.output)
+            self.output.mkdir(parents=True, exist_ok=True)
+            self.history = self.output / "log.jsonl"
+            self.scores = iter([1.0, 1.5, 1.2, 2.0])
+
+        def _record(self, row):
+            events.append(row)
+
+        def evaluate(self, samples):
+            return {"tokens_per_round": next(self.scores), "rounds": 10, "emitted": 0, "accepted": 0, "seconds": 0.0, "per_sample": []}
+
+        def step(self, batch, step):
+            if step == 5:
+                stop.requested = True  # as SIGTERM would
+            return {"step": step, "loss": 1.0, "grad_norm": 1.0, "lr": 0.0, "labels": 1.0, "seconds": 0.0, "ce": 1.0,
+                    "accuracy": 0.5, "selector_ce": 0.0, "selector_accuracy": 0.0, "selector_coverage": 0.0}
+
+    saved = []
+
+    class FakeDraft:
+        def parameter_count(self):
+            return 7
+
+        def save(self, directory, snapshot, manifest):
+            directory = Path(directory)
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "config.json").write_text("{}")
+            (directory / "model.safetensors").write_bytes(b"")
+            saved.append(directory.name)
+
+    monkeypatch.setattr(module, "Trainer", FakeTrainer)
+    stop = module.StopRequest()
+    runs = tmp_path / "runs"
+    cfg = module.TrainConfig(traces=str(tmp_path / "traces"), output=str(runs / "run-1"), steps=0, eval_every=2,
+                             promote_to=str(runs / "current"), sequences_per_step=1, holdout_fraction=0.2, eval_sequences=1)
+    result = module.run(cfg, FakeDraft(), tmp_path, log=lambda *a: None, stop=stop)
+    assert result == {"base": 1.0, "best": {"step": 5, "tokens_per_round": 2.0}, "steps": 5, "stopped": True}
+    evals = [e["step"] for e in events if e["event"] == "eval"]
+    assert evals == [0, 2, 4, 5]  # periodic evaluations plus the final one after the stop
+    assert saved == ["step-000002", "best", "step-000004", "step-000005", "best"]  # 1.2 at step 4 was not promoted
+    assert os.readlink(runs / "current") == "run-1/best"
+    manifest = json.loads((runs / "run-1" / "manifest.json").read_text())
+    assert manifest["best"]["step"] == 5 and events[-1] == {"event": "end", "step": 5, "stopped": True, "best": {"step": 5, "tokens_per_round": 2.0}}
+
+
+def test_stop_request_installs_and_restores_handlers():
+    import signal
+
+    from sharar.train.trainer import StopRequest
+    previous = signal.getsignal(signal.SIGTERM)
+    stop = StopRequest()
+    stop.install()
+    assert not stop.requested
+    signal.raise_signal(signal.SIGTERM)
+    assert stop.requested
+    stop.restore()
+    assert signal.getsignal(signal.SIGTERM) is previous
+
+
+def test_train_cli_continues_from_a_current_link(monkeypatch, tmp_path):
+    from sharar import cli
+    from sharar.train.trainer import promote_link
+    runs = tmp_path / "runs"
+    best = runs / "run-0" / "best"
+    best.mkdir(parents=True)
+    (best / "config.json").write_text("{}")
+    (best / "model.safetensors").write_bytes(b"")
+    promote_link(runs / "current", best)
+    seen = {}
+    monkeypatch.setattr("sharar.train.trainer.load_runtime", lambda cfg, log=print: (seen.__setitem__("cfg", cfg) or cfg, "pinned"))
+    monkeypatch.setattr("sharar.train.trainer.run", lambda cfg, draft, pinned, stop=None: {"ok": True})
+    assert cli.main(["train", "--traces", str(tmp_path), "--output", str(runs / "run-1"), "--steps", "0",
+                     "--promote-to", str(runs / "current"), "--continue-from", str(runs / "current")]) == 0
+    cfg = seen["cfg"]
+    assert cfg.draft == str(best.resolve()) and cfg.steps == 0 and cfg.promote_to == str(runs / "current")
+    assert cli.main(["train", "--traces", str(tmp_path), "--output", str(runs / "run-2"), "--continue-from", str(runs / "missing")]) == 0
+    assert seen["cfg"].draft is None

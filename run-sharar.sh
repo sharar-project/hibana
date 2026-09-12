@@ -15,7 +15,7 @@ PROPOSER="${SHARAR_PROPOSER:-dflash2}"
 VERIFY_STATE="${SHARAR_VERIFY_STATE:-reconstruct}"
 DRAFT_PRECISION="${SHARAR_DRAFT_PRECISION:-bf16}" # fp8 selects the measured optimized parallel draft
 TRACES_DIR="${SHARAR_TRACES:-}"                    # opt-in request traces for draft adaptation (unset = off)
-DRAFT_DIR="${SHARAR_DRAFT:-}"                      # trained draft checkpoint directory (unset = pinned publisher draft)
+DRAFT_DIR="${SHARAR_DRAFT:-}"                      # trained draft checkpoint directory; unset follows draft-runs/current; 'pinned' forces the publisher draft
 TRACES_MAX_MIB="${SHARAR_TRACES_MAX_MIB:-8192}"
 DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"   # incoai/Qwen3.8-27B-DFlash2
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
@@ -24,6 +24,13 @@ STATE_DIR="$RESULTS_DIR/runtime-state"   # JIT caches; persists across restarts
 GUARD_UNIT="sharar-memory-guard.service"
 GUARD_MIN_AVAILABLE_KIB="${SHARAR_MIN_AVAILABLE_KIB:-16777216}"
 MODEL_REVISION="319f741cce68d7914884900c138a1fbb70a42f30"
+RUNS_DIR="${SHARAR_DRAFT_RUNS:-$RESULTS_DIR/draft-runs}"
+if [[ "$DRAFT_DIR" == pinned ]]; then
+  DRAFT_DIR=""
+elif [[ -z "$DRAFT_DIR" && -L "$RUNS_DIR/current" ]]; then
+  current="$(readlink -f "$RUNS_DIR/current")"
+  [[ -f "$current/config.json" && -f "$current/model.safetensors" ]] && DRAFT_DIR="$current"
+fi
 DRIVER_LIB_DIR="/usr/lib/aarch64-linux-gnu"
 
 fail() { echo "sharar launch failed: $*" >&2; exit 1; }

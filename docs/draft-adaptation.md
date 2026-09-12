@@ -95,12 +95,14 @@ beyond what serving already does.
    benchmarked on held-out prompts from that same workload. Still to do: an
    in-place reload between rounds, and a collapse check on the general
    workload set. The base checkpoint is never overwritten.
-5. **User-run training and transport.** The user starts and stops the trainer
-   explicitly. It pauses whenever the engine reports active requests, so a
-   forgotten session cannot halve serving throughput. Serving picks up the
-   best promoted checkpoint when it resumes. A second machine runs the same
-   trainer on a synced trace directory and pushes checkpoints back; shipping
-   traces off the box is a separate explicit opt-in.
+5. **User-run training.** `./run-sharar-train.sh start` stops serving and
+   trains until `stop`, continuing from the current promoted checkpoint and
+   holding out the newest tenth of all traces; `stop` runs a final held-out
+   evaluation, promotes on improvement by updating `draft-runs/current`, and
+   relaunches serving, which follows that link. The GPU is never shared:
+   start refuses while serving runs. A second machine can run the same
+   trainer on a synced trace directory (`--keep-serving`) and the link can be
+   copied back; shipping traces off the box is a separate explicit opt-in.
 
 ## Evidence
 
@@ -112,10 +114,15 @@ steps, monotone at every evaluation).
 ## Running the trainer
 
 ```bash
-# inside the runtime container, GPU idle, traces mounted read-only
-python3 -m sharar train --traces /traces --output /results/draft-runs/2026-09-11 \
-    --steps 200 --sequences-per-step 2 --anchors 128 --eval-every 50
+SHARAR_TRACES=/home/me/sharar-traces ./run-sharar.sh     # serve and record
+./run-sharar-train.sh start                              # when the machine is free
+./run-sharar-train.sh status
+./run-sharar-train.sh stop                               # final evaluation, promote, serve again
 ```
+
+The launcher wraps `sharar train --steps 0 --promote-to /runs/current
+--continue-from /runs/current`; the command can also be run by hand inside the
+runtime container with explicit `--steps`, `--draft` and hyperparameters.
 
 `--draft DIR` continues from a saved checkpoint; `--train-context` also
 trains the feature and K/V projections (a reload then invalidates retained

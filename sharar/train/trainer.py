@@ -13,7 +13,9 @@ loaded: only its embeddings and vocabulary head are needed.
 from __future__ import annotations
 
 import json
+import os
 import random
+import signal
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -29,7 +31,8 @@ class TrainConfig:
     traces: str
     output: str
     draft: str | None = None  # checkpoint directory to start from; default: the pinned publisher draft
-    steps: int = 200
+    steps: int = 200  # 0: until stopped (SIGTERM/SIGINT), then a final evaluation
+    promote_to: str | None = None  # symlink updated to point at the promoted checkpoint (relative target)
     sequences_per_step: int = 2
     anchors_per_sequence: int = 128
     anchor_chunk: int = 32
@@ -49,6 +52,45 @@ class TrainConfig:
     seed: int = 0
     log_every: int = 1
     tags: dict = field(default_factory=dict)
+
+
+def promote_link(link: Path, target: Path) -> None:
+    """Atomically point ``link`` at ``target`` with a relative path, so the
+    link resolves both inside the container and on the host mount."""
+    link = Path(link)
+    relative = os.path.relpath(target, link.parent)
+    temporary = link.parent / f".{link.name}.tmp"
+    if temporary.is_symlink() or temporary.exists():
+        temporary.unlink()
+    temporary.symlink_to(relative)
+    temporary.replace(link)
+
+
+def resolve_draft(link: Path | None) -> Path | None:
+    """The checkpoint a ``current`` link points at, if it is a complete checkpoint."""
+    if link is None or not Path(link).is_symlink():
+        return None
+    target = Path(link).resolve()
+    return target if (target / "config.json").is_file() and (target / "model.safetensors").is_file() else None
+
+
+class StopRequest:
+    """Set by SIGTERM/SIGINT; the loop finishes the current step, evaluates once more and exits."""
+
+    def __init__(self):
+        self.requested = False
+        self._previous = {}
+
+    def install(self) -> None:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            self._previous[sig] = signal.signal(sig, self._handle)
+
+    def _handle(self, signum, frame) -> None:
+        self.requested = True
+
+    def restore(self) -> None:
+        for sig, handler in self._previous.items():
+            signal.signal(sig, handler)
 
 
 def learning_rate(cfg: TrainConfig, step: int) -> float:
@@ -157,7 +199,7 @@ class Trainer:
                 "per_sample": per_sample}
 
 
-def run(cfg: TrainConfig, draft, snapshot: Path, log=print) -> dict:
+def run(cfg: TrainConfig, draft, snapshot: Path, log=print, stop: StopRequest | None = None) -> dict:
     samples = load_samples(cfg.traces, max_length=cfg.max_length, greedy_only=cfg.greedy_only, require_features=True)
     if len(samples) < 2:
         raise ValueError(f"need at least two traced requests with recorded features, found {len(samples)}")
@@ -172,12 +214,38 @@ def run(cfg: TrainConfig, draft, snapshot: Path, log=print) -> dict:
     log(f"holdout tokens/round before training: {base['tokens_per_round']:.3f} ({base['rounds']} rounds, {base['seconds']:.0f}s)")
     trainer._record({"event": "eval", "step": 0, **{k: v for k, v in base.items() if k != "per_sample"}})
     best = {"step": 0, "tokens_per_round": base["tokens_per_round"]}
-    (trainer.output / "manifest.json").write_text(json.dumps({**manifest, "base_eval": base, "best": best}, indent=2))
+
+    def write_manifest():
+        (trainer.output / "manifest.json").write_text(json.dumps({**manifest, "base_eval": base, "best": best}, indent=2))
+
+    def evaluate_and_promote(step: int) -> dict:
+        nonlocal best
+        result = trainer.evaluate(holdout_eval)
+        log(f"holdout tokens/round at step {step}: {result['tokens_per_round']:.3f} (best {best['tokens_per_round']:.3f} at step {best['step']})")
+        trainer._record({"event": "eval", "step": step, **{k: v for k, v in result.items() if k != "per_sample"}})
+        draft.save(trainer.output / f"step-{step:06d}", snapshot, {**manifest, "step": step, "eval": result})
+        if result["tokens_per_round"] > best["tokens_per_round"]:
+            best = {"step": step, "tokens_per_round": result["tokens_per_round"]}
+            draft.save(trainer.output / "best", snapshot, {**manifest, "step": step, "eval": result, "promoted": True})
+            log(f"promoted step {step} to best/")
+            if cfg.promote_to:
+                promote_link(Path(cfg.promote_to), trainer.output / "best")
+                log(f"{cfg.promote_to} -> {trainer.output / 'best'}")
+        write_manifest()
+        return result
+
+    write_manifest()
     order = list(range(len(train_set)))
     rng = random.Random(cfg.seed)
     rng.shuffle(order)
     cursor = 0
-    for step in range(1, cfg.steps + 1):
+    step = 0
+    stopped = False
+    while cfg.steps <= 0 or step < cfg.steps:
+        if stop is not None and stop.requested:
+            stopped = True
+            break
+        step += 1
         batch = []
         for _ in range(cfg.sequences_per_step):
             if cursor >= len(order):
@@ -191,16 +259,13 @@ def run(cfg: TrainConfig, draft, snapshot: Path, log=print) -> dict:
             log(f"step {step}: loss {row['loss']:.4f} ce {row['ce']:.4f} acc {row['accuracy']:.3f} "
                 f"sel_acc {row['selector_accuracy']:.3f} grad {row['grad_norm']:.2f} {row['seconds']:.1f}s")
         if step % cfg.eval_every == 0 or step == cfg.steps:
-            result = trainer.evaluate(holdout_eval)
-            log(f"holdout tokens/round at step {step}: {result['tokens_per_round']:.3f} (best {best['tokens_per_round']:.3f} at step {best['step']})")
-            trainer._record({"event": "eval", "step": step, **{k: v for k, v in result.items() if k != "per_sample"}})
-            draft.save(trainer.output / f"step-{step:06d}", snapshot, {**manifest, "step": step, "eval": result})
-            if result["tokens_per_round"] > best["tokens_per_round"]:
-                best = {"step": step, "tokens_per_round": result["tokens_per_round"]}
-                draft.save(trainer.output / "best", snapshot, {**manifest, "step": step, "eval": result, "promoted": True})
-                log(f"promoted step {step} to best/")
-            (trainer.output / "manifest.json").write_text(json.dumps({**manifest, "base_eval": base, "best": best}, indent=2))
-    return {"base": base["tokens_per_round"], "best": best}
+            evaluate_and_promote(step)
+    if stopped or (cfg.steps <= 0 and step > 0):
+        if step % cfg.eval_every != 0:
+            log(f"stop requested after step {step}: final evaluation")
+            evaluate_and_promote(step)
+    trainer._record({"event": "end", "step": step, "stopped": stopped, "best": best})
+    return {"base": base["tokens_per_round"], "best": best, "steps": step, "stopped": stopped}
 
 
 class HeadOnlyTarget:

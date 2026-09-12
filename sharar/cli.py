@@ -75,7 +75,9 @@ def main(argv: list[str] | None = None) -> int:
     p_train.add_argument("--traces", default=None, help="trace directory (default: SHARAR_TRACES)")
     p_train.add_argument("--output", required=True, help="run directory: log.jsonl, manifest.json, step-*/ and best/ checkpoints")
     p_train.add_argument("--draft", default=None, help="draft checkpoint directory to start from (default: the pinned publisher draft)")
-    p_train.add_argument("--steps", type=int, default=200)
+    p_train.add_argument("--steps", type=int, default=200, help="0 trains until stopped (SIGTERM), then evaluates once more")
+    p_train.add_argument("--promote-to", default=None, help="symlink kept pointing at the promoted checkpoint, e.g. /runs/current")
+    p_train.add_argument("--continue-from", default=None, help="a 'current' symlink: start from its checkpoint when it resolves (default: the pinned draft)")
     p_train.add_argument("--sequences-per-step", type=int, default=2)
     p_train.add_argument("--anchors", type=int, default=128, help="random anchors per sequence")
     p_train.add_argument("--anchor-chunk", type=int, default=32)
@@ -161,12 +163,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "train":
         import os
 
-        from sharar.train.trainer import TrainConfig, load_runtime, run
+        from pathlib import Path
+
+        from sharar.train.trainer import StopRequest, TrainConfig, load_runtime, resolve_draft, run
 
         traces = args.traces or os.environ.get("SHARAR_TRACES")
         if not traces:
             parser.error("give --traces or set SHARAR_TRACES")
-        cfg = TrainConfig(traces=traces, output=args.output, draft=args.draft, steps=args.steps,
+        draft = args.draft
+        if draft is None and args.continue_from:
+            resolved = resolve_draft(Path(args.continue_from))
+            draft = str(resolved) if resolved is not None else None
+            print(f"continuing from {draft}" if draft else f"{args.continue_from} does not resolve to a checkpoint; starting from the pinned draft", flush=True)
+        cfg = TrainConfig(traces=traces, output=args.output, draft=draft, steps=args.steps, promote_to=args.promote_to,
                           sequences_per_step=args.sequences_per_step, anchors_per_sequence=args.anchors,
                           anchor_chunk=args.anchor_chunk, block=args.block, gamma=args.gamma,
                           selector_alpha=args.selector_alpha, learning_rate=args.lr, warmup_steps=args.warmup_steps,
@@ -174,7 +183,12 @@ def main(argv: list[str] | None = None) -> int:
                           eval_every=args.eval_every, eval_sequences=args.eval_sequences, greedy_only=args.greedy_only,
                           train_context=args.train_context, seed=args.seed)
         draft, pinned = load_runtime(cfg)
-        result = run(cfg, draft, pinned)
+        stop = StopRequest()
+        stop.install()
+        try:
+            result = run(cfg, draft, pinned, stop=stop)
+        finally:
+            stop.restore()
         print(json.dumps(result))
         return 0
     if args.command == "traces":
