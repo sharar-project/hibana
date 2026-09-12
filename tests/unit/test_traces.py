@@ -258,7 +258,7 @@ def test_serve_cli_passes_trace_settings(monkeypatch, tmp_path):
     monkeypatch.delenv("SHARAR_TRACES")
     monkeypatch.delenv("SHARAR_TRACES_MAX_MIB")
     assert cli.main(["serve", "--spec", "0"]) == 0
-    assert calls[-1]["traces"] is None and calls[-1]["traces_max_mib"] == 8192
+    assert calls[-1]["traces"] is None and calls[-1]["traces_max_mib"] == 32768
     with pytest.raises(SystemExit):
         cli.main(["serve", "--spec", "0", "--traces", "/x", "--traces-max-mib", "0"])
 

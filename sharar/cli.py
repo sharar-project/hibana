@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--spec", type=int, default=None, help="draft tokens per round (0 = off; default: SHARAR_SPEC, else the proposer's validated depth)")
     p_serve.add_argument("--draft", default=None, help="trained DFlash2/DSpark checkpoint directory to serve instead of the pinned draft (default: SHARAR_DRAFT)")
     p_serve.add_argument("--traces", default=None, help="directory for opt-in request traces (default: SHARAR_TRACES; unset disables recording)")
-    p_serve.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: SHARAR_TRACES_MAX_MIB or 8192)")
+    p_serve.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: SHARAR_TRACES_MAX_MIB or 32768)")
     p_traces = sub.add_parser("traces", help="summarize a request trace directory")
     p_traces.add_argument("--dir", default=None, help="trace directory (default: SHARAR_TRACES)")
     p_train = sub.add_parser("train", help="fine-tune the DFlash2 drafter on request traces (GPU, nothing else served)")
@@ -152,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         draft_dir = args.draft or os.environ.get("SHARAR_DRAFT") or None
         if draft_dir and (not args.spec or args.proposer not in ('dspark', 'dflash2')):
             parser.error('--draft requires an enabled parallel draft')
-        max_mib = args.traces_max_mib if args.traces_max_mib is not None else int(os.environ.get("SHARAR_TRACES_MAX_MIB") or 8192)
+        max_mib = args.traces_max_mib if args.traces_max_mib is not None else int(os.environ.get("SHARAR_TRACES_MAX_MIB") or 32768)
         if max_mib < 1:
             parser.error("--traces-max-mib must be a positive integer")
         from sharar.api.server import serve

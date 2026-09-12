@@ -3,8 +3,8 @@
  "summary_document": "gb10-draft-training.md",
  "full_evidence": {
   "path": "reviews/2026-09-11-draft-traces/results.json",
-  "sha256": "8da103b51dd9489d61cc14fa744eb0ee8852bcfcbd46a92e63ffcf099867fd88",
-  "bytes": 16803
+  "sha256": "c8b07f430ac0d651f6e164e98fc3f67b38fbb42f4e656361373563e0800357a0",
+  "bytes": 24719
  },
  "summary": {
   "branch": "feat/draft-traces",
@@ -88,6 +88,53 @@
     "median_first_divergence_token": 132,
     "outputs_identical_across_runs_per_draft": "24 of 24"
    }
+  },
+  "loop_1000": {
+   "test_set_tps": [
+    45.38,
+    46.16,
+    44.76,
+    45.68,
+    46.44
+   ],
+   "test_set_tokens_per_round": [
+    4.884,
+    4.954,
+    4.798,
+    4.901,
+    4.988
+   ],
+   "serving_accept_rate_by_block": [
+    0.2745,
+    0.285,
+    0.3024,
+    0.3149
+   ],
+   "serving_tps_by_block": [
+    129.2,
+    135.9,
+    140.7,
+    145.2
+   ],
+   "trainer_slice_before_best": [
+    [
+     5.368,
+     5.736
+    ],
+    [
+     5.065,
+     5.069
+    ],
+    [
+     5.718,
+     5.835
+    ],
+    [
+     5.838,
+     5.853
+    ]
+   ],
+   "note": "unseen-pair test set not monotone on a ~150-pair pool; serving throughput +12.4%"
   }
  }
 }

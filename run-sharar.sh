@@ -16,7 +16,7 @@ VERIFY_STATE="${SHARAR_VERIFY_STATE:-reconstruct}"
 DRAFT_PRECISION="${SHARAR_DRAFT_PRECISION:-bf16}" # fp8 selects the measured optimized parallel draft
 TRACES_DIR="${SHARAR_TRACES:-}"                    # opt-in request traces for draft adaptation (unset = off)
 DRAFT_DIR="${SHARAR_DRAFT:-}"                      # trained draft checkpoint directory; unset follows draft-runs/current; 'pinned' forces the publisher draft
-TRACES_MAX_MIB="${SHARAR_TRACES_MAX_MIB:-8192}"
+TRACES_MAX_MIB="${SHARAR_TRACES_MAX_MIB:-32768}"
 DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"   # incoai/Qwen3.8-27B-DFlash2
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"

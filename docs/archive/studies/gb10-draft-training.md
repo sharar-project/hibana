@@ -167,6 +167,54 @@ defect, and it is the same property that makes recomputed features unusable.
 A drafter therefore changes outputs only through the target's own
 shape sensitivity; fixing that sensitivity is a target-numerics task.
 
+## A 1,000-request serve-train loop
+
+The product loop was then exercised end to end on the same repository-coding
+workload: a fixed test set of 30 requests generated once with the pinned draft
+(one opted out, 29 replayed), whose file-and-task pairs were excluded from all
+later traffic; then four rounds of serve 250 requests with the current draft
+(concurrency four, traces recorded), train 150 steps continuing from the
+current draft (learning rate 1e-4, evaluation every 75 steps, newest 20K
+output tokens held out, promotion on improvement), and measure the promoted
+draft on the test set at batch size one.
+
+Acceptance on the traffic being served, from the serving counters of each
+block, and the trainer's own held-out slice:
+
+| Block | Draft serving it | Proposals accepted | Throughput at concurrency four | Trainer slice before -> best |
+|---:|---|---:|---:|---:|
+| 1 | untrained | 27.5% | 129.2 tok/s | 5.368 -> 5.736 |
+| 2 | stage 1 | 28.5% | 135.9 tok/s | 5.065 -> 5.069 |
+| 3 | stage 2 | 30.2% | 140.7 tok/s | 5.718 -> 5.835 |
+| 4 | stage 3 | 31.5% | 145.2 tok/s | 5.838 -> 5.853 (step 75) |
+
+The fixed test set, unseen pairs, batch size one, 19,868 output tokens per
+measurement:
+
+| Stage | Trained on | Tokens/s | Tokens per round | Proposals accepted |
+|---:|---:|---:|---:|---:|
+| 0 (incoai) | 0 | 45.38 | 4.884 | 26.1% |
+| 1 | 250 | 46.16 | 4.954 | 26.6% |
+| 2 | 500 | 44.76 | 4.798 | 25.5% |
+| 3 | 750 | 45.68 | 4.901 | 26.2% |
+| 4 | 1,000 | 46.44 | 4.988 | 26.9% |
+
+Serving throughput on the workload rose 12.4% over the loop and acceptance
+monotonically. The unseen-pair test set ends 2.3% faster than the untrained
+draft but is not monotone: stage 2 fell below the baseline while the
+trainer's slice stayed flat, because the repository offers only about 150
+distinct file-and-task pairs after the exclusion, so from block 2 on every
+block re-teaches pairs the draft already fits, at an unchanged learning rate;
+the held-out slice shares those pairs and cannot see the damage to unseen
+ones. Two consequences for the trainer: continuation from an adapted draft
+should use a smaller learning rate, and promotion should also require no
+regression on a fixed general set. A second observation: the recorded
+features are 10 KiB per attended position, so the 16 GiB cap used here held
+about 750 of the 1,000 requests and the oldest block was pruned during block
+4; the trace cap sets the training window, and the default was raised to
+32 GiB. On a real workload the pool of distinct requests is far larger than
+150, so the stage-2 effect should be weaker, but the fixes above stand.
+
 ## Serving path with tracing off
 
 Before merging, the standard benchmark (`sharar benchmark --workload all`,

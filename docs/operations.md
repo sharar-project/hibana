@@ -35,7 +35,7 @@ budget separately. Automatic KV capacity depends on available memory.
 | Accepted state | Reconstruction | `SHARAR_VERIFY_STATE` |
 | Image | `sharar:qwen38-27b` | `SHARAR_IMAGE` |
 | Container / port | `sharar-qwen38` / 30001 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
-| Request traces | Off | `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 8192) |
+| Request traces | Off | `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
 | Draft checkpoint | `draft-runs/current` when promoted, else pinned | `SHARAR_DRAFT=/dir` or `SHARAR_DRAFT=pinned` |
 
 The optimized measured profile uses FP8 DFlash2 with 15 proposals:
@@ -103,7 +103,7 @@ the drafter attended to, copied from the proposer's ring as they are written:
 the last 2,048 prompt positions and every committed output position, 10 KiB
 per row as raw BF16 under `features/<trace file>/<id>.bin`. No text or client
 metadata is stored. Files rotate at 64 MiB and the oldest trace file is
-deleted together with its feature directory above the cap (default 8 GiB).
+deleted together with its feature directory above the cap (default 32 GiB, about 1,300 requests of 2K-token traffic; the cap is the training window).
 Writing happens on a separate thread and never blocks the engine: feature rows
 go through pinned staging chunks with CUDA events; a full queue or disk counts
 as `dropped` in `/get_server_info` under `traces`. Any request can opt out with
