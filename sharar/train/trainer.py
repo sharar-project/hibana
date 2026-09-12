@@ -44,9 +44,8 @@ class TrainConfig:
     weight_decay: float = 0.0
     max_grad_norm: float = 1.0
     max_length: int = 8192
-    holdout_fraction: float = 0.1
+    holdout_tokens: int = 20_000  # newest requests held out until they cover this many output tokens
     eval_every: int = 50
-    eval_sequences: int = 32
     greedy_only: bool = False
     train_context: bool = False
     seed: int = 0
@@ -203,8 +202,8 @@ def run(cfg: TrainConfig, draft, snapshot: Path, log=print, stop: StopRequest | 
     samples = load_samples(cfg.traces, max_length=cfg.max_length, greedy_only=cfg.greedy_only, require_features=True)
     if len(samples) < 2:
         raise ValueError(f"need at least two traced requests with recorded features, found {len(samples)}")
-    train_set, holdout = split(samples, cfg.holdout_fraction)
-    holdout_eval = holdout[-cfg.eval_sequences:]
+    train_set, holdout = split(samples, cfg.holdout_tokens)
+    holdout_eval = holdout
     trainer = Trainer(cfg, draft, log)
     manifest = {"config": asdict(cfg), "train": summary(train_set), "holdout": summary(holdout),
                 "trainable_parameters": draft.parameter_count(), "base": cfg.draft or "pinned"}

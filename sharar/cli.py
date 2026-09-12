@@ -88,9 +88,8 @@ def main(argv: list[str] | None = None) -> int:
     p_train.add_argument("--warmup-steps", type=int, default=10)
     p_train.add_argument("--max-grad-norm", type=float, default=1.0)
     p_train.add_argument("--max-length", type=int, default=8192)
-    p_train.add_argument("--holdout", type=float, default=0.1, help="newest fraction of traces held out")
+    p_train.add_argument("--holdout-tokens", type=int, default=20000, help="newest requests held out until they cover this many output tokens")
     p_train.add_argument("--eval-every", type=int, default=50)
-    p_train.add_argument("--eval-sequences", type=int, default=32)
     p_train.add_argument("--greedy-only", action="store_true")
     p_train.add_argument("--train-context", action="store_true", help=argparse.SUPPRESS)  # needs raw target features; not recorded
     p_train.add_argument("--seed", type=int, default=0)
@@ -179,8 +178,8 @@ def main(argv: list[str] | None = None) -> int:
                           sequences_per_step=args.sequences_per_step, anchors_per_sequence=args.anchors,
                           anchor_chunk=args.anchor_chunk, block=args.block, gamma=args.gamma,
                           selector_alpha=args.selector_alpha, learning_rate=args.lr, warmup_steps=args.warmup_steps,
-                          max_grad_norm=args.max_grad_norm, max_length=args.max_length, holdout_fraction=args.holdout,
-                          eval_every=args.eval_every, eval_sequences=args.eval_sequences, greedy_only=args.greedy_only,
+                          max_grad_norm=args.max_grad_norm, max_length=args.max_length, holdout_tokens=args.holdout_tokens,
+                          eval_every=args.eval_every, greedy_only=args.greedy_only,
                           train_context=args.train_context, seed=args.seed)
         draft, pinned = load_runtime(cfg)
         stop = StopRequest()

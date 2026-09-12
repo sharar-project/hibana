@@ -5,8 +5,8 @@
 #
 # start: stops the serving container (the GPU has no spare bandwidth), then trains
 #        until `stop`, from the current promoted checkpoint when one exists, on every
-#        trace in SHARAR_TRACES with the newest tenth held out. Promotions update
-#        $SHARAR_RESULTS/draft-runs/current.
+#        trace in SHARAR_TRACES with the newest requests held out (about 20K output
+#        tokens). Promotions update $SHARAR_RESULTS/draft-runs/current.
 # stop:  asks the trainer to finish (final held-out evaluation, promotion), then
 #        relaunches serving, which follows draft-runs/current by default.
 set -Eeuo pipefail
@@ -24,7 +24,7 @@ RUNS_DIR="${SHARAR_DRAFT_RUNS:-$RESULTS_DIR/draft-runs}"
 STATE_DIR="$RESULTS_DIR/runtime-state"
 STOP_GRACE_S="${SHARAR_TRAIN_STOP_GRACE_S:-1200}"   # a final held-out evaluation takes a few minutes
 EVAL_EVERY="${SHARAR_TRAIN_EVAL_EVERY:-100}"
-EVAL_SEQUENCES="${SHARAR_TRAIN_EVAL_SEQUENCES:-24}"
+HOLDOUT_TOKENS="${SHARAR_TRAIN_HOLDOUT_TOKENS:-20000}"
 LR="${SHARAR_TRAIN_LR:-1e-4}"
 DRIVER_LIB_DIR="/usr/lib/aarch64-linux-gnu"
 
@@ -69,7 +69,7 @@ case "${1:-}" in
     for gpucomp in "$DRIVER_LIB_DIR"/libnvidia-gpucomp.so.*; do [[ -f "$gpucomp" ]] && args+=(--mount "type=bind,src=$gpucomp,dst=$gpucomp,readonly"); done
     cid="$("${args[@]}" "$IMAGE" train --traces /traces --output "/runs/$run" --steps 0 \
             --promote-to /runs/current --continue-from /runs/current \
-            --eval-every "$EVAL_EVERY" --eval-sequences "$EVAL_SEQUENCES" --lr "$LR")"
+            --eval-every "$EVAL_EVERY" --holdout-tokens "$HOLDOUT_TOKENS" --lr "$LR")"
     echo "Started $CONTAINER ($cid): run $RUNS_DIR/$run; logs: docker logs -f $CONTAINER; stop with: $0 stop"
     ;;
   stop)

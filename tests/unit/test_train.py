@@ -217,9 +217,13 @@ def test_samples_load_split_and_truncate(tmp_path):
     samples = load_samples(tmp_path, max_length=30, min_output=16)
     assert [s.request_id for s in samples] == [2, 3, 4, 5, 6]  # the four-token output is dropped
     assert all(s.length == 30 and s.prompt_len == 1 and s.output_len == 29 for s in samples)  # tails are kept
-    train, holdout = split(samples, 0.2)
-    assert [s.request_id for s in holdout] == [6] and len(train) == 4
-    assert split(samples, 0.0)[1] == [samples[-1]]  # at least one held out
+    train, holdout = split(samples, holdout_tokens=30, min_requests=1)
+    assert [s.request_id for s in holdout] == [6] and len(train) == 4  # one request already covers 30 tokens
+    train, holdout = split(samples, holdout_tokens=50, min_requests=1, max_fraction=0.5)
+    assert [s.request_id for s in holdout] == [5, 6] and len(train) == 3
+    assert len(split(samples, holdout_tokens=10**6, min_requests=1, max_fraction=0.5)[1]) == 2  # capped by the fraction
+    assert len(split(samples, holdout_tokens=0, min_requests=3, max_fraction=0.9)[1]) == 3  # floor of requests
+    assert split(samples[:1], 100)[1] == [] and split([], 100) == ([], [])
     assert summary(samples)["output_tokens"] == 5 * 29
     full = load_samples(tmp_path, max_length=8192)
     assert full[0].prompt_len == 11 and full[0].output_len == 40 and full[0].features is None
@@ -301,7 +305,7 @@ def test_run_trains_until_stopped_then_evaluates_and_promotes(tmp_path, monkeypa
     stop = module.StopRequest()
     runs = tmp_path / "runs"
     cfg = module.TrainConfig(traces=str(tmp_path / "traces"), output=str(runs / "run-1"), steps=0, eval_every=2,
-                             promote_to=str(runs / "current"), sequences_per_step=1, holdout_fraction=0.2, eval_sequences=1)
+                             promote_to=str(runs / "current"), sequences_per_step=1, holdout_tokens=40)
     result = module.run(cfg, FakeDraft(), tmp_path, log=lambda *a: None, stop=stop)
     assert result == {"base": 1.0, "best": {"step": 5, "tokens_per_round": 2.0}, "steps": 5, "stopped": True}
     evals = [e["step"] for e in events if e["event"] == "eval"]

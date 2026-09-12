@@ -45,7 +45,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:30001")
     ap.add_argument("--traces", required=True)
-    ap.add_argument("--holdout", type=float, default=0.1)
+    ap.add_argument("--holdout-tokens", type=int, default=20000, help="the trainer's held-out budget")
     ap.add_argument("--count", type=int, default=24, help="newest held-out requests to replay")
     ap.add_argument("--max-length", type=int, default=8192)
     ap.add_argument("--timeout", type=float, default=900)
@@ -54,7 +54,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     from sharar.train.data import load_samples, split
     samples = load_samples(args.traces, max_length=args.max_length, require_features=True)
-    _, holdout = split(samples, args.holdout)
+    _, holdout = split(samples, args.holdout_tokens)
     holdout = holdout[-args.count:]
     info = server_info(args.url)
     rows = []

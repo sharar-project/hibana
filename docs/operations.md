@@ -57,14 +57,29 @@ No production rollout is part of the September 11 maintenance cleanup.
 
 ## Training the drafter on this machine's traffic
 
-Serve with `SHARAR_TRACES=/dir` so requests are recorded (below). When the
-machine is free, `./run-sharar-train.sh start` stops serving and trains the
-DFlash2 drafter on every recorded request, newest tenth held out, continuing
-from the current promoted checkpoint if there is one. It evaluates held-out
-tokens per round every 100 steps and after `./run-sharar-train.sh stop`, and
-promotes a checkpoint only when that improves; promotion updates
-`$SHARAR_RESULTS/draft-runs/current`. `stop` waits for the final evaluation
-(up to 20 minutes) and relaunches serving. `status` shows both. The serving
+`./sharar-ctl` is the host-side command for the whole loop (standard-library
+Python; it drives the launchers below):
+
+```bash
+./sharar-ctl serve          # serve and record traces under $SHARAR_RESULTS/traces
+./sharar-ctl status         # serving, training, current draft, trace directory
+./sharar-ctl train          # stop serving, train the drafter until told to stop
+./sharar-ctl train stop     # final held-out evaluation, promote if better, serve again
+./sharar-ctl draft list     # runs, their held-out gains, the current draft
+./sharar-ctl traces         # what has been recorded
+```
+
+`serve --no-traces`, `serve --pinned`, `serve --draft DIR`, `serve --fp8`,
+`draft use RUN` and `draft pinned` cover the exceptions. Underneath,
+`run-sharar-train.sh start` stops serving and trains the DFlash2 drafter on
+every recorded request, continuing from the current promoted checkpoint if
+there is one, with the newest requests held out until they cover about 20K
+output tokens (at least four requests, at most a fifth of them). Tokens per
+round is measured over rounds, so the held-out budget is output tokens rather
+than a share of requests. It evaluates held-out tokens per round every 100
+steps and after `stop`, and promotes a checkpoint only when that improves;
+promotion updates `$SHARAR_RESULTS/draft-runs/current`. `stop` waits for the
+final evaluation (up to 20 minutes) and relaunches serving. The serving
 launcher follows `draft-runs/current` whenever it resolves to a checkpoint;
 `SHARAR_DRAFT=pinned` forces the publisher draft and `SHARAR_DRAFT=/dir`
 serves any checkpoint saved by `sharar train`. `/get_server_info` reports the

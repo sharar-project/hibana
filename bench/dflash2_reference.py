@@ -258,7 +258,7 @@ def main() -> int:
 
     # ---- 5. training smoke on recorded traces, then a reload of the saved checkpoint ----
     cfg = TrainConfig(traces=args.traces, output=str(args.output / "smoke"), steps=args.smoke_steps, sequences_per_step=1,
-                      anchors_per_sequence=32, anchor_chunk=16, eval_every=args.smoke_steps, eval_sequences=2, max_length=4096)
+                      anchors_per_sequence=32, anchor_chunk=16, eval_every=args.smoke_steps, holdout_tokens=200, max_length=4096)
     trainer = Trainer(cfg, draft, log=print)
     before = trainer.evaluate(samples[:2])
     rows = []

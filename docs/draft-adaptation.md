@@ -92,12 +92,16 @@ beyond what serving already does.
    `sharar serve --draft DIR`) serves a promoted checkpoint, in BF16 or FP8.
    Held-out data is always the user's own newest traces, never a public
    corpus: the drafter is meant to overfit the workload, and its TPS is
-   benchmarked on held-out prompts from that same workload. Still to do: an
+   benchmarked on held-out prompts from that same workload. The held-out
+   budget is about 20K output tokens (roughly 4,000 rounds, enough to resolve
+   a 1% change in a few minutes of evaluation). Still to do: an
    in-place reload between rounds, and a collapse check on the general
    workload set. The base checkpoint is never overwritten.
-5. **User-run training.** `./run-sharar-train.sh start` stops serving and
-   trains until `stop`, continuing from the current promoted checkpoint and
-   holding out the newest tenth of all traces; `stop` runs a final held-out
+5. **User-run training.** `./sharar-ctl train` stops serving and trains
+   until `./sharar-ctl train stop`, continuing from the current promoted
+   checkpoint and holding out the newest requests until they cover about 20K
+   output tokens (tokens per round is measured over rounds, so the held-out
+   budget is tokens, not a share of requests); `stop` runs a final held-out
    evaluation, promotes on improvement by updating `draft-runs/current`, and
    relaunches serving, which follows that link. The GPU is never shared:
    start refuses while serving runs. A second machine can run the same
@@ -114,10 +118,10 @@ steps, monotone at every evaluation).
 ## Running the trainer
 
 ```bash
-SHARAR_TRACES=/home/me/sharar-traces ./run-sharar.sh     # serve and record
-./run-sharar-train.sh start                              # when the machine is free
-./run-sharar-train.sh status
-./run-sharar-train.sh stop                               # final evaluation, promote, serve again
+./sharar-ctl serve          # serve and record traces
+./sharar-ctl train          # when the machine is free
+./sharar-ctl status
+./sharar-ctl train stop     # final evaluation, promote, serve again
 ```
 
 The launcher wraps `sharar train --steps 0 --promote-to /runs/current

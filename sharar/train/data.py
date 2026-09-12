@@ -88,12 +88,30 @@ def load_samples(directory: str | Path, *, max_length: int = 8192, min_output: i
     return samples
 
 
-def split(samples: list[Sample], holdout_fraction: float = 0.1, min_holdout: int = 1) -> tuple[list[Sample], list[Sample]]:
-    """Newest requests are held out; the rest train."""
-    if not 0 <= holdout_fraction < 1:
-        raise ValueError("holdout_fraction must be in [0, 1)")
-    count = max(min_holdout, int(round(len(samples) * holdout_fraction))) if samples else 0
-    count = min(count, max(0, len(samples) - 1))
+HOLDOUT_TOKENS = 20_000  # about 4,000 verification rounds: resolves a 1% change in a few minutes
+
+
+def split(samples: list[Sample], holdout_tokens: int = HOLDOUT_TOKENS, min_requests: int = 4,
+          max_fraction: float = 0.2) -> tuple[list[Sample], list[Sample]]:
+    """Newest requests are held out until they cover ``holdout_tokens`` output tokens.
+
+    Tokens per round is measured over rounds, so the held-out budget is output
+    tokens, not a share of requests: at least ``min_requests`` requests, never
+    more than ``max_fraction`` of them (and always at least one), so small
+    corpora still train and large ones do not waste data.
+    """
+    if holdout_tokens < 0 or min_requests < 1 or not 0 < max_fraction < 1:
+        raise ValueError("invalid holdout budget")
+    if not samples:
+        return [], []
+    cap = max(1, int(len(samples) * max_fraction))
+    count, tokens = 0, 0
+    for sample in reversed(samples):
+        if count >= cap or (tokens >= holdout_tokens and count >= min_requests):
+            break
+        count += 1
+        tokens += sample.output_len
+    count = min(count, len(samples) - 1) if len(samples) > 1 else count
     return samples[:len(samples) - count], samples[len(samples) - count:]
 
 

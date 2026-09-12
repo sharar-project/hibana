@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Operate Sharar on this machine: serve, record traces, train the drafter, promote.
+
+Host-side and dependency-free (Python 3 standard library only); it drives the
+container launchers `run-sharar.sh` and `run-sharar-train.sh`.
+
+  sharar-ctl serve [--no-traces] [--pinned | --draft DIR] [--fp8]
+  sharar-ctl stop
+  sharar-ctl status
+  sharar-ctl train            # stop serving, train until `train stop`
+  sharar-ctl train stop       # final held-out evaluation, promote, serve again
+  sharar-ctl train status
+  sharar-ctl draft list | use RUN | pinned
+  sharar-ctl traces
+  sharar-ctl logs [--train] [-n LINES]
+
+Tracing is on by default under this command (traces land in
+$SHARAR_RESULTS/traces): the loop exists to train on your own traffic.
+Traces are your prompts; they stay on this machine.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+
+
+def load_env() -> dict:
+    env = dict(os.environ)
+    config = Path(env.get("SHARAR_CONFIG_FILE") or ROOT / "config" / "gb10.env")
+    if config.is_file():
+        for line in config.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                env.setdefault(key.strip(), value.strip().strip('"'))
+    if "SHARAR_RESULTS" not in env:
+        sys.exit("set SHARAR_RESULTS in config/gb10.env")
+    env.setdefault("SHARAR_TRACES", str(Path(env["SHARAR_RESULTS"]) / "traces"))
+    env.setdefault("SHARAR_DRAFT_RUNS", str(Path(env["SHARAR_RESULTS"]) / "draft-runs"))
+    return env
+
+
+def run(command: list[str], env: dict, dry: bool) -> int:
+    if dry:
+        print("+ " + " ".join(command))
+        return 0
+    return subprocess.call(command, env=env, cwd=ROOT)
+
+
+def container_running(name: str) -> bool:
+    out = subprocess.run(["docker", "inspect", "--format", "{{.State.Running}}", name], capture_output=True, text=True)
+    return out.returncode == 0 and out.stdout.strip() == "true"
+
+
+def server_info(port: str) -> dict | None:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/get_server_info", timeout=3) as r:
+            return json.loads(r.read())
+    except Exception:  # noqa: BLE001 - not serving
+        return None
+
+
+def current_draft(env: dict) -> Path | None:
+    link = Path(env["SHARAR_DRAFT_RUNS"]) / "current"
+    if not link.is_symlink():
+        return None
+    target = link.resolve()
+    return target if (target / "config.json").is_file() else None
+
+
+def cmd_serve(args, env, dry) -> int:
+    env = dict(env)
+    if args.no_traces:
+        env.pop("SHARAR_TRACES", None)
+    if args.pinned:
+        env["SHARAR_DRAFT"] = "pinned"
+    elif args.draft:
+        env["SHARAR_DRAFT"] = str(Path(args.draft).resolve())
+    if args.fp8:
+        env["SHARAR_DRAFT_PRECISION"] = "fp8"
+    return run([str(ROOT / "run-sharar.sh")], env, dry)
+
+
+def cmd_stop(args, env, dry) -> int:
+    return run([str(ROOT / "run-sharar.sh"), "--stop"], env, dry)
+
+
+def cmd_status(args, env, dry) -> int:
+    port = env.get("SHARAR_PORT", "30001")
+    serving = container_running(env.get("SHARAR_CONTAINER", "sharar-qwen38"))
+    info = server_info(port) if serving else None
+    if info:
+        spec = info.get("speculative") or {}
+        traces = info.get("scheduler", {}).get("traces") or info.get("traces")
+        print(f"serving: up on port {port}, draft {spec.get('draft')}, precision {spec.get('draft_precision')}")
+        stats = info.get("spec_stats") or {}
+        if stats.get("rounds"):
+            print(f"  tokens per round so far {stats['tokens_per_round']:.3f} over {stats['rounds']} rounds")
+        if traces:
+            print(f"  traces: {traces['records']} recorded, {traces['bytes'] / 2**20:.0f} MiB, {traces['dropped']} dropped")
+        else:
+            print("  traces: off")
+    else:
+        print("serving: " + ("starting" if serving else "down"))
+    training = container_running(env.get("SHARAR_TRAIN_CONTAINER", "sharar-train"))
+    print("training: " + ("running (sharar-ctl train stop to finish)" if training else "not running"))
+    draft = current_draft(env)
+    if draft:
+        manifest = draft / "manifest.json"
+        note = ""
+        if manifest.is_file():
+            m = json.loads(manifest.read_text())
+            note = f" (step {m.get('step')}, held-out tokens/round {m.get('eval', {}).get('tokens_per_round', 0):.3f})"
+        print(f"current draft: {draft}{note}")
+    else:
+        print("current draft: pinned publisher draft (nothing promoted yet)")
+    traces_dir = Path(env["SHARAR_TRACES"])
+    files = list(traces_dir.glob("traces-*.jsonl")) if traces_dir.is_dir() else []
+    size = sum(f.stat().st_size for f in traces_dir.rglob("*") if f.is_file()) if traces_dir.is_dir() else 0
+    print(f"trace directory: {traces_dir} ({len(files)} files, {size / 2**20:.0f} MiB)")
+    return 0
+
+
+def cmd_train(args, env, dry) -> int:
+    script = str(ROOT / "run-sharar-train.sh")
+    if args.action == "start":
+        return run([script, "start"], env, dry)
+    if args.action == "stop":
+        return run([script, "stop"] + (["--no-serve"] if args.no_serve else []), env, dry)
+    return run([script, "status"], env, dry)
+
+
+def cmd_draft(args, env, dry) -> int:
+    runs = Path(env["SHARAR_DRAFT_RUNS"])
+    link = runs / "current"
+    if args.action == "list":
+        current = current_draft(env)
+        for run_dir in sorted(runs.glob("run-*")):
+            manifest = run_dir / "manifest.json"
+            best = run_dir / "best"
+            if not manifest.is_file():
+                continue
+            m = json.loads(manifest.read_text())
+            mark = " *" if current and best.resolve() == current else ""
+            base = m.get("base_eval", {}).get("tokens_per_round")
+            b = m.get("best", {})
+            print(f"{run_dir.name}: base {base:.3f} -> best {b.get('tokens_per_round', 0):.3f} at step {b.get('step')}{mark}")
+        print("current: " + (str(current) if current else "pinned publisher draft"))
+        return 0
+    if args.action == "use":
+        target = runs / args.run / "best"
+        if not (target / "config.json").is_file():
+            sys.exit(f"{target} is not a promoted checkpoint")
+        if dry:
+            print(f"+ ln -sfn {os.path.relpath(target, runs)} {link}")
+            return 0
+        tmp = runs / ".current.tmp"
+        if tmp.is_symlink() or tmp.exists():
+            tmp.unlink()
+        tmp.symlink_to(os.path.relpath(target, runs))
+        tmp.replace(link)
+        print(f"current -> {target}; restart serving to use it (sharar-ctl stop; sharar-ctl serve)")
+        return 0
+    if args.action == "pinned":
+        if link.is_symlink() and not dry:
+            link.unlink()
+        print("current draft removed; serving uses the pinned publisher draft after a restart")
+        return 0
+    return 2
+
+
+def cmd_traces(args, env, dry) -> int:
+    image = env.get("SHARAR_IMAGE", "sharar:qwen38-27b")
+    traces = env["SHARAR_TRACES"]
+    return run(["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "--volume", f"{traces}:/traces:ro",
+                "--entrypoint", "python3", image, "-m", "sharar", "traces", "--dir", "/traces"], env, dry)
+
+
+def cmd_logs(args, env, dry) -> int:
+    name = env.get("SHARAR_TRAIN_CONTAINER", "sharar-train") if args.train else env.get("SHARAR_CONTAINER", "sharar-qwen38")
+    return run(["docker", "logs", "--tail", str(args.lines)] + (["--follow"] if args.follow else []) + [name], env, dry)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog="sharar-ctl", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--dry-run", action="store_true", help="print the commands instead of running them")
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("serve", help="start serving (records traces unless --no-traces; follows the promoted draft)")
+    p.add_argument("--no-traces", action="store_true")
+    p.add_argument("--pinned", action="store_true", help="serve the publisher draft even if one was promoted")
+    p.add_argument("--draft", default=None, help="serve this checkpoint directory")
+    p.add_argument("--fp8", action="store_true", help="FP8 draft precision (the optimized measured profile)")
+    sub.add_parser("stop", help="stop serving")
+    sub.add_parser("status", help="serving, training, current draft and trace directory")
+    p = sub.add_parser("train", help="stop serving and train the drafter on the recorded traces")
+    p.add_argument("action", nargs="?", choices=("start", "stop", "status"), default="start")
+    p.add_argument("--no-serve", action="store_true", help="with stop: do not relaunch serving")
+    p = sub.add_parser("draft", help="promoted checkpoints")
+    p.add_argument("action", choices=("list", "use", "pinned"))
+    p.add_argument("run", nargs="?", help="with use: a run directory name from `draft list`")
+    sub.add_parser("traces", help="summarize the recorded traces")
+    p = sub.add_parser("logs", help="container logs")
+    p.add_argument("--train", action="store_true")
+    p.add_argument("-n", "--lines", type=int, default=50)
+    p.add_argument("-f", "--follow", action="store_true")
+    args = parser.parse_args(argv)
+    env = load_env()
+    handler = {"serve": cmd_serve, "stop": cmd_stop, "status": cmd_status, "train": cmd_train,
+               "draft": cmd_draft, "traces": cmd_traces, "logs": cmd_logs}[args.command]
+    return handler(args, env, args.dry_run)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,75 @@
+"""The host-side control command composes the launcher calls without torch or docker."""
+import importlib.util
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture
+def ctl(monkeypatch, tmp_path):
+    from importlib.machinery import SourceFileLoader
+    spec = importlib.util.spec_from_file_location("sharar_ctl", ROOT / "sharar-ctl", loader=SourceFileLoader("sharar_ctl", str(ROOT / "sharar-ctl")))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    config = tmp_path / "gb10.env"
+    config.write_text(f"SHARAR_HF_CACHE=/cache\nSHARAR_RESULTS={tmp_path / 'results'}\n")
+    monkeypatch.setenv("SHARAR_CONFIG_FILE", str(config))
+    monkeypatch.setenv("SHARAR_RESULTS", str(tmp_path / "results"))  # the environment outranks the config file
+    for name in ("SHARAR_TRACES", "SHARAR_DRAFT", "SHARAR_DRAFT_RUNS", "SHARAR_DRAFT_PRECISION"):
+        monkeypatch.delenv(name, raising=False)
+    calls = []
+    monkeypatch.setattr(module, "run", lambda command, env, dry: calls.append((command, env)) or 0)
+    monkeypatch.setattr(module, "container_running", lambda name: False)
+    return module, calls, tmp_path / "results"
+
+
+def test_serve_records_traces_by_default_and_honors_overrides(ctl):
+    module, calls, results = ctl
+    assert module.main(["serve"]) == 0
+    command, env = calls[-1]
+    assert command == [str(ROOT / "run-sharar.sh")] and env["SHARAR_TRACES"] == str(results / "traces") and "SHARAR_DRAFT" not in env
+    assert module.main(["serve", "--no-traces", "--pinned", "--fp8"]) == 0
+    _, env = calls[-1]
+    assert "SHARAR_TRACES" not in env and env["SHARAR_DRAFT"] == "pinned" and env["SHARAR_DRAFT_PRECISION"] == "fp8"
+    assert module.main(["serve", "--draft", "/ckpt"]) == 0 and calls[-1][1]["SHARAR_DRAFT"] == "/ckpt"
+    assert module.main(["stop"]) == 0 and calls[-1][0] == [str(ROOT / "run-sharar.sh"), "--stop"]
+
+
+def test_train_commands_wrap_the_training_launcher(ctl):
+    module, calls, _ = ctl
+    script = str(ROOT / "run-sharar-train.sh")
+    assert module.main(["train"]) == 0 and calls[-1][0] == [script, "start"]
+    assert module.main(["train", "stop"]) == 0 and calls[-1][0] == [script, "stop"]
+    assert module.main(["train", "stop", "--no-serve"]) == 0 and calls[-1][0] == [script, "stop", "--no-serve"]
+    assert module.main(["train", "status"]) == 0 and calls[-1][0] == [script, "status"]
+
+
+def test_draft_list_use_and_pinned(ctl, capsys):
+    module, calls, results = ctl
+    runs = results / "draft-runs"
+    for name, best in (("run-1", 5.1), ("run-2", 5.4)):
+        d = runs / name / "best"
+        d.mkdir(parents=True)
+        (d / "config.json").write_text("{}")
+        (runs / name / "manifest.json").write_text(json.dumps({"base_eval": {"tokens_per_round": 5.0}, "best": {"step": 40, "tokens_per_round": best}}))
+    assert module.main(["draft", "use", "run-2"]) == 0
+    assert os.readlink(runs / "current") == "run-2/best"
+    assert module.main(["draft", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "run-2: base 5.000 -> best 5.400 at step 40 *" in out and "run-1: base 5.000 -> best 5.100" in out
+    with pytest.raises(SystemExit):
+        module.main(["draft", "use", "run-9"])
+    assert module.main(["draft", "pinned"]) == 0 and not (runs / "current").exists()
+    assert module.main(["status"]) == 0
+    assert "current draft: pinned publisher draft" in capsys.readouterr().out
+
+
+def test_dry_run_prints_instead_of_running(ctl, capsys, monkeypatch):
+    module, calls, _ = ctl
+    monkeypatch.setattr(module, "run", lambda command, env, dry: (print("+ " + " ".join(command)) or 0) if dry else 1)
+    assert module.main(["--dry-run", "traces"]) == 0
+    assert "sharar traces --dir /traces" in capsys.readouterr().out
