@@ -167,6 +167,26 @@ defect, and it is the same property that makes recomputed features unusable.
 A drafter therefore changes outputs only through the target's own
 shape sensitivity; fixing that sensitivity is a target-numerics task.
 
+## Serving path with tracing off
+
+Before merging, the standard benchmark (`sharar benchmark --workload all`,
+10K input / 1K output, greedy, seed 42, cold prefix cache, one warmup and
+three timed requests per workload, FP8 draft, tracing off) ran against an
+image built from `main` and an image built from this branch in separate
+windows with frozen inputs:
+
+| Workload | main end-to-end / decode TPS | branch end-to-end / decode TPS | Change | Output IDs |
+|---|---:|---:|---:|---|
+| code | 38.46 / 45.28 | 38.26 / 45.02 | -0.53% / -0.58% | match |
+| design | 30.72 / 34.94 | 30.66 / 34.85 | -0.18% / -0.25% | match |
+| reasoning | 46.90 / 57.54 | 46.90 / 57.51 | +0.01% / -0.06% | match |
+
+Outputs are identical and the differences sit inside the repeat spread of
+three timed requests. With tracing off the only hot-path change is the
+packed acceptance download, which now also carries the target argmax rows
+for sampled batches. Raw results: `bench-main/` and `bench-branch/` under the
+evidence root.
+
 ## Limits
 
 Serving is unchanged: no reload command, no promotion into the launcher, no
