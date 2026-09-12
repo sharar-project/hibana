@@ -77,6 +77,10 @@ if [[ "$PROPOSER" == dflash2 && "$SPEC" != 0 ]]; then
   $draft_ok || fail "pinned DFlash2 draft revision $DRAFT_REVISION is missing in $CACHE_DIR (set SHARAR_PROPOSER=mtp to serve without it)"
 fi
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image is missing: $IMAGE (build with docker/build.sh)"
+if [[ -n "$TRACES_DIR" || -n "$DRAFT_DIR" ]]; then
+  docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--traces" \
+    || fail "image $IMAGE predates trace recording and trained drafts; rebuild it with docker/build.sh"
+fi
 [[ "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "io.sharar.engine"}}')" == "sharar" ]] || fail "image is not a Sharar image"
 
 cat <<EOT

@@ -39,6 +39,9 @@ case "${1:-}" in
     running "$CONTAINER" && fail "training container $CONTAINER is already running (use: $0 status)"
     [[ -d "$TRACES_DIR" ]] || fail "trace directory $TRACES_DIR does not exist; serve with SHARAR_TRACES first"
     docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image is missing: $IMAGE (build with docker/build.sh)"
+    # The image must carry this checkout's trainer: an older image fails at argument parsing after serving was stopped.
+    docker run --rm --entrypoint python3 "$IMAGE" -m sharar train --help 2>/dev/null | grep -q -- "--holdout-tokens" \
+      || fail "image $IMAGE predates the current trainer; rebuild it with docker/build.sh"
     if running "$SERVING_CONTAINER"; then
       $keep_serving && fail "serving container $SERVING_CONTAINER is running; stop it or pass --keep-serving only on a second machine"
       "$SCRIPT_DIR/run-sharar.sh" --stop
