@@ -50,8 +50,12 @@ REPO_TASKS = [
 ]
 
 
-def repo_requests(root: Path, seed: int, count: int, min_chars: int = 400, max_chars: int = 24000) -> list[dict]:
-    """Coding prompts over a repository's source and documentation files."""
+def repo_requests(root: Path, seed: int, count: int, min_chars: int = 400, max_chars: int = 24000,
+                  exclude: set[str] | None = None) -> list[dict]:
+    """Coding prompts over a repository's source and documentation files.
+
+    ``exclude`` holds ``path#task`` keys (a test set's) that must not be drawn.
+    """
     files = sorted(p for p in root.rglob("*") if p.suffix in (".py", ".md", ".sh", ".json", ".toml")
                    and p.is_file() and not any(part.startswith(".") or part in ("__pycache__", "build", "archive") for part in p.parts)
                    and min_chars <= p.stat().st_size <= max_chars)
@@ -60,10 +64,25 @@ def repo_requests(root: Path, seed: int, count: int, min_chars: int = 400, max_c
     while len(out) < count and files:
         path = rng.choice(files)
         task = rng.choice(REPO_TASKS)
+        key = f"{path.relative_to(root)}#{REPO_TASKS.index(task)}"
+        if exclude and key in exclude:
+            continue
         fence = {"py": "python", "sh": "bash", "json": "json", "toml": "toml"}.get(path.suffix[1:], "")
         prompt = f"{task}\n\nFile `{path.relative_to(root)}`:\n\n```{fence}\n{path.read_text(errors='replace')}\n```"
-        out.append({"id": f"{path.relative_to(root)}#{REPO_TASKS.index(task)}#{len(out)}", "prompt": prompt})
+        out.append({"id": f"{key}#{len(out)}", "prompt": prompt})
     return out
+
+
+def excluded_keys(log: Path) -> set[str]:
+    """``path#task`` keys of the requests in another run's client log."""
+    keys = set()
+    for line in log.read_text().splitlines():
+        try:
+            rid = json.loads(line).get("id") or ""
+        except ValueError:
+            continue
+        keys.add("#".join(rid.split("#")[:2]))
+    return keys
 
 
 def send(url: str, item: dict, max_tokens: int, temperature: float, trace: bool, timeout: float) -> dict:
@@ -93,6 +112,7 @@ def main(argv=None) -> int:
     ap.add_argument("--url", default="http://127.0.0.1:30001")
     ap.add_argument("--dataset", type=Path, default=None, help="ShareGPT JSON")
     ap.add_argument("--repo", type=Path, default=None, help="repository to draw coding prompts from")
+    ap.add_argument("--exclude", type=Path, default=None, help="client log of a test set whose file/task pairs are never drawn")
     ap.add_argument("--count", type=int, default=200)
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--concurrency", type=int, default=4)
@@ -103,7 +123,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     if (args.dataset is None) == (args.repo is None):
         ap.error("give exactly one of --dataset or --repo")
-    items = conversations(args.dataset, args.seed, args.count) if args.dataset else repo_requests(args.repo, args.seed, args.count)
+    exclude = excluded_keys(args.exclude) if args.exclude else None
+    items = conversations(args.dataset, args.seed, args.count) if args.dataset else repo_requests(args.repo, args.seed, args.count, exclude=exclude)
     rng = random.Random(args.seed + 1)
     plan = []
     for i, item in enumerate(items):
