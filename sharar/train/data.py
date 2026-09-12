@@ -111,7 +111,7 @@ def split(samples: list[Sample], holdout_tokens: int = HOLDOUT_TOKENS, min_reque
             break
         count += 1
         tokens += sample.output_len
-    count = min(count, len(samples) - 1) if len(samples) > 1 else count
+    count = min(count, len(samples) - 1)  # a lone sample trains; run() needs two anyway
     return samples[:len(samples) - count], samples[len(samples) - count:]
 
 
