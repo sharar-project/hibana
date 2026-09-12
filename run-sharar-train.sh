@@ -57,19 +57,9 @@ case "${1:-}" in
       --volume "$STATE_DIR:/state"
       --volume "$TRACES_DIR:/traces:ro"
       --volume "$RUNS_DIR:/runs"
-      --env TRITON_LIBCUDA_PATH=$DRIVER_LIB_DIR
-      --mount type=bind,src=/usr/bin/nvidia-smi,dst=/usr/bin/nvidia-smi,readonly)
-    for dev in /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-modeset /dev/dri/renderD128; do
-      [[ -e "$dev" ]] || fail "missing device $dev"
-      args+=(--device "$dev")
-    done
-    add_lib() { local src; src="$(readlink -f "$DRIVER_LIB_DIR/$1")"; [[ -f "$src" ]] || fail "missing driver library $1"; args+=(--mount "type=bind,src=$src,dst=$DRIVER_LIB_DIR/$2,readonly"); }
-    add_lib libcuda.so.1 libcuda.so.1; add_lib libcuda.so.1 libcuda.so
-    add_lib libnvidia-ptxjitcompiler.so.1 libnvidia-ptxjitcompiler.so.1; add_lib libnvidia-ptxjitcompiler.so.1 libnvidia-ptxjitcompiler.so
-    add_lib libnvidia-ml.so.1 libnvidia-ml.so.1; add_lib libnvidia-ml.so.1 libnvidia-ml.so
-    add_lib libnvidia-nvvm.so.4 libnvidia-nvvm.so.4; add_lib libnvidia-nvvm.so.4 libnvidia-nvvm.so
-    add_lib libcudadebugger.so.1 libcudadebugger.so.1
-    for gpucomp in "$DRIVER_LIB_DIR"/libnvidia-gpucomp.so.*; do [[ -f "$gpucomp" ]] && args+=(--mount "type=bind,src=$gpucomp,dst=$gpucomp,readonly"); done
+      --env TRITON_LIBCUDA_PATH=$DRIVER_LIB_DIR)
+    source "$SCRIPT_DIR/tools/gb10-container.sh"
+    gb10_container_args
     cid="$("${args[@]}" "$IMAGE" train --traces /traces --output "/runs/$run" --steps 0 \
             --promote-to /runs/current --continue-from /runs/current \
             --eval-every "$EVAL_EVERY" --holdout-tokens "$HOLDOUT_TOKENS" --lr "$LR")"

@@ -17,8 +17,8 @@ Model facts live in `model/qwen38_config.py`, device constraints in
 performs snapshot/hardware validation. This split does not make the current
 model-specific attention or recurrent kernels generic.
 
-The shipped scope stays Qwen on GB10 until DFlash2 promotion. Additional target
-models and MoE implementation are deferred. Keep these existing seams clear;
+The shipped scope stays Qwen on GB10. Additional target models and MoE
+implementation are deferred. Keep these existing seams clear;
 extract another model contract only when a second real target requires it.
 Checkpoint construction lives in `proposers/factory.py`. `max_depth` and feature
 requirements let the executor validate an adapter without knowing its name.
@@ -206,7 +206,10 @@ reference path with scalar transfers, not a claimed optimized GPU sampler.
 ## Draft cache and memory
 
 Radix auxiliary metadata is keyed by target/draft revisions, feature schema,
-layout and window. Metadata follows the exact node endpoint and is never
+layout, window and the draft checkpoint source, so a trained checkpoint served
+with `--draft` never reuses another draft's payloads. Trained checkpoints keep
+the feature and K/V projections of the publisher's draft, so their projected
+rings are interchangeable; the identity is conservative anyway. Metadata follows the exact node endpoint and is never
 attached to another node's retained target pages during duplicate insertion.
 `prepare_release(req)` runs before target ownership transfers. `release(req)`
 releases the active draft ring slot. In a cached executor, parallel-draft

@@ -17,7 +17,7 @@ import os
 import random
 import signal
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
@@ -50,7 +50,6 @@ class TrainConfig:
     train_context: bool = False
     seed: int = 0
     log_every: int = 1
-    tags: dict = field(default_factory=dict)
 
 
 def promote_link(link: Path, target: Path) -> None:

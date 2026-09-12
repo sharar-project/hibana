@@ -1,9 +1,13 @@
-"""Target features for a whole sequence through the serving executor.
+"""Recompute target features for a sequence through the serving executor (diagnostics only).
 
-Teacher forcing: the sequence (prompt plus the target's recorded output) is
-admitted as a prompt and prefilled in chunks; the target's post-block residual
-streams at the draft's feature layers are captured from each forward. The
-executor is created without the prefix cache so nothing is retained.
+Teacher forcing: the sequence is admitted as a prompt and prefilled in chunks;
+the target's post-block residual streams at the draft's feature layers are
+captured from each forward. The executor is created without the prefix cache
+so nothing is retained. Training does not use this: the target's prefill
+numerics depend on sequence length and chunking, so recomputed features do not
+match what the drafter saw while serving; traces record those instead. The
+reference harness uses it to feed identical raw features to the publisher's
+model and the training forward.
 """
 
 from __future__ import annotations

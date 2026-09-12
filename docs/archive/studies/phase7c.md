@@ -180,7 +180,7 @@ allocations, not physical DRAM traffic counters. The first experiment should
 test storing compact verified recurrence inputs and reconstructing only the
 accepted recurrent state, preserving the current full-snapshot path as the
 reference. The detailed keep/remove decision is in
-[gb10-experiments.md](../../gb10-experiments.md).
+[gb10-experiments.md](../gb10-experiments-2026-09.md).
 
 ## Reproduction and evidence
 

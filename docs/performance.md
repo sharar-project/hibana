@@ -22,6 +22,17 @@ The [width study](archive/studies/gb10-bs4-engine.md) held draft generation at
 drafter or prove that k=15 wins every prompt. Smaller widths changed outputs
 and produced mixed BS1 results; no adaptive width policy was qualified.
 
+## Trained drafter
+
+Training the DFlash2 drafter on recorded traffic changes speed only. On a
+repository-coding proxy workload, 300 steps on 359 traced requests raised
+held-out tokens per round 5.367 to 5.739 and served throughput on held-out
+prompts 46.3 to 52.3 tokens/s (+12.9%, batch one, FP8 draft, three repeats);
+a 1,000-request serve-then-train loop raised acceptance while serving from
+27.5% to 31.5% of proposals and throughput 129 to 145 tokens/s at concurrency
+four. See the [draft training report](archive/studies/gb10-draft-training.md)
+and [draft adaptation](draft-adaptation.md).
+
 ## Integrated changes
 
 | Change and workload | Measured result | Qualification |
@@ -48,12 +59,22 @@ and selector/compression screens failed their stated gates. Their evidence is
 in the [decision archive](archive/README.md); their reported microbenchmark
 savings cannot be added into a throughput forecast.
 
-The fixed-weight 1.5× cold BS1/BS4 goal remains open. Outputs can change with
-floating-point execution shapes even when weights are unchanged. HTTP task
-trajectories and batch membership can differ; synthetic fixed-output traces
-do not establish generated-code quality or completed tool tasks. Consult
-[quality limitations](archive/studies/greedy-quality.md) and
-[the current engine work](gb10-engine-next.md).
+The 1.5× cold BS1/BS4 goal with a fixed target remains open.
+
+## Limits
+
+The target's arithmetic depends on execution shape even with unchanged
+weights: prefill features of a fixed prefix change with the total prefill
+length and chunking (up to 30% relative RMS in deep layers, about one prefix
+argmax in ten between a 26- and a 27-token prefill), and greedy continuations
+can therefore change with batch shape, verification width or the drafter,
+because those move the round boundaries a token is computed in. Each
+configuration is deterministic run to run. Evidence: the
+[draft training report](archive/studies/gb10-draft-training.md); the finding
+is on the roadmap as a target-numerics task. HTTP task trajectories and batch
+membership can differ; synthetic fixed-output traces do not establish
+generated-code quality or completed tool tasks
+([quality limitations](archive/studies/greedy-quality.md)).
 
 For new measurements, use [the benchmark guide](../bench/README.md). Keep cold
 requests, warm resumes, decode TPS and end-to-end TPS distinct.

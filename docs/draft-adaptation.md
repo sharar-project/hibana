@@ -1,154 +1,112 @@
 # Draft adaptation
 
-Started 2026-09-11. This guide records the design for training the DFlash2
-drafter on the requests a user actually sends, so that accepted tokens per
-verification round rise on that workload. It is the only track that changes
-weights; the pinned NVFP4 target, the shared vocabulary head, the verifier and
-every engine contract stay fixed. Verification is exact, so a drafter can only
-change speed, never the output. The gates are therefore tokens per round on
-held-out traces, TTFT, memory and no regression on the general workload set.
+Sharar can train its DFlash2 drafter on the requests a machine actually
+serves, so accepted tokens per verification round rise on that workload. Only
+the drafter changes: the target, its vocabulary head, the verifier and every
+engine contract stay fixed, so the gates are held-out tokens per round on the
+user's own newest traffic, served throughput, and memory. This page is the
+guide; the dated evidence is the [draft training report](archive/studies/gb10-draft-training.md).
 
-## Why the drafter
-
-The BS1 round is bandwidth-bound: about 107 ms, of which 84 ms is target
-matrix work reading 17.6 GB of weights, close to the streaming floor. Only
-fewer bytes or more accepted tokens per round change throughput. On the code
-workload the drafter emits 4.7 tokens per round while the correct future sits
-inside its own top-16 candidates 7.9 deep, so most first rejections are
-selection errors on this workload. Lossy target quantization cut the round by
-13% but lost more than that in acceptance because the drafter had been trained
-against the original target. Aligning the drafter to the served target and to
-the user's workload attacks both. Nothing here runs the drafter or target
-beyond what serving already does.
-
-## What is fixed and what is not
-
-| Component | Adaptation track |
-|---|---|
-| Target weights, KV format, recurrent state | Fixed |
-| Shared NVFP4 vocabulary head and embeddings | Fixed and frozen in training |
-| DFlash2 draft feature projection and per-layer K/V projections | Frozen in the first version so retained draft rings, cold-tier payloads and captured graphs stay valid across a reload |
-| DFlash2 noise-path weights: Q/O, MLP, convolution, selector | Trained |
-| Verification width k=15, accepted-state reconstruction | Fixed |
-
-## Steps
-
-1. **Request traces (this branch).** `SHARAR_TRACES=/dir` records every
-   finished request as one JSON line: prompt and output IDs, sampling
-   parameters, cached prefix length and each verification round's accepted
-   count, proposals and target argmax rows (sampled rows keep the correction
-   token only). The outputs are the target's own tokens, which is exactly the
-   target-generated training set the DFlash recipe uses. The per-round rows
-   are on-policy labels: the target's answer after the drafter's own mistake.
-   Recording is opt-in per server and per request (`"trace": false`), writes
-   on a separate thread, rotates files and prunes the oldest above a cap.
-   `sharar traces --dir DIR` summarizes a directory. DFlash2 requests also
-   record the projected context features the drafter attended to, copied from
-   the proposer's ring as they are written. They are the only usable training
-   input: the target's prefill numerics depend on sequence length and
-   chunking (for one 26-token prefix, deep-layer features move by up to 30%
-   and about one prefix argmax in ten flips between a 26- and a 27-token
-   prefill), so features recomputed later never match what the drafter saw.
-   Recording them also removes the target from training entirely.
-2. **SpecForge as the reference, not the pipeline.** SpecForge trains DFlash2
-   and warm-starts from the incoai checkpoint, but its Qwen3.8 recipe takes
-   target features only from patched SGLang capture servers (plus Mooncake
-   when disaggregated), which this box does not run and the repository must
-   not depend on. Its objective, selector scoring and mask construction are
-   used as the numerical reference for the in-repo trainer instead. The gain
-   question is answered by that trainer on held-out traces: if fine-tuning on
-   a user's traces shows no tokens-per-round gain, the workload is not
-   repetitive enough and the track stops.
-3. **Training in Sharar (`sharar train`).** The `sharar/train` package holds a
-   plain-torch differentiable copy of the serving draft forward over the same
-   weight dictionary (`draft.py`), the recorded-feature samples (`data.py`),
-   the block objective (`loss.py`) and the loop (`trainer.py`); `features.py`
-   recomputes raw features by target prefill for the reference harness only. The objective is SpecForge's DFlash2 objective:
-   cross-entropy at block positions 1..B-1 with weights `exp(-(k-1)/gamma)`
-   over response positions, the selector trained as a classifier over the
-   head's strict top-16 with the true predecessor, one shared denominator.
-   The CPU tests check it against the naive formulas SpecForge's own tests use;
-   `bench/dflash2_reference.py` checks the forward against the serving proposer
-   and the publisher's reference model and the objective and selector scoring
-   against SpecForge's code on the GPU. One deliberate difference: SpecForge's
-   sliding-window mask is causal inside the draft block, while the published
-   checkpoint declares `is_causal: false` and both the publisher's model and
-   Sharar's serving plan attend bidirectionally inside the block, so training
-   uses the served mask. Blocks are 16 wide, matching serving's k=15, not the
-   publisher's block of 8. The vocabulary head runs serving's exact NVFP4
-   kernel in the forward and the dequantized BF16 weight in the backward.
-   Trainable weights keep FP32 masters; the serving weights are updated in
-   place after every step. The trainer loads only the target's embeddings and
-   head (about 6 GB with the draft and optimizer state for 1.7B parameters),
-   so it fits beside a serving process in memory; it still runs in the runtime
-   container while nothing is served, because the GPU has no spare bandwidth.
-   The feature and K/V projections cannot be trained from recorded projected
-   features, which matches the reload-compatibility decision above.
-4. **Serving and promotion.** The trainer evaluates held-out tokens per
-   round by replaying serving's greedy proposals along the newest traces and
-   writes `best/` only when that beats the untrained drafter or the previous
-   best; every evaluated step is also kept under `step-*/` in the publisher's
-   checkpoint layout. `SHARAR_DRAFT=/run/best ./run-sharar.sh` (or
-   `sharar serve --draft DIR`) serves a promoted checkpoint, in BF16 or FP8.
-   Held-out data is always the user's own newest traces, never a public
-   corpus: the drafter is meant to overfit the workload, and its TPS is
-   benchmarked on held-out prompts from that same workload. The held-out
-   budget is about 20K output tokens (roughly 4,000 rounds, enough to resolve
-   a 1% change in a few minutes of evaluation). Still to do: an
-   in-place reload between rounds, and a collapse check on the general
-   workload set. The base checkpoint is never overwritten.
-5. **User-run training.** `./sharar-ctl train` stops serving and trains
-   until `./sharar-ctl train stop`, continuing from the current promoted
-   checkpoint and holding out the newest requests until they cover about 20K
-   output tokens (tokens per round is measured over rounds, so the held-out
-   budget is tokens, not a share of requests); `stop` runs a final held-out
-   evaluation, promotes on improvement by updating `draft-runs/current`, and
-   relaunches serving, which follows that link. The GPU is never shared:
-   start refuses while serving runs. A second machine can run the same
-   trainer on a synced trace directory (`--keep-serving`) and the link can be
-   copied back; shipping traces off the box is a separate explicit opt-in.
-
-## Evidence
-
-The [draft training report](archive/studies/gb10-draft-training.md) records
-the reference checks, the target prefill shape dependence, the ShareGPT corpus
-and the first fine-tune (held-out tokens per round 3.871 to 3.926 over 150
-steps, monotone at every evaluation).
-
-## Running the trainer
+## Using it
 
 ```bash
-./sharar-ctl serve          # serve and record traces
-./sharar-ctl train          # when the machine is free
-./sharar-ctl status
-./sharar-ctl train stop     # final evaluation, promote, serve again
+./sharar-ctl serve          # serve; every request is recorded under $SHARAR_RESULTS/traces
+./sharar-ctl train          # stops serving, trains until told to stop
+./sharar-ctl train stop     # final held-out evaluation, promotion, serving relaunches
+./sharar-ctl draft list     # runs, their held-out gains, the draft in use
 ```
 
-The launcher wraps `sharar train --steps 0 --promote-to /runs/current
---continue-from /runs/current`; the command can also be run by hand inside the
-runtime container with explicit `--steps`, `--draft` and hyperparameters.
+`train` continues from the current promoted checkpoint when there is one and
+trains on every recorded request, holding out the newest ones until they cover
+about 20K output tokens (at least four requests, at most a fifth of them). It
+evaluates every 100 steps and once more on `stop`, and promotes only when
+held-out tokens per round improve; promotion updates
+`$SHARAR_RESULTS/draft-runs/current`, which `serve` follows. `serve --pinned`
+forces the publisher's draft, `serve --draft DIR` any checkpoint, `draft use
+RUN` another run, `draft pinned` removes the link. Training never shares the
+GPU with serving: `train` refuses while a server runs on this machine, and
+`stop` waits for the final evaluation (up to 20 minutes by default) before
+relaunching. The trainer loads only the draft, the target's embeddings and its
+NVFP4 head, about 40 GiB in total.
 
-`--draft DIR` continues from a saved checkpoint; `--train-context` also
-trains the feature and K/V projections (a reload then invalidates retained
-draft rings). `log.jsonl` records every step and evaluation; `manifest.json`
-records data digests, the base evaluation and the best step.
-`bench/trace_corpus.py` replays ShareGPT prompts against a tracing server to
-build a corpus when no user traces exist yet.
+Underneath, `sharar-ctl` drives `run-sharar-train.sh`, which runs
+`sharar train --steps 0 --continue-from /runs/current --promote-to /runs/current`
+in the runtime container; that command also takes explicit `--steps`,
+`--draft`, `--lr`, `--holdout-tokens` and the other hyperparameters for
+controlled runs. Launcher variables: `SHARAR_TRAIN_LR` (1e-4),
+`SHARAR_TRAIN_HOLDOUT_TOKENS` (20000), `SHARAR_TRAIN_EVAL_EVERY` (100),
+`SHARAR_TRAIN_STOP_GRACE_S` (1200), `SHARAR_DRAFT_RUNS`.
 
-## Budget on one GB10
+## What is recorded
 
-| Item | Estimate |
-|---|---:|
-| Trainable draft parameters | about 1.8B |
-| Full AdamW state | about 30 GB; far less with adapters |
-| One 3K-token sample, 128 anchors | about 3e13 FLOPs, about 0.5 s |
-| A 30-minute, 100K-token session, one epoch | about 90 s plus 40 s of feature prefill |
+Each finished request is one JSON line: prompt and output token IDs, sampling
+parameters, the cached prefix length and every verification round (accepted
+count, the draft's proposals, the target's argmax rows). DFlash2 requests also
+store the projected context features the drafter attended to, copied from the
+proposer's ring as they are written: the last 2,048 prompt positions and every
+committed output position, 10 KiB per row. No text or client metadata is
+stored, nothing leaves the machine, and `"trace": false` opts a request out.
+The directory is capped (32 GiB by default, about 1,300 requests of 2K-token
+traffic); the oldest trace file and its features go first, so the cap is the
+training window. Operational details are in [operations](operations.md#request-traces).
 
-Memory, not compute, is the constraint beside a serving process. The trainer
-must respect the memory ledger and the external guard's 16 GiB floor.
+Features are recorded rather than recomputed because the target's prefill
+numerics depend on sequence length and chunking (see
+[performance](performance.md#limits)); features computed later never match
+what the drafter saw. Recording them also removes the target from training.
 
-## Not in scope
+## How training works
 
-Target training or quantization, changing k, tree verification and sampling
-kernels are separate tracks. Traces are never used for anything but drafter
-training and its evaluation.
+`sharar/train/` holds a plain-torch differentiable copy of the serving draft
+forward over the same weight dictionary (`draft.py`), the recorded-feature
+samples (`data.py`), the block objective (`loss.py`) and the loop
+(`trainer.py`). The objective is SpecForge's DFlash2 objective: cross-entropy
+at block positions 1..15 with weights `exp(-(k-1)/7)` over response positions,
+the selector trained as a classifier over the head's strict top-16 with the
+true predecessor, one shared denominator. Blocks are 16 wide, matching
+serving's k=15. The vocabulary head runs serving's exact NVFP4 kernel in the
+forward and the dequantized BF16 weight in the backward. Trainable weights
+keep FP32 masters and are written back into the serving weights in place
+after every step. Evaluation replays serving's greedy proposals from each
+round's anchor along the held-out outputs and counts accepted prefix plus one
+correction, which reproduces the acceptance the server records.
+
+Two deliberate choices:
+
+- The feature projection, per-layer K/V projections and K norms are frozen.
+  They define the cached draft context, so a promoted draft stays compatible
+  with retained rings, cold-tier payloads and captured graphs, and the traces
+  recorded under one draft remain valid training data for the next.
+- The attention block is bidirectional, as the published checkpoint declares
+  (`is_causal: false`) and as both the publisher's model and Sharar's serving
+  plan attend. SpecForge's sliding-window mask is causal inside the block; the
+  reference harness records that difference explicitly.
+
+`bench/dflash2_reference.py` checks the forward against the serving proposer
+and the publisher's reference model, and the objective and selector against
+SpecForge's code; `tests/gpu/test_train_forward.py` covers the head, the
+forward and one optimizer step on the real checkpoint. `bench/trace_corpus.py`
+generates proxy traffic (ShareGPT or coding requests over a repository) and
+`bench/draft_ab.py` replays a trace directory's held-out prompts at batch one
+to compare drafts on throughput and tokens per round.
+
+## Results and limits
+
+On a repository-coding proxy workload: a 300-step session raised held-out
+tokens per round 5.367 to 5.739 and served throughput 46.3 to 52.3 tokens/s
+(+12.9%); a 1,000-request serve-then-train loop raised acceptance while
+serving from 27.5% to 31.5% of proposals and throughput by 12.4%. On diverse
+ShareGPT traffic the gain was 1.4%. The proxy has only about 150 distinct
+prompts, and a second session over the same pool regressed an unseen-prompt
+test set while the trainer's own held-out slice stayed flat; the next changes
+are a smaller learning rate when continuing from an adapted draft and a fixed
+general regression set in the promotion gate.
+
+A different drafter can change greedy continuations through the target's
+own shape sensitivity: round boundaries move, the same token is computed in a
+different verification row, and a near-tie flips. Each draft is deterministic
+run to run; the sensitivity belongs to the target numerics track.
+
+Not in scope here: target training or quantization, changing k, tree
+verification and sampling kernels. Traces are used for drafter training and
+its evaluation only.

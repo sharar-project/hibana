@@ -110,9 +110,19 @@ at their original revisions. Raw tensors, outputs and traces stay outside Git.
 
 ## Draft adaptation tools
 
-`bench/trace_corpus.py` replays ShareGPT prompts over HTTP against a server
-started with `--traces` (greedy, thinking off, a sampled share, one opt-out
-request). `bench/dflash2_reference.py` runs inside the runtime container on an
-exclusive GPU and checks the training forward against the serving proposer and
-the publisher's reference model, and the objective against SpecForge, then runs
-a short training smoke; see [draft adaptation](../docs/draft-adaptation.md).
+- `bench/trace_corpus.py` generates traced traffic over HTTP against a server
+  started with traces on (`./sharar-ctl serve`): `--dataset` replays ShareGPT
+  first turns, `--repo DIR` sends coding requests over a repository's files;
+  `--exclude LOG` keeps a test set's file/task pairs out of the traffic.
+- `bench/draft_ab.py` replays a trace directory's newest held-out prompts (or
+  `--all`) at batch one against a running server and reports throughput,
+  tokens per round and output hashes, for A/B of drafts across windows.
+- `bench/dflash2_reference.py` runs inside the runtime container on an
+  exclusive GPU and checks the training forward against the serving proposer
+  and the publisher's reference model, and the objective against SpecForge,
+  then runs a short training smoke. `bench/support/target_features.py`
+  recomputes raw target features for it.
+- `bench/draft_validate.py` and `bench/draft_profile.py` are the earlier
+  publisher-oracle and profiling gates for external drafts.
+
+See [draft adaptation](../docs/draft-adaptation.md).

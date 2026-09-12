@@ -1,7 +1,7 @@
 # Next engine work for BS1 and BS4
 
 2026-09-10. Target and draft weights remain fixed; training and new numerical
-model profiles are deferred. The [BS4 study](archive/studies/gb10-bs4-engine.md) completes the
+model profiles are deferred. The [BS4 study](studies/gb10-bs4-engine.md) completes the
 previous width and scheduling task. **It does not establish a large cold
 throughput gain, and no BS4 serving change is promoted.**
 
@@ -9,7 +9,7 @@ Keep the current FP8 DFlash2 k=15 source baseline and the exact BS1 QKV/MLP
 integration. The restored production container still uses the BF16 draft;
 source validation and production deployment are separate.
 
-The subsequent [agent checkpoint-retention study](archive/studies/gb10-agent-retention.md)
+The subsequent [agent checkpoint-retention study](studies/gb10-agent-retention.md)
 implements coupled draft-feature and recurrent-slot lifetime with explicit
 memory accounting. It evaluates warm-session recovery separately from cold
 decode, and keeps its short-resume scheduler experiment in `bench/`.
@@ -47,7 +47,7 @@ independent HTTP loads, natural-stop checks and the limits of the measurements.
    scheduler waste. This is a measurement prerequisite, not a promised gain.
 2. **For warm agent sessions, build on checkpoint retention.** The subsequent
    study binds draft features to recurrent slots, including eviction, flush
-   and cold-tier restore. Follow [the cache plan](archive/studies/request-cache-policy.md)
+   and cold-tier restore. Follow [the cache plan](studies/request-cache-policy.md)
    for request modes, namespaces and expiring retention policy. The historical
    duplicate-save repair's 11.40 → 42.38 TPS rescue and recovery on a larger
    working set are related cache-fallback repairs, not additive cold gains.
@@ -65,7 +65,7 @@ available before the next round; a hindsight width oracle is not a policy.
 Further physical-shape changes can change numerical continuations even with
 identical weights, and need their own quality and throughput qualification.
 
-The [mixed-forward prototype](archive/studies/mixed-forward.md) already failed arrival TTFT
+The [mixed-forward prototype](studies/mixed-forward.md) already failed arrival TTFT
 and protected quality. Sharing projections is not a new untested shortcut;
 revisit it only with a concrete change addressing those failures. The earlier
 numerical FP8 replacement saves about 2 ms in the real matrix sequence and

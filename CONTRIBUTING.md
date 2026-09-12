@@ -1,9 +1,10 @@
 # Contributing to Sharar
 
 Sharar specializes in local inference on one GB10. Keep the current Qwen
-checkpoint and numerical profile fixed unless a change explicitly validates a
-new one. Favor a small implementation with explicit tensor ownership over a
-registry or framework. Read [the interfaces](docs/interfaces.md),
+target checkpoint, its vocabulary head and the numerical serving profile fixed
+unless a change explicitly validates a new one; the DFlash2 drafter is the one
+component trained on recorded traffic. Favor a small implementation with
+explicit tensor ownership over a registry or framework. Read [the interfaces](docs/interfaces.md),
 [the roadmap](roadmap.md), and [request ownership](docs/phase7a.md).
 
 ## Run checks
@@ -75,6 +76,21 @@ features through identity-keyed metadata without taking ownership of target
 pages. Both full snapshots and accepted-state reconstruction use the same
 StateManager commit and stop/continuation tests.
 
+## Change the drafter or its training
+
+Training lives in `sharar/train/`: the differentiable forward must stay a
+function of the serving weight dictionary (`draft.py`), the objective must
+match the reference formulas the CPU tests carry (`tests/unit/test_train.py`),
+and any change to the forward, objective, selector or mask must pass
+`bench/dflash2_reference.py` on the GPU (serving proposer, the publisher's
+model and SpecForge as references) and `tests/gpu/test_train_forward.py`.
+Judge a drafter on held-out tokens per round and served throughput on the
+user's own newest traffic (`bench/draft_ab.py`), never on a public corpus.
+Keep the feature and K/V projections frozen unless the cache identity, the
+cold-tier payloads and the trace format are versioned with it. Trace format
+changes bump `FORMAT_VERSION` in `engine/traces.py` and keep the reader
+accepting older records.
+
 ## Add a GB10 kernel
 
 Keep the semantic operation in `kernels/ops.py` or its existing model module;
@@ -106,7 +122,22 @@ needs its own pressure and graph-address tests.
 
 ## Propose a hardware optimization
 
-Use [the GB10 experiment plan](docs/gb10-experiments.md). Describe the mechanism,
+GB10 shares physical DRAM between CPU and GPU, but not every CUDA allocation
+is coherently CPU-accessible; a mapped-allocation experiment must establish
+its visibility and synchronization contract
+([porting notes](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/cuda.html)).
+Use host `MemAvailable` alongside allocator measurements, and benchmark with
+background CPU load as well as an idle machine
+([UMA guidance](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/optimization.html)).
+Use independent repeated runs with intervals appropriate to the sample count;
+do not infer tail latency from a handful of requests. Each experiment records
+the bottleneck evidence and predicted reduction; pinned source, image, model,
+draft, shapes, cache state, sampling and host load; an ablation against the
+same target work, separating kernel-cost comparisons from generation runs when
+changed continuations alter the amount of work; the affected tests, raw
+samples, emitted tokens and memory; and a keep/remove decision against the
+declared threshold, negative results included. The full historical plan is
+[archived](docs/archive/gb10-experiments-2026-09.md). Describe the mechanism,
 what traffic or synchronization it removes, the control experiment, and the
 condition that would make us abandon it. Keep tuning and algorithm/architecture
 experiments distinguishable. Report source/image/compiler identities, all raw

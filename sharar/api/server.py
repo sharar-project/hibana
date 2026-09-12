@@ -362,7 +362,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
 
 def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
-          traces: str | None = None, traces_max_mib: int = 8192, draft_dir: str | None = None) -> None:
+          traces: str | None = None, traces_max_mib: int = 32768, draft_dir: str | None = None) -> None:
     from sharar.memory.spec_budget import SpecConfig
 
     if not spec and draft_precision != 'bf16':

@@ -2,8 +2,8 @@
 
 The pre-cleanup tree is preserved by `archive/pre-cleanup-2026-09-11` at
 `3655d7f7d57f68c905f373281a76a9c56368705a`. Current documentation is indexed
-in [docs/README.md](README.md); original studies and decisions remain
-[searchable in the archive](archive/README.md).
+in [docs/README.md](../README.md); original studies and decisions remain
+[searchable in the archive](README.md).
 
 ## Completed
 
@@ -42,7 +42,7 @@ Model/kernel arithmetic, scheduling policy and feature-retention behavior are
 unchanged. No new throughput gain is claimed, and production is not redeployed.
 Memory-pressure admission, asynchronous restore, reclaimable cache slabs and
 constrained output remain separate engineering tasks in the
-[roadmap](../roadmap.md). The existing experimental fused-norm switch remains
+[roadmap](../../roadmap.md). The existing experimental fused-norm switch remains
 off by default, with its numerical reference tests retained.
 
 The previous GitHub Actions run was blocked before execution by account

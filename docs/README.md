@@ -14,12 +14,9 @@ to the source recorded in each report.
 | [Benchmark guide](../bench/README.md) | Commands, reproducibility and shared helper layout |
 | [Contributing](../CONTRIBUTING.md) | Checks and implementation boundaries |
 | [Roadmap](../roadmap.md) | Current priorities and remaining engineering work |
-| [Engine experiments](gb10-engine-next.md) | Bounded next BS1/BS4 measurements |
-| [Experiment criteria](gb10-experiments.md) | Methodology and advancement gates |
+| [Draft adaptation](draft-adaptation.md) | Training the DFlash2 drafter on recorded traffic: `sharar-ctl train`, traces, promotion, design and limits |
 | [Cache-policy proposal](request-cache-policy.md) | Unimplemented request-level cache controls |
-| [Draft adaptation](draft-adaptation.md) | Request traces and the plan for workload-trained DFlash2 drafters |
 | [Archive and decisions](archive/README.md) | Historical studies, manifests and rejected experiments |
-| [September 11 cleanup](maintenance.md) | Completed maintenance, validation and archive provenance |
 
 Write supported behavior in its current guide. Put measured results in dated
 reports with source/protocol identities and compact evidence manifests. Keep

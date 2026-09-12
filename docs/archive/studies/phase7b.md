@@ -148,7 +148,7 @@ synchronization and recurrent-snapshot traffic, then prototype device-resident
 progress or selective checkpoints where the trace shows headroom. Session
 cache value, reclaimable unified-memory slabs, prepacked weight layouts and
 adaptive local scheduling follow the hypotheses and discard criteria in
-[docs/gb10-experiments.md](../../gb10-experiments.md).
+[docs/gb10-experiments.md](../gb10-experiments-2026-09.md).
 
 DSpark/DFlash2 adapters, draft-prefix restoration, ordinary-decode feature
 feedback, adaptive width and stochastic proposal verification remain explicit

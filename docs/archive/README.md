@@ -29,6 +29,9 @@ main deliberately refuses its now-identical capacity comparison.
 
 - [Roadmap before cleanup](roadmap-2026-09-11.md)
 - [Benchmark commands before cleanup](benchmark-guide-2026-09-11.md)
+- [Engine next steps after the BS4 study, 2026-09-10](gb10-engine-next-2026-09-10.md)
+- [GB10 experiment plan and criteria, September 2026](gb10-experiments-2026-09.md) (the evergreen criteria moved to CONTRIBUTING)
+- [September 11 maintenance cleanup](maintenance-2026-09-11.md)
 
 ## Study index
 

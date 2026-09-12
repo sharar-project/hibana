@@ -32,6 +32,10 @@ Admission also checks the output budget and speculative scratch capacity.
 | `response_format` omitted/null/`{"type":"text"}` | Ordinary text output |
 | `trace` | `false` excludes this request from the opt-in [trace sink](operations.md#request-traces); accepted on every generation route |
 
+`GET /get_server_info` reports `speculative.draft` (the served draft
+directory), `spec_stats` (rounds, proposed, accepted, emitted) and, when
+tracing is on, `scheduler.traces` (records, bytes, `dropped`).
+
 Forced/named/required tool choices and constrained JSON formats return HTTP
 400 before rendering or admission. `none` does not install a token constraint;
 it suppresses supplied tool schemas and returns ordinary generated content.

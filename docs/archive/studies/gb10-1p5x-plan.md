@@ -3,7 +3,7 @@
 > Dated evidence for the source and protocol recorded below. See the [current documentation](../../README.md) for supported behavior and priorities. Historical commands may require the recorded revision.
 
 **Current priority:** the user has deferred training and asked for engine work
-at both BS1 and BS4. Follow [the engine-only next steps](../../gb10-engine-next.md)
+at both BS1 and BS4. Follow [the engine-only next steps](../gb10-engine-next-2026-09-10.md)
 first. The training sequence below remains a deferred research option.
 
 The [completed BS4 study](gb10-bs4-engine.md) keeps k=15 and the scheduler
