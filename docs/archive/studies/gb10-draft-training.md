@@ -10,7 +10,11 @@ request traces with an objective that matches SpecForge's, a forward that
 matches the serving proposer and the publisher's reference model, and an
 evaluation that reproduces serving acceptance. A first 150-step run on
 ShareGPT replays raises held-out tokens per round monotonically from 3.871 to
-3.926 (+1.4%). No serving default, checkpoint or production image changes.
+3.926 (+1.4%). On a narrow workload, coding requests over this repository,
+300 steps raise held-out tokens per round from 5.367 to 5.739 (+6.9%) and the
+promoted checkpoint served through `--draft` delivers **52.3 versus 46.3
+tokens/s (+12.9%)** on the held-out prompts at batch size one. No serving
+default, checkpoint or production image changes; `SHARAR_DRAFT` is opt-in.
 
 ## What was run
 
@@ -111,6 +115,57 @@ at two sequences per step (mean cross-entropy 2.77 over the first 25 steps,
 2.73 over the last 25); the held-out gain is small because ShareGPT first
 turns are diverse by construction, and this run establishes the loop, not a
 serving speedup. No throughput claim follows from it.
+
+## Repository-coding workload and served TPS
+
+The user's own traffic did not exist yet, so a proxy with its shape was built:
+400 requests asking the target to explain, review, test, document or
+summarize one file of this repository (`bench/trace_corpus.py --repo`),
+thinking off, 768-token budget, 5% sampled, concurrency four: 399 traced
+requests, 655,814 prompt and 266,269 output tokens, 52,885 rounds at 5.053
+tokens per round untrained, 768,966 feature rows. Fine-tune: 359 training
+requests (238,966 output tokens), 40 held out by recency, evaluation on the
+24 newest; 300 steps of two sequences, 128 anchors, learning rate 1e-4,
+otherwise as above; 4.9 s per step.
+
+| Step | Held-out tokens per round | Rounds |
+|---:|---:|---:|
+| 0 | 5.367 | 3,142 |
+| 100 | 5.604 | 3,009 |
+| 200 | 5.683 | 2,967 |
+| 300 | 5.739 | 2,938 |
+
+Mean training cross-entropy fell from 2.08 (first 25 steps) to 1.46 (last 25)
+and block accuracy rose from 0.48 to 0.58, so unlike the ShareGPT run the
+drafter is learning the workload, not only the target's style.
+
+The step-300 checkpoint was then served (`sharar serve --draft`, FP8 draft
+precision, otherwise the measured serving profile) and the 24 held-out prompts
+replayed as exact token IDs through `/generate` at batch size one with each
+request's recorded output budget, after one excluded warmup, in separate
+windows for each draft:
+
+| Draft | Aggregate tokens/s | Median per-request tokens/s | Server tokens per round | Rounds | Proposed |
+|---|---:|---:|---:|---:|---:|
+| Pinned publisher draft | 46.34 | 44.07 | 4.955 | 3,403 | 51,045 |
+| Trained, step 300 | 52.33 | 49.19 | 5.619 | 3,001 | 45,015 |
+
+Both runs emit 16,862 tokens. Two further pairs of windows repeated the
+replay with output hashes and then full output IDs: 46.39 / 52.36 and
+46.40 / 52.33 tokens/s, the same round counts every time, and each draft's 24
+outputs bit-identical across its own runs. Between the two drafts, 7 of 24
+outputs are identical and 17 diverge, first at token 20 to 747 of a 768 budget
+(median 132); 44.5% of all output tokens precede any divergence. The replayed
+outputs also differ from the traced outputs for both drafts, which were
+produced at batch four. The verifier commits only the target's argmax, so in
+exact arithmetic a drafter cannot change outputs; a different drafter changes
+where round boundaries fall, so the same token is computed in a different row
+of a verification block, and the target's shape-dependent numerics (above)
+then pick a different near-tie. This is the continuation drift the existing
+studies report for changed verification widths and batch shapes, not a draft
+defect, and it is the same property that makes recomputed features unusable.
+A drafter therefore changes outputs only through the target's own
+shape sensitivity; fixing that sensitivity is a target-numerics task.
 
 ## Limits
 

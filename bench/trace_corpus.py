@@ -1,9 +1,16 @@
-"""Generate a request-trace corpus by replaying ShareGPT prompts over HTTP.
+"""Generate a request-trace corpus over HTTP.
 
 The server must run with `--traces`; this client only sends chat requests so
-that the target regenerates every answer. Greedy by default, thinking off, a
-small sampled share to exercise the sampled trace path, and one request per
-run sent with `trace: false` to confirm the opt-out. No GPU imports.
+that the target regenerates every answer. Two prompt sources:
+
+* ``--dataset FILE``: ShareGPT first user turns (diverse, general traffic);
+* ``--repo DIR``: coding requests over the files of a repository (explain,
+  review, test, document), the shape of a coding agent's traffic and a proxy
+  for a user's own workload until real traces exist.
+
+Greedy by default, thinking off, a small sampled share to exercise the
+sampled trace path, and one request per run sent with `trace: false` to
+confirm the opt-out. No GPU imports.
 """
 
 from __future__ import annotations
@@ -34,6 +41,31 @@ def conversations(path: Path, seed: int, count: int, min_chars: int = 40, max_ch
     return out
 
 
+REPO_TASKS = [
+    "Explain what this file does, then list every public function or class with a one-line description.",
+    "Review this file for bugs, race conditions and unclear error handling. Quote the lines you would change and show the fix.",
+    "Write pytest unit tests for the most important behavior in this file. Return one complete test module.",
+    "Add a concise docstring to every function and class in this file and return the complete updated file.",
+    "Summarize this file in five bullet points for a new contributor, then suggest one refactor with code.",
+]
+
+
+def repo_requests(root: Path, seed: int, count: int, min_chars: int = 400, max_chars: int = 24000) -> list[dict]:
+    """Coding prompts over a repository's source and documentation files."""
+    files = sorted(p for p in root.rglob("*") if p.suffix in (".py", ".md", ".sh", ".json", ".toml")
+                   and p.is_file() and not any(part.startswith(".") or part in ("__pycache__", "build", "archive") for part in p.parts)
+                   and min_chars <= p.stat().st_size <= max_chars)
+    rng = random.Random(seed)
+    out = []
+    while len(out) < count and files:
+        path = rng.choice(files)
+        task = rng.choice(REPO_TASKS)
+        fence = {"py": "python", "sh": "bash", "json": "json", "toml": "toml"}.get(path.suffix[1:], "")
+        prompt = f"{task}\n\nFile `{path.relative_to(root)}`:\n\n```{fence}\n{path.read_text(errors='replace')}\n```"
+        out.append({"id": f"{path.relative_to(root)}#{REPO_TASKS.index(task)}#{len(out)}", "prompt": prompt})
+    return out
+
+
 def send(url: str, item: dict, max_tokens: int, temperature: float, trace: bool, timeout: float) -> dict:
     body = {
         "model": "sharar", "messages": [{"role": "user", "content": item["prompt"]}],
@@ -59,7 +91,8 @@ def send(url: str, item: dict, max_tokens: int, temperature: float, trace: bool,
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:30001")
-    ap.add_argument("--dataset", type=Path, required=True)
+    ap.add_argument("--dataset", type=Path, default=None, help="ShareGPT JSON")
+    ap.add_argument("--repo", type=Path, default=None, help="repository to draw coding prompts from")
     ap.add_argument("--count", type=int, default=200)
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--concurrency", type=int, default=4)
@@ -68,7 +101,9 @@ def main(argv=None) -> int:
     ap.add_argument("--timeout", type=float, default=600)
     ap.add_argument("--log", type=Path, required=True, help="JSONL of one row per request")
     args = ap.parse_args(argv)
-    items = conversations(args.dataset, args.seed, args.count)
+    if (args.dataset is None) == (args.repo is None):
+        ap.error("give exactly one of --dataset or --repo")
+    items = conversations(args.dataset, args.seed, args.count) if args.dataset else repo_requests(args.repo, args.seed, args.count)
     rng = random.Random(args.seed + 1)
     plan = []
     for i, item in enumerate(items):

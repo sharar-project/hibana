@@ -37,9 +37,16 @@ needs patched SGLang capture servers; (3) `sharar train`: DFlash2 training in
 Sharar against the NVFP4 target with held-out tokens-per-round evaluation and
 `best/` promotion, checked against the serving proposer, the publisher's
 reference model and SpecForge's objective by `bench/dflash2_reference.py`.
-Next: (4) in-place draft reload in the engine and the 18-family collapse check;
-(5) user-started training with an engine-busy pause and multi-machine
-transport. Training never runs beside serving on the same GPU.
+Trained checkpoints are served with `SHARAR_DRAFT=/run/best` (`sharar serve
+--draft`). On a repository-coding proxy workload, 300 steps on 359 traced
+requests raised held-out tokens per round 5.367 -> 5.739 and served throughput
+46.3 -> 52.3 tokens/s (+12.9%) on the held-out prompts at batch one
+([report](docs/archive/studies/gb10-draft-training.md)). Held-out data is
+always the user's own newest traces. Next: (4) record real traffic and repeat
+the measurement on it; an in-place reload between rounds and a collapse check
+on the general workload set; (5) user-started training with an engine-busy
+pause and multi-machine transport. Training never runs beside serving on the
+same GPU.
 
 ## Next work, in order
 

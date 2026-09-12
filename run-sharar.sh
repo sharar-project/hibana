@@ -15,6 +15,7 @@ PROPOSER="${SHARAR_PROPOSER:-dflash2}"
 VERIFY_STATE="${SHARAR_VERIFY_STATE:-reconstruct}"
 DRAFT_PRECISION="${SHARAR_DRAFT_PRECISION:-bf16}" # fp8 selects the measured optimized parallel draft
 TRACES_DIR="${SHARAR_TRACES:-}"                    # opt-in request traces for draft adaptation (unset = off)
+DRAFT_DIR="${SHARAR_DRAFT:-}"                      # trained draft checkpoint directory (unset = pinned publisher draft)
 TRACES_MAX_MIB="${SHARAR_TRACES_MAX_MIB:-8192}"
 DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"   # incoai/Qwen3.8-27B-DFlash2
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
@@ -78,6 +79,7 @@ Sharar preflight OK
   Host memory: $((mem_total / 1048576)) GiB total, $((mem_avail / 1048576)) GiB available; runtime floor $((GUARD_MIN_AVAILABLE_KIB / 1048576)) GiB
   Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (proposer: $PROPOSER, drafts: $SPEC, draft precision: $DRAFT_PRECISION, verify state: $VERIFY_STATE)
   Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}
+  Draft: ${DRAFT_DIR:-pinned $DRAFT_REVISION}
 EOT
 [[ "${1:-}" == "--check" ]] && exit 0
 
@@ -110,6 +112,12 @@ for gpucomp in "$DRIVER_LIB_DIR"/libnvidia-gpucomp.so.*; do [[ -f "$gpucomp" ]] 
 serve_args=(serve --host 0.0.0.0 --port "$PORT" --proposer "$PROPOSER" --verify-state "$VERIFY_STATE" --spec "$SPEC")
 if [[ "$DRAFT_PRECISION" != bf16 ]]; then
   serve_args+=(--draft-precision "$DRAFT_PRECISION")
+fi
+if [[ -n "$DRAFT_DIR" ]]; then
+  [[ -f "$DRAFT_DIR/config.json" && -f "$DRAFT_DIR/model.safetensors" ]] || fail "SHARAR_DRAFT=$DRAFT_DIR needs config.json and model.safetensors"
+  [[ "$PROPOSER" == dflash2 || "$PROPOSER" == dspark ]] && [[ "$SPEC" != 0 ]] || fail "SHARAR_DRAFT requires an enabled parallel draft"
+  args+=(--volume "$DRAFT_DIR:/draft:ro")
+  serve_args+=(--draft /draft)
 fi
 if [[ -n "$TRACES_DIR" ]]; then
   [[ "$TRACES_MAX_MIB" =~ ^[1-9][0-9]*$ ]] || fail "SHARAR_TRACES_MAX_MIB must be a positive integer"

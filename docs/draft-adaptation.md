@@ -84,14 +84,17 @@ beyond what serving already does.
    container while nothing is served, because the GPU has no spare bandwidth.
    The feature and K/V projections cannot be trained from recorded projected
    features, which matches the reload-compatibility decision above.
-4. **Reload and promotion.** The trainer already evaluates held-out tokens
-   per round by replaying serving's greedy proposals along the newest traces
-   and writes `best/` only when that beats the untrained drafter or the
-   previous best; every evaluated step is also kept under `step-*/` in the
-   publisher's checkpoint layout, loadable by the serving loader. Still to do:
-   an engine inbox command that copies new weights in place between rounds,
-   re-quantizing into the FP8 buffers when that profile is active, and the
-   18-family collapse check. The base checkpoint is never overwritten.
+4. **Serving and promotion.** The trainer evaluates held-out tokens per
+   round by replaying serving's greedy proposals along the newest traces and
+   writes `best/` only when that beats the untrained drafter or the previous
+   best; every evaluated step is also kept under `step-*/` in the publisher's
+   checkpoint layout. `SHARAR_DRAFT=/run/best ./run-sharar.sh` (or
+   `sharar serve --draft DIR`) serves a promoted checkpoint, in BF16 or FP8.
+   Held-out data is always the user's own newest traces, never a public
+   corpus: the drafter is meant to overfit the workload, and its TPS is
+   benchmarked on held-out prompts from that same workload. Still to do: an
+   in-place reload between rounds, and a collapse check on the general
+   workload set. The base checkpoint is never overwritten.
 5. **User-run training and transport.** The user starts and stops the trainer
    explicitly. It pauses whenever the engine reports active requests, so a
    forgotten session cannot halve serving throughput. Serving picks up the

@@ -83,7 +83,7 @@ class Executor:
             log(f"  pools: {num_pages} KV pages ({self.kv_pool.bytes / 2**30:.2f} GiB), {num_slots} state slots ({num_slots * self.state_pool.bytes_per_slot / 2**30:.2f} GiB)")
         if spec_config is not None:
             self.enable_spec(spec_config.depth, log=log, proposer=spec_config.name, state_strategy=spec_config.state_strategy,
-                             draft_precision=spec_config.draft_precision)
+                             draft_precision=spec_config.draft_precision, draft_dir=spec_config.draft_dir)
 
     @property
     def cache(self):
@@ -100,7 +100,8 @@ class Executor:
             return self.spec.proposer.requirements.features
         return getattr(self, "feature_request", None)  # test doubles bypass __init__
 
-    def enable_spec(self, k: int = 3, log=None, *, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16') -> None:
+    def enable_spec(self, k: int = 3, log=None, *, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
+                    draft_dir: str | None = None) -> None:
         """Select the adapter and its numerical profile once, before capture."""
         if self.graphs is not None or self.spec is not None:
             raise ValueError("enable speculation once, before graph capture")
@@ -111,11 +112,12 @@ class Executor:
         check_load_headroom(fixed + per_page * self.kv_pool.num_pages + 8 * 2**30)
         context = ProposerContext(self.device, self.max_batch, self.max_context)
         from sharar.proposers.factory import create
-        adapter = create(proposer, k, self.model, context, self.kv_pool.num_pages, draft_precision=draft_precision)
+        adapter = create(proposer, k, self.model, context, self.kv_pool.num_pages, draft_precision=draft_precision, draft_dir=draft_dir)
         self.set_proposer(adapter, state_strategy=state_strategy)
         self.ledger.record_cuda_allocated("proposer_and_verify")
         if log:
-            log(f"  proposer: {adapter.requirements.name}, persistent {adapter.requirements.persistent_bytes / 2**30:.2f} GiB, verify buffers {self.spec.bytes / 2**30:.2f} GiB, k={k}")
+            log(f"  proposer: {adapter.requirements.name}, persistent {adapter.requirements.persistent_bytes / 2**30:.2f} GiB, verify buffers {self.spec.bytes / 2**30:.2f} GiB, k={k}"
+                + (f", draft {draft_dir}" if draft_dir else ""))
 
     def set_proposer(self, proposer: Proposer, *, state_strategy: str = "snapshots") -> None:
         from sharar.engine.spec import SpecDecoder

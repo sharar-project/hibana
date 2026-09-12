@@ -3,8 +3,8 @@
  "summary_document": "gb10-draft-training.md",
  "full_evidence": {
   "path": "reviews/2026-09-11-draft-traces/results.json",
-  "sha256": "3e73049d7647a245dcff8b79eb567ff038be6086a38bee15dd3bb123a875721c",
-  "bytes": 9716
+  "sha256": "8da103b51dd9489d61cc14fa744eb0ee8852bcfcbd46a92e63ffcf099867fd88",
+  "bytes": 16803
  },
  "summary": {
   "branch": "feat/draft-traces",
@@ -44,6 +44,50 @@
   "target_prefill_shape_dependence": {
    "prefix_26_vs_27_final_norm_relative_rms": 0.32002,
    "prefix_26_vs_27_argmax_agreement": 0.884615421295166
+  },
+  "repo_workload": {
+   "corpus": {
+    "requests": 399,
+    "prompt_tokens": 655814,
+    "output_tokens": 266269,
+    "spec_rounds": 52885,
+    "tokens_per_round": 5.052831615770067,
+    "feature_rows": 768966
+   },
+   "train": {
+    "steps": 300,
+    "train_requests": 359,
+    "holdout_requests": 40,
+    "eval_requests": 24,
+    "learning_rate": 0.0001,
+    "holdout_tokens_per_round": {
+     "0": 5.3666,
+     "100": 5.6039,
+     "200": 5.6832,
+     "300": 5.7393
+    }
+   },
+   "ab_bs1_heldout": {
+    "pinned_tps": [
+     46.34,
+     46.39,
+     46.4
+    ],
+    "trained_tps": [
+     52.33,
+     52.36,
+     52.33
+    ],
+    "pinned_tokens_per_round": 4.955,
+    "trained_tokens_per_round": 5.619,
+    "rounds": [
+     3403,
+     3001
+    ],
+    "outputs_identical_between_drafts": "7 of 24",
+    "median_first_divergence_token": 132,
+    "outputs_identical_across_runs_per_draft": "24 of 24"
+   }
   }
  }
 }

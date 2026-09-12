@@ -97,7 +97,8 @@ class ParallelProposer:
         self.window = model.window
         self.pitch = self.window + self.noise_steps
         self.free_slots = list(range(context.max_batch, 0, -1))
-        self.cache_identity = (config.MODEL_REVISION, *PINS[name], model.features, 'projected-bf16-kv-v1', self.window)
+        self.cache_identity = (config.MODEL_REVISION, *PINS[name], model.features, 'projected-bf16-kv-v1', self.window,
+                               getattr(model, 'source', None))
         device = context.device
         shape = ((context.max_batch + 1) * self.pitch, 1, 8, 128)
         self.caches = [(torch.empty(shape, dtype=torch.bfloat16, device=device), torch.empty(shape, dtype=torch.bfloat16, device=device)) for _ in range(5)]

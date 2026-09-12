@@ -36,6 +36,7 @@ budget separately. Automatic KV capacity depends on available memory.
 | Image | `sharar:qwen38-27b` | `SHARAR_IMAGE` |
 | Container / port | `sharar-qwen38` / 30001 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
 | Request traces | Off | `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 8192) |
+| Draft checkpoint | Pinned publisher draft | `SHARAR_DRAFT=/dir` (a `sharar train` checkpoint: `config.json` + `model.safetensors`) |
 
 The optimized measured profile uses FP8 DFlash2 with 15 proposals:
 
@@ -53,6 +54,17 @@ launch the intended configuration. Updating Git or rebuilding a tag does not
 replace a running container. Validate the chosen image/profile before a
 production rollout; source benchmark qualification is separate from deployment.
 No production rollout is part of the September 11 maintenance cleanup.
+
+## Trained draft checkpoints
+
+`SHARAR_DRAFT=/path/to/run/best` mounts a checkpoint saved by `sharar train`
+read-only at `/draft` and starts the server with `--draft /draft`. The
+directory must hold the draft `config.json` and `model.safetensors` in the
+publisher's layout; the launcher and `sharar serve` refuse anything else
+before loading the target. FP8 draft precision applies to the trained
+weights the same way. `/get_server_info` reports the directory under
+`speculative.draft`. A trained draft changes only speed: verification is
+unchanged, so outputs are still the target's own.
 
 ## Request traces
 
