@@ -23,7 +23,7 @@ from pathlib import Path
 import torch
 
 from sharar.train.data import Sample, load_samples, split, summary
-from sharar.train.loss import Terms, block_targets, block_teacher, block_terms, sample_anchors
+from sharar.train.loss import Terms, block_targets, block_teacher, block_terms, on_policy_selector, sample_anchors
 
 
 @dataclass
@@ -42,6 +42,9 @@ class TrainConfig:
     selector_alpha: float = 1.0
     kl_alpha: float = 1.0  # weight of the KL to the target's recorded top-k; ignored for traces without it
     train_params: str = "attn"  # attn | all | selector (see draft.PARAMETER_SETS)
+    on_policy: bool = False  # anchors at recorded rounds; selector labels from the target's answers to the drafter's own proposals
+    regression_traces: str | None = None  # a fixed general trace set; promotion also requires no regression on it
+    regression_tolerance: float = 0.005
     learning_rate: float = 5e-5
     warmup_steps: int = 10
     weight_decay: float = 0.0
@@ -129,12 +132,23 @@ class Trainer:
             den = den + block_targets(ids, anchors.to(self.device), self.cfg.block, sample.prompt_len, self.cfg.gamma)[3].sum()
         return den.clamp_min(torch.finfo(torch.float32).tiny)
 
+    def choose_anchors(self, sample: Sample) -> torch.Tensor:
+        """Random supervised positions, or (on-policy) a random subset of the recorded round anchors."""
+        cfg = self.cfg
+        if cfg.on_policy and sample.rounds:
+            anchors = torch.tensor([r[0] for r in sample.rounds], dtype=torch.int64)
+            if anchors.shape[0] > cfg.anchors_per_sequence:
+                keep = torch.randperm(anchors.shape[0], generator=self.generator)[:cfg.anchors_per_sequence].sort().values
+                anchors = anchors[keep]
+            return anchors
+        return sample_anchors(sample.prompt_len, sample.length, cfg.anchors_per_sequence, self.generator)
+
     # ---- one step ----
     def step(self, samples: list[Sample], step: int) -> dict:
         cfg = self.cfg
         started = time.perf_counter()
         # Anchors are drawn once so the shared denominator matches the anchors trained on.
-        anchor_sets = [sample_anchors(s.prompt_len, s.length, cfg.anchors_per_sequence, self.generator) for s in samples]
+        anchor_sets = [self.choose_anchors(s) for s in samples]
         total_den = self.denominator(samples, anchor_sets)
         self.optimizer.zero_grad(set_to_none=True)
         total = None
@@ -158,16 +172,25 @@ class Trainer:
         anchors = anchors.to(self.device)
         hidden_projection, predecessor_codebook, successor_codebook = self.draft.selector_weights()
         teacher_ids, teacher_logits, teacher_valid = sample.teacher(self.device) if cfg.kl_alpha and sample.topk else (None, None, None)
+        rounds = None
+        if cfg.on_policy and sample.rounds:
+            round_anchor, proposals, target_rows = sample.on_policy(self.device)
+            rounds = {int(a): i for i, a in enumerate(round_anchor.tolist())}
         total = None
         for start in range(0, anchors.shape[0], cfg.anchor_chunk):
             chunk = anchors[start:start + cfg.anchor_chunk]
             target_ids, predecessor_ids, weight_mask, loss_weights = block_targets(ids, chunk, cfg.block, sample.prompt_len, cfg.gamma)
             teacher = block_teacher(chunk, cfg.block, teacher_ids, teacher_logits, teacher_valid) if teacher_ids is not None else None
+            overrides = {}
+            if rounds is not None:
+                index = torch.tensor([rounds[int(a)] for a in chunk.tolist()], device=self.device)
+                sel_pred, sel_target, sel_weights = on_policy_selector(ids[chunk], proposals[index], target_rows[index], cfg.block, cfg.gamma)
+                overrides = {"selector_predecessor_ids": sel_pred, "selector_target_ids": sel_target, "selector_weights_override": sel_weights}
             hidden = self.forward_blocks(projected, ids, chunk)
             logits = self.draft.head(hidden)
             terms = block_terms(logits, hidden, target_ids, predecessor_ids, weight_mask, loss_weights, top_k=self.draft.top_k,
                                 hidden_projection=hidden_projection, predecessor_codebook=predecessor_codebook,
-                                successor_codebook=successor_codebook, teacher=teacher)
+                                successor_codebook=successor_codebook, teacher=teacher, **overrides)
             (terms.loss(cfg.selector_alpha, cfg.kl_alpha) * terms.loss_den / total_den).backward()
             detached = terms.detached()
             total = detached if total is None else total + detached
@@ -221,13 +244,24 @@ def run(cfg: TrainConfig, draft, snapshot: Path, log=print, stop: StopRequest | 
     log(f"train {manifest['train']['requests']} requests / {manifest['train']['output_tokens']} output tokens "
         f"({manifest['train']['with_topk']} with target top-k); holdout {manifest['holdout']['requests']} requests; "
         f"trainable {draft.parameter_count() / 1e9:.2f}B ({cfg.train_params})")
+    regression = []
+    if cfg.regression_traces:
+        regression = split(load_samples(cfg.regression_traces, max_length=cfg.max_length, require_features=True), cfg.holdout_tokens)[1]
+        manifest["regression"] = summary(regression)
+        log(f"regression set: {len(regression)} requests / {manifest['regression']['output_tokens']} output tokens from {cfg.regression_traces}")
     base = trainer.evaluate(holdout_eval)
     log(f"holdout tokens/round before training: {base['tokens_per_round']:.3f} ({base['rounds']} rounds, {base['seconds']:.0f}s)")
     trainer._record({"event": "eval", "step": 0, **{k: v for k, v in base.items() if k != "per_sample"}})
+    base_regression = trainer.evaluate(regression) if regression else None
+    if base_regression:
+        log(f"regression tokens/round before training: {base_regression['tokens_per_round']:.3f} ({base_regression['rounds']} rounds)")
+        trainer._record({"event": "regression", "step": 0, **{k: v for k, v in base_regression.items() if k != "per_sample"}})
     best = {"step": 0, "tokens_per_round": base["tokens_per_round"]}
+    if base_regression:
+        best["regression_tokens_per_round"] = base_regression["tokens_per_round"]
 
     def write_manifest():
-        (trainer.output / "manifest.json").write_text(json.dumps({**manifest, "base_eval": base, "best": best}, indent=2))
+        (trainer.output / "manifest.json").write_text(json.dumps({**manifest, "base_eval": base, "base_regression": base_regression, "best": best}, indent=2))
 
     def evaluate_and_promote(step: int) -> dict:
         nonlocal best
@@ -235,8 +269,19 @@ def run(cfg: TrainConfig, draft, snapshot: Path, log=print, stop: StopRequest | 
         log(f"holdout tokens/round at step {step}: {result['tokens_per_round']:.3f} (best {best['tokens_per_round']:.3f} at step {best['step']})")
         trainer._record({"event": "eval", "step": step, **{k: v for k, v in result.items() if k != "per_sample"}})
         draft.save(trainer.output / f"step-{step:06d}", snapshot, {**manifest, "step": step, "eval": result})
-        if result["tokens_per_round"] > best["tokens_per_round"]:
+        improved = result["tokens_per_round"] > best["tokens_per_round"]
+        regressed = None
+        if improved and regression:
+            check = trainer.evaluate(regression)
+            floor = base_regression["tokens_per_round"] * (1 - cfg.regression_tolerance)
+            regressed = check["tokens_per_round"] < floor
+            log(f"regression tokens/round at step {step}: {check['tokens_per_round']:.3f} (floor {floor:.3f}){' REGRESSED, not promoted' if regressed else ''}")
+            trainer._record({"event": "regression", "step": step, **{k: v for k, v in check.items() if k != "per_sample"}})
+            result["regression_tokens_per_round"] = check["tokens_per_round"]
+        if improved and not regressed:
             best = {"step": step, "tokens_per_round": result["tokens_per_round"]}
+            if regression:
+                best["regression_tokens_per_round"] = result["regression_tokens_per_round"]
             draft.save(trainer.output / "best", snapshot, {**manifest, "step": step, "eval": result, "promoted": True})
             log(f"promoted step {step} to best/")
             if cfg.promote_to:

@@ -28,6 +28,7 @@ class Sample:
     prompt_len: int  # first supervised position
     features: dict | None = None  # {"path", "start", "rows", "dim", "skip"}; start is a position in ids
     topk: dict | None = None  # {"ids_path", "logits_path", "start", "rows", "k", "skip"}; row p is the target's top-k over the token at p + 1
+    rounds: tuple = ()  # (anchor position, proposals y[k], target argmax rows z[k+1]) per greedy verification round
 
     @property
     def length(self) -> int:
@@ -55,6 +56,21 @@ class Sample:
             logits[info["start"]:end] = rec_logits[:n].to(device=device, dtype=torch.float32)
             valid[info["start"]:end] = True
         return ids, logits, valid
+
+    def on_policy(self, device):
+        """Verification rounds as (anchors [R], proposals [R, k], target rows [R, k + 1]) tensors.
+
+        Row j of a round's target rows is the target's argmax after the block
+        prefix through row j (row 0 is the anchor token), so it labels block
+        position j + 1 given predecessor block token j, including positions
+        after the first rejected proposal.
+        """
+        if not self.rounds:
+            return torch.empty(0, dtype=torch.int64, device=device), None, None
+        anchors = torch.tensor([r[0] for r in self.rounds], dtype=torch.int64, device=device)
+        y = torch.tensor([r[1] for r in self.rounds], dtype=torch.int64, device=device)
+        z = torch.tensor([r[2] for r in self.rounds], dtype=torch.int64, device=device)
+        return anchors, y, z
 
     def context(self, device) -> torch.Tensor:
         """[length, dim] BF16 projected context; rows never recorded are zero.
@@ -111,7 +127,17 @@ def load_samples(directory: str | Path, *, max_length: int = 8192, min_output: i
             if tinfo["rows"] - skip > 0:
                 topk = {"ids_path": tinfo["ids_path"], "logits_path": tinfo["logits_path"], "start": max(0, start),
                         "rows": tinfo["rows"], "k": tinfo["k"], "skip": skip}
-        samples.append(Sample(doc["id"], float(doc.get("finish", 0.0)), tuple(ids), prompt_len, features, topk))
+        rounds = []
+        spec = doc.get("spec")
+        if spec:
+            k = spec["k"]
+            position = len(doc["prompt_ids"])  # the pending token of the first round is the first output token
+            for r in spec["rounds"]:
+                anchor = position - cut
+                if r["z"] is not None and len(r["y"]) == k and len(r["z"]) == k + 1 and 0 <= anchor < len(ids) - 1:
+                    rounds.append((anchor, tuple(r["y"]), tuple(r["z"])))
+                position += r["a"] + 1
+        samples.append(Sample(doc["id"], float(doc.get("finish", 0.0)), tuple(ids), prompt_len, features, topk, tuple(rounds)))
     samples.sort(key=lambda s: (s.finish, s.request_id))
     return samples
 
@@ -157,5 +183,6 @@ def summary(samples: list[Sample]) -> dict:
         "output_tokens": sum(s.output_len for s in samples),
         "with_features": sum(s.features is not None for s in samples),
         "with_topk": sum(s.topk is not None for s in samples),
+        "rounds": sum(len(s.rounds) for s in samples),
         "digest": digest(samples),
     }

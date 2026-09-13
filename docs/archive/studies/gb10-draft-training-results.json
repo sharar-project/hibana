@@ -3,8 +3,8 @@
  "summary_document": "gb10-draft-training.md",
  "full_evidence": {
   "path": "reviews/2026-09-11-draft-traces/results.json",
-  "sha256": "c82a3caaa9ba3817b91224257294621e7eee9305c96c0c90c242167ee3e64f55",
-  "bytes": 36508
+  "sha256": "4aa9ab7976576bea7c040abfab406aa062fa0f946eae350f10c2946a6d046d97",
+  "bytes": 40788
  },
  "summary": {
   "branch": "feat/draft-traces",
@@ -212,6 +212,22 @@
     -0.74
    ],
    "default_train_params": "attn"
+  },
+  "v3": {
+   "on_policy_test_set": [
+    5.086923076923077,
+    5.103936197581683
+   ],
+   "continuation_test_set": {
+    "lr_1e-4": 5.034001522456229,
+    "lr_3e-5": 5.090839107005388,
+    "base": 5.085619072032812
+   },
+   "continuation_regression_set": {
+    "base": 3.757,
+    "lr_1e-4": 3.7334315169366716,
+    "lr_3e-5": 3.770918557084418
+   }
   }
  }
 }
