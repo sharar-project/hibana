@@ -17,7 +17,7 @@ from pathlib import Path
 
 import torch
 
-from sharar.engine.traces import iter_records, load_features
+from sharar.engine.traces import iter_records, load_features, load_topk
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,7 @@ class Sample:
     ids: tuple[int, ...]
     prompt_len: int  # first supervised position
     features: dict | None = None  # {"path", "start", "rows", "dim", "skip"}; start is a position in ids
+    topk: dict | None = None  # {"ids_path", "logits_path", "start", "rows", "k", "skip"}; row p is the target's top-k over the token at p + 1
 
     @property
     def length(self) -> int:
@@ -35,6 +36,25 @@ class Sample:
     @property
     def output_len(self) -> int:
         return len(self.ids) - self.prompt_len
+
+    def teacher(self, device, k: int = 16):
+        """([length, k] int64 ids, [length, k] float32 logits, [length] bool valid) aligned to
+        positions: row p describes the token at p + 1. Rows never recorded are invalid."""
+        ids = torch.zeros((self.length, k), dtype=torch.int64, device=device)
+        logits = torch.zeros((self.length, k), dtype=torch.float32, device=device)
+        valid = torch.zeros(self.length, dtype=torch.bool, device=device)
+        if self.topk is None:
+            return ids, logits, valid
+        info = self.topk
+        rec_ids, rec_logits = load_topk(info)
+        rec_ids, rec_logits = rec_ids[info["skip"]:], rec_logits[info["skip"]:]
+        end = min(self.length, info["start"] + rec_ids.shape[0])
+        n = end - info["start"]
+        if n > 0 and rec_ids.shape[1] == k:
+            ids[info["start"]:end] = rec_ids[:n].to(device=device, dtype=torch.int64)
+            logits[info["start"]:end] = rec_logits[:n].to(device=device, dtype=torch.float32)
+            valid[info["start"]:end] = True
+        return ids, logits, valid
 
     def context(self, device) -> torch.Tensor:
         """[length, dim] BF16 projected context; rows never recorded are zero.
@@ -83,7 +103,15 @@ def load_samples(directory: str | Path, *, max_length: int = 8192, min_output: i
                 if require_features:
                     continue  # the retained window does not reach the response
                 features = None
-        samples.append(Sample(doc["id"], float(doc.get("finish", 0.0)), tuple(ids), prompt_len, features))
+        topk = None
+        tinfo = doc.get("topk")
+        if tinfo:
+            start = tinfo["start"] - cut
+            skip = max(0, -start)
+            if tinfo["rows"] - skip > 0:
+                topk = {"ids_path": tinfo["ids_path"], "logits_path": tinfo["logits_path"], "start": max(0, start),
+                        "rows": tinfo["rows"], "k": tinfo["k"], "skip": skip}
+        samples.append(Sample(doc["id"], float(doc.get("finish", 0.0)), tuple(ids), prompt_len, features, topk))
     samples.sort(key=lambda s: (s.finish, s.request_id))
     return samples
 
@@ -128,5 +156,6 @@ def summary(samples: list[Sample]) -> dict:
         "tokens": sum(s.length for s in samples),
         "output_tokens": sum(s.output_len for s in samples),
         "with_features": sum(s.features is not None for s in samples),
+        "with_topk": sum(s.topk is not None for s in samples),
         "digest": digest(samples),
     }

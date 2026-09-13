@@ -103,14 +103,20 @@ def test_selector_objective_is_classification_over_candidates_with_shared_denomi
     assert terms.selector_weight_den == (loss_weights * is_candidate).sum()
 
 
-def test_terms_add_and_metrics_are_finite():
-    logits = torch.randn(2, 3, 9)
+def test_terms_add_detach_and_metrics_with_and_without_teacher():
+    logits = torch.randn(2, 3, 9, requires_grad=True)
     ids = torch.arange(12)
     t = block_targets(ids, torch.tensor([0, 4]), 3, 0, 7.0)
     a = block_terms(logits, torch.zeros(2, 3, 2), *t, top_k=3, hidden_projection=None, predecessor_codebook=None, successor_codebook=None)
-    total = a + a
-    assert total.ce_num == 2 * a.ce_num and total.loss(1.0) == pytest.approx(a.loss(1.0).item())
-    assert all(v == v for v in total.metrics().values())
+    total = (a + a).detached()
+    assert total.ce_num == 2 * a.ce_num.detach() and total.loss(1.0).item() == pytest.approx(a.loss(1.0).item())
+    assert all(v == v for v in total.metrics().values()) and "kl" not in total.metrics()
+    d = a.detached()
+    assert d.kl_num is None and not d.ce_num.requires_grad and a.ce_num.requires_grad
+    teacher = (torch.randint(0, 9, (2, 3, 4)), torch.randn(2, 3, 4), torch.ones(2, 3, dtype=torch.bool))
+    b = block_terms(logits, torch.zeros(2, 3, 2), *t, top_k=3, hidden_projection=None, predecessor_codebook=None, successor_codebook=None, teacher=teacher)
+    assert b.kl_num is not None and "kl" in b.metrics() and b.loss(1.0, 1.0) > b.loss(1.0, 0.0)
+    assert (b + b).kl_num == 2 * b.kl_num and b.detached().kl_num is not None and not b.detached().kl_num.requires_grad
 
 
 def test_anchor_sampling_is_bounded_and_deterministic():
@@ -348,3 +354,75 @@ def test_train_cli_continues_from_a_current_link(monkeypatch, tmp_path):
     assert cfg.draft == str(best.resolve()) and cfg.steps == 0 and cfg.promote_to == str(runs / "current")
     assert cli.main(["train", "--traces", str(tmp_path), "--output", str(runs / "run-2"), "--continue-from", str(runs / "missing")]) == 0
     assert seen["cfg"].draft is None
+
+
+def test_teacher_kl_matches_manual_computation():
+    from sharar.train.loss import teacher_kl
+    torch.manual_seed(4)
+    logits = torch.randn(2, 3, 50)
+    ids = torch.stack([torch.randperm(50)[:4] for _ in range(6)]).view(2, 3, 4)
+    t_logits = torch.randn(2, 3, 4)
+    weights = torch.tensor([[0.0, 1.0, 0.5], [1.0, 1.0, 0.0]])
+    num, den = teacher_kl(logits, ids, t_logits, weights)
+    manual = 0.0
+    for a in range(2):
+        for b in range(3):
+            p = torch.softmax(t_logits[a, b], -1)
+            q = torch.softmax(logits[a, b][ids[a, b]], -1)
+            manual += weights[a, b] * (p * (p.log() - q.log())).sum()
+    torch.testing.assert_close(num, manual, rtol=1e-5, atol=1e-6)
+    assert den == weights.sum()
+    # a student that matches the teacher on those ids has zero KL
+    matched = torch.full((2, 3, 50), -30.0)
+    matched.scatter_(-1, ids, t_logits)
+    assert teacher_kl(matched, ids, t_logits, weights)[0].abs() < 1e-4
+
+
+def test_block_teacher_aligns_rows_to_labels():
+    from sharar.train.loss import block_teacher
+    length = 10
+    ids = torch.arange(length)[:, None].expand(length, 3).clone()  # row p carries value p
+    logits = torch.zeros(length, 3)
+    valid = torch.tensor([False, False, True, True, True, True, True, False, False, False])
+    t_ids, t_logits, keep = block_teacher(torch.tensor([2, 6]), 4, ids, logits, valid)
+    assert t_ids[0, 1:, 0].tolist() == [2, 3, 4]  # label at a+k uses row a+k-1
+    assert keep[0].tolist() == [False, True, True, True]  # position 0 never; rows 2..4 valid
+    assert keep[1].tolist() == [False, True, False, False]  # rows 6 valid, 7.. invalid
+    assert t_ids.shape == (2, 4, 3) and t_logits.shape == (2, 4, 3)
+
+
+def test_samples_expose_teacher_topk(tmp_path):
+    sink = TraceSink(tmp_path)
+    req = Request(prompt_ids=[1] * 5, params=SamplingParams(max_new_tokens=32), request_id=1)
+    req.output_ids, req.finish_reason, req.t_finish = [2] * 20, "stop", time.perf_counter()
+    req.trace_features = sink.recorder()
+    req.trace_features.append(torch.zeros(24, 5120, dtype=torch.bfloat16), 0)
+    req.trace_topk = sink.topk_recorder()
+    ids = (torch.arange(19)[:, None] + torch.arange(16)[None, :]).to(torch.int32)
+    req.trace_topk.append(ids, torch.ones(19, 16, dtype=torch.bfloat16), 5)  # rows for positions 5..23
+    sink.record(req)
+    deadline = time.time() + 5
+    while sink.records < 1 and time.time() < deadline:
+        time.sleep(0.01)
+    sink.close()
+    sample = load_samples(tmp_path, require_features=True)[0]
+    assert sample.topk["start"] == 5 and sample.topk["rows"] == 19 and summary([sample])["with_topk"] == 1
+    t_ids, t_logits, valid = sample.teacher("cpu")
+    assert t_ids.shape == (25, 16) and valid.tolist() == [False] * 5 + [True] * 19 + [False]
+    assert t_ids[5, 0] == 0 and t_ids[23, 0] == 18 and t_logits[6, 3] == 1.0
+    cut = load_samples(tmp_path, max_length=20, require_features=True)[0]  # 5 positions dropped
+    assert cut.topk["start"] == 0 and cut.topk["skip"] == 0 and cut.teacher("cpu")[0][0, 0] == 0
+    assert load_samples(tmp_path, max_length=15, min_output=8, require_features=True)[0].teacher("cpu")[0][0, 0] == 5
+
+
+def test_parameter_subsets_select_expected_weights():
+    from sharar.train.draft import trainable_key
+    names = ["fc.weight", "hidden_norm.weight", "norm.weight", "layers.0.self_attn.q_proj.weight", "layers.0.self_attn.kv",
+             "layers.0.self_attn.k_norm.weight", "layers.0.mlp.gate_up", "layers.0.mlp.down_proj.weight",
+             "layers.0.attention_conv.base_kernel", "candidate_selector.successor_codebook"]
+    picked = lambda mode: {n for n in names if trainable_key(n, mode, False)}
+    assert picked("all") == set(names) - {"fc.weight", "hidden_norm.weight", "layers.0.self_attn.kv", "layers.0.self_attn.k_norm.weight"}
+    assert "layers.0.mlp.gate_up" not in picked("attn") and "layers.0.self_attn.q_proj.weight" in picked("attn") and "candidate_selector.successor_codebook" in picked("attn")
+    assert picked("selector") == {"candidate_selector.successor_codebook"}
+    with pytest.raises(ValueError):
+        trainable_key("norm.weight", "mlp", False)

@@ -49,7 +49,7 @@ def test_finished_requests_are_recorded_unless_opted_out(tmp_path):
     assert stats["records"] == 1 and stats["dropped"] == 0 and stats["files"] == 1 and stats["bytes"] == stats["bytes_written"]
     assert summarize(tmp_path / "traces") == {"requests": 1, "prompt_tokens": 3, "output_tokens": 2, "reasons": {"length": 1},
                                               "spec_rounds": 0, "accepted_tokens": 0, "tokens_per_round": None,
-                                              "requests_with_features": 0, "feature_rows": 0}
+                                              "requests_with_features": 0, "feature_rows": 0, "requests_with_topk": 0}
 
 
 def test_no_sink_means_no_recording_state():
@@ -278,3 +278,33 @@ def test_traces_cli_summarizes(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv("SHARAR_TRACES", raising=False)
     with pytest.raises(SystemExit):
         cli.main(["traces"])
+
+
+def test_topk_recorder_writes_ids_and_logits_beside_features(tmp_path):
+    sink = TraceSink(tmp_path, max_bytes=10**9, rotate_bytes=10**8)
+    req = Request(prompt_ids=[1, 2, 3], params=SamplingParams(max_new_tokens=8), request_id=5)
+    req.output_ids, req.finish_reason, req.t_finish = [4, 5, 6, 7], "length", time.perf_counter()
+    req.trace_features = sink.recorder()
+    req.trace_topk = sink.topk_recorder()
+    req.trace_features.append(torch.zeros(6, 5120, dtype=torch.bfloat16), 0)
+    ids = torch.arange(2 * 16, dtype=torch.int32).view(2, 16)
+    logits = torch.linspace(0, 1, 32, dtype=torch.bfloat16).view(2, 16)
+    req.trace_topk.append(ids, logits, 3)  # rows for positions 3 and 4 (tokens at 4 and 5)
+    req.trace_topk.append(ids[:1] + 100, logits[:1], 5)
+    assert sink.record(req)
+    # a gap between appends invalidates the top-k stream only
+    req2 = Request(prompt_ids=[1], params=SamplingParams(max_new_tokens=8), request_id=6)
+    req2.output_ids, req2.finish_reason, req2.t_finish = [2, 3], "stop", time.perf_counter()
+    req2.trace_topk = sink.topk_recorder()
+    req2.trace_topk.append(ids[:1], logits[:1], 1)
+    req2.trace_topk.append(ids[:1], logits[:1], 5)
+    assert sink.record(req2)
+    _drain(sink, 2)
+    doc, doc2 = iter_records(tmp_path)
+    assert doc["topk"]["start"] == 3 and doc["topk"]["rows"] == 3 and doc["topk"]["k"] == 16
+    from sharar.engine.traces import load_topk
+    got_ids, got_logits = load_topk(doc["topk"])
+    assert got_ids.shape == (3, 16) and got_ids[0].tolist() == list(range(16)) and got_ids[2, 0] == 100
+    torch.testing.assert_close(got_logits[:2], logits)
+    assert summarize(tmp_path)["requests_with_topk"] == 1
+    assert doc2["topk"] is None and not list((tmp_path / "features").rglob("6.topk-*"))

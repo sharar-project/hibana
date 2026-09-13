@@ -80,10 +80,13 @@ def main(argv: list[str] | None = None) -> int:
     p_train.add_argument("--continue-from", default=None, help="a 'current' symlink: start from its checkpoint when it resolves (default: the pinned draft)")
     p_train.add_argument("--sequences-per-step", type=int, default=2)
     p_train.add_argument("--anchors", type=int, default=128, help="random anchors per sequence")
-    p_train.add_argument("--anchor-chunk", type=int, default=32)
+    p_train.add_argument("--anchor-chunk", type=int, default=128)
+    p_train.add_argument("--no-compile", action="store_true", help="train the block forward eagerly instead of torch.compile")
     p_train.add_argument("--block", type=int, default=16, help="block size: serving's k proposals plus the anchor")
     p_train.add_argument("--gamma", type=float, default=7.0, help="position weight decay exp(-(k-1)/gamma)")
     p_train.add_argument("--selector-alpha", type=float, default=1.0)
+    p_train.add_argument("--kl-alpha", type=float, default=1.0, help="weight of the KL to the target's recorded top-k logits (0 disables)")
+    p_train.add_argument("--train-params", default="attn", choices=("attn", "all", "selector"), help="which draft weights to train (attn: attention, norms, convolutions and selector)")
     p_train.add_argument("--lr", type=float, default=5e-5)
     p_train.add_argument("--warmup-steps", type=int, default=10)
     p_train.add_argument("--max-grad-norm", type=float, default=1.0)
@@ -176,8 +179,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"continuing from {draft}" if draft else f"{args.continue_from} does not resolve to a checkpoint; starting from the pinned draft", flush=True)
         cfg = TrainConfig(traces=traces, output=args.output, draft=draft, steps=args.steps, promote_to=args.promote_to,
                           sequences_per_step=args.sequences_per_step, anchors_per_sequence=args.anchors,
-                          anchor_chunk=args.anchor_chunk, block=args.block, gamma=args.gamma,
-                          selector_alpha=args.selector_alpha, learning_rate=args.lr, warmup_steps=args.warmup_steps,
+                          anchor_chunk=args.anchor_chunk, compile=not args.no_compile, block=args.block, gamma=args.gamma,
+                          selector_alpha=args.selector_alpha, kl_alpha=args.kl_alpha, train_params=args.train_params,
+                          learning_rate=args.lr, warmup_steps=args.warmup_steps,
                           max_grad_norm=args.max_grad_norm, max_length=args.max_length, holdout_tokens=args.holdout_tokens,
                           eval_every=args.eval_every, greedy_only=args.greedy_only,
                           train_context=args.train_context, seed=args.seed)

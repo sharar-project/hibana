@@ -198,15 +198,24 @@ class SpecDecoder:
         s_len = k + 1
         if self.ex.use_graphs and self.verify_graphs is not None:
             graphs = self.width_graphs.get(k, self.verify_graphs)
-            norm_rows, z_flat, ctx, layers = graphs.run(batch.tokens, batch.positions, batch.pages,
-                                                       batch.slots, batch.kv_pages, sampled=batch.sampled)
+            norm_rows, z_flat, ctx, layers, logits = graphs.run(batch.tokens, batch.positions, batch.pages,
+                                                               batch.slots, batch.kv_pages, sampled=batch.sampled)
             norm = norm_rows.view(b_sz, s_len, -1).clone() if self.proposer.requirements.features.final_norm else None
             layers = {lid: value.view(b_sz, s_len, -1).clone() for lid, value in layers.items()} if layers else None
             z = z_flat.view(b_sz, s_len, -1) if batch.sampled else z_flat.view(b_sz, s_len).clone()
-            self._accept_batch(batch, z, VerifiedFeatures(norm, layers))
+            self._accept_batch(batch, z, VerifiedFeatures(norm, layers), topk=self._target_topk(batch.requests, logits, b_sz, s_len))
             return
         ctx = self.context(batch, self.ex._paged_prefill)
         self.finish(batch, self.ex.model.forward(batch.tokens, ctx))
+
+    TOPK = 16
+
+    def _target_topk(self, reqs, logits, b_sz: int, s_len: int):
+        """Top-k target logits per verified row, only when a request in the batch records traces."""
+        if not any(r.trace_topk is not None for r in reqs):
+            return None
+        values, ids = logits.view(b_sz, s_len, -1).topk(self.TOPK, dim=-1)
+        return ids.to(torch.int32), values.to(torch.bfloat16)
 
     def context(self, batch: Verification, wrapper) -> ForwardContext:
         """Plan the eager verification attention wrapper."""
@@ -241,13 +250,13 @@ class SpecDecoder:
         layers = {lid: value.view(b_sz, s_len, -1) for lid, value in out["features"].items()} if "features" in out else None
         logits = self.ex.model.logits(out["norm"])
         z = logits.view(b_sz, s_len, -1) if batch.sampled else logits.argmax(-1).view(b_sz, s_len)
-        self._accept_batch(batch, z, VerifiedFeatures(norm, layers))
+        self._accept_batch(batch, z, VerifiedFeatures(norm, layers), topk=self._target_topk(batch.requests, logits, b_sz, s_len))
 
-    def _accept_batch(self, batch, z, features):
+    def _accept_batch(self, batch, z, features, topk=None):
         self._accept(batch.requests, batch.proposal.tokens, z, features, batch.started, batch.prepared,
-                     proposal=batch.proposal if batch.sampled else None)
+                     proposal=batch.proposal if batch.sampled else None, topk=topk)
 
-    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None) -> None:
+    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, topk=None) -> None:
         if self.timing:
             torch.cuda.synchronize()
         t2 = time.perf_counter()
@@ -326,9 +335,12 @@ class SpecDecoder:
             r.spec_accepted += a
             r.spec_emitted += count
         self.proposer.accepted_batch(reqs, outputs, features)
-        for r, emitted in zip(reqs, outputs):
+        for i, (r, emitted) in enumerate(zip(reqs, outputs)):
             if r.trace_features is not None:
                 self._trace_features(r, r.committed_len - len(emitted), r.committed_len)
+            if r.trace_topk is not None and topk is not None:
+                count = len(emitted)
+                r.trace_topk.append(topk[0][i, :count], topk[1][i, :count], r.committed_len - count)
         self.rounds += 1
         if self.timing:
             torch.cuda.synchronize()

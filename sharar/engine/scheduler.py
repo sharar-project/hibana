@@ -103,6 +103,7 @@ class Scheduler:
         if self.sink is not None and params.trace:
             req.trace_rounds = []
             req.trace_features = self.sink.recorder()
+            req.trace_topk = self.sink.topk_recorder()
         self.queue.append(req)
         return req
 

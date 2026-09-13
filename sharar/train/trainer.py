@@ -23,7 +23,7 @@ from pathlib import Path
 import torch
 
 from sharar.train.data import Sample, load_samples, split, summary
-from sharar.train.loss import Terms, block_targets, block_terms, sample_anchors
+from sharar.train.loss import Terms, block_targets, block_teacher, block_terms, sample_anchors
 
 
 @dataclass
@@ -35,10 +35,13 @@ class TrainConfig:
     promote_to: str | None = None  # symlink updated to point at the promoted checkpoint (relative target)
     sequences_per_step: int = 2
     anchors_per_sequence: int = 128
-    anchor_chunk: int = 32
+    anchor_chunk: int = 128
+    compile: bool = True  # torch.compile the block forward (about a minute of warmup; falls back to eager)
     block: int = 16  # serving verifies k=15 proposals, one block of 16
     gamma: float = 7.0
     selector_alpha: float = 1.0
+    kl_alpha: float = 1.0  # weight of the KL to the target's recorded top-k; ignored for traces without it
+    train_params: str = "attn"  # attn | all | selector (see draft.PARAMETER_SETS)
     learning_rate: float = 5e-5
     warmup_steps: int = 10
     weight_decay: float = 0.0
@@ -107,6 +110,13 @@ class Trainer:
         self.output = Path(cfg.output)
         self.output.mkdir(parents=True, exist_ok=True)
         self.history = self.output / "log.jsonl"
+        self.forward_blocks = draft.forward_blocks
+        if cfg.compile and self.device.type == "cuda":
+            try:
+                self.forward_blocks = torch.compile(draft.forward_blocks, dynamic=True)
+                log("block forward: torch.compile (dynamic shapes); first steps include compilation")
+            except Exception as exc:  # noqa: BLE001 - compile support varies by stack
+                log(f"torch.compile unavailable ({type(exc).__name__}); training eager")
 
     def _record(self, row: dict) -> None:
         with self.history.open("a") as handle:
@@ -136,7 +146,7 @@ class Trainer:
             group["lr"] = learning_rate(cfg, step)
         self.optimizer.step()
         self.draft.sync()
-        row = {"step": step, "loss": total.loss(cfg.selector_alpha).item(), "grad_norm": float(grad_norm),
+        row = {"step": step, "loss": total.loss(cfg.selector_alpha, cfg.kl_alpha).item(), "grad_norm": float(grad_norm),
                "lr": learning_rate(cfg, step), "labels": total.label_count.item(), "seconds": time.perf_counter() - started,
                **total.metrics()}
         return row
@@ -147,17 +157,19 @@ class Trainer:
         projected = sample.context(self.device)
         anchors = anchors.to(self.device)
         hidden_projection, predecessor_codebook, successor_codebook = self.draft.selector_weights()
+        teacher_ids, teacher_logits, teacher_valid = sample.teacher(self.device) if cfg.kl_alpha and sample.topk else (None, None, None)
         total = None
         for start in range(0, anchors.shape[0], cfg.anchor_chunk):
             chunk = anchors[start:start + cfg.anchor_chunk]
             target_ids, predecessor_ids, weight_mask, loss_weights = block_targets(ids, chunk, cfg.block, sample.prompt_len, cfg.gamma)
-            hidden = self.draft.forward_blocks(projected, ids, chunk)
+            teacher = block_teacher(chunk, cfg.block, teacher_ids, teacher_logits, teacher_valid) if teacher_ids is not None else None
+            hidden = self.forward_blocks(projected, ids, chunk)
             logits = self.draft.head(hidden)
             terms = block_terms(logits, hidden, target_ids, predecessor_ids, weight_mask, loss_weights, top_k=self.draft.top_k,
                                 hidden_projection=hidden_projection, predecessor_codebook=predecessor_codebook,
-                                successor_codebook=successor_codebook)
-            ((terms.ce_num + cfg.selector_alpha * terms.selector_ce_num) / total_den).backward()
-            detached = Terms(*(t.detach() for t in terms.__dict__.values()))
+                                successor_codebook=successor_codebook, teacher=teacher)
+            (terms.loss(cfg.selector_alpha, cfg.kl_alpha) * terms.loss_den / total_den).backward()
+            detached = terms.detached()
             total = detached if total is None else total + detached
             del hidden, logits, terms
         return total
@@ -206,8 +218,9 @@ def run(cfg: TrainConfig, draft, snapshot: Path, log=print, stop: StopRequest | 
     trainer = Trainer(cfg, draft, log)
     manifest = {"config": asdict(cfg), "train": summary(train_set), "holdout": summary(holdout),
                 "trainable_parameters": draft.parameter_count(), "base": cfg.draft or "pinned"}
-    log(f"train {manifest['train']['requests']} requests / {manifest['train']['output_tokens']} output tokens; "
-        f"holdout {manifest['holdout']['requests']} requests; trainable {draft.parameter_count() / 1e9:.2f}B")
+    log(f"train {manifest['train']['requests']} requests / {manifest['train']['output_tokens']} output tokens "
+        f"({manifest['train']['with_topk']} with target top-k); holdout {manifest['holdout']['requests']} requests; "
+        f"trainable {draft.parameter_count() / 1e9:.2f}B ({cfg.train_params})")
     base = trainer.evaluate(holdout_eval)
     log(f"holdout tokens/round before training: {base['tokens_per_round']:.3f} ({base['rounds']} rounds, {base['seconds']:.0f}s)")
     trainer._record({"event": "eval", "step": 0, **{k: v for k, v in base.items() if k != "per_sample"}})
@@ -306,6 +319,6 @@ def load_runtime(cfg: TrainConfig, log=print):
     draft_dir = Path(cfg.draft) if cfg.draft else pinned
     model = ParallelDraftModel(draft_dir, target, config.CONTEXT_LENGTH, precision="bf16")
     head = Head(target, target.weights)
-    draft = TrainableDraft(model, head, block=cfg.block, train_context=cfg.train_context)
-    log(f"draft {draft_dir}: {draft.parameter_count() / 1e9:.2f}B trainable parameters, head-only target")
+    draft = TrainableDraft(model, head, block=cfg.block, train_context=cfg.train_context, train_params=cfg.train_params)
+    log(f"draft {draft_dir}: {draft.parameter_count() / 1e9:.2f}B trainable parameters ({cfg.train_params}), head-only target")
     return draft, pinned

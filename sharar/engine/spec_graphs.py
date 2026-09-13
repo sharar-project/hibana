@@ -91,8 +91,7 @@ class VerifyGraphs:
                 st["features"] = out.get("features")
                 logits = self.ex.model.logits(out["norm"])
                 st["argmax"] = logits.argmax(-1)
-                if not self.spec.proposer.requirements.greedy_only:
-                    st["logits"] = logits
+                st["logits"] = logits  # materialized by the graph anyway; traces read the target's top-k from it
             self._graphs[b] = g
             torch.cuda.synchronize()
             if log:
@@ -105,8 +104,9 @@ class VerifyGraphs:
         raise ValueError(b)
 
     def run(self, tokens: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, slots: torch.Tensor, kv_all: list[torch.Tensor], *, sampled=False):
-        """Returns (norm rows [b*s, H], argmax [b*s]) for the real rows; padded
-        rows use slot 0 and page 0."""
+        """Returns (norm rows [b*s, H], argmax or logits [b*s(, V)], ctx, features,
+        logits [b*s, V]) for the real rows; padded rows use slot 0 and page 0.
+        The logits view is overwritten by the next replay."""
         b = slots.shape[0]
         size = self.pick(b)
         st = self._st[size]
@@ -125,4 +125,4 @@ class VerifyGraphs:
         self._plan(st, list(kv_all) + pad_kv)
         self._graphs[size].replay()
         layers = {lid: value[:n] for lid, value in st["features"].items()} if st["features"] else None
-        return st["norm"][:n], st["logits" if sampled else "argmax"][:n], st["ctx"], layers
+        return st["norm"][:n], st["logits" if sampled else "argmax"][:n], st["ctx"], layers, st["logits"][:n]
