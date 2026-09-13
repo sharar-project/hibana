@@ -28,6 +28,9 @@ HOLDOUT_TOKENS="${SHARAR_TRAIN_HOLDOUT_TOKENS:-20000}"
 LR="${SHARAR_TRAIN_LR:-1e-4}"
 TRAIN_PARAMS="${SHARAR_TRAIN_PARAMS:-attn}"     # attn | all | selector
 KL_ALPHA="${SHARAR_TRAIN_KL_ALPHA:-1.0}"
+CONTINUE_LR="${SHARAR_TRAIN_CONTINUE_LR:-3e-5}"  # used when continuing from a promoted checkpoint
+ON_POLICY="${SHARAR_TRAIN_ON_POLICY:-0}"
+REGRESSION_DIR="${SHARAR_TRAIN_REGRESSION:-$RESULTS_DIR/draft-regression}"  # optional fixed general trace set
 DRIVER_LIB_DIR="/usr/lib/aarch64-linux-gnu"
 
 fail() { echo "sharar-train: $*" >&2; exit 1; }
@@ -62,10 +65,16 @@ case "${1:-}" in
       --env TRITON_LIBCUDA_PATH=$DRIVER_LIB_DIR)
     source "$SCRIPT_DIR/tools/gb10-container.sh"
     gb10_container_args
-    cid="$("${args[@]}" "$IMAGE" train --traces /traces --output "/runs/$run" --steps 0 \
-            --promote-to /runs/current --continue-from /runs/current \
-            --eval-every "$EVAL_EVERY" --holdout-tokens "$HOLDOUT_TOKENS" --lr "$LR" \
-            --train-params "$TRAIN_PARAMS" --kl-alpha "$KL_ALPHA")"
+    train_args=(train --traces /traces --output "/runs/$run" --steps 0
+            --promote-to /runs/current --continue-from /runs/current --continue-lr "$CONTINUE_LR"
+            --eval-every "$EVAL_EVERY" --holdout-tokens "$HOLDOUT_TOKENS" --lr "$LR"
+            --train-params "$TRAIN_PARAMS" --kl-alpha "$KL_ALPHA")
+    [[ "$ON_POLICY" == 1 ]] && train_args+=(--on-policy)
+    if [[ -d "$REGRESSION_DIR" ]]; then
+      args+=(--volume "$REGRESSION_DIR:/regression:ro")
+      train_args+=(--regression-traces /regression)
+    fi
+    cid="$("${args[@]}" "$IMAGE" "${train_args[@]}")"
     echo "Started $CONTAINER ($cid): run $RUNS_DIR/$run; logs: docker logs -f $CONTAINER; stop with: $0 stop"
     ;;
   stop)

@@ -86,6 +86,10 @@ def main(argv: list[str] | None = None) -> int:
     p_train.add_argument("--gamma", type=float, default=7.0, help="position weight decay exp(-(k-1)/gamma)")
     p_train.add_argument("--selector-alpha", type=float, default=1.0)
     p_train.add_argument("--kl-alpha", type=float, default=1.0, help="weight of the KL to the target's recorded top-k logits (0 disables)")
+    p_train.add_argument("--on-policy", action="store_true", help="anchor blocks at recorded rounds and train the selector on the target's answers to the drafter's own proposals")
+    p_train.add_argument("--regression-traces", default=None, help="fixed general trace directory; promotion also requires no regression on its newest slice")
+    p_train.add_argument("--regression-tolerance", type=float, default=0.01)
+    p_train.add_argument("--continue-lr", type=float, default=None, help="learning rate used instead of --lr when --continue-from resolves to a checkpoint")
     p_train.add_argument("--train-params", default="attn", choices=("attn", "all", "selector"), help="which draft weights to train (attn: attention, norms, convolutions and selector)")
     p_train.add_argument("--lr", type=float, default=5e-5)
     p_train.add_argument("--warmup-steps", type=int, default=10)
@@ -173,15 +177,19 @@ def main(argv: list[str] | None = None) -> int:
         if not traces:
             parser.error("give --traces or set SHARAR_TRACES")
         draft = args.draft
+        lr = args.lr
         if draft is None and args.continue_from:
             resolved = resolve_draft(Path(args.continue_from))
             draft = str(resolved) if resolved is not None else None
-            print(f"continuing from {draft}" if draft else f"{args.continue_from} does not resolve to a checkpoint; starting from the pinned draft", flush=True)
+            if draft and args.continue_lr is not None:
+                lr = args.continue_lr
+            print(f"continuing from {draft} at learning rate {lr}" if draft else f"{args.continue_from} does not resolve to a checkpoint; starting from the pinned draft", flush=True)
         cfg = TrainConfig(traces=traces, output=args.output, draft=draft, steps=args.steps, promote_to=args.promote_to,
                           sequences_per_step=args.sequences_per_step, anchors_per_sequence=args.anchors,
                           anchor_chunk=args.anchor_chunk, compile=not args.no_compile, block=args.block, gamma=args.gamma,
                           selector_alpha=args.selector_alpha, kl_alpha=args.kl_alpha, train_params=args.train_params,
-                          learning_rate=args.lr, warmup_steps=args.warmup_steps,
+                          on_policy=args.on_policy, regression_traces=args.regression_traces, regression_tolerance=args.regression_tolerance,
+                          learning_rate=lr, warmup_steps=args.warmup_steps,
                           max_grad_norm=args.max_grad_norm, max_length=args.max_length, holdout_tokens=args.holdout_tokens,
                           eval_every=args.eval_every, greedy_only=args.greedy_only,
                           train_context=args.train_context, seed=args.seed)

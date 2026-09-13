@@ -426,3 +426,129 @@ def test_parameter_subsets_select_expected_weights():
     assert picked("selector") == {"candidate_selector.successor_codebook"}
     with pytest.raises(ValueError):
         trainable_key("norm.weight", "mlp", False)
+
+
+def test_rounds_are_reconstructed_from_traces_with_truncation(tmp_path):
+    sink = TraceSink(tmp_path)
+    req = Request(prompt_ids=[1] * 6, params=SamplingParams(max_new_tokens=32), request_id=1)
+    # three greedy rounds: a=2, a=15 (all accepted), a=0; committed tokens follow y[:a] + [c]
+    rounds = [{"a": 2, "y": [10, 11] + [99] * 13, "z": [10, 11, 12] + [0] * 13, "c": 12},
+              {"a": 15, "y": list(range(20, 35)), "z": list(range(20, 36)), "c": 35},
+              {"a": 0, "y": [50] * 15, "z": [60] + [0] * 15, "c": 60}]
+    output = [5]  # the first output token comes from prefill and is the first round's anchor
+    for r in rounds:
+        output += r["y"][:r["a"]] + [r["c"]]
+    req.output_ids, req.finish_reason, req.t_finish, req.trace_rounds = output, "stop", time.perf_counter(), rounds
+    req.trace_features = sink.recorder()
+    req.trace_features.append(torch.zeros(len(req.prompt_ids) + len(output) - 1, 5120, dtype=torch.bfloat16), 0)
+    sink.record(req)
+    deadline = time.time() + 5
+    while sink.records < 1 and time.time() < deadline:
+        time.sleep(0.01)
+    sink.close()
+    sample = load_samples(tmp_path, require_features=True, min_output=4)[0]
+    assert [r[0] for r in sample.rounds] == [6, 9, 25]  # prompt_len, +3 emitted, +16 emitted
+    assert sample.ids[6] == 5 and sample.ids[9] == 12 and sample.ids[25] == 35
+    anchors, y, z = sample.on_policy("cpu")
+    assert anchors.tolist() == [6, 9, 25] and y.shape == (3, 15) and z.shape == (3, 16) and z[0, 2] == 12
+    cut = load_samples(tmp_path, max_length=20, require_features=True, min_output=4)[0]  # 6 + 21 = 27 -> drop 7
+    assert [r[0] for r in cut.rounds] == [2, 18] and summary([cut])["rounds"] == 2
+
+
+def test_on_policy_selector_labels_follow_the_block_prefix():
+    from sharar.train.loss import on_policy_selector
+    anchor = torch.tensor([7, 8])
+    proposals = torch.arange(30).view(2, 15) + 100
+    target_rows = torch.arange(32).view(2, 16) + 500
+    pred, labels, weights = on_policy_selector(anchor, proposals, target_rows, 16, None)
+    assert pred[0].tolist() == [7, 7] + (proposals[0, :14] ).tolist()  # position 1 <- anchor, position j <- proposal j-1
+    assert labels[0, 1:].tolist() == target_rows[0, :15].tolist()  # position j labelled by the target's row j-1
+    assert weights[0].tolist() == [0.0] + [1.0] * 15
+    _, _, decayed = on_policy_selector(anchor, proposals, target_rows, 16, 7.0)
+    assert decayed[0, 1] == 1.0 and decayed[0, 2] == pytest.approx(torch.exp(torch.tensor(-1 / 7.0)).item())
+
+
+def test_selector_overrides_replace_teacher_forced_selector_terms():
+    torch.manual_seed(1)
+    rows, block, vocab, top_k, rank, hidden_size = 2, 4, 20, 3, 5, 6
+    ids = torch.randint(0, vocab, (12,))
+    logits = torch.randn(rows, block, vocab)
+    hidden = torch.randn(rows, block, hidden_size)
+    weights = (torch.randn(rank, hidden_size), torch.randn(vocab, rank), torch.randn(vocab, rank))
+    t = block_targets(ids, torch.tensor([0, 4]), block, 0, None)
+    base = block_terms(logits, hidden, *t, top_k=top_k, hidden_projection=weights[0], predecessor_codebook=weights[1], successor_codebook=weights[2])
+    pred = torch.randint(0, vocab, (rows, block))
+    labels = logits.argmax(-1)  # always a candidate -> every position covered
+    w = torch.ones(rows, block)
+    w[:, 0] = 0
+    over = block_terms(logits, hidden, *t, top_k=top_k, hidden_projection=weights[0], predecessor_codebook=weights[1], successor_codebook=weights[2],
+                       selector_predecessor_ids=pred, selector_target_ids=labels, selector_weights_override=w)
+    assert over.ce_num == base.ce_num  # the unary objective is untouched
+    assert over.selector_covered_num == rows * (block - 1) and over.selector_weight_den == rows * (block - 1)
+    assert over.selector_ce_num != base.selector_ce_num
+
+
+def test_regression_gate_blocks_promotion(tmp_path, monkeypatch):
+    from sharar.train import trainer as module
+    _write_traces(tmp_path / "traces", 6, features=True)
+    _write_traces(tmp_path / "general", 4, features=True)
+    holdout_scores = iter([1.0, 1.5, 1.6])
+    regression_scores = iter([2.0, 1.9, 2.0])  # step 2 regresses by 5%, step 4 recovers
+
+    class FakeTrainer:
+        def __init__(self, cfg, draft, log):
+            self.cfg, self.output = cfg, Path(cfg.output)
+            self.output.mkdir(parents=True, exist_ok=True)
+            self.history = self.output / "log.jsonl"
+            self.events = []
+
+        def _record(self, row):
+            self.events.append(row)
+
+        def evaluate(self, samples):
+            score = next(regression_scores) if samples and samples[0].request_id in {s.request_id for s in general} else next(holdout_scores)
+            return {"tokens_per_round": score, "rounds": 1, "emitted": 0, "accepted": 0, "seconds": 0.0, "per_sample": []}
+
+        def step(self, batch, step):
+            return {"step": step, "loss": 1.0, "grad_norm": 1.0, "lr": 0.0, "labels": 1.0, "seconds": 0.0, "ce": 1.0,
+                    "accuracy": 0.5, "selector_ce": 0.0, "selector_accuracy": 0.0, "selector_coverage": 0.0}
+
+    saved = []
+
+    class FakeDraft:
+        def parameter_count(self):
+            return 1
+
+        def save(self, directory, snapshot, manifest):
+            Path(directory).mkdir(parents=True, exist_ok=True)
+            (Path(directory) / "config.json").write_text("{}")
+            (Path(directory) / "model.safetensors").write_bytes(b"")
+            saved.append(Path(directory).name)
+
+    general = load_samples(tmp_path / "general", require_features=True)
+    monkeypatch.setattr(module, "Trainer", FakeTrainer)
+    cfg = module.TrainConfig(traces=str(tmp_path / "traces"), output=str(tmp_path / "run"), steps=4, eval_every=2, sequences_per_step=1,
+                             holdout_tokens=40, regression_traces=str(tmp_path / "general"), regression_tolerance=0.01)
+    result = module.run(cfg, FakeDraft(), tmp_path, log=lambda *a: None)
+    assert result["best"]["step"] == 4 and result["best"]["regression_tokens_per_round"] == 2.0
+    assert saved == ["step-000002", "step-000004", "best"]  # step 2 improved held-out but regressed the general set
+
+
+def test_train_cli_uses_the_continuation_rate_only_when_continuing(monkeypatch, tmp_path):
+    from sharar import cli
+    from sharar.train.trainer import promote_link
+    seen = {}
+    monkeypatch.setattr("sharar.train.trainer.load_runtime", lambda cfg, log=print: (seen.__setitem__("cfg", cfg) or cfg, "pinned"))
+    monkeypatch.setattr("sharar.train.trainer.run", lambda cfg, draft, pinned, stop=None: {})
+    runs = tmp_path / "runs"
+    assert cli.main(["train", "--traces", str(tmp_path), "--output", str(runs / "a"), "--lr", "1e-4", "--continue-lr", "3e-5",
+                     "--continue-from", str(runs / "current"), "--on-policy", "--regression-traces", str(tmp_path)]) == 0
+    assert seen["cfg"].learning_rate == 1e-4 and seen["cfg"].on_policy and seen["cfg"].regression_traces == str(tmp_path)
+    best = runs / "run-0" / "best"
+    best.mkdir(parents=True)
+    (best / "config.json").write_text("{}")
+    (best / "model.safetensors").write_bytes(b"")
+    promote_link(runs / "current", best)
+    assert cli.main(["train", "--traces", str(tmp_path), "--output", str(runs / "b"), "--lr", "1e-4", "--continue-lr", "3e-5",
+                     "--continue-from", str(runs / "current")]) == 0
+    assert seen["cfg"].learning_rate == 3e-5 and seen["cfg"].draft == str(best.resolve())

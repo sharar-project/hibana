@@ -50,6 +50,25 @@ def block_teacher(anchors: torch.Tensor, block: int, ids: torch.Tensor, logits: 
     return ids[rows], logits[rows], keep
 
 
+def on_policy_selector(anchor_tokens: torch.Tensor, proposals: torch.Tensor, target_rows: torch.Tensor, block: int, gamma: float | None):
+    """Selector predecessors, labels and weights from verification rounds.
+
+    anchor_tokens [A], proposals [A, k], target_rows [A, k + 1] with k = block - 1.
+    Block position j (1..k) has predecessor block token j - 1 (the anchor token
+    for j = 1, else proposal j - 1) and label target_rows[j - 1], the target's
+    argmax after that prefix. Position 0 carries no label.
+    """
+    rows = anchor_tokens.shape[0]
+    tokens = torch.cat([anchor_tokens[:, None], proposals], dim=1)  # [A, block]
+    predecessor = torch.cat([tokens[:, :1], tokens[:, :-1]], dim=1)
+    labels = torch.cat([tokens[:, :1], target_rows[:, :block - 1]], dim=1)
+    offsets = torch.arange(block, device=anchor_tokens.device)
+    weights = (offsets[None, :] > 0).to(torch.float32).expand(rows, block).clone()
+    if gamma is not None and gamma > 0:
+        weights = weights * torch.exp(-(offsets - 1).clamp(min=0).to(torch.float32) / gamma)[None, :]
+    return predecessor, labels, weights
+
+
 def block_targets(ids: torch.Tensor, anchors: torch.Tensor, block: int, prompt_len: int, gamma: float | None):
     """Return (target_ids, predecessor_ids, weight_mask, loss_weights) as [A, block]."""
     length = ids.shape[0]
@@ -131,10 +150,15 @@ def selector_scores(unary: torch.Tensor, candidates: torch.Tensor, hidden: torch
 def block_terms(logits: torch.Tensor, hidden: torch.Tensor, target_ids: torch.Tensor, predecessor_ids: torch.Tensor,
                 weight_mask: torch.Tensor, loss_weights: torch.Tensor, *, top_k: int,
                 hidden_projection: torch.Tensor | None, predecessor_codebook: torch.Tensor | None,
-                successor_codebook: torch.Tensor | None, teacher=None) -> Terms:
+                successor_codebook: torch.Tensor | None, teacher=None,
+                selector_predecessor_ids: torch.Tensor | None = None, selector_target_ids: torch.Tensor | None = None,
+                selector_weights_override: torch.Tensor | None = None) -> Terms:
     """logits [A, B, V] (any float dtype), hidden [A, B, H]; selector terms are
     zero when the selector weights are None. ``teacher`` is an optional
-    (ids [A, B, k], logits [A, B, k], valid [A, B]) for the KL term."""
+    (ids [A, B, k], logits [A, B, k], valid [A, B]) for the KL term. The
+    selector's predecessors, labels and weights default to the teacher-forced
+    ones and can be replaced by on-policy rows (the drafter's own proposals as
+    predecessors, the target's answers to them as labels)."""
     kl_num = kl_den = None
     if teacher is not None:
         teacher_ids, teacher_logits, teacher_valid = teacher
@@ -152,20 +176,23 @@ def block_terms(logits: torch.Tensor, hidden: torch.Tensor, target_ids: torch.Te
     zero = ce_num.new_zeros(())
     if hidden_projection is None:
         return Terms(ce_num, loss_den, correct_num, label_count, zero, zero, zero, zero, kl_num, kl_den)
+    sel_pred = predecessor_ids if selector_predecessor_ids is None else selector_predecessor_ids
+    sel_target = target_ids if selector_target_ids is None else selector_target_ids
+    sel_base = loss_weights if selector_weights_override is None else selector_weights_override
     unary, candidates = logits.float().topk(top_k, dim=-1)
-    matches = candidates.eq(target_ids.unsqueeze(-1))
+    matches = candidates.eq(sel_target.unsqueeze(-1))
     is_candidate = matches.any(dim=-1)
     target_index = matches.long().argmax(dim=-1)
-    scores = selector_scores(unary, candidates, hidden.float(), predecessor_ids, hidden_projection.float(),
+    scores = selector_scores(unary, candidates, hidden.float(), sel_pred, hidden_projection.float(),
                              predecessor_codebook.float(), successor_codebook.float())
-    selector_ce = F.cross_entropy(scores.reshape(-1, top_k), target_index.reshape(-1), reduction="none").reshape_as(target_ids.to(torch.float32))
-    selector_weights = loss_weights * is_candidate.to(torch.float32)
+    selector_ce = F.cross_entropy(scores.reshape(-1, top_k), target_index.reshape(-1), reduction="none").reshape_as(sel_target.to(torch.float32))
+    selector_weights = sel_base * is_candidate.to(torch.float32)
     selector_ce_num = (selector_ce * selector_weights).sum()
     with torch.no_grad():
         selected = candidates.gather(-1, scores.argmax(dim=-1, keepdim=True)).squeeze(-1)
-        selector_correct_num = ((selected == target_ids).to(torch.float32) * selector_weights).sum()
+        selector_correct_num = ((selected == sel_target).to(torch.float32) * selector_weights).sum()
         selector_weight_den = selector_weights.sum()
-        selector_covered_num = (weight_mask * is_candidate.to(torch.float32)).sum()
+        selector_covered_num = ((sel_base > 0).to(torch.float32) * is_candidate.to(torch.float32)).sum()
     return Terms(ce_num, loss_den, correct_num, label_count, selector_ce_num, selector_correct_num,
                  selector_weight_den, selector_covered_num, kl_num, kl_den)
 
