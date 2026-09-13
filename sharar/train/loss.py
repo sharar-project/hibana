@@ -41,6 +41,15 @@ def sample_anchors(prompt_len: int, length: int, count: int, generator: torch.Ge
     return (picked + low).sort().values
 
 
+def block_teacher(anchors: torch.Tensor, block: int, ids: torch.Tensor, logits: torch.Tensor, valid: torch.Tensor):
+    """Teacher rows for each block position: the label at ``a + k`` is described by row ``a + k - 1``."""
+    length = ids.shape[0]
+    offsets = torch.arange(block, device=anchors.device)
+    rows = (anchors[:, None] + offsets[None, :] - 1).clamp(min=0, max=length - 1)
+    keep = valid[rows] & (offsets[None, :] > 0) & (anchors[:, None] + offsets[None, :] < length)
+    return ids[rows], logits[rows], keep
+
+
 def block_targets(ids: torch.Tensor, anchors: torch.Tensor, block: int, prompt_len: int, gamma: float | None):
     """Return (target_ids, predecessor_ids, weight_mask, loss_weights) as [A, block]."""
     length = ids.shape[0]
@@ -68,23 +77,46 @@ class Terms:
     selector_correct_num: torch.Tensor
     selector_weight_den: torch.Tensor
     selector_covered_num: torch.Tensor
+    kl_num: torch.Tensor | None = None  # KL(target top-k || draft over the same ids), weighted like the CE
+    kl_den: torch.Tensor | None = None
 
-    def loss(self, selector_alpha: float) -> torch.Tensor:
-        return (self.ce_num + selector_alpha * self.selector_ce_num) / self.loss_den.clamp_min(torch.finfo(torch.float32).tiny)
+    def loss(self, selector_alpha: float, kl_alpha: float = 0.0) -> torch.Tensor:
+        total = self.ce_num + selector_alpha * self.selector_ce_num
+        if kl_alpha and self.kl_num is not None:
+            total = total + kl_alpha * self.kl_num
+        return total / self.loss_den.clamp_min(torch.finfo(torch.float32).tiny)
 
     def metrics(self) -> dict:
         den = self.label_count.clamp_min(1)
-        return {
+        out = {
             "ce": (self.ce_num / self.loss_den.clamp_min(1e-30)).item(),
             "accuracy": (self.correct_num / den).item(),
             "selector_ce": (self.selector_ce_num / self.selector_weight_den.clamp_min(1e-30)).item(),
             "selector_accuracy": (self.selector_correct_num / self.selector_weight_den.clamp_min(1e-30)).item(),
             "selector_coverage": (self.selector_covered_num / den).item(),
         }
+        if self.kl_num is not None:
+            out["kl"] = (self.kl_num / self.kl_den.clamp_min(1e-30)).item()
+        return out
 
     def __add__(self, other: "Terms") -> "Terms":
-        return Terms(*(a + b for a, b in zip(self.__dict__.values(), other.__dict__.values())))
+        return Terms(*(None if a is None or b is None else a + b for a, b in zip(self.__dict__.values(), other.__dict__.values())))
 
+    def detached(self) -> "Terms":
+        return Terms(*(None if t is None else t.detach() for t in self.__dict__.values()))
+
+
+def teacher_kl(logits: torch.Tensor, teacher_ids: torch.Tensor, teacher_logits: torch.Tensor, weights: torch.Tensor):
+    """KL from the target's distribution over its top-k ids to the draft's distribution over the same ids.
+
+    logits [A, B, V] student, teacher_ids [A, B, k] (int64), teacher_logits [A, B, k],
+    weights [A, B] (zero where no teacher row exists). Returns (numerator, denominator).
+    """
+    student = torch.gather(logits.float(), -1, teacher_ids)
+    log_q = torch.log_softmax(student, dim=-1)
+    log_p = torch.log_softmax(teacher_logits.float(), dim=-1)
+    kl = (log_p.exp() * (log_p - log_q)).sum(-1)
+    return (kl * weights).sum(), weights.sum()
 
 def selector_scores(unary: torch.Tensor, candidates: torch.Tensor, hidden: torch.Tensor, predecessor_ids: torch.Tensor,
                     hidden_projection: torch.Tensor, predecessor_codebook: torch.Tensor,
@@ -99,9 +131,14 @@ def selector_scores(unary: torch.Tensor, candidates: torch.Tensor, hidden: torch
 def block_terms(logits: torch.Tensor, hidden: torch.Tensor, target_ids: torch.Tensor, predecessor_ids: torch.Tensor,
                 weight_mask: torch.Tensor, loss_weights: torch.Tensor, *, top_k: int,
                 hidden_projection: torch.Tensor | None, predecessor_codebook: torch.Tensor | None,
-                successor_codebook: torch.Tensor | None) -> Terms:
+                successor_codebook: torch.Tensor | None, teacher=None) -> Terms:
     """logits [A, B, V] (any float dtype), hidden [A, B, H]; selector terms are
-    zero when the selector weights are None."""
+    zero when the selector weights are None. ``teacher`` is an optional
+    (ids [A, B, k], logits [A, B, k], valid [A, B]) for the KL term."""
+    kl_num = kl_den = None
+    if teacher is not None:
+        teacher_ids, teacher_logits, teacher_valid = teacher
+        kl_num, kl_den = teacher_kl(logits, teacher_ids, teacher_logits, loss_weights * teacher_valid.to(torch.float32))
     vocab = logits.shape[-1]
     flat = logits.reshape(-1, vocab)
     if flat.dtype not in (torch.float32, torch.float64):
@@ -114,7 +151,7 @@ def block_terms(logits: torch.Tensor, hidden: torch.Tensor, target_ids: torch.Te
         label_count = weight_mask.sum()
     zero = ce_num.new_zeros(())
     if hidden_projection is None:
-        return Terms(ce_num, loss_den, correct_num, label_count, zero, zero, zero, zero)
+        return Terms(ce_num, loss_den, correct_num, label_count, zero, zero, zero, zero, kl_num, kl_den)
     unary, candidates = logits.float().topk(top_k, dim=-1)
     matches = candidates.eq(target_ids.unsqueeze(-1))
     is_candidate = matches.any(dim=-1)
@@ -130,7 +167,7 @@ def block_terms(logits: torch.Tensor, hidden: torch.Tensor, target_ids: torch.Te
         selector_weight_den = selector_weights.sum()
         selector_covered_num = (weight_mask * is_candidate.to(torch.float32)).sum()
     return Terms(ce_num, loss_den, correct_num, label_count, selector_ce_num, selector_correct_num,
-                 selector_weight_den, selector_covered_num)
+                 selector_weight_den, selector_covered_num, kl_num, kl_den)
 
 
 def greedy_walk(candidates: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:

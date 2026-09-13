@@ -244,6 +244,43 @@ of their acceptance gain (5.086 to 4.988) than the replay evaluation shows in
 BF16; the FP8 per-tensor scales are computed at load from weights the profile
 was validated on. Recalibrating them for trained weights is a small follow-up.
 
+## Soft labels, parameter subsets, compile: the v2 trainer
+
+Three changes were measured together on a fresh 400-request repository corpus
+recorded with the target's top-16 logits per verified row (368 training, 31
+held out; test set as above). Each run is 150 steps from the pinned draft.
+
+| Recipe | Trainable | Held-out slice (seed 0 / 1) | Test set (seed 0 / 1) |
+|---|---:|---:|---:|
+| pinned | 0 | 4.614 | 4.859 |
+| CE only, all (previous default) | 1.74B | 4.853 / 4.853 | 5.030 / 5.017 |
+| CE + KL, all | 1.74B | 4.847 | 5.048 |
+| CE + KL, attention subset | 0.44B | 4.853 / 4.813 | 5.086 / 5.028 |
+| CE + KL, attention subset, lr 3e-5 | 0.44B | 4.833 | 5.046 |
+
+Seed-to-seed spread (about 0.8%) equals the spread between recipes, so on
+acceptance they are equivalent at this step count; the KL to the target's
+top-16 is neutral here and stays on as the default because it costs nothing.
+The attention subset (Q/O projections, norms, convolutions, selector; no MLP
+matrices) reaches the same acceptance with a quarter of the parameters, about
+9 GiB less memory and a faster evaluation, and becomes the default. Served in
+FP8 on the test set it gives 46.3 tokens/s and 4.99 tokens per round after one
+session, what the all-parameter recipe reached after four sessions of the
+1,000-request loop (46.4 / 4.99).
+
+Training step cost: the block forward and backward for 128 anchors of one
+sequence take 1.64 s eager at 32 anchors per chunk, 1.32 s at 64, 1.31 s at
+128, and 0.93 s with `torch.compile` at 128 (54 s compile warmup, peak 35.7
+GiB); compile at chunk 128 is the default. FP8 for trained drafts: per-tensor
+and per-row weight scales give the same 2.9 to 3.9% error per matrix on both
+the pinned and a trained checkpoint, so the BF16/FP8 acceptance gap is the
+format, not calibration; nothing to recalibrate.
+
+Merge gate for this trainer, standard benchmark against main's image: with
+tracing off, +0.18% / +0.27% / +0.07% end-to-end TPS (code / design /
+reasoning), outputs identical; with tracing on, including the top-k
+recording, -0.29% / -0.51% / -0.74%, outputs identical.
+
 ## Serving path with tracing off
 
 Before merging, the standard benchmark (`sharar benchmark --workload all`,

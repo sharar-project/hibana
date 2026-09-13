@@ -50,6 +50,7 @@ class Request(RequestState):
     # opt-in trace sink (engine/traces.py): per-round records while recording, else None
     trace_rounds: list[dict] | None = None
     trace_features: object = None  # FeatureRecorder while recording projected draft context, else None
+    trace_topk: object = None  # TopkRecorder for the target's top-k logits per verified row, else None
 
     @property
     def prefill_len(self) -> int:

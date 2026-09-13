@@ -217,7 +217,7 @@ def verify_case(ex, cell, expected, output, window):
         before = history_hashes(ex, req)
         graph, traces, rows = {}, {}, []
         for b in (1, 2):
-            norm, targets, _, _ = ex.spec.verify_graphs.run(*inputs[b])
+            norm, targets, _, _, _ = ex.spec.verify_graphs.run(*inputs[b])
             graph[b] = {'norm': norm[:8].clone().cpu(), 'argmax': targets[:8].cpu().tolist()}
             assert graph[b]['argmax'] == expected['target_ids'][str(b)][:8]
         wrapper = ex.spec.verify_graphs._st[1]['wrapper']

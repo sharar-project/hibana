@@ -32,10 +32,12 @@ NVFP4 head, about 40 GiB in total.
 Underneath, `sharar-ctl` drives `run-sharar-train.sh`, which runs
 `sharar train --steps 0 --continue-from /runs/current --promote-to /runs/current`
 in the runtime container; that command also takes explicit `--steps`,
-`--draft`, `--lr`, `--holdout-tokens` and the other hyperparameters for
-controlled runs. Launcher variables: `SHARAR_TRAIN_LR` (1e-4),
-`SHARAR_TRAIN_HOLDOUT_TOKENS` (20000), `SHARAR_TRAIN_EVAL_EVERY` (100),
-`SHARAR_TRAIN_STOP_GRACE_S` (1200), `SHARAR_DRAFT_RUNS`.
+`--draft`, `--lr`, `--holdout-tokens`, `--train-params`, `--kl-alpha` and the
+other hyperparameters for controlled runs. Launcher variables:
+`SHARAR_TRAIN_LR` (1e-4), `SHARAR_TRAIN_PARAMS` (which weights to train),
+`SHARAR_TRAIN_KL_ALPHA` (1.0), `SHARAR_TRAIN_HOLDOUT_TOKENS` (20000),
+`SHARAR_TRAIN_EVAL_EVERY` (100), `SHARAR_TRAIN_STOP_GRACE_S` (1200),
+`SHARAR_DRAFT_RUNS`.
 
 ## What is recorded
 
@@ -44,7 +46,9 @@ parameters, the cached prefix length and every verification round (accepted
 count, the draft's proposals, the target's argmax rows). DFlash2 requests also
 store the projected context features the drafter attended to, copied from the
 proposer's ring as they are written: the last 2,048 prompt positions and every
-committed output position, 10 KiB per row. No text or client metadata is
+committed output position, 10 KiB per row; and the target's top-16 ids and
+logits for every verified output position (96 bytes per row), read from the
+verify graph's logits only while a traced request is in the batch. No text or client metadata is
 stored, nothing leaves the machine, and `"trace": false` opts a request out.
 The directory is capped (32 GiB by default, about 1,300 requests of 2K-token
 traffic); the oldest trace file and its features go first, so the cap is the
@@ -63,8 +67,14 @@ samples (`data.py`), the block objective (`loss.py`) and the loop
 (`trainer.py`). The objective is SpecForge's DFlash2 objective: cross-entropy
 at block positions 1..15 with weights `exp(-(k-1)/7)` over response positions,
 the selector trained as a classifier over the head's strict top-16 with the
-true predecessor, one shared denominator. Blocks are 16 wide, matching
-serving's k=15. The vocabulary head runs serving's exact NVFP4 kernel in the
+true predecessor, one shared denominator; plus, when the traces carry the
+target's top-16, a KL from the target's distribution over those ids to the
+draft's distribution over the same ids (`--kl-alpha`, soft labels). Blocks
+are 16 wide, matching serving's k=15. The default `--train-params attn`
+trains the attention projections, norms, convolutions and selector (about
+0.44B parameters) and leaves the MLP matrices; `all` trains every non-context
+weight (1.74B) for the same acceptance at four times the optimizer cost. The block forward is compiled with `torch.compile` and
+processed in chunks of 128 anchors. The vocabulary head runs serving's exact NVFP4 kernel in the
 forward and the dequantized BF16 weight in the backward. Trainable weights
 keep FP32 masters and are written back into the serving weights in place
 after every step. Evaluation replays serving's greedy proposals from each

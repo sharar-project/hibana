@@ -37,6 +37,22 @@ def context_key(name: str) -> bool:
     return name in CONTEXT_KEYS or name.endswith(("self_attn.kv", "self_attn.k_norm.weight"))
 
 
+PARAMETER_SETS = {
+    "all": lambda name: True,  # every non-context weight (about 1.74B)
+    "attn": lambda name: not name.endswith(("mlp.gate_up", "mlp.down_proj.weight")),  # no MLP matrices (about 0.4B)
+    "selector": lambda name: name.startswith("candidate_selector."),
+}
+
+
+def trainable_key(name: str, train_params: str, train_context: bool) -> bool:
+    if not train_context and context_key(name):
+        return False
+    try:
+        return PARAMETER_SETS[train_params](name)
+    except KeyError:
+        raise ValueError(f"unknown parameter set {train_params!r}; choose from {sorted(PARAMETER_SETS)}") from None
+
+
 class Nvfp4HeadFunction(torch.autograd.Function):
     """Serving's exact NVFP4 head in the forward; BF16 dequantized weight in the backward."""
 
@@ -79,7 +95,7 @@ class Head:
 
 class TrainableDraft:
     def __init__(self, model: ParallelDraftModel, head: Head, *, block: int, window: int | None = None,
-                 train_context: bool = False):
+                 train_context: bool = False, train_params: str = "all"):
         if model.precision != "bf16" or model.fp8_weights:
             raise ValueError("training needs the BF16 draft profile")
         self.model, self.head, self.block = model, head, block
@@ -87,9 +103,10 @@ class TrainableDraft:
         self.layers = model.cfg["num_hidden_layers"]
         self.top_k = model.cfg["dflash_config"]["selector_top_k"]
         self.train_context = train_context
+        self.train_params = train_params
         self.masters: dict[str, torch.nn.Parameter] = {}
         for name, weight in model.weights.items():
-            if train_context or not context_key(name):
+            if trainable_key(name, train_params, train_context):
                 self.masters[name] = torch.nn.Parameter(weight.detach().float().clone())
 
     # ---- weights ----
