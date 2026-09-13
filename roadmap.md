@@ -39,16 +39,17 @@ and [draft adaptation](docs/draft-adaptation.md).
 1. **Train on real traffic.** Record a few hundred requests of actual use and
    repeat the held-out and served-throughput measurements; the repository
    proxy has only about 150 distinct prompts and overfits after one session.
-2. **Harden promotion.** Use a smaller learning rate when continuing from an
-   adapted draft, and add a fixed general regression set to the promotion
-   gate so a draft that fits the newest traffic cannot regress everything else.
-   Done: traces record the target's top-16 logits, the trainer distills over
-   them (neutral on acceptance so far), trains the attention subset by
-   default (same acceptance, a quarter of the parameters) and compiles the
-   block forward (1.8x faster). Next: the recorded on-policy rows as
-   supervision, and adapters if a subset ever limits gains. Measured and
-   rejected: candidate masking to the user's vocabulary (about 1% acceptance
-   loss) and FP8 scale recalibration (per-row scales change nothing).
+2. **Harden promotion.** Done: traces record the target's top-16 logits,
+   the trainer distills over them (neutral on acceptance so far), trains the
+   attention subset by default (same acceptance, a quarter of the
+   parameters), compiles the block forward (1.8x faster), continues from an
+   adapted draft at 3e-5 (a second session at 1e-4 regressed an unseen test
+   set 1%; at 3e-5 it improved it) and refuses promotion when a fixed
+   regression set drops more than 0.5%. On-policy selector supervision is
+   available and within seed spread of the default. Next: adapters if a
+   subset ever limits gains. Measured and rejected: candidate masking to the
+   user's vocabulary (about 1% acceptance loss) and FP8 scale recalibration
+   (per-row scales change nothing).
 3. **Reload without a restart.** An engine command that copies a promoted
    draft into the serving weights between rounds, including the FP8
    conversion, so `train stop` does not relaunch the container.
