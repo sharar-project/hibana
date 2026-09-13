@@ -44,7 +44,7 @@ class TrainConfig:
     train_params: str = "attn"  # attn | all | selector (see draft.PARAMETER_SETS)
     on_policy: bool = False  # anchors at recorded rounds; selector labels from the target's answers to the drafter's own proposals
     regression_traces: str | None = None  # a fixed general trace set; promotion also requires no regression on it
-    regression_tolerance: float = 0.01
+    regression_tolerance: float = 0.005
     learning_rate: float = 5e-5
     warmup_steps: int = 10
     weight_decay: float = 0.0

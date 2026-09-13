@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     p_train.add_argument("--kl-alpha", type=float, default=1.0, help="weight of the KL to the target's recorded top-k logits (0 disables)")
     p_train.add_argument("--on-policy", action="store_true", help="anchor blocks at recorded rounds and train the selector on the target's answers to the drafter's own proposals")
     p_train.add_argument("--regression-traces", default=None, help="fixed general trace directory; promotion also requires no regression on its newest slice")
-    p_train.add_argument("--regression-tolerance", type=float, default=0.01)
+    p_train.add_argument("--regression-tolerance", type=float, default=0.005, help="promotion is refused when the regression set drops below base x (1 - tolerance)")
     p_train.add_argument("--continue-lr", type=float, default=None, help="learning rate used instead of --lr when --continue-from resolves to a checkpoint")
     p_train.add_argument("--train-params", default="attn", choices=("attn", "all", "selector"), help="which draft weights to train (attn: attention, norms, convolutions and selector)")
     p_train.add_argument("--lr", type=float, default=5e-5)

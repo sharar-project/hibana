@@ -281,6 +281,47 @@ tracing off, +0.18% / +0.27% / +0.07% end-to-end TPS (code / design /
 reasoning), outputs identical; with tracing on, including the top-k
 recording, -0.29% / -0.51% / -0.74%, outputs identical.
 
+## On-policy selector supervision and safer continuation: v3
+
+Two follow-ups, same corpus, 150 steps each, attention subset with KL.
+
+On-policy selector: the traces record every verification round (the drafter's
+proposals and the target's argmax after each proposed prefix), so the selector
+can be trained on the rows it sees at serving time instead of the
+teacher-forced ones. Blocks are anchored at the recorded rounds; the unary and
+KL terms are unchanged.
+
+| Recipe (from pinned) | Held-out slice (seed 0 / 1) | Test set (seed 0 / 1) | Step |
+|---|---:|---:|---:|
+| teacher-forced selector (v2 default) | 4.853 / 4.813 | 5.086 / 5.028 | 2.7 s |
+| on-policy selector | 4.837 / 4.846 | 5.087 / 5.104 | 2.3 s |
+
+Means differ by 0.2% on the held-out slice and 0.8% on the test set, inside
+the seed spread; on-policy is not the default, it stays available as
+`--on-policy`. The step is faster because anchors come from recorded rounds
+(one block per round, no random anchor sampling), not because the objective
+is cheaper.
+
+Continuation: a second session from the v2 attention checkpoint on the same
+corpus, with the ShareGPT held-out slice (5,398 rounds) as a fixed regression
+set in the promotion gate.
+
+| Continuation from kl-attn | Held-out slice | Regression set | Test set |
+|---|---:|---:|---:|
+| base (kl-attn/best) | 4.853 | 3.757 | 5.086 |
+| lr 1e-4 | 4.860 | 3.733 (-0.6%) | 5.034 (-1.0%) |
+| lr 3e-5 | 4.897 | 3.771 (+0.4%) | 5.091 (+0.1%) |
+
+At the original rate the second session repeats the earlier finding: the
+trainer's own held-out slice is flat while the general set and the unseen
+prompt pairs regress. At 3e-5 all three improve. The gate at its first
+tolerance (1%) let the 1e-4 checkpoint through; the default is now 0.5%, which
+blocks it and passes the 3e-5 one. `sharar-ctl train` therefore uses 3e-5
+whenever it continues from a promoted checkpoint (`SHARAR_TRAIN_CONTINUE_LR`)
+and takes `$SHARAR_RESULTS/draft-regression` as the regression set when that
+directory exists; the regression set should be the user's own traffic that
+they consider general, held fixed across sessions.
+
 ## Serving path with tracing off
 
 Before merging, the standard benchmark (`sharar benchmark --workload all`,

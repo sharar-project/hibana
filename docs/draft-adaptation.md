@@ -22,7 +22,7 @@ request, holding out the newest ones until they cover about 20K output tokens
 (at least four requests, at most a fifth of them). It evaluates every 100
 steps and once more on `stop`, and promotes only when held-out tokens per
 round improve and, when a regression set is configured, that set does not
-drop by more than 1% below its pre-training score; promotion updates
+drop by more than 0.5% below its pre-training score; promotion updates
 `$SHARAR_RESULTS/draft-runs/current`, which `serve` follows. `serve --pinned`
 forces the publisher's draft, `serve --draft DIR` any checkpoint, `draft use
 RUN` another run, `draft pinned` removes the link. Training never shares the
@@ -120,10 +120,13 @@ tokens per round 5.367 to 5.739 and served throughput 46.3 to 52.3 tokens/s
 (+12.9%); a 1,000-request serve-then-train loop raised acceptance while
 serving from 27.5% to 31.5% of proposals and throughput by 12.4%. On diverse
 ShareGPT traffic the gain was 1.4%. The proxy has only about 150 distinct
-prompts, and a second session over the same pool regressed an unseen-prompt
-test set while the trainer's own held-out slice stayed flat; the next changes
-are a smaller learning rate when continuing from an adapted draft and a fixed
-general regression set in the promotion gate.
+prompts, and a second session over the same pool at the first-session rate
+regressed an unseen-prompt test set by 1% while the trainer's own held-out
+slice stayed flat; at the continuation rate (3e-5) the same session improved
+the held-out slice, a fixed ShareGPT regression set and the test set together,
+which is why continuation uses the smaller rate and a 0.5% regression
+tolerance. On-policy selector supervision scored within seed spread of the
+teacher-forced default and is optional.
 
 A different drafter can change greedy continuations through the target's
 own shape sensitivity: round boundaries move, the same token is computed in a

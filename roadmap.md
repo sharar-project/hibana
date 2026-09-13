@@ -26,6 +26,8 @@ and [draft adaptation](docs/draft-adaptation.md).
   trained-draft serving, `sharar-ctl` and the start/stop launcher. On a
   repository-coding workload a 1,000-request serve-then-train loop raised
   serving throughput 12.4% ([report](docs/archive/studies/gb10-draft-training.md)).
+  Continuation sessions use a smaller rate and a fixed regression set in the
+  promotion gate; on-policy selector supervision is available (`--on-policy`).
 - API: chat with auto/null/none tool choice, thinking, streaming; forced tool
   choice and constrained JSON output remain unsupported.
 - Known property: the target's prefill numerics depend on sequence length and
