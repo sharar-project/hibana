@@ -166,7 +166,7 @@ class ParallelDraftModel:
         from sharar.model.draft_linear import DraftFp8Linear
         for name, weight in incoming.items():
             if name in self.fp8_weights:
-                packed = DraftFp8Linear.from_bf16(weight)
+                packed = DraftFp8Linear.from_bf16(weight.to(self.device))  # pack on the device, as the constructor does
                 self.fp8_weights[name].weight.copy_(packed.weight)
                 self.fp8_weights[name].scale.copy_(packed.scale)
             elif not name.endswith(self.CONTEXT_SUFFIXES):
