@@ -115,6 +115,10 @@ serve_args=(serve --host 0.0.0.0 --port "$PORT" --proposer "$PROPOSER" --verify-
 if [[ "$DRAFT_PRECISION" != bf16 ]]; then
   serve_args+=(--draft-precision "$DRAFT_PRECISION")
 fi
+if [[ "$PROPOSER" == dflash2 || "$PROPOSER" == dspark ]] && [[ "$SPEC" != 0 ]]; then
+  mkdir -p "$RUNS_DIR"   # promoted checkpoints; /reload_draft swaps them in without a restart
+  args+=(--volume "$RUNS_DIR:/runs:ro")
+fi
 if [[ -n "$DRAFT_DIR" ]]; then
   [[ -f "$DRAFT_DIR/config.json" && -f "$DRAFT_DIR/model.safetensors" ]] || fail "SHARAR_DRAFT=$DRAFT_DIR needs config.json and model.safetensors"
   [[ "$PROPOSER" == dflash2 || "$PROPOSER" == dspark ]] && [[ "$SPEC" != 0 ]] || fail "SHARAR_DRAFT requires an enabled parallel draft"

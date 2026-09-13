@@ -24,6 +24,7 @@ def ctl(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(module, "run", lambda command, env, dry: calls.append((command, env)) or 0)
     monkeypatch.setattr(module, "container_running", lambda name: False)
+    monkeypatch.setattr(module, "server_info", lambda port: None)  # never touch a real server
     return module, calls, tmp_path / "results"
 
 
@@ -73,3 +74,24 @@ def test_dry_run_prints_instead_of_running(ctl, capsys, monkeypatch):
     monkeypatch.setattr(module, "run", lambda command, env, dry: (print("+ " + " ".join(command)) or 0) if dry else 1)
     assert module.main(["--dry-run", "traces"]) == 0
     assert "sharar traces --dir /traces" in capsys.readouterr().out
+
+
+def test_draft_use_pinned_and_reload_swap_the_running_server(ctl, capsys, monkeypatch):
+    module, calls, results = ctl
+    runs = results / "draft-runs"
+    best = runs / "run-3" / "best"
+    best.mkdir(parents=True)
+    (best / "config.json").write_text("{}")
+    posted = []
+    monkeypatch.setattr(module, "server_info", lambda port: None)
+    assert module.main(["draft", "use", "run-3"]) == 0
+    assert "serving is down" in capsys.readouterr().out and not posted
+    monkeypatch.setattr(module, "server_info", lambda port: {"speculative": {}})
+    monkeypatch.setattr(module, "post_json", lambda port, route, payload, timeout=120: posted.append((port, route, payload)) or {"draft": payload["draft"], "seconds": 1.5})
+    assert module.main(["draft", "use", "run-3"]) == 0
+    assert posted[-1] == ("30001", "/reload_draft", {"draft": "/runs/run-3/best"})
+    assert "serving now uses /runs/run-3/best" in capsys.readouterr().out
+    assert module.main(["draft", "reload"]) == 0 and posted[-1][2] == {"draft": "/runs/run-3/best"}
+    assert module.main(["draft", "pinned"]) == 0 and posted[-1][2] == {"draft": "pinned"}
+    assert module.main(["draft", "reload"]) == 0 and posted[-1][2] == {"draft": "pinned"}  # no current link: the pinned draft
+    assert module.main(["--dry-run", "draft", "reload"]) == 0 and "POST" in capsys.readouterr().out and len(posted) == 4

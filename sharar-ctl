@@ -27,6 +27,7 @@ import os
 import subprocess
 import sys
 import urllib.error
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -67,6 +68,36 @@ def server_info(port: str) -> dict | None:
             return json.loads(r.read())
     except Exception:  # noqa: BLE001 - not serving
         return None
+
+
+def post_json(port: str, route: str, payload: dict, timeout: float = 120) -> dict:
+    request = urllib.request.Request(f"http://127.0.0.1:{port}{route}", data=json.dumps(payload).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        try:
+            detail = json.loads(detail)["error"]["message"]
+        except Exception:  # noqa: BLE001 - not the engine's error shape
+            pass
+        sys.exit(f"{route} failed: {detail}")
+
+
+def reload_served_draft(env: dict, run: str | None, dry: bool) -> bool:
+    """Swap the draft in the running server: a run name, or None for the pinned draft.
+    Returns False when nothing is serving. Runs are mounted read-only at /runs."""
+    port = env.get("SHARAR_PORT", "30001")
+    target = f"/runs/{run}/best" if run else "pinned"
+    if dry:
+        print(f"+ POST http://127.0.0.1:{port}/reload_draft {{\"draft\": \"{target}\"}}")
+        return True
+    if server_info(port) is None:
+        return False
+    reply = post_json(port, "/reload_draft", {"draft": target})
+    print(f"serving now uses {reply.get('draft')} ({reply.get('seconds')}s)")
+    return True
 
 
 def current_draft(env: dict) -> Path | None:
@@ -168,12 +199,24 @@ def cmd_draft(args, env, dry) -> int:
             tmp.unlink()
         tmp.symlink_to(os.path.relpath(target, runs))
         tmp.replace(link)
-        print(f"current -> {target}; restart serving to use it (sharar-ctl stop; sharar-ctl serve)")
+        print(f"current -> {target}")
+        if not reload_served_draft(env, args.run, dry):
+            print("serving is down; it follows current at the next sharar-ctl serve")
         return 0
     if args.action == "pinned":
         if link.is_symlink() and not dry:
             link.unlink()
-        print("current draft removed; serving uses the pinned publisher draft after a restart")
+        print("current draft removed")
+        if not reload_served_draft(env, None, dry):
+            print("serving is down; it uses the pinned publisher draft at the next sharar-ctl serve")
+        return 0
+    if args.action == "reload":
+        current = current_draft(env)
+        run = current.parent.name if current and current.parent.parent == runs.resolve() else None
+        if current and run is None:
+            sys.exit(f"current draft {current} is outside {runs}; serve it with sharar-ctl serve --draft")
+        if not reload_served_draft(env, run, dry):
+            sys.exit("serving is not up (sharar-ctl serve)")
         return 0
     return 2
 
@@ -299,8 +342,8 @@ def main(argv=None) -> int:
     p = sub.add_parser("train", help="stop serving and train the drafter on the recorded traces")
     p.add_argument("action", nargs="?", choices=("start", "stop", "status"), default="start")
     p.add_argument("--no-serve", action="store_true", help="with stop: do not relaunch serving")
-    p = sub.add_parser("draft", help="promoted checkpoints")
-    p.add_argument("action", choices=("list", "use", "pinned"))
+    p = sub.add_parser("draft", help="promoted checkpoints; use/pinned/reload swap the running server's draft in place")
+    p.add_argument("action", choices=("list", "use", "pinned", "reload"))
     p.add_argument("run", nargs="?", help="with use: a run directory name from `draft list`")
     sub.add_parser("traces", help="summarize the recorded traces")
     p = sub.add_parser("chat", help="chat with the running server in the terminal")

@@ -106,6 +106,12 @@ class EngineLoop:
         self._enqueue(("flush", fut, loop))
         await fut
 
+    async def reload_draft(self, draft_dir: str | None) -> str:
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        self._enqueue(("reload_draft", draft_dir, fut, loop))
+        return await fut
+
     def stats(self) -> dict:
         return self.last_stats
 
@@ -137,6 +143,17 @@ class EngineLoop:
                 _notify(loop, _resolve, fut, None, EngineUnavailable("engine unavailable"))
                 raise
             _notify(loop, _resolve, fut, True)
+        elif kind == "reload_draft":
+            _, draft_dir, fut, loop = cmd
+            try:
+                source = self.sched.ex.reload_draft(draft_dir)
+            except (ValueError, FileNotFoundError) as exc:
+                _notify(loop, _resolve, fut, None, InvalidRequest(str(exc)))
+                return
+            except Exception:
+                _notify(loop, _resolve, fut, None, EngineUnavailable("engine unavailable"))
+                raise
+            _notify(loop, _resolve, fut, source)
 
     def _run(self) -> None:
         import torch

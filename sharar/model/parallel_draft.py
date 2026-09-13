@@ -7,6 +7,7 @@ target features feed context K/V directly; only the short noise block traverses
 the draft layers. Attention planning and cache ownership stay in the adapter.
 """
 import json
+from pathlib import Path
 import math
 
 import torch
@@ -104,23 +105,74 @@ class ParallelDraftModel:
         self.features = tuple(cfg['dflash_config']['target_layer_ids'])
         self.window = cfg['sliding_window'] or max_context
         self.cos, self.sin = frequencies(cfg, max_context + 32, self.device)
+        self.weights = {name: weight.to(self.device) for name, weight in self.read_weights(snapshot, cfg).items()}
+        if precision == 'fp8':
+            from sharar.model.draft_linear import DraftFp8Linear
+            for name in list(self.weights):
+                if self.is_fp8_name(name):
+                    self.fp8_weights[name] = DraftFp8Linear.from_bf16(self.weights.pop(name))
+
+    # Keys that define the cached draft context (rings, retained features, cold
+    # payloads); a reload must leave them bit-identical.
+    CONTEXT_SUFFIXES = ('fc.weight', 'hidden_norm.weight', 'self_attn.kv', 'self_attn.k_norm.weight')
+    # Config keys that shape the graphs, the rings or the rotary tables.
+    SHAPE_KEYS = ('architectures', 'hidden_size', 'num_attention_heads', 'num_key_value_heads', 'head_dim',
+                  'num_hidden_layers', 'sliding_window', 'dflash_config', 'selector_top_k', 'rope_parameters', 'rope_theta',
+                  'intermediate_size', 'vocab_size')
+
+    @staticmethod
+    def is_fp8_name(name):
+        return name.endswith(('self_attn.q_proj.weight', 'self_attn.o_proj.weight', 'mlp.gate_up', 'mlp.down_proj.weight'))
+
+    @staticmethod
+    def read_weights(snapshot, cfg):
+        """The checkpoint's tensors on the CPU with the serving fusion applied (k|v, gate|up)."""
         with safe_open(str(snapshot / 'model.safetensors'), framework='pt', device='cpu') as source:
             # clone() reads the mmap view into RAM first: copying the view to the
             # device page-faults the file through DMA staging at ~200 MB/s on GB10
             # (19 s for this draft); memcpy plus a device copy takes about a second.
-            self.weights = {key: source.get_tensor(key).clone().to(self.device) for key in source.keys()}
-        # Fuse the equal-input projections once; original storage is released.
+            weights = {key: source.get_tensor(key).clone() for key in source.keys()}
         for layer in range(cfg['num_hidden_layers']):
             prefix = f'layers.{layer}.'
             for output, members in [('self_attn.kv', ('self_attn.k_proj.weight', 'self_attn.v_proj.weight')),
                                     ('mlp.gate_up', ('mlp.gate_proj.weight', 'mlp.up_proj.weight'))]:
-                self.weights[prefix + output] = torch.cat([self.weights.pop(prefix + name) for name in members])
-        if precision == 'fp8':
-            from sharar.model.draft_linear import DraftFp8Linear
-            for name in list(self.weights):
-                if name.endswith(('self_attn.q_proj.weight', 'self_attn.o_proj.weight',
-                                  'mlp.gate_up', 'mlp.down_proj.weight')):
-                    self.fp8_weights[name] = DraftFp8Linear.from_bf16(self.weights.pop(name))
+                weights[prefix + output] = torch.cat([weights.pop(prefix + name) for name in members])
+        return weights
+
+    def load_weights(self, snapshot):
+        """Copy a checkpoint into the serving tensors in place, so captured
+        graphs (which hold the tensor storage) run the new draft from the next
+        replay. Requires the same shapes and the same context weights; the
+        trainer freezes those, so a promoted checkpoint always qualifies."""
+        snapshot = Path(snapshot)
+        cfg = json.loads((snapshot / 'config.json').read_text())
+        for key in self.SHAPE_KEYS:
+            if cfg.get(key) != self.cfg.get(key):
+                raise ValueError(f'draft {snapshot} changes {key}; a reload needs the served architecture')
+        incoming = self.read_weights(snapshot, cfg)
+        expected = set(self.weights) | set(self.fp8_weights)
+        if set(incoming) != expected:
+            missing, extra = sorted(expected - set(incoming)), sorted(set(incoming) - expected)
+            raise ValueError(f'draft {snapshot} tensors differ from the served draft (missing {missing[:3]}, extra {extra[:3]})')
+        for name, weight in incoming.items():
+            served = self.fp8_weights[name].weight if name in self.fp8_weights else self.weights[name]
+            if tuple(weight.shape) != tuple(served.shape):
+                raise ValueError(f'draft {snapshot} changes the shape of {name}: {tuple(weight.shape)} vs {tuple(served.shape)}')
+            if weight.dtype != torch.bfloat16:
+                raise ValueError(f'draft {snapshot} stores {name} as {weight.dtype}; checkpoints are BF16')
+        for name in incoming:
+            if name.endswith(self.CONTEXT_SUFFIXES) and not torch.equal(incoming[name], self.weights[name].cpu()):
+                raise ValueError(f'draft {snapshot} changes the context weight {name}; retained rings would be stale, restart to serve it')
+        from sharar.model.draft_linear import DraftFp8Linear
+        for name, weight in incoming.items():
+            if name in self.fp8_weights:
+                packed = DraftFp8Linear.from_bf16(weight)
+                self.fp8_weights[name].weight.copy_(packed.weight)
+                self.fp8_weights[name].scale.copy_(packed.scale)
+            elif not name.endswith(self.CONTEXT_SUFFIXES):
+                self.weights[name].copy_(weight)
+        torch.cuda.synchronize(self.device) if self.device.type == 'cuda' else None
+        self.source = str(snapshot)
 
     def _linear(self, x, name):
         if name in self.fp8_weights:
