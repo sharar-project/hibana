@@ -12,7 +12,7 @@ guide; the dated evidence is the [draft training report](archive/studies/gb10-dr
 ```bash
 ./sharar-ctl serve          # serve; every request is recorded under $SHARAR_RESULTS/traces
 ./sharar-ctl train          # stops serving, trains until told to stop
-./sharar-ctl train stop     # final held-out evaluation, promotion, serving relaunches
+./sharar-ctl train stop     # final held-out evaluation, promotion, serving relaunches (or reloads if it kept running)
 ./sharar-ctl draft list     # runs, their held-out gains, the draft in use
 ```
 
@@ -25,7 +25,12 @@ round improve and, when a regression set is configured, that set does not
 drop by more than 0.5% below its pre-training score; promotion updates
 `$SHARAR_RESULTS/draft-runs/current`, which `serve` follows. `serve --pinned`
 forces the publisher's draft, `serve --draft DIR` any checkpoint, `draft use
-RUN` another run, `draft pinned` removes the link. Training never shares the
+RUN` another run, `draft pinned` removes the link; `use`, `pinned` and `draft
+reload` swap the draft inside a running server (`POST /reload_draft`) in about
+a second, without a restart: the checkpoint's weights are copied into the
+serving tensors between two verification rounds, so captured graphs, rings and
+the prefix cache stay valid. A reload refuses a checkpoint that changes the
+architecture or the frozen context weights. Training never shares the
 GPU with serving: `train` refuses while a server runs on this machine, and
 `stop` waits for the final evaluation (up to 20 minutes by default) before
 relaunching. The trainer loads only the draft, the target's embeddings and its

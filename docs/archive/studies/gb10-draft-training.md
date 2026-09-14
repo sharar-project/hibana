@@ -322,6 +322,37 @@ and takes `$SHARAR_RESULTS/draft-regression` as the regression set when that
 directory exists; the regression set should be the user's own traffic that
 they consider general, held fixed across sessions.
 
+## Hot reload of the served draft
+
+`POST /reload_draft` copies a checkpoint into the serving draft's tensors in
+place between two verification rounds (FP8 matrices requantized on the
+device), so captured graphs, rings and the prefix cache stay valid; it refuses
+a checkpoint that changes the architecture or the frozen context weights.
+`sharar-ctl draft use`, `draft pinned` and `draft reload` call it.
+
+Gate, test set at batch one, FP8 draft: a fresh server on the pinned draft,
+swap to the v2 attention checkpoint, replay, swap back while a 600-token
+request is generating, replay. Every replay is compared token for token with
+a cold start of the same draft.
+
+| Step | Swap | Tokens/round | Throughput | Identical to cold start |
+|---|---:|---:|---:|---:|
+| pinned, fresh | | 4.884 | 45.4 | 29/29 |
+| reload trained checkpoint | 2.6 s | 4.987 | 46.4 | 29/29 |
+| reload pinned, mid-request | 0.8 s | 4.884 | 45.4 | 29/29 |
+
+The in-flight request finished its 600 tokens without error. A GPU test
+reloads the served snapshot and checks every tensor bit for bit in both
+precisions.
+
+Two things learned on the way. Packing FP8 on the CPU is not the same as on
+the GPU: the first reload packed on the host, and 122,693 bytes and the scale
+of one q_proj matrix differed, enough to change 19 of 29 greedy outputs; the
+reload now packs on the device as startup does. And replaying the same
+prompts against a warm prefix cache changes greedy outputs on its own (the
+target's prefill shape sensitivity), so the gate flushes the cache before
+each replay; a flushed server reproduces a fresh one exactly.
+
 ## Serving path with tracing off
 
 Before merging, the standard benchmark (`sharar benchmark --workload all`,

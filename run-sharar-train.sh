@@ -90,7 +90,12 @@ case "${1:-}" in
       echo "no promoted draft yet; serving keeps the pinned draft"
     fi
     if [[ "${1:-}" != "--no-serve" ]]; then
-      "$SCRIPT_DIR/run-sharar.sh"
+      if running "$SERVING_CONTAINER"; then
+        # a server kept running (second machine): swap the promoted draft in place
+        "$SCRIPT_DIR/sharar-ctl" draft reload
+      else
+        "$SCRIPT_DIR/run-sharar.sh"
+      fi
     fi
     ;;
   status)

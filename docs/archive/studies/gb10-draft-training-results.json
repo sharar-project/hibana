@@ -3,8 +3,8 @@
  "summary_document": "gb10-draft-training.md",
  "full_evidence": {
   "path": "reviews/2026-09-11-draft-traces/results.json",
-  "sha256": "4aa9ab7976576bea7c040abfab406aa062fa0f946eae350f10c2946a6d046d97",
-  "bytes": 40788
+  "sha256": "2a1ea309530a3ee2a27f95404d55b4fecf17fac31f688028cad123737e93be19",
+  "bytes": 45164
  },
  "summary": {
   "branch": "feat/draft-traces",
@@ -227,6 +227,26 @@
     "base": 3.757,
     "lr_1e-4": 3.7334315169366716,
     "lr_3e-5": 3.770918557084418
+   }
+  },
+  "reload": {
+   "swap_seconds": [
+    2.567,
+    0.778
+   ],
+   "identical_outputs": {
+    "hot-kl-attn (after reload) vs cold kl-attn": "29/29",
+    "hot-pinned-1 (fresh server) vs cold pinned": "29/29",
+    "hot-pinned-2 (after reload back) vs cold pinned": "29/29",
+    "hot-pinned-2 vs hot-pinned-1": "29/29"
+   },
+   "in_flight_request": {
+    "completion_tokens": 600,
+    "finish_reason": {
+     "type": "length"
+    },
+    "seconds": 21.976248341612518,
+    "error": null
    }
   }
  }

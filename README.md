@@ -49,7 +49,8 @@ the machine, and a request can opt out with `"trace": false`.
 ```
 
 Serving follows the promoted checkpoint automatically; `./sharar-ctl serve
---pinned` returns to the publisher's draft, `draft use RUN` picks another.
+--pinned` returns to the publisher's draft, `draft use RUN` picks another;
+both swap the draft inside a running server without a restart.
 The held-out set is always your newest traffic. On a repository-coding
 workload, four serve-then-train rounds over 1,000 requests raised acceptance
 from 27.5% to 31.5% of proposals and serving throughput by 12.4%; a single
