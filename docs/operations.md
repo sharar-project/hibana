@@ -58,7 +58,8 @@ production rollout; source benchmark qualification is separate from deployment.
 
 `./sharar-ctl train` stops serving and trains the DFlash2 drafter on the
 recorded traces until `./sharar-ctl train stop`, which evaluates once more,
-promotes on improvement and relaunches serving on the promoted checkpoint.
+promotes on improvement and relaunches serving on the promoted checkpoint
+(or swaps it into a server that kept running through `POST /reload_draft`).
 `./sharar-ctl status` shows serving, training, the draft in use and the trace
 directory; `./sharar-ctl draft list|use|pinned` manages checkpoints. The
 serving launcher follows `$SHARAR_RESULTS/draft-runs/current` whenever it

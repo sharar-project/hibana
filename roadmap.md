@@ -50,9 +50,12 @@ and [draft adaptation](docs/draft-adaptation.md).
    subset ever limits gains. Measured and rejected: candidate masking to the
    user's vocabulary (about 1% acceptance loss) and FP8 scale recalibration
    (per-row scales change nothing).
-3. **Reload without a restart.** An engine command that copies a promoted
-   draft into the serving weights between rounds, including the FP8
-   conversion, so `train stop` does not relaunch the container.
+3. **Reload without a restart.** Done: `POST /reload_draft` copies a
+   checkpoint into the serving draft between rounds (FP8 repacked on the
+   device) in 1 to 3 s, outputs identical to a cold start; `draft use`,
+   `draft pinned` and `draft reload` use it, and `train stop` reloads when a
+   server kept running. Next: training while serving on one machine, which
+   the reload now makes worthwhile.
 4. **Restore CI availability.** GitHub refused the previous run on account
    billing limits; keep the CPU, distribution and documentation checks.
 5. **Target numerics.** Find the length-dependent kernel dispatch behind the
