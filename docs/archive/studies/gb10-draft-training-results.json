@@ -3,8 +3,8 @@
  "summary_document": "gb10-draft-training.md",
  "full_evidence": {
   "path": "reviews/2026-09-11-draft-traces/results.json",
-  "sha256": "2a1ea309530a3ee2a27f95404d55b4fecf17fac31f688028cad123737e93be19",
-  "bytes": 45164
+  "sha256": "cbd74243505e29ce1dbab6ec36c7af4714ed2876fb51ccdce23c56132c7e9ee7",
+  "bytes": 47257
  },
  "summary": {
   "branch": "feat/draft-traces",

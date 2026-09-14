@@ -69,9 +69,16 @@ length and chunking (up to 30% relative RMS in deep layers, about one prefix
 argmax in ten between a 26- and a 27-token prefill), and greedy continuations
 can therefore change with batch shape, verification width or the drafter,
 because those move the round boundaries a token is computed in. Each
-configuration is deterministic run to run. Evidence: the
-[draft training report](archive/studies/gb10-draft-training.md); the finding
-is on the roadmap as a target-numerics task. HTTP task trajectories and batch
+configuration is deterministic run to run. The cause is three kernels whose
+arithmetic depends on the row count: cuBLAS's BF16 GEMM for the GDN b/a
+gates, cuBLASLt's FP8 GEMM for the 5120x6144 output projections at 27 to 32
+rows, and the gated norm's rows-per-block choice, with FlashInfer's prefill
+schedule a rare fourth. M-invariant replacements for the first three make a
+prefix bit-exact across prefill lengths for under 1% prefill cost ([target
+numerics study](archive/studies/target-numerics.md)); they live on branch
+`feat/stable-numerics` and are not merged, because the one-time shift in
+greedy outputs changed served acceptance on a small prompt set, and chunked
+and cached-prefix prefills still take different attention paths. HTTP task trajectories and batch
 membership can differ; synthetic fixed-output traces do not establish
 generated-code quality or completed tool tasks
 ([quality limitations](archive/studies/greedy-quality.md)).
