@@ -58,9 +58,15 @@ and [draft adaptation](docs/draft-adaptation.md).
    the reload now makes worthwhile.
 4. **Restore CI availability.** GitHub refused the previous run on account
    billing limits; keep the CPU, distribution and documentation checks.
-5. **Target numerics.** Find the length-dependent kernel dispatch behind the
-   prefill shape sensitivity; it likely bears on the unresolved cross-engine
-   greedy parity as well.
+5. **Target numerics.** Done: the prefill shape sensitivity is cuBLAS's BF16
+   b/a projection (six algorithm classes by row count), cuBLASLt's FP8
+   5120x6144 GEMM at 27 to 32 rows and the gated norm's rows-per-block
+   heuristic ([study](docs/archive/studies/target-numerics.md)). M-invariant
+   kernels on branch `feat/stable-numerics` make a prefix bit-exact across
+   prefill lengths for under 1% prefill cost but are not merged: on 29 test
+   prompts served acceptance was 4.7% lower, within about two standard
+   errors, and serving with them needs a few hundred prompts of evidence.
+   Open: FlashInfer's length classes, chunked and cached-prefix paths.
 6. **Protect long-lived sessions under memory pressure**: bounded admission
    and backpressure, live/reserved memory reporting; `Ledger.check_floor()` is
    not yet in the serving loop.

@@ -85,6 +85,7 @@ main deliberately refuses its now-identical capacity comparison.
 - [Sixteen-row draft-tree coverage study](studies/tree-coverage-study.md)
 - [Chat controls and the single-agent two-path study](studies/two-path-study.md)
 - [Verifier and prefill numerical controls](studies/verifier-numerics.md)
+- [Target prefill numerics: the shape dependence bisected](studies/target-numerics.md)
 - [Controlled DFlash2 costs and compact convolution screen](studies/verify-cost.md)
 
 JSON manifests stay beside their companion reports. Raw artifacts remain under
