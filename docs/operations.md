@@ -36,6 +36,7 @@ budget separately. Automatic KV capacity depends on available memory.
 | Image | `sharar:qwen38-27b` | `SHARAR_IMAGE` |
 | Container / port | `sharar-qwen38` / 30001 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
 | Request traces | Off | `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
+| Shape-stable prefill numerics | Off | `SHARAR_STABLE_NUMERICS=1` (research baseline for row-count experiments; the [numerics study](archive/studies/target-numerics.md)) |
 | Draft checkpoint | `draft-runs/current` when promoted, else pinned | `SHARAR_DRAFT=/dir` or `SHARAR_DRAFT=pinned` |
 
 The optimized measured profile uses FP8 DFlash2 with 15 proposals:

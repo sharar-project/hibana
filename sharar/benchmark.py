@@ -12,14 +12,14 @@ from urllib.error import URLError
 from urllib.parse import urlsplit
 
 from sharar.benchmark_aiperf import MODEL, REVISION, digest, http_json, trial
-from sharar.benchmark_workloads import VERSION, WORKLOADS, materialize
+from sharar.benchmark_workloads import LEGACY_WORKLOADS, VERSION, WORKLOADS, materialize
 
 AIPERF_VERSION = '0.12.0'
 
 
 def add_arguments(parser):
     parser.add_argument('--url', default='http://127.0.0.1:30001', help='already running server (default: Sharar on port 30001)')
-    parser.add_argument('--workload', choices=(*WORKLOADS, 'all'), default='code')
+    parser.add_argument('--workload', choices=(*WORKLOADS, *LEGACY_WORKLOADS, 'all'), default='code', help='code_v1 is the pre-2026-09-15 prompt (stops at output 98), kept for historical comparisons')
     parser.add_argument('--input-tokens', type=int, default=10000)
     parser.add_argument('--output-tokens', type=int, default=1000)
     parser.add_argument('--repeats', type=int, default=3, help='timed requests per workload')

@@ -17,6 +17,8 @@ gates. Historical commands may require the recorded source revision.
 | Narrow NVFP4 tiles failed their integration screen | [NVFP4](studies/nvfp4-cost.md) |
 | Fixed-output agent traces do not establish task success | [Agent workloads](studies/agent-workloads.md), [quality](studies/greedy-quality.md) |
 | Train the drafter on recorded serving features; target prefill numerics are shape-dependent | [Draft training](studies/gb10-draft-training.md) |
+| A 15-row prompt-lookup branch beside the draft chain does not raise served throughput; per-round union oracles over-value copy-region tokens | [Lookup branch](studies/lookup-branch.md) |
+| Judge arithmetic changes on the family gate's round-cost interval; acceptance is unresolvable below about 7% on 18 families; bit-identical outputs are not a gate | [Family gate](studies/family-gate.md) |
 
 The exact pre-cleanup tree is tagged `archive/pre-cleanup-2026-09-11`.
 Create a separate checkout with `git worktree add --detach /tmp/sharar-history
@@ -79,6 +81,9 @@ main deliberately refuses its now-identical capacity comparison.
 - [Phase 7C: local workload pilot and first GB10 experiment](studies/phase7c.md)
 - [Phase 7D: native drafts and GB10 state retention](studies/phase7d.md)
 - [One GDN prefill plan per forward](studies/prefill-plan.md)
+- [Prompt-lookup n-gram branch coverage screen](studies/ngram-branch-screen.md)
+- [Prompt-lookup second verification branch: serving measurement](studies/lookup-branch.md)
+- [The family gate: one command, a fixed code prompt, and what it can resolve](studies/family-gate.md)
 - [Runtime cleanup and clean-image promotion review](studies/promotion.md)
 - [Request cache policy for agent sessions](studies/request-cache-policy.md)
 - [Ten-second restarts, a sync-free sampled path, and the tier's park cost](studies/restart-and-syncs.md)

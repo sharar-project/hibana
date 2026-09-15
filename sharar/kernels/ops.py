@@ -14,7 +14,7 @@ from sharar.kernels.fp8_gemv_cuda import fp8_gemv_cuda
 from sharar.kernels.fp8_quant import quant_fp8
 from sharar.kernels.nvfp4_quant import nvfp4_quantize
 from sharar.weights.modelopt import FP8_MAX, Fp8Linear, Nvfp4Linear
-from sharar.kernels import verify_gemm
+from sharar.kernels import stable, verify_gemm
 
 # cuBLAS FP8 GEMM reaches ~60% of DRAM bandwidth at M<=4 on SM121 (profile in
 # docs/phase2.md); the streaming GEMV is used up to this many rows.
@@ -103,6 +103,12 @@ def fp8_linear(x: torch.Tensor | None, lin: Fp8Linear, x_q: torch.Tensor | None 
     else:
         lead = x_q.shape[:-1]
     m = x_q.shape[0]
+    if stable.ENABLED:
+        rows = stable.padded_rows(m, (lin.out_features, lin.weight.shape[1]))
+        if rows != m:  # keep cuBLASLt on its wide-M algorithm; the padded rows are discarded
+            padded = torch.zeros((rows, x_q.shape[1]), dtype=x_q.dtype, device=x_q.device)
+            padded[:m] = x_q
+            return fp8_linear(None, lin, x_q=padded)[:m].view(*lead, lin.out_features)
     if m <= FP8_GEMV_MAX_M:
         out = fp8_gemv_cuda(x_q, lin.weight, lin.alpha)
     elif VERIFY_GEMM_ENABLED and verify_gemm.is_attention_qkv(m, lin.out_features, lin.weight.shape[1]):

@@ -49,6 +49,20 @@ prospective pool/draft budget before allocation. See [7D evidence](docs/archive/
 Performance measurements need exclusive GPU use. The check command does not
 stop or replace a running service.
 
+Anything that changes arithmetic (kernels, dispatch thresholds, draft
+precision, verify shapes, proposers) is judged by the family gate,
+`tools/family-gate.py` ([bench/README.md](bench/README.md#the-family-gate)):
+paired 21-task intervals against a native pass, with the noise floor from a
+repeated native pass. Bit-identical outputs are not required and not a
+substitute: the target's arithmetic already changes with the row count, so
+outputs drift whenever shapes move. Compare row-count changes under
+`SHARAR_STABLE_NUMERICS=1` as well. Read the gate this way: the round-cost
+interval decides cost (it resolves 0.05%); the tokens-per-round interval
+decides acceptance only when it excludes 1, and on 18 families it is about
+±7% wide for any change that moves continuations, so do not select among
+variants on its point estimate. The three-prompt `tools/benchmark.sh`
+remains the reporting cell for end-to-end numbers, never the decision.
+
 ## Add a proposer
 
 1. Put the adapter in `sharar/proposers/`. Implement `Proposer` and declare

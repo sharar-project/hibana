@@ -1,0 +1,29 @@
+{
+  "schema": 2,
+  "summary_document": "family-gate.md",
+  "full_evidence": {
+    "path": "reviews/2026-09-14-family-gate/gate-1/results.json",
+    "sha256": "76feb18ecff3be7f09bc3e0431ddcbe81cc9135b2bb3cc2735fa498715cdb10d",
+    "bytes": 234255,
+    "files": 6
+  },
+  "summary": {
+    "date": "2026-09-15",
+    "source": "1feb8c6 plus working tree (gate tooling, code prompt v2, stable numerics opt-in, lookup branch opt-in)",
+    "inputs": {"set": "family-eval-v2", "tasks": 22, "sha256": "fc7332830b97f84218dc40c8a6763688350f4db466e2dad984642c9df7ff0451"},
+    "passes": ["native-0", "stable_numerics-1", "fp8_m16-2", "native-3", "bf16draft-4", "draft_nvfp4_body-5"],
+    "all_passes_ok": true,
+    "noise_floor": {"decode": [1.0011, 1.0007, 1.0014], "identical_outputs": "22/22"},
+    "families": {
+      "stable_numerics_vs_native": {"decode": [1.011, 0.934, 1.094], "round_ms": [1.0010, 1.0005, 1.0015], "tok_per_round": [1.012, 0.935, 1.095]},
+      "fp8_m16_vs_native": {"decode": [1.041, 0.984, 1.105], "round_ms": [0.9847, 0.9842, 0.9852], "tok_per_round": [1.025, 0.969, 1.088]},
+      "nvfp4_draft_body_vs_bf16_draft": {"decode": [1.065, 1.012, 1.117], "round_ms": [0.9136, 0.9132, 0.9140], "tok_per_round": [0.973, 0.924, 1.020]},
+      "nvfp4_draft_body_vs_fp8_draft": {"decode": [1.025, 0.957, 1.101], "round_ms": [0.9714, 0.9708, 0.9720], "tok_per_round": [0.996, 0.929, 1.070]},
+      "bf16_draft_vs_fp8_draft": {"decode": [0.963, 0.910, 1.022], "round_ms": [1.0633, 1.0626, 1.0639], "tok_per_round": [1.024, 0.967, 1.086]}
+    },
+    "tok_per_round_log_sd_per_task": [0.11, 0.17],
+    "native_family_means": {"decode_tps": 48.2, "tok_per_round": 5.084, "round_ms": 105.4},
+    "code_prompt": {"old_first_eos": 98, "new": "gb10-coding-v2 (tool-free)", "new_first_eos": null, "new_decode_tps": 36.4, "new_tok_per_round": 3.84},
+    "decision": "round-cost interval decides cost; acceptance unresolved below ~7% on 18 families; fp8_m16 to integrate"
+  }
+}

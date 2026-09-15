@@ -15,6 +15,7 @@ import triton
 import triton.language as tl
 from einops import rearrange
 
+from sharar.kernels import stable
 from sharar.kernels._compat import is_arch_support_pdl
 from sharar.kernels._compat import (
     Backend,
@@ -193,7 +194,7 @@ def _get_sm_count(device: torch.device) -> int:
 
 def calc_rows_per_block(M: int, device: torch.device) -> int:
     # Use a constant value when the row count must not affect kernel numerics.
-    if is_batch_invariant_mode_enabled() or check_cuda_graph_backend(
+    if stable.ENABLED or is_batch_invariant_mode_enabled() or check_cuda_graph_backend(
         Phase.PREFILL, Backend.TC_PIECEWISE
     ):
         return MAX_ROWS_PER_BLOCK

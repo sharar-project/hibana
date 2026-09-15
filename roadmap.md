@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Updated 2026-09-13. This is the current work order. Historical milestones and
+Updated 2026-09-14. This is the current work order. Historical milestones and
 their original gates are in the [archived roadmap](docs/archive/roadmap-2026-09-11.md).
 
 ## Supported baseline
@@ -36,46 +36,129 @@ and [draft adaptation](docs/draft-adaptation.md).
 
 ## Next work, in order
 
-1. **Train on real traffic.** Record a few hundred requests of actual use and
-   repeat the held-out and served-throughput measurements; the repository
-   proxy has only about 150 distinct prompts and overfits after one session.
-2. **Harden promotion.** Done: traces record the target's top-16 logits,
-   the trainer distills over them (neutral on acceptance so far), trains the
-   attention subset by default (same acceptance, a quarter of the
-   parameters), compiles the block forward (1.8x faster), continues from an
-   adapted draft at 3e-5 (a second session at 1e-4 regressed an unseen test
-   set 1%; at 3e-5 it improved it) and refuses promotion when a fixed
-   regression set drops more than 0.5%. On-policy selector supervision is
-   available and within seed spread of the default. Next: adapters if a
-   subset ever limits gains. Measured and rejected: candidate masking to the
-   user's vocabulary (about 1% acceptance loss) and FP8 scale recalibration
-   (per-row scales change nothing).
-3. **Reload without a restart.** Done: `POST /reload_draft` copies a
-   checkpoint into the serving draft between rounds (FP8 repacked on the
-   device) in 1 to 3 s, outputs identical to a cold start; `draft use`,
-   `draft pinned` and `draft reload` use it, and `train stop` reloads when a
-   server kept running. Next: training while serving on one machine, which
-   the reload now makes worthwhile.
-4. **Restore CI availability.** GitHub refused the previous run on account
-   billing limits; keep the CPU, distribution and documentation checks.
-5. **Target numerics.** Done: the prefill shape sensitivity is cuBLAS's BF16
-   b/a projection (six algorithm classes by row count), cuBLASLt's FP8
-   5120x6144 GEMM at 27 to 32 rows and the gated norm's rows-per-block
-   heuristic ([study](docs/archive/studies/target-numerics.md)). M-invariant
-   kernels on branch `feat/stable-numerics` make a prefix bit-exact across
-   prefill lengths for under 1% prefill cost but are not merged: on 29 test
-   prompts served acceptance was 4.7% lower, within about two standard
-   errors, and serving with them needs a few hundred prompts of evidence.
-   Open: FlashInfer's length classes, chunked and cached-prefix paths.
-6. **Protect long-lived sessions under memory pressure**: bounded admission
-   and backpressure, live/reserved memory reporting; `Ledger.check_floor()` is
-   not yet in the serving loop.
-7. **Request cache policy**: scoped reuse/store modes and expiring retention
-   from the [proposal](docs/request-cache-policy.md).
-8. **Cold-restore overlap, output controls, release work**: event-owned
-   restore lifetimes; request-owned constraint state before forced tool choice
-   or structured output; prepared-weight caching and AOT kernels once profiles
-   stabilize.
+Reviewed 2026-09-14 against the whole archive; the order is by expected gain
+per unit of work. Work the items one at a time, top to bottom. Each item names
+its first step and its gate, so a session can pick it up cold. Batch-one decode
+is at about 87% of the measured 239 GB/s weight-read ceiling, so the multipliers
+left are accepted tokens per round, the eager accept path at batch two to four,
+and hardware; kernel work at batch one is capped near 10%.
+
+1. **Done, negative: a second proposal branch from prompt lookup.** Built as
+   an opt-in (`--lookup-branch`, parked on branch `feat/lookup-branch`): a
+   host-side n-gram continuation verified as a second 16-row block beside
+   the DFlash2 chain, whichever block accepts more wins. The offline screen
+   ([study](docs/archive/studies/ngram-branch-screen.md)) predicted +14% tokens
+   per round on repository coding; served at batch one the branch gave
+   +1.4% tokens per round and throughput within the 1% window noise
+   (repository test set 45.4 to 45.6/45.3 TPS; ShareGPT +2.5/+1.5%; five
+   real requests +2.8/+0.7%), with the mechanism audited correct
+   ([study](docs/archive/studies/lookup-branch.md)). The branch wins inside
+   copy spans where the chain is already near the 16-token cap and would
+   have accepted the same tokens next round, so gained tokens save few
+   rounds. A 31- or 63-row branch would lift the cap only for verbatim
+   reproduction (at most 7 to 8% of rounds on these histories); not
+   pursued. Lesson for every future screen: a per-round union oracle on
+   recorded histories over-values tokens the chain already handles.
+2. **Done: the family gate replaces the bit-exact gate and the three-prompt
+   benchmark as the decision tool** ([study](docs/archive/studies/family-gate.md)).
+   `tools/family-gate.py` runs paired 22-task passes in exclusive windows
+   with the noise floor; `bench/family_inputs.py` regenerates the frozen
+   inputs byte-identically; the code benchmark prompt no longer answers with
+   a tool call at token 98 (`code` is the tool-free `gb10-coding-v2`, the old
+   prompt is `code_v1`); the shape-stable kernels are in main behind
+   `SHARAR_STABLE_NUMERICS=1`. Measured: two native passes agree to 0.1% with
+   identical outputs; round cost resolves to 0.05%; accepted tokens per round
+   have a ±7% interval on 18 families because every arithmetic change moves
+   every continuation (about 100 families for ±3%, 1,000 for ±1%). Decision
+   rule: judge cost on the round-cost interval, treat acceptance as unknown
+   unless its interval excludes 1, never require identical outputs. Re-judged:
+   `fp8_m16` is a clean −1.5% round-cost win (integrate next), the NVFP4
+   draft body −2.9% against the FP8 draft with acceptance unresolved, stable
+   numerics cost-neutral. Not re-run: the 16-row tree and the SiLU boundary
+   need porting to current main first. Follow-ups: integrate `fp8_m16`;
+   grow the family set to about 100 tasks with the generator in
+   `bench/family_inputs.py` so acceptance claims of a few percent become
+   testable.
+3. **Make the accept path device-resident for batch two to four.** After the
+   single `.tolist()` in `SpecDecoder._accept` the round is eager: the
+   reconstruction launch, per-request conv copies, feature feedback, trace
+   top-k, two FlashInfer plans and the stop scan. At batch four short context
+   that is about 16 ms of a 136 ms round; at batch one about 1%. Steps:
+   device-side acceptance and stop detection with a `max_new_tokens` clamp;
+   one captured graph per batch size for accept, reconstruction and feedback;
+   tokens read back through an event and a pinned buffer off the critical
+   path; keep the plan inputs exact. Gate: batch-four HTTP throughput and
+   unchanged output IDs at fixed shape.
+4. **Train on real traffic, then train while serving.** Record a few hundred
+   requests of actual use and repeat the held-out and served measurements;
+   the repository proxy overfits after one session. Then let the trainer run
+   beside the server when the machine is idle: both fit in unified memory,
+   so bound the interference instead, with anchor chunks of 32 and a check
+   of the engine's active flag between chunks so a first token never waits
+   more than a few hundred milliseconds. Reload is already in place.
+5. **Spend memory on draft capacity.** The draft is 12 ms of a 107 ms round
+   and the oracle ceiling on code is 7.85 tokens per round against 4.7. A
+   draft twice as deep costs about 10 ms and breaks even at +0.45 tokens per
+   round; tapping more than five target layers is the cheaper variant. Both
+   change the rings, so they are restart changes distilled with `sharar
+   train` from the pinned draft, judged as in item 1(c).
+6. **Tensor parallel across two Sparks, if a second machine exists.** Halving
+   weight bytes per GPU takes the round from 107 to roughly 55 to 60 ms; the
+   128 all-reduces of 160 KB per round over the ConnectX-7 link cost about
+   3 ms. It is the only path near 2x because the floor is bytes, not compute.
+   Steps: NCCL over RoCE between the two containers, column/row split of the
+   projections, replicated draft, a two-node launcher.
+7. **Target bytes, only if the target is reopened.** Calibrated NVFP4 for the
+   7.2 GB of FP8 projections removes about 12 ms per round. The W4A16 attempt
+   failed because 5% NRMSE was the selection objective; re-quantize from the
+   BF16 originals with Model Optimizer and judge on the family set. 2:4
+   sparsity halves weight bytes at the kernel level but needs sparse
+   fine-tuning of an already 4-bit model; a research project, not a task.
+8. **Latency for one local user.** Prefill while the user types: the chat
+   client sends prefill-only requests for the partial prompt and the prefix
+   cache absorbs the rest, so the first token after submit is nearly
+   immediate. Then the request cache policy for agent sessions from the
+   [proposal](docs/request-cache-policy.md), and bounded admission with
+   backpressure and live memory reporting; `Ledger.check_floor()` is not yet
+   in the serving loop.
+9. **Restore CI, cold-restore overlap, output controls, release work.**
+   GitHub refused the previous run on account billing limits; keep the CPU,
+   distribution and documentation checks. Event-owned restore lifetimes,
+   request-owned constraint state before forced tool choice or structured
+   output, prepared-weight caching and AOT kernels once profiles stabilize.
+
+Done since the last order, kept for reference: promotion hardening (top-16
+traces, KL distillation, attention subset, compiled trainer, continuation at
+3e-5, 0.5% regression gate, optional on-policy selector), hot draft reload
+(`POST /reload_draft`), and the target numerics study (shape sensitivity is
+cuBLAS's BF16 b/a projection, cuBLASLt FP8 at 27 to 32 rows and the gated
+norm's rows-per-block heuristic; M-invariant kernels opt-in in main behind
+`SHARAR_STABLE_NUMERICS=1`, [study](docs/archive/studies/target-numerics.md)).
+
+## Maintenance fixes
+
+Small, independent, any session; none changes numerics.
+
+- `TraceSink.stats()` globs the trace directory and stats every trace file and
+  every feature blob on every engine-loop iteration through
+  `EngineLoop._run_inference` and `Scheduler.stats()`, idle or not. Keep
+  counters in the sink, updated by the writer thread.
+- `Metrics.summary()` sorts the 2,048-entry TTFT window on every iteration for
+  the same reason; compute it on `/metrics` requests only.
+- The detokenizer re-decodes the whole output every round, and `/generate`
+  streaming re-sends the full output ID list in every chunk; both are
+  quadratic in output length.
+- `SHARAR_COLD_TIER_GIB` is read inside the container but `run-sharar.sh`
+  never forwards it.
+- `can_admit` and `admit` each run the cold-tier scan, eviction and radix
+  match; the cold-tier `find` materializes the prefix per parked entry.
+- KV page size is fixed at 1, so the per-round FlashInfer plan concatenates
+  an index list as long as the context; the page-16 measurement promised in
+  `kv_pool.py` never happened.
+- `gemma_rmsnorm_nvfp4` (fused norm and NVFP4 quantizer, bit-identical per
+  its tests) is dead behind `SHARAR_FUSED_NORM_NVFP4`; keep or remove.
+- The MTP head runs entirely in BF16 with unfused gate and SiLU; irrelevant
+  while DFlash2 is the default, remove or port if MTP is kept.
 
 ## Contribution gates
 
@@ -85,7 +168,9 @@ and [draft adaptation](docs/draft-adaptation.md).
   every performance claim. Retain failed runs and exact comparison limits.
 - Run CPU contracts for control changes, the affected GPU tests for execution
   changes, and paired full-workload runs for performance changes; an engine
-  change proves no regression on the standard benchmark before merging.
+  change that alters arithmetic passes the family gate (`tools/family-gate.py`,
+  18-family paired intervals plus the noise floor) before merging, and the
+  standard benchmark is reported, not used to decide.
 - A larger redesign should establish at least 5% aggregate improvement with
   protected BS1 and latency, and target 10% or more to justify complexity.
 - Drafter changes are judged on held-out tokens per round and served

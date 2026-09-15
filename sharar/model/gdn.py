@@ -13,7 +13,7 @@ import torch
 
 from sharar import config
 from sharar.engine.context import ForwardContext
-from sharar.kernels import ops
+from sharar.kernels import ops, stable
 from sharar.kernels.conv1d import causal_conv1d_fn, causal_conv1d_update
 from sharar.kernels.fla.chunk import chunk_gated_delta_rule
 from sharar.kernels.fla.fused_gdn_gating import fused_gdn_gating
@@ -84,7 +84,11 @@ class GatedDeltaNet:
         return mixed_qkv, z, b, a
 
     def _project_ba(self, x):
-        ba = x @ self.in_ba.T
+        if stable.ENABLED:
+            from sharar.kernels.ba_proj import ba_project
+            ba = ba_project(x, self.in_ba)  # M-invariant arithmetic; cuBLAS's choice changes with M
+        else:
+            ba = x @ self.in_ba.T
         b, a = ba.split([self.num_v_heads, self.num_v_heads], dim=-1)
         # Every gating/recurrent kernel consumes the token strides explicitly.
         return b, a

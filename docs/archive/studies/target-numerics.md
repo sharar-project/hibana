@@ -2,9 +2,10 @@
 
 Date: 2026-09-14. Evidence: `reviews/2026-09-11-draft-traces/numerics/` (phase
 scripts and JSON) in the results tree. The M-invariant kernels described
-below were prototyped on branch `feat/stable-numerics` (flag
-`SHARAR_STABLE_NUMERICS=1`) and are not merged; main's serving numerics are
-unchanged.
+below were prototyped on branch `feat/stable-numerics` and merged into main
+on 2026-09-15 behind `SHARAR_STABLE_NUMERICS=1` (default off, the family
+gate's research baseline for row-count experiments); serving numerics are
+unchanged unless the flag is set.
 
 ## The property
 
@@ -37,7 +38,7 @@ to the 10% level. That is why a first-eight-rows hash over M found only the
 27..32 window: the flips are rare per row and need the whole prefix over all
 layers to show.
 
-## Fix prototype: `SHARAR_STABLE_NUMERICS=1` (branch `feat/stable-numerics`, not merged)
+## Fix: `SHARAR_STABLE_NUMERICS=1` (opt-in in main since 2026-09-15, default off)
 
 - b/a projection: a Triton kernel with fixed [16, 64] x [64, 128] tiles, a
   fixed split of K into 16 ranges and a fixed-order reduction of the partial

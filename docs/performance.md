@@ -75,10 +75,11 @@ gates, cuBLASLt's FP8 GEMM for the 5120x6144 output projections at 27 to 32
 rows, and the gated norm's rows-per-block choice, with FlashInfer's prefill
 schedule a rare fourth. M-invariant replacements for the first three make a
 prefix bit-exact across prefill lengths for under 1% prefill cost ([target
-numerics study](archive/studies/target-numerics.md)); they live on branch
-`feat/stable-numerics` and are not merged, because the one-time shift in
-greedy outputs changed served acceptance on a small prompt set, and chunked
-and cached-prefix prefills still take different attention paths. HTTP task trajectories and batch
+numerics study](archive/studies/target-numerics.md)); since 2026-09-15 they
+ship in main behind `SHARAR_STABLE_NUMERICS=1`, off by default, as the
+research baseline for row-count experiments: the one-time shift in greedy
+outputs changed served acceptance on a small prompt set, and chunked and
+cached-prefix prefills still take different attention paths. HTTP task trajectories and batch
 membership can differ; synthetic fixed-output traces do not establish
 generated-code quality or completed tool tasks
 ([quality limitations](archive/studies/greedy-quality.md)).

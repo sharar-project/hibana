@@ -20,6 +20,12 @@ recorded [AIPerf TPS comparison](../docs/archive/studies/gb10-tps.md). The packa
 source fixture is independent of edits to current engine code. Prompt
 tokenization occurs outside timing; each run saves the exact IDs it uses.
 
+The `code` workload changed on 2026-09-15 (`gb10-coding-v2`): the earlier
+prompt made the model answer with a tool call and stop at output token 98, so
+902 of its 1,000 tokens were a forced post-EOS continuation. The new prompt
+tells the model it has no tools and runs the full budget; `--workload code_v1`
+keeps the old prompt for comparisons with reports dated before the change.
+
 `--input-tokens`, `--output-tokens`, `--repeats` and `--warmups` can shorten a
 development run. Changed token budgets define a different benchmark cell.
 Run `tools/benchmark.sh --help` for all options.
@@ -75,17 +81,47 @@ token audit. Existing directories are never overwritten. The default root is
 (or `~/.local/state/sharar/gb10/aiperf`). The legacy `bench.gb10_aiperf` entry
 point remains available for historical commands and uses the shared auditor.
 
+## The family gate
+
+Any change that alters arithmetic (a kernel, a dispatch threshold, a draft
+precision, a verify shape, a proposer) is judged on the frozen 21-task family
+set, not on the three benchmark prompts and not on bit-identical outputs.
+The gate runs each pass in its own exclusive window and reports paired
+per-task log-ratios of decode throughput, round cost and tokens per round
+with bootstrap 95% intervals, plus the noise floor between two native passes:
+
+```bash
+tools/family-gate.py --label my-change --order N,C1,N --candidates bench.gate_hooks:my_hook
+tools/family-gate.py --label stable --order N,C1,N --candidates env:SHARAR_STABLE_NUMERICS=1
+```
+
+A candidate is a hook in `bench/gate_hooks.py` (`fn(stage, executor, args)`
+at `model`, `spec` and `ready`), or `env:KEY=VALUE`; `|bf16` after a
+candidate runs that pass with the BF16 draft. Inputs come from
+`$SHARAR_RESULTS/datasets/family-eval-v1/` and are hash-checked;
+`python3 -m bench.family_inputs freeze` regenerates them byte-identically from
+`bench/workloads/family_v1.json` and the benchmark prompts. Read the
+`families` row of the comparison (18 tasks) as the decision, the `benchmarks`
+row as context, and never a single task; the round-cost interval resolves 0.05%,
+the tokens-per-round interval is about ±7% wide for any continuation-changing
+change at this size ([study](../docs/archive/studies/family-gate.md)). Results and logs land in
+`$SHARAR_RESULTS/reviews/<date>-family-gate/<label>/`. Row-count changes
+should also be compared under `SHARAR_STABLE_NUMERICS=1`, the shape-stable
+research baseline, so that continuation drift does not masquerade as a gain.
+
 ## Current measurement drivers
 
 | Driver | Purpose |
 |---|---|
 | `sharar benchmark` / `tools/benchmark.sh` | Installed AIPerf cold BS1 iteration command |
 | `bench.gb10_family_eval` | Frozen family native comparisons and paired statistics |
+| `tools/family-gate.py`, `bench/gate_hooks.py`, `bench/family_inputs.py` | The family gate: windows, candidate hooks, reproducible frozen inputs |
 | `bench.gb10_bs4_engine` | Controlled verifier-width/native BS4 comparison |
 | `bench.gb10_bs4_http` | Finite and replenished BS4 HTTP workloads |
 | `bench.gb10_agent_retention` | Cold controls and interleaved native cache resumes |
 | `bench.gb10_agent_http` | Growing simulated conversations and mixed HTTP arrivals |
 | `bench.gb10_audit`, `bench.gb10_matrix` | Generation profiling and real-operand matrix diagnostics |
+| `bench/ngram_branch_screen.py` | CPU-only coverage screen of a prompt-lookup n-gram branch beside DFlash2 on recorded traces |
 
 Use each driver's `--help` and its linked [performance evidence](../docs/performance.md)
 to freeze inputs, output budgets, warmups, precision and geometry before running.

@@ -26,11 +26,14 @@ def server_info(url: str) -> dict:
 
 def spec_counters(info: dict) -> dict:
     spec = info.get("spec_stats") or {}
-    return {k: spec.get(k) for k in ("rounds", "emitted", "accepted", "proposed")}
+    out = {k: spec.get(k) for k in ("rounds", "emitted", "accepted", "proposed")}
+    lookup = spec.get("lookup_branch") or {}
+    out.update({f"lookup_{k}": lookup.get(k) for k in ("rounds", "blocks", "wins", "gain")})
+    return out
 
 
-def generate(url: str, ids: list[int], max_new_tokens: int, timeout: float) -> dict:
-    body = {"input_ids": ids, "sampling_params": {"max_new_tokens": max_new_tokens, "temperature": 0.0, "ignore_eos": True}, "trace": False}
+def generate(url: str, ids: list[int], max_new_tokens: int, timeout: float, trace: bool = False) -> dict:
+    body = {"input_ids": ids, "sampling_params": {"max_new_tokens": max_new_tokens, "temperature": 0.0, "ignore_eos": True}, "trace": trace}
     req = urllib.request.Request(f"{url}/generate", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     t0 = time.perf_counter()
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -51,6 +54,7 @@ def main(argv=None) -> int:
     ap.add_argument("--max-length", type=int, default=8192)
     ap.add_argument("--timeout", type=float, default=900)
     ap.add_argument("--label", default="run")
+    ap.add_argument("--trace", action="store_true", help="let the server record traces for the replayed requests (default: opt out)")
     ap.add_argument("--output", type=Path, required=True)
     args = ap.parse_args(argv)
     from sharar.train.data import load_samples, split
@@ -67,7 +71,7 @@ def main(argv=None) -> int:
     before = spec_counters(server_info(args.url))
     started = time.perf_counter()
     for sample in holdout:
-        row = generate(args.url, list(sample.ids[:sample.prompt_len]), sample.output_len, args.timeout)
+        row = generate(args.url, list(sample.ids[:sample.prompt_len]), sample.output_len, args.timeout, trace=args.trace)
         output = row.pop("output_ids", None) or []
         row.update({"id": sample.request_id, "prompt_tokens": sample.prompt_len, "budget": sample.output_len,
                     "matches_trace": output == list(sample.ids[sample.prompt_len:]),
