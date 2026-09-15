@@ -32,9 +32,10 @@ Admission also checks the output budget and speculative scratch capacity.
 | `tool_choice: "none"` | Omit tool schemas from the prompt and tool-call parsing |
 | `response_format` omitted/null/`{"type":"text"}` | Ordinary text output |
 | `trace` | `false` excludes this request from the opt-in [trace sink](operations.md#request-traces); accepted on every generation route |
+| `accept_top_k`, `accept_margin` | Relaxed speculative acceptance, greedy requests only, off unless both are set: a drafted token is also accepted when the target ranks it within its top `accept_top_k` and within `accept_margin` logits of the argmax (a log-probability ratio; 1.0 means at least 37% of the top probability). Faster, and no longer the target's exact greedy continuation; the per-request `spec_relaxed_tokens` counts such tokens. **Default: the server applies top-2 within 1.0 logit to greedy requests that set neither field** (`--accept-default`, `SHARAR_ACCEPT_DEFAULT`; `off` keeps everything exact); send `accept_top_k: 1` to get the exact greedy continuation for one request. Accepted on every generation route |
 
 `GET /get_server_info` reports `speculative.draft` (the served draft
-directory), `spec_stats` (rounds, proposed, accepted, emitted) and, when
+directory), `speculative.accept_default`, `spec_stats` (rounds, proposed, accepted, emitted, `relaxed_accepts`) and, when
 tracing is on, `scheduler.traces` (records, bytes, `dropped`).
 
 Forced/named/required tool choices and constrained JSON formats return HTTP

@@ -51,6 +51,12 @@ when it exists), `SHARAR_TRAIN_HOLDOUT_TOKENS` (20000), `SHARAR_TRAIN_EVAL_EVERY
 
 ## What is recorded
 
+Requests served under relaxed acceptance record the block offsets of tokens
+that were the drafter's pick rather than the target's argmax (`rx`); the
+trainer keeps those requests but gives such positions no label weight, and
+never holds them out, since replaying acceptance on them would score the
+drafter against itself. Corpus and benchmark clients pin exact acceptance.
+
 Each finished request is one JSON line: prompt and output token IDs, sampling
 parameters, the cached prefix length and every verification round (accepted
 count, the draft's proposals, the target's argmax rows). DFlash2 requests also

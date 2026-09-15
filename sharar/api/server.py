@@ -172,6 +172,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                 info["spec_accept_length"] = n_out / req.spec_rounds
                 info["spec_tokens_per_round"] = req.spec_emitted / req.spec_rounds
                 info["spec_accept_rate"] = req.spec_accepted / max(1, req.spec_proposed)
+                if req.params.relaxed:
+                    info["spec_relaxed_tokens"] = req.spec_relaxed
             return info
 
         if body.get("stream"):
@@ -377,8 +379,14 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
 
 def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
-          traces: str | None = None, traces_max_mib: int = 32768, draft_dir: str | None = None) -> None:
+          traces: str | None = None, traces_max_mib: int = 32768, draft_dir: str | None = None,
+          accept_default: tuple[int, float] = (1, 0.0)) -> None:
     from sharar.memory.spec_budget import SpecConfig
+    from sharar.api.validation import set_accept_default
+
+    if accept_default != (1, 0.0) and not spec:
+        raise ValueError('a relaxed acceptance default requires speculation')
+    set_accept_default(*accept_default)
 
     if not spec and draft_precision != 'bf16':
         raise ValueError('draft precision requires speculation')
@@ -428,7 +436,8 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "ledger_gib": {k: round(v / 2**30, 2) for k, v in ex.ledger.entries.items()},
         "speculative": {"algorithm": ex.spec.proposer.requirements.name, "num_draft_tokens": spec,
                         "draft_precision": draft_precision, "draft": getattr(ex.spec.proposer.model, "source", None)
-                        if hasattr(ex.spec.proposer, "model") else None} if spec else None,
+                        if hasattr(ex.spec.proposer, "model") else None,
+                        "accept_default": {"accept_top_k": accept_default[0], "accept_margin": accept_default[1]}} if spec else None,
         "attention_backend": "flashinfer",
         "gdn_backend": "triton",
         "kv_cache_dtype": "float8_e4m3fn",

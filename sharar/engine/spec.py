@@ -69,6 +69,9 @@ class SpecDecoder:
         # Pinned staging for the per-round host -> device upload: rows are
         # pending token, its position, state slot; one non-blocking copy.
         self._host_rows = torch.empty((3, n), dtype=torch.int64, pin_memory=self.device.type == "cuda")
+        # Per-row relaxed-acceptance thresholds (top-k, logit margin), uploaded only when a request asks for them.
+        self._host_relax = torch.empty((2, n), dtype=torch.float32, pin_memory=self.device.type == "cuda")
+        self.relaxed_accepts = 0  # emitted tokens accepted by the relaxed rule (not the argmax)
         self.rounds = 0
         self.proposed = 0
         self.accepted = 0
@@ -92,7 +95,7 @@ class SpecDecoder:
         return sum(t.numel() * t.element_size() for t in (self.inter_ssm_all, self.conv_windows_all) if t is not None) + (self.replay.bytes if self.replay is not None else 0)
 
     def reset_stats(self) -> None:
-        self.rounds = self.proposed = self.accepted = self.emitted = 0
+        self.rounds = self.proposed = self.accepted = self.emitted = self.relaxed_accepts = 0
         self.draft_seconds = self.verify_seconds = self.accept_seconds = 0.0
 
     def stats(self) -> dict:
@@ -103,6 +106,7 @@ class SpecDecoder:
             "state_strategy": self.state_strategy, "verify_buffer_bytes": self.bytes,
             "verify_depth": self.verify_depth, "verify_depths": self.verify_depths,
             "round_ms": 1000 * (self.draft_seconds + self.verify_seconds + self.accept_seconds) / r,
+            "relaxed_accepts": self.relaxed_accepts,
         }
         if self.timing:  # phase split is only meaningful with the synchronizing timers on
             out.update({
@@ -203,10 +207,31 @@ class SpecDecoder:
             norm = norm_rows.view(b_sz, s_len, -1).clone() if self.proposer.requirements.features.final_norm else None
             layers = {lid: value.view(b_sz, s_len, -1).clone() for lid, value in layers.items()} if layers else None
             z = z_flat.view(b_sz, s_len, -1) if batch.sampled else z_flat.view(b_sz, s_len).clone()
-            self._accept_batch(batch, z, VerifiedFeatures(norm, layers), topk=self._target_topk(batch.requests, logits, b_sz, s_len))
+            relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens, b_sz, s_len)
+            self._accept_batch(batch, z, VerifiedFeatures(norm, layers), topk=self._target_topk(batch.requests, logits, b_sz, s_len), relaxed=relaxed)
             return
         ctx = self.context(batch, self.ex._paged_prefill)
         self.finish(batch, self.ex.model.forward(batch.tokens, ctx))
+
+    def _relaxed_matches(self, reqs, logits, y, b_sz: int, s_len: int):
+        """[b, k] bool: drafted token within the request's top-k and logit margin of the target's argmax.
+
+        None when no request in the batch asked for relaxed acceptance, so the
+        default path is untouched. Rows of exact requests get top-k 1 and margin 0,
+        which reduces to the argmax test."""
+        if not any(r.params.relaxed for r in reqs):
+            return None
+        k = y.shape[1]
+        host = self._host_relax
+        for i, r in enumerate(reqs):
+            host[0, i] = float(r.params.accept_top_k)
+            host[1, i] = float(r.params.accept_margin)
+        thresholds = host[:, :b_sz].to(self.device, non_blocking=True)
+        rows = logits.view(b_sz, s_len, -1)[:, :k]  # row j predicts drafted token y_j
+        ly = rows.gather(-1, y.unsqueeze(-1)).squeeze(-1).float()
+        lmax = rows.max(-1).values.float()
+        rank = (rows > ly.unsqueeze(-1)).sum(-1).float()
+        return (rank < thresholds[0].unsqueeze(1)) & ((lmax - ly) <= thresholds[1].unsqueeze(1))
 
     TOPK = 16
 
@@ -250,13 +275,14 @@ class SpecDecoder:
         layers = {lid: value.view(b_sz, s_len, -1) for lid, value in out["features"].items()} if "features" in out else None
         logits = self.ex.model.logits(out["norm"])
         z = logits.view(b_sz, s_len, -1) if batch.sampled else logits.argmax(-1).view(b_sz, s_len)
-        self._accept_batch(batch, z, VerifiedFeatures(norm, layers), topk=self._target_topk(batch.requests, logits, b_sz, s_len))
+        relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens, b_sz, s_len)
+        self._accept_batch(batch, z, VerifiedFeatures(norm, layers), topk=self._target_topk(batch.requests, logits, b_sz, s_len), relaxed=relaxed)
 
-    def _accept_batch(self, batch, z, features, topk=None):
+    def _accept_batch(self, batch, z, features, topk=None, relaxed=None):
         self._accept(batch.requests, batch.proposal.tokens, z, features, batch.started, batch.prepared,
-                     proposal=batch.proposal if batch.sampled else None, topk=topk)
+                     proposal=batch.proposal if batch.sampled else None, topk=topk, relaxed=relaxed)
 
-    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, topk=None) -> None:
+    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, topk=None, relaxed=None) -> None:
         if self.timing:
             torch.cuda.synchronize()
         t2 = time.perf_counter()
@@ -264,12 +290,19 @@ class SpecDecoder:
         k, s_len = y.shape[1], y.shape[1] + 1
         # ---- accept ----
         if proposal is None:
-            match = (y == z[:, :k])
-            acc_t = torch.cumprod(match.int(), dim=1).sum(dim=1)
-            packed = torch.cat([y, z, acc_t.unsqueeze(1).to(y.dtype)], dim=1).tolist()
+            exact = (y == z[:, :k])
+            match = exact if relaxed is None else (exact | relaxed)
+            prefix = torch.cumprod(match.int(), dim=1)
+            acc_t = prefix.sum(dim=1)
+            # Relaxed accepts inside the accepted prefix: drafted tokens the target
+            # did not rank first. Downloaded with everything else, one sync.
+            flags_t = (prefix.bool() & ~exact) if relaxed is not None else torch.zeros_like(exact)
+            packed = torch.cat([y, z, acc_t.unsqueeze(1).to(y.dtype), flags_t.to(y.dtype)], dim=1).tolist()
             y_l = [row[:k] for row in packed]
             z_l = [row[k:2 * k + 1] for row in packed]
-            acc = [row[-1] for row in packed]
+            acc = [row[2 * k + 1] for row in packed]
+            flags = [row[2 * k + 2:] for row in packed]  # block offsets accepted by the relaxed rule
+            used = [sum(f) for f in flags]
         else:
             # Sampled batch: acceptance and the correction/bonus token are
             # computed on the device per row (vectorized rejection sampling,
@@ -294,6 +327,8 @@ class SpecDecoder:
                                 torch.stack(target_rows).to(y.dtype)], dim=1).tolist()
             y_l = [row[:k] for row in packed]
             acc = [row[k] for row in packed]
+            used = [0] * len(reqs)
+            flags = [[0] * k for _ in reqs]
             # Sampled rows carry only their correction at index a (-1 elsewhere).
             z_l = [row[k + 2:] for row in packed]
         outputs = []
@@ -310,8 +345,13 @@ class SpecDecoder:
             outputs.append(emitted)
             if r.trace_rounds is not None:
                 # Greedy rows carry every target argmax; sampled rows only
-                # realize the correction token, so their z is omitted.
-                r.trace_rounds.append({"a": a, "y": y_l[i], "z": z_l[i] if proposal is None or r.params.greedy else None, "c": z_l[i][a]})
+                # realize the correction token, so their z is omitted. `rx`
+                # counts relaxed (non-argmax) accepts in the emitted prefix.
+                record = {"a": a, "y": y_l[i], "z": z_l[i] if proposal is None or r.params.greedy else None, "c": z_l[i][a]}
+                if used[i]:
+                    # block offsets (0 = first drafted token) emitted under the relaxed rule; the trainer masks them
+                    record["rx"] = [j for j, f in enumerate(flags[i][:count]) if f]
+                r.trace_rounds.append(record)
         replay = getattr(self, "replay", None)
         if replay is not None:
             # StateManager validates every stop-truncated count before one
@@ -330,6 +370,9 @@ class SpecDecoder:
             self.proposed += self.k
             self.accepted += a
             self.emitted += len(emitted)
+            relaxed_here = min(used[i], count)  # stop truncation can cut accepted tokens
+            self.relaxed_accepts += relaxed_here
+            r.spec_relaxed += relaxed_here
             r.spec_rounds += 1
             r.spec_proposed += self.k
             r.spec_accepted += a

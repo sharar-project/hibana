@@ -29,6 +29,7 @@ class Sample:
     features: dict | None = None  # {"path", "start", "rows", "dim", "skip"}; start is a position in ids
     topk: dict | None = None  # {"ids_path", "logits_path", "start", "rows", "k", "skip"}; row p is the target's top-k over the token at p + 1
     rounds: tuple = ()  # (anchor position, proposals y[k], target argmax rows z[k+1]) per greedy verification round
+    relaxed: tuple = ()  # positions in ids emitted under relaxed acceptance (not the target's argmax): masked as labels
 
     @property
     def length(self) -> int:
@@ -128,6 +129,7 @@ def load_samples(directory: str | Path, *, max_length: int = 8192, min_output: i
                 topk = {"ids_path": tinfo["ids_path"], "logits_path": tinfo["logits_path"], "start": max(0, start),
                         "rows": tinfo["rows"], "k": tinfo["k"], "skip": skip}
         rounds = []
+        relaxed = []
         spec = doc.get("spec")
         if spec:
             k = spec["k"]
@@ -136,8 +138,11 @@ def load_samples(directory: str | Path, *, max_length: int = 8192, min_output: i
                 anchor = position - cut
                 if r["z"] is not None and len(r["y"]) == k and len(r["z"]) == k + 1 and 0 <= anchor < len(ids) - 1:
                     rounds.append((anchor, tuple(r["y"]), tuple(r["z"])))
+                rx = r.get("rx")
+                if isinstance(rx, list):  # block offsets emitted under the relaxed rule -> absolute positions in ids
+                    relaxed.extend(anchor + 1 + j for j in rx if 0 <= anchor + 1 + j < len(ids))
                 position += r["a"] + 1
-        samples.append(Sample(doc["id"], float(doc.get("finish", 0.0)), tuple(ids), prompt_len, features, topk, tuple(rounds)))
+        samples.append(Sample(doc["id"], float(doc.get("finish", 0.0)), tuple(ids), prompt_len, features, topk, tuple(rounds), tuple(relaxed)))
     samples.sort(key=lambda s: (s.finish, s.request_id))
     return samples
 
@@ -159,14 +164,22 @@ def split(samples: list[Sample], holdout_tokens: int = HOLDOUT_TOKENS, min_reque
     if not samples:
         return [], []
     cap = max(1, int(len(samples) * max_fraction))
-    count, tokens = 0, 0
+    # Held-out requests must be exact: a relaxed request's outputs contain the
+    # drafter's own picks, which would inflate its replayed acceptance. Relaxed
+    # requests train (their relaxed positions are masked) but are never held out.
+    held, train, tokens = [], [], 0
     for sample in reversed(samples):
-        if count >= cap or (tokens >= holdout_tokens and count >= min_requests):
-            break
-        count += 1
-        tokens += sample.output_len
-    count = min(count, len(samples) - 1)  # a lone sample trains; run() needs two anyway
-    return samples[:len(samples) - count], samples[len(samples) - count:]
+        full = len(held) >= cap or (tokens >= holdout_tokens and len(held) >= min_requests)
+        if not full and not sample.relaxed:
+            held.append(sample)
+            tokens += sample.output_len
+        else:
+            train.append(sample)
+    if not train and held:  # a lone sample trains; run() needs two anyway
+        train.append(held.pop())
+    train.reverse()
+    held.reverse()
+    return train, held
 
 
 def digest(samples: list[Sample]) -> str:

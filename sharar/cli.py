@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--draft", default=None, help="trained DFlash2/DSpark checkpoint directory to serve instead of the pinned draft (default: SHARAR_DRAFT)")
     p_serve.add_argument("--traces", default=None, help="directory for opt-in request traces (default: SHARAR_TRACES; unset disables recording)")
     p_serve.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: SHARAR_TRACES_MAX_MIB or 32768)")
+    p_serve.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests that do not set accept_top_k/accept_margin, as K:M (default: SHARAR_ACCEPT_DEFAULT, else 2:1.0); 'off' keeps every request exact")
     p_traces = sub.add_parser("traces", help="summarize a request trace directory")
     p_traces.add_argument("--dir", default=None, help="trace directory (default: SHARAR_TRACES)")
     p_train = sub.add_parser("train", help="fine-tune the DFlash2 drafter on request traces (GPU, nothing else served)")
@@ -162,9 +163,17 @@ def main(argv: list[str] | None = None) -> int:
         max_mib = args.traces_max_mib if args.traces_max_mib is not None else int(os.environ.get("SHARAR_TRACES_MAX_MIB") or 32768)
         if max_mib < 1:
             parser.error("--traces-max-mib must be a positive integer")
+        from sharar.api.validation import parse_accept_default
+        try:
+            accept_default = parse_accept_default(args.accept_default if args.accept_default is not None else os.environ.get("SHARAR_ACCEPT_DEFAULT", "2:1.0"))
+        except ValueError as exc:
+            parser.error(str(exc))
+        if not args.spec:
+            accept_default = (1, 0.0)  # no speculation, nothing to relax
         from sharar.api.server import serve
         serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state,
-              draft_precision=args.draft_precision, traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir)
+              draft_precision=args.draft_precision, traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
+              accept_default=accept_default)
         return 0
     if args.command == "train":
         import os

@@ -26,14 +26,14 @@ def server_info(url: str) -> dict:
 
 def spec_counters(info: dict) -> dict:
     spec = info.get("spec_stats") or {}
-    out = {k: spec.get(k) for k in ("rounds", "emitted", "accepted", "proposed")}
+    out = {k: spec.get(k) for k in ("rounds", "emitted", "accepted", "proposed", "relaxed_accepts")}
     lookup = spec.get("lookup_branch") or {}
     out.update({f"lookup_{k}": lookup.get(k) for k in ("rounds", "blocks", "wins", "gain")})
     return out
 
 
-def generate(url: str, ids: list[int], max_new_tokens: int, timeout: float, trace: bool = False) -> dict:
-    body = {"input_ids": ids, "sampling_params": {"max_new_tokens": max_new_tokens, "temperature": 0.0, "ignore_eos": True}, "trace": trace}
+def generate(url: str, ids: list[int], max_new_tokens: int, timeout: float, trace: bool = False, accept: dict | None = None) -> dict:
+    body = {"input_ids": ids, "sampling_params": {"max_new_tokens": max_new_tokens, "temperature": 0.0, "ignore_eos": True, **(accept or {})}, "trace": trace}
     req = urllib.request.Request(f"{url}/generate", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     t0 = time.perf_counter()
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -41,7 +41,8 @@ def generate(url: str, ids: list[int], max_new_tokens: int, timeout: float, trac
     elapsed = time.perf_counter() - t0
     meta = payload.get("meta_info") or payload.get("meta") or payload
     return {"seconds": elapsed, "completion_tokens": meta.get("completion_tokens"), "e2e_latency": meta.get("e2e_latency"),
-            "rounds": meta.get("spec_verify_ct"), "tokens_per_round": meta.get("spec_tokens_per_round"), "output_ids": payload.get("output_ids")}
+            "rounds": meta.get("spec_verify_ct"), "tokens_per_round": meta.get("spec_tokens_per_round"),
+            "relaxed_tokens": meta.get("spec_relaxed_tokens"), "output_ids": payload.get("output_ids")}
 
 
 def main(argv=None) -> int:
@@ -55,6 +56,9 @@ def main(argv=None) -> int:
     ap.add_argument("--timeout", type=float, default=900)
     ap.add_argument("--label", default="run")
     ap.add_argument("--trace", action="store_true", help="let the server record traces for the replayed requests (default: opt out)")
+    ap.add_argument("--accept-top-k", type=int, default=1, help="relaxed acceptance: drafted token within the target's top-k ...")
+    ap.add_argument("--accept-margin", type=float, default=0.0, help="... and within this logit margin of the argmax (both > 0 to enable)")
+    ap.add_argument("--concurrency", type=int, default=1, help="requests in flight (1 = batch one; 4 = the server's batch-four cell)")
     ap.add_argument("--output", type=Path, required=True)
     args = ap.parse_args(argv)
     from sharar.train.data import load_samples, split
@@ -65,19 +69,29 @@ def main(argv=None) -> int:
         _, holdout = split(samples, args.holdout_tokens)
         holdout = holdout[-args.count:]
     info = server_info(args.url)
+    # Always explicit: the server may apply a relaxed default to requests that do not choose.
+    accept = {"accept_top_k": args.accept_top_k, "accept_margin": args.accept_margin} if args.accept_top_k > 1 and args.accept_margin > 0 else {"accept_top_k": 1, "accept_margin": 0.0}
     rows = []
     warm = holdout[0]
-    generate(args.url, list(warm.ids[:warm.prompt_len]), warm.output_len, args.timeout)  # excluded warmup
+    generate(args.url, list(warm.ids[:warm.prompt_len]), warm.output_len, args.timeout, accept=accept)  # excluded warmup
     before = spec_counters(server_info(args.url))
     started = time.perf_counter()
-    for sample in holdout:
-        row = generate(args.url, list(sample.ids[:sample.prompt_len]), sample.output_len, args.timeout, trace=args.trace)
+
+    def one(sample):
+        row = generate(args.url, list(sample.ids[:sample.prompt_len]), sample.output_len, args.timeout, trace=args.trace, accept=accept)
         output = row.pop("output_ids", None) or []
         row.update({"id": sample.request_id, "prompt_tokens": sample.prompt_len, "budget": sample.output_len,
                     "matches_trace": output == list(sample.ids[sample.prompt_len:]),
                     "output_sha256": hashlib.sha256(json.dumps(output).encode()).hexdigest(), "output_ids": output})
-        rows.append(row)
-        print(json.dumps({k: row[k] for k in ("id", "completion_tokens", "seconds", "tokens_per_round", "matches_trace")}), flush=True)
+        print(json.dumps({k: row[k] for k in ("id", "completion_tokens", "seconds", "tokens_per_round", "relaxed_tokens", "matches_trace")}), flush=True)
+        return row
+
+    if args.concurrency > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+            rows = list(pool.map(one, holdout))  # closed loop: a lane sends its next prompt when its previous one completes
+    else:
+        rows = [one(sample) for sample in holdout]
     wall = time.perf_counter() - started
     after = spec_counters(server_info(args.url))
     tokens = sum(r["completion_tokens"] or 0 for r in rows)
@@ -88,6 +102,9 @@ def main(argv=None) -> int:
         "tokens_per_round_median": statistics.median(r["tokens_per_round"] for r in rows if r.get("tokens_per_round")),
         "server_delta": delta, "server_tokens_per_round": (delta["emitted"] / delta["rounds"]) if delta.get("rounds") else None,
         "matches_trace": sum(bool(r["matches_trace"]) for r in rows), "speculative": (info.get("speculative")),
+        "concurrency": args.concurrency, "accept": accept if accept.get("accept_top_k", 1) > 1 else None,
+        "relaxed_tokens": sum(r.get("relaxed_tokens") or 0 for r in rows),
+        "relaxed_fraction": (sum(r.get("relaxed_tokens") or 0 for r in rows) / tokens) if tokens else None,
     }
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / f"{args.label}.json").write_text(json.dumps({"summary": summary, "rows": rows}, indent=1))

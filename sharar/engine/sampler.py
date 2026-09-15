@@ -27,6 +27,13 @@ class SamplingParams:
     stop_token_ids: tuple[int, ...] = (248046, 248044)  # <|im_end|>, <|endoftext|>
     ignore_eos: bool = False
     trace: bool = True  # may this request be written to the opt-in trace sink
+    # Relaxed speculative acceptance (greedy requests only): a drafted token is
+    # also accepted when the target ranks it within its top accept_top_k and
+    # its logit is within accept_margin of the argmax (a log-probability
+    # ratio). Off unless both are set; outputs then are not the target's exact
+    # greedy continuation.
+    accept_top_k: int = 1
+    accept_margin: float = 0.0
 
     def validate(self) -> None:
         if type(self.max_new_tokens) is not int or self.max_new_tokens < 1:
@@ -45,10 +52,20 @@ class SamplingParams:
             raise InvalidRequest("ignore_eos must be a boolean")
         if type(self.trace) is not bool:
             raise InvalidRequest("trace must be a boolean")
+        if type(self.accept_top_k) is not int or self.accept_top_k < 1:
+            raise InvalidRequest("accept_top_k must be an integer >= 1")
+        if type(self.accept_margin) not in (int, float) or not math.isfinite(self.accept_margin) or self.accept_margin < 0:
+            raise InvalidRequest("accept_margin must be a finite number >= 0")
+        if self.relaxed and not self.greedy:
+            raise InvalidRequest("relaxed acceptance (accept_top_k > 1 with accept_margin > 0) requires temperature 0")
 
     @property
     def greedy(self) -> bool:
         return self.temperature <= 0.0
+
+    @property
+    def relaxed(self) -> bool:
+        return self.accept_top_k > 1 and self.accept_margin > 0
 
 
 class Sampler:

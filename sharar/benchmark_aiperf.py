@@ -60,6 +60,7 @@ def digest(value):
 def payload_for(ids, budget=1000):
     return {'model': MODEL, 'prompt': ids, 'max_tokens': budget, 'temperature': 0,
             'top_p': 1, 'top_k': -1, 'seed': 42, 'ignore_eos': True,
+            'accept_top_k': 1, 'accept_margin': 0.0,  # the benchmark measures exact acceptance whatever the server default
             'frequency_penalty': 0, 'presence_penalty': 0, 'repetition_penalty': 1,
             'stop': None, 'n': 1, 'stream': True, 'skip_special_tokens': True,
             'return_token_ids': True, 'return_spec_tokens_details': True,

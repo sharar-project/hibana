@@ -69,15 +69,22 @@ def on_policy_selector(anchor_tokens: torch.Tensor, proposals: torch.Tensor, tar
     return predecessor, labels, weights
 
 
-def block_targets(ids: torch.Tensor, anchors: torch.Tensor, block: int, prompt_len: int, gamma: float | None):
-    """Return (target_ids, predecessor_ids, weight_mask, loss_weights) as [A, block]."""
+def block_targets(ids: torch.Tensor, anchors: torch.Tensor, block: int, prompt_len: int, gamma: float | None,
+                  banned: torch.Tensor | None = None):
+    """Return (target_ids, predecessor_ids, weight_mask, loss_weights) as [A, block].
+
+    ``banned`` (bool [length]) marks positions whose token is not the target's
+    own choice (relaxed acceptance); they stay in the context but carry no label weight."""
     length = ids.shape[0]
     offsets = torch.arange(block, device=ids.device)
     indices = anchors[:, None] + offsets[None, :]
     safe = indices.clamp(max=length - 1)
     target_ids = ids[safe]
     predecessor_ids = torch.cat([target_ids[:, :1], target_ids[:, :-1]], dim=1)
-    weight_mask = ((indices < length) & (offsets[None, :] > 0) & (safe >= prompt_len)).to(torch.float32)
+    keep = (indices < length) & (offsets[None, :] > 0) & (safe >= prompt_len)
+    if banned is not None:
+        keep = keep & ~banned[safe]
+    weight_mask = keep.to(torch.float32)
     loss_weights = weight_mask
     if gamma is not None and gamma > 0:
         decay = torch.exp(-(offsets - 1).clamp(min=0).to(torch.float32) / gamma)

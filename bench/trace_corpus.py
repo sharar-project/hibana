@@ -89,6 +89,7 @@ def send(url: str, item: dict, max_tokens: int, temperature: float, trace: bool,
     body = {
         "model": "sharar", "messages": [{"role": "user", "content": item["prompt"]}],
         "max_tokens": max_tokens, "temperature": temperature, "stream": False,
+        "accept_top_k": 1, "accept_margin": 0.0,  # corpus traces stay exact so training labels are the target's
         "chat_template_kwargs": {"enable_thinking": False},
     }
     if not trace:

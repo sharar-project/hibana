@@ -135,6 +135,65 @@ cuBLAS's BF16 b/a projection, cuBLASLt FP8 at 27 to 32 rows and the gated
 norm's rows-per-block heuristic; M-invariant kernels opt-in in main behind
 `SHARAR_STABLE_NUMERICS=1`, [study](docs/archive/studies/target-numerics.md)).
 
+## Research directions (2026-09-15)
+
+Ranked by expected multiplier at batch one, from the byte budget: one round
+streams about 20 GB (9.6 GB NVFP4 MLPs, 7.2 GB FP8 projections, 0.7 GB head,
+2.5 GB FP8 draft) in about 85 of 107 ms, at roughly 83% of the 239 GB/s
+ceiling, and accepts 4.7 tokens per round against an oracle near 8. Only
+fewer bytes, more accepted tokens, or a second GPU move the number.
+
+- **Relaxed acceptance, opt-in per request: built and measured**
+  ([study](docs/archive/studies/relaxed-acceptance.md)). `accept_top_k` and
+  `accept_margin` accept a drafted token the target ranks within its top-k
+  and within a logit margin of the argmax. Coding replays: top-2 within 1.0
+  logit +9.8% at batch one and +5.7% at batch four with 4% of emitted tokens
+  non-argmax; top-3 within 2.0 logits +21.6% at batch one with 7%; ShareGPT
+  +14.8%. Round cost unchanged. Judged on 53 prompts by the target model in
+  both orders: no setting distinguishable from exact (top-2/1.0: 13 relaxed
+  wins, 14 exact, 26 ties). Decision: merge as opt-in; top-2 within 1.0
+  logit is the recommended interactive default, exact stays for benchmarks
+  and training traces; a few hundred prompts per setting would be needed to
+  see a 55/45 preference.
+- **Three-bit decode weights beside NVFP4 prefill weights (about 1.3 to 1.5x).**
+  3.25 bits per weight (FP8 scale per 32) takes the MLPs from 9.6 to 6.9 GB
+  and the FP8 projections to about 2.9 GB, roughly 7 GB off the round. At 16
+  rows the tensor cores have five times the compute the weight stream needs,
+  so in-kernel dequantization is free; prefill keeps the tensor-core-native
+  NVFP4 copy, and unified memory holds both. The hard part is quality: a 27B
+  dense model at 3 bits needs incoherence processing or codebooks (QuIP#,
+  QTIP) or a short QAT pass on the BF16 originals, judged on the family
+  gate's cost interval plus a held-out quality set; the projections will be
+  more sensitive than the MLPs.
+- **Draft capacity (about 1.1 to 1.3x, lossless).** A draft twice as deep
+  costs 10 ms and breaks even at +0.45 tokens per round against about 3
+  available; more target taps is the cheaper variant. Trainer, traces and
+  objective exist; the family set must grow to about 100 tasks before
+  acceptance gains of a few percent are measurable.
+- **Two Sparks in tensor parallel (about 1.7 to 1.8x, hardware permitting).**
+  Half the weight bytes per GPU for about 3 ms of all-reduce per round over
+  the 200 GbE link; the only near-2x lever.
+- **Device-resident round (about 10% at batch two to four).** Item 3 above.
+- **Profile first.** The host has `RmProfilingAdminOnly: 1`, so no study so
+  far has seen DRAM counters; `NVreg_RestrictProfilingToAdminUsers=0` in a
+  modprobe file and a reboot unlocks them. Then one round at batch one and
+  four: which 16-row GEMM shapes sit furthest below the ceiling (the Triton
+  FP8 kernel found 1.5% there; the NVFP4 shapes were never checked the same
+  way), how much of the roughly 1,000 launches per round is kernel tail
+  (bounds a persistent decode kernel), and the accept path at batch four.
+
+## Engine to-dos
+
+- **Relaxed acceptance for sampled requests.** Today `accept_top_k` /
+  `accept_margin` require temperature 0 (HTTP 400 otherwise) because sampled
+  verification is rejection sampling, which keeps the exact target
+  distribution and has no argmax to relax. The sampled analogue is typical
+  acceptance (accept a drafted token whose target probability clears an
+  entropy-scaled threshold, as Medusa and EAGLE do), or a biased ratio
+  `min(1, p_target / (q_draft * factor))`. Add typical acceptance behind the
+  same two parameters when a sampling user wants the speed; judge it the
+  same way as the greedy mode.
+
 ## Maintenance fixes
 
 Small, independent, any session; none changes numerics.

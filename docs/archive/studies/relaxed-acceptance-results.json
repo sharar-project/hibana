@@ -1,0 +1,25 @@
+{
+  "schema": 2,
+  "summary_document": "relaxed-acceptance.md",
+  "full_evidence": {
+    "path": "reviews/2026-09-15-relaxed-accept/results.json",
+    "sha256": "367be03dbfb9bd227e40ba02b008033a051bce47522273ccc6f591060076c2c7",
+    "bytes": 187882,
+    "files": 11
+  },
+  "summary": {
+    "date": "2026-09-15",
+    "source": "main 24a1c77 plus working-tree relaxed acceptance (opt-in, default off)",
+    "protocol": "one exclusive window, FP8 pinned DFlash2 k=15, bench/draft_ab.py replays with recorded budgets, greedy",
+    "cells": {
+      "coding_bs1_top2_m1": {"requests": 29, "tps": [45.47, 49.91], "change": 0.098, "tok_per_round": [4.884, 5.358], "relaxed_fraction": 0.0405, "identical": 3},
+      "coding_bs1_top3_m2": {"requests": 29, "tps": [45.47, 55.31], "change": 0.216, "tok_per_round": [4.884, 6.037], "relaxed_fraction": 0.0702, "identical": 3},
+      "coding_bs4_top2_m1": {"requests": 29, "concurrency": 4, "tps": [122.27, 129.19], "change": 0.057, "batch_tok_per_round": [17.65, 19.00], "relaxed_fraction": 0.0397, "identical": 3},
+      "sharegpt_bs1_top2_m1": {"requests": 24, "tps": [35.47, 40.72], "change": 0.148, "tok_per_round": [3.714, 4.310], "relaxed_fraction": 0.0496, "identical": 0}
+    },
+    "cpu_tests_passed": 526,
+    "serving_changes": "per-request opt-in only; default path unchanged",
+    "judged": {"prompts": 53, "consistent_relaxed_vs_exact": {"top2_m0.5": [11, 18], "top2_m1.0": [13, 14], "top3_m2.0": [11, 15]}, "sign_test_p": [0.26, 1.0, 0.56], "judge": "target model, both orders, thinking off"},
+    "decision": "merge as opt-in; top-2 within 1.0 logit is defensible as the interactive default (no detectable loss at n=53); keep exact for benchmarks and training traces"
+  }
+}

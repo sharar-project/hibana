@@ -4,7 +4,11 @@ Sharar is a local inference engine for one NVIDIA GB10 (a DGX Spark). It
 serves Qwen3.8-27B in NVFP4 through an OpenAI-compatible API with prefix
 caching and DFlash2 speculative decoding, and it can train the speculative
 drafter on your own traffic so it gets faster at the work you actually do.
-Outputs are always the target model's own: the drafter only changes speed.
+Outputs are the target model's own: the drafter only changes speed. By default a
+greedy request also accepts a drafted token the target ranks second within one
+logit of its first choice (about +10% throughput, one token in 25); set
+`accept_top_k: 1` on a request, or `SHARAR_ACCEPT_DEFAULT=off`, for the exact
+greedy continuation.
 
 ## Setup
 

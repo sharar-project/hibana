@@ -170,6 +170,10 @@ class Trainer:
         ids = torch.tensor(sample.ids, dtype=torch.int64, device=self.device)
         projected = sample.context(self.device)
         anchors = anchors.to(self.device)
+        banned = None
+        if sample.relaxed:
+            banned = torch.zeros(len(sample.ids), dtype=torch.bool, device=self.device)
+            banned[torch.tensor(sample.relaxed, dtype=torch.int64, device=self.device)] = True
         hidden_projection, predecessor_codebook, successor_codebook = self.draft.selector_weights()
         teacher_ids, teacher_logits, teacher_valid = sample.teacher(self.device) if cfg.kl_alpha and sample.topk else (None, None, None)
         rounds = None
@@ -179,7 +183,7 @@ class Trainer:
         total = None
         for start in range(0, anchors.shape[0], cfg.anchor_chunk):
             chunk = anchors[start:start + cfg.anchor_chunk]
-            target_ids, predecessor_ids, weight_mask, loss_weights = block_targets(ids, chunk, cfg.block, sample.prompt_len, cfg.gamma)
+            target_ids, predecessor_ids, weight_mask, loss_weights = block_targets(ids, chunk, cfg.block, sample.prompt_len, cfg.gamma, banned)
             teacher = block_teacher(chunk, cfg.block, teacher_ids, teacher_logits, teacher_valid) if teacher_ids is not None else None
             overrides = {}
             if rounds is not None:

@@ -2,6 +2,28 @@
 import math
 from sharar.engine.sampler import InvalidRequest, SamplingParams
 
+# Relaxed acceptance applied to greedy requests that set neither accept_top_k
+# nor accept_margin; (1, 0.0) means exact. Set once by serve() from --accept-default.
+ACCEPT_DEFAULT = (1, 0.0)
+
+
+def set_accept_default(top_k: int, margin: float) -> None:
+    global ACCEPT_DEFAULT
+    SamplingParams(accept_top_k=top_k, accept_margin=margin).validate()
+    ACCEPT_DEFAULT = (top_k, margin)
+
+
+def parse_accept_default(text: str | None) -> tuple[int, float]:
+    """'off', '' or None -> exact; 'K:M' -> top-k K within M logits."""
+    if text is None or text.strip().lower() in ("", "off", "exact", "0", "1", "1:0", "1:0.0"):
+        return (1, 0.0)
+    try:
+        k, m = text.split(":")
+        return (int(k), float(m))
+    except ValueError as exc:
+        raise ValueError("accept default must be K:M, e.g. 2:1.0, or off") from exc
+
+
 def _sampling_from(body: dict, max_default: int = 512) -> SamplingParams:
     sp = body.get("sampling_params")
     if sp is None:
@@ -26,7 +48,12 @@ def _sampling_from(body: dict, max_default: int = 512) -> SamplingParams:
         seed=integer(seed),
         ignore_eos=sp.get("ignore_eos", body.get("ignore_eos", False)),
         trace=body.get("trace", sp.get("trace", True)),
+        accept_top_k=integer(body.get("accept_top_k", sp.get("accept_top_k", 1))),
+        accept_margin=body.get("accept_margin", sp.get("accept_margin", 0.0)),
     )
+    if ("accept_top_k" not in body and "accept_top_k" not in sp and "accept_margin" not in body and "accept_margin" not in sp
+            and params.greedy and ACCEPT_DEFAULT != (1, 0.0)):
+        params.accept_top_k, params.accept_margin = ACCEPT_DEFAULT
     params.validate()
     return params
 

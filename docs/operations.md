@@ -36,6 +36,7 @@ budget separately. Automatic KV capacity depends on available memory.
 | Image | `sharar:qwen38-27b` | `SHARAR_IMAGE` |
 | Container / port | `sharar-qwen38` / 30001 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
 | Request traces | Off | `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
+| Relaxed acceptance default | top-2 within 1.0 logit | `SHARAR_ACCEPT_DEFAULT=K:M` or `off` (greedy requests that do not set `accept_top_k`/`accept_margin`; the [study](archive/studies/relaxed-acceptance.md)) |
 | Shape-stable prefill numerics | Off | `SHARAR_STABLE_NUMERICS=1` (research baseline for row-count experiments; the [numerics study](archive/studies/target-numerics.md)) |
 | Draft checkpoint | `draft-runs/current` when promoted, else pinned | `SHARAR_DRAFT=/dir` or `SHARAR_DRAFT=pinned` |
 
