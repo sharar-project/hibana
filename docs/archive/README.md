@@ -19,6 +19,8 @@ gates. Historical commands may require the recorded source revision.
 | Train the drafter on recorded serving features; target prefill numerics are shape-dependent | [Draft training](studies/gb10-draft-training.md) |
 | A 15-row prompt-lookup branch beside the draft chain does not raise served throughput; per-round union oracles over-value copy-region tokens | [Lookup branch](studies/lookup-branch.md) |
 | Judge arithmetic changes on the family gate's round-cost interval; acceptance is unresolvable below about 7% on 18 families; bit-identical outputs are not a gate | [Family gate](studies/family-gate.md) |
+| The 101-family set resolves acceptance to about ±3%; 1 to 2% claims still need hundreds of real traces | [Family set v3](studies/family-set-v3.md) |
+| At batch one the GPU is 98% busy and NVFP4 GEMMs stream at 90 to 96% of the ceiling; the FP8 5120x6144 shape and the b/a GEMMs are the named slack | [Round profile](studies/gb10-round-profile.md) |
 | Relaxed acceptance is an opt-in speed mode (+10% at batch one for 4% non-argmax tokens), never a default without a judged quality comparison | [Relaxed acceptance](studies/relaxed-acceptance.md) |
 
 The exact pre-cleanup tree is tagged `archive/pre-cleanup-2026-09-11`.
@@ -85,6 +87,8 @@ main deliberately refuses its now-identical capacity comparison.
 - [Prompt-lookup n-gram branch coverage screen](studies/ngram-branch-screen.md)
 - [Prompt-lookup second verification branch: serving measurement](studies/lookup-branch.md)
 - [The family gate: one command, a fixed code prompt, and what it can resolve](studies/family-gate.md)
+- [The 101-family set: the gate's resolution at three percent](studies/family-set-v3.md)
+- [One decode round on the GB10, profiled](studies/gb10-round-profile.md)
 - [Relaxed speculative acceptance: opt-in speed mode, batch one and batch four](studies/relaxed-acceptance.md)
 - [Runtime cleanup and clean-image promotion review](studies/promotion.md)
 - [Request cache policy for agent sessions](studies/request-cache-policy.md)

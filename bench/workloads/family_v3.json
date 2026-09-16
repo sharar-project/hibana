@@ -1,0 +1,715 @@
+{
+ "version": "family-v3",
+ "input_tokens": 10000,
+ "output_tokens": 1000,
+ "note": "family-v1 (18 families, 2026-09-09) plus 83 families written 2026-09-15 to bring the paired interval on tokens per round from about +-7% to about +-3%; frozen once, never tuned against results.",
+ "tasks": [
+  {
+   "id": "ring_buffer",
+   "split": "train",
+   "category": "code",
+   "spec": "A telemetry collector stores variable-size records in a bounded byte ring. Readers consume monotonically numbered records. Wrapping a record cannot overwrite unread bytes; oversized records are rejected. There is one writer and one reader, both represented by explicit methods rather than real threads.",
+   "question": "Write a complete Python implementation, explain its invariants and wraparound representation, and provide tests covering empty/full states, variable record sizes, rejection, and repeated wraparound. Explain every ownership transition."
+  },
+  {
+   "id": "deadline_queue",
+   "split": "train",
+   "category": "code",
+   "spec": "A job broker orders runnable work by deadline and stable insertion order. Jobs can be rescheduled or cancelled after insertion. The heap may contain stale versions, but clients must never execute an obsolete version. IDs are arbitrary strings and deadlines are integer clock ticks.",
+   "question": "Implement the broker in Python using a heap plus version tracking. Explain complexity, stale-entry cleanup, deterministic ties and how to test cancellation, rescheduling and ID reuse. Include a detailed worked execution trace."
+  },
+  {
+   "id": "build_graph",
+   "split": "train",
+   "category": "code",
+   "spec": "A build planner receives named tasks and their dependencies. Tasks can be requested in any order. It must detect cycles with an explanatory path, emit a stable valid order for acyclic tasks, and invalidate dependents after an input changes. The graph is small enough to keep in memory.",
+   "question": "Provide complete Python code for validation, stable planning and transitive invalidation. Explain the algorithms and invariants. Include tests for disconnected graphs, diamonds, self-cycles, longer cycles and incremental changes."
+  },
+  {
+   "id": "stream_parser",
+   "split": "train",
+   "category": "code",
+   "spec": "A byte stream contains frames with a four-byte unsigned big-endian length followed by payload bytes. Reads may split headers or payloads and may contain several frames. Payloads can be empty; lengths over 65536 are invalid. End of stream with an incomplete frame is an error.",
+   "question": "Implement an incremental Python frame parser with feed and finish methods. Explain buffering, failure recovery and memory bounds. Include exhaustive split-point tests, multiple frames, empty frames, oversized lengths and truncated streams."
+  },
+  {
+   "id": "content_manifest",
+   "split": "train",
+   "category": "code",
+   "spec": "A content store builds a manifest mapping normalized relative file paths to byte size and SHA-256. Absolute paths and parent traversal are invalid. Comparing two manifests must classify additions, deletions and content changes. Ordering and serialization must be deterministic.",
+   "question": "Write a Python implementation with path validation, deterministic serialization and manifest comparison. Explain filesystem race assumptions and how to test Unicode paths, empty files, content changes with equal size and unsafe paths."
+  },
+  {
+   "id": "idempotent_jobs",
+   "split": "train",
+   "category": "code",
+   "spec": "A worker may receive duplicate jobs with the same idempotency key. The durable record can be pending, running, completed or failed. Leases expire after 30 clock ticks. A completed result must be returned on retry; a stale lease owner must not overwrite a newer owner's result.",
+   "question": "Implement the state machine in Python with an injected clock and an in-memory transactional store. Explain fencing tokens, retries and failure cases. Include detailed tests for duplicates, lease expiry, stale completion and successful result reuse."
+  },
+  {
+   "id": "transactional_outbox",
+   "split": "train",
+   "category": "design",
+   "spec": "An order service commits database changes and an outgoing event in the same transaction. A publisher sends committed outbox entries to a broker with at-least-once delivery. Subscribers must handle duplicates and preserve ordering per order ID. Broker outages can last several hours.",
+   "question": "Design the complete outbox and consumer protocol. Include schemas, state transitions, pseudocode, batching, retry backoff, ordering, retention, observability and a failure-injection test plan. Explain where exactly-once claims would be misleading."
+  },
+  {
+   "id": "warehouse_scheduler",
+   "split": "train",
+   "category": "design",
+   "spec": "A warehouse has eight packing stations and three loading docks. Each order requires a packing phase and a loading phase with known durations. Urgent orders have deadlines. Stations and docks may fail temporarily, and in-progress work cannot be moved instantaneously.",
+   "question": "Design a scheduler with explicit resource ownership, deadline handling and recovery. Explain admission, priority inversion, fairness, cancellation and rescheduling. Include pseudocode, a worked schedule and tests for failures and capacity exhaustion."
+  },
+  {
+   "id": "schema_evolution",
+   "split": "train",
+   "category": "design",
+   "spec": "A distributed service stores versioned customer documents. Old and new application instances run concurrently during deployment. Migration must be resumable and preserve writes. Documents carry a schema version and revision number; some fields are renamed and split into two fields.",
+   "question": "Design a safe expand-migrate-contract rollout. Explain reads and writes during each phase, optimistic concurrency, backfills, rollback, monitoring and failure recovery. Include example schemas, pseudocode and adversarial tests."
+  },
+  {
+   "id": "queue_capacity",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "A service receives 72 jobs per second. A worker spends 40 milliseconds of CPU and 20 milliseconds waiting per job. There are six CPU cores, and jobs share a storage link capped at 120 jobs per second. Arrival bursts double the rate for 15 seconds every five minutes.",
+   "question": "Derive sustainable throughput and explain the role of concurrency, CPU time and waiting. Calculate queue buildup during bursts under several worker counts, estimate drain times, state assumptions and propose a measurement plan. Show the arithmetic step by step."
+  },
+  {
+   "id": "storage_crossover",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "Storage plan A has 180 milliseconds setup and 3 milliseconds per object. Plan B has 650 milliseconds setup and 0.8 milliseconds per object. Both share a 900 MB/s channel; each object is 2 MB. Setup cannot overlap transfer within a plan.",
+   "question": "Derive the break-even object count with and without the bandwidth limit. Calculate total times for 20, 100, 500 and 2000 objects. Explain batching, overlap assumptions, sensitivity to object size and a practical benchmark design."
+  },
+  {
+   "id": "replica_reliability",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "Three replicas independently fail during a one-hour interval with probability 0.02 each. A read needs one available replica; a write needs two. A shared network outage has probability 0.005 and makes every replica unreachable. Ignore repair within the interval.",
+   "question": "Derive read and write availability under independence and then including the shared outage. Compare two and three replicas, explain correlated failures and conditional probability, and work through numerical examples and sensitivity analysis."
+  },
+  {
+   "id": "log_compactor",
+   "split": "validation",
+   "category": "code",
+   "spec": "An append-only log contains updates and tombstones keyed by strings. Every entry has a strictly increasing sequence number. Compaction keeps the latest entry per key within a closed segment while preserving the information needed by readers whose snapshots may be older than the compaction watermark.",
+   "question": "Implement a Python compaction planner with a snapshot watermark. Explain safe tombstone removal, segment replacement, crash recovery and sequence-number invariants. Include a thorough worked example and tests for concurrent snapshots and repeated compaction."
+  },
+  {
+   "id": "multipart_upload",
+   "split": "validation",
+   "category": "design",
+   "spec": "Clients upload large objects in independently retried chunks. A server must verify checksums, track missing chunks, finalize atomically and garbage-collect abandoned uploads. Clients may restart or send duplicate chunks; two clients may accidentally reuse an upload ID.",
+   "question": "Design the protocol, metadata schema and state machine. Include ownership, authentication assumptions, idempotency, atomic finalization, cleanup, resource limits and a detailed failure-injection test plan with pseudocode."
+  },
+  {
+   "id": "batch_economics",
+   "split": "validation",
+   "category": "reasoning",
+   "spec": "A processor incurs 9 milliseconds dispatch overhead per batch and 1.4 milliseconds per item. The buffer holds at most 80 items. Items arrive at 160 per second and require a mean latency below 100 milliseconds. Assume periodic dispatch and explain when this assumption breaks.",
+   "question": "Derive throughput, utilization and mean waiting time as functions of batch size and interval. Evaluate several concrete choices, identify feasible operating points, and analyze bursts, deadline tails and measurement error with worked calculations."
+  },
+  {
+   "id": "dependency_versions",
+   "split": "test",
+   "category": "code",
+   "spec": "A package resolver chooses one version per package from a finite repository. Requirements are inclusive integer version ranges. Packages can have transitive dependencies and conflicts. The resolver should return a deterministic solution or an explanation of the unsatisfied constraints.",
+   "question": "Implement a small backtracking resolver in Python with propagation and rollback. Explain termination, deterministic choice order, conflict reporting and complexity. Include tests for diamonds, conflicting ranges, cycles and backtracking to an older version."
+  },
+  {
+   "id": "metrics_pipeline",
+   "split": "test",
+   "category": "design",
+   "spec": "A metrics service ingests timestamped samples from intermittently connected devices. Samples may arrive late, out of order or duplicated. Dashboards query fixed windows and may accept provisional results. Storage and aggregation workers have independent capacity limits.",
+   "question": "Design ingestion, deduplication, watermarking and aggregate correction. Explain bounded state, backpressure, retention, recovery and query semantics. Include schemas, state transitions, pseudocode and a worked late-arrival example."
+  },
+  {
+   "id": "erasure_budget",
+   "split": "test",
+   "category": "reasoning",
+   "spec": "A storage system compares three replicas with an erasure code using six data and three parity fragments. Each object contains 24 MB. A rack offers 2 GB/s of usable bandwidth; reconstructing one missing erasure fragment reads six available fragments. Ignore CPU encoding cost initially.",
+   "question": "Calculate storage overhead, normal write traffic and repair traffic for both schemes. Analyze repair time for one and many lost fragments under shared bandwidth, explain failure-domain assumptions, and extend the model to include encoding CPU cost and concurrent foreground traffic."
+  },
+  {
+   "id": "lru_ttl_cache",
+   "split": "validation",
+   "category": "code",
+   "spec": "An in-process cache holds string keys with byte-size values, a per-entry time-to-live and a global byte budget. Reads refresh recency but not expiry. Eviction removes expired entries first, then the least recently used until the budget holds. Time is injected as an integer clock so behaviour is deterministic.",
+   "question": "Write a complete Python implementation with O(1) get and put, explain the data structures and every invariant, and provide tests for expiry ordering, budget pressure with mixed sizes, refresh semantics and clock rollover at boundaries."
+  },
+  {
+   "id": "rate_limiter_tiers",
+   "split": "train",
+   "category": "code",
+   "spec": "An API gateway enforces per-client token buckets with three tiers whose refill rates and burst sizes differ. Clients can be re-tiered at runtime without losing accrued tokens beyond the new burst cap. A request may consume more than one token. The limiter must be safe to call from several request handlers that are simulated by explicit interleavings.",
+   "question": "Implement the limiter in Python with lazy refill, explain fairness and the re-tiering rule, and write tests covering bursts, starvation, re-tiering up and down, multi-token requests and clock jumps."
+  },
+  {
+   "id": "csv_diff_tool",
+   "split": "test",
+   "category": "code",
+   "spec": "A reconciliation tool compares two CSV exports of the same table keyed by one or more columns. It must report added, removed and changed rows with the changed columns, tolerate reordered columns and rows, and treat a configurable set of columns as insignificant. Files can be larger than memory only in the sense that the tool should stream one side.",
+   "question": "Provide a complete Python implementation, explain the streaming strategy and key handling, and add tests for duplicate keys, missing columns, whitespace and case differences, and ignored columns. Discuss the complexity."
+  },
+  {
+   "id": "interval_merger",
+   "split": "train",
+   "category": "code",
+   "spec": "A calendar service stores half-open integer intervals per resource with an owner tag. Adding an interval must merge with adjacent or overlapping intervals of the same owner and reject overlaps with other owners, returning the conflicting interval. Removal may split an existing interval into two.",
+   "question": "Write the Python data structure with logarithmic lookup, explain the merge and split cases and the ordering invariant, and provide tests for adjacency, containment, partial overlap, removal splits and many owners."
+  },
+  {
+   "id": "retry_policy_engine",
+   "split": "train",
+   "category": "code",
+   "spec": "A client library retries failed calls according to a policy: exponential backoff with jitter, a per-attempt timeout, a total deadline, and classification of errors into retryable and terminal. Some operations are idempotent only if a client-supplied key is attached. Sleeping is done through an injected scheduler so tests do not wait.",
+   "question": "Implement the engine in Python, explain the state machine and how the deadline interacts with per-attempt timeouts, and write tests for terminal errors, deadline exhaustion mid-backoff, idempotency keys and jitter bounds."
+  },
+  {
+   "id": "trie_autocomplete",
+   "split": "validation",
+   "category": "code",
+   "spec": "A search box needs prefix completion over a few hundred thousand phrases with frequencies. Completions return the top-k phrases by frequency for a prefix, support deletion and frequency updates, and treat case and accents as insignificant while returning the original form.",
+   "question": "Write a complete Python implementation with a compact trie and per-node top-k maintenance, explain the update cost trade-offs, and add tests for normalisation, deletion, ties, updates that change rankings and empty prefixes."
+  },
+  {
+   "id": "bank_ledger",
+   "split": "train",
+   "category": "code",
+   "spec": "A double-entry ledger records transfers between accounts in integer minor units. Every posting must balance, accounts may not go below configured floors, and a transfer can be reversed by a compensating entry that references the original. Balances at any past sequence number must be reconstructible.",
+   "question": "Implement the ledger in Python, explain the invariants and how reversals and historical balances are represented, and provide tests for multi-leg transfers, floor violations, reversal of reversals and replay from the journal."
+  },
+  {
+   "id": "tokenizer_bpe",
+   "split": "test",
+   "category": "code",
+   "spec": "A text pipeline needs a byte-pair-encoding tokenizer trained from a corpus: learn merges up to a vocabulary size, encode strings deterministically with the learned merges, and decode back to exact bytes. Unknown bytes must never fail. The implementation must be pure Python and reproducible.",
+   "question": "Write training, encoding and decoding with clear data structures, explain the merge priority rule and the round-trip guarantee, and add tests for repeated merges, multibyte characters, empty input and vocabulary limits."
+  },
+  {
+   "id": "dag_executor",
+   "split": "train",
+   "category": "code",
+   "spec": "A workflow runner executes tasks with dependencies using a fixed pool of simulated workers. A task can fail; dependents are skipped with a recorded reason while independent branches continue. Runs can be resumed from a checkpoint so completed tasks are not repeated.",
+   "question": "Provide a complete Python implementation with deterministic scheduling, explain the ready-set maintenance and the checkpoint format, and write tests for partial failure, resume after a crash, worker limits and diamond dependencies."
+  },
+  {
+   "id": "snapshot_isolation_store",
+   "split": "train",
+   "category": "code",
+   "spec": "A key-value store supports transactions with snapshot isolation: a transaction reads the version current at its start, writes are buffered, and commit fails if a written key was committed by another transaction after the snapshot. Old versions are garbage-collected once no snapshot can see them.",
+   "question": "Implement the store in Python with multiversion storage, explain the visibility rule, first-committer-wins and garbage collection, and provide tests for write skew, lost-update prevention, long-running readers and collection timing."
+  },
+  {
+   "id": "markdown_toc",
+   "split": "validation",
+   "category": "code",
+   "spec": "A documentation tool generates a table of contents for Markdown files: it must recognise ATX and setext headings, skip headings inside fenced code blocks, produce unique GitHub-style anchors for duplicate titles, and respect a configurable depth range.",
+   "question": "Write a complete Python implementation, explain the parsing state machine and the anchor algorithm, and provide tests for nested fences, duplicate titles, headings with punctuation and links, and depth filtering."
+  },
+  {
+   "id": "consistent_hash_ring",
+   "split": "train",
+   "category": "code",
+   "spec": "A cache cluster assigns keys to nodes with consistent hashing using virtual nodes and weights. Adding or removing a node must move only the keys that belong to it, lookups must be logarithmic, and the ring must support finding the next N distinct nodes for replication.",
+   "question": "Implement the ring in Python, explain virtual node placement, weight handling and replica selection, and add tests measuring key movement on membership changes, distribution balance and replica distinctness."
+  },
+  {
+   "id": "sparse_matrix_ops",
+   "split": "test",
+   "category": "code",
+   "spec": "A scientific tool needs a sparse matrix type in compressed sparse row form supporting transpose, matrix-vector product, addition and multiplication with another sparse matrix, and conversion from coordinate lists with duplicate accumulation. Dimensions are validated and results stay sorted by column.",
+   "question": "Write the complete Python implementation without numpy, explain the index arithmetic and complexity of each operation, and provide tests against dense reference computations for random small matrices, empty rows and duplicates."
+  },
+  {
+   "id": "event_sourced_cart",
+   "split": "train",
+   "category": "code",
+   "spec": "A shopping cart is stored as an append-only event stream: items added, quantities changed, coupons applied and removed, checkout started. The current state is a fold over events, and business rules such as coupon eligibility are checked against the folded state before appending. Events carry a version for optimistic concurrency.",
+   "question": "Implement the aggregate in Python with commands, events and the fold, explain concurrency control and rule evaluation, and provide tests for conflicting versions, coupon rules, replay from the stream and idempotent re-application."
+  },
+  {
+   "id": "glob_matcher",
+   "split": "train",
+   "category": "code",
+   "spec": "A file-selection library needs a glob matcher supporting star, double-star across directory boundaries, question mark, bracket classes with negation, and escaped characters. Matching must be linear in the path length for patterns without nested wildcards and must never backtrack exponentially.",
+   "question": "Write a complete Python implementation, explain the matching algorithm and why it avoids exponential backtracking, and provide tests for tricky patterns, hidden files, trailing slashes and escaping."
+  },
+  {
+   "id": "circuit_breaker",
+   "split": "validation",
+   "category": "code",
+   "spec": "A service client wraps calls in a circuit breaker with closed, open and half-open states. Failures within a sliding window trip the breaker; after a cooldown a limited number of trial calls decide whether to close it. Different error classes have different weights, and the breaker exposes metrics.",
+   "question": "Implement the breaker in Python with an injected clock, explain the window arithmetic and each transition, and add tests for tripping thresholds, cooldown expiry, half-open trial limits and weighted errors."
+  },
+  {
+   "id": "diff_patch_lines",
+   "split": "train",
+   "category": "code",
+   "spec": "A version-control tool needs line-based diff and patch: compute a minimal edit script between two files, print it in unified format with context, and apply such a patch to a file, detecting and reporting hunks that no longer apply with offsets.",
+   "question": "Provide a complete Python implementation using a longest-common-subsequence algorithm, explain complexity and hunk merging, and write tests for insertions, deletions, moved blocks, fuzzy offsets and rejected hunks."
+  },
+  {
+   "id": "priority_mailbox",
+   "split": "test",
+   "category": "code",
+   "spec": "An actor runtime delivers messages to a mailbox with priorities and per-sender ordering: higher priority is delivered first, messages from one sender keep their relative order, and a sender can be paused so its messages are held without blocking others. Capacity is bounded per sender.",
+   "question": "Implement the mailbox in Python, explain the data structures that keep both orderings, and write tests for interleaved priorities, pausing and resuming, capacity backpressure and starvation."
+  },
+  {
+   "id": "json_schema_lite",
+   "split": "train",
+   "category": "code",
+   "spec": "A configuration loader validates documents against a small schema language: typed fields, required and optional keys, nested objects and arrays with item schemas, enumerations, numeric ranges and default values. Errors must name the exact path and every violation, not just the first.",
+   "question": "Write the validator in Python, explain the traversal and default-filling rules, and provide tests for nested errors, multiple violations, defaults inside arrays and unknown keys in strict and lenient modes."
+  },
+  {
+   "id": "wal_recovery",
+   "split": "train",
+   "category": "code",
+   "spec": "A tiny storage engine writes updates to a write-ahead log with checksums and periodically checkpoints its in-memory table to a file. On startup it must recover the latest consistent state, tolerating a torn final record and a crash during checkpointing.",
+   "question": "Implement writing, checkpointing and recovery in Python over a simulated file system, explain the ordering guarantees and the recovery cases, and write tests that inject crashes at every step of a checkpoint and truncate the log."
+  },
+  {
+   "id": "rope_text_buffer",
+   "split": "validation",
+   "category": "code",
+   "spec": "A text editor needs a buffer supporting insertion and deletion at arbitrary offsets in large documents, line and column lookup, and undo of the last operations. Operations should be logarithmic in the document size.",
+   "question": "Write a rope-based Python implementation, explain rebalancing, line-index maintenance and undo, and provide tests with random operation sequences compared against a plain string model."
+  },
+  {
+   "id": "dependency_resolver",
+   "split": "train",
+   "category": "code",
+   "spec": "A package manager resolves version constraints: each package lists dependencies with range constraints, several versions exist per package, and the resolver must find a consistent assignment preferring newest versions or explain the conflict with a chain of constraints.",
+   "question": "Implement backtracking resolution in Python, explain the search order, conflict explanation and termination, and provide tests for diamond conflicts, unsatisfiable ranges, optional dependencies and large fan-out."
+  },
+  {
+   "id": "tail_follow_rotation",
+   "split": "test",
+   "category": "code",
+   "spec": "A log shipper follows a file that is periodically rotated by rename and recreated. It must not lose lines written just before rotation, must not duplicate lines after restart using a persisted offset, and must handle a partially written final line.",
+   "question": "Implement the follower in Python over an injected file system, explain how inode identity, offsets and partial lines are tracked, and write tests for rotation during a write, restart with a stale offset and truncation."
+  },
+  {
+   "id": "bloom_counting",
+   "split": "train",
+   "category": "code",
+   "spec": "A deduplication service needs a counting Bloom filter with configurable false-positive rate, support for deletions, saturation detection and serialization to bytes. The hash functions are derived from two base hashes.",
+   "question": "Write the Python implementation, derive the sizing formulas and explain the deletion caveats, and provide tests for false-positive rate on random data, deletion correctness and round-trip serialization."
+  },
+  {
+   "id": "state_machine_dsl",
+   "split": "train",
+   "category": "code",
+   "spec": "A device controller is specified as a finite state machine in a small text format: states, events, guarded transitions with actions, and entry and exit hooks. The interpreter must validate the definition, reject unreachable states, and execute deterministically with a trace.",
+   "question": "Implement the parser and interpreter in Python, explain validation and the semantics of guards and hooks, and provide tests for parse errors, unreachable states, guard ordering and a worked device trace."
+  },
+  {
+   "id": "histogram_percentiles",
+   "split": "validation",
+   "category": "code",
+   "spec": "A metrics library records latencies into a log-scale histogram with bounded relative error, supports merging histograms from several processes, and answers percentile queries. Memory must be constant regardless of sample count.",
+   "question": "Write the Python implementation, derive the bucket boundaries and the error bound, and provide tests for percentile accuracy against sorted samples, merges and extreme values."
+  },
+  {
+   "id": "template_renderer",
+   "split": "train",
+   "category": "code",
+   "spec": "A report generator renders templates with variables, conditionals, loops with index variables, filters applied through a pipe syntax and safe escaping by default. Missing variables are errors in strict mode and empty in lenient mode. Templates can include other templates with depth limits.",
+   "question": "Implement the renderer in Python, explain tokenizing, parsing and escaping, and add tests for nested loops, filter chains, missing variables in both modes, include cycles and escaping of user content."
+  },
+  {
+   "id": "union_find_rollback",
+   "split": "test",
+   "category": "code",
+   "spec": "A network simulator connects and disconnects nodes and asks whether two nodes are connected at various points in time. Connections form a timeline; queries about earlier moments must be answered without rebuilding from scratch.",
+   "question": "Implement an offline dynamic-connectivity solution in Python using divide and conquer over time with a rollback union-find, explain the algorithm and complexity, and provide tests against a brute-force reference."
+  },
+  {
+   "id": "file_chunk_dedupe",
+   "split": "train",
+   "category": "code",
+   "spec": "A backup tool splits files into content-defined chunks using a rolling hash, stores unique chunks by digest, and reconstructs files from chunk lists. Small edits in the middle of a file must change only a few chunks.",
+   "question": "Write the chunker, store and reconstruction in Python, explain the rolling hash and boundary rule with minimum and maximum chunk sizes, and provide tests showing locality of changes and exact reconstruction."
+  },
+  {
+   "id": "leaky_bucket_shaper",
+   "split": "train",
+   "category": "code",
+   "spec": "A network device shapes outgoing packets with a leaky bucket per queue and strict priority between queues. Packets have sizes in bytes, the link has a fixed rate, and a queue can be paused. The shaper must report per-queue delay statistics.",
+   "question": "Implement the shaper as a discrete-event simulation in Python, explain the timing arithmetic and priority handling, and provide tests for starvation, bursts, pauses and conservation of bytes."
+  },
+  {
+   "id": "immutable_persistent_map",
+   "split": "validation",
+   "category": "code",
+   "spec": "A configuration system needs a persistent hash map where updates return a new version sharing structure with the old one, old versions stay usable, and memory per version is logarithmic in the change size. Iteration order must be deterministic.",
+   "question": "Implement a hash array mapped trie in Python, explain structural sharing, collision handling and deletion, and provide tests comparing many versions against a dict model."
+  },
+  {
+   "id": "csv_streaming_parser",
+   "split": "train",
+   "category": "code",
+   "spec": "A data importer parses CSV incrementally from byte chunks of arbitrary size, handling quoted fields with embedded newlines and quotes, configurable delimiters, a byte-order mark and inconsistent line endings, and reporting row and column of malformed input.",
+   "question": "Write the incremental parser in Python, explain the state machine and chunk boundaries, and provide tests that split the same input at every byte offset and compare results."
+  },
+  {
+   "id": "feature_flags_service",
+   "split": "validation",
+   "category": "design",
+   "spec": "A product team needs a feature-flag service used by web, mobile and batch systems. Flags have targeting rules by user attributes and percentage rollouts, must evaluate consistently for the same user across services, and changes must propagate within seconds without a restart. Offline evaluation is required when the service is unreachable.",
+   "question": "Design the service end to end: data model, rule evaluation, consistent bucketing, propagation, client caching and fallback, auditing and a kill switch. Include pseudocode, failure cases, a rollout runbook and a test plan."
+  },
+  {
+   "id": "webhook_delivery",
+   "split": "train",
+   "category": "design",
+   "spec": "A platform delivers webhooks to thousands of customer endpoints with at-least-once semantics, ordered per subscription, signed payloads, retries with backoff for up to 24 hours, and per-customer rate limits. Slow endpoints must not delay others, and customers need visibility into failures.",
+   "question": "Design the delivery pipeline with queues, workers, ordering, signature scheme, retry state, isolation of slow tenants, dead-lettering and a customer-facing status API. Include pseudocode, capacity estimates and failure-injection tests."
+  },
+  {
+   "id": "multi_tenant_search",
+   "split": "test",
+   "category": "design",
+   "spec": "A SaaS product offers full-text search over each tenant's documents with strict isolation, near-real-time indexing after edits, per-tenant relevance tuning and a hard latency budget of 200 ms at the 99th percentile. Tenants range from tens to tens of millions of documents.",
+   "question": "Design the indexing and query path, tenant placement and isolation, update propagation, relevance configuration and latency protection. Explain trade-offs between shared and dedicated indices, give pseudocode for the write path and a load-test plan."
+  },
+  {
+   "id": "payment_reconciliation",
+   "split": "train",
+   "category": "design",
+   "spec": "A marketplace records payments internally and receives daily settlement files from three payment providers with different formats and time zones. Amounts can differ by fees, partial refunds arrive later, and some transactions never settle. Finance needs exceptions surfaced within a day.",
+   "question": "Design the reconciliation system: ingestion, normalisation, matching rules with tolerances, exception workflow, ledger adjustments and reporting. Include state transitions, pseudocode for matching, edge cases and how to prove completeness."
+  },
+  {
+   "id": "iot_firmware_rollout",
+   "split": "train",
+   "category": "design",
+   "spec": "A fleet of two million low-power devices receives firmware updates over unreliable connections. Updates must be staged, verified, resumable, and rolled back automatically if devices fail health checks after installing. Some devices are offline for weeks.",
+   "question": "Design the rollout system: artifact distribution, staging cohorts, resumable transfer, verification, health signals, automatic rollback and long-offline devices. Include state machines, pseudocode, safety invariants and a rehearsal plan."
+  },
+  {
+   "id": "realtime_leaderboard",
+   "split": "validation",
+   "category": "design",
+   "spec": "A game needs leaderboards updated within a second for tens of millions of players across global, regional and friends views, with rank queries for any player, anti-cheat holds that can retroactively remove scores, and season resets.",
+   "question": "Design storage and update paths, rank computation, friends views, retroactive removal, resets and consistency between views. Explain trade-offs, give pseudocode for the hot path and a test plan for correctness under concurrent updates."
+  },
+  {
+   "id": "document_collaboration",
+   "split": "train",
+   "category": "design",
+   "spec": "A document editor supports simultaneous editing by several users with offline periods, comments anchored to text ranges, version history and permission changes that must take effect promptly. Conflicts must be resolved without losing anyone's edits.",
+   "question": "Design the synchronization model and choose between operational transformation and conflict-free replicated data types with justification. Cover anchoring comments across edits, history compaction, permission revocation and offline merge. Include pseudocode and tests."
+  },
+  {
+   "id": "ml_feature_store",
+   "split": "test",
+   "category": "design",
+   "spec": "A recommendation team needs consistent features for training and online inference: batch features computed daily, streaming features updated in seconds, point-in-time correct joins for training data, and low-latency reads at serving time with schema evolution.",
+   "question": "Design the feature store: definitions, offline and online storage, point-in-time correctness, freshness guarantees, backfills, schema changes and monitoring for training-serving skew. Include pseudocode for the point-in-time join and a validation plan."
+  },
+  {
+   "id": "secrets_rotation",
+   "split": "train",
+   "category": "design",
+   "spec": "A company runs hundreds of services that use database passwords, API keys and certificates. Secrets must rotate on schedules and on demand after an incident, without downtime, with an audit trail, and with the ability to revoke a leaked secret everywhere within minutes.",
+   "question": "Design the secrets lifecycle: storage, distribution, dual-secret rotation windows, service integration patterns, emergency revocation, auditing and break-glass access. Include state transitions, pseudocode for a rotation and a game-day test plan."
+  },
+  {
+   "id": "video_transcoding_pipeline",
+   "split": "train",
+   "category": "design",
+   "spec": "A video platform ingests uploads up to several gigabytes, produces multiple renditions and thumbnails, must start playback of the first rendition within a minute of upload, and must be resilient to worker failures. Cost matters, so spare capacity should be used opportunistically.",
+   "question": "Design the pipeline: chunking, job orchestration, priority and preemption, progressive availability, failure recovery, storage layout and cost controls. Include pseudocode for the scheduler, capacity estimates and an operational runbook."
+  },
+  {
+   "id": "geo_fencing_alerts",
+   "split": "validation",
+   "category": "design",
+   "spec": "A logistics operator tracks fifty thousand vehicles reporting positions every few seconds and needs alerts when a vehicle enters or leaves any of a hundred thousand polygons, with per-customer rules and suppression of flapping at boundaries.",
+   "question": "Design the ingestion, spatial indexing, enter and exit detection with hysteresis, rule evaluation, alert delivery and backfill after outages. Include data structures, pseudocode for the hot path, capacity math and correctness tests."
+  },
+  {
+   "id": "notification_preferences",
+   "split": "train",
+   "category": "design",
+   "spec": "An application sends notifications over email, push and SMS with per-user preferences, quiet hours in the user's time zone, digest batching, legal opt-outs that override everything, and deduplication across channels within a time window.",
+   "question": "Design the decision engine and delivery: preference model, evaluation order, quiet hours, batching, opt-out precedence, deduplication and auditing of why a message was or was not sent. Include pseudocode and a test matrix."
+  },
+  {
+   "id": "inventory_reservation",
+   "split": "test",
+   "category": "design",
+   "spec": "An e-commerce system reserves inventory across several warehouses during checkout, releases expired reservations, handles oversell from delayed warehouse counts, and supports flash sales where thousands of buyers compete for a few hundred units.",
+   "question": "Design the reservation protocol, expiry, warehouse reconciliation, oversell handling and the flash-sale path. Explain consistency choices, give pseudocode for reserve and confirm, and provide a load and correctness test plan."
+  },
+  {
+   "id": "schema_registry_evolution",
+   "split": "train",
+   "category": "design",
+   "spec": "An event platform has hundreds of producers and consumers exchanging binary-encoded events. Schemas evolve; compatibility rules differ per topic; consumers deploy on their own schedules; and a bad schema must be blocked before it breaks readers.",
+   "question": "Design the registry and its compatibility checking, versioning, client caching, migration workflows and enforcement in CI and at runtime. Include pseudocode for the compatibility checker, failure cases and a rollout plan."
+  },
+  {
+   "id": "tenant_data_export",
+   "split": "train",
+   "category": "design",
+   "spec": "A regulated SaaS product must let a tenant export all of its data, spanning several services and terabytes, in a consistent snapshot, with encryption, resumability, verification of completeness and deletion after download within a deadline.",
+   "question": "Design the export orchestration, snapshot consistency across services, streaming and encryption, manifests for verification, resumability and lifecycle. Include state machines, pseudocode and a compliance audit plan."
+  },
+  {
+   "id": "api_gateway_auth",
+   "split": "validation",
+   "category": "design",
+   "spec": "A public API supports API keys, OAuth tokens and mutual TLS, with per-key scopes, quota tiers, key rotation and immediate revocation. Authentication must add under two milliseconds and survive identity-provider outages.",
+   "question": "Design the gateway authentication and authorization path, caching and revocation propagation, scope model, quotas and outage behaviour. Include pseudocode for the request path, threat analysis and tests."
+  },
+  {
+   "id": "clinical_trial_scheduling",
+   "split": "train",
+   "category": "design",
+   "spec": "A hospital schedules participants for a trial with visit windows relative to enrolment, room and staff constraints, equipment that must be booked in blocks, and protocol deviations that must be recorded when windows are missed.",
+   "question": "Design the scheduling system: constraint model, search strategy, rescheduling on cancellations, deviation tracking and reporting. Include pseudocode, a worked week and tests for conflicting constraints."
+  },
+  {
+   "id": "cdn_cache_invalidation",
+   "split": "test",
+   "category": "design",
+   "spec": "A content network caches API responses at edge nodes worldwide. Origins publish updates that must invalidate dependent cached objects within seconds, some objects depend on many keys, and stale-while-revalidate is acceptable for some routes but not for prices.",
+   "question": "Design tagging, invalidation propagation, dependency tracking, per-route freshness policies and protection against invalidation storms. Include pseudocode for the edge and the control plane, consistency arguments and tests."
+  },
+  {
+   "id": "fraud_scoring_pipeline",
+   "split": "train",
+   "category": "design",
+   "spec": "A payments company scores transactions for fraud in under 50 milliseconds using rules and a model, with features aggregated over the last minutes and days, human review queues, feedback loops from chargebacks, and the ability to replay decisions for audits.",
+   "question": "Design the scoring service, feature aggregation, rule and model integration, review workflow, feedback ingestion and replay. Include pseudocode for the decision path, latency budget allocation and a monitoring plan."
+  },
+  {
+   "id": "backup_restore_service",
+   "split": "train",
+   "category": "design",
+   "spec": "A platform backs up thousands of customer databases nightly with point-in-time recovery to any second in the last week, tested restores, cross-region copies and retention policies that differ by plan. Restore time objectives are one hour.",
+   "question": "Design the backup scheduling, log shipping, storage layout, restore orchestration, verification and retention enforcement. Include capacity math, pseudocode for restore-to-time and a disaster rehearsal plan."
+  },
+  {
+   "id": "chat_moderation_queue",
+   "split": "validation",
+   "category": "design",
+   "spec": "A community platform moderates user reports and automated flags with priorities, reviewer specialisations, escalation paths, service-level targets per severity and protection against reviewer burnout through fair assignment.",
+   "question": "Design the queue, assignment algorithm, escalation, service-level tracking and reviewer tooling. Include state transitions, pseudocode for assignment, fairness metrics and tests."
+  },
+  {
+   "id": "time_series_downsampling",
+   "split": "train",
+   "category": "design",
+   "spec": "A monitoring product ingests millions of samples per second and must retain raw data for days, downsampled aggregates for years, answer range queries that pick the right resolution automatically, and keep counters correct across resets.",
+   "question": "Design storage tiers, downsampling jobs, query planning across resolutions, counter handling and retention. Include pseudocode for the query planner, storage estimates and correctness tests."
+  },
+  {
+   "id": "email_ingestion_parsing",
+   "split": "test",
+   "category": "design",
+   "spec": "A support product ingests customer emails into tickets: it must thread replies correctly, strip quoted history and signatures, handle attachments up to 25 megabytes, detect auto-replies and loops, and preserve the original for audit.",
+   "question": "Design the ingestion pipeline: receipt, parsing, threading heuristics, attachment handling, loop prevention and storage. Include pseudocode for threading, failure handling and a test corpus plan."
+  },
+  {
+   "id": "zero_downtime_migration",
+   "split": "train",
+   "category": "design",
+   "spec": "A team must move a large relational table to a new schema and a new database engine while the application keeps writing, with the ability to abort at any point and no data loss. Dual writes are allowed but must be verified.",
+   "question": "Design the migration: expand and contract steps, dual-write with verification, backfill, cutover, rollback and observability. Include pseudocode for the verification job, invariants at each step and a rehearsal plan."
+  },
+  {
+   "id": "edge_sync_field_app",
+   "split": "train",
+   "category": "design",
+   "spec": "Field technicians use a mobile application offline for days, editing work orders that dispatchers also edit centrally. Sync must merge changes, resolve conflicts by field-level rules, handle attachments and keep the device's storage bounded.",
+   "question": "Design the data model, change tracking, sync protocol, conflict rules, attachment transfer and storage bounds. Include pseudocode for merge, failure cases and tests for long offline periods."
+  },
+  {
+   "id": "sla_billing_engine",
+   "split": "validation",
+   "category": "design",
+   "spec": "A cloud provider bills usage metered from many services, applies tiered and committed-use pricing, credits for missed service levels, currency conversion and mid-month plan changes, and must produce invoices that can be recomputed exactly later.",
+   "question": "Design metering ingestion, rating, credits, proration, reproducibility and invoice generation. Include pseudocode for rating with tiers, edge cases and a reconciliation plan."
+  },
+  {
+   "id": "cache_hit_economics",
+   "split": "validation",
+   "category": "reasoning",
+   "spec": "A read-heavy service answers 5,000 requests per second. A cache hit costs 0.3 milliseconds and a miss costs 12 milliseconds of backend time plus 2 milliseconds of cache work. The backend can sustain 900 requests per second. Cache memory costs 4 units per gigabyte per month; each gigabyte of cache raises the hit rate along a curve given as 60 percent at 4 gigabytes, 80 percent at 16, 90 percent at 48, 95 percent at 128.",
+   "question": "Derive the minimum cache size that keeps the backend within capacity, compute mean latency at each size, model the cost of cache versus adding backend capacity at 60 units per 300 requests per second, and recommend a configuration with the arithmetic shown."
+  },
+  {
+   "id": "replication_lag_budget",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "A primary database commits 2,400 transactions per second averaging 1.5 kilobytes of log each. Two replicas apply logs at most 3,000 transactions per second each, the network to the remote replica adds 40 milliseconds and carries 25 megabytes per second, and reads tolerate 200 milliseconds of staleness.",
+   "question": "Compute steady-state lag for both replicas, the maximum burst duration at 4,000 transactions per second before staleness is violated, and drain time after the burst. Derive when the network becomes the bottleneck, state assumptions and propose alerts with thresholds."
+  },
+  {
+   "id": "batch_window_planning",
+   "split": "test",
+   "category": "reasoning",
+   "spec": "A nightly pipeline runs 14 jobs with given durations and dependencies on a cluster that can run four jobs at once. Three jobs read the same input and can share one scan of 90 minutes if co-scheduled. The window is six hours and one job of two hours must finish before 3 a.m.",
+   "question": "Construct a schedule meeting the constraints, compute the critical path and slack for each job, analyse what happens if any single job runs 50 percent long, and propose how many extra slots would make the window robust. Show the reasoning step by step."
+  },
+  {
+   "id": "retry_storm_analysis",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "A client fleet of 20,000 instances calls a service that fails entirely for 90 seconds. Each client retries up to five times with backoff of 1, 2, 4, 8 and 16 seconds plus uniform jitter of up to 50 percent, and normally sends two requests per second. The service recovers to a capacity of 60,000 requests per second.",
+   "question": "Model the request rate during and after the outage, estimate the peak retry surge and whether the recovering service is overwhelmed, compare with a policy adding a retry budget of 10 percent, and derive parameters that keep the surge under capacity. Show the arithmetic and assumptions."
+  },
+  {
+   "id": "storage_tiering_cost",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "An archive holds 800 terabytes growing 30 terabytes per month. Hot storage costs 20 units per terabyte-month with free reads, warm storage costs 8 with reads at 5 units per terabyte, and cold storage costs 2 with reads at 30 units per terabyte and a 12-hour delay. Access data shows 5 percent of data read monthly in the first year and 0.5 percent afterwards.",
+   "question": "Derive a tiering policy by age, compute annual cost for the next three years under the policy versus all-hot and all-warm, quantify the sensitivity to the read rates, and explain the break-even points step by step."
+  },
+  {
+   "id": "shard_rebalancing_time",
+   "split": "validation",
+   "category": "reasoning",
+   "spec": "A cluster of 12 nodes stores 24 terabytes in 480 shards. Adding four nodes requires moving shards so each node holds an equal share; each node can send and receive 200 megabytes per second, but production traffic must keep at least half the bandwidth. Moves are per shard and cannot be split.",
+   "question": "Compute how many shards move and the minimum rebalance time under the bandwidth constraint, compare naive versus optimally parallel move schedules, analyse the effect of shard size variance of 50 percent, and propose a throttling policy with numbers."
+  },
+  {
+   "id": "queue_sla_probability",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "Requests arrive at 30 per second on average with Poisson arrivals and are served by eight workers with exponential service averaging 200 milliseconds. The service-level objective is that 99 percent of requests wait less than one second in queue.",
+   "question": "Compute utilisation, the probability of waiting, the mean wait and the 99th percentile wait using the Erlang-C model, determine the minimum number of workers meeting the objective, and discuss how heavier-tailed service times would change the answer. Show every step."
+  },
+  {
+   "id": "energy_cost_scheduling",
+   "split": "test",
+   "category": "reasoning",
+   "spec": "A compute job needs 600 machine-hours and must finish within 48 hours. Electricity costs 0.32 units per kilowatt-hour from 8 a.m. to 10 p.m. and 0.11 otherwise; a machine draws 0.9 kilowatts running and 0.1 idle. The cluster has 40 machines, and the job's speed drops 20 percent when more than 25 machines run together because of a shared storage link.",
+   "question": "Derive the cheapest schedule meeting the deadline, compute its cost versus running flat out, quantify the storage-link penalty, and analyse how the answer changes if the deadline is 30 hours. Show the arithmetic and assumptions."
+  },
+  {
+   "id": "capacity_headroom_growth",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "A service runs at 55 percent CPU at peak on 24 servers. Traffic grows 6 percent per month, procurement takes 10 weeks, and the team wants peak utilisation under 70 percent even after losing one availability zone of three. Servers are bought in batches of 6.",
+   "question": "Compute the effective headroom after a zone loss, the month in which the threshold is crossed, when orders must be placed, and a 24-month purchase plan. Analyse sensitivity to 9 percent growth and explain the compounding step by step."
+  },
+  {
+   "id": "ab_test_duration",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "A checkout page converts 3.2 percent of 40,000 daily visitors. The team wants to detect a relative lift of 5 percent with 80 percent power at a 5 percent two-sided significance level, splitting traffic evenly, and must decide whether to run two variants against control at once.",
+   "question": "Compute the required sample size per arm and test duration, explain the effect of testing two variants with a corrected significance level, quantify the cost of stopping early after a week, and derive when a sequential design would be preferable. Show the formulas and arithmetic."
+  },
+  {
+   "id": "disk_failure_budget",
+   "split": "validation",
+   "category": "reasoning",
+   "spec": "A storage cluster has 1,800 drives with an annual failure rate of 2 percent. Data is stored with a scheme tolerating two failures per group of 14 drives, and rebuilding a failed drive takes 6 hours during which the group is degraded.",
+   "question": "Estimate expected failures per week, the probability of a third failure in a group during a rebuild, annual data-loss probability, and how rebuild time and group size trade off. Compare with a scheme tolerating three failures and show the calculations."
+  },
+  {
+   "id": "latency_budget_allocation",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "A page load calls an edge service that fans out to authentication, profile, recommendations and pricing services, with the last two depending on profile. Measured medians are 8, 15, 40 and 25 milliseconds with 99th percentiles roughly three times the medians. The page budget is 150 milliseconds at the 99th percentile.",
+   "question": "Compute critical-path latency at the median and 99th percentile with and without hedged requests, allocate budgets per service, evaluate whether caching profile for five minutes fixes the budget, and explain how tail latencies compose. Show the reasoning."
+  },
+  {
+   "id": "index_write_amplification",
+   "split": "test",
+   "category": "reasoning",
+   "spec": "A table receives 1,500 inserts per second with 200-byte rows and has six secondary indices averaging 40 bytes per entry. The storage engine writes 4-kilobyte pages, flushes dirty pages every 30 seconds, and the disk sustains 250 megabytes per second of writes.",
+   "question": "Estimate logical and physical write rates, write amplification from page flushes under random versus sequential keys, headroom on the disk, and the effect of dropping two indices or batching inserts. Show the arithmetic and assumptions."
+  },
+  {
+   "id": "ttl_cache_consistency",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "Product prices change on average every 4 hours and are cached with a time-to-live. Each stale second across the catalogue of 200,000 products costs 0.002 units in mispricing on average, cache refreshes cost 0.0005 units each, and requests arrive at 3,000 per second spread across products by popularity where 10 percent of products get 90 percent of traffic.",
+   "question": "Derive the expected staleness cost and refresh cost as functions of the time-to-live, find the cost-minimising value, evaluate a popularity-dependent time-to-live, and quantify the benefit of event-driven invalidation. Show the derivations."
+  },
+  {
+   "id": "thread_pool_sizing",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "A server handles requests that spend 12 milliseconds on CPU and 60 milliseconds waiting on downstream calls. It has 16 cores, memory allows at most 400 threads, and the target is 1,200 requests per second with CPU utilisation under 75 percent.",
+   "question": "Derive the thread count needed for the throughput, check the CPU and memory constraints, analyse what happens when downstream latency doubles, and compare with an asynchronous design. Show the formulas step by step."
+  },
+  {
+   "id": "backfill_throughput_plan",
+   "split": "validation",
+   "category": "reasoning",
+   "spec": "A migration must reprocess 3 billion records at 6 kilobytes each through a service that handles 20,000 records per second at most, while production uses 40 percent of that capacity during the day and 10 percent at night. The migration must finish in two weeks without raising production error rates.",
+   "question": "Compute the available capacity per day, the minimum duration, a throttling schedule by hour, and the effect of a 30 percent retry rate. Analyse the data transfer volume and propose checkpointing granularity with numbers."
+  },
+  {
+   "id": "outage_cost_tradeoff",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "A service generates 18,000 units of revenue per hour. Its current design has an expected 8 hours of downtime per year. A redundant design costs 240,000 units per year more and reduces expected downtime to 1.5 hours but adds operational complexity estimated to cause 0.5 hours of downtime from misconfiguration.",
+   "question": "Compute expected annual loss under both designs, the break-even revenue rate, sensitivity to the downtime estimates, and how risk aversion and reputational effects could change the decision. Show the arithmetic and reasoning."
+  },
+  {
+   "id": "connection_pool_limits",
+   "split": "test",
+   "category": "reasoning",
+   "spec": "Forty application instances share a database that allows 400 connections and serves a query in 5 milliseconds on average. Each instance handles 60 requests per second, each needing one query, and connection acquisition should wait less than 20 milliseconds at the 99th percentile.",
+   "question": "Derive the per-instance pool size, check the database limit, compute utilisation and waiting under the load, analyse the effect of a slow query type taking 80 milliseconds at 5 percent of traffic, and propose limits. Show the calculations."
+  },
+  {
+   "id": "compression_tradeoff",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "A log pipeline ships 40 terabytes per day. A fast codec compresses 3 to 1 at 800 megabytes per second per core, a slow codec compresses 5 to 1 at 120 megabytes per second per core. Cores cost 0.05 units per hour, network transfer costs 0.02 units per gigabyte and storage costs 0.01 units per gigabyte-month with 90-day retention.",
+   "question": "Compute the compute, transfer and storage costs per day for each codec, the break-even retention period, the number of cores needed, and the impact of a 2 to 1 reduction in transfer price. Show the arithmetic step by step."
+  },
+  {
+   "id": "consensus_quorum_availability",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "A replicated log uses majority quorums across nodes with independent 99.5 percent availability each. Deployments consider three, five and seven nodes, and a cross-region layout where one region holding two of five nodes has an additional 0.2 percent chance per month of a full outage.",
+   "question": "Compute the write availability for each configuration, the effect of the region outage on the five-node layout, the trade-off with write latency if the majority must include the remote region, and recommend a layout with the calculations shown."
+  },
+  {
+   "id": "gpu_batching_throughput",
+   "split": "validation",
+   "category": "reasoning",
+   "spec": "An inference server's step time is 40 milliseconds at batch one and grows by 6 milliseconds per additional request up to batch eight. Requests arrive at 90 per second, each producing 200 output tokens one per step, and users tolerate 80 milliseconds between tokens.",
+   "question": "Compute throughput and inter-token latency for each batch size, determine the largest batch within the latency tolerance, analyse whether the arrival rate can be served, and model queueing delay when arrivals burst to 150 per second. Show the arithmetic."
+  },
+  {
+   "id": "data_retention_volume",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "An analytics platform stores events of 450 bytes at 12,000 per second, keeps raw events 30 days, hourly rollups at 2 percent of raw volume for two years and daily rollups at 0.1 percent forever. Compression achieves 4 to 1 on raw and 2 to 1 on rollups.",
+   "question": "Compute storage after one, two and five years, the monthly growth in year three, the share held by each tier, and the effect of extending raw retention to 90 days. Show the arithmetic step by step."
+  },
+  {
+   "id": "incident_paging_load",
+   "split": "test",
+   "category": "reasoning",
+   "spec": "An on-call rotation of six engineers receives an average of 14 pages per week, 30 percent at night, with pages clustered so that 20 percent of weeks have twice the average. Each page takes 45 minutes on average, and the team wants no engineer to exceed four night pages per rotation week.",
+   "question": "Compute the expected pages per person per week, the probability of exceeding the night limit in a heavy week, the total toil hours per month, and how adding a seventh engineer or reducing false pages by half changes the numbers. Show the reasoning."
+  },
+  {
+   "id": "api_pagination_cost",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "Clients list resources through an API with page size 100. Offset pagination costs the database time proportional to the offset, about 0.02 milliseconds per skipped row, plus 3 milliseconds per page; keyset pagination costs a flat 3 milliseconds. Collections average 20,000 items and 5 percent of clients scan entire collections.",
+   "question": "Compute the total database time for a full scan under both schemes, the average cost per request across all clients, the effect of raising the page size to 500, and derive when offset pagination becomes unacceptable. Show the arithmetic."
+  },
+  {
+   "id": "bandwidth_bound_kernel",
+   "split": "train",
+   "category": "reasoning",
+   "spec": "A matrix-vector workload streams 18 gigabytes of weights per step on a device with 240 gigabytes per second of memory bandwidth and 200 trillion operations per second of compute. Each step also runs 900 small kernels that each lose 8 microseconds to launch and tail effects, and 14 percent of the bytes are read twice.",
+   "question": "Compute the bandwidth-bound step time, the overhead from launch effects and repeated reads, the arithmetic intensity at which compute would bind, and the step time after halving weight bytes with 3-bit storage. Show the derivations and state the assumptions."
+  }
+ ]
+}

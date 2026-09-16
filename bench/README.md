@@ -101,10 +101,11 @@ candidate runs that pass with the BF16 draft. Inputs come from
 `$SHARAR_RESULTS/datasets/family-eval-v1/` and are hash-checked;
 `python3 -m bench.family_inputs freeze` regenerates them byte-identically from
 `bench/workloads/family_v1.json` and the benchmark prompts. Read the
-`families` row of the comparison (18 tasks) as the decision, the `benchmarks`
+`families` row of the comparison (101 families) as the decision, the `benchmarks`
 row as context, and never a single task; the round-cost interval resolves 0.05%,
-the tokens-per-round interval is about ±7% wide for any continuation-changing
-change at this size ([study](../docs/archive/studies/family-gate.md)). Results and logs land in
+the tokens-per-round interval is about ±3% wide for any continuation-changing
+change on the 101-family set ([study](../docs/archive/studies/family-set-v3.md); it was ±7%
+on the 18-family `v2` set, [study](../docs/archive/studies/family-gate.md)). Results and logs land in
 `$SHARAR_RESULTS/reviews/<date>-family-gate/<label>/`. Row-count changes
 should also be compared under `SHARAR_STABLE_NUMERICS=1`, the shape-stable
 research baseline, so that continuation drift does not masquerade as a gain.

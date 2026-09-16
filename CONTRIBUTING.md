@@ -58,9 +58,9 @@ substitute: the target's arithmetic already changes with the row count, so
 outputs drift whenever shapes move. Compare row-count changes under
 `SHARAR_STABLE_NUMERICS=1` as well. Read the gate this way: the round-cost
 interval decides cost (it resolves 0.05%); the tokens-per-round interval
-decides acceptance only when it excludes 1, and on 18 families it is about
-±7% wide for any change that moves continuations, so do not select among
-variants on its point estimate. The three-prompt `tools/benchmark.sh`
+decides acceptance only when it excludes 1, and it is about ±3% wide on the
+101-family default set (±7% on the old 18-family set) for any change that
+moves continuations, so do not select among variants on its point estimate. The three-prompt `tools/benchmark.sh`
 remains the reporting cell for end-to-end numbers, never the decision.
 
 ## Add a proposer

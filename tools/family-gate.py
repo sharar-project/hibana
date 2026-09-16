@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The family gate: paired 21-task evaluation of engine candidates in exclusive GPU windows.
+"""The family gate: paired 105-task evaluation of engine candidates in exclusive GPU windows.
 
 Runs `bench.gb10_family_eval run` once per pass, each in a fresh container from
 the runtime image with the working tree mounted read-only, then pairs every
@@ -36,8 +36,9 @@ REPO = Path(__file__).resolve().parents[1]
 FROZEN_SHA = {  # dataset name -> sha256 of task-inputs.json; regenerate with bench/family_inputs.py freeze
     "family-eval-v1": "0c0da566c177b9c55dee6a776ad5ba62ff466bd678f20c2285aa2647aebdd2ac",
     "family-eval-v2": "fc7332830b97f84218dc40c8a6763688350f4db466e2dad984642c9df7ff0451",
+    "family-eval-v3": "b72bdecd50c2fb0a7a00eda1433bb697a305160b8f6e72c1c74cb0b3530124a3",
 }
-DEFAULT_SET = "family-eval-v2"  # v1 plus benchmark_code_v2, the tool-free code prompt
+DEFAULT_SET = "family-eval-v3"  # 101 families plus the four benchmark prompts (v2 = the 18-family set plus benchmark_code_v2)
 REFERENCE_V1_SHA = "6dd2b3cc868bcf99c9465d7355806732226de0f2b6b89ba5d5045d933a79cfd5"
 SERVICE = "sharar-qwen38"
 GUARD_UNIT = "sharar-memory-guard.service"

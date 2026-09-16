@@ -78,7 +78,8 @@ and hardware; kernel work at batch one is capped near 10%.
    need porting to current main first. Follow-ups: integrate `fp8_m16`;
    grow the family set to about 100 tasks with the generator in
    `bench/family_inputs.py` so acceptance claims of a few percent become
-   testable.
+   testable. Done 2026-09-16: `family-eval-v3`, 101 families, ±3.0% measured
+   ([study](docs/archive/studies/family-set-v3.md)).
 3. **Make the accept path device-resident for batch two to four.** After the
    single `.tolist()` in `SpecDecoder._accept` the round is eager: the
    reconstruction launch, per-request conv copies, feature feedback, trace
@@ -168,19 +169,26 @@ fewer bytes, more accepted tokens, or a second GPU move the number.
 - **Draft capacity (about 1.1 to 1.3x, lossless).** A draft twice as deep
   costs 10 ms and breaks even at +0.45 tokens per round against about 3
   available; more target taps is the cheaper variant. Trainer, traces and
-  objective exist; the family set must grow to about 100 tasks before
-  acceptance gains of a few percent are measurable.
+  objective exist; the family set is now 101 families (`family-eval-v3`,
+  the gate's default), which brings the paired interval on tokens per round
+  from about ±7% to about ±3%.
 - **Two Sparks in tensor parallel (about 1.7 to 1.8x, hardware permitting).**
   Half the weight bytes per GPU for about 3 ms of all-reduce per round over
   the 200 GbE link; the only near-2x lever.
 - **Device-resident round (about 10% at batch two to four).** Item 3 above.
-- **Profile first.** The host has `RmProfilingAdminOnly: 1`, so no study so
-  far has seen DRAM counters; `NVreg_RestrictProfilingToAdminUsers=0` in a
-  modprobe file and a reboot unlocks them. Then one round at batch one and
-  four: which 16-row GEMM shapes sit furthest below the ceiling (the Triton
-  FP8 kernel found 1.5% there; the NVFP4 shapes were never checked the same
-  way), how much of the roughly 1,000 launches per round is kernel tail
-  (bounds a persistent decode kernel), and the accept path at batch four.
+- **Profiled (2026-09-15/16), timelines and hardware counters**
+  ([study](docs/archive/studies/gb10-round-profile.md)). Batch one: the GPU
+  is busy 98.4% of the round; every large GEMM moves exactly one weight
+  footprint and streams at 84 to 97% of the 239 GB/s ceiling (NVFP4 MLPs
+  217 to 230, head 232, FP8 projections 200 to 220); the round averages
+  213 GB/s. Remaining kernel slack at batch one is about 5% (the 64x88
+  cuBLAS FP8 class, the latency-bound recurrent verify kernel, attention,
+  idle gaps): a custom 16-row NVFP4 GEMM and a persistent decode kernel
+  are not worth writing. Batch four has about 11%: 64-row FP8 dispatch at
+  74 to 80%, the recurrent verify kernel at 55%, the NVFP4 64-row path,
+  attention at 75%, 4.5 ms of idle. Method: root container with
+  `CAP_SYS_ADMIN` (no driver change needed), eager path, application
+  replay, the `lts__` system-memory counters (`dram__` is empty on GB10).
 
 ## Engine to-dos
 

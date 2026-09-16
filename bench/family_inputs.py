@@ -1,4 +1,4 @@
-"""Freeze the family-gate inputs from source: 18 synthetic task families plus the benchmark prompts.
+"""Freeze the family-gate inputs from source: the synthetic task families plus the benchmark prompts.
 
     python3 -m bench.family_inputs freeze --output $SHARAR_RESULTS/datasets/family-eval-v1/task-inputs.json
 
@@ -9,7 +9,9 @@ byte-identical to the frozen file the 2026-09-10 family evaluations used
 (SHA-256 0c0da566...), so a gate run can regenerate its inputs and verify them.
 `--extra-code-prompt` appends the tool-free code prompt as `benchmark_code_v2`:
 that is the `family-eval-v2` set (22 tasks, SHA-256 fc733283...), the gate's
-default since 2026-09-15; v1 stays for comparisons with older reports.
+default until 2026-09-15; `--protocol bench/workloads/family_v3.json --extra-code-prompt`
+freezes `family-eval-v3` (101 families plus four benchmark prompts, 105 tasks,
+SHA-256 b72bdecd...), the gate's default from 2026-09-15 on.
 """
 from __future__ import annotations
 
