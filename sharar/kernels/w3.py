@@ -23,7 +23,8 @@ scale; a single per-row scale measurably lost task accuracy). Enabled for
 decode-sized calls (at most `MAX_ROWS` rows) when `SHARAR_W3_DECODE=1` and a
 linear carries a packed copy (`attach_model`); prefill keeps the NVFP4 and
 FP8 weights and kernels. Quantization here is nearest-level from the served
-weights; a calibrated source (GPTQ from the FP8 release) plugs into `pack`.
+weights; calibrated source weights use `pack_codes` to retain fitted scales
+and load through `SHARAR_W3_CHECKPOINT` before graph capture.
 """
 from __future__ import annotations
 
@@ -120,6 +121,12 @@ def _pack_rows(weight: torch.Tensor, levels: tuple[float, ...]):
     mids = (lv[1:] + lv[:-1]) / 2
     q = torch.bucketize(normalized.reshape(n, k), mids, out_int32=True)  # [N, K] codes 0..7
     del normalized
+    return _pack_codes_rows(q, scale_fp8, row_scale)
+
+
+def _pack_codes_rows(q: torch.Tensor, scale_fp8: torch.Tensor, row_scale: torch.Tensor):
+    n, k = q.shape
+    dev = q.device
     # fragment order: n = 32 nb + 8 nt + g, k = 128 kc + 16 s + 4 t + j
     q = q.reshape(n // 32, 4, 8, k // CHUNK, 8, 4, 4)  # [nb, nt, g, kc, s, t, j]
     rot = _rotations(dev)  # [s]
@@ -138,6 +145,24 @@ def _pack_rows(weight: torch.Tensor, levels: tuple[float, ...]):
     sc = scale_fp8.view(torch.uint8).reshape(n // 32, 4, 4, 2, k // CHUNK, 4)  # [nb, nt, t, i, kc, grp]
     scales = sc.permute(0, 4, 2, 1, 5, 3).reshape(n // 32, k // CHUNK, 4, 32).contiguous()
     return planes, scales, row_scale.contiguous()
+
+
+def pack_codes(q: torch.Tensor, scale_fp8: torch.Tensor, row_scale: torch.Tensor,
+               codebook=DEFAULT_CODEBOOK, rows_per_chunk: int = 4096) -> W3Weight:
+    """Pack calibrated codes and their exact scales without quantizing again."""
+    n, k = q.shape
+    if n % 128 or k % CHUNK or rows_per_chunk < 128 or rows_per_chunk % 128:
+        raise ValueError("N, K and rows_per_chunk must be multiples of 128")
+    if q.dtype not in (torch.uint8, torch.int32, torch.int64) or torch.any((q < 0) | (q > 7)):
+        raise ValueError("3-bit codes must be integers between zero and seven")
+    if scale_fp8.shape != (n, k // GROUP) or scale_fp8.dtype != torch.float8_e4m3fn or row_scale.shape != (n,):
+        raise ValueError("calibrated scales do not match the weight shape")
+    if not torch.isfinite(scale_fp8.float()).all() or not torch.isfinite(row_scale).all() or (row_scale <= 0).any() or (scale_fp8.float() < 0).any():
+        raise ValueError("calibrated scales must be finite and nonnegative, with positive row scales")
+    levels = _codebook(codebook)
+    chunks = [_pack_codes_rows(q[r:r + rows_per_chunk].int(), scale_fp8[r:r + rows_per_chunk], row_scale[r:r + rows_per_chunk])
+              for r in range(0, n, rows_per_chunk)]
+    return W3Weight(*(torch.cat([part[i] for part in chunks]) for i in range(3)), n, k, levels, lut_of(levels))
 
 
 def codes(w3: W3Weight) -> torch.Tensor:
@@ -246,9 +271,9 @@ def w3_linear(x: torch.Tensor, w3: W3Weight, x_scale: torch.Tensor | None = None
 # ------------------------------------------------------------------ attaching to the served model
 
 def _dequant_nvfp4(lin) -> torch.Tensor:
-    from bench.verifier_numerics import unpack_fp4, unswizzle
+    from sharar.weights.modelopt import unpack_fp4, unswizzle_block_scales
     groups = lin.in_features // 16
-    scales = unswizzle(lin.weight_scale_swizzled.reshape(-1), lin.out_features, groups)
+    scales = unswizzle_block_scales(lin.weight_scale_swizzled.reshape(-1), lin.out_features, groups)
     # unpack_fp4 applies the block scales; alpha = input_scale * weight_scale_2 restores the global scale
     return unpack_fp4(lin.weight, scales) * (lin.alpha * lin.input_scale_inv).float()
 
@@ -261,18 +286,19 @@ def attach_model(model, log=print, head: bool | None = None, codebook=DEFAULT_CO
     """Pack 3-bit decode copies for every MLP and FP8 projection of a loaded Qwen38 (and the lm_head when `head`)."""
     total = 0
     count = 0
-    for layer in model.layers:
-        for lin in (layer.mlp.gate_up, layer.mlp.down):
-            if getattr(lin, "w3", None) is None:
-                lin.w3 = pack(_dequant_nvfp4(lin), codebook)
-                total += lin.w3.bytes; count += 1
-        mixer = layer.mixer  # GatedDeltaNet (in_qkv, in_z, out) or Attention (qkv, o)
-        for name in ("in_qkv", "in_z", "out", "qkv", "o"):
-            lin = getattr(mixer, name, None) if mixer is not None else None
-            if lin is not None and getattr(lin, "w3", None) is None:
-                lin.w3 = pack(_dequant_fp8(lin), codebook)
-                total += lin.w3.bytes; count += 1
-        torch.cuda.synchronize()
+    from sharar.weights.w3_checkpoint import CalibratedWeights, model_linears
+    directory = os.environ.get("SHARAR_W3_CHECKPOINT")
+    calibrated = CalibratedWeights(directory) if directory else None
+    linears = list(model_linears(model))
+    if calibrated is not None and set(calibrated.weights) != {name for name, _ in linears}:
+        raise ValueError("calibrated W3 checkpoint must contain every target layer projection")
+    for name, lin in linears:
+        if getattr(lin, "w3", None) is None:
+            lin.w3 = calibrated.load(name, lin) if calibrated else pack(
+                _dequant_nvfp4(lin) if hasattr(lin, "weight_scale_swizzled") else _dequant_fp8(lin), codebook)
+            total += lin.w3.bytes; count += 1
+    torch.cuda.synchronize()
+    model.w3_identity = calibrated.identity if calibrated else "nearest:" + str(codebook)
     if (HEAD if head is None else head) and getattr(model.lm_head, "w3", None) is None:
         model.lm_head.w3 = pack(_dequant_nvfp4(model.lm_head), codebook)
         total += model.lm_head.w3.bytes; count += 1

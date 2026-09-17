@@ -23,6 +23,16 @@ def test_latency_metrics_keep_a_bounded_recent_window():
     metrics.ttfts.append(float('nan'))
     assert metrics.summary()['ttft_window_count'] == 2047
 
+
+def test_engine_stats_do_not_compute_latency_percentiles(monkeypatch):
+    metrics = Metrics(finished=3000)
+    metrics.ttfts.extend(range(3000))
+    def no_sort(*args, **kwargs):
+        raise AssertionError("latencies must be computed only for a reader")
+    monkeypatch.setattr(metrics, 'latency_summary', no_sort)
+    result = metrics.summary(include_latencies=False)
+    assert result['finished'] == 3000 and 'ttft_p50' not in result
+
 PREFILL_TOKS_PER_S = 2500.0
 DECODE_STEP_S = 0.085
 

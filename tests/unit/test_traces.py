@@ -149,6 +149,26 @@ def test_rotation_and_retention_prune_oldest_files(tmp_path):
     ids = [d["id"] for d in iter_records(tmp_path)]
     assert ids == list(range(ids[0], 40)) and ids[0] > 0  # only the oldest records were dropped
     assert sink.records == 40 and sink.dropped == 0
+    assert sink.stats()["bytes"] == sum(f.stat().st_size for f in files)
+    assert sink.stats()["files"] == len(files)
+
+
+def test_stats_include_existing_storage_without_scanning_on_the_engine_thread(tmp_path, monkeypatch):
+    trace = tmp_path / "traces-20260911-000000-0001.jsonl"
+    trace.write_bytes(b"{}\n")
+    features = tmp_path / "features" / trace.stem
+    features.mkdir(parents=True)
+    (features / "1.bin").write_bytes(b"abcdef")
+    sink = TraceSink(tmp_path)
+    try:
+        def no_scan(*args, **kwargs):
+            raise AssertionError("stats must not scan storage")
+        monkeypatch.setattr(sink, "_files", no_scan)
+        monkeypatch.setattr(sink, "_size", no_scan)
+        assert sink.stats()["files"] == 1
+        assert sink.stats()["bytes"] == 9
+    finally:
+        sink.close()
 
 
 def test_recorder_stages_contiguous_rows_and_writes_them(tmp_path):
@@ -172,7 +192,7 @@ def test_recorder_stages_contiguous_rows_and_writes_them(tmp_path):
 
 
 def test_sink_writes_feature_files_beside_traces_and_prunes_them(tmp_path):
-    sink = TraceSink(tmp_path, max_bytes=40_000, rotate_bytes=1)  # one request per file
+    sink = TraceSink(tmp_path, max_bytes=40_000, rotate_bytes=20_000)  # feature bytes must trigger rotation
     params = SamplingParams(max_new_tokens=4)
     for i in range(6):
         req = Request(prompt_ids=[i] * 8, params=params, request_id=i)
@@ -186,6 +206,7 @@ def test_sink_writes_feature_files_beside_traces_and_prunes_them(tmp_path):
     assert all((tmp_path / d["features"]["file"]).exists() for d in docs)
     total = sum(f.stat().st_size for f in tmp_path.rglob("*") if f.is_file())
     assert total <= 40_000 and len(docs) < 6  # pruned to the cap, feature files included
+    assert sink.stats()["bytes"] == total
     kept_dirs = {d["features"]["file"].split("/")[1] for d in docs}
     assert {p.name for p in (tmp_path / "features").iterdir()} == kept_dirs  # pruned files took their directories
     assert load_features(docs[-1]["features"])[0, 0].item() == docs[-1]["id"]

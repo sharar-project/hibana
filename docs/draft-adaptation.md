@@ -126,6 +126,15 @@ to compare drafts on throughput and tokens per round.
 
 ## Results and limits
 
+The [2026-09-17 calibrated-W3 run](archive/studies/w3-calibration-adaptation.md)
+uses separate source files for training, validation and final testing.
+Step 200 of a 300-step session improves BF16 validation tokens per round by
+5.83%; the selected checkpoint improves actual FP8/W3 served throughput by
+3.60% at concurrency one and 4.43% at concurrency four over two repeated
+pairs. Paired source-file intervals for acceptance and request latency are
+positive; the concurrent latency interval does not describe aggregate-TPS
+uncertainty. This is a synthetic repository-coding proxy, not user traffic.
+
 On a repository-coding proxy workload: a 300-step session raised held-out
 tokens per round 5.367 to 5.739 and served throughput 46.3 to 52.3 tokens/s
 (+12.9%); a 1,000-request serve-then-train loop raised acceptance while

@@ -57,17 +57,21 @@ class Metrics:
     # A long-lived local server must not retain/sort its entire request history.
     ttfts: deque[float] = field(default_factory=lambda: deque(maxlen=2048))
 
-    def summary(self) -> dict:
-        ttfts = sorted(t for t in self.ttfts if t == t)  # drop NaN
+    @staticmethod
+    def latency_summary(values, capacity: int = 2048) -> dict:
+        ttfts = sorted(t for t in values if t == t)  # drop NaN
         p = lambda q: ttfts[min(len(ttfts) - 1, int(q * len(ttfts)))] if ttfts else None  # noqa: E731
+        return {"ttft_p50": p(0.5), "ttft_p95": p(0.95),
+                "ttft_window_count": len(ttfts), "ttft_window_capacity": capacity}
+
+    def summary(self, *, include_latencies: bool = True) -> dict:
         return {
             "admitted": self.admitted, "finished": self.finished, "cancelled": self.cancelled,
             "retractions": self.retractions, "rejected": self.rejected,
             "prefill_chunks": self.prefill_chunks, "prefill_tokens": self.prefill_tokens,
             "decode_steps": self.decode_steps, "decode_tokens": self.decode_tokens,
             "steps": self.steps, "avg_step_ms": 1000 * self.step_seconds / max(1, self.steps),
-            "ttft_p50": p(0.5), "ttft_p95": p(0.95),
-            "ttft_window_count": len(ttfts), "ttft_window_capacity": self.ttfts.maxlen,
+            **(self.latency_summary(self.ttfts, self.ttfts.maxlen) if include_latencies else {}),
         }
 
 
@@ -121,8 +125,8 @@ class Scheduler:
     def active(self) -> int:
         return len(self.queue) + len(self.prefilling) + len(self.running)
 
-    def stats(self) -> dict:
-        d = self.metrics.summary()
+    def stats(self, *, include_latencies: bool = True) -> dict:
+        d = self.metrics.summary(include_latencies=include_latencies)
         d.update({"queued": len(self.queue), "prefilling": len(self.prefilling), "running": len(self.running)})
         cache = self.ex.cache_stats()
         if cache is not None:

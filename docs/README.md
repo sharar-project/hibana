@@ -16,6 +16,7 @@ to the source recorded in each report.
 | [Contributing](../CONTRIBUTING.md) | Checks and implementation boundaries |
 | [Roadmap](../roadmap.md) | Current priorities and remaining engineering work |
 | [Draft adaptation](draft-adaptation.md) | Training the DFlash2 drafter on recorded traffic: `sharar-ctl train`, traces, promotion, design and limits |
+| [W3 calibration](w3-calibration.md) | Fit, validate and load activation-aware three-bit target decode copies |
 | [Cache-policy proposal](request-cache-policy.md) | Unimplemented request-level cache controls |
 | [Archive and decisions](archive/README.md) | Historical studies, manifests and rejected experiments |
 

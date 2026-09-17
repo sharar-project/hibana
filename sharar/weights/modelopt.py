@@ -84,6 +84,23 @@ def swizzle_block_scales(scales: torch.Tensor) -> torch.Tensor:
     return padded.reshape(m_pad, k_pad)
 
 
+def unswizzle_block_scales(scales: torch.Tensor, rows: int, groups: int) -> torch.Tensor:
+    """Decode the 128-row/four-column NVFP4 scale layout, removing padding."""
+    mp, kp = (rows + 127) // 128 * 128, (groups + 3) // 4 * 4
+    if scales.numel() != mp * kp:
+        raise ValueError("scale extent does not match padded matrix")
+    return scales.reshape(1, mp // 128, kp // 4, 32, 4, 4).permute(0, 1, 4, 3, 2, 5).reshape(mp, kp)[:rows, :groups]
+
+
+def unpack_fp4(packed: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
+    """Dequantize low-nibble-first E2M1 weights with one scale per 16 values."""
+    if packed.ndim != 2 or packed.shape[1] % 8 or scales.shape != (packed.shape[0], packed.shape[1] // 8):
+        raise ValueError("expected packed rows and one scale per sixteen values")
+    codes = torch.stack((packed & 15, packed >> 4), -1).reshape(packed.shape[0], -1).long()
+    magnitudes = torch.tensor([0, .5, 1, 1.5, 2, 3, 4, 6], device=packed.device)
+    return magnitudes[codes & 7] * torch.where(codes & 8 != 0, -1, 1) * scales.float().repeat_interleave(16, -1)
+
+
 def load_nvfp4_linear(w: SnapshotWeights, prefixes: list[str], device: torch.device) -> Nvfp4Linear:
     weights = [w.get(f"{p}.weight") for p in prefixes]
     scales = [w.get(f"{p}.weight_scale") for p in prefixes]

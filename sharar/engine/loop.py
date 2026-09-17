@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from sharar.engine.request import Request
 from sharar.engine.sampler import InvalidRequest, SamplingParams
-from sharar.engine.scheduler import QueueFull, Scheduler
+from sharar.engine.scheduler import Metrics, QueueFull, Scheduler
 
 class EngineUnavailable(RuntimeError):
     pass
@@ -53,6 +53,8 @@ class EngineLoop:
         self.failure: str | None = None
         self._status_lock = threading.Lock()
         self.last_stats: dict = {}
+        self._latency_finished = -1
+        self._latencies: tuple[float, ...] = ()
         self.thread = threading.Thread(target=self._run, name="sharar-engine", daemon=True)
 
     def start(self) -> None:
@@ -113,7 +115,9 @@ class EngineLoop:
         return await fut
 
     def stats(self) -> dict:
-        return self.last_stats
+        # Called by the HTTP side. Sorting a bounded immutable snapshot never
+        # stalls the engine or iterates its concurrently changing deque.
+        return {**self.last_stats, **Metrics.latency_summary(self._latencies)}
 
     # ---- engine thread ----
     def _handle(self, cmd) -> None:
@@ -174,7 +178,10 @@ class EngineLoop:
                 if self.sched.active:
                     self.sched.step()
                 self._publish()
-                self.last_stats = self.sched.stats()
+                self.last_stats = self.sched.stats(include_latencies=False)
+                if self.sched.metrics.finished != self._latency_finished:
+                    self._latencies = tuple(self.sched.metrics.ttfts)
+                    self._latency_finished = self.sched.metrics.finished
                 if self.drain_deadline is not None:
                     if not self.sched.active and self.inbox.empty():
                         self.stop = True

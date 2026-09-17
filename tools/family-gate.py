@@ -85,7 +85,7 @@ def container_base(image: str, uid: str, name: str, results: Path, hf_cache: str
         for device in source["HostConfig"]["Devices"]:
             cmd += ["--device", device["PathOnHost"]]
         for mount in source["Mounts"]:
-            if mount["Destination"] in ("/traces", "/draft", "/runs", "/proof"):
+            if mount["Destination"] in ("/traces", "/draft", "/runs", "/proof", "/w3"):
                 continue
             cmd += ["--mount", f"type=bind,src={mount['Source']},dst={mount['Destination']}" + (",readonly" if not mount["RW"] else "")]
     else:
@@ -120,6 +120,7 @@ def main() -> int:
     ap.add_argument("--results", type=Path, default=None, help="run directory (default: $SHARAR_RESULTS/reviews/<date>-family-gate/<label>)")
     ap.add_argument("--time-guard", type=float, default=4 * 3600)
     ap.add_argument("--env", action="append", default=[], help="KEY=VALUE for every pass")
+    ap.add_argument("--w3-checkpoint", type=Path, help="mount a completed calibrated artifact at /w3; enable it in a candidate with env:SHARAR_W3_CHECKPOINT=/w3")
     ap.add_argument("--dry-run", action="store_true", help="print the pass commands and exit")
     args = ap.parse_args()
 
@@ -172,6 +173,10 @@ def main() -> int:
              "--env", "TOKENIZERS_PARALLELISM=false", "--env", "TRITON_LIBCUDA_PATH=/usr/lib/aarch64-linux-gnu"]
     for kv in args.env:
         base += ["--env", kv]
+    if args.w3_checkpoint:
+        if not (args.w3_checkpoint / "manifest.json").is_file():
+            sys.exit("--w3-checkpoint needs a completed manifest.json")
+        base += ["--mount", f"type=bind,src={args.w3_checkpoint.resolve()},dst=/w3,readonly"]
     commands = []
     for token, label, precision, hook, env in passes:
         cmd = list(base)

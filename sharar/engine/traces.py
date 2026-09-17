@@ -211,6 +211,11 @@ class TraceSink:
         self.bytes_written = 0
         self.feature_bytes_written = 0
         self.closed = False
+        # Scan once before serving starts. Only the writer mutates the inventory;
+        # the engine reads an immutable snapshot without filesystem operations.
+        self._sizes = {path: self._size(path) for path in self._files()}
+        self._stored_bytes = sum(self._sizes.values())
+        self._disk_usage = (len(self._sizes), self._stored_bytes)
         self._thread = threading.Thread(target=self._run, name="sharar-traces", daemon=True)
         self._thread.start()
 
@@ -238,11 +243,11 @@ class TraceSink:
         return True
 
     def stats(self) -> dict:
-        files = self._files()
+        files, nbytes = self._disk_usage
         return {
             "dir": str(self.directory), "records": self.records, "dropped": self.dropped,
             "bytes_written": self.bytes_written, "feature_bytes_written": self.feature_bytes_written,
-            "files": len(files), "bytes": self._total_bytes(files), "max_bytes": self.max_bytes,
+            "files": files, "bytes": nbytes, "max_bytes": self.max_bytes,
             "features": self.features, "pinned_chunks": self.pool.allocated,
         }
 
@@ -268,9 +273,6 @@ class TraceSink:
             total += sum(f.stat().st_size for f in directory.iterdir() if f.is_file())
         return total
 
-    def _total_bytes(self, files: list[Path]) -> int:
-        return sum(self._size(f) for f in files)
-
     def _open(self) -> Path:
         self._sequence += 1
         stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
@@ -279,33 +281,34 @@ class TraceSink:
             self._sequence += 1
             path = self.directory / f"{FILE_PREFIX}{stamp}-{self._sequence:04d}{FILE_SUFFIX}"
         path.touch()
+        self._sizes[path] = 0
         self._current, self._current_size = path, 0
         return path
 
     def _prune(self) -> None:
-        files = self._files()
-        total = self._total_bytes(files)
-        for old in files:
-            if total <= self.max_bytes or old == self._current:
+        for old in list(self._sizes):
+            if self._stored_bytes <= self.max_bytes or old == self._current:
                 break
-            total -= self._size(old)
             directory = self._feature_dir(old)
             if directory.is_dir():
                 for f in directory.iterdir():
                     f.unlink(missing_ok=True)
                 directory.rmdir()
             old.unlink(missing_ok=True)
+            self._stored_bytes -= self._sizes.pop(old)
+        self._disk_usage = (len(self._sizes), self._stored_bytes)
 
     def _write(self, doc: dict, recorder: FeatureRecorder | None, topk: TopkRecorder | None = None) -> None:
         if self._current is None or self._current_size >= self.rotate_bytes:
             self._open()
+        blob_bytes = 0
         if recorder is not None:
             path = self._feature_dir(self._current) / f"{doc['id']}.bin"
             info = recorder.write(path)
             if info is not None:
                 info["file"] = str(path.relative_to(self.directory))
                 doc["features"] = info
-                self.feature_bytes_written += info["rows"] * info["dim"] * 2
+                blob_bytes += info["rows"] * info["dim"] * 2
         if topk is not None:
             ids_path = self._feature_dir(self._current) / f"{doc['id']}.topk-ids.bin"
             logits_path = self._feature_dir(self._current) / f"{doc['id']}.topk-logits.bin"
@@ -314,13 +317,16 @@ class TraceSink:
                 info["ids_file"] = str(ids_path.relative_to(self.directory))
                 info["logits_file"] = str(logits_path.relative_to(self.directory))
                 doc["topk"] = info
-                self.feature_bytes_written += info["rows"] * info["k"] * 6
+                blob_bytes += info["rows"] * info["k"] * 6
         line = json.dumps(doc, separators=(",", ":")) + "\n"
         data = line.encode()
         with open(self._current, "ab") as handle:
             handle.write(data)
-        self._current_size += len(data)
+        self._current_size += len(data) + blob_bytes
         self.bytes_written += len(data)
+        self.feature_bytes_written += blob_bytes
+        self._sizes[self._current] += len(data) + blob_bytes
+        self._stored_bytes += len(data) + blob_bytes
         self.records += 1
         self._prune()
 
@@ -338,6 +344,17 @@ class TraceSink:
                     if r is not None:
                         r._release()
                 logging.exception("trace write failed")
+                # A failed write can leave a partial blob or line on disk.
+                # Reconcile that file on the writer thread, including its blobs.
+                try:
+                    if self._current is not None:
+                        size = self._size(self._current)
+                        self._current_size = size
+                        self._stored_bytes += size - self._sizes[self._current]
+                        self._sizes[self._current] = size
+                    self._prune()
+                except OSError:
+                    logging.exception("trace storage accounting failed")
 
 
 def iter_records(directory: str | Path):

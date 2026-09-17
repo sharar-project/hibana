@@ -36,8 +36,9 @@ budget separately. Automatic KV capacity depends on available memory.
 | Image | `sharar:qwen38-27b` | `SHARAR_IMAGE` |
 | Container / port | `sharar-qwen38` / 30001 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
 | Request traces | Off | `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
+| Calibrated W3 artifact | Unset | `SHARAR_W3_CHECKPOINT=/dir` loads completed, checksummed target decode copies; requires `SHARAR_W3_DECODE=1`. See [calibration](w3-calibration.md) for fitting and validation. |
 | Relaxed acceptance default | top-2 within 1.0 logit | `SHARAR_ACCEPT_DEFAULT=K:M` or `off` (greedy requests that do not set `accept_top_k`/`accept_margin`; the [study](archive/studies/relaxed-acceptance.md)) |
-| Three-bit decode weights | Layers and draft on, lm_head off | `SHARAR_W3_DECODE` (3.25-bit copies of the MLPs and FP8 projections serve every decode call of at most 64 rows, batch one to four, through a tensor-core kernel at the memory ceiling; +9.2 GiB resident), `SHARAR_W3_DRAFT` (the parallel draft's FP8 matrices, +0.6 GiB), `SHARAR_W3_HEAD` (the lm_head, +0.5 GiB); each 1 or 0. Decode x1.49 at batch one with all three; round-to-nearest 3-bit costs about two GSM8K points, calibration pending; the [study](archive/studies/w3-cuda.md). Set `SHARAR_W3_DECODE=0` for the exact-numerics baseline |
+| Three-bit decode weights | Layers and draft on, lm_head off | `SHARAR_W3_DECODE` (3.25-bit copies of the MLPs and FP8 projections serve every decode call of at most 64 rows, batch one to four, through a tensor-core kernel at the memory ceiling; +9.2 GiB resident), `SHARAR_W3_DRAFT` (the parallel draft's FP8 matrices, +0.6 GiB), `SHARAR_W3_HEAD` (the lm_head, +0.5 GiB); each 1 or 0. The earlier all-three-copies profile gave decode x1.49 at batch one ([study](archive/studies/w3-cuda.md)); calibrated target copies now improve quality and speed over nearest rounding ([calibration results](archive/studies/w3-calibration-adaptation.md)). Set `SHARAR_W3_DECODE=0` and unset `SHARAR_W3_CHECKPOINT` for the original NVFP4/FP8 target path |
 | Shape-stable prefill numerics | Off | `SHARAR_STABLE_NUMERICS=1` (research baseline for row-count experiments; the [numerics study](archive/studies/target-numerics.md)) |
 | Draft checkpoint | `draft-runs/current` when promoted, else pinned | `SHARAR_DRAFT=/dir` or `SHARAR_DRAFT=pinned` |
 
@@ -83,7 +84,7 @@ correction token). DFlash2 requests also store the projected context features
 the drafter attended to, copied from the proposer's ring as they are written:
 the last 2,048 prompt positions and every committed output position, 10 KiB
 per row as raw BF16 under `features/<trace file>/<id>.bin`. No text or client
-metadata is stored. Files rotate at 64 MiB and the oldest trace file is
+metadata is stored. Files rotate at 64 MiB of JSON and feature data, and the oldest trace file is
 deleted together with its feature directory above the cap. The default cap
 is 32 GiB, about 1,300 requests of 2K-token traffic, and it is also the
 training window.

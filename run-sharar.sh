@@ -21,6 +21,7 @@ ACCEPT_DEFAULT="${SHARAR_ACCEPT_DEFAULT:-2:1.0}"      # relaxed acceptance for g
 W3_DECODE="${SHARAR_W3_DECODE:-1}"   # 3-bit decode copies of the MLPs and FP8 projections for calls of at most 64 rows (1/0)
 W3_HEAD="${SHARAR_W3_HEAD:-0}"       # also the lm_head (1/0)
 W3_DRAFT="${SHARAR_W3_DRAFT:-1}"     # also the parallel draft's FP8 matrices (1/0; needs W3_DECODE)
+W3_CHECKPOINT="${SHARAR_W3_CHECKPOINT:-}" # calibrated target decode copies; unset uses nearest rounding
 DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"   # incoai/Qwen3.8-27B-DFlash2
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
@@ -49,6 +50,12 @@ if [[ "${1:-}" == "--stop" ]]; then
 fi
 
 [[ "$DRAFT_PRECISION" == bf16 || "$DRAFT_PRECISION" == fp8 ]] || fail "SHARAR_DRAFT_PRECISION must be bf16 or fp8"
+for v in W3_DECODE W3_HEAD W3_DRAFT; do [[ "${!v}" == 0 || "${!v}" == 1 ]] || fail "SHARAR_$v must be 0 or 1"; done
+if [[ -n "$W3_CHECKPOINT" ]]; then
+  [[ "$W3_DECODE" == 1 ]] || fail "SHARAR_W3_CHECKPOINT requires SHARAR_W3_DECODE=1"
+  [[ -f "$W3_CHECKPOINT/manifest.json" ]] || fail "SHARAR_W3_CHECKPOINT needs a completed manifest.json"
+  W3_CHECKPOINT="$(realpath "$W3_CHECKPOINT")"
+fi
 if [[ "$DRAFT_PRECISION" == fp8 && ( "$SPEC" == 0 || ( "$PROPOSER" != dflash2 && "$PROPOSER" != dspark ) ) ]]; then
   fail "FP8 draft precision requires enabled DFlash2 or DSpark speculation"
 fi
@@ -98,6 +105,7 @@ Sharar preflight OK
   Relaxed acceptance default: $ACCEPT_DEFAULT (requests may set accept_top_k/accept_margin; 1 = exact)
   Three-bit decode copies: layers $(onoff "$W3_DECODE"), lm_head $(onoff "$W3_HEAD"), draft $(onoff "$W3_DRAFT")$([[ "$W3_DRAFT" == 1 && "$DRAFT_PRECISION" != fp8 ]] && echo ' (no effect: the draft copy needs the FP8 draft)') (SHARAR_W3_DECODE / SHARAR_W3_HEAD / SHARAR_W3_DRAFT)
   Draft: ${DRAFT_DIR:-pinned $DRAFT_REVISION}
+  W3 target checkpoint: ${W3_CHECKPOINT:-nearest rounding from the pinned serving weights}
 EOT
 [[ "${1:-}" == "--check" ]] && exit 0
 
@@ -128,10 +136,14 @@ if [[ "$ACCEPT_DEFAULT" != "2:1.0" ]]; then
     || fail "image $IMAGE predates --accept-default; rebuild with docker/build.sh or unset SHARAR_ACCEPT_DEFAULT"
   serve_args+=(--accept-default "$ACCEPT_DEFAULT")
 fi
-for v in W3_DECODE W3_HEAD W3_DRAFT; do [[ "${!v}" == 0 || "${!v}" == 1 ]] || fail "SHARAR_$v must be 0 or 1"; done
 if [[ "$W3_DECODE" == 1 ]]; then
   docker run --rm --entrypoint python3 "$IMAGE" -c "import sharar.kernels.w3" 2>/dev/null \
     || fail "image $IMAGE predates the 3-bit decode path; rebuild with docker/build.sh or set SHARAR_W3_DECODE=0"
+fi
+if [[ -n "$W3_CHECKPOINT" ]]; then
+  docker run --rm --entrypoint python3 "$IMAGE" -c "import sharar.weights.w3_checkpoint" 2>/dev/null \
+    || fail "image $IMAGE predates calibrated W3 checkpoints; rebuild with docker/build.sh"
+  args+=(--volume "$W3_CHECKPOINT:/w3:ro" --env SHARAR_W3_CHECKPOINT=/w3)
 fi
 if [[ "$PROPOSER" == dflash2 || "$PROPOSER" == dspark ]] && [[ "$SPEC" != 0 ]]; then
   mkdir -p "$RUNS_DIR"   # promoted checkpoints; /reload_draft swaps them in without a restart

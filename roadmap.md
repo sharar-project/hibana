@@ -1,6 +1,6 @@
 # Sharar roadmap
 
-Updated 2026-09-14. This is the current work order. Historical milestones and
+Updated 2026-09-17. This is the current work order. Historical milestones and
 their original gates are in the [archived roadmap](docs/archive/roadmap-2026-09-11.md).
 
 ## Supported baseline
@@ -9,15 +9,29 @@ One GB10, the pinned Qwen3.8-27B NVFP4 target, 32K context, maximum batch four.
 DFlash2 with 15 proposals and accepted-state reconstruction; FP8 draft by
 default since 2026-09-17 (BF16 is the publisher's precision); relaxed acceptance at top-2 within
 1.0 logit for greedy requests that do not choose; 3-bit decode copies of the
-layers and the draft on by default in the launcher (the lm_head copy opt-in),
-accepted at about two GSM8K points until calibration lands. The target, its vocabulary head
-and the verifier are fixed. The DFlash2 drafter is trainable on recorded
+layers and the draft on by default in the launcher (the lm_head copy opt-in).
+Activation-aware calibrated target copies are available through
+`SHARAR_W3_CHECKPOINT`; paired accuracy and the family performance gate pass.
+The NVFP4/FP8 prefill weights, vocabulary head and verifier stay fixed.
+The DFlash2 drafter is trainable on recorded
 traffic and serving follows the promoted checkpoint; the publisher's draft is
 the fallback. See [operations](docs/operations.md), [performance](docs/performance.md),
 the [optimization inventory](docs/optimizations.md) and [draft adaptation](docs/draft-adaptation.md).
 
 ## Current state
 
+- W3 calibration: GPTQ fitting from the pinned FP8 release improves full
+  GSM8K from 92.04% to 94.47% and family decode throughput by 8.6%
+  [5.1%, 12.3%] against the current nearest-rounded W3 profile. The kernel
+  and stored weight size are unchanged. See the
+  [calibration and adaptation study](docs/archive/studies/w3-calibration-adaptation.md).
+- Calibrated-target drafter adaptation: 300 steps over 240 coding-proxy
+  requests, with separate validation and test files, selected step 200.
+  Actual FP8/W3 serving improves by 3.60% at concurrency one and 4.43%
+  at concurrency four. The updated runtime, calibrated target and selected
+  drafter are active on the local GB10 since 2026-09-17; live generation and
+  artifact identities were checked, and the previous container is retained
+  for rollback.
 - Engine: exact BS1 QKV/MLP integration (+1.43% family decode), k=15 with
   2,048-token prefill chunks and a 4,096-token prefill budget, checkpoint-owned
   draft features, shared GDN prefill planning, accepted-state reconstruction,
@@ -183,10 +197,12 @@ fewer bytes, more accepted tokens, or a second GPU move the number.
   p < 0.001) with HumanEval within noise for the layers; the lm_head copy
   costs HumanEval and stays opt-in; the uniform grid loses five points on
   both; per-row activation scales lose more. The launcher default flipped
-  to layers and draft on (a05457d). Next: GPTQ
-  or QuIP#-style calibration from the FP8 release in the local cache (the
-  path to a lossless default); retrain the drafter on 3-bit traces; the
-  64-row occupancy (attention qkv at 156 GB/s).
+  to layers and draft on (a05457d). GPTQ calibration from the FP8 release
+  now passes paired accuracy and the full family gate; see the
+  [new study](docs/archive/studies/w3-calibration-adaptation.md) and
+  [artifact guide](docs/w3-calibration.md). Drafter adaptation on fresh
+  calibrated-target traces also passes held-out serving checks. The remaining kernel opportunity
+  is 64-row occupancy (attention qkv at 156 GB/s).
 
 ## Engine to-dos
 
@@ -204,12 +220,12 @@ fewer bytes, more accepted tokens, or a second GPU move the number.
 
 Small, independent, any session; none changes numerics.
 
-- `TraceSink.stats()` globs the trace directory and stats every trace file and
-  every feature blob on every engine-loop iteration through
-  `EngineLoop._run_inference` and `Scheduler.stats()`, idle or not. Keep
-  counters in the sink, updated by the writer thread.
-- `Metrics.summary()` sorts the 2,048-entry TTFT window on every iteration for
-  the same reason; compute it on `/metrics` requests only.
+Completed 2026-09-17: trace storage counters are maintained by the writer,
+rotation includes feature bytes, and TTFT percentiles are computed on the
+HTTP side from an immutable snapshot. W3 dequantization also imports its
+helpers from the installed runtime instead of the benchmark package. See the
+[runtime and calibration study](docs/archive/studies/w3-calibration-adaptation.md).
+
 - The detokenizer re-decodes the whole output every round, and `/generate`
   streaming re-sends the full output ID list in every chunk; both are
   quadratic in output length.

@@ -8,6 +8,7 @@ where residual is the stream before this layer's MLP output is added.
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -29,7 +30,7 @@ from sharar.weights.safetensors import SnapshotWeights
 PREFIX = "model.language_model"
 # Retained compatibility switch for prequantized MLP inputs. Both routes now
 # use the phase-specific norm and the same BF16-to-NVFP4 boundary.
-FUSED_NORM_NVFP4 = __import__("os").environ.get("SHARAR_FUSED_NORM_NVFP4", "0") == "1"
+FUSED_NORM_NVFP4 = os.environ.get("SHARAR_FUSED_NORM_NVFP4", "0") == "1"
 
 
 class DecoderLayer:
@@ -67,6 +68,9 @@ class DecoderLayer:
 class Qwen38:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", fused_silu_quant: bool = True, log=print):
         from sharar.memory.ledger import check_load_headroom
+        from sharar.kernels import w3
+        if os.environ.get("SHARAR_W3_CHECKPOINT") and not w3.ENABLED:
+            raise ValueError("SHARAR_W3_CHECKPOINT requires SHARAR_W3_DECODE=1")
         check_load_headroom(config.WEIGHT_LOAD_PEAK_BYTES)
         self.device = torch.device(device)
         cfg = config.load_model_config(snap)
@@ -100,7 +104,6 @@ class Qwen38:
         if log:
             log(f"  weights loaded in {time.perf_counter() - started:.0f}s, "
                 f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated")
-        from sharar.kernels import w3
         if w3.ENABLED:
             w3.attach_model(self, log=log)
 

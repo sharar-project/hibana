@@ -39,7 +39,8 @@ def main():
         unpacked = next((work / 'unpacked').iterdir())
         run([sys.executable, '-c', 'from setuptools.build_meta import build_wheel; build_wheel("../../artifacts")'], cwd=unpacked)
         wheel = next(artifacts.glob('*.whl'))
-        required = ['sharar/kernels/csrc/fp8_gemv.cu', 'sharar/benchmark_data/request_state_7aebbe6.txt']
+        required = ['sharar/kernels/csrc/fp8_gemv.cu', 'sharar/kernels/csrc/w3_gemm.cu',
+                    'sharar/benchmark_data/request_state_7aebbe6.txt']
         with zipfile.ZipFile(wheel) as archive:
             for name in required:
                 assert archive.read(name) == (root / name).read_bytes(), f'missing or changed wheel asset: {name}'
@@ -51,6 +52,20 @@ def main():
              'from sharar.benchmark_workloads import materialize; '
              'assert len(materialize(lambda text: list(text.encode()), "code", 10000)) == 10000'], cwd=work, env=env)
         run([sys.executable, '-m', 'sharar', 'benchmark', '--help'], cwd=work, env=env)
+        run([sys.executable, '-c', '''
+import torch
+from types import SimpleNamespace
+from sharar.kernels.w3 import _dequant_nvfp4, pack, dequantize
+from sharar.weights.modelopt import swizzle_block_scales
+from sharar.weights.w3_checkpoint import CalibratedWeights
+from sharar.weights.w3_calibration import quantize
+linear = SimpleNamespace(weight=torch.full((128, 64), 0x22, dtype=torch.uint8),
+    weight_scale_swizzled=swizzle_block_scales(torch.ones(128, 8)),
+    out_features=128, in_features=128, alpha=torch.tensor(2.), input_scale_inv=torch.tensor(.5))
+weight = _dequant_nvfp4(linear)
+assert torch.equal(weight, torch.ones(128, 128))
+assert torch.isfinite(dequantize(pack(weight))).all()
+'''], cwd=work, env=env)
     print('Source distribution, wheel assets, installed CUDA loader and benchmark CLI passed.')
 
 
