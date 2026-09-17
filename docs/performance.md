@@ -51,6 +51,19 @@ predictable lifetime and reclamation. Caps are 460 MiB at 24 state slots and
 full target-prefix eviction and worse latency tails. These are not additive
 cold-kernel gains or measurements of arbitrary agent productivity.
 
+## Against SGLang, 2026-09-16
+
+On the standard 10K/1K batch-one cell with identical prompt IDs, mean
+end-to-end output TPS over code, design and reasoning: SGLang DFlash2 30.4,
+Sharar exact 36.5 (1.19x), the relaxed default 44.2 (1.44x), 3-bit decode
+weights 47.4 (1.59x), both together 52.3 (1.75x); see the
+[comparison](archive/studies/sglang-comparison-2026-09-16.md) and the
+controlled numbers behind it in the gate studies. The CUDA 3-bit kernel with
+the head and draft (2026-09-17, decode x1.488 on the gate against the first
+build's x1.174) projects to about 1.9x end-to-end exact and 2.1x with the
+relaxed default; the [inventory](optimizations.md#combined-effect-on-the-standard-cell)
+shows the arithmetic, a rerun replaces it.
+
 ## Rejected candidates and remaining limits
 
 The short-resume scheduler reduced mixed throughput 7.27% and lengthened

@@ -62,6 +62,12 @@ decides acceptance only when it excludes 1, and it is about ±3% wide on the
 101-family default set (±7% on the old 18-family set) for any change that
 moves continuations, so do not select among variants on its point estimate. The three-prompt `tools/benchmark.sh`
 remains the reporting cell for end-to-end numbers, never the decision.
+A change to the target's arithmetic or to acceptance also runs
+`bench/accuracy_eval.py` (GSM8K and HumanEval, paired against the exact
+configuration) before it becomes a default; the gate measures speed and
+acceptance, not correctness.
+When an optimization lands, changes its default or is retired, update its
+row in the [optimization inventory](docs/optimizations.md) in the same change.
 
 ## Add a proposer
 

@@ -11,6 +11,7 @@ to the source recorded in each report.
 | [Interfaces](interfaces.md) | Execution, proposer, cache and graph-buffer contracts |
 | [Ownership invariants](phase7a.md) | Termination, cancellation, flush, retraction and failure |
 | [Performance](performance.md) | Current BS1/BS4 and resumed-session evidence |
+| [Optimization inventory](optimizations.md) | Every optimization in the engine: location, default, measured effect, evidence |
 | [Benchmark guide](../bench/README.md) | Commands, reproducibility and shared helper layout |
 | [Contributing](../CONTRIBUTING.md) | Checks and implementation boundaries |
 | [Roadmap](../roadmap.md) | Current priorities and remaining engineering work |

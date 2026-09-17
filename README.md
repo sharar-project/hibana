@@ -71,7 +71,8 @@ tools/benchmark.sh --workload all   # code, design and reasoning
 ```
 
 FP8 DFlash2 at k=15 (`./sharar-ctl serve --fp8`) is the measured serving
-profile. [Performance](docs/performance.md) links every measured claim to its
+profile. The [optimization inventory](docs/optimizations.md) lists what is on,
+opt-in and parked. [Performance](docs/performance.md) links every measured claim to its
 evidence; [bench/README.md](bench/README.md) covers protocols and tools.
 
 ## Develop
