@@ -18,9 +18,9 @@ TRACES_DIR="${SHARAR_TRACES:-}"                    # opt-in request traces for d
 DRAFT_DIR="${SHARAR_DRAFT:-}"                      # trained draft checkpoint directory; unset follows draft-runs/current; 'pinned' forces the publisher draft
 TRACES_MAX_MIB="${SHARAR_TRACES_MAX_MIB:-32768}"
 ACCEPT_DEFAULT="${SHARAR_ACCEPT_DEFAULT:-2:1.0}"      # relaxed acceptance for greedy requests that do not choose (K:M; off = exact)
-W3_DECODE="${SHARAR_W3_DECODE:-0}"   # 3-bit decode copies of the MLPs and FP8 projections for calls of at most 64 rows (1/0)
+W3_DECODE="${SHARAR_W3_DECODE:-1}"   # 3-bit decode copies of the MLPs and FP8 projections for calls of at most 64 rows (1/0)
 W3_HEAD="${SHARAR_W3_HEAD:-0}"       # also the lm_head (1/0)
-W3_DRAFT="${SHARAR_W3_DRAFT:-0}"     # also the parallel draft's FP8 matrices (1/0; needs W3_DECODE)
+W3_DRAFT="${SHARAR_W3_DRAFT:-1}"     # also the parallel draft's FP8 matrices (1/0; needs W3_DECODE)
 DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"   # incoai/Qwen3.8-27B-DFlash2
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"

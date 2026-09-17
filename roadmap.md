@@ -8,8 +8,9 @@ their original gates are in the [archived roadmap](docs/archive/roadmap-2026-09-
 One GB10, the pinned Qwen3.8-27B NVFP4 target, 32K context, maximum batch four.
 DFlash2 with 15 proposals and accepted-state reconstruction; BF16 draft by
 default, FP8 as the measured serving profile; relaxed acceptance at top-2 within
-1.0 logit for greedy requests that do not choose; 3-bit decode copies opt-in in
-the launcher until the full-size accuracy run clears a default. The target, its vocabulary head
+1.0 logit for greedy requests that do not choose; 3-bit decode copies of the
+layers and the draft on by default in the launcher (the lm_head copy opt-in),
+accepted at about two GSM8K points until calibration lands. The target, its vocabulary head
 and the verifier are fixed. The DFlash2 drafter is trainable on recorded
 traffic and serving follows the promoted checkpoint; the publisher's draft is
 the fallback. See [operations](docs/operations.md), [performance](docs/performance.md),
