@@ -20,7 +20,10 @@ gates. Historical commands may require the recorded source revision.
 | A 15-row prompt-lookup branch beside the draft chain does not raise served throughput; per-round union oracles over-value copy-region tokens | [Lookup branch](studies/lookup-branch.md) |
 | Judge arithmetic changes on the family gate's round-cost interval; acceptance is unresolvable below about 7% on 18 families; bit-identical outputs are not a gate | [Family gate](studies/family-gate.md) |
 | The 101-family set resolves acceptance to about ±3%; 1 to 2% claims still need hundreds of real traces | [Family set v3](studies/family-set-v3.md) |
-| At batch one the GPU is 98% busy and NVFP4 GEMMs stream at 90 to 96% of the ceiling; the FP8 5120x6144 shape and the b/a GEMMs are the named slack | [Round profile](studies/gb10-round-profile.md) |
+| At batch one the GPU is 98% busy and every large GEMM streams at 84 to 97% of the ceiling; kernel headroom is about 5% at batch one, 11% at batch four | [Round profile](studies/gb10-round-profile.md) |
+| 3.25-bit decode copies give 1.17x at batch one with unchanged acceptance and no detectable quality loss; batch four needs a tensor-core CUDA kernel | [3-bit decode](studies/w3-decode.md) |
+| A tensor-core CUDA kernel streams the 3-bit copies at the memory ceiling for 16 to 64 rows: round cost x0.66 at batch one and x0.76 at batch four with the head and draft included | [3-bit CUDA kernel](studies/w3-cuda.md) |
+| GSM8K and HumanEval accuracy is unchanged by the relaxed default and by 3-bit decode weights (paired, n=300 and 164) | [Accuracy](studies/accuracy-benchmarks.md) |
 | Relaxed acceptance is an opt-in speed mode (+10% at batch one for 4% non-argmax tokens), never a default without a judged quality comparison | [Relaxed acceptance](studies/relaxed-acceptance.md) |
 
 The exact pre-cleanup tree is tagged `archive/pre-cleanup-2026-09-11`.
@@ -89,6 +92,10 @@ main deliberately refuses its now-identical capacity comparison.
 - [The family gate: one command, a fixed code prompt, and what it can resolve](studies/family-gate.md)
 - [The 101-family set: the gate's resolution at three percent](studies/family-set-v3.md)
 - [One decode round on the GB10, profiled](studies/gb10-round-profile.md)
+- [Three-bit decode weights: kernel, speed and quality](studies/w3-decode.md)
+- [Three-bit decode weights: the tensor-core kernel, head and draft](studies/w3-cuda.md)
+- [Task accuracy: exact, relaxed default and 3-bit decode](studies/accuracy-benchmarks.md)
+- [Sharar versus SGLang on the 10K/1K cell, 2026-09-16](studies/sglang-comparison-2026-09-16.md)
 - [Relaxed speculative acceptance: opt-in speed mode, batch one and batch four](studies/relaxed-acceptance.md)
 - [Runtime cleanup and clean-image promotion review](studies/promotion.md)
 - [Request cache policy for agent sessions](studies/request-cache-policy.md)

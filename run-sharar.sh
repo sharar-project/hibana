@@ -18,6 +18,9 @@ TRACES_DIR="${SHARAR_TRACES:-}"                    # opt-in request traces for d
 DRAFT_DIR="${SHARAR_DRAFT:-}"                      # trained draft checkpoint directory; unset follows draft-runs/current; 'pinned' forces the publisher draft
 TRACES_MAX_MIB="${SHARAR_TRACES_MAX_MIB:-32768}"
 ACCEPT_DEFAULT="${SHARAR_ACCEPT_DEFAULT:-2:1.0}"      # relaxed acceptance for greedy requests that do not choose (K:M; off = exact)
+W3_DECODE="${SHARAR_W3_DECODE:-0}"   # 3-bit decode copies of the MLPs and FP8 projections for calls of at most 64 rows (1/0)
+W3_HEAD="${SHARAR_W3_HEAD:-0}"       # also the lm_head (1/0)
+W3_DRAFT="${SHARAR_W3_DRAFT:-0}"     # also the parallel draft's FP8 matrices (1/0; needs W3_DECODE)
 DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"   # incoai/Qwen3.8-27B-DFlash2
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
@@ -92,6 +95,7 @@ Sharar preflight OK
   Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (proposer: $PROPOSER, drafts: $SPEC, draft precision: $DRAFT_PRECISION, verify state: $VERIFY_STATE)
   Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}
   Relaxed acceptance default: $ACCEPT_DEFAULT (requests may set accept_top_k/accept_margin; 1 = exact)
+  Three-bit decode copies: layers ${W3_DECODE/1/on}${W3_DECODE/0/off}, lm_head ${W3_HEAD/1/on}${W3_HEAD/0/off}, draft ${W3_DRAFT/1/on}${W3_DRAFT/0/off} (SHARAR_W3_DECODE / SHARAR_W3_HEAD / SHARAR_W3_DRAFT)
   Draft: ${DRAFT_DIR:-pinned $DRAFT_REVISION}
 EOT
 [[ "${1:-}" == "--check" ]] && exit 0
@@ -109,6 +113,7 @@ args=(docker run --detach --name "$CONTAINER"
   --volume "$STATE_DIR:/state"
   --env TRITON_LIBCUDA_PATH=$DRIVER_LIB_DIR
   --env SHARAR_SPEC=$SPEC
+  --env SHARAR_W3_DECODE=$W3_DECODE --env SHARAR_W3_HEAD=$W3_HEAD --env SHARAR_W3_DRAFT=$W3_DRAFT
 )
 source "$SCRIPT_DIR/tools/gb10-container.sh"
 gb10_container_args
@@ -121,6 +126,11 @@ if [[ "$ACCEPT_DEFAULT" != "2:1.0" ]]; then
   docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--accept-default" \
     || fail "image $IMAGE predates --accept-default; rebuild with docker/build.sh or unset SHARAR_ACCEPT_DEFAULT"
   serve_args+=(--accept-default "$ACCEPT_DEFAULT")
+fi
+for v in W3_DECODE W3_HEAD W3_DRAFT; do [[ "${!v}" == 0 || "${!v}" == 1 ]] || fail "SHARAR_$v must be 0 or 1"; done
+if [[ "$W3_DECODE" == 1 ]]; then
+  docker run --rm --entrypoint python3 "$IMAGE" -c "import sharar.kernels.w3" 2>/dev/null \
+    || fail "image $IMAGE predates the 3-bit decode path; rebuild with docker/build.sh or set SHARAR_W3_DECODE=0"
 fi
 if [[ "$PROPOSER" == dflash2 || "$PROPOSER" == dspark ]] && [[ "$SPEC" != 0 ]]; then
   mkdir -p "$RUNS_DIR"   # promoted checkpoints; /reload_draft swaps them in without a restart

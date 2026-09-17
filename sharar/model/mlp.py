@@ -27,6 +27,9 @@ class Mlp:
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         gate_up = ops.nvfp4_linear(x, self.gate_up)
+        if ops.w3_decode(self.down, x.shape[0]):
+            # 3-bit decode: keep the SiLU product in BF16, no NVFP4 activation quantization
+            return ops.nvfp4_linear(ops.silu_and_mul(gate_up), self.down)
         if self.fused_silu_quant:
             # Compute in FP32, preserve the BF16 product boundary, then pack
             # directly to NVFP4 without a materialized activation tensor.

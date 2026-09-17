@@ -111,6 +111,13 @@ roughly two in three would have shown. A same-model judge may also favor
 the model's own most-likely text. Detecting a 55/45 preference needs about
 400 decisive pairs, which means a few hundred prompts per setting.
 
+## Task accuracy
+
+With the default setting (top-2 within 1.0 logit): GSM8K (300 problems)
+94.7% against 95.0% exact, HumanEval (164) 91.5% against 90.9%, neither
+difference significant (paired McNemar p 1.0 for both):
+[accuracy benchmarks](accuracy-benchmarks.md).
+
 ## Decision
 
 Merge as an opt-in feature. For interactive use, top-2 within 1.0 logit is

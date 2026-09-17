@@ -8,6 +8,7 @@ import torch
 class DraftFp8Linear:
     weight: torch.Tensor
     scale: torch.Tensor
+    w3: object = None  # 3-bit decode copy (sharar.kernels.w3.W3Weight) when SHARAR_W3_DRAFT=1
 
     @classmethod
     def from_bf16(cls, weight):
@@ -24,6 +25,10 @@ class DraftFp8Linear:
     def __call__(self, x):
         from sharar.kernels.draft_fp8 import quant_dynamic
         flat = x.reshape(-1, x.shape[-1]).contiguous()
+        if self.w3 is not None:
+            from sharar.kernels import w3
+            if flat.shape[0] <= w3.MAX_ROWS:
+                return w3.w3_linear(flat, self.w3).reshape(*x.shape[:-1], self.weight.shape[0])
         packed, scale = quant_dynamic(flat)
         out = torch._scaled_mm(packed, self.weight.T, scale_a=scale, scale_b=self.scale,
                                out_dtype=torch.bfloat16)

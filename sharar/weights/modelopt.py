@@ -25,6 +25,7 @@ class Fp8Linear:
     weight_scale: torch.Tensor  # [] float32
     input_scale: torch.Tensor  # [] float32
     alpha: torch.Tensor = None  # [] float32 = input_scale * weight_scale
+    w3: object = None  # optional 3-bit decode copy (sharar.kernels.w3.W3Weight)
 
     def __post_init__(self):
         if self.alpha is None:
@@ -43,6 +44,7 @@ class Nvfp4Linear:
     input_scale_inv: torch.Tensor  # [] float32
     out_features: int
     in_features: int
+    w3: object = None  # optional 3-bit decode copy (sharar.kernels.w3.W3Weight)
 
 
 def _to_fp8(x: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:

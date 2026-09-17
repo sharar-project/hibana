@@ -111,6 +111,9 @@ class ParallelDraftModel:
             for name in list(self.weights):
                 if self.is_fp8_name(name):
                     self.fp8_weights[name] = DraftFp8Linear.from_bf16(self.weights.pop(name))
+            from sharar.kernels import w3
+            if w3.ENABLED and w3.DRAFT:
+                w3.attach_draft(self)
 
     # Keys that define the cached draft context (rings, retained features, cold
     # payloads); a reload must leave them bit-identical.
@@ -169,6 +172,10 @@ class ParallelDraftModel:
                 packed = DraftFp8Linear.from_bf16(weight.to(self.device))  # pack on the device, as the constructor does
                 self.fp8_weights[name].weight.copy_(packed.weight)
                 self.fp8_weights[name].scale.copy_(packed.scale)
+                if self.fp8_weights[name].w3 is not None:  # the 3-bit copy follows the reload, in place for the captured graphs
+                    from sharar.kernels import w3
+                    old, new = self.fp8_weights[name].w3, w3.pack(packed.weight.float() * packed.scale.float(), self.fp8_weights[name].w3.codebook)
+                    old.planes.copy_(new.planes); old.scales.copy_(new.scales); old.row_scale.copy_(new.row_scale)
             elif not name.endswith(self.CONTEXT_SUFFIXES):
                 self.weights[name].copy_(weight)
         torch.cuda.synchronize(self.device) if self.device.type == 'cuda' else None

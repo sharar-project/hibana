@@ -7,11 +7,13 @@ their original gates are in the [archived roadmap](docs/archive/roadmap-2026-09-
 
 One GB10, the pinned Qwen3.8-27B NVFP4 target, 32K context, maximum batch four.
 DFlash2 with 15 proposals and accepted-state reconstruction; BF16 draft by
-default, FP8 as the measured serving profile. The target, its vocabulary head
+default, FP8 as the measured serving profile; relaxed acceptance at top-2 within
+1.0 logit for greedy requests that do not choose; 3-bit decode copies opt-in in
+the launcher until the full-size accuracy run clears a default. The target, its vocabulary head
 and the verifier are fixed. The DFlash2 drafter is trainable on recorded
 traffic and serving follows the promoted checkpoint; the publisher's draft is
-the fallback. See [operations](docs/operations.md), [performance](docs/performance.md)
-and [draft adaptation](docs/draft-adaptation.md).
+the fallback. See [operations](docs/operations.md), [performance](docs/performance.md),
+the [optimization inventory](docs/optimizations.md) and [draft adaptation](docs/draft-adaptation.md).
 
 ## Current state
 
@@ -152,43 +154,31 @@ fewer bytes, more accepted tokens, or a second GPU move the number.
   non-argmax; top-3 within 2.0 logits +21.6% at batch one with 7%; ShareGPT
   +14.8%. Round cost unchanged. Judged on 53 prompts by the target model in
   both orders: no setting distinguishable from exact (top-2/1.0: 13 relaxed
-  wins, 14 exact, 26 ties). Decision: merge as opt-in; top-2 within 1.0
+  wins, 14 exact, 26 ties; GSM8K 94.7% vs 95.0%, HumanEval 91.5% vs 90.9%,
+  paired, not significant). Decision: merge as opt-in; top-2 within 1.0
   logit is the recommended interactive default, exact stays for benchmarks
   and training traces; a few hundred prompts per setting would be needed to
   see a 55/45 preference.
-- **Three-bit decode weights beside NVFP4 prefill weights (about 1.3 to 1.5x).**
-  3.25 bits per weight (FP8 scale per 32) takes the MLPs from 9.6 to 6.9 GB
-  and the FP8 projections to about 2.9 GB, roughly 7 GB off the round. At 16
-  rows the tensor cores have five times the compute the weight stream needs,
-  so in-kernel dequantization is free; prefill keeps the tensor-core-native
-  NVFP4 copy, and unified memory holds both. The hard part is quality: a 27B
-  dense model at 3 bits needs incoherence processing or codebooks (QuIP#,
-  QTIP) or a short QAT pass on the BF16 originals, judged on the family
-  gate's cost interval plus a held-out quality set; the projections will be
-  more sensitive than the MLPs.
-- **Draft capacity (about 1.1 to 1.3x, lossless).** A draft twice as deep
-  costs 10 ms and breaks even at +0.45 tokens per round against about 3
-  available; more target taps is the cheaper variant. Trainer, traces and
-  objective exist; the family set is now 101 families (`family-eval-v3`,
-  the gate's default), which brings the paired interval on tokens per round
-  from about ±7% to about ±3%.
-- **Two Sparks in tensor parallel (about 1.7 to 1.8x, hardware permitting).**
-  Half the weight bytes per GPU for about 3 ms of all-reduce per round over
-  the 200 GbE link; the only near-2x lever.
-- **Device-resident round (about 10% at batch two to four).** Item 3 above.
-- **Profiled (2026-09-15/16), timelines and hardware counters**
-  ([study](docs/archive/studies/gb10-round-profile.md)). Batch one: the GPU
-  is busy 98.4% of the round; every large GEMM moves exactly one weight
-  footprint and streams at 84 to 97% of the 239 GB/s ceiling (NVFP4 MLPs
-  217 to 230, head 232, FP8 projections 200 to 220); the round averages
-  213 GB/s. Remaining kernel slack at batch one is about 5% (the 64x88
-  cuBLAS FP8 class, the latency-bound recurrent verify kernel, attention,
-  idle gaps): a custom 16-row NVFP4 GEMM and a persistent decode kernel
-  are not worth writing. Batch four has about 11%: 64-row FP8 dispatch at
-  74 to 80%, the recurrent verify kernel at 55%, the NVFP4 64-row path,
-  attention at 75%, 4.5 ms of idle. Method: root container with
-  `CAP_SYS_ADMIN` (no driver change needed), eager path, application
-  replay, the `lts__` system-memory counters (`dram__` is empty on GB10).
+- **Three-bit decode weights beside NVFP4 prefill weights: built, tensor-core
+  kernel at the memory ceiling for batch one to four** ([kernel study](docs/archive/studies/w3-cuda.md),
+  [first study](docs/archive/studies/w3-decode.md)). `sharar/kernels/w3.py` +
+  `csrc/w3_gemm.cu`: 3.25 bits per weight (3-bit codes into an eight-level
+  E4M3 codebook, E4M3 scale per 32, FP32 row scale), bit planes stored in
+  mma-fragment order so a lane expands four codes with three rotates, three
+  masked ORs and one PRMT; `mma.sync` m16n8k32 E4M3 against the engine's
+  static-scale FP8 projection inputs or per-row FP8 MLP inputs; split-K with
+  an in-kernel reduction for the narrow shapes. 218 to 243 GB/s at 16 rows
+  (ceiling about 239), 156 to 228 at 64. Opt-in `SHARAR_W3_DECODE=1` for calls
+  of at most 64 rows; `SHARAR_W3_HEAD=1` and `SHARAR_W3_DRAFT=1` extend it to
+  the lm_head and the draft. Round profile: batch one 104.7 to 68.8 ms
+  (x0.66), batch four 139.1 to 106.3 ms (x0.76). First (Triton) version:
+  101-family gate round cost x0.870, tokens per round x1.021 [0.989, 1.057],
+  decode x1.174; 53 judged prompts 12 to 9 with 31 ties; GSM8K 95.7% vs
+  95.0%, HumanEval 91.5% vs 90.9%. Gate, A/B and accuracy for the CUDA
+  kernel with the head and draft: see the kernel study. Next: GPTQ or
+  QuIP#-style calibration from the FP8 release in the local cache before
+  any default; retrain the drafter on 3-bit traces; the 64-row occupancy
+  (attention qkv at 156 GB/s).
 
 ## Engine to-dos
 

@@ -14,7 +14,7 @@ from sharar.kernels.fp8_gemv_cuda import fp8_gemv_cuda
 from sharar.kernels.fp8_quant import quant_fp8
 from sharar.kernels.nvfp4_quant import nvfp4_quantize
 from sharar.weights.modelopt import FP8_MAX, Fp8Linear, Nvfp4Linear
-from sharar.kernels import stable, verify_gemm
+from sharar.kernels import stable, verify_gemm, w3
 
 # cuBLAS FP8 GEMM reaches ~60% of DRAM bandwidth at M<=4 on SM121 (profile in
 # docs/phase2.md); the streaming GEMV is used up to this many rows.
@@ -47,7 +47,14 @@ def fp4_quantize(x: torch.Tensor, input_scale_inv: torch.Tensor) -> tuple[torch.
     )
 
 
+def w3_decode(lin, m: int) -> bool:
+    """True when this call runs the 3-bit decode copy instead of the NVFP4/FP8 weights."""
+    return w3.ENABLED and lin.w3 is not None and m <= w3.MAX_ROWS
+
+
 def nvfp4_linear(x: torch.Tensor, lin: Nvfp4Linear, prequantized: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:
+    if prequantized is None and x.dtype == torch.bfloat16 and w3_decode(lin, x.shape[0]):
+        return w3.w3_linear(x, lin.w3)
     if prequantized is None:
         x_fp4, x_sf = nvfp4_quantize(x, lin.input_scale_inv)
         m = x.shape[0]
@@ -103,6 +110,8 @@ def fp8_linear(x: torch.Tensor | None, lin: Fp8Linear, x_q: torch.Tensor | None 
     else:
         lead = x_q.shape[:-1]
     m = x_q.shape[0]
+    if w3_decode(lin, m):
+        return w3.w3_linear(x_q, lin.w3, x_scale=lin.input_scale).view(*lead, lin.out_features)
     if stable.ENABLED:
         rows = stable.padded_rows(m, (lin.out_features, lin.weight.shape[1]))
         if rows != m:  # keep cuBLASLt on its wide-M algorithm; the padded rows are discarded

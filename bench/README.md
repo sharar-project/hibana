@@ -123,6 +123,8 @@ research baseline, so that continuation drift does not masquerade as a gain.
 | `bench.gb10_agent_http` | Growing simulated conversations and mixed HTTP arrivals |
 | `bench.gb10_audit`, `bench.gb10_matrix` | Generation profiling and real-operand matrix diagnostics |
 | `bench/ngram_branch_screen.py` | CPU-only coverage screen of a prompt-lookup n-gram branch beside DFlash2 on recorded traces |
+| `bench/accuracy_eval.py` | GSM8K exact-match and HumanEval pass@1 against a running server, acceptance pinned per request; `compare` pairs arms with McNemar |
+| `bench/w3_bench.py` | 3-bit decode GEMM: correctness against the dequantized reference and DRAM bandwidth per decode shape at 16, 32 and 64 rows (weights rotated past L2, CUDA-graph timing), split-K sweep |
 
 Use each driver's `--help` and its linked [performance evidence](../docs/performance.md)
 to freeze inputs, output budgets, warmups, precision and geometry before running.

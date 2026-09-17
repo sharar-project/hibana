@@ -100,7 +100,9 @@ class Qwen38:
         if log:
             log(f"  weights loaded in {time.perf_counter() - started:.0f}s, "
                 f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated")
-
+        from sharar.kernels import w3
+        if w3.ENABLED:
+            w3.attach_model(self, log=log)
 
     @torch.inference_mode()
     def forward(self, input_ids: torch.Tensor, ctx: ForwardContext, capture: bool = False) -> ForwardResult:
