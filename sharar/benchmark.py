@@ -28,6 +28,7 @@ def add_arguments(parser):
     parser.add_argument('--inputs', type=Path, help='reuse frozen-inputs.json from another run')
     parser.add_argument('--baseline', type=Path, help='previous result directory to compare TPS and output hashes')
     parser.add_argument('--aiperf', help='AIPerf executable (normally discovered automatically)')
+    parser.add_argument('--accept', default='1:0', help="acceptance pinned on every request: K:M (1:0 exact, 2:1.0 the relaxed default) or 'omit' for servers without the fields")
 
 
 def load_config():
@@ -42,8 +43,10 @@ def load_config():
                 if len(parts) == 1:
                     os.environ.setdefault(key, parts[0])
     if cache := os.environ.get('SHARAR_HF_CACHE'):
+        # The pinned tokenizer lives in the repository's model cache; a shell that already
+        # points HF_HUB_CACHE at another cache must not redirect AIPerf away from it.
         root = Path(cache).expanduser()
-        os.environ.setdefault('HF_HUB_CACHE', str(root / 'hub' if (root / 'hub').is_dir() else root))
+        os.environ['HF_HUB_CACHE'] = str(root / 'hub' if (root / 'hub').is_dir() else root)
 
 
 def results_root():
@@ -110,6 +113,13 @@ def compare(summary, baseline):
 def run(args):
     if args.repeats < 1 or args.warmups < 0 or args.input_tokens < 1 or args.output_tokens < 2:
         raise ValueError('Use repeats >= 1, warmups >= 0, input tokens >= 1 and output tokens >= 2')
+    from sharar import benchmark_aiperf as _aiperf
+    accept = getattr(args, 'accept', '1:0')
+    if accept == 'omit':
+        _aiperf.ACCEPT = None
+    else:
+        k, m = accept.split(':')
+        _aiperf.ACCEPT = (int(k), float(m))
     if args.input_tokens + args.output_tokens > 32768:
         raise ValueError('Input and output token budgets must fit the validated 32768-token profile')
     url = args.url.rstrip('/')
@@ -153,7 +163,7 @@ def run(args):
     stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     output = (args.output or results_root() / 'aiperf' / stamp).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=False)
-    summary = {'schema': 1, 'completed': False, 'protocol': protocol, 'workload_version': VERSION,
+    summary = {'schema': 1, 'completed': False, 'accept': getattr(args, 'accept', '1:0'), 'protocol': protocol, 'workload_version': VERSION,
                'url': url, 'aiperf_executable': str(aiperf), 'aiperf_version_output': version,
                'warmups_per_case': args.warmups, 'repeats_per_case': args.repeats,
                'server_info': info, 'cases': {}}

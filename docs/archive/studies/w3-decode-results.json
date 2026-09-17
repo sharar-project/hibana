@@ -1,0 +1,71 @@
+{
+  "schema": 2,
+  "summary_document": "w3-decode.md",
+  "full_evidence": {
+    "path": "reviews/2026-09-16-w3/results.json",
+    "sha256": "1d20ebe2c1a80c5f7bc905ff64d0fb45d2a8f8d55e73cdf7aee43a28f3fd330f",
+    "bytes": 297577,
+    "files": 9
+  },
+  "summary": {
+    "date": "2026-09-16",
+    "source": "afab63c plus working tree",
+    "format": "3-bit codes, E4M3 scale per 32, FP32 row scale: 3.25 bits/weight; round-to-nearest from served weights",
+    "kernel_16_rows_GBs": {
+      "mlp_gate_up": 187,
+      "mlp_down": 156,
+      "gdn_qkv": 160,
+      "z_oproj": 130,
+      "gdn_out": 140,
+      "attn_qkv": 177
+    },
+    "kernel_64_rows": "compute-bound, 78 to 112 GB/s; path limited to 16 rows",
+    "gate_families_101": {
+      "decode": [
+        1.174,
+        1.137,
+        1.214
+      ],
+      "round_ms": [
+        0.87,
+        0.8699,
+        0.8705
+      ],
+      "tok_per_round": [
+        1.021,
+        0.989,
+        1.057
+      ],
+      "noise_decode": [
+        0.9992,
+        0.9989,
+        0.9995
+      ]
+    },
+    "family_means": {
+      "native": [
+        47.9,
+        5.049,
+        105.4
+      ],
+      "w3": [
+        56.0,
+        5.138,
+        91.7
+      ]
+    },
+    "judged_53": {
+      "w3_wins": 12,
+      "exact_wins": 9,
+      "tie_or_split": 31,
+      "missing": 1,
+      "sign_test_p": 0.66
+    },
+    "quick_rounds_ms": {
+      "bs1_native": 104.7,
+      "bs1_w3": 91.3,
+      "bs4_w3_build_path_off": 136.9
+    },
+    "decision": "merge opt-in; batch one 1.17x; batch four needs a CUDA mma kernel; calibration (GPTQ from the FP8 release) before any default"
+  }
+}
