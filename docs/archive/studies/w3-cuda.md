@@ -160,7 +160,37 @@ are near-identical greedy outputs, so the two-point reading is one
 measurement at p about 0.1; a full-size GSM8K (1,319 items, paired) on
 exact and on the all-on configuration decides the launcher default, and
 calibration (GPTQ or QuIP#-style from the FP8 release) is the path to a
-lossless default. Until then the flags stay opt-in. The batch-one and batch-four replays above ran with per-row
+lossless default.
+
+## Full-size decision run (final numerics: Lloyd-Max codebook, per-group FP8 activations)
+
+Exact baseline on production against a window with the layers, lm_head and
+draft copies on. GSM8K is the full test set.
+
+| | GSM8K (1,319) | HumanEval (164) |
+|---|---:|---:|
+| Exact | 94.0% | 90.9% |
+| 3-bit layers + head + draft | 92.3% (17 gained / 39 lost, p < 0.001) | 86.6% (4 / 11, p 0.12) |
+
+The GSM8K cost is real and resolved: 1.7 points. The HumanEval reading for
+the all-on arm is 4.3 points, mostly attributable to the lm_head copy
+(layers alone measured 90.2%, layers plus head 87.8% in the 300/164 runs),
+so the lm_head stays opt-in. Two-arm gate on the same numerics (101
+families, batch one): round cost x0.651 [0.650, 0.651], tokens per round
+x0.955 [0.929, 0.983], decode x1.468 [1.427, 1.510], mean 47.9 to 70.3
+tokens per second, one early-EOS family in each arm. Coding replays against
+production: batch one exact x1.53 (64.7 TPS), batch one relaxed default
+x1.57 (72.5), batch four exact x1.22 (151.8), batch four relaxed x1.32
+(171.9).
+
+## Decision
+
+Merged (c37af98). The launcher turns the layer and draft copies on by
+default from a05457d (decode about 1.45x at batch one, 1.2 to 1.3x at
+batch four, for 1.7 GSM8K points with round-to-nearest weights); the
+lm_head copy stays opt-in; `SHARAR_W3_DECODE=0` restores the exact path.
+Calibration from the FP8 release is the next step toward removing the
+accuracy cost. The batch-one and batch-four replays above ran with per-row
 scaling; the group-scaled kernel streams at the same bandwidth, so the
 throughput ratios stand and are re-measured with the full-size run.
 

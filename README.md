@@ -70,8 +70,9 @@ tools/benchmark.sh                  # code, 10K input / 1K output, batch one
 tools/benchmark.sh --workload all   # code, design and reasoning
 ```
 
-FP8 DFlash2 at k=15 (`./sharar-ctl serve --fp8`) is the measured serving
-profile. The [optimization inventory](docs/optimizations.md) lists what is on,
+The launcher's defaults are the measured serving profile: FP8 DFlash2 at k=15,
+relaxed acceptance, 3-bit decode copies of the layers and the draft. The
+[optimization inventory](docs/optimizations.md) lists what is on,
 opt-in and parked. [Performance](docs/performance.md) links every measured claim to its
 evidence; [bench/README.md](bench/README.md) covers protocols and tools.
 

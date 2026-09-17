@@ -31,7 +31,7 @@ budget separately. Automatic KV capacity depends on available memory.
 |---|---|---|
 | Proposer | DFlash2 | `SHARAR_PROPOSER` |
 | Draft proposals | 15 (16 target verification rows) | `SHARAR_SPEC` |
-| Draft precision | BF16 | `SHARAR_DRAFT_PRECISION=fp8` |
+| Draft precision | FP8 (the measured serving profile; the 3-bit draft copy applies to it) | `SHARAR_DRAFT_PRECISION=bf16` for the publisher's precision |
 | Accepted state | Reconstruction | `SHARAR_VERIFY_STATE` |
 | Image | `sharar:qwen38-27b` | `SHARAR_IMAGE` |
 | Container / port | `sharar-qwen38` / 30001 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
@@ -41,10 +41,10 @@ budget separately. Automatic KV capacity depends on available memory.
 | Shape-stable prefill numerics | Off | `SHARAR_STABLE_NUMERICS=1` (research baseline for row-count experiments; the [numerics study](archive/studies/target-numerics.md)) |
 | Draft checkpoint | `draft-runs/current` when promoted, else pinned | `SHARAR_DRAFT=/dir` or `SHARAR_DRAFT=pinned` |
 
-The optimized measured profile uses FP8 DFlash2 with 15 proposals:
+The launcher's defaults are the measured profile (FP8 DFlash2 with 15 proposals, relaxed acceptance, 3-bit layer and draft copies); the publisher's BF16 draft is
 
 ```bash
-SHARAR_DRAFT_PRECISION=fp8 ./run-sharar.sh
+SHARAR_DRAFT_PRECISION=bf16 ./run-sharar.sh
 ```
 
 For MTP without the external draft, use

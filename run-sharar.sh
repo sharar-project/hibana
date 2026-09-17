@@ -13,7 +13,7 @@ PORT="${SHARAR_PORT:-30001}"
 SPEC="${SHARAR_SPEC:-15}"   # draft tokens per round (0 = off); 15 is DFlash2's validated depth (16 verify rows)
 PROPOSER="${SHARAR_PROPOSER:-dflash2}"
 VERIFY_STATE="${SHARAR_VERIFY_STATE:-reconstruct}"
-DRAFT_PRECISION="${SHARAR_DRAFT_PRECISION:-bf16}" # fp8 selects the measured optimized parallel draft
+DRAFT_PRECISION="${SHARAR_DRAFT_PRECISION:-fp8}"  # the measured serving profile (2.5 GB draft, and the 3-bit draft copy applies to it); bf16 is the publisher precision
 TRACES_DIR="${SHARAR_TRACES:-}"                    # opt-in request traces for draft adaptation (unset = off)
 DRAFT_DIR="${SHARAR_DRAFT:-}"                      # trained draft checkpoint directory; unset follows draft-runs/current; 'pinned' forces the publisher draft
 TRACES_MAX_MIB="${SHARAR_TRACES_MAX_MIB:-32768}"
@@ -87,6 +87,7 @@ if [[ -n "$TRACES_DIR" || -n "$DRAFT_DIR" ]]; then
 fi
 [[ "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "io.sharar.engine"}}')" == "sharar" ]] || fail "image is not a Sharar image"
 
+onoff() { [[ "$1" == 1 ]] && echo on || echo off; }
 cat <<EOT
 Sharar preflight OK
   GPU: $gpu_name (SM $gpu_cc), driver $gpu_driver
@@ -95,7 +96,7 @@ Sharar preflight OK
   Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (proposer: $PROPOSER, drafts: $SPEC, draft precision: $DRAFT_PRECISION, verify state: $VERIFY_STATE)
   Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}
   Relaxed acceptance default: $ACCEPT_DEFAULT (requests may set accept_top_k/accept_margin; 1 = exact)
-  Three-bit decode copies: layers ${W3_DECODE/1/on}${W3_DECODE/0/off}, lm_head ${W3_HEAD/1/on}${W3_HEAD/0/off}, draft ${W3_DRAFT/1/on}${W3_DRAFT/0/off} (SHARAR_W3_DECODE / SHARAR_W3_HEAD / SHARAR_W3_DRAFT)
+  Three-bit decode copies: layers $(onoff "$W3_DECODE"), lm_head $(onoff "$W3_HEAD"), draft $(onoff "$W3_DRAFT")$([[ "$W3_DRAFT" == 1 && "$DRAFT_PRECISION" != fp8 ]] && echo ' (no effect: the draft copy needs the FP8 draft)') (SHARAR_W3_DECODE / SHARAR_W3_HEAD / SHARAR_W3_DRAFT)
   Draft: ${DRAFT_DIR:-pinned $DRAFT_REVISION}
 EOT
 [[ "${1:-}" == "--check" ]] && exit 0

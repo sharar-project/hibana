@@ -6,8 +6,8 @@ their original gates are in the [archived roadmap](docs/archive/roadmap-2026-09-
 ## Supported baseline
 
 One GB10, the pinned Qwen3.8-27B NVFP4 target, 32K context, maximum batch four.
-DFlash2 with 15 proposals and accepted-state reconstruction; BF16 draft by
-default, FP8 as the measured serving profile; relaxed acceptance at top-2 within
+DFlash2 with 15 proposals and accepted-state reconstruction; FP8 draft by
+default since 2026-09-17 (BF16 is the publisher's precision); relaxed acceptance at top-2 within
 1.0 logit for greedy requests that do not choose; 3-bit decode copies of the
 layers and the draft on by default in the launcher (the lm_head copy opt-in),
 accepted at about two GSM8K points until calibration lands. The target, its vocabulary head
@@ -179,9 +179,11 @@ fewer bytes, more accepted tokens, or a second GPU move the number.
   default). Quality: round-to-nearest 3-bit is not free. Measured at
   concurrency four (the 2026-09-16 quality runs bypassed the then 16-row
   path and are void), the Lloyd-Max codebook with per-group FP8 activations
-  is GSM8K 93.0% and HumanEval 90.2% against 95.0% and 90.9%; the uniform
-  grid loses five points on both; per-row activation scales lose more. A
-  full-size GSM8K decides whether the launcher default flips. Next: GPTQ
+  is GSM8K 92.3% against 94.0% exact on the full test set (1,319, paired,
+  p < 0.001) with HumanEval within noise for the layers; the lm_head copy
+  costs HumanEval and stays opt-in; the uniform grid loses five points on
+  both; per-row activation scales lose more. The launcher default flipped
+  to layers and draft on (a05457d). Next: GPTQ
   or QuIP#-style calibration from the FP8 release in the local cache (the
   path to a lossless default); retrain the drafter on 3-bit traces; the
   64-row occupancy (attention qkv at 156 GB/s).

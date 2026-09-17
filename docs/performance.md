@@ -8,8 +8,8 @@ source identities are linked through each report's compact manifest.
 
 Use **FP8 DFlash2, k=15, accepted-state reconstruction** as the optimized
 measured baseline. Fifteen proposals give sixteen target verification rows per
-request. The launcher still defaults to BF16 draft precision; select FP8
-explicitly as described in [operations](operations.md).
+request. Since 2026-09-17 the launcher defaults to FP8 draft precision (with
+the 3-bit layer and draft copies); see [operations](operations.md).
 
 | Proposals verified | Rows per request | BS4 pooled family decode TPS |
 |---|---:|---:|
