@@ -133,7 +133,11 @@ tokens is 3.4 to 3.9%, as on native.
 
 `bench/accuracy_eval.py`, exact acceptance pinned, GSM8K 300 items and
 HumanEval 164, McNemar-paired against the exact arm of 2026-09-16 (95.0%
-and 90.9%; the first 3-bit build measured 95.7% and 91.5%).
+and 90.9%). The first build's 95.7% and 91.5% are void: the harness keeps
+four requests in flight, that kernel served 16-row calls only, and at four
+requests the verify calls have 64 rows, so it measured the native path
+(its wall time matched exact's). This build serves 64 rows, so these are
+the first real accuracy numbers for 3-bit decode weights.
 
 | Arm (this build) | GSM8K | HumanEval | Notes |
 |---|---:|---:|---|
@@ -143,17 +147,20 @@ and 90.9%; the first 3-bit build measured 95.7% and 91.5%).
 | Layers, uniform codebook, per-row FP8 | 90.7% (3/16, p 0.00) | 82.3% (4/18, p 0.00) | per-row scaling fails badly with the coarser grid |
 | Layers, Lloyd codebook, per-group FP8 | 93.0% (2/8, p 0.11) | 90.2% (5/6, p 1.00) | shipped: `quant_groups`, one E4M3 scale per row and 32 channels |
 
-The uniform-codebook run exposed the mechanism: a single FP8 scale per row
-of the MLP input squeezes every channel next to an outlier, and the coarser
-grid made that visible. Per-32-group activation scales (applied in the
-kernel with the weight group scale, no bandwidth cost) restore HumanEval to
-exact and cut the activation error on outlier rows from 2.0% to 0.3% in the
-bench. GSM8K stays 1.3 to 2.0 points under exact across the runs of this
-build; those runs are near-identical greedy outputs, so they are one
-measurement at p about 0.1 to 0.2, neither confirmed nor cleared on 300
-items. A full-size GSM8K (1,319 items, paired) on exact and on the all-on
-configuration decides the launcher default; until it does the flags stay
-opt-in. The batch-one and batch-four replays above ran with per-row
+| Layers, uniform codebook, per-group FP8 | 90.3% (2/16, p 0.00) | 86.0% (7/15, p 0.13) | the codebook, not the activations, is the larger term |
+
+Two findings. Per-32-group activation scales (applied in the kernel with
+the weight group scale, no bandwidth cost) restore HumanEval to exact for
+the Lloyd codebook and cut the activation error on outlier rows from 2.0%
+to 0.3% in the bench; per-row scales are not acceptable. And
+round-to-nearest 3-bit weights cost accuracy on their own: about five
+GSM8K and HumanEval points with the uniform grid, about two GSM8K points
+(HumanEval within noise) with the Lloyd-Max levels. The runs of this build
+are near-identical greedy outputs, so the two-point reading is one
+measurement at p about 0.1; a full-size GSM8K (1,319 items, paired) on
+exact and on the all-on configuration decides the launcher default, and
+calibration (GPTQ or QuIP#-style from the FP8 release) is the path to a
+lossless default. Until then the flags stay opt-in. The batch-one and batch-four replays above ran with per-row
 scaling; the group-scaled kernel streams at the same bandwidth, so the
 throughput ratios stand and are re-measured with the full-size run.
 

@@ -171,14 +171,19 @@ fewer bytes, more accepted tokens, or a second GPU move the number.
   (ceiling about 239), 156 to 228 at 64. Opt-in `SHARAR_W3_DECODE=1` for calls
   of at most 64 rows; `SHARAR_W3_HEAD=1` and `SHARAR_W3_DRAFT=1` extend it to
   the lm_head and the draft. Round profile: batch one 104.7 to 68.8 ms
-  (x0.66), batch four 139.1 to 106.3 ms (x0.76). First (Triton) version:
-  101-family gate round cost x0.870, tokens per round x1.021 [0.989, 1.057],
-  decode x1.174; 53 judged prompts 12 to 9 with 31 ties; GSM8K 95.7% vs
-  95.0%, HumanEval 91.5% vs 90.9%. Gate, A/B and accuracy for the CUDA
-  kernel with the head and draft: see the kernel study. Next: GPTQ or
-  QuIP#-style calibration from the FP8 release in the local cache before
-  any default; retrain the drafter on 3-bit traces; the 64-row occupancy
-  (attention qkv at 156 GB/s).
+  (x0.66), batch four 139.1 to 106.3 ms (x0.76). 101-family gate with the
+  layers, head and draft: round cost x0.649, tokens per round x0.965
+  [0.937, 0.994], decode x1.488 [1.444, 1.532]; coding replays x1.58 batch
+  one and x1.27 batch four exact (x1.63 and x1.40 with the relaxed
+  default). Quality: round-to-nearest 3-bit is not free. Measured at
+  concurrency four (the 2026-09-16 quality runs bypassed the then 16-row
+  path and are void), the Lloyd-Max codebook with per-group FP8 activations
+  is GSM8K 93.0% and HumanEval 90.2% against 95.0% and 90.9%; the uniform
+  grid loses five points on both; per-row activation scales lose more. A
+  full-size GSM8K decides whether the launcher default flips. Next: GPTQ
+  or QuIP#-style calibration from the FP8 release in the local cache (the
+  path to a lossless default); retrain the drafter on 3-bit traces; the
+  64-row occupancy (attention qkv at 156 GB/s).
 
 ## Engine to-dos
 

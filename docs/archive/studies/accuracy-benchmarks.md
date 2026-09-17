@@ -1,5 +1,7 @@
 # Task accuracy: exact acceptance, the relaxed default and 3-bit decode weights
 
+> **Correction (2026-09-17).** The 3-bit arm below is not a measurement of 3-bit decode: both benchmarks keep four requests in flight, the kernel of 2026-09-16 served calls of at most 16 rows, and at four requests the verify calls have 64, so nearly every round ran the native NVFP4/FP8 path (its wall time, 454 s against 473 s exact, shows no 1.17x). The [CUDA kernel study](w3-cuda.md) measures 3-bit decode properly at concurrency four: GSM8K 93.0% and HumanEval 90.2% against 95.0% and 90.9% on 300 and 164 items. The relaxed-acceptance rows are unaffected.
+>
 > Dated evidence for the source and protocol recorded below. See the [current documentation](../../README.md) for supported behavior and priorities. Historical commands may require the recorded revision.
 
 2026-09-16, main `afab63c` plus the working tree. The judged comparisons in
@@ -38,8 +40,8 @@ gate's 1.17x.
 
 ## Reading
 
-Neither the relaxed default nor round-to-nearest 3-bit decode weights
-change GSM8K or HumanEval accuracy measurably. Together with the judged
+The relaxed default does not change GSM8K or HumanEval accuracy
+measurably; the 3-bit row is void (see the correction at the top). Together with the judged
 comparisons this is enough to keep the relaxed default on and to ship the
 3-bit path as an opt-in; it is not enough to call 3-bit lossless, and a
 larger or harder evaluation (full GSM8K, a coding benchmark with hidden

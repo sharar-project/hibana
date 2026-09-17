@@ -21,9 +21,9 @@ gates. Historical commands may require the recorded source revision.
 | Judge arithmetic changes on the family gate's round-cost interval; acceptance is unresolvable below about 7% on 18 families; bit-identical outputs are not a gate | [Family gate](studies/family-gate.md) |
 | The 101-family set resolves acceptance to about ±3%; 1 to 2% claims still need hundreds of real traces | [Family set v3](studies/family-set-v3.md) |
 | At batch one the GPU is 98% busy and every large GEMM streams at 84 to 97% of the ceiling; kernel headroom is about 5% at batch one, 11% at batch four | [Round profile](studies/gb10-round-profile.md) |
-| 3.25-bit decode copies give 1.17x at batch one with unchanged acceptance and no detectable quality loss; batch four needs a tensor-core CUDA kernel | [3-bit decode](studies/w3-decode.md) |
-| A tensor-core CUDA kernel streams the 3-bit copies at the memory ceiling for 16 to 64 rows: round cost x0.66 at batch one and x0.76 at batch four with the head and draft included | [3-bit CUDA kernel](studies/w3-cuda.md) |
-| GSM8K and HumanEval accuracy is unchanged by the relaxed default and by 3-bit decode weights (paired, n=300 and 164) | [Accuracy](studies/accuracy-benchmarks.md) |
+| 3.25-bit decode copies give 1.17x at batch one with unchanged acceptance; batch four needs a tensor-core CUDA kernel (its quality runs were void: four requests in flight bypassed the 16-row path, corrected 2026-09-17) | [3-bit decode](studies/w3-decode.md) |
+| A tensor-core CUDA kernel streams the 3-bit copies at the memory ceiling for 16 to 64 rows: decode x1.49 at batch one, round cost x0.76 at batch four; per-group activation scales are required; round-to-nearest 3-bit costs about two GSM8K points with the Lloyd-Max codebook and five with the uniform grid | [3-bit CUDA kernel](studies/w3-cuda.md) |
+| GSM8K and HumanEval accuracy is unchanged by the relaxed default (paired, n=300 and 164); the 3-bit row there is void, see the CUDA kernel study | [Accuracy](studies/accuracy-benchmarks.md) |
 | Relaxed acceptance is an opt-in speed mode (+10% at batch one for 4% non-argmax tokens), never a default without a judged quality comparison | [Relaxed acceptance](studies/relaxed-acceptance.md) |
 
 The exact pre-cleanup tree is tagged `archive/pre-cleanup-2026-09-11`.
