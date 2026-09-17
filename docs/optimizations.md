@@ -67,5 +67,9 @@ the relaxed default 44.2 (1.44x), first 3-bit build 47.4 (1.59x), both 52.3
 (decode x1.488 against the first build's x1.174, same 10K/1K batch-one
 families, TTFT 3.96 s unchanged) projects the current tree at about 57
 end-to-end (1.9x) with every 3-bit copy on and about 63 (2.1x) with the
-relaxed default as well; decode-only about 74 (2.2x) and 84 (2.4x). A
-rerun of the comparison replaces these projections.
+relaxed default as well; decode-only about 74 (2.2x) and 84 (2.4x). Measured
+on the code workload against the restarted production (2026-09-17, layers
+and draft copies, FP8 draft): exact acceptance pinned 43.8 end-to-end and
+53.0 decode (SGLang 27.6 and 31.1: 1.59x and 1.70x); the served relaxed
+default 53.1 and 67.2 (1.93x and 2.16x). A rerun of the full three-workload
+comparison replaces the projections.

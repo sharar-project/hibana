@@ -62,7 +62,11 @@ controlled numbers behind it in the gate studies. The CUDA 3-bit kernel with
 the head and draft (2026-09-17, decode x1.488 on the gate against the first
 build's x1.174) projects to about 1.9x end-to-end exact and 2.1x with the
 relaxed default; the [inventory](optimizations.md#combined-effect-on-the-standard-cell)
-shows the arithmetic, a rerun replaces it.
+shows the arithmetic, a rerun replaces it. Measured on the code workload
+after the 2026-09-17 restart (layers and draft copies, FP8 draft): 43.8
+end-to-end and 53.0 decode with exact acceptance pinned, 53.1 and 67.2 with
+the served relaxed default, against SGLang's 27.6 and 31.1 (1.93x end-to-end
+as served).
 
 ## Rejected candidates and remaining limits
 
