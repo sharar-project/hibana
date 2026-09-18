@@ -17,6 +17,7 @@ from sharar.engine.request import Request
 from sharar.memory.kv_pool import KV_DTYPE
 from sharar.engine.contracts import Proposer, StepInputs, VerifiedFeatures
 from sharar.engine.rejection import Proposal, distribution, verify_rows
+from sharar.engine.accept_graphs import AcceptGraphs, ENABLED as DEVICE_ACCEPT
 
 
 @dataclass
@@ -63,6 +64,9 @@ class SpecDecoder:
         self.conv_windows_all = torch.zeros((len(layer_ids), n, self.steps, *conv_shape), dtype=torch.bfloat16, device=self.device)
         self.conv_windows = {lid: self.conv_windows_all[j] for j, lid in enumerate(layer_ids)}
         self.verify_graphs = None
+        # Device-resident acceptance for all-greedy graph batches (engine/accept_graphs.py);
+        # SHARAR_DEVICE_ACCEPT=0 keeps the host path for every round.
+        self.device_accept = DEVICE_ACCEPT
         # Set by benchmarks: synchronize around the draft/verify/accept phases
         # to attribute time. Off in serving so the host can queue graphs ahead.
         self.timing = False
@@ -89,6 +93,10 @@ class SpecDecoder:
             self.width_graphs[depth] = graphs
         self.verify_graphs = self.width_graphs[self.k]
         self.proposer.capture_graphs(log=log)
+        if AcceptGraphs.supported(self):  # captured whenever possible so the path can be switched at run time
+            for graphs in self.width_graphs.values():
+                graphs.accept = AcceptGraphs(self, graphs)
+                graphs.accept.capture(log=log)
 
     @property
     def bytes(self) -> int:
@@ -204,6 +212,13 @@ class SpecDecoder:
             graphs = self.width_graphs.get(k, self.verify_graphs)
             norm_rows, z_flat, ctx, layers, logits = graphs.run(batch.tokens, batch.positions, batch.pages,
                                                                batch.slots, batch.kv_pages, sampled=batch.sampled)
+            accept = getattr(graphs, "accept", None)
+            if accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests):
+                if self.timing:
+                    torch.cuda.synchronize()
+                accept.round(batch, batch.proposal.tokens, self._target_topk(batch.requests, logits, b_sz, s_len),
+                             batch.started, batch.prepared)
+                return
             norm = norm_rows.view(b_sz, s_len, -1).clone() if self.proposer.requirements.features.final_norm else None
             layers = {lid: value.view(b_sz, s_len, -1).clone() for lid, value in layers.items()} if layers else None
             z = z_flat.view(b_sz, s_len, -1) if batch.sampled else z_flat.view(b_sz, s_len).clone()

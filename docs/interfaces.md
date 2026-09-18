@@ -253,6 +253,43 @@ to the HTTP event loop. Proposer checkpoint-cache binding and cold-tier codecs
 are optional capabilities discovered once during executor setup; adapters
 without them retain the base proposer contract.
 
+## Device-resident acceptance
+
+For an all-greedy batch on the graph path, `engine/accept_graphs.py` replaces
+the host's `SpecDecoder._accept` with one captured graph per batch bucket
+(`SHARAR_DEVICE_ACCEPT=0` restores the host path for every round). The graph
+reads the verify graph's static outputs, decides acceptance with the same rule
+(`engine/accept.py`: exact or relaxed match, cumulative prefix, budget clamp,
+first stop token), runs the accepted-state reconstruction and the convolution
+commit for exactly those counts, and calls the proposer's `feedback_device` to
+project and scatter the accepted rows. The host reads one packed result
+(proposals, argmax rows, accepted count, emitted count, relaxed flags) through
+a pinned buffer and an event, and only publishes.
+
+Ownership does not move. `StateManager.authorize_reconstruction` performs the
+batch checks (unique private slots, reservations of the verified width,
+window shapes) before the replay; `publish_reconstructed` transfers pages and
+advances `committed_len` after the counts are known, and a failure between
+them poisons the batch exactly as the host commit does. A proposer opts in by
+providing three methods: `accepted_prepare(requests)` validates its private
+prefixes before the replay and returns each request's start position and ring
+slot; `feedback_device(features, starts, ring_slots, counts, steps)` is the
+captured feedback over the bucket's `[b*steps, H]` verify features, writing
+rows past a request's count (and rows of padded requests) to the dummy ring
+slot 0; `accepted_publish(requests, emitted)` advances its state afterwards.
+Padded rows of a bucket carry budget 0 and target slot 0, so they emit nothing
+and touch only the dummy recurrent slot. Requests with more than
+`accept.MAX_STOPS` stop token ids, sampled batches, proposers without the
+three methods, and proposers that need final-normalized features stay on the
+host path.
+
+The projection over the whole bucket rounds bf16 differently from the host
+path's projection of exactly the accepted rows, so the drafter's rings agree
+to bf16 precision and its proposals can drift after a few rounds; the
+target's outputs are the same, and the committed recurrent state is bitwise
+the host's for identical round boundaries (`tests/gpu/test_device_accept.py`).
+Acceptance is judged by the family gate like any other arithmetic change.
+
 ## Recurrent retention
 
 `snapshots` retains every FP32 verify state. `reconstruct` retains compact

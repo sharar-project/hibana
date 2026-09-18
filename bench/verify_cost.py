@@ -40,6 +40,9 @@ def phases(ex, records):
                (ex.state, 'commit_reconstructed', 'commit_including_reconstruction'),
                (spec.replay, 'run', 'reconstruction'),
                (proposer, 'accepted_batch', 'draft_feedback')]
+    accept = getattr(spec.verify_graphs, 'accept', None)
+    if accept is not None:  # device-resident acceptance: replay, one wait, publish (engine/accept_graphs.py)
+        methods.append((accept, 'round', 'device_accept_round'))
     originals = []
     for obj, method, label in methods:
         original = getattr(obj, method)

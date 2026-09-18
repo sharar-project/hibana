@@ -332,6 +332,54 @@ class ParallelProposer:
                 self._save(req, state.end)
             state.pending = None if req.finished else tokens[-1]
 
+    # ---- device-resident acceptance (engine/accept_graphs.py) ----
+    def accepted_prepare(self, requests):
+        """Validate the batch before a captured feedback pass whose counts the device decides.
+
+        Returns (starts, ring slots) per request: the committed prefix length
+        each request's emitted rows continue from and its private draft ring.
+        """
+        if not 1 <= len(requests) <= self.context.max_batch:
+            raise ValueError('invalid accepted batch')
+        states = [req.proposer_state for req in requests]
+        if (any(not isinstance(s, DraftState) or not s.valid or s.end != req.committed_len or s.end < 0
+                for s, req in zip(states, requests))
+                or len({s.slot for s in states}) != len(states)
+                or any(any(req.committed_len < p < req.committed_len + self.k + 1 for p in req.checkpoints) for req in requests)):
+            raise ValueError('accepted rows do not follow private draft prefixes')
+        return [req.committed_len for req in requests], [s.slot for s in states]
+
+    def feedback_device(self, features, starts, ring_slots, counts, steps):
+        """Project every verify row and scatter the first counts[i] of each request into its ring.
+
+        Static shapes for graph capture: features {lid: [b*steps, H]} verify
+        outputs, starts/ring_slots/counts [b] int64 on the device. Rows past a
+        request's count (and rows of padded requests, ring slot 0) are written
+        to the dummy ring slot 0, whose contents only padded draft rows read.
+        """
+        batch = starts.shape[0]
+        hidden = self.model.project_features({lid: features[lid][:batch * steps] for lid in self.model.features})
+        offsets = torch.arange(steps, device=starts.device)
+        positions = starts[:, None] + offsets[None, :]
+        valid = offsets[None, :] < counts[:, None]
+        slot = torch.where(valid, ring_slots[:, None], torch.zeros_like(ring_slots)[:, None])
+        ring = positions % self.window
+        rows = (slot * self.window + ring).reshape(-1)
+        pages = (slot * self.pitch + ring).reshape(-1)
+        self.features.view(-1, self.features.shape[-1])[rows] = hidden
+        self.model.context_kv(hidden, positions.reshape(-1), self.caches, pages)
+
+    def accepted_publish(self, requests, emitted):
+        """Advance the private draft prefixes after the device feedback pass landed."""
+        for req, tokens in zip(requests, emitted):
+            state = req.proposer_state
+            if not isinstance(state, DraftState) or not 1 <= len(tokens) <= self.k + 1 or state.end + len(tokens) != req.committed_len:
+                raise ValueError('accepted rows do not follow private draft prefixes')
+            state.end = req.committed_len
+            if state.end in req.checkpoints:
+                self._save(req, state.end)
+            state.pending = None if req.finished else tokens[-1]
+
     def _accepted(self, req, emitted, features, row):
         count = len(emitted)
         start = req.committed_len - count

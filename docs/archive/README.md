@@ -27,6 +27,7 @@ gates. Historical commands may require the recorded source revision.
 | 3.25-bit decode copies give 1.17x at batch one with unchanged acceptance; batch four needs a tensor-core CUDA kernel (its quality runs were void: four requests in flight bypassed the 16-row path, corrected 2026-09-17) | [3-bit decode](studies/w3-decode.md) |
 | A tensor-core CUDA kernel streams the 3-bit copies at the memory ceiling for 16 to 64 rows: decode x1.49 at batch one, round cost x0.76 at batch four; per-group activation scales are required; round-to-nearest 3-bit costs about two GSM8K points with the Lloyd-Max codebook and five with the uniform grid | [3-bit CUDA kernel](studies/w3-cuda.md) |
 | GSM8K and HumanEval accuracy is unchanged by the relaxed default (paired, n=300 and 164); the 3-bit row there is void, see the CUDA kernel study | [Accuracy](studies/accuracy-benchmarks.md) |
+| Device-resident acceptance is exact and cuts engine-loop round cost 6 to 12% at batch four, but serving at concurrency four is bounded by the engine thread's per-step host work under the HTTP thread; opt-in until rounds complete lazily | [Device accept](studies/device-accept.md) |
 | Relaxed acceptance is an opt-in speed mode (+10% at batch one for 4% non-argmax tokens), never a default without a judged quality comparison | [Relaxed acceptance](studies/relaxed-acceptance.md) |
 
 The exact pre-cleanup tree is tagged `archive/pre-cleanup-2026-09-11`.
@@ -103,6 +104,7 @@ main deliberately refuses its now-identical capacity comparison.
 - [Task accuracy: exact, relaxed default and 3-bit decode](studies/accuracy-benchmarks.md)
 - [Sharar versus SGLang on the 10K/1K cell, 2026-09-16](studies/sglang-comparison-2026-09-16.md)
 - [Relaxed speculative acceptance: opt-in speed mode, batch one and batch four](studies/relaxed-acceptance.md)
+- [Device-resident acceptance: the round is faster, the server is not yet](studies/device-accept.md)
 - [Runtime cleanup and clean-image promotion review](studies/promotion.md)
 - [Request cache policy for agent sessions](studies/request-cache-policy.md)
 - [Ten-second restarts, a sync-free sampled path, and the tier's park cost](studies/restart-and-syncs.md)

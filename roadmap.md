@@ -97,16 +97,21 @@ and hardware; kernel work at batch one is capped near 10%.
    `bench/family_inputs.py` so acceptance claims of a few percent become
    testable. Done 2026-09-16: `family-eval-v3`, 101 families, ±3.0% measured
    ([study](docs/archive/studies/family-set-v3.md)).
-3. **Make the accept path device-resident for batch two to four.** After the
-   single `.tolist()` in `SpecDecoder._accept` the round is eager: the
-   reconstruction launch, per-request conv copies, feature feedback, trace
-   top-k, two FlashInfer plans and the stop scan. At batch four short context
-   that is about 16 ms of a 136 ms round; at batch one about 1%. Steps:
-   device-side acceptance and stop detection with a `max_new_tokens` clamp;
-   one captured graph per batch size for accept, reconstruction and feedback;
-   tokens read back through an event and a pinned buffer off the critical
-   path; keep the plan inputs exact. Gate: batch-four HTTP throughput and
-   unchanged output IDs at fixed shape.
+3. **Half done: the accept path is device-resident, the server does not
+   gain yet** ([study](docs/archive/studies/device-accept.md)). One captured
+   graph per batch bucket decides acceptance (exact or relaxed, budget, stop
+   tokens), reconstructs the state, commits the convolution windows and
+   feeds the draft rings before the single host wait; ownership stays with
+   StateManager and the proposer. Opt-in `SHARAR_DEVICE_ACCEPT=1`, exact
+   (19 GPU tests, bitwise state while round boundaries agree). Engine-loop
+   round cost x0.944 at batch four and 10K context, x0.883 at 1K, x0.983 at
+   batch one; HTTP replay +2% at concurrency one, unchanged at concurrency
+   four, where the engine thread's mean step is 117 ms on both paths
+   because everything it does between rounds under the HTTP thread
+   (publication, stats, reservations, plans, uploads) is now the exposed
+   critical path. Next: complete rounds lazily (return after the replay,
+   wait at the next step) and take an `nsys` timeline of the serving process
+   at concurrency four; then the family gate before a default flip.
 4. **Train on real traffic, then train while serving.** Record a few hundred
    requests of actual use and repeat the held-out and served measurements;
    the repository proxy overfits after one session. Then let the trainer run

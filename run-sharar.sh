@@ -103,6 +103,7 @@ Sharar preflight OK
   Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (proposer: $PROPOSER, drafts: $SPEC, draft precision: $DRAFT_PRECISION, verify state: $VERIFY_STATE)
   Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}
   Cold tier: ${SHARAR_COLD_TIER_GIB:-automatic (spare memory up to 24 GiB)}${SHARAR_COLD_TIER_GIB:+ GiB (SHARAR_COLD_TIER_GIB)}
+  Device-resident acceptance: ${SHARAR_DEVICE_ACCEPT:-image default} (SHARAR_DEVICE_ACCEPT)
   Relaxed acceptance default: $ACCEPT_DEFAULT (requests may set accept_top_k/accept_margin; 1 = exact)
   Three-bit decode copies: layers $(onoff "$W3_DECODE"), lm_head $(onoff "$W3_HEAD"), draft $(onoff "$W3_DRAFT")$([[ "$W3_DRAFT" == 1 && "$DRAFT_PRECISION" != fp8 ]] && echo ' (no effect: the draft copy needs the FP8 draft)') (SHARAR_W3_DECODE / SHARAR_W3_HEAD / SHARAR_W3_DRAFT)
   Draft: ${DRAFT_DIR:-pinned $DRAFT_REVISION}
@@ -155,6 +156,10 @@ if [[ -n "$DRAFT_DIR" ]]; then
   [[ "$PROPOSER" == dflash2 || "$PROPOSER" == dspark ]] && [[ "$SPEC" != 0 ]] || fail "SHARAR_DRAFT requires an enabled parallel draft"
   args+=(--volume "$DRAFT_DIR:/draft:ro")
   serve_args+=(--draft /draft)
+fi
+if [[ -n "${SHARAR_DEVICE_ACCEPT:-}" ]]; then
+  [[ "$SHARAR_DEVICE_ACCEPT" == 0 || "$SHARAR_DEVICE_ACCEPT" == 1 ]] || fail "SHARAR_DEVICE_ACCEPT must be 0 or 1"
+  args+=(--env "SHARAR_DEVICE_ACCEPT=$SHARAR_DEVICE_ACCEPT")   # device-resident acceptance graphs (engine/accept_graphs.py)
 fi
 if [[ -n "${SHARAR_COLD_TIER_GIB:-}" ]]; then
   [[ "$SHARAR_COLD_TIER_GIB" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "SHARAR_COLD_TIER_GIB must be a non-negative number of GiB"

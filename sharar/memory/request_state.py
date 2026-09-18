@@ -188,15 +188,10 @@ class StateManager:
             self.recurrent.conv_all[:, req.slot].copy_(conv)
         self._publish(req, count, pages)
 
-    def commit_reconstructed(self, requests, counts, replay, conv_windows, *, verified_steps: int) -> None:
-        """Validate the whole batch before allowing reconstruction into private slots.
-
-        Prepare retained page tensors before mutation. A failed in-place commit
-        poisons every affected request; rollback can free pages but cannot undo
-        recurrent writes. Publication and proposer feedback follow all writes.
-        """
+    def _validate_reconstruction(self, requests, replay, conv_windows, verified_steps: int, counts=None) -> list[int]:
+        """The batch-wide checks shared by the host and device commit paths; returns the slots."""
         batch = len(requests)
-        if (not 1 <= batch <= replay.batch or len(counts) != batch
+        if (not 1 <= batch <= replay.batch or (counts is not None and len(counts) != batch)
                 or type(verified_steps) is not int or not 1 <= verified_steps <= replay.steps):
             raise ValueError("invalid reconstruction batch")
         slots = [r.slot for r in requests]
@@ -207,14 +202,27 @@ class StateManager:
                 or conv_windows.shape[1] < batch or conv_windows.shape[3:] != conv.shape[2:]
                 or conv_windows.dtype != conv.dtype or conv_windows.device != conv.device):
             raise ValueError("invalid reconstruction convolution windows")
-        for req, count in zip(requests, counts):
+        for row, req in enumerate(requests):
             pending = req.reservation
             if (req.finished or req.released or req.pages is None or len(req.pages) != req.committed_len
-                    or pending is None or type(count) is not int
-                    or not 1 <= count <= min(len(pending.ids), verified_steps, conv_windows.shape[2])):
+                    or pending is None or len(pending.ids) < verified_steps or conv_windows.shape[2] < verified_steps):
                 raise ValueError("reconstruction commit outside reservation")
-        pages = [r.reservation.full_pages if count == len(r.reservation.ids) and r.reservation.full_pages is not None
-                 else torch.cat([r.pages, r.reservation.pages[:count]]) for r, count in zip(requests, counts)]
+            if counts is not None:
+                count = counts[row]
+                if type(count) is not int or not 1 <= count <= min(len(pending.ids), verified_steps, conv_windows.shape[2]):
+                    raise ValueError("reconstruction commit outside reservation")
+        return slots
+
+    def commit_reconstructed(self, requests, counts, replay, conv_windows, *, verified_steps: int) -> None:
+        """Validate the whole batch before allowing reconstruction into private slots.
+
+        Prepare retained page tensors before mutation. A failed in-place commit
+        poisons every affected request; rollback can free pages but cannot undo
+        recurrent writes. Publication and proposer feedback follow all writes.
+        """
+        slots = self._validate_reconstruction(requests, replay, conv_windows, verified_steps, counts)
+        conv = self.recurrent.conv_all
+        pages = self._retained_pages(requests, counts)
         metadata = torch.tensor([slots, counts], dtype=torch.int32, pin_memory=conv.device.type == "cuda")
         metadata = metadata.to(conv.device, non_blocking=True)
         try:
@@ -224,13 +232,40 @@ class StateManager:
             for req, count, retained in zip(requests, counts, pages):
                 self._publish(req, count, retained)
         except BaseException as exc:
-            for req in requests:
-                req.cacheable = False
-            if isinstance(exc, MemoryError):
-                # The scheduler retries pool-pressure MemoryError. A partially
-                # written recurrent slot requires failure cleanup instead.
-                raise RuntimeError("reconstruction failed after state mutation") from exc
-            raise
+            self.poison(requests, exc)
+
+    def authorize_reconstruction(self, requests, replay, conv_windows, *, verified_steps: int) -> list[int]:
+        """Validate a batch whose counts the device will decide (`engine/accept_graphs.py`).
+
+        Every count the device can produce lies in [0, verified_steps]; the
+        reservation covers verified_steps pages and the windows verified_steps
+        rows, so the only host checks left are ownership and uniqueness, made
+        before any in-place write. Returns the private slots in batch order.
+        """
+        return self._validate_reconstruction(requests, replay, conv_windows, verified_steps)
+
+    def publish_reconstructed(self, requests, counts) -> None:
+        """Publish counts the device decided after `authorize_reconstruction` and the writes landed."""
+        for req, count in zip(requests, counts):
+            pending = req.reservation
+            if pending is None or type(count) is not int or not 1 <= count <= len(pending.ids):
+                raise ValueError("reconstruction commit outside reservation")
+        for req, count, retained in zip(requests, counts, self._retained_pages(requests, counts)):
+            self._publish(req, count, retained)
+
+    def poison(self, requests, exc: BaseException):
+        """A failure after in-place recurrent writes: nothing in the batch may be cached or retried."""
+        for req in requests:
+            req.cacheable = False
+        if isinstance(exc, MemoryError):
+            # The scheduler retries pool-pressure MemoryError. A partially
+            # written recurrent slot requires failure cleanup instead.
+            raise RuntimeError("reconstruction failed after state mutation") from exc
+        raise exc
+
+    def _retained_pages(self, requests, counts) -> list[torch.Tensor]:
+        return [r.reservation.full_pages if count == len(r.reservation.ids) and r.reservation.full_pages is not None
+                else torch.cat([r.pages, r.reservation.pages[:count]]) for r, count in zip(requests, counts)]
 
     def _publish(self, req, count, pages) -> None:
         self.kv.free_ids(req.reservation.ids[count:])
