@@ -12,6 +12,9 @@ gates. Historical commands may require the recorded source revision.
 | Retain exact BS1 QKV/MLP bundle; other numerical candidates unqualified | [BS1](studies/gb10-bs1-speedups.md) |
 | Keep k=15 and existing BS4 scheduling defaults | [BS4](studies/gb10-bs4-engine.md) |
 | Retain checkpoint-owned features; reject short-resume scheduler | [Retention](studies/gb10-agent-retention.md) |
+| Stage mapped calibrated W3 tensors before CUDA loading; reject broad kernel substitutions and extra decode between prefill forwards | [W3 runtime profile](studies/w3-runtime-profile.md) |
+| Retain narrow 64-row W3 QKV tiling for a 0.66% paired decode gain; HTTP gain unresolved; key compiled W3 modules by source contents | [QKV qualification](studies/w3-qkv-tiling.md) |
+| Keep streaming W3 MLP weight loads; bypass-L1 and normal caching regress the six isolated shapes; distinguish cold-cache counters from serving cost | [MLP hardware counters](studies/w3-mlp-profile.md) |
 | Mixed forwarding failed latency/quality protection | [Mixed forward](studies/mixed-forward.md) |
 | Two-path/trees did not qualify a serving policy | [Two path](studies/two-path-study.md), [tree coverage](studies/tree-coverage-study.md) |
 | Narrow NVFP4 tiles failed their integration screen | [NVFP4](studies/nvfp4-cost.md) |
@@ -43,6 +46,7 @@ main deliberately refuses its now-identical capacity comparison.
 
 ## Study index
 
+- [W3 MLP hardware counters and cache-policy screen](studies/w3-mlp-profile.md)
 - [Batched accepted-feature feedback](studies/accepted-batch.md)
 - [Long-session cache work on GB10](studies/agent-context.md)
 - [Agent workloads and sustained generation](studies/agent-workloads.md)
@@ -94,6 +98,8 @@ main deliberately refuses its now-identical capacity comparison.
 - [One decode round on the GB10, profiled](studies/gb10-round-profile.md)
 - [Three-bit decode weights: kernel, speed and quality](studies/w3-decode.md)
 - [Three-bit decode weights: the tensor-core kernel, head and draft](studies/w3-cuda.md)
+- [Calibrated W3 runtime profile and memory staging](studies/w3-runtime-profile.md)
+- [Calibrated W3 QKV row tiling](studies/w3-qkv-tiling.md)
 - [Task accuracy: exact, relaxed default and 3-bit decode](studies/accuracy-benchmarks.md)
 - [Sharar versus SGLang on the 10K/1K cell, 2026-09-16](studies/sglang-comparison-2026-09-16.md)
 - [Relaxed speculative acceptance: opt-in speed mode, batch one and batch four](studies/relaxed-acceptance.md)

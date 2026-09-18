@@ -1,5 +1,8 @@
 # Calibrated three-bit decode weights
 
+For an introduction to bits, codebooks, scales and what is specific to this
+implementation, start with [3-bit quantization explained](3bit-quantization-explained.md).
+
 `bench.w3_calibrate` fits the target's optional W3 copies using activation
 covariances and the block-128 FP8 release. It uses the
 [GPTQ column-error update](https://arxiv.org/abs/2210.17323) with the existing
@@ -38,6 +41,12 @@ revision, full projection coverage, dimensions, dtypes and hashes before graph
 capture. `/get_server_info` exposes `w3_target_identity`, the manifest's SHA256;
 ordinary nearest rounding is identified separately. Unsetting the checkpoint
 restores ordinary W3 packing.
+
+The loader stages each mapped tensor in ordinary CPU storage before copying
+it to CUDA. On GB10 this reduced warm-cache target construction from 63.2 to
+12.0 seconds while preserving all 304 matrices byte for byte. It changes
+loading, not decode arithmetic or throughput; see the
+[runtime profile](archive/studies/w3-runtime-profile.md).
 
 A fitted artifact is a candidate until it passes the family gate and paired
 GSM8K/HumanEval evaluation against the intended serving profile. Collect fresh

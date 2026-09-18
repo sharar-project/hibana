@@ -1,8 +1,39 @@
 # Current performance evidence
 
-Updated 2026-09-11. Numbers below describe controlled GB10 source benchmarks,
+Updated 2026-09-17. Numbers below describe controlled GB10 source benchmarks,
 not a newly deployed production image. Raw evidence, immutable inputs and
 source identities are linked through each report's compact manifest.
+
+## Current calibrated W3 profile, 2026-09-17
+
+With the selected FP8 drafter and exact acceptance, unprofiled decode rounds
+take 70.68, 82.19 and 107.79 ms at batch sizes one, two and four on the frozen
+10K-context profile. W3 GEMM accounts for 58–71% of round time; GPU idle gaps
+account for 2.8–5.5%. These are round costs, not tokens/s across workloads.
+
+Staging mapped calibrated tensors in CPU storage before CUDA loading reduces
+warm-cache target construction from 63.23 to 11.99 seconds, with all 304
+matrices byte-identical. This excludes drafter loading and graph capture and
+does not improve steady decode. Broad kernel substitutions and extra decode
+between prefill forwards did not qualify for serving. See the
+[profile, controls and negative results](archive/studies/w3-runtime-profile.md).
+
+The subsequent narrow 64-row QKV specialization improves cached 10K
+batch-four family decode by **0.66% [0.61%, 0.71%]** across two paired process
+blocks covering all 101 families, with identical outputs and round work.
+Batch-one/two controls show no material change. HTTP comparisons do not
+establish a general serving-throughput gain; their cache pressure and run
+variation are recorded in the [qualification study](archive/studies/w3-qkv-tiling.md).
+The specialization and source-keyed W3 build cache are local source changes
+awaiting deployment.
+
+The [MLP hardware-counter follow-up](archive/studies/w3-mlp-profile.md)
+profiles the large gate/up and down matrices at 16/32/64 rows. Cold-cache
+captures show memory-load waits and 255-register kernels with local spills
+at 64 rows. The profiler does not expose direct DRAM counters on this
+device. Two cache-policy substitutions were 43–59% slower in unprofiled
+graph-replay screens and were rejected; no additional MLP serving gain is
+claimed.
 
 ## DFlash2 configuration
 

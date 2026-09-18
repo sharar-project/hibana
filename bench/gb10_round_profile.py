@@ -1,4 +1,4 @@
-"""Decode-round profiling target: prefill one or four 10K prompts, then a window of verify rounds.
+"""Decode-round profiling target: prefill 1-4 frozen prompts, then profile verification.
 
 Run under a profiler inside the runtime image, as root with CAP_SYS_ADMIN when
 hardware counters are wanted (the host driver restricts them to administrators):
@@ -12,12 +12,17 @@ hardware counters are wanted (the host driver restricts them to administrators):
 The profiled window is bracketed by torch.cuda.profiler.start()/stop(): it
 begins after the prompts are prefilled and the first `--skip` rounds have run,
 and covers exactly `--rounds` decode rounds of the whole batch. Everything else
-(load, capture, warmup, prefill) is outside the window. Greedy, exact
-acceptance, FP8 DFlash2 at k=15, cold prefix cache, the frozen family prompts.
+(load, capture, warmup, prefill) is outside the window. An unprofiled baseline
+precedes capture; CUDA-event phase diagnostics follow it. Phase spans overlap
+and host intervals include waits for earlier GPU work, so they must not be
+summed or interpreted as removable CPU overhead. Greedy, exact acceptance,
+FP8 DFlash2 at k=15, cold prefix cache, the frozen family prompts. Use --draft
+and SHARAR_W3_CHECKPOINT to profile the artifacts actually served.
 """
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import json
 import time
 from pathlib import Path
@@ -39,6 +44,10 @@ def main() -> int:
     ap.add_argument("--skip", type=int, default=8, help="rounds run before the window opens (steady state)")
     ap.add_argument("--rounds", type=int, default=20, help="rounds inside the profiled window")
     ap.add_argument("--draft-precision", choices=("bf16", "fp8"), default="fp8")
+    ap.add_argument("--draft", help="trained draft directory; omitted uses the pinned publisher checkpoint")
+    ap.add_argument("--context", type=int, default=10000, help="prefix length from each frozen prompt")
+    ap.add_argument("--unprofiled-rounds", type=int, default=32, help="baseline window before profiler capture")
+    ap.add_argument("--phase-rounds", type=int, default=8, help="event-instrumented rounds after profiler capture")
     ap.add_argument("--depth", type=int, default=15)
     ap.add_argument("--num-pages", type=int, default=60000)
     ap.add_argument("--num-slots", type=int, default=24)
@@ -48,10 +57,13 @@ def main() -> int:
 
     frozen = json.loads(args.inputs.read_text())
     wanted = [t.strip() for t in args.tasks.split(",")][:args.batch]
-    prompts = [next(t["input_ids"] for t in frozen["tasks"] if t["id"] == w) for w in wanted]
+    prompts = [next(t["input_ids"] for t in frozen["tasks"] if t["id"] == w)[:args.context] for w in wanted]
+    if len(prompts) != args.batch or args.context < 1 or any(len(ids) != args.context for ids in prompts):
+        ap.error("each batch row needs a frozen prompt covering --context")
     model = Qwen38(config.snapshot_dir(), log=print)
     ex = Executor(model, num_pages=args.num_pages, num_slots=args.num_slots, max_batch=4, log=print)
-    ex.enable_spec(args.depth, proposer="dflash2", state_strategy="reconstruct", draft_precision=args.draft_precision, log=print)
+    ex.enable_spec(args.depth, proposer="dflash2", state_strategy="reconstruct", draft_precision=args.draft_precision,
+                   draft_dir=args.draft, log=print)
     if args.eager:
         ex.use_graphs = False
         print("  eager mode: graphs not captured", flush=True)
@@ -67,6 +79,14 @@ def main() -> int:
     for _ in range(args.skip):
         ex.decode_step(reqs)
     torch.cuda.synchronize()
+    unprofiled = []
+    t0 = time.perf_counter()
+    for _ in range(args.unprofiled_rounds):
+        before = [len(r.output_ids) for r in reqs]
+        ex.decode_step(reqs)
+        unprofiled.append([len(r.output_ids) - b for r, b in zip(reqs, before)])
+    torch.cuda.synchronize()
+    unprofiled_wall = time.perf_counter() - t0
     timings = []
     torch.cuda.profiler.start()
     t0 = time.perf_counter()
@@ -77,12 +97,23 @@ def main() -> int:
     torch.cuda.synchronize()
     wall = time.perf_counter() - t0
     torch.cuda.profiler.stop()
+    from bench.verify_cost import phases, summarize_phases
+    records = defaultdict(list)
+    with phases(ex, records):
+        for _ in range(args.phase_rounds):
+            ex.decode_step(reqs)
+    torch.cuda.synchronize()
+    output_ids = [r.output_ids[:] for r in reqs]
     for req in reqs:
         req.cacheable = False
         ex.release(req)
     summary = {"batch": args.batch, "tasks": wanted, "skip": args.skip, "rounds": args.rounds, "window_seconds": wall,
                "round_ms": 1000 * wall / args.rounds, "emitted_per_round": timings,
-               "tokens_per_round": sum(map(sum, timings)) / args.rounds, "draft_precision": args.draft_precision}
+               "tokens_per_round": sum(map(sum, timings)) / args.rounds, "draft_precision": args.draft_precision,
+               "draft": args.draft, "w3_target_identity": getattr(model, "w3_identity", None),
+               "context": args.context, "unprofiled_rounds": args.unprofiled_rounds,
+               "unprofiled_seconds": unprofiled_wall, "unprofiled_emitted": unprofiled,
+               "phases": summarize_phases(records), "output_ids": output_ids}
     print(json.dumps(summary), flush=True)
     if args.summary:
         args.summary.write_text(json.dumps(summary, indent=1) + "\n")

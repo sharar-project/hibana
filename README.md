@@ -72,6 +72,8 @@ tools/benchmark.sh --workload all   # code, design and reasoning
 
 The launcher's defaults are the measured serving profile: FP8 DFlash2 at k=15,
 relaxed acceptance, 3-bit decode copies of the layers and the draft. The
+[3-bit quantization guide](docs/3bit-quantization-explained.md) explains the
+format, calibration and prior work from the basics. The
 [optimization inventory](docs/optimizations.md) lists what is on,
 opt-in and parked. [Performance](docs/performance.md) links every measured claim to its
 evidence; [bench/README.md](bench/README.md) covers protocols and tools.

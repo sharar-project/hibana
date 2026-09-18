@@ -1,10 +1,34 @@
 """3-bit fragment-order packing round-trips through the reference dequantizer (CPU)."""
+import os
 import struct
 
 import pytest
 import torch
 
 from sharar.kernels import w3
+
+
+def test_kernel_cache_tracks_source_content_across_image_rollbacks(tmp_path, monkeypatch):
+    from torch.utils import cpp_extension
+
+    source = tmp_path / 'w3_gemm.cu'
+    monkeypatch.setattr(w3, '_SRC', source)
+    monkeypatch.setenv('TORCH_CUDA_ARCH_LIST', '12.1a')
+    modules = {}
+    monkeypatch.setattr(cpp_extension, 'load', lambda *, name, **kwargs: modules.setdefault(name, object()))
+    loaded = []
+    try:
+        for content in (b'original', b'modified', b'original'):
+            source.write_bytes(content)
+            os.utime(source, (1000, 1000))  # identical size and old timestamp
+            w3._module.cache_clear()  # a fresh image/process loading its source
+            loaded.append(w3._module())
+            assert w3._module() is loaded[-1]
+        assert loaded[0] is not loaded[1]
+        assert loaded[2] is loaded[0]
+        assert len(modules) == 2
+    finally:
+        w3._module.cache_clear()
 
 
 @pytest.mark.parametrize("codebook", ["uniform", "lloyd"])

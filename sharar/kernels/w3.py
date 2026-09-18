@@ -28,6 +28,7 @@ and load through `SHARAR_W3_CHECKPOINT` before graph capture.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import struct
 from dataclasses import dataclass
@@ -200,7 +201,10 @@ def _module():
     from torch.utils.cpp_extension import load
 
     os.environ.setdefault("TORCH_CUDA_ARCH_LIST", os.environ.get("SHARAR_CUDA_ARCH", "12.1a"))
-    return load(name="sharar_w3_gemm", sources=[str(_SRC)], extra_cuda_cflags=["-O3", "--use_fast_math"], verbose=False)
+    # Images can restore older source timestamps into a shared build cache.
+    # Separate source revisions so Ninja cannot reuse another revision's object.
+    revision = hashlib.sha256(_SRC.read_bytes()).hexdigest()[:16]
+    return load(name=f"sharar_w3_gemm_{revision}", sources=[str(_SRC)], extra_cuda_cflags=["-O3", "--use_fast_math"], verbose=False)
 
 
 _WORKSPACE: dict[torch.device, tuple[torch.Tensor, torch.Tensor]] = {}

@@ -6,6 +6,12 @@ Use an already running server built from the current source, with exclusive
 GPU use and the host memory guard. The benchmark client runs on the host;
 it flushes the server's prefix cache but does not start or stop services.
 
+For experiments that mount changed CUDA sources into a container, set a
+separate `TORCH_EXTENSIONS_DIR` from the serving container. A shared Ninja
+build directory can retain an experimental binary when an older image's
+source timestamps precede the compiled object. Verify the loaded extension
+when restoring a service; its image identity alone is insufficient.
+
 ```bash
 tools/benchmark.sh
 # Equivalent installed entry point:
@@ -121,6 +127,8 @@ research baseline, so that continuation drift does not masquerade as a gain.
 | `bench.gb10_bs4_http` | Finite and replenished BS4 HTTP workloads |
 | `bench.gb10_agent_retention` | Cold controls and interleaved native cache resumes |
 | `bench.gb10_agent_http` | Growing simulated conversations and mixed HTTP arrivals |
+| `bench.gb10_runtime_ab` | Current calibrated target and selected drafter over cold, warm and mixed HTTP workloads at concurrency 1, 2 and 4; optional candidate hook |
+| `bench.gb10_round_profile` | Separate unprofiled, Nsight and CUDA-event phase windows on frozen prompts; `--draft` selects the served drafter |
 | `bench.gb10_audit`, `bench.gb10_matrix` | Generation profiling and real-operand matrix diagnostics |
 | `bench/ngram_branch_screen.py` | CPU-only coverage screen of a prompt-lookup n-gram branch beside DFlash2 on recorded traces |
 | `bench/accuracy_eval.py` | GSM8K exact-match and HumanEval pass@1 against a running server, acceptance pinned per request; `compare` pairs arms with McNemar |

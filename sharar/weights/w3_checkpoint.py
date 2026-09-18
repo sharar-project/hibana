@@ -75,4 +75,7 @@ class CalibratedWeights:
                                                      for key, (shape, dtype) in expected.items()):
             raise ValueError(f"invalid calibrated W3 tensors for {name}")
         levels = _codebook(entry["codebook"])
-        return W3Weight(*(tensors[key].to(linear.weight.device) for key in expected), n, k, levels, lut_of(levels))
+        # On GB10, copying a file-backed mmap directly to CUDA is much slower
+        # than staging it in ordinary CPU storage, as the draft loader does.
+        # Only one projection is staged at a time.
+        return W3Weight(*(tensors[key].clone().to(linear.weight.device) for key in expected), n, k, levels, lut_of(levels))

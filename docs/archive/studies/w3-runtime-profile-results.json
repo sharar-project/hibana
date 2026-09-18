@@ -1,0 +1,82 @@
+{
+  "schema": 2,
+  "summary_document": "w3-runtime-profile.md",
+  "full_evidence": {
+    "path": "reviews/2026-09-17-w3-runtime-profile/results.json",
+    "sha256": "f3dcb1d6dd0938702e738dfe09f4c9f3c8bae684cd8c4522b8ac66d464eddcdf",
+    "bytes": 39827,
+    "files": 108
+  },
+  "summary": {
+    "base": "ddd82af1027060758cf776ff1b62f3b99f2d2936",
+    "profile": {
+      "1": {
+        "unprofiled_round_ms": 70.68299857201055,
+        "gpu_idle_percent": 2.801244702676324,
+        "w3_ms": 50.6692713
+      },
+      "2": {
+        "unprofiled_round_ms": 82.1871429507155,
+        "gpu_idle_percent": 4.5241834451046845,
+        "w3_ms": 52.69559983333333
+      },
+      "4": {
+        "unprofiled_round_ms": 107.7923568955157,
+        "gpu_idle_percent": 5.493462252314339,
+        "w3_ms": 63.21842653333333
+      }
+    },
+    "loading": {
+      "control_seconds": 63.22739330120385,
+      "staged_seconds": 11.99420755635947,
+      "speed_ratio": 5.271494011097043,
+      "time_reduction_fraction": 0.8103004579166938,
+      "bit_identical_all_304_matrices": true,
+      "cache": "warm filesystem/JIT; model construction only, no draft/graph capture"
+    },
+    "integrated_loading": {
+      "completed": true,
+      "load_seconds": 14.26407874096185,
+      "matrix_count": 304,
+      "tensor_sha256": "76770b8599ac1cb599748eaff8c4dc28ce654c5c45f743ee502d286443fe5e9b",
+      "w3_target_identity": "9585ba8c682de346e526aeed0e0c9ba5ec34b341d7e8bfb382da0b81f60991b8"
+    },
+    "validation": {
+      "cpu": {
+        "passed": 539,
+        "skipped": 8,
+        "log": "cpu-tests.txt"
+      },
+      "gpu": {
+        "distinct_passed": 281,
+        "initial_passed": 277,
+        "initial_failed": 4,
+        "initial_failure": "frozen reference fixture missing at /proof/parity/reference/http/canary_exact.json",
+        "rerun_passed": 4,
+        "logs": [
+          "final-targeted-screen.log",
+          "canary-recheck.log"
+        ],
+        "test_files": [
+          "test_w3_calibration.py",
+          "test_lifecycle.py",
+          "test_parallel_feedback.py",
+          "test_verify_gemm_lifecycle.py",
+          "test_draft_lifecycle.py",
+          "test_accepted_state.py",
+          "test_accepted_batch.py"
+        ]
+      },
+      "distribution": {
+        "passed": true,
+        "log": "distribution-check.txt"
+      },
+      "integrated_loader": {
+        "all_304_matrix_hashes_match": true,
+        "report": "integrated-load.json"
+      },
+      "source_status": "local, not activated or pushed"
+    },
+    "decision": "Retain mapped-tensor CPU staging for calibrated loading. No serving kernel/scheduler change or qualified steady decode gain. Source changes not activated or pushed."
+  }
+}

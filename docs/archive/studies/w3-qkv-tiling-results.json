@@ -1,0 +1,657 @@
+{
+  "schema": 2,
+  "summary_document": "w3-qkv-tiling.md",
+  "full_evidence": {
+    "path": "reviews/2026-09-17-w3-qkv-gate/results.json",
+    "sha256": "a6721ed7f2210a6703026dd3406ff8316ca04aa9e1f6e2ae08df5bf8ce05355c",
+    "bytes": 850073,
+    "files": 153
+  },
+  "summary": {
+    "base": "ddd82af1027060758cf776ff1b62f3b99f2d2936",
+    "decision": {
+      "keep": true,
+      "implementation": "64-row static/per-row-scale W3 QKV at N14336 K5120 split1 uses two 32-row tiles; all other dispatch remains on the existing path.",
+      "primary_result": "Batch-four cached-prefix family decode ratio 1.006579 [1.006106, 1.007142], with positive intervals in both process blocks and identical outputs/round work.",
+      "protections": "No material batch-one/two cost regression; descriptive CPU-load cases positive at batch four; all numerical, state, GPU, CPU, packaging and HTTP correctness checks pass.",
+      "http_limit": "No general HTTP gain is established. Cold concurrency-four mean is -1.05% with differing continuations/batch work and repeat variation. Warm 96-slot mean is -0.54%, with 2.22% candidate repeat spread. Neither is a resolved, repeatable material serving regression; retain all samples.",
+      "additional_fix": "W3 module name includes the CUDA source digest to avoid stale shared build objects after timestamp rollback. CUDA source unchanged from primary gate; final 59 GPU checks, 144 exact comparisons, source-keyed module identity, and one paired smoke pass.",
+      "deployment": "Changes remain local and uncommitted/unpushed; original service image and loaded CUDA binary restored, memory guard active.",
+      "next": "Profile the large grouped W3 MLP kernels with hardware counters before selecting another kernel implementation."
+    },
+    "family_gate": {
+      "1": {
+        "decode_speed_ratio": {
+          "groups": 6,
+          "ratio": 1.000935811182221,
+          "ci95": [
+            1.000043695705693,
+            1.0016747288257832
+          ],
+          "min": 0.9990324288258512,
+          "max": 1.0023191773902969
+        },
+        "round_time_ratio": {
+          "groups": 6,
+          "ratio": 0.999059756962708,
+          "ci95": [
+            0.9983246740460382,
+            0.999945276898339
+          ],
+          "min": 0.997681630813187,
+          "max": 1.0009511314069215
+        },
+        "native_repeat_speed_ratio": {
+          "groups": 6,
+          "ratio": 1.0032690820242804,
+          "ci95": [
+            1.000896816931559,
+            1.005423246885516
+          ],
+          "min": 0.998605819614605,
+          "max": 1.006936389647071
+        },
+        "candidate_repeat_speed_ratio": {
+          "groups": 6,
+          "ratio": 1.0008680454368555,
+          "ci95": [
+            0.9990139954365842,
+            1.0026684796234893
+          ],
+          "min": 0.9969788892287139,
+          "max": 1.004322038426991
+        },
+        "blocks": {
+          "0": {
+            "groups": 6,
+            "ratio": 1.0005890065191105,
+            "ci95": [
+              0.9994757088633238,
+              1.0015811533559855
+            ],
+            "min": 0.9981026873884061,
+            "max": 1.0022784356893113
+          },
+          "1": {
+            "groups": 6,
+            "ratio": 1.0012827360480059,
+            "ci95": [
+              1.0003959300336107,
+              1.0021703281760619
+            ],
+            "min": 0.9999630363256277,
+            "max": 1.0029080516996274
+          }
+        }
+      },
+      "2": {
+        "decode_speed_ratio": {
+          "groups": 3,
+          "ratio": 1.0013754602654004,
+          "ci95": [
+            0.9992745444365504,
+            1.0027344744039657
+          ],
+          "min": 0.9992745444365504,
+          "max": 1.0027344744039657
+        },
+        "round_time_ratio": {
+          "groups": 3,
+          "ratio": 0.9986264715218389,
+          "ci95": [
+            0.9972741176309682,
+            1.000724388096901
+          ],
+          "min": 0.9972741176309682,
+          "max": 1.000724388096901
+        },
+        "native_repeat_speed_ratio": {
+          "groups": 3,
+          "ratio": 0.9998237042600376,
+          "ci95": [
+            0.996822181676789,
+            1.0018119728089698
+          ],
+          "min": 0.996822181676789,
+          "max": 1.0018119728089698
+        },
+        "candidate_repeat_speed_ratio": {
+          "groups": 3,
+          "ratio": 0.9996007122202264,
+          "ci95": [
+            0.9981640138932003,
+            1.0006001515599336
+          ],
+          "min": 0.9981640138932003,
+          "max": 1.0006001515599336
+        },
+        "blocks": {
+          "0": {
+            "groups": 3,
+            "ratio": 1.0021495065635848,
+            "ci95": [
+              1.0008973886786927,
+              1.0028721207647597
+            ],
+            "min": 1.0008973886786927,
+            "max": 1.0028721207647597
+          },
+          "1": {
+            "groups": 3,
+            "ratio": 1.0006020118297785,
+            "ci95": [
+              0.9976543314565776,
+              1.002788757765319
+            ],
+            "min": 0.9976543314565776,
+            "max": 1.002788757765319
+          }
+        }
+      },
+      "4": {
+        "decode_speed_ratio": {
+          "groups": 26,
+          "ratio": 1.0065790255616847,
+          "ci95": [
+            1.0061059587703671,
+            1.0071415099510161
+          ],
+          "min": 1.0042510596089662,
+          "max": 1.0116031102058924
+        },
+        "round_time_ratio": {
+          "groups": 26,
+          "ratio": 0.9934617209142639,
+          "ci95": [
+            0.9929033919702699,
+            0.9939305354627749
+          ],
+          "min": 0.9884834072453345,
+          "max": 0.9957670799242716
+        },
+        "native_repeat_speed_ratio": {
+          "groups": 26,
+          "ratio": 1.00033380007922,
+          "ci95": [
+            0.9993188763126897,
+            1.001215526997394
+          ],
+          "min": 0.9920832451508944,
+          "max": 1.0041049091003142
+        },
+        "candidate_repeat_speed_ratio": {
+          "groups": 26,
+          "ratio": 1.0007374702099376,
+          "ci95": [
+            1.0002039178846904,
+            1.0012773452070334
+          ],
+          "min": 0.9986017694016075,
+          "max": 1.003799811640913
+        },
+        "blocks": {
+          "0": {
+            "groups": 26,
+            "ratio": 1.0074268538024385,
+            "ci95": [
+              1.0065712078049378,
+              1.0085151092239302
+            ],
+            "min": 1.0039155937568773,
+            "max": 1.0179330678215075
+          },
+          "1": {
+            "groups": 26,
+            "ratio": 1.0057319108344955,
+            "ci95": [
+              1.005100080230576,
+              1.0063509568370297
+            ],
+            "min": 1.00189706726098,
+            "max": 1.0092868302763325
+          }
+        }
+      }
+    },
+    "http": {
+      "cold-c1": {
+        "native_tps": [
+          31.259690665346827,
+          31.190098797765117
+        ],
+        "candidate_tps": [
+          31.279284537131865,
+          31.302129455704147
+        ],
+        "mean_speed_ratio": 1.0021076857240938,
+        "native_repeat_ratio": 0.9977737506001985,
+        "candidate_repeat_ratio": 1.0007303529767493,
+        "same_outputs_all_arms": true,
+        "native_zero_cached_prefix_requests": [
+          1,
+          1
+        ],
+        "candidate_zero_cached_prefix_requests": [
+          1,
+          1
+        ],
+        "native_prefill_tokens": [
+          10000,
+          10000
+        ],
+        "candidate_prefill_tokens": [
+          10000,
+          10000
+        ],
+        "native_max_ttft_s": 3.9903390677645802,
+        "candidate_max_ttft_s": 3.9792476324364543,
+        "native_max_stream_gap_s": 0.07381197903305292,
+        "candidate_max_stream_gap_s": 0.07360889203846455
+      },
+      "warm-c1": {
+        "native_tps": [
+          137.07281776586527,
+          136.57367330127138
+        ],
+        "candidate_tps": [
+          136.72148859304258,
+          137.06332794948347
+        ],
+        "mean_speed_ratio": 1.0005054896733738,
+        "native_repeat_ratio": 0.9963585452409209,
+        "candidate_repeat_ratio": 1.0025002606390454,
+        "same_outputs_all_arms": true,
+        "native_zero_cached_prefix_requests": [
+          0,
+          0
+        ],
+        "candidate_zero_cached_prefix_requests": [
+          0,
+          0
+        ],
+        "native_prefill_tokens": [
+          387,
+          387
+        ],
+        "candidate_prefill_tokens": [
+          387,
+          387
+        ],
+        "native_max_ttft_s": 0.16047774255275726,
+        "candidate_max_ttft_s": 0.16189799923449755,
+        "native_max_stream_gap_s": 0.0740008745342493,
+        "candidate_max_stream_gap_s": 0.0739202918484807
+      },
+      "cold-c2": {
+        "native_tps": [
+          36.39566390322873,
+          37.070561379345804
+        ],
+        "candidate_tps": [
+          36.428009908803986,
+          36.479725109843315
+        ],
+        "mean_speed_ratio": 0.9923979997368982,
+        "native_repeat_ratio": 1.0185433484030277,
+        "candidate_repeat_ratio": 1.0014196548526477,
+        "same_outputs_all_arms": false,
+        "native_zero_cached_prefix_requests": [
+          2,
+          2
+        ],
+        "candidate_zero_cached_prefix_requests": [
+          2,
+          2
+        ],
+        "native_prefill_tokens": [
+          20000,
+          20000
+        ],
+        "candidate_prefill_tokens": [
+          20000,
+          20000
+        ],
+        "native_max_ttft_s": 8.607377989217639,
+        "candidate_max_ttft_s": 8.597826613113284,
+        "native_max_stream_gap_s": 0.10352261364459991,
+        "candidate_max_stream_gap_s": 0.10250929929316044
+      },
+      "warm-c2": {
+        "native_tps": [
+          223.39834336085707,
+          230.32820895531543
+        ],
+        "candidate_tps": [
+          237.00564258618562,
+          223.44959187815158
+        ],
+        "mean_speed_ratio": 1.0148298179020299,
+        "native_repeat_ratio": 1.0310202192648514,
+        "candidate_repeat_ratio": 0.9428028355776193,
+        "same_outputs_all_arms": true,
+        "native_zero_cached_prefix_requests": [
+          0,
+          0
+        ],
+        "candidate_zero_cached_prefix_requests": [
+          0,
+          0
+        ],
+        "native_prefill_tokens": [
+          774,
+          774
+        ],
+        "candidate_prefill_tokens": [
+          774,
+          774
+        ],
+        "native_max_ttft_s": 0.3076582597568631,
+        "candidate_max_ttft_s": 0.3005537735298276,
+        "native_max_stream_gap_s": 0.22391785960644484,
+        "candidate_max_stream_gap_s": 0.22508427128195763
+      },
+      "mixed-c2": {
+        "native_tps": [
+          64.51529742043502,
+          64.51758828668248
+        ],
+        "candidate_tps": [
+          64.3215454346894,
+          64.36959722264186
+        ],
+        "mean_speed_ratio": 0.9973515042470497,
+        "native_repeat_ratio": 1.0000355088845445,
+        "candidate_repeat_ratio": 1.0007470558679479,
+        "same_outputs_all_arms": true,
+        "native_zero_cached_prefix_requests": [
+          1,
+          1
+        ],
+        "candidate_zero_cached_prefix_requests": [
+          1,
+          1
+        ],
+        "native_prefill_tokens": [
+          10129,
+          10129
+        ],
+        "candidate_prefill_tokens": [
+          10129,
+          10129
+        ],
+        "native_max_ttft_s": 4.21548483800143,
+        "candidate_max_ttft_s": 4.219531483948231,
+        "native_max_stream_gap_s": 1.7231184551492333,
+        "candidate_max_stream_gap_s": 1.7247222121804953
+      },
+      "cold-c4": {
+        "native_tps": [
+          42.544730348562815,
+          41.94144500785599
+        ],
+        "candidate_tps": [
+          42.32377987306194,
+          41.27908757068478
+        ],
+        "mean_speed_ratio": 0.9895449414185727,
+        "native_repeat_ratio": 0.9858199749824668,
+        "candidate_repeat_ratio": 0.9753166587315591,
+        "same_outputs_all_arms": false,
+        "native_zero_cached_prefix_requests": [
+          4,
+          4
+        ],
+        "candidate_zero_cached_prefix_requests": [
+          4,
+          4
+        ],
+        "native_prefill_tokens": [
+          40000,
+          40000
+        ],
+        "candidate_prefill_tokens": [
+          40000,
+          40000
+        ],
+        "native_max_ttft_s": 17.428390504792333,
+        "candidate_max_ttft_s": 17.437774743884802,
+        "native_max_stream_gap_s": 3.5875692358240485,
+        "candidate_max_stream_gap_s": 3.5930793015286326
+      },
+      "warm-c4": {
+        "native_tps": [
+          116.1959980898083,
+          172.84611988129214
+        ],
+        "candidate_tps": [
+          337.79148327164904,
+          117.25327184086467
+        ],
+        "mean_speed_ratio": 1.5743198891104544,
+        "native_repeat_ratio": 1.487539353530048,
+        "candidate_repeat_ratio": 0.3471173124473674,
+        "same_outputs_all_arms": true,
+        "native_zero_cached_prefix_requests": [
+          2,
+          1
+        ],
+        "candidate_zero_cached_prefix_requests": [
+          0,
+          2
+        ],
+        "native_prefill_tokens": [
+          22316,
+          12060
+        ],
+        "candidate_prefill_tokens": [
+          1548,
+          22316
+        ],
+        "native_max_ttft_s": 4.94018679857254,
+        "candidate_max_ttft_s": 4.818634266965091,
+        "native_max_stream_gap_s": 1.816001453436911,
+        "candidate_max_stream_gap_s": 1.8178795333951712
+      },
+      "mixed-c4": {
+        "native_tps": [
+          111.13722147235227,
+          111.21496142086542
+        ],
+        "candidate_tps": [
+          111.38573728072478,
+          111.22652344529027
+        ],
+        "mean_speed_ratio": 1.0011696661998695,
+        "native_repeat_ratio": 1.0006994951599766,
+        "candidate_repeat_ratio": 0.9985706084161095,
+        "same_outputs_all_arms": true,
+        "native_zero_cached_prefix_requests": [
+          1,
+          1
+        ],
+        "candidate_zero_cached_prefix_requests": [
+          1,
+          1
+        ],
+        "native_prefill_tokens": [
+          10387,
+          10387
+        ],
+        "candidate_prefill_tokens": [
+          10387,
+          10387
+        ],
+        "native_max_ttft_s": 4.431459689512849,
+        "candidate_max_ttft_s": 4.4357408015057445,
+        "native_max_stream_gap_s": 1.757559822872281,
+        "candidate_max_stream_gap_s": 1.7583557609468699
+      }
+    },
+    "http_at_96_state_slots": {
+      "warm-c4": {
+        "native_tps": [
+          339.0031106232643,
+          337.9461903163003
+        ],
+        "candidate_tps": [
+          332.9425032413,
+          340.3390599810594
+        ],
+        "mean_speed_ratio": 0.9945819609945462,
+        "native_repeat_ratio": 0.9968822695903267,
+        "candidate_repeat_ratio": 1.0222157179325306,
+        "same_outputs_all_arms": true,
+        "native_zero_cached_prefix_requests": [
+          0,
+          0
+        ],
+        "candidate_zero_cached_prefix_requests": [
+          0,
+          0
+        ],
+        "native_prefill_tokens": [
+          1548,
+          1548
+        ],
+        "candidate_prefill_tokens": [
+          1548,
+          1548
+        ],
+        "native_max_ttft_s": 0.4069088753312826,
+        "candidate_max_ttft_s": 0.42206817027181387,
+        "native_max_stream_gap_s": 0.363917644135654,
+        "candidate_max_stream_gap_s": 0.36119158659130335
+      }
+    },
+    "cpu_background_load": {
+      "completed": true,
+      "cells": [
+        {
+          "id": "family_00",
+          "batch": 4,
+          "native": [
+            131.5216429922989,
+            131.24400331064493
+          ],
+          "candidate": [
+            132.26307165400678,
+            132.29387286989018
+          ],
+          "mean_speed_ratio": 1.0068170944191386
+        },
+        {
+          "id": "family_10",
+          "batch": 4,
+          "native": [
+            130.59940249431912,
+            130.32515563174005
+          ],
+          "candidate": [
+            130.9184079091512,
+            131.25497633847937
+          ],
+          "mean_speed_ratio": 1.0047861578478483
+        },
+        {
+          "id": "control_b1_00",
+          "batch": 1,
+          "native": [
+            48.74216154832819,
+            48.85412978477873
+          ],
+          "candidate": [
+            48.70129083680826,
+            48.813575074501145
+          ],
+          "mean_speed_ratio": 0.999165691434733
+        },
+        {
+          "id": "control_b2_00",
+          "batch": 2,
+          "native": [
+            89.29087954149941,
+            89.71229426224204
+          ],
+          "candidate": [
+            89.14022196754146,
+            89.60565928240081
+          ],
+          "mean_speed_ratio": 0.9985626369168109
+        }
+      ],
+      "cpu_load": {
+        "workers": [
+          {
+            "iterations": 2703,
+            "seconds": 160.54487424809486,
+            "array_bytes_each": 67108864
+          },
+          {
+            "iterations": 2749,
+            "seconds": 160.45865365397185,
+            "array_bytes_each": 67108864
+          },
+          {
+            "iterations": 2662,
+            "seconds": 160.54689096845686,
+            "array_bytes_each": 67108864
+          },
+          {
+            "iterations": 2661,
+            "seconds": 160.46668754331768,
+            "array_bytes_each": 67108864
+          }
+        ]
+      },
+      "limitation": "Four moderate synthetic CPU memory workers; four workload groups, one process block. Descriptive interference check, not a real agent-tool workload or independent family gate."
+    },
+    "validation": {
+      "cpu": {
+        "passed": 540,
+        "skipped": 8,
+        "log": "cpu-tests-final-unsandboxed.txt",
+        "note": "A sandboxed final attempt stalled and was interrupted; the complete rerun with local socket access passed. The interrupted log is retained as cpu-tests-final.txt."
+      },
+      "gpu": {
+        "passed": 59,
+        "log": "final-gpu-checks.log",
+        "suites": [
+          "test_w3_calibration.py",
+          "test_verify_gemm_lifecycle.py",
+          "test_accepted_state.py",
+          "test_parallel_feedback.py"
+        ]
+      },
+      "original_kernel_comparisons": {
+        "cases": 144,
+        "all_bit_identical": true,
+        "eager_and_graph": true,
+        "report": "kernel-check.json"
+      },
+      "original_model_state_comparisons": {
+        "greedy_and_mixed_sampling": true,
+        "shrinking_batch": true,
+        "all_states_and_outputs_exact": true,
+        "report": "state-check.json"
+      },
+      "distribution": {
+        "passed": true,
+        "scope": "sdist, wheel runtime assets, installed CUDA loader and benchmark CLI",
+        "log": "distribution-check-final.txt"
+      },
+      "source_keyed_build": {
+        "unit_regression": true,
+        "gpu_module_report": "final-module.json",
+        "paired_smoke": "cache-fix-smoke.json",
+        "unchanged_cuda_source": true
+      }
+    },
+    "minimum_available_gib": {
+      "serving-protection-resources.jsonl": 67.08190536499023,
+      "warm-capacity-protection-resources.jsonl": 56.04092788696289,
+      "full-family-gate-resources.jsonl": 66.88197326660156,
+      "kernel-and-harness-resources.jsonl": 67.39396667480469,
+      "final-gpu-checks-resources.jsonl": 66.47562408447266
+    }
+  }
+}

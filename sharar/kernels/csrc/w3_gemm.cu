@@ -104,7 +104,7 @@ __device__ __forceinline__ void group(float (&acc)[MT][4][4], const uint32_t* __
   }
 }
 
-template <int MT, bool XG>
+template <int MT, bool XG, bool ROW_TILES = false>
 __global__ void __launch_bounds__(kWarps * 32) w3_gemm_kernel(
     __nv_bfloat16* __restrict__ y,            // [M, N]
     float* __restrict__ ws,                   // [splits, M, N] partials when gridDim.y > 1
@@ -115,9 +115,21 @@ __global__ void __launch_bounds__(kWarps * 32) w3_gemm_kernel(
     const uint4* __restrict__ scales,         // [N/32][K/128][4 t][2]
     const float* __restrict__ row_scale,      // [N]
     const uint32_t lut_lo, const uint32_t lut_hi,
-    const int M, const int N, const int K, const int chunks_per_split) {
+    const int full_M, const int N, const int K, const int chunks_per_split) {
+  // Only the unsplit, statically scaled 64-row QKV projection uses this
+  // specialization. Adjacent CTAs share weights through L2 while holding
+  // half the row accumulators; each row keeps its original K reduction.
+  static_assert(!ROW_TILES || (MT == 2 && !XG));
+  const int row_begin = ROW_TILES ? (blockIdx.x % 2) * 32 : 0;
+  const int column_block = ROW_TILES ? blockIdx.x / 2 : blockIdx.x;
+  const int M = ROW_TILES ? 32 : full_M;
+  if (ROW_TILES) {
+    y += static_cast<size_t>(row_begin) * N;
+    x += static_cast<size_t>(row_begin) * K;
+    x_scale += row_begin * x_scale_stride;
+  }
   const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
-  const int nb = blockIdx.x * kWarps + warp;
+  const int nb = column_block * kWarps + warp;
   const int KC = K / kChunk;
   const int c_begin = blockIdx.y * chunks_per_split, c_end = c_begin + chunks_per_split;
   const uint4* wp = planes + static_cast<size_t>(nb) * KC * kPlaneWords + lane;
@@ -302,12 +314,12 @@ __global__ void __launch_bounds__(256) quant_groups_kernel(const __nv_bfloat16* 
   }
 }
 
-template <int MT, bool XG>
+template <int MT, bool XG, bool ROW_TILES = false>
 void launch(torch::Tensor y, torch::Tensor ws, torch::Tensor counters, torch::Tensor x, torch::Tensor x_scale, int x_scale_stride,
             torch::Tensor planes, torch::Tensor scales, torch::Tensor row_scale, uint32_t lut_lo, uint32_t lut_hi,
             int M, int N, int K, int splits) {
-  const dim3 grid(N / kBlockRows, splits);
-  w3_gemm_kernel<MT, XG><<<grid, kWarps * 32, 0, c10::cuda::getCurrentCUDAStream()>>>(
+  const dim3 grid((N / kBlockRows) * (ROW_TILES ? 2 : 1), splits);
+  w3_gemm_kernel<MT, XG, ROW_TILES><<<grid, kWarps * 32, 0, c10::cuda::getCurrentCUDAStream()>>>(
       reinterpret_cast<__nv_bfloat16*>(y.data_ptr()), static_cast<float*>(ws.data_ptr()), static_cast<int*>(counters.data_ptr()),
       static_cast<const uint8_t*>(x.data_ptr()), static_cast<const float*>(x_scale.data_ptr()), x_scale_stride,
       static_cast<const uint4*>(planes.data_ptr()), static_cast<const uint4*>(scales.data_ptr()),
@@ -333,6 +345,11 @@ torch::Tensor w3_gemm(torch::Tensor x, torch::Tensor x_scale, torch::Tensor plan
   TORCH_CHECK(grouped || x_scale_stride == 0 || x_scale.numel() == M, "x_scale must be a scalar, one per row or one per row and 32-group");
   auto y = torch::empty({M, N}, x.options().dtype(at::kBFloat16));
   const uint32_t lut_lo = static_cast<uint32_t>(lut & 0xFFFFFFFFu), lut_hi = static_cast<uint32_t>(static_cast<uint64_t>(lut) >> 32);
+  if (M == 64 && N == 14336 && K == 5120 && !grouped && splits == 1) {
+    launch<2, false, true>(y, ws, counters, x, x_scale, x_scale_stride, planes, scales, row_scale,
+                          lut_lo, lut_hi, M, N, K, 1);
+    return y;
+  }
   const int MT = (M + 15) / 16;
 #define W3_LAUNCH(T) if (MT == T) { if (grouped) launch<T, true>(y, ws, counters, x, x_scale, x_scale_stride, planes, scales, row_scale, lut_lo, lut_hi, M, N, K, static_cast<int>(splits)); \
                                     else launch<T, false>(y, ws, counters, x, x_scale, x_scale_stride, planes, scales, row_scale, lut_lo, lut_hi, M, N, K, static_cast<int>(splits)); }

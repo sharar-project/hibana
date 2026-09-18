@@ -4,12 +4,15 @@ What makes Sharar fast on the GB10 today, in one place: each optimization,
 where it lives, whether it is on by default, and what it measured. Update
 this page when an optimization lands, changes default or is retired; the
 dated numbers behind every row are in the linked studies. Last updated
-2026-09-17.
+2026-09-18.
 
-Decode on this machine is bound by weight bandwidth (about 239 GB/s
-measured, 22 GB per native batch-one round), so every row below either
-moves fewer bytes per emitted token, emits more tokens per round, or keeps
-the GPU streaming instead of waiting.
+The earlier native batch-one profile streamed roughly 22 GB of weights per
+round at about 239 GB/s. Weight traffic remains a major cost; W3's larger
+row counts also expose register pressure and memory-load waits. See the
+[MLP counter study](archive/studies/w3-mlp-profile.md) for the distinction
+between effective weight bandwidth and measured hardware counters. The
+optimizations below reduce traffic, increase tokens per round, or reduce
+time spent waiting.
 
 ## Weights and kernels
 
@@ -19,9 +22,62 @@ the GPU streaming instead of waiting.
 | Small-M FP8 GEMV for the projections (weights stream once for up to four rows) | `sharar/kernels/csrc/fp8_gemv.cu` | On for calls of at most 4 rows | Above cuBLAS's 60% of bandwidth at small M | [BS1](archive/studies/gb10-bs1-speedups.md) |
 | Exact BS1 QKV/MLP verify bundle (cutlass FP4 MLP tiles and the QKV path for 16 rows) | `sharar/kernels/verify_gemm.py` | On | +1.43% family decode, outputs preserved | [BS1](archive/studies/gb10-bs1-speedups.md) |
 | Fused verify norm and convolution, GDN prefill planning, QK-norm plus RoPE | `sharar/kernels/verify_norm.py`, `verify_conv.py`, `qk_norm_rope.py`, `sharar/model/gdn_plan.py` | On | Part of the exact bundle and the DFlash2 default | [DFlash2 default](archive/studies/default-dflash2.md) |
-| **Three-bit decode weights** (3.25 bits per weight, eight-level E4M3 codebook, tensor-core kernel for 16 to 64 rows; NVFP4/FP8 kept for prefill) | `sharar/kernels/w3.py`, `csrc/w3_gemm.cu` | **On** for the layers and the draft in the launcher since 2026-09-17 (`SHARAR_W3_DECODE=1`, `SHARAR_W3_DRAFT=1`), lm_head off (`SHARAR_W3_HEAD`); benches and gates leave it off unless asked | The original all-three-copies measurement gave round cost x0.649 and decode x1.488 [1.444, 1.532] at batch one, round x0.76 at batch four. Nearest rounding loses task accuracy; the lm_head copy stays off. Calibrated target copies now pass their own quality and speed gates | [kernel study](archive/studies/w3-cuda.md), [first study](archive/studies/w3-decode.md) |
+| **Three-bit decode weights** (3.25 bits per weight plus row multipliers, eight-level E4M3 codebook, tensor-core kernel for up to 64 rows; original NVFP4/FP8 weights retained for larger calls) | `sharar/kernels/w3.py`, `csrc/w3_gemm.cu` | **On** for the layers and the draft in the launcher since 2026-09-17 (`SHARAR_W3_DECODE=1`, `SHARAR_W3_DRAFT=1`), lm_head off (`SHARAR_W3_HEAD`); benches and gates leave it off unless asked | The original all-three-copies measurement gave round cost x0.649 and decode x1.488 [1.444, 1.532] at batch one, round x0.76 at batch four. Nearest rounding loses task accuracy; the lm_head copy stays off. Calibrated target copies now pass their own quality and speed gates | [coverage and dispatch](#w3-coverage-and-dispatch), [kernel study](archive/studies/w3-cuda.md), [first study](archive/studies/w3-decode.md) |
 | GPTQ-calibrated W3 target copies from the pinned FP8 release | `sharar/weights/w3_calibration.py`, `w3_checkpoint.py`, `bench/w3_calibrate.py` | Opt-in `SHARAR_W3_CHECKPOINT`; qualified artifact active on the local GB10 since 2026-09-17 | GSM8K 92.04% to 94.47%; family decode x1.0862 [1.0513, 1.1230] against nearest W3, with unchanged kernel and weight size | [calibration and adaptation](archive/studies/w3-calibration-adaptation.md), [artifact guide](w3-calibration.md) |
+| W3 QKV at 64 rows split into two 32-row tiles | `sharar/kernels/csrc/w3_gemm.cu` | Enabled in source for static/per-row scales, N=14336, K=5120, split=1; awaiting deployment | Cached 10K batch-four family decode +0.66% [0.61%, 0.71%], exact outputs/work; no general HTTP gain established | [paired qualification](archive/studies/w3-qkv-tiling.md) |
 | Shape-stable prefill numerics (M-invariant b/a projection, FP8 window, gated norm) | `sharar/kernels/stable.py`, `ba_proj.py` | Opt-in `SHARAR_STABLE_NUMERICS=1` | Prefix bit-exact across prefill lengths for under 1% prefill cost; research baseline, not a speedup | [numerics](archive/studies/target-numerics.md) |
+
+### W3 coverage and dispatch
+
+The current local profile has **304 calibrated target projection matrices
+across all 64 target layers**, plus **20 W3 matrices in the five-layer
+DFlash2 drafter**. A projection is a learned matrix that transforms the
+layer's inputs. Counts below refer to packed matrices: combined Q/K/V and
+gate/up each count as one matrix.
+
+| Component | Layers covered | Matrices with W3 copies in each layer | Packed matrices |
+|---|---:|---|---:|
+| Target feed-forward network (MLP) | All 64 | Combined `gate_up`, plus `down` | 128 |
+| Target Gated DeltaNet (recurrent/linear attention) | 48 | `in_qkv`, `in_z`, `out` | 144 |
+| Target full attention | 16 | Combined `qkv`, plus output `o` | 32 |
+| DFlash2 drafter | All 5 | `q_proj`, `o_proj`, combined `gate_up`, `down_proj` | 20 |
+
+The target's 304 matrices are fitted offline from the pinned FP8 source
+using GPTQ, then loaded from the calibrated artifact. The drafter is
+separately trained to match that target; its 20 eligible FP8 matrices are
+packed into W3 by nearest rounding at construction or reload. They are not
+part of the target's GPTQ artifact. Weight quantization is not repeated for
+each generated token.
+
+In this serving profile, W3 is selected for eligible matrix calls with
+**at most 64 activation rows**. It serves ordinary decode and speculative
+verification; it is not gated solely on the request's prefill/decode phase.
+Short prefill calls can also qualify. With 15 draft proposals, the target
+verifies 16 rows per request, so batches of one, two and four commonly
+produce 16, 32 and 64 rows. Larger prompt-processing calls use the original
+NVFP4/FP8 weights. Both representations remain resident: W3 adds compact
+copies to reduce decode weight traffic, rather than replacing all resident
+weights with a smaller model.
+
+The following retain their existing formats: the target's NVFP4 vocabulary
+head (`lm_head`, W3 disabled), embeddings, normalization weights, small
+Gated DeltaNet b/a control projections and convolution weights; the
+drafter's K/V context projections and other unlisted components; and KV
+caches and recurrent states. Attention score computation and softmax are
+not converted to 3-bit operations.
+
+Three bits describe each stored weight code. Including group scales and
+row multipliers, the tensor payload is `3.25 + 32/K` bits per weight for
+input width `K`. Inside the W3 kernel, codes expand to FP8 values, multiply
+FP8 activations, accumulate in FP32 and produce BF16 outputs. Activations
+are not 3-bit. See [3-bit quantization explained](3bit-quantization-explained.md)
+for examples, calibration and prior work.
+
+The executable coverage and dispatch rules live in
+[target projection enumeration](../sharar/weights/w3_checkpoint.py),
+[target dispatch](../sharar/kernels/ops.py),
+[drafter matrix selection](../sharar/model/parallel_draft.py) and
+[drafter dispatch](../sharar/model/draft_linear.py).
 
 ## Speculative decoding
 
@@ -46,6 +102,8 @@ the GPU streaming instead of waiting.
 | Prefix caching and managed-memory cold storage for KV pages | `sharar/memory/`, `sharar/engine/context.py` | On | Warm resumes skip the prefill | [cold tier](archive/studies/cold-tier.md), [agent context](archive/studies/agent-context.md) |
 | Checkpoint-owned draft features and state retention for resumed sessions | `sharar/engine/context.py` | On | Resumed batch-one completion TPS 11.3 to 36.7 (3.24x); four conversation sessions 28.8 to 78.5 aggregate TPS | [retention](archive/studies/gb10-agent-retention.md) |
 | Host memory guard (16 GiB `MemAvailable` floor) | `tools/memory-guard.sh`, launcher | On | Keeps unified memory from paging the weights | [operations](operations.md) |
+| CPU staging of mapped calibrated W3 tensors before CUDA loading | `sharar/weights/w3_checkpoint.py` | Enabled in source for calibrated checkpoints; awaiting deployment | Warm-cache target construction 63.23 to 11.99 seconds (5.27×); all 304 matrices byte-identical; excludes drafter and graph capture | [W3 runtime profile](archive/studies/w3-runtime-profile.md) |
+| W3 compiled module identity includes its CUDA source digest | `sharar/kernels/w3.py` | Enabled in source; awaiting deployment | Prevents stale objects across source revisions with older timestamps; rollback regression and final GPU checks pass | [build identity](archive/studies/w3-qkv-tiling.md#build-identity-and-final-verification) |
 
 ## Measured, not integrated
 
@@ -58,6 +116,9 @@ the GPU streaming instead of waiting.
 Rejected candidates (narrower verification, mixed forwarding, numerical FP8
 replacements, the short-resume scheduler, two-path trees, narrow NVFP4
 tiles) are in the [decision index](archive/README.md).
+The W3 MLP cache-policy screen also rejected bypass-L1 and normal-cache
+bit-plane loads: both take 43–59% longer than the existing streaming loads
+in the six isolated cases ([hardware-counter study](archive/studies/w3-mlp-profile.md)).
 
 ## Combined effect on the standard cell
 
