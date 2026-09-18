@@ -127,7 +127,8 @@ class Scheduler:
 
     def stats(self, *, include_latencies: bool = True) -> dict:
         d = self.metrics.summary(include_latencies=include_latencies)
-        d.update({"queued": len(self.queue), "prefilling": len(self.prefilling), "running": len(self.running)})
+        d.update({"queued": len(self.queue), "prefilling": len(self.prefilling), "running": len(self.running),
+                  "floor_holds": getattr(self.ex, "floor_holds", 0)})
         cache = self.ex.cache_stats()
         if cache is not None:
             d["cache"] = cache

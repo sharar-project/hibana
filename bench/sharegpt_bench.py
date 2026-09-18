@@ -74,10 +74,9 @@ def freeze(dataset: Path, out: Path, per_bucket: int, seed: int) -> dict:
 def stream_chat(url: str, model: str, prompt: str, max_tokens: int, engine: str, timeout: float) -> dict:
     body = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens,
             "temperature": 0, "stream": True, "stream_options": {"include_usage": True}}
-    if engine in ("sharar", "sglang"):
-        body["chat_template_kwargs"] = {"enable_thinking": False}
-    else:
-        body["chat_template_kwargs"] = {"enable_thinking": False}
+    body["chat_template_kwargs"] = {"enable_thinking": False}
+    if engine == "sharar":
+        body["trace"] = False  # benchmark traffic stays out of the trace sink
     req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"content-type": "application/json"})
     t0 = time.perf_counter()

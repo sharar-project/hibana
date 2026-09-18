@@ -173,6 +173,13 @@ class Executor:
         return req
 
     def can_admit(self, prompt_ids: list[int], reserve_tokens: int = 0) -> bool:
+        ledger = getattr(self, "ledger", None)
+        if ledger is not None and not ledger.above_floor():
+            # Unified memory: pool IDs being free does not mean DRAM is. Hold
+            # admission (running requests keep decoding and release memory as
+            # they finish) instead of letting the host guard stop the server.
+            self.floor_holds = getattr(self, "floor_holds", 0) + 1
+            return False
         return self.state.can_admit(prompt_ids, reserve_tokens)
 
     def admission_reserve(self, req: Request, limit: int) -> int:

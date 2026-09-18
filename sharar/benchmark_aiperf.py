@@ -67,6 +67,7 @@ def payload_for(ids, budget=1000):
     return {'model': MODEL, 'prompt': ids, 'max_tokens': budget, 'temperature': 0,
             'top_p': 1, 'top_k': -1, 'seed': 42, 'ignore_eos': True,
             **accept,  # exact acceptance by default, whatever the server's own default
+            **({} if ACCEPT is None else {'trace': False}),  # benchmark traffic is not the user's: keep it out of the trace sink
             'frequency_penalty': 0, 'presence_penalty': 0, 'repetition_penalty': 1,
             'stop': None, 'n': 1, 'stream': True, 'skip_special_tokens': True,
             'return_token_ids': True, 'return_spec_tokens_details': True,

@@ -137,8 +137,8 @@ and hardware; kernel work at batch one is capped near 10%.
    cache absorbs the rest, so the first token after submit is nearly
    immediate. Then the request cache policy for agent sessions from the
    [proposal](docs/request-cache-policy.md), and bounded admission with
-   backpressure and live memory reporting; `Ledger.check_floor()` is not yet
-   in the serving loop.
+   backpressure and live memory reporting (admission already holds under the
+   host floor since 2026-09-18; queue-depth and per-session limits remain).
 9. **Restore CI, cold-restore overlap, output controls, release work.**
    GitHub refused the previous run on account billing limits; keep the CPU,
    distribution and documentation checks. Event-owned restore lifetimes,
@@ -226,16 +226,22 @@ HTTP side from an immutable snapshot. W3 dequantization also imports its
 helpers from the installed runtime instead of the benchmark package. See the
 [runtime and calibration study](docs/archive/studies/w3-calibration-adaptation.md).
 
-- The detokenizer re-decodes the whole output every round, and `/generate`
-  streaming re-sends the full output ID list in every chunk; both are
-  quadratic in output length.
-- `SHARAR_COLD_TIER_GIB` is read inside the container but `run-sharar.sh`
-  never forwards it.
+Completed 2026-09-18: the detokenizer decodes a bounded window (the emitted
+tokens since the last stable boundary plus the new ones) instead of the whole
+output; `run-sharar.sh` forwards `SHARAR_COLD_TIER_GIB`; admission holds while
+host `MemAvailable` is under the 16 GiB floor (`floor_holds` in the scheduler
+stats) instead of leaving that to the external guard. The page-16 measurement
+promised in `kv_pool.py` was made with `bench/kv_page_size.py` (FlashInfer
+decode and 16-row verify attention over FP8 pages, 10K context, 16 layers,
+random page order): page 16 leaves decode attention unchanged (x0.99) and
+takes verify attention from 2.52 to 2.08 ms per round at batch one and 8.49
+to 7.42 ms at batch four, under 1% of the round either way; plan() cost is
+sub-millisecond at both sizes. Not worth the token-granular cache, cold-tier
+and reservation refactor; parked. `/generate` streaming still re-sends the
+cumulative output ID list per chunk because SGLang clients expect it.
+
 - `can_admit` and `admit` each run the cold-tier scan, eviction and radix
   match; the cold-tier `find` materializes the prefix per parked entry.
-- KV page size is fixed at 1, so the per-round FlashInfer plan concatenates
-  an index list as long as the context; the page-16 measurement promised in
-  `kv_pool.py` never happened.
 - `gemma_rmsnorm_nvfp4` (fused norm and NVFP4 quantizer, bit-identical per
   its tests) is dead behind `SHARAR_FUSED_NORM_NVFP4`; keep or remove.
 - The MTP head runs entirely in BF16 with unfused gate and SiLU; irrelevant

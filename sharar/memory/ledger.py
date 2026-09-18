@@ -98,6 +98,10 @@ class Ledger:
         state_slots = min(state_slot_target, max_running + 1 + int(spare * 0.6) // STATE_BYTES_PER_SLOT)
         return Plan(kv_tokens=kv_tokens, state_slots=state_slots, reserved_bytes=prefill_reserve_bytes + future_bytes)
 
+    def above_floor(self) -> bool:
+        """Whether host MemAvailable is still above the floor (no exception)."""
+        return mem_available_bytes() >= self.floor_bytes
+
     def check_floor(self) -> int:
         available = mem_available_bytes()
         if available < self.floor_bytes:

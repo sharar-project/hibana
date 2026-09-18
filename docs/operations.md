@@ -91,7 +91,8 @@ training window.
 Writing happens on a separate thread and never blocks the engine: feature rows
 go through pinned staging chunks with CUDA events; a full queue or disk counts
 as `dropped` in `/get_server_info` under `traces`. Any request can opt out with
-`"trace": false`. `sharar traces --dir DIR` summarizes a directory. The traces are the
+`"trace": false`; the benchmark, draft A/B, accuracy and corpus clients do, so
+the directory holds the user's own traffic. `sharar traces --dir DIR` summarizes a directory. The traces are the
 input for [draft adaptation](draft-adaptation.md); they are the user's prompts
 and stay on this machine unless the user copies them elsewhere.
 
@@ -100,6 +101,11 @@ The latter reports draft precision, scheduler settings, KV/state geometry and
 cache statistics. `cache.draft_features` reports retained features and fallbacks.
 At 96 slots, DFlash2 feature retention reserves up to 1,900 MiB before planning
 KV. The cold tier uses the same physical DRAM; it adds no physical memory.
+`SHARAR_COLD_TIER_GIB` caps its managed-memory budget (the launcher forwards
+it; 0 disables the tier; unset sizes it from spare memory, up to 24 GiB).
+While host `MemAvailable` is under the 16 GiB floor the scheduler holds new
+admissions (`floor_holds` in `/get_server_info`) so running requests can
+finish and release memory before the external guard has to act.
 
 ## Development and checks
 

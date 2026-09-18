@@ -109,7 +109,8 @@ The executable coverage and dispatch rules live in
 
 | Candidate | Result | Status |
 |---|---|---|
-| FP8 GEMM at 16 rows through the GEMV path (`fp8_m16`) | Round cost x0.985 on the 101-family gate | Clean win awaiting integration ([family gate](archive/studies/family-gate.md)) |
+| FP8 GEMM at 16 rows through the GEMV path (`fp8_m16`) | Round cost x0.985 on the 101-family gate | Moot in the served profile: with `SHARAR_W3_DECODE=1` every FP8 projection at 64 rows or fewer takes the 3-bit copy before the FP8 dispatch; only the exact NVFP4/FP8 path (`SHARAR_W3_DECODE=0`) would use it ([family gate](archive/studies/family-gate.md)) |
+| KV page size 16 | Decode attention unchanged; verify attention 2.52 to 2.08 ms (batch one) and 8.49 to 7.42 ms (batch four) per round at 10K context, under 1% of the round | Parked; `bench/kv_page_size.py` (2026-09-18) |
 | NVFP4 draft body | Round cost x0.971; acceptance not resolved | Needs the trained-draft comparison |
 | Prompt-lookup second verify branch | Offline oracle +14 to 50% tokens per round, served +1.4% | Parked on `feat/lookup-branch` ([study](archive/studies/lookup-branch.md)) |
 
