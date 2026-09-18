@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from sharar import config
+from sharar.target import Target
 from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import DecodeGraphs
 from sharar.engine.request import Request, State
@@ -39,30 +39,32 @@ class PrefillBatch:
 class Executor:
     timing = False  # benchmarks set True: synchronize to attribute prefill wall time (class attribute: test executors skip __init__)
 
-    def __init__(self, model: Qwen38, num_pages: int | None = None, num_slots: int | None = None, max_batch: int = 4, use_cache: bool = True, log=None, max_context: int = config.CONTEXT_LENGTH, spec_config=None):
+    def __init__(self, model: Qwen38, num_pages: int | None = None, num_slots: int | None = None, max_batch: int = 4, use_cache: bool = True, log=None, max_context: int | None = None, spec_config=None):
+        self.target: Target = model.target
+        max_context = self.target.context_length if max_context is None else max_context
         self.profile = ServingProfile(max_context=max_context, max_batch=max_batch)
         import flashinfer
 
         self.max_context = max_context
         self.model = model
         self.device = model.device
-        self.ledger = Ledger()
+        self.ledger = Ledger(target=self.target)
         self.ledger.record_cuda_allocated("weights")
         future, extra_page = 2 * 2**30, 0
         if spec_config is not None:
             from sharar.memory.spec_budget import budget
-            future, extra_page = budget(spec_config, max_batch, max_context, cache_slots=num_slots or 96)
+            future, extra_page = budget(spec_config, max_batch, max_context, cache_slots=num_slots or 96, target=self.target)
         if num_pages is None or num_slots is None:
             plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future, extra_page_bytes=extra_page)
             num_pages = num_pages or plan.kv_tokens
             num_slots = num_slots or plan.state_slots
         if type(num_pages) is not int or num_pages < 2 or type(num_slots) is not int or num_slots < 2:
             raise ValueError("pools need at least one usable entry plus the reserved dummy entry")
-        from sharar.memory.ledger import check_load_headroom, KV_BYTES_PER_TOKEN, STATE_BYTES_PER_SLOT
-        check_load_headroom(num_pages * (KV_BYTES_PER_TOKEN + extra_page) + num_slots * STATE_BYTES_PER_SLOT + future + 8 * 2**30)
-        self.kv_pool = KvPool(num_pages, self.device)
+        from sharar.memory.ledger import check_load_headroom
+        check_load_headroom(num_pages * (self.target.kv_bytes_per_token + extra_page) + num_slots * self.target.state_bytes_per_slot + future + 8 * 2**30)
+        self.kv_pool = KvPool(num_pages, self.device, target=self.target)
         self.ledger.record_cuda_allocated("kv_pool")
-        self.state_pool = StatePool(num_slots, self.device)
+        self.state_pool = StatePool(num_slots, self.device, target=self.target)
         self.ledger.record_cuda_allocated("state_pool")
         cache = RadixCache(self.kv_pool, self.state_pool, self.device) if use_cache else None
         self.state = StateManager(self.kv_pool, self.state_pool, cache)
@@ -108,7 +110,7 @@ class Executor:
         from sharar.memory.spec_budget import SpecConfig, budget
         from sharar.memory.ledger import check_load_headroom
         fixed, per_page = budget(SpecConfig(proposer, k, state_strategy, draft_precision), self.max_batch, self.max_context,
-                                 cache_slots=self.state_pool.num_slots)
+                                 cache_slots=self.state_pool.num_slots, target=self.target)
         check_load_headroom(fixed + per_page * self.kv_pool.num_pages + 8 * 2**30)
         context = ProposerContext(self.device, self.max_batch, self.max_context)
         from sharar.proposers.factory import create
@@ -128,7 +130,7 @@ class Executor:
         limit = proposer.requirements.max_depth
         if type(proposer.k) is not int or not 1 <= proposer.k <= limit:
             raise ValueError("unsupported proposal width")
-        if any(type(i) is not int or not 0 <= i < config.NUM_LAYERS for i in proposer.requirements.features.layers):
+        if any(type(i) is not int or not 0 <= i < self.target.num_layers for i in proposer.requirements.features.layers):
             raise ValueError("invalid target feature layer")
         bind = getattr(proposer, 'bind_checkpoint_cache', None)
         if bind is not None and self.cache is not None:
@@ -149,9 +151,10 @@ class Executor:
         params.validate()
         if not isinstance(prompt_ids, list) or not prompt_ids:
             raise InvalidRequest("prompt must be a non-empty token list")
-        if any(type(t) is not int or not 0 <= t < config.VOCAB_SIZE for t in prompt_ids):
-            raise InvalidRequest(f"token IDs must be integers in [0, {config.VOCAB_SIZE})")
-        if not isinstance(params.stop_token_ids, (tuple, list)) or any(type(t) is not int or not 0 <= t < config.VOCAB_SIZE for t in params.stop_token_ids):
+        vocab = self.target.vocab_size
+        if any(type(t) is not int or not 0 <= t < vocab for t in prompt_ids):
+            raise InvalidRequest(f"token IDs must be integers in [0, {vocab})")
+        if not isinstance(params.stop_token_ids, (tuple, list)) or any(type(t) is not int or not 0 <= t < vocab for t in params.stop_token_ids):
             raise InvalidRequest("invalid stop token ID")
         if len(prompt_ids) + params.max_new_tokens > self.max_context:
             raise InvalidRequest(f"prompt plus output budget exceeds context limit {self.max_context}")
@@ -272,8 +275,8 @@ class Executor:
         last_page_len = torch.ones(1, dtype=torch.int32)
         self._paged_prefill.plan(
             qo_indptr, kv_indptr, prefix_pages, last_page_len,
-            config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, self.kv_pool.page_size,
-            causal=False, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
+            self.target.num_attention_heads, self.target.num_kv_heads, self.target.head_dim, self.kv_pool.page_size,
+            causal=False, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=self.target.head_dim**-0.5,
         )
 
     def _checkpoint_positions(self, start: int, end: int, total: int) -> list[int]:
@@ -376,8 +379,8 @@ class Executor:
             self._paged_prefill.plan(
                 torch.tensor(cu, dtype=torch.int32), torch.tensor(kv_indptr, dtype=torch.int32), torch.cat(kv_indices),
                 torch.ones(len(chunks), dtype=torch.int32),
-                config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, self.kv_pool.page_size,
-                causal=False, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
+                self.target.num_attention_heads, self.target.num_kv_heads, self.target.head_dim, self.kv_pool.page_size,
+                causal=False, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=self.target.head_dim**-0.5,
             )
             ctx.paged_prefill_wrapper = self._paged_prefill
         ids = upload(ids_list, torch.int64, d)
@@ -481,8 +484,8 @@ class Executor:
         last_page_len = torch.ones(len(reqs), dtype=torch.int32)
         self._decode_wrapper.plan(
             indptr, indices, last_page_len,
-            config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, self.kv_pool.page_size,
-            pos_encoding_mode="NONE", q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
+            self.target.num_attention_heads, self.target.num_kv_heads, self.target.head_dim, self.kv_pool.page_size,
+            pos_encoding_mode="NONE", q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=self.target.head_dim**-0.5,
         )
 
     def decode_step(self, reqs: list[Request]) -> list[int]:

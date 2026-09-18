@@ -27,6 +27,8 @@ from tests.unit.test_scheduler import FakeExecutor, FakePool
 
 def tiny_executor(monkeypatch, cache=False):
     ex = Executor.__new__(Executor)
+    from sharar.target import QWEN38
+    ex.target = QWEN38
     ex.device = torch.device('cpu')
     ex.max_context, ex.max_batch = 512, 4
     ex.kv_pool = FakePool(1025)

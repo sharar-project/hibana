@@ -14,12 +14,13 @@ from pathlib import Path
 
 import torch
 
-from sharar import config
-from sharar.memory.state_pool import CONV_DIM, CONV_STATE_LEN
+from sharar.hardware.gb10 import HOST_FLOOR_KIB
+from sharar.target import DEFAULT_TARGET, Target
 
 GIB = 2**30
-KV_BYTES_PER_TOKEN = 2 * config.NUM_KV_HEADS * config.HEAD_DIM * 16  # K+V, fp8, 16 attention layers
-STATE_BYTES_PER_SLOT = 48 * (CONV_DIM * CONV_STATE_LEN * 2 + config.LINEAR_NUM_VALUE_HEADS * config.LINEAR_VALUE_HEAD_DIM * config.LINEAR_KEY_HEAD_DIM * 4)
+# The default target's per-token and per-slot bytes, for tools written against the 27B.
+KV_BYTES_PER_TOKEN = DEFAULT_TARGET.kv_bytes_per_token
+STATE_BYTES_PER_SLOT = DEFAULT_TARGET.state_bytes_per_slot
 
 
 def mem_available_bytes() -> int:
@@ -32,7 +33,7 @@ def mem_available_bytes() -> int:
 def check_load_headroom(peak_bytes: int) -> None:
     """Reject a second model load before transient allocations reach the floor."""
     available = mem_available_bytes()
-    floor = config.HOST_FLOOR_KIB * 1024
+    floor = HOST_FLOOR_KIB * 1024
     if available < floor + peak_bytes:
         raise MemoryError(f"model load needs {(floor + peak_bytes) / GIB:.1f} GiB MemAvailable including the host floor; have {available / GIB:.1f} GiB")
 
@@ -49,6 +50,7 @@ class Ledger:
     floor_bytes: int = 16 * GIB
     entries: dict[str, int] = field(default_factory=dict)
     start_available: int = field(default_factory=mem_available_bytes)
+    target: Target = DEFAULT_TARGET
 
     def record(self, name: str, nbytes: int) -> None:
         self.entries[name] = self.entries.get(name, 0) + int(nbytes)
@@ -67,7 +69,7 @@ class Ledger:
     def plan(
         self,
         max_running: int = 4,
-        context_len: int = config.CONTEXT_LENGTH,
+        context_len: int | None = None,
         prefill_reserve_bytes: int = 8 * GIB,
         state_slot_target: int = 96,
         kv_token_target: int = 1 << 20,
@@ -84,18 +86,20 @@ class Ledger:
         against 256 MiB of KV for an 8K prompt, and the Phase 3 soak showed
         slots, not pages, drive eviction, so the split is 40% pages / 60% slots.
         """
+        context_len = self.target.context_length if context_len is None else context_len
+        kv_bytes_per_token, state_bytes_per_slot = self.target.kv_bytes_per_token, self.target.state_bytes_per_slot
         available = mem_available_bytes()
         budget = available - self.floor_bytes - prefill_reserve_bytes - future_bytes
-        page_bytes = KV_BYTES_PER_TOKEN + extra_page_bytes
+        page_bytes = kv_bytes_per_token + extra_page_bytes
         must_kv = max_running * context_len * page_bytes
-        must_state = (max_running + 1) * STATE_BYTES_PER_SLOT  # +1 dummy slot 0
+        must_state = (max_running + 1) * state_bytes_per_slot  # +1 dummy slot 0
         if budget < must_kv + must_state:
             raise MemoryError(
                 f"only {available / GIB:.1f} GiB available; need {(must_kv + must_state + prefill_reserve_bytes + future_bytes + self.floor_bytes) / GIB:.1f} GiB"
             )
         spare = int((budget - must_kv - must_state) * cache_fraction)
         kv_tokens = min(kv_token_target, max_running * context_len + int(spare * 0.4) // page_bytes)
-        state_slots = min(state_slot_target, max_running + 1 + int(spare * 0.6) // STATE_BYTES_PER_SLOT)
+        state_slots = min(state_slot_target, max_running + 1 + int(spare * 0.6) // state_bytes_per_slot)
         return Plan(kv_tokens=kv_tokens, state_slots=state_slots, reserved_bytes=prefill_reserve_bytes + future_bytes)
 
     def above_floor(self) -> bool:

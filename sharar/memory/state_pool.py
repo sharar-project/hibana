@@ -10,25 +10,28 @@ from __future__ import annotations
 
 import torch
 
-from sharar import config
+from sharar.target import DEFAULT_TARGET, Target
 
-CONV_DIM = 2 * config.LINEAR_NUM_KEY_HEADS * config.LINEAR_KEY_HEAD_DIM + config.LINEAR_NUM_VALUE_HEADS * config.LINEAR_VALUE_HEAD_DIM
-CONV_STATE_LEN = config.LINEAR_CONV_KERNEL - 1
+# The default target's convolution geometry, for tools written against the 27B.
+CONV_DIM = DEFAULT_TARGET.conv_dim
+CONV_STATE_LEN = DEFAULT_TARGET.conv_state_len
 
 
 class StatePool:
-    def __init__(self, num_slots: int, device: torch.device, num_scratch: int = 0):
+    def __init__(self, num_slots: int, device: torch.device, num_scratch: int = 0, target: Target | None = None):
+        t = self.target = target or DEFAULT_TARGET
         self.num_slots = num_slots
         self.device = device
-        self.layer_ids = [i for i in range(config.NUM_LAYERS) if (i + 1) % config.FULL_ATTENTION_INTERVAL != 0]
+        self.layer_ids = list(t.gdn_layer_ids)
+        self.conv_dim, self.conv_state_len = t.conv_dim, t.conv_state_len
         total = num_slots + num_scratch
         n_layers = len(self.layer_ids)
         # One contiguous tensor per kind, indexed [layer_index, slot, ...], with a
         # per-layer view for the kernels; clearing or copying a slot across all
         # layers is then one strided copy instead of one launch per layer.
-        self.conv_all = torch.zeros((n_layers, total, CONV_DIM, CONV_STATE_LEN), dtype=torch.bfloat16, device=device)
+        self.conv_all = torch.zeros((n_layers, total, t.conv_dim, t.conv_state_len), dtype=torch.bfloat16, device=device)
         self.ssm_all = torch.zeros(
-            (n_layers, total, config.LINEAR_NUM_VALUE_HEADS, config.LINEAR_VALUE_HEAD_DIM, config.LINEAR_KEY_HEAD_DIM),
+            (n_layers, total, t.linear_num_value_heads, t.linear_value_head_dim, t.linear_key_head_dim),
             dtype=torch.float32,
             device=device,
         )
@@ -45,8 +48,7 @@ class StatePool:
 
     @property
     def bytes_per_slot(self) -> int:
-        per_layer = CONV_DIM * CONV_STATE_LEN * 2 + config.LINEAR_NUM_VALUE_HEADS * config.LINEAR_VALUE_HEAD_DIM * config.LINEAR_KEY_HEAD_DIM * 4
-        return per_layer * len(self.layer_ids)
+        return self.target.state_bytes_per_layer * len(self.layer_ids)
 
     def alloc(self) -> int:
         if not self._free:

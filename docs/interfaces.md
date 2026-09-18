@@ -11,15 +11,23 @@ not a plugin registry or a promise of arbitrary model support.
 | `Proposer` | Draft weights/KV, readiness, pending tokens, retained features and draft graphs | Shared speculative driver |
 | `ForwardResult` / `FeatureRequest` | Target computes logits inputs and only requested features | Prefill driver and verifier deliver features to the proposer |
 
-Model facts live in `model/qwen38_config.py`, device constraints in
-`hardware/gb10.py`, and supported limits in immutable `engine/profile.py`.
-`config.py` remains a compatibility import point for the existing kernels and
-performs snapshot/hardware validation. This split does not make the current
-model-specific attention or recurrent kernels generic.
+Model facts live in a `Target` value (`sharar/target.py`): the pinned
+checkpoint, the layer kinds, the attention and recurrent head shapes, the
+vocabulary, the serving profile and the load budget. The executor reads
+`model.target` once and sizes the pools, the ledger, the attention plans and
+the verify buffers from it; pools and the ledger accept a `target` and default
+to the 27B for tools written against it. One process serves one target,
+chosen at launch (`sharar serve --target`, `SHARAR_TARGET`); nothing is
+discovered at run time. `model/qwen38_config.py` holds the 27B's constants,
+`config.py` remains the compatibility facade over that default target, device
+constraints stay in `hardware/gb10.py` and the limits in `engine/profile.py`.
+The current attention and recurrent kernels take their shapes from the
+tensors and the target, but they are still validated only for the pinned
+targets.
 
-The shipped scope stays Qwen on GB10. Additional target models and MoE
-implementation are deferred. Keep these existing seams clear;
-extract another model contract only when a second real target requires it.
+A second target adds a `Target` instance, a loader in `target.load_model`,
+and a model package whose forward honors `ForwardResult`; the scheduler,
+state manager, radix cache, verifier and proposer contracts do not change.
 Checkpoint construction lives in `proposers/factory.py`. `max_depth` and feature
 requirements let the executor validate an adapter without knowing its name.
 

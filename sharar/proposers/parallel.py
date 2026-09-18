@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 
 import torch
 
-from sharar import config
+from sharar.target import DEFAULT_TARGET
 from sharar.engine.contracts import FeatureRequest, ProposerRequirements
 from sharar.engine.rejection import Proposal, distribution
 
@@ -97,7 +97,8 @@ class ParallelProposer:
         self.window = model.window
         self.pitch = self.window + self.noise_steps
         self.free_slots = list(range(context.max_batch, 0, -1))
-        self.cache_identity = (config.MODEL_REVISION, *PINS[name], model.features, 'projected-bf16-kv-v1', self.window,
+        served = getattr(model.target, 'target', DEFAULT_TARGET)  # the draft's target model carries the serving target
+        self.cache_identity = (served.model_revision, *PINS[name], model.features, 'projected-bf16-kv-v1', self.window,
                                getattr(model, 'source', None))
         device = context.device
         shape = ((context.max_batch + 1) * self.pitch, 1, 8, 128)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from sharar import config
+from sharar.target import DEFAULT_TARGET
 from sharar.engine.graphs import capture_sizes, check_context_capacity
 from sharar.engine.spec_graphs import _prefill_wrapper
 
@@ -15,6 +15,7 @@ class DraftGraphs:
     def __init__(self, proposer):
         self.proposer = proposer
         self.mtp = proposer.head
+        self.target = getattr(proposer, 'target', DEFAULT_TARGET)
         self.device = proposer.context.device
         self.k = proposer.k
         self.max_context = proposer.context.max_context + proposer.k
@@ -28,7 +29,7 @@ class DraftGraphs:
         d = self.device
         st = {
             "tokens": torch.zeros(b, dtype=torch.int64, device=d),
-            "hidden": torch.zeros(b, config.HIDDEN_SIZE, dtype=torch.bfloat16, device=d),
+            "hidden": torch.zeros(b, self.target.hidden_size, dtype=torch.bfloat16, device=d),
             "positions": torch.zeros(b, dtype=torch.int64, device=d),
             "pages": torch.zeros(b, dtype=torch.int32, device=d),
             "qo_indptr": torch.arange(0, b + 1, dtype=torch.int32, device=d),
@@ -46,8 +47,8 @@ class DraftGraphs:
         indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_all]).cumsum(0).tolist()), dtype=torch.int32)  # host: no sync in plan()
         st["wrapper"].plan(
             torch.arange(0, b + 1, dtype=torch.int32), indptr, torch.cat(kv_all), torch.ones(b, dtype=torch.int32),
-            config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, 1,
-            causal=True, q_data_type=torch.bfloat16, kv_data_type=torch.bfloat16, sm_scale=config.HEAD_DIM**-0.5,
+            self.target.num_attention_heads, self.target.num_kv_heads, self.target.head_dim, 1,
+            causal=True, q_data_type=torch.bfloat16, kv_data_type=torch.bfloat16, sm_scale=self.target.head_dim**-0.5,
         )
 
     def _forward(self, st: dict) -> tuple[torch.Tensor, torch.Tensor]:

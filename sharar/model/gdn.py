@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import torch
 
-from sharar import config
+from sharar.target import QWEN38, Target
 from sharar.engine.context import ForwardContext
 from sharar.kernels import ops, stable
 from sharar.kernels.conv1d import causal_conv1d_fn, causal_conv1d_update
@@ -29,13 +29,14 @@ from sharar.weights.safetensors import SnapshotWeights
 
 
 class GatedDeltaNet:
-    def __init__(self, w: SnapshotWeights, prefix: str, layer_id: int, device: torch.device):
+    def __init__(self, w: SnapshotWeights, prefix: str, layer_id: int, device: torch.device, target: Target = QWEN38):
         self.layer_id = layer_id
         self.device = device
-        self.num_k_heads = config.LINEAR_NUM_KEY_HEADS
-        self.num_v_heads = config.LINEAR_NUM_VALUE_HEADS
-        self.head_k_dim = config.LINEAR_KEY_HEAD_DIM
-        self.head_v_dim = config.LINEAR_VALUE_HEAD_DIM
+        self.eps = target.rms_norm_eps
+        self.num_k_heads = target.linear_num_key_heads
+        self.num_v_heads = target.linear_num_value_heads
+        self.head_k_dim = target.linear_key_head_dim
+        self.head_v_dim = target.linear_value_head_dim
         self.key_dim = self.num_k_heads * self.head_k_dim
         self.value_dim = self.num_v_heads * self.head_v_dim
         self.conv_dim = 2 * self.key_dim + self.value_dim
@@ -50,7 +51,7 @@ class GatedDeltaNet:
         del fused.weight
         self.in_qkvz = None
         self.in_ba = torch.cat([w.get(f"{prefix}.in_proj_b.weight"), w.get(f"{prefix}.in_proj_a.weight")], dim=0).to(device)
-        self.conv_weight = w.get(f"{prefix}.conv1d.weight").to(device).view(self.conv_dim, config.LINEAR_CONV_KERNEL)
+        self.conv_weight = w.get(f"{prefix}.conv1d.weight").to(device).view(self.conv_dim, target.linear_conv_kernel)
         self.A_log = w.get(f"{prefix}.A_log").to(device).float().contiguous()
         self.dt_bias = w.get(f"{prefix}.dt_bias").to(device).contiguous()
         # Per-head gated RMSNorm as a grouped norm over [T, value_dim] so the
@@ -99,11 +100,11 @@ class GatedDeltaNet:
     def _output_input(self, core, z, t, *, verify=False):
         if verify:
             from sharar.kernels.verify_norm import verify_gated_norm
-            normalized = verify_gated_norm(core, z, self.norm_weight, config.RMS_NORM_EPS, self.head_v_dim)
+            normalized = verify_gated_norm(core, z, self.norm_weight, self.eps, self.head_v_dim)
             return quant_fp8(normalized.reshape(t, self.value_dim), self.out.input_scale)
         core = rms_norm_gated(
             x=core.reshape(t, self.value_dim), weight=self.norm_weight, bias=None, z=z,
-            eps=config.RMS_NORM_EPS, group_size=self.head_v_dim, norm_before_gate=True,
+            eps=self.eps, group_size=self.head_v_dim, norm_before_gate=True,
             is_rms_norm=True, activation="swish",
         )
         return quant_fp8(core, self.out.input_scale)

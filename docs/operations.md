@@ -29,6 +29,7 @@ budget separately. Automatic KV capacity depends on available memory.
 
 | Setting | Launcher default | Override |
 |---|---|---|
+| Target | `qwen38` (the only served target) | `SHARAR_TARGET` / `sharar serve --target` |
 | Proposer | DFlash2 | `SHARAR_PROPOSER` |
 | Draft proposals | 15 (16 target verification rows) | `SHARAR_SPEC` |
 | Draft precision | FP8 (the measured serving profile; the 3-bit draft copy applies to it) | `SHARAR_DRAFT_PRECISION=bf16` for the publisher's precision |

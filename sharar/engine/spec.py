@@ -11,7 +11,6 @@ from dataclasses import dataclass
 
 import torch
 
-from sharar import config
 from sharar.engine.context import ForwardContext
 from sharar.engine.request import Request
 from sharar.memory.kv_pool import KV_DTYPE
@@ -56,7 +55,7 @@ class SpecDecoder:
         self.replay = None
         if state_strategy == "reconstruct":
             from sharar.kernels.fla.accepted_state import AcceptedState
-            self.replay = AcceptedState(executor.state_pool, n, self.steps, config.LINEAR_NUM_KEY_HEADS)
+            self.replay = AcceptedState(executor.state_pool, n, self.steps, executor.target.linear_num_key_heads)
             self.inter_ssm_all, self.inter_ssm = None, {}
         else:
             self.inter_ssm_all = torch.zeros((len(layer_ids), n, self.steps, *ssm_shape), dtype=torch.float32, device=self.device)
@@ -276,9 +275,9 @@ class SpecDecoder:
         for pages in batch.kv_pages:
             indptr.append(indptr[-1] + pages.shape[0])
         wrapper.plan(cu_host, torch.tensor(indptr, dtype=torch.int32), torch.cat(batch.kv_pages),
-                     torch.ones(b_sz, dtype=torch.int32), config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS,
-                     config.HEAD_DIM, 1, causal=True, q_data_type=torch.bfloat16,
-                     kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5)
+                     torch.ones(b_sz, dtype=torch.int32), self.ex.target.num_attention_heads, self.ex.target.num_kv_heads,
+                     self.ex.target.head_dim, 1, causal=True, q_data_type=torch.bfloat16,
+                     kv_data_type=KV_DTYPE, sm_scale=self.ex.target.head_dim**-0.5)
         ctx.paged_prefill_wrapper = wrapper
         return ctx
 

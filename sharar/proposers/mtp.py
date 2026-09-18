@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-from sharar import config
+from sharar.target import DEFAULT_TARGET
 
 from sharar.engine.contracts import FeatureRequest, ProposerContext, ProposerRequirements
 
@@ -28,7 +28,9 @@ class MtpProposer:
                                         pin_memory=context.device.type == "cuda")
         self._upload_done = torch.cuda.Event() if context.device.type == "cuda" else None
         self._upload_pending = False
-        self.cache_identity = (config.MODEL_ID, config.MODEL_REVISION, "native-mtp", "final_norm-v1", "bf16-kv-target-forced-v1")
+        target = getattr(head, 'target', DEFAULT_TARGET)
+        self.target = target
+        self.cache_identity = (target.model_id, target.model_revision, "native-mtp", "final_norm-v1", "bf16-kv-target-forced-v1")
         self.cache_hits = self.cache_fallbacks = 0
 
     def _state(self, req) -> MtpState:

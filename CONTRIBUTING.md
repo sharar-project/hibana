@@ -69,6 +69,18 @@ acceptance, not correctness.
 When an optimization lands, changes its default or is retired, update its
 row in the [optimization inventory](docs/optimizations.md) in the same change.
 
+## Add a target
+
+A target is a pinned checkpoint with a `Target` value in `sharar/target.py`
+(geometry, profile, load budget, snapshot lookup, host validation) and a
+model package under `sharar/model/` whose forward returns `ForwardResult`
+and exposes `.target`. Register the loader in `target.load_model`. The
+engine, pools and graphs read `executor.target`; do not add module-level
+constants for a new model, and keep `config.py` describing the 27B for the
+tools that import it. Validate a new target with layer-by-layer parity
+against a reference server, the CPU contracts, the GPU lifecycle suites and
+regenerated family-gate inputs before it is served.
+
 ## Add a proposer
 
 1. Put the adapter in `sharar/proposers/`. Implement `Proposer` and declare

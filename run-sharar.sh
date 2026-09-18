@@ -157,6 +157,9 @@ if [[ -n "$DRAFT_DIR" ]]; then
   args+=(--volume "$DRAFT_DIR:/draft:ro")
   serve_args+=(--draft /draft)
 fi
+if [[ -n "${SHARAR_TARGET:-}" ]]; then
+  args+=(--env "SHARAR_TARGET=$SHARAR_TARGET")   # pinned serving target (sharar/target.py); qwen38 is the only one today
+fi
 if [[ -n "${SHARAR_DEVICE_ACCEPT:-}" ]]; then
   [[ "$SHARAR_DEVICE_ACCEPT" == 0 || "$SHARAR_DEVICE_ACCEPT" == 1 ]] || fail "SHARAR_DEVICE_ACCEPT must be 0 or 1"
   args+=(--env "SHARAR_DEVICE_ACCEPT=$SHARAR_DEVICE_ACCEPT")   # device-resident acceptance graphs (engine/accept_graphs.py)

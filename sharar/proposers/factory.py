@@ -1,17 +1,17 @@
 """Checkpoint-specific construction at startup; the executor consumes contracts."""
-from sharar import config
+from sharar.target import DEFAULT_TARGET
 
 MAX_DEPTHS = {"mtp": 4, "ngram": 4, "dspark": 7, "dflash2": 15}
 
 
-def draft_snapshot(proposer, draft_dir=None):
+def draft_snapshot(proposer, draft_dir=None, target=None):
     """The pinned publisher snapshot, or a trained checkpoint directory saved by `sharar train`."""
     import json
     from pathlib import Path
     from sharar.proposers.parallel import PINS
     name, revision = PINS[proposer]
     if draft_dir is None:
-        root = config.snapshot_dir().parents[2]
+        root = (target or DEFAULT_TARGET).snapshot_dir().parents[2]
         return root / ("models--" + name.replace("/", "--")) / "snapshots" / revision
     directory = Path(draft_dir)
     if not (directory / "config.json").is_file() or not (directory / "model.safetensors").is_file():
@@ -28,11 +28,12 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
         from sharar.model.mtp import MtpHead
         from sharar.proposers.mtp import MtpProposer
         from sharar.weights.safetensors import SnapshotWeights
-        w = SnapshotWeights(config.snapshot_dir())
+        w = SnapshotWeights(model.target.snapshot_dir())
         try:
             head = MtpHead(w, context.device, model.embed, model.lm_head, model.rope, num_pages)
         finally:
             w.close()
+        head.target = model.target
         adapter = MtpProposer(head, context, k)
     elif proposer == "ngram":
         from sharar.proposers.ngram import NGramProposer
@@ -40,7 +41,7 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
     elif proposer in ("dspark", "dflash2"):
         from sharar.model.parallel_draft import ParallelDraftModel
         from sharar.proposers.parallel import ParallelProposer
-        snapshot = draft_snapshot(proposer, draft_dir)
+        snapshot = draft_snapshot(proposer, draft_dir, model.target)
         adapter = ParallelProposer(ParallelDraftModel(snapshot, model, context.max_context, precision=draft_precision), context, k, proposer)
     else:
         raise ValueError(f"unknown proposer {proposer!r}")

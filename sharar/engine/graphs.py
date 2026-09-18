@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import torch
 
-from sharar import config
 from sharar.engine.context import ForwardContext
 from sharar.engine.contracts import FeatureRequest
 from sharar.engine.profile import ServingProfile
@@ -64,14 +63,14 @@ class DecodeGraphs:
             indptr,
             indices,
             st["last_page_len_host"],
-            config.NUM_ATTENTION_HEADS,
-            config.NUM_KV_HEADS,
-            config.HEAD_DIM,
+            self.ex.target.num_attention_heads,
+            self.ex.target.num_kv_heads,
+            self.ex.target.head_dim,
             self.ex.kv_pool.page_size,
             pos_encoding_mode="NONE",
             q_data_type=torch.bfloat16,
             kv_data_type=KV_DTYPE,
-            sm_scale=config.HEAD_DIM**-0.5,
+            sm_scale=self.ex.target.head_dim**-0.5,
         )
 
     def _ctx(self, b: int) -> ForwardContext:

@@ -89,7 +89,7 @@ bash tools/check.sh gpu                     # inside the runtime container, excl
 
 | Path | Purpose |
 |---|---|
-| `sharar/` | Engine, API, kernels, model, trainer (`sharar/train/`), installed CLI |
+| `sharar/` | Engine, API, kernels, model, trainer (`sharar/train/`), installed CLI; `sharar/target.py` names the served checkpoint and its geometry |
 | `sharar-ctl`, `run-sharar.sh`, `run-sharar-train.sh` | Host command and the container launchers it drives |
 | `bench/` | Measurement drivers, corpus and A/B tools, shared support |
 | `tests/` | CPU contracts and opt-in GPU validation |

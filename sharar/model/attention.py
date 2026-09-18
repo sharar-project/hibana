@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import torch
 
-from sharar import config
+from sharar.target import QWEN38, Target
 from sharar.engine.context import ForwardContext
 from sharar.kernels import ops
 from sharar.kernels.fp8_quant import gated_quant_fp8
@@ -20,18 +20,20 @@ from sharar.weights.safetensors import SnapshotWeights
 
 
 class Attention:
-    def __init__(self, w: SnapshotWeights, prefix: str, layer_id: int, device: torch.device, rope: PartialRotary, ragged: ops.RaggedAttention):
+    def __init__(self, w: SnapshotWeights, prefix: str, layer_id: int, device: torch.device, rope: PartialRotary, ragged: ops.RaggedAttention,
+                 target: Target = QWEN38):
         self.layer_id = layer_id
-        self.num_heads = config.NUM_ATTENTION_HEADS
-        self.num_kv_heads = config.NUM_KV_HEADS
-        self.head_dim = config.HEAD_DIM
+        self.eps = target.rms_norm_eps
+        self.num_heads = target.num_attention_heads
+        self.num_kv_heads = target.num_kv_heads
+        self.head_dim = target.head_dim
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
         # q_proj rows are [head0: q(256) | gate(256), head1: ...], k/v follow.
         self.qkv = load_fp8_linear(w, [f"{prefix}.q_proj", f"{prefix}.k_proj", f"{prefix}.v_proj"], device)
         self.o = load_fp8_linear(w, [f"{prefix}.o_proj"], device)
-        self.q_norm = GemmaRMSNorm(w.get(f"{prefix}.q_norm.weight").to(device), config.RMS_NORM_EPS)
-        self.k_norm = GemmaRMSNorm(w.get(f"{prefix}.k_norm.weight").to(device), config.RMS_NORM_EPS)
+        self.q_norm = GemmaRMSNorm(w.get(f"{prefix}.q_norm.weight").to(device), self.eps)
+        self.k_norm = GemmaRMSNorm(w.get(f"{prefix}.k_norm.weight").to(device), self.eps)
         self.rope = rope
         self.ragged = ragged
 
@@ -48,7 +50,7 @@ class Attention:
         gate = qkv[:, : self.q_size * 2].view(t, self.num_heads, 2 * self.head_dim)[..., self.head_dim :]
         q, k = qk_norm_rope(
             qkv, positions, self.rope.cos_sin, self.q_norm.weight, self.k_norm.weight,
-            self.num_heads, self.num_kv_heads, self.head_dim, self.rope.rotary_dim, config.RMS_NORM_EPS,
+            self.num_heads, self.num_kv_heads, self.head_dim, self.rope.rotary_dim, self.eps,
         )
         v = qkv[:, self.q_size * 2 + self.kv_size :].view(t, self.num_kv_heads, self.head_dim).contiguous()
         return q, k, v, gate

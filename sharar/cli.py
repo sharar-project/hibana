@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 
@@ -60,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     p_sb.add_argument("--chunk-size", type=int, default=2048)
     p_sb.add_argument("--prefill-budget", type=int, default=4096)
     p_serve = sub.add_parser("serve", help="OpenAI-compatible HTTP server")
+    p_serve.add_argument("--target", default=None, help="pinned serving target (default: SHARAR_TARGET, else qwen38)")
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=30001)
     p_serve.add_argument("--proposer", choices=("mtp", "ngram", "dspark", "dflash2"), default="dflash2")
@@ -173,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
         from sharar.api.server import serve
         serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state,
               draft_precision=args.draft_precision, traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
-              accept_default=accept_default)
+              accept_default=accept_default, target=args.target or os.environ.get("SHARAR_TARGET") or None)
         return 0
     if args.command == "train":
         import os

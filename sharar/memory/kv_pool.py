@@ -14,19 +14,22 @@ from __future__ import annotations
 
 import torch
 
-from sharar import config
+from sharar.target import DEFAULT_TARGET, Target
 
 KV_DTYPE = torch.float8_e4m3fn
 
 
 class KvPool:
-    def __init__(self, num_pages: int, device: torch.device, page_size: int = 1, layer_ids: list[int] | None = None, dtype: torch.dtype = KV_DTYPE):
+    def __init__(self, num_pages: int, device: torch.device, page_size: int = 1, layer_ids: list[int] | None = None, dtype: torch.dtype = KV_DTYPE,
+                 target: Target | None = None):
+        self.target = target or DEFAULT_TARGET
         self.num_pages = num_pages
         self.page_size = page_size
         self.device = device
         self.dtype = dtype
-        self.layer_ids = layer_ids if layer_ids is not None else [i for i in range(config.NUM_LAYERS) if (i + 1) % config.FULL_ATTENTION_INTERVAL == 0]
-        shape = (num_pages, page_size, config.NUM_KV_HEADS, config.HEAD_DIM)
+        self.num_kv_heads, self.head_dim = self.target.num_kv_heads, self.target.head_dim
+        self.layer_ids = layer_ids if layer_ids is not None else list(self.target.attention_layer_ids)
+        shape = (num_pages, page_size, self.num_kv_heads, self.head_dim)
         self.k = {i: torch.zeros(shape, dtype=dtype, device=device) for i in self.layer_ids}
         self.v = {i: torch.zeros(shape, dtype=dtype, device=device) for i in self.layer_ids}
         # Simple free list; page 0 is reserved as the dummy page for padded batch rows.
@@ -38,7 +41,7 @@ class KvPool:
 
     @property
     def bytes(self) -> int:
-        n = self.num_pages * self.page_size * config.NUM_KV_HEADS * config.HEAD_DIM
+        n = self.num_pages * self.page_size * self.num_kv_heads * self.head_dim
         return n * 2 * len(self.layer_ids) * self.k[self.layer_ids[0]].element_size()
 
     def alloc(self, n: int) -> torch.Tensor:

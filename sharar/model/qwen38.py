@@ -14,7 +14,7 @@ from pathlib import Path
 
 import torch
 
-from sharar import config
+from sharar.target import QWEN38, Target
 from sharar.engine.context import ForwardContext, scratch_prefill_context
 from sharar.model.gdn_plan import prepare_gdn_prefill
 from sharar.engine.contracts import ForwardResult
@@ -34,16 +34,17 @@ FUSED_NORM_NVFP4 = os.environ.get("SHARAR_FUSED_NORM_NVFP4", "0") == "1"
 
 
 class DecoderLayer:
-    def __init__(self, w: SnapshotWeights, index: int, kind: str, device: torch.device, rope: PartialRotary, ragged: ops.RaggedAttention, fused_silu_quant: bool):
+    def __init__(self, w: SnapshotWeights, index: int, kind: str, device: torch.device, rope: PartialRotary, ragged: ops.RaggedAttention, fused_silu_quant: bool,
+                 target: Target = QWEN38):
         p = f"{PREFIX}.layers.{index}"
         self.index = index
         self.kind = kind
-        self.input_norm = GemmaRMSNorm(w.get(f"{p}.input_layernorm.weight").to(device), config.RMS_NORM_EPS)
-        self.post_norm = GemmaRMSNorm(w.get(f"{p}.post_attention_layernorm.weight").to(device), config.RMS_NORM_EPS)
+        self.input_norm = GemmaRMSNorm(w.get(f"{p}.input_layernorm.weight").to(device), target.rms_norm_eps)
+        self.post_norm = GemmaRMSNorm(w.get(f"{p}.post_attention_layernorm.weight").to(device), target.rms_norm_eps)
         if kind == "full_attention":
-            self.mixer = Attention(w, f"{p}.self_attn", index, device, rope, ragged)
+            self.mixer = Attention(w, f"{p}.self_attn", index, device, rope, ragged, target=target)
         else:
-            self.mixer = GatedDeltaNet(w, f"{p}.linear_attn", index, device)
+            self.mixer = GatedDeltaNet(w, f"{p}.linear_attn", index, device, target=target)
         self.mlp = Mlp(w, f"{p}.mlp", device, fused_silu_quant=fused_silu_quant)
 
     def forward(self, hidden: torch.Tensor, residual: torch.Tensor | None, ctx: ForwardContext) -> tuple[torch.Tensor, torch.Tensor]:
@@ -66,30 +67,31 @@ class DecoderLayer:
 
 
 class Qwen38:
-    def __init__(self, snap: Path, device: torch.device | str = "cuda", fused_silu_quant: bool = True, log=print):
+    def __init__(self, snap: Path, device: torch.device | str = "cuda", fused_silu_quant: bool = True, log=print, target: Target = QWEN38):
         from sharar.memory.ledger import check_load_headroom
         from sharar.kernels import w3
         if os.environ.get("SHARAR_W3_CHECKPOINT") and not w3.ENABLED:
             raise ValueError("SHARAR_W3_CHECKPOINT requires SHARAR_W3_DECODE=1")
-        check_load_headroom(config.WEIGHT_LOAD_PEAK_BYTES)
+        self.target = target
+        check_load_headroom(target.weight_load_peak_bytes)
         self.device = torch.device(device)
-        cfg = config.load_model_config(snap)
-        types = config.layer_types(cfg)
+        cfg = target.load_model_config(snap)
+        types = target.layer_types_of(cfg)
         started = time.perf_counter()
         w = SnapshotWeights(snap)
         self.embed = w.get(f"{PREFIX}.embed_tokens.weight").to(self.device)
         w.close()
         self.rope = PartialRotary(
-            config.HEAD_DIM,
-            int(config.HEAD_DIM * config.PARTIAL_ROTARY_FACTOR),
-            config.ROPE_THETA,
-            config.MAX_POSITION_EMBEDDINGS,
+            target.head_dim,
+            target.rotary_dim,
+            target.rope_theta,
+            target.max_position_embeddings,
             self.device,
         )
-        self.ragged = ops.RaggedAttention(self.device, config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM)
+        self.ragged = ops.RaggedAttention(self.device, target.num_attention_heads, target.num_kv_heads, target.head_dim)
         self.layers: list[DecoderLayer] = []
         for i, kind in enumerate(types):
-            self.layers.append(DecoderLayer(w, i, kind, self.device, self.rope, self.ragged, fused_silu_quant))
+            self.layers.append(DecoderLayer(w, i, kind, self.device, self.rope, self.ragged, fused_silu_quant, target=target))
             # GB10 counts source mappings and CUDA allocations against the
             # same physical pool. No layer retains CPU checkpoint tensors.
             # Reopen a shard on demand rather than holding every source map
@@ -97,7 +99,7 @@ class Qwen38:
             w.close()
             if log and (i + 1) % 8 == 0:
                 log(f"  loaded {i + 1}/{len(types)} layers ({time.perf_counter() - started:.0f}s)")
-        self.final_norm = GemmaRMSNorm(w.get(f"{PREFIX}.norm.weight").to(self.device), config.RMS_NORM_EPS)
+        self.final_norm = GemmaRMSNorm(w.get(f"{PREFIX}.norm.weight").to(self.device), target.rms_norm_eps)
         self.lm_head = load_nvfp4_linear(w, ["lm_head"], self.device)
         w.close()
         torch.cuda.synchronize()

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import json
 import struct
 
-from sharar import config
+from sharar.target import DEFAULT_TARGET
 
 GIB = 2**30
 
@@ -45,31 +45,35 @@ def tensor_bytes(snapshot, prefix=''):
     return total, largest
 
 
-def verify_bytes(batch, steps, strategy):
-    ssm = 48 * batch * 48 * 128 * 128 * 4
-    conv = 48 * batch * steps * (2 * 16 * 128 + 48 * 128) * 3 * 2
+def verify_bytes(batch, steps, strategy, target=None):
+    t = target or DEFAULT_TARGET
+    layers = len(t.gdn_layer_ids)
+    ssm = layers * batch * t.linear_num_value_heads * t.linear_value_head_dim * t.linear_key_head_dim * 4
+    conv = layers * batch * steps * t.conv_dim * t.conv_state_len * 2
     if strategy == 'snapshots':
         return ssm * steps + conv
-    compact = 48 * batch * steps * ((16 * 128 + 48 * 128) * 2 + 48 * 2 * 4)
+    compact = layers * batch * steps * ((t.linear_num_key_heads * t.linear_key_head_dim + t.linear_num_value_heads * t.linear_value_head_dim) * 2
+                                        + t.linear_num_value_heads * 2 * 4)
     return compact + conv
 
 
-def budget(spec, batch, context, *, cache_slots=96):
+def budget(spec, batch, context, *, cache_slots=96, target=None):
     """Return fixed future bytes and extra bytes per target KV page.
 
     Header-derived weights, exact persistent tensor shapes, plus explicit
     bounded load/graph/activation reserves. Reserves are not claimed allocations.
     """
-    fixed = verify_bytes(batch, spec.depth + 1, spec.state_strategy)
+    t = target or DEFAULT_TARGET
+    fixed = verify_bytes(batch, spec.depth + 1, spec.state_strategy, t)
     page_bytes = 0
     if spec.name == 'mtp':
-        weights, largest = tensor_bytes(config.snapshot_dir(), 'mtp.')
+        weights, largest = tensor_bytes(t.snapshot_dir(), 'mtp.')
         fixed += weights + 2 * largest + 128 * 2**20
-        page_bytes = 2 * config.NUM_KV_HEADS * config.HEAD_DIM * 2
+        page_bytes = 2 * t.num_kv_heads * t.head_dim * 2
     elif spec.name in ('dspark', 'dflash2'):
         from sharar.proposers.parallel import PINS
         name, revision = PINS[spec.name]
-        snapshot = config.snapshot_dir().parents[2] / ('models--' + name.replace('/', '--')) / 'snapshots' / revision
+        snapshot = t.snapshot_dir().parents[2] / ('models--' + name.replace('/', '--')) / 'snapshots' / revision
         weights, largest = tensor_bytes(snapshot)
         cfg = json.loads((snapshot / 'config.json').read_text())
         window = cfg['sliding_window'] or context

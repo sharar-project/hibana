@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request as HttpRequest
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
-from sharar import config
+from sharar import target as targets
 from sharar.api.chat_template import ChatTemplate
 from sharar.api.detok import Detokenizer
 from sharar.api.parsers.reasoning import ReasoningParser
@@ -29,10 +29,10 @@ from sharar.engine.sampler import InvalidRequest
 from sharar.engine.scheduler import QueueFull, Scheduler
 from sharar.tokenizer import SnapshotTokenizer
 
-MODEL_ID = config.MODEL_ID
 
 
 def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, describe: dict) -> FastAPI:
+    MODEL_ID = describe.get("model_path", targets.DEFAULT_TARGET.model_id)  # the served checkpoint id, reported as the model name
     @asynccontextmanager
     async def lifespan(app):
         yield
@@ -135,7 +135,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     async def tokenize(body: dict):
         text = body.get("prompt") if body.get("prompt") is not None else body.get("text", "")
         ids = tok.encode(text)
-        return {"tokens": ids, "count": len(ids), "max_model_len": config.CONTEXT_LENGTH}
+        return {"tokens": ids, "count": len(ids), "max_model_len": describe.get("context_length", targets.DEFAULT_TARGET.context_length)}
 
     # ---- /generate (SGLang style) ----
     @app.post("/generate")
@@ -380,7 +380,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
 def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
           traces: str | None = None, traces_max_mib: int = 32768, draft_dir: str | None = None,
-          accept_default: tuple[int, float] = (1, 0.0)) -> None:
+          accept_default: tuple[int, float] = (1, 0.0), target: str | None = None) -> None:
     from sharar.memory.spec_budget import SpecConfig
     from sharar.api.validation import set_accept_default
 
@@ -392,22 +392,21 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         raise ValueError('draft precision requires speculation')
     if draft_dir is not None and not spec:
         raise ValueError('a draft directory requires speculation')
+    served = targets.get(target)
     spec_config = SpecConfig(proposer, spec, state_strategy, draft_precision, draft_dir) if spec else None
     if spec_config is not None:
         from sharar.proposers.factory import draft_snapshot
         if proposer in ('dspark', 'dflash2'):
-            draft_snapshot(proposer, draft_dir)  # fail before loading the target
+            draft_snapshot(proposer, draft_dir, served)  # fail before loading the target
     import uvicorn
 
     from sharar.engine.executor import Executor
     from sharar.engine.scheduler import SchedulerConfig
-    from sharar.model.qwen38 import Qwen38
-
-    snap = config.snapshot_dir()
+    snap = served.snapshot_dir()
     tok = SnapshotTokenizer(snap)
     tmpl = ChatTemplate(snap)
-    log(f"loading {MODEL_ID}@{config.MODEL_REVISION[:8]}")
-    model = Qwen38(snap, log=log)
+    log(f"loading {served.name}: {served.model_id}@{served.model_revision[:8]}")
+    model = targets.load_model(served, snap, log=log)
     ex = Executor(model, log=log, spec_config=spec_config)
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
@@ -424,10 +423,11 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         log(f"recording opt-in request traces under {sink.directory} (cap {traces_max_mib} MiB)")
     describe = {
         "engine": "sharar",
-        "model_path": MODEL_ID,
-        "revision": config.MODEL_REVISION,
+        "target": served.name,
+        "model_path": served.model_id,
+        "revision": served.model_revision,
         "w3_target_identity": getattr(model, "w3_identity", None),
-        "context_length": config.CONTEXT_LENGTH,
+        "context_length": ex.max_context,
         "max_running_requests": cfg.max_running,
         "max_queued_requests": cfg.max_queued,
         "chunked_prefill_size": cfg.chunk_size,

@@ -333,6 +333,8 @@ class HeadOnlyTarget:
 
     def __init__(self, snap: Path, device="cuda"):
         from sharar.kernels import ops
+        from sharar.target import QWEN38
+        self.target = QWEN38  # the drafter is trained against the 27B
         from sharar.model.qwen38 import PREFIX
         from sharar.weights.modelopt import load_nvfp4_linear
         from sharar.weights.safetensors import SnapshotWeights

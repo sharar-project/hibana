@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from sharar import config
 from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import capture_sizes, check_context_capacity
 from sharar.memory.kv_pool import KV_DTYPE
@@ -70,8 +69,8 @@ class VerifyGraphs:
         indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_all]).cumsum(0).tolist()), dtype=torch.int32)
         st["wrapper"].plan(
             torch.arange(0, b * s + 1, s, dtype=torch.int32), indptr, torch.cat(kv_all), torch.ones(b, dtype=torch.int32),
-            config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, 1,
-            causal=True, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=config.HEAD_DIM**-0.5,
+            self.ex.target.num_attention_heads, self.ex.target.num_kv_heads, self.ex.target.head_dim, 1,
+            causal=True, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=self.ex.target.head_dim**-0.5,
         )
 
     def capture(self, log=None) -> None:
