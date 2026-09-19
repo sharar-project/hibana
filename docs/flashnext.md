@@ -65,6 +65,7 @@ the host for graph-captured decode and verify); `Executor.register_state`.
 | + parallel PLE row reads (20:15) | batch-1 step 40.1 ms (24.9 tok/s), batch 4 43.7 ms (91.6 tok/s). The serial memory-map gather paid up to sixteen NVMe latencies per token (4.7 ms cold); 32 threads of `pread` take 1.4 ms. GPU time per step is 32.5 ms, graph launch 0.05 ms |
 | MTP k=3, batch 1 (`bench-decode --spec 3`, reconstruct strategy) | JSON prompt 22.3 -> 44.4 tok/s (1.99x, 79% accepted, 3.32 tok/round), needle prompt 1.79x; per round draft 11.6 ms + verify 59 ms + accept 5 to 40 ms (the accept commit phase varies by prompt and run: 2 to 36 ms, 376 ms once; unexplained, profile next) |
 | MTP k=3, batch 4 | JSON 1.97x (172 tok/s), needle 1.54x (136 tok/s); k=2 is not better at either batch size |
+| `SHARAR_FLASHNEXT_TRUNK=w3` (nearest-rounded 3.25-bit decode copies over FP8, mixers stay FP8) | batch-1 step 31.0 ms (32.3 tok/s), batch 4 35.8 ms (112 tok/s); parity: long code prompts unchanged, the two short text prompts drop (top-1 71 to 89%, confident 83 to 100%) as nearest rounding did on the 27B; accuracy gate pending, calibration (GPTQ) is the known fix |
 | Served through the launcher (`config/flashnext.env`, MTP k=3, exact greedy, concurrency 4), 2026-09-19 | GSM8K-300 96.0% in 1,002 s (SGLang 95.3% in 1,889 s; 27B 95.0%), HumanEval 94.5% in 390 s (SGLang 94.5% in 714 s; 27B 90.9%) |
 
 Serving: `SHARAR_CONFIG_FILE=config/flashnext.env ./run-sharar.sh` (image
