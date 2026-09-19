@@ -29,7 +29,7 @@ class DraftGraphs:
         d = self.device
         st = {
             "tokens": torch.zeros(b, dtype=torch.int64, device=d),
-            "hidden": torch.zeros(b, self.target.hidden_size, dtype=torch.bfloat16, device=d),
+            "hidden": torch.zeros(b, getattr(self.mtp, "hidden_width", self.target.hidden_size), dtype=torch.bfloat16, device=d),
             "positions": torch.zeros(b, dtype=torch.int64, device=d),
             "pages": torch.zeros(b, dtype=torch.int32, device=d),
             "qo_indptr": torch.arange(0, b + 1, dtype=torch.int32, device=d),

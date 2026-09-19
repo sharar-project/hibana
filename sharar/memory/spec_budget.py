@@ -68,6 +68,9 @@ def budget(spec, batch, context, *, cache_slots=96, target=None):
     page_bytes = 0
     if spec.name == 'mtp':
         weights, largest = tensor_bytes(t.snapshot_dir(), 'mtp.')
+        if t.family == 'flashnext':
+            # The expert tensors (most of the bytes) are stored FP8 and loaded one expert at a time.
+            weights, largest = weights // 2, 4 * 2**20
         fixed += weights + 2 * largest + 128 * 2**20
         page_bytes = 2 * t.num_kv_heads * t.head_dim * 2
     elif spec.name in ('dspark', 'dflash2'):

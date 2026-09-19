@@ -74,7 +74,11 @@ row in the [optimization inventory](docs/optimizations.md) in the same change.
 A target is a pinned checkpoint with a `Target` value in `sharar/target.py`
 (geometry, profile, load budget, snapshot lookup, host validation) and a
 model package under `sharar/model/` whose forward returns `ForwardResult`
-and exposes `.target`. Register the loader in `target.load_model`. The
+and exposes `.target`. Register the loader in `target.load_model` under a
+new `Target.family`; model-specific facts become optional `Target` fields
+(absent for the 27B), per-slot state beyond the GDN's goes through
+`StatePool.register_aux`, and a family's model cache is named by
+`Target.cache_env`. `sharar/model/flashnext/` is the worked example. The
 engine, pools and graphs read `executor.target`; do not add module-level
 constants for a new model, and keep `config.py` describing the 27B for the
 tools that import it. Validate a new target with layer-by-layer parity

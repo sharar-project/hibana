@@ -171,7 +171,7 @@ class StateManager:
             req.reservation.full_pages = torch.cat([req.pages, req.reservation.pages])
         return req.reservation.full_pages
 
-    def commit(self, req: Request, count: int, *, ssm=None, conv=None) -> None:
+    def commit(self, req: Request, count: int, *, ssm=None, conv=None, aux: dict | None = None) -> None:
         """Keep count verify inputs, or publish a successful in-place decode.
 
         ssm/conv are borrowed snapshots after input count-1; together they
@@ -186,6 +186,8 @@ class StateManager:
         if ssm is not None:
             self.recurrent.ssm_all[:, req.slot].copy_(ssm)
             self.recurrent.conv_all[:, req.slot].copy_(conv)
+            for name, value in (aux or {}).items():
+                self.recurrent.aux[name][req.slot].copy_(value)
         self._publish(req, count, pages)
 
     def _validate_reconstruction(self, requests, replay, conv_windows, verified_steps: int, counts=None) -> list[int]:
@@ -213,7 +215,7 @@ class StateManager:
                     raise ValueError("reconstruction commit outside reservation")
         return slots
 
-    def commit_reconstructed(self, requests, counts, replay, conv_windows, *, verified_steps: int) -> None:
+    def commit_reconstructed(self, requests, counts, replay, conv_windows, *, verified_steps: int, aux_windows: dict | None = None) -> None:
         """Validate the whole batch before allowing reconstruction into private slots.
 
         Prepare retained page tensors before mutation. A failed in-place commit
@@ -229,6 +231,8 @@ class StateManager:
             replay.run(self.recurrent, metadata[0], metadata[1])
             for row, (req, count) in enumerate(zip(requests, counts)):
                 conv[:, req.slot].copy_(conv_windows[:, row, count - 1])
+                for name, win in (aux_windows or {}).items():
+                    self.recurrent.aux[name][req.slot].copy_(win[row, count - 1])
             for req, count, retained in zip(requests, counts, pages):
                 self._publish(req, count, retained)
         except BaseException as exc:

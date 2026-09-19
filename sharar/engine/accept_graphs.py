@@ -80,6 +80,8 @@ class AcceptGraphs:
         self.spec.replay.run(pool, slots, counts.to(torch.int32))
         rows = torch.arange(b, device=self.device)
         pool.conv_all[:, slots.long()] = self.spec.conv_windows_all[:, rows, (counts - 1).clamp(min=0)]
+        for name, win in self.spec.aux_windows.items():
+            pool.aux[name][slots.long()] = win[rows, (counts - 1).clamp(min=0)]
         self.spec.proposer.feedback_device(vst["features"], meta[:, 1], meta[:, 2], counts, s)
         st["packet"].copy_(torch.cat([st["y"], z, accepted.unsqueeze(1), counts.unsqueeze(1), flags.to(torch.int64)], dim=1))
 

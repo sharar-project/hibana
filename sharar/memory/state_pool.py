@@ -41,6 +41,9 @@ class StatePool:
         self._free = list(range(num_slots - 1, 0, -1))
         self.scratch = list(range(num_slots, total))
         self.on_free = []  # optional auxiliary owners tied to a committed slot
+        # Extra per-slot state registered by a model (e.g. the PLE convolution window), [total, ...] each;
+        # cleared, copied and parked together with the recurrent states.
+        self.aux: dict[str, torch.Tensor] = {}
 
     @property
     def free_count(self) -> int:
@@ -66,10 +69,21 @@ class StatePool:
             callback(slot)
         self._free.append(slot)
 
+    def register_aux(self, name: str, shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
+        """Allocate (once) a zeroed [total_slots, *shape] tensor that follows the slots' lifecycle."""
+        t = self.aux.get(name)
+        if t is None:
+            t = self.aux[name] = torch.zeros((self.num_slots + len(self.scratch), *shape), dtype=dtype, device=self.device)
+        return t
+
     def clear(self, slot: int) -> None:
         self.conv_all[:, slot].zero_()
         self.ssm_all[:, slot].zero_()
+        for t in getattr(self, "aux", {}).values():  # test doubles skip __init__
+            t[slot].zero_()
 
     def copy_slot(self, src: int, dst: int) -> None:
         self.conv_all[:, dst].copy_(self.conv_all[:, src])
         self.ssm_all[:, dst].copy_(self.ssm_all[:, src])
+        for t in getattr(self, "aux", {}).values():
+            t[dst].copy_(t[src])

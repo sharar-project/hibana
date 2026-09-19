@@ -192,7 +192,8 @@ class ColdTier:
 
     def _state_bytes(self) -> int:
         sp = self.state_pool
-        return sp.conv_all[:, 0].numel() * sp.conv_all.element_size() + sp.ssm_all[:, 0].numel() * sp.ssm_all.element_size()
+        return (sp.conv_all[:, 0].numel() * sp.conv_all.element_size() + sp.ssm_all[:, 0].numel() * sp.ssm_all.element_size()
+                + sum(t[0].numel() * t.element_size() for t in getattr(sp, "aux", {}).values()))
 
     def register_codec(self, identity, export, import_) -> None:
         """Import receives ``slot=`` naming the newly owned recurrent slot."""
@@ -258,7 +259,14 @@ class ColdTier:
         conv.copy_(sp.conv_all[:, slot])
         ssm.copy_(sp.ssm_all[:, slot])
         cursor = base + conv_n + ssm_n
-        aux = {}
+        pool_aux = {}
+        for name, t in getattr(sp, "aux", {}).items():
+            n = t[0].numel() * t.element_size()
+            v = self.arena.view((slab_i, cursor), n, t.dtype, tuple(t[0].shape))
+            v.copy_(t[slot])
+            pool_aux[name] = v
+            cursor += n
+        aux = {"__pool__": ((), list(pool_aux.items()))} if pool_aux else {}
         for identity, scalars, tensors in aux_items:
             views = []
             for x in tensors:
@@ -320,6 +328,10 @@ class ColdTier:
         sp.ssm_all[:, slot].copy_(entry.ssm)
         aux = {}
         for identity, (scalars, views) in entry.auxiliary.items():
+            if identity == "__pool__":
+                for name, v in views:
+                    sp.aux[name][slot].copy_(v)
+                continue
             codec = self.codecs.get(identity)
             if codec is not None:
                 value = codec[1]((*scalars, *views), slot=slot)

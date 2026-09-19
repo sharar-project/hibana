@@ -38,6 +38,7 @@ class PrefillBatch:
 
 class Executor:
     timing = False  # benchmarks set True: synchronize to attribute prefill wall time (class attribute: test executors skip __init__)
+    _ple = None  # the model's prefix-lookup embedding layer when it has one (Flash-Next); class attribute for the same reason
 
     def __init__(self, model: Qwen38, num_pages: int | None = None, num_slots: int | None = None, max_batch: int = 4, use_cache: bool = True, log=None, max_context: int | None = None, spec_config=None):
         self.target: Target = model.target
@@ -48,6 +49,7 @@ class Executor:
         self.max_context = max_context
         self.model = model
         self.device = model.device
+        self._ple = getattr(model, "ple", None)  # prefix-lookup embeddings need the tokens before each forward
         self.ledger = Ledger(target=self.target)
         self.ledger.record_cuda_allocated("weights")
         future, extra_page = 2 * 2**30, 0
@@ -65,6 +67,8 @@ class Executor:
         self.kv_pool = KvPool(num_pages, self.device, target=self.target)
         self.ledger.record_cuda_allocated("kv_pool")
         self.state_pool = StatePool(num_slots, self.device, target=self.target)
+        if hasattr(model, "register_state"):
+            model.register_state(self.state_pool)  # e.g. the PLE convolution window (StatePool.aux)
         self.ledger.record_cuda_allocated("state_pool")
         cache = RadixCache(self.kv_pool, self.state_pool, self.device) if use_cache else None
         self.state = StateManager(self.kv_pool, self.state_pool, cache)
@@ -331,6 +335,8 @@ class Executor:
         if start:
             self._plan_paged_prefill(req.pages[:start], t)
             ctx.paged_prefill_wrapper = self._paged_prefill
+        if self._ple is not None:
+            ctx.ple_history = torch.tensor([self._ple_history(req, start)], dtype=torch.int64)
         for _, pos, slot in self.state.prefill_checkpoints([(req, self._checkpoint_positions(start, end, n))]):
             ctx.checkpoint_positions.append(pos)
             ctx.checkpoint_slots.append(slot)
@@ -384,9 +390,30 @@ class Executor:
             )
             ctx.paged_prefill_wrapper = self._paged_prefill
         ids = upload(ids_list, torch.int64, d)
+        if self._ple is not None:
+            ctx.ple_history = torch.tensor([self._ple_history(req, req.prefill_pos) for req, _ in chunks], dtype=torch.int64)
         if self._features_wanted() is not None:
             ctx.feature_request = self._features_wanted()
         return PrefillBatch(list(chunks), ids, ctx, started)
+
+    def _ple_history(self, req: Request, start: int) -> list[int]:
+        """The two tokens before absolute position `start` of the request (EOS before the sequence)."""
+        full = req.prompt_ids + req.output_ids
+        eos = self.model.eos
+        return [full[i] if i >= 0 else eos for i in (start - 2, start - 1)]
+
+    def _ple_rows_block(self, reqs: list[Request], drafts: list[list[int]]) -> torch.Tensor:
+        """Table rows for each request's verify block (its pending token then the drafted ones) -> device uint8 [B*(k+1), heads, row_bytes]."""
+        k = len(drafts[0])
+        tokens = torch.tensor([[r.output_ids[-1], *d] for r, d in zip(reqs, drafts)], dtype=torch.int64).reshape(-1)
+        histories = torch.tensor([self._ple_history(r, r.context_len - 1) for r in reqs], dtype=torch.int64)
+        return self._ple.rows_for(tokens, [(i * (k + 1), k + 1) for i in range(len(reqs))], histories, self.model.eos)
+
+    def _ple_rows(self, reqs: list[Request]) -> torch.Tensor:
+        """Table rows for each request's pending decode token (host gather) -> device uint8 [B, heads, row_bytes]."""
+        tokens = torch.tensor([r.output_ids[-1] for r in reqs], dtype=torch.int64)
+        histories = torch.tensor([self._ple_history(r, r.context_len - 1) for r in reqs], dtype=torch.int64)
+        return self._ple.rows_for(tokens, [(i, 1) for i in range(len(reqs))], histories, self.model.eos)
 
     def _finish_prefill(self, batch: PrefillBatch, out) -> int | None:
         chunks, started = batch.chunks, batch.started
@@ -515,6 +542,7 @@ class Executor:
                 new_pages,
                 step_pages,
                 return_features=self.spec is not None,
+                ple_rows=self._ple_rows(reqs) if self._ple is not None else None,
             )
             if self.spec is not None:
                 logits, out = result
@@ -529,6 +557,8 @@ class Executor:
                 slots=upload([r.slot for r in reqs], torch.int32, self.device),
                 out_pages=new_pages, decode_wrapper=self._decode_wrapper, batch_size=len(reqs),
             )
+            if self._ple is not None:
+                ctx.ple_rows = self._ple_rows(reqs)
             if self._features_wanted() is not None:
                 ctx.feature_request = self._features_wanted()
             out = self.model.forward(tokens, ctx)

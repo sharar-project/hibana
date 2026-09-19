@@ -30,7 +30,11 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
         from sharar.weights.safetensors import SnapshotWeights
         w = SnapshotWeights(model.target.snapshot_dir())
         try:
-            head = MtpHead(w, context.device, model.embed, model.lm_head, model.rope, num_pages)
+            if model.target.family == "flashnext":
+                from sharar.model.flashnext.mtp import FlashNextMtpHead
+                head = FlashNextMtpHead(w, context.device, model, num_pages)
+            else:
+                head = MtpHead(w, context.device, model.embed, model.lm_head, model.rope, num_pages)
         finally:
             w.close()
         head.target = model.target

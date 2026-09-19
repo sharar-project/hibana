@@ -17,6 +17,7 @@ to the source recorded in each report.
 | [Roadmap](../roadmap.md) | Current priorities and remaining engineering work |
 | [Draft adaptation](draft-adaptation.md) | Training the DFlash2 drafter on recorded traffic: `sharar-ctl train`, traces, promotion, design and limits |
 | [W3 calibration](w3-calibration.md) | Fit, validate and load activation-aware three-bit target decode copies |
+| [Qwen3.8-Flash-Next](flashnext.md) | The second target: package layout, checkpoint conventions, parity and decode numbers, what is not ported |
 | [Cache-policy proposal](request-cache-policy.md) | Unimplemented request-level cache controls |
 | [Archive and decisions](archive/README.md) | Historical studies, manifests and rejected experiments |
 

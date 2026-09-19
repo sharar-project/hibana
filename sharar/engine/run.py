@@ -28,12 +28,18 @@ def _canary_checks():
 
 
 def _load(graphs: bool = True, spec: int = 0) -> tuple[Qwen38, Executor, SnapshotTokenizer]:
-    snap = config.snapshot_dir()
-    print(f"loading {config.MODEL_ID}@{config.MODEL_REVISION[:8]}")
-    model = Qwen38(snap)
-    ex = Executor(model, log=print)
+    import os
+    from sharar import target as targets
+    target = targets.get(os.environ.get("SHARAR_TARGET") or None)
+    snap = target.snapshot_dir()
+    print(f"loading {target.model_id}@{target.model_revision[:8]} ({target.name})")
+    model = targets.load_model(target, snap)
+    spec_config = None
     if spec:
-        ex.enable_spec(spec, log=print)
+        from sharar.memory.spec_budget import SpecConfig
+        spec_config = SpecConfig("mtp", spec, "snapshots", "bf16", None)  # reserve the verify/draft budget in the pool plan
+    max_context = int(os.environ.get("SHARAR_BENCH_MAX_CONTEXT", "0")) or None  # smaller pools for large models
+    ex = Executor(model, log=print, spec_config=spec_config, max_context=max_context)  # a spec_config enables speculation itself
     if graphs:
         started = time.perf_counter()
         ex.capture_graphs()
@@ -133,7 +139,7 @@ def bench_decode_cli(prompts_path: str, name: str, max_new_tokens: int, batches:
         ex.spec.timing = True
     if spec:
         return _bench_spec(ex, tok, prompts, max_new_tokens, batches)
-    weight_bytes = 19.2 * 2**30
+    weight_bytes = getattr(model, "stream_bytes", 19.2 * 2**30)  # bytes read per decode step for the bandwidth estimate
     params = SamplingParams(max_new_tokens=max_new_tokens, ignore_eos=True)
     ok = True
     for b in (int(x) for x in batches.split(",")):

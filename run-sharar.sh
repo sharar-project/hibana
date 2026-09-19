@@ -158,7 +158,13 @@ if [[ -n "$DRAFT_DIR" ]]; then
   serve_args+=(--draft /draft)
 fi
 if [[ -n "${SHARAR_TARGET:-}" ]]; then
-  args+=(--env "SHARAR_TARGET=$SHARAR_TARGET")   # pinned serving target (sharar/target.py); qwen38 is the only one today
+  args+=(--env "SHARAR_TARGET=$SHARAR_TARGET")   # pinned serving target (sharar/target.py): qwen38 (default) or flashnext
+fi
+if [[ "${SHARAR_TARGET:-}" == flashnext ]]; then
+  FN_CACHE="${SHARAR_FLASHNEXT_CACHE:?SHARAR_TARGET=flashnext needs SHARAR_FLASHNEXT_CACHE (the RadixArk/Qwen3.8-Flash-Next-NVFP4 model cache)}"
+  [[ -d "$FN_CACHE/models--RadixArk--Qwen3.8-Flash-Next-NVFP4/snapshots" ]] || fail "no Flash-Next snapshot under $FN_CACHE"
+  args+=(--volume "$FN_CACHE:/cache/flash-next:ro" --env SHARAR_FLASHNEXT_CACHE=/cache/flash-next
+         --env "SHARAR_FLASHNEXT_TRUNK=${SHARAR_FLASHNEXT_TRUNK:-fp8}")   # trunk precision at load: fp8 (default) or bf16
 fi
 if [[ -n "${SHARAR_DEVICE_ACCEPT:-}" ]]; then
   [[ "$SHARAR_DEVICE_ACCEPT" == 0 || "$SHARAR_DEVICE_ACCEPT" == 1 ]] || fail "SHARAR_DEVICE_ACCEPT must be 0 or 1"

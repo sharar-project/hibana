@@ -34,6 +34,8 @@ class Verification:
 
 
 class SpecDecoder:
+    aux_windows: dict = {}  # class attribute: test decoders skip __init__
+
     def __init__(self, executor, proposer: Proposer, state_strategy: str = "snapshots"):
         if state_strategy not in ("snapshots", "reconstruct"):
             raise ValueError("unknown verify state strategy")
@@ -62,6 +64,9 @@ class SpecDecoder:
             self.inter_ssm = {lid: self.inter_ssm_all[j] for j, lid in enumerate(layer_ids)}
         self.conv_windows_all = torch.zeros((len(layer_ids), n, self.steps, *conv_shape), dtype=torch.bfloat16, device=self.device)
         self.conv_windows = {lid: self.conv_windows_all[j] for j, lid in enumerate(layer_ids)}
+        # Auxiliary per-slot state (StatePool.aux) after each verify step, same lifecycle as the conv windows.
+        self.aux_windows = {name: torch.zeros((n, self.steps, *t.shape[1:]), dtype=t.dtype, device=self.device)
+                            for name, t in getattr(executor.state_pool, "aux", {}).items()}
         self.verify_graphs = None
         # Device-resident acceptance for all-greedy graph batches (engine/accept_graphs.py);
         # SHARAR_DEVICE_ACCEPT=0 keeps the host path for every round.
@@ -99,7 +104,8 @@ class SpecDecoder:
 
     @property
     def bytes(self) -> int:
-        return sum(t.numel() * t.element_size() for t in (self.inter_ssm_all, self.conv_windows_all) if t is not None) + (self.replay.bytes if self.replay is not None else 0)
+        return (sum(t.numel() * t.element_size() for t in (self.inter_ssm_all, self.conv_windows_all, *self.aux_windows.values()) if t is not None)
+                + (self.replay.bytes if self.replay is not None else 0))
 
     def reset_stats(self) -> None:
         self.rounds = self.proposed = self.accepted = self.emitted = self.relaxed_accepts = 0
@@ -209,8 +215,9 @@ class SpecDecoder:
         s_len = k + 1
         if self.ex.use_graphs and self.verify_graphs is not None:
             graphs = self.width_graphs.get(k, self.verify_graphs)
+            ple_rows = self.ex._ple_rows_block(batch.requests, batch.proposal.tokens.tolist()) if getattr(self.ex, "_ple", None) is not None else None
             norm_rows, z_flat, ctx, layers, logits = graphs.run(batch.tokens, batch.positions, batch.pages,
-                                                               batch.slots, batch.kv_pages, sampled=batch.sampled)
+                                                               batch.slots, batch.kv_pages, sampled=batch.sampled, ple_rows=ple_rows)
             accept = getattr(graphs, "accept", None)
             if accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests):
                 if self.timing:
@@ -269,8 +276,10 @@ class SpecDecoder:
             seq_prefix_lens=[r.context_len - 1 for r in batch.requests], seq_lens=[s_len] * b_sz,
             verify_steps=s_len, verify_scratch=torch.arange(b_sz, dtype=torch.int32, device=d), inter_ssm=self.inter_ssm,
             verify_replay=self.replay.layer_inputs if self.replay is not None else {},
-            verify_conv_windows=self.conv_windows,
+            verify_conv_windows=self.conv_windows, verify_aux_windows=self.aux_windows,
         )
+        if getattr(self.ex, "_ple", None) is not None:
+            ctx.ple_rows = self.ex._ple_rows_block(batch.requests, batch.proposal.tokens.tolist())
         indptr = [0]
         for pages in batch.kv_pages:
             indptr.append(indptr[-1] + pages.shape[0])
@@ -370,7 +379,7 @@ class SpecDecoder:
         if replay is not None:
             # StateManager validates every stop-truncated count before one
             # upload/kernel updates the private committed slots directly.
-            ex.state.commit_reconstructed(reqs, [len(o) for o in outputs], replay, self.conv_windows_all,
+            ex.state.commit_reconstructed(reqs, [len(o) for o in outputs], replay, self.conv_windows_all, aux_windows=self.aux_windows,
                                           verified_steps=s_len)
         for i, (r, emitted) in enumerate(zip(reqs, outputs)):
             a, count = acc[i], len(emitted)
@@ -378,7 +387,8 @@ class SpecDecoder:
             # inputs that produced the visible outputs, including early stops.
             if replay is None:
                 ex.state.commit(r, count, ssm=self.inter_ssm_all[:, i, count - 1],
-                                conv=self.conv_windows_all[:, i, count - 1])
+                                conv=self.conv_windows_all[:, i, count - 1],
+                                aux={name: win[i, count - 1] for name, win in self.aux_windows.items()})
             for tok in emitted:
                 r.push(int(tok))
             self.proposed += self.k

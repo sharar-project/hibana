@@ -28,6 +28,19 @@ targets.
 A second target adds a `Target` instance, a loader in `target.load_model`,
 and a model package whose forward honors `ForwardResult`; the scheduler,
 state manager, radix cache, verifier and proposer contracts do not change.
+Qwen3.8-Flash-Next (`flashnext`, `sharar/model/flashnext/`) is the second
+one: `Target.family` picks its loader, the family-specific facts (experts,
+hyper-connections, the prefix-lookup embedding, the sparse-attention indexer,
+the GDN output gate) are optional fields that default to "absent" for the 27B,
+and `Target.cache_env` names the model cache (`SHARAR_FLASHNEXT_CACHE`).
+Two small extensions carry its extra state through the existing contracts:
+`StatePool.register_aux` allocates per-slot tensors that are cleared, copied
+and parked with the recurrent states (the PLE's convolution window lives
+there), and `ForwardContext.ple_history` / `ple_rows` give a forward the two
+tokens before each sequence and, for graph-captured decode, the table rows
+the executor gathered on the host. The sparse attention runs dense, which is
+exact while a context fits the indexer budget (2,048 tokens); the indexer,
+the verify path of the PLE and layer feature capture are not ported yet.
 Checkpoint construction lives in `proposers/factory.py`. `max_depth` and feature
 requirements let the executor validate an adapter without knowing its name.
 

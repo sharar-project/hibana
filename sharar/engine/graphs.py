@@ -52,6 +52,7 @@ class DecodeGraphs:
             "last_page_len": torch.ones(b, dtype=torch.int32, device=d),
             "last_page_len_host": torch.ones(b, dtype=torch.int32),
             "logits": None,
+            "ple_rows": (torch.zeros((b, self.ex._ple.heads, 160), dtype=torch.uint8, device=d) if getattr(self.ex, "_ple", None) is not None else None),
         }
 
     def _plan(self, b: int, counts: list[int], pages: list[torch.Tensor]) -> None:
@@ -85,6 +86,7 @@ class DecodeGraphs:
             out_pages=st["out_pages"],
             decode_wrapper=self._wrappers[b],
             batch_size=b,
+            ple_rows=st["ple_rows"],
         )
 
     def capture(self, log=print) -> None:
@@ -126,12 +128,15 @@ class DecodeGraphs:
                 return s
         raise ValueError(f"batch {b} exceeds captured sizes {self.sizes}")
 
-    def run(self, tokens: list[int], positions: list[int], slots: list[int], out_pages: torch.Tensor, pages: list[torch.Tensor], *, return_features=False):
+    def run(self, tokens: list[int], positions: list[int], slots: list[int], out_pages: torch.Tensor, pages: list[torch.Tensor], *, return_features=False,
+            ple_rows: torch.Tensor | None = None):
         """Returns logits [b, V] for the b real rows."""
         b = len(tokens)
         size = self.pick(b)
         st = self._static[size]
         pad = size - b
+        if ple_rows is not None:
+            st["ple_rows"][:b].copy_(ple_rows)
         st["tokens"].copy_(torch.tensor(tokens + [0] * pad, dtype=torch.int64))
         st["positions"].copy_(torch.tensor(positions + [0] * pad, dtype=torch.int64))
         st["slots"].copy_(torch.tensor(slots + [0] * pad, dtype=torch.int32))

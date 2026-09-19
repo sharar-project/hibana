@@ -69,6 +69,13 @@ class ForwardContext:
     # then cloned instead of updated in place.
     capture: bool = False
     feature_request: FeatureRequest = FeatureRequest()
+    # Prefix-lookup embeddings (Flash-Next): the two tokens before each sequence's new tokens,
+    # int64 [B, 2] on the host (None = EOS history), and optionally the table rows already
+    # gathered for the forward's tokens (uint8 [T, heads, row_bytes] on the device).
+    ple_history: torch.Tensor | None = None
+    ple_rows: torch.Tensor | None = None
+    # Verify: auxiliary per-slot state after each step, name -> [max_batch, steps, ...] buffer the model fills
+    verify_aux_windows: dict = field(default_factory=dict)
 
     @property
     def query_start_loc(self) -> torch.Tensor:

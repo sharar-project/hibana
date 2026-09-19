@@ -28,7 +28,7 @@ class Target:
     model_cache_key: str
     architecture: str
     hidden_size: int
-    intermediate_size: int
+    intermediate_size: int | None  # dense MLP width; None for a pure-MoE trunk
     num_layers: int
     layer_types: tuple[str, ...]  # "full_attention" | "linear_attention", one per layer
     num_attention_heads: int
@@ -48,6 +48,33 @@ class Target:
     weight_load_peak_bytes: int
     profile: ServingProfile = field(default=DEFAULT_PROFILE)
     kv_bytes_per_element: int = 1  # FP8 KV cache
+    # Model family: selects the loader in `load_model` and the modules a family adds.
+    family: str = "qwen38"
+    # Environment variable naming this target's model cache (falls back to SHARAR_HF_CACHE).
+    cache_env: str = "SHARAR_HF_CACHE"
+    # Gated DeltaNet output gate: "swish" (silu(z), the 27B) or "sigmoid" (Flash-Next).
+    output_gate: str = "swish"
+    # Mixture of experts (0 = dense MLP of `intermediate_size`).
+    num_experts: int = 0
+    experts_per_token: int = 0
+    moe_intermediate_size: int = 0
+    shared_expert_intermediate_size: int = 0
+    # Hyper-connections (0 = plain residual stream).
+    hc_count: int = 0
+    hc_lowrank: int = 0
+    # Prefix-lookup n-gram embedding layers (config numbering, one-based) and their geometry.
+    ple_layer_ids: tuple[int, ...] = ()
+    ple_ngram: int = 0
+    ple_heads_per_ngram: int = 0
+    ple_embed_dim: int = 0
+    ple_conv_kernel: int = 0
+    # Sparse attention indexer (0 = dense attention).
+    indexer_budget: int = 0
+    indexer_compress_ratio: int = 0
+    indexer_n_heads: int = 0
+    indexer_head_dim: int = 0
+    # In-checkpoint multi-token-prediction layers.
+    mtp_layers: int = 0
 
     def __post_init__(self):
         if len(self.layer_types) != self.num_layers or any(t not in ("full_attention", "linear_attention") for t in self.layer_types):
@@ -95,7 +122,7 @@ class Target:
     # ---- snapshot and host validation ----
     def snapshot_dir(self, cache_dir: str | os.PathLike | None = None) -> Path:
         """Return the pinned snapshot directory or raise if it is incomplete."""
-        root = Path(cache_dir or os.environ.get("SHARAR_HF_CACHE") or os.environ.get("HF_HOME") or "")
+        root = Path(cache_dir or os.environ.get(self.cache_env) or os.environ.get("SHARAR_HF_CACHE") or os.environ.get("HF_HOME") or "")
         if not str(root):
             raise FileNotFoundError("set SHARAR_HF_CACHE (or HF_HOME) to the model cache")
         for base in (root, root / "hub"):
@@ -117,6 +144,20 @@ class Target:
             "linear_conv_kernel_dim": self.linear_conv_kernel, "vocab_size": self.vocab_size,
             "rms_norm_eps": self.rms_norm_eps, "max_position_embeddings": self.max_position_embeddings,
         }
+        if self.num_experts:
+            expected.update({"num_experts": self.num_experts, "num_experts_per_tok": self.experts_per_token,
+                             "moe_intermediate_size": self.moe_intermediate_size,
+                             "shared_expert_intermediate_size": self.shared_expert_intermediate_size})
+        if self.hc_count:
+            expected.update({"hc_count": self.hc_count, "hc_lowrank": self.hc_lowrank})
+        if self.ple_layer_ids:
+            expected.update({"ple_layer_ids": list(self.ple_layer_ids), "ngram_size": self.ple_ngram, "heads_per_ngram": self.ple_heads_per_ngram,
+                             "ple_embed_dim": self.ple_embed_dim, "ple_conv_kernel_size": self.ple_conv_kernel})
+        if self.indexer_budget:
+            expected.update({"indexer_budget": self.indexer_budget, "indexer_compress_ratio": self.indexer_compress_ratio,
+                             "indexer_n_heads": self.indexer_n_heads, "indexer_head_dim": self.indexer_head_dim})
+        if self.output_gate != "swish":
+            expected["output_gate_type"] = self.output_gate
         wrong = {k: (text.get(k), v) for k, v in expected.items() if text.get(k) != v}
         if cfg["architectures"] != [self.architecture] or wrong:
             raise ValueError(f"unexpected model config: arch={cfg['architectures']} mismatches={wrong}")
@@ -186,8 +227,33 @@ def _qwen38() -> Target:
     )
 
 
+def _flashnext() -> Target:
+    from sharar.model.flashnext import config as c
+    return Target(
+        name="flashnext", family="flashnext", cache_env="SHARAR_FLASHNEXT_CACHE",
+        model_id=c.MODEL_ID, model_revision=c.MODEL_REVISION, model_cache_key=c.MODEL_CACHE_KEY,
+        architecture=c.MODEL_ARCHITECTURE, hidden_size=c.HIDDEN_SIZE, intermediate_size=None,
+        num_layers=c.NUM_LAYERS, layer_types=c.LAYER_TYPES,
+        num_attention_heads=c.NUM_ATTENTION_HEADS, num_kv_heads=c.NUM_KV_HEADS, head_dim=c.HEAD_DIM,
+        partial_rotary_factor=c.PARTIAL_ROTARY_FACTOR, rope_theta=c.ROPE_THETA,
+        linear_num_key_heads=c.LINEAR_NUM_KEY_HEADS, linear_num_value_heads=c.LINEAR_NUM_VALUE_HEADS,
+        linear_key_head_dim=c.LINEAR_KEY_HEAD_DIM, linear_value_head_dim=c.LINEAR_VALUE_HEAD_DIM,
+        linear_conv_kernel=c.LINEAR_CONV_KERNEL, vocab_size=c.VOCAB_SIZE, rms_norm_eps=c.RMS_NORM_EPS,
+        max_position_embeddings=c.MAX_POSITION_EMBEDDINGS, nvfp4_group_size=c.NVFP4_GROUP_SIZE,
+        weight_load_peak_bytes=c.WEIGHT_LOAD_PEAK_BYTES, output_gate="sigmoid",
+        num_experts=c.NUM_EXPERTS, experts_per_token=c.EXPERTS_PER_TOKEN, moe_intermediate_size=c.MOE_INTERMEDIATE_SIZE,
+        shared_expert_intermediate_size=c.SHARED_EXPERT_INTERMEDIATE_SIZE,
+        hc_count=c.HC_COUNT, hc_lowrank=c.HC_LOWRANK,
+        ple_layer_ids=c.PLE_LAYER_IDS, ple_ngram=c.PLE_NGRAM, ple_heads_per_ngram=c.PLE_HEADS_PER_NGRAM,
+        ple_embed_dim=c.PLE_EMBED_DIM, ple_conv_kernel=c.PLE_CONV_KERNEL,
+        indexer_budget=c.INDEXER_BUDGET, indexer_compress_ratio=c.INDEXER_COMPRESS_RATIO,
+        indexer_n_heads=c.INDEXER_N_HEADS, indexer_head_dim=c.INDEXER_HEAD_DIM, mtp_layers=c.MTP_LAYERS,
+    )
+
+
 QWEN38 = _qwen38()
-TARGETS: dict[str, Target] = {QWEN38.name: QWEN38}
+FLASHNEXT = _flashnext()
+TARGETS: dict[str, Target] = {QWEN38.name: QWEN38, FLASHNEXT.name: FLASHNEXT}
 DEFAULT_TARGET = QWEN38
 
 
@@ -202,7 +268,10 @@ def get(name: str | None) -> Target:
 
 def load_model(target: Target, snap: Path, **kwargs):
     """Construct the target's model object; the executor reads its `.target`."""
-    if target.name == "qwen38":
+    if target.family == "qwen38":
         from sharar.model.qwen38 import Qwen38
         return Qwen38(snap, target=target, **kwargs)
+    if target.family == "flashnext":
+        from sharar.model.flashnext.model import FlashNext
+        return FlashNext(snap, target=target, **kwargs)
     raise ValueError(f"no loader for target {target.name!r}")

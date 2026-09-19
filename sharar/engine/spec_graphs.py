@@ -48,6 +48,7 @@ class VerifyGraphs:
             "kv_indptr": torch.zeros(b + 1, dtype=torch.int32, device=d),
             "kv_indices": torch.zeros(b * self.max_context, dtype=torch.int32, device=d),
             "last_page_len": torch.ones(b, dtype=torch.int32, device=d),
+            "ple_rows": (torch.zeros((b * s, self.ex._ple.heads, 160), dtype=torch.uint8, device=d) if getattr(self.ex, "_ple", None) is not None else None),
         }
         st["wrapper"] = _prefill_wrapper(self._ws, st)
         st["ctx"] = ForwardContext(
@@ -57,7 +58,8 @@ class VerifyGraphs:
             seq_prefix_lens=[0] * b, seq_lens=[s] * b, verify_steps=s,
             verify_scratch=torch.arange(b, dtype=torch.int32, device=d), inter_ssm=self.spec.inter_ssm,
             verify_replay=self.spec.replay.layer_inputs if self.spec.replay is not None else {},
-            verify_conv_windows=self.spec.conv_windows, paged_prefill_wrapper=st["wrapper"],
+            verify_conv_windows=self.spec.conv_windows, verify_aux_windows=self.spec.aux_windows,
+            paged_prefill_wrapper=st["wrapper"], ple_rows=st["ple_rows"],
         )
         return st
 
@@ -102,7 +104,8 @@ class VerifyGraphs:
                 return s
         raise ValueError(b)
 
-    def run(self, tokens: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, slots: torch.Tensor, kv_all: list[torch.Tensor], *, sampled=False):
+    def run(self, tokens: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, slots: torch.Tensor, kv_all: list[torch.Tensor], *, sampled=False,
+            ple_rows: torch.Tensor | None = None):
         """Returns (norm rows [b*s, H], argmax or logits [b*s(, V)], ctx, features,
         logits [b*s, V]) for the real rows; padded rows use slot 0 and page 0.
         The logits view is overwritten by the next replay."""
@@ -111,6 +114,8 @@ class VerifyGraphs:
         st = self._st[size]
         s = self.s_len
         n = b * s
+        if ple_rows is not None:
+            st["ple_rows"][:n].copy_(ple_rows)
         st["tokens"][:n].copy_(tokens)
         st["positions"][:n].copy_(positions)
         st["pages"][:n].copy_(pages)
