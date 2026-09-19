@@ -244,3 +244,29 @@ def expert_gemv(w: torch.Tensor, scale: torch.Tensor, x: torch.Tensor, idx: torc
     _expert_gemv_kernel[(r, triton.cdiv(n, block_n))](w, scale, x, idx, y, w.stride(0), w.stride(1), x.stride(0), y.stride(0), n, k,
                                                        BLOCK_N=block_n, BLOCK_K=block_k, num_warps=4)
     return y
+
+
+# ---- FP8 GEMV for a few rows and any K (the CUDA GEMV needs K % 512 == 0 and K <= 8192): y = alpha * (W @ x) ----
+@triton.jit
+def _fp8_gemv_kernel(X, W, Alpha, Y, stride_x, stride_w, stride_y, N: tl.constexpr, K: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr):
+    r = tl.program_id(0)
+    rows = tl.program_id(1) * BLOCK_N + tl.arange(0, BLOCK_N)
+    rmask = rows < N
+    acc = tl.zeros([BLOCK_N], dtype=tl.float32)
+    for k0 in tl.static_range(0, K, BLOCK_K):
+        cols = k0 + tl.arange(0, BLOCK_K)
+        cmask = cols < K
+        w = tl.load(W + rows[:, None] * stride_w + cols[None, :], mask=rmask[:, None] & cmask[None, :], other=0.0).to(tl.float32)
+        x = tl.load(X + r * stride_x + cols, mask=cmask, other=0.0).to(tl.float32)
+        acc += tl.sum(w * x[None, :], 1)
+    tl.store(Y + r * stride_y + rows, (acc * tl.load(Alpha).to(tl.float32)).to(tl.bfloat16), mask=rmask)
+
+
+def fp8_gemv_any(x_q: torch.Tensor, w: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
+    """x_q: fp8 [M, K] (M small), w: fp8 [N, K], alpha: [1] fp32 -> bf16 [M, N]."""
+    m, k = x_q.shape
+    n = w.shape[0]
+    y = torch.empty((m, n), dtype=torch.bfloat16, device=x_q.device)
+    block_n, block_k = 32, 512
+    _fp8_gemv_kernel[(m, triton.cdiv(n, block_n))](x_q, w, alpha, y, x_q.stride(0), w.stride(0), y.stride(0), n, k, BLOCK_N=block_n, BLOCK_K=block_k, num_warps=4)
+    return y

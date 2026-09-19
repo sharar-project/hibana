@@ -39,7 +39,7 @@ class DecoderLayer:
         self.index, self.kind = index, kind
         hc, hidden, eps = target.hc_count, target.hidden_size, target.rms_norm_eps
         self.ple = PleLayer(w, snap, f"{p}.ple", device, target, TrunkLinear, precision) if (index + 1) in target.ple_layer_ids else None
-        mixers = os.environ.get("SHARAR_FLASHNEXT_MIXERS", "bf16")
+        mixers = os.environ.get("SHARAR_FLASHNEXT_MIXERS", "fp8")
         self.attn_hc = HyperConnection.load(w, f"{p}.attn_hyper_connection", hc, hidden, eps, device, precision=mixers)
         self.mlp_hc = HyperConnection.load(w, f"{p}.mlp_hyper_connection", hc, hidden, eps, device, precision=mixers)
         if kind == "full_attention":
@@ -85,7 +85,7 @@ class FlashNext:
             if log and (i + 1) % 8 == 0:
                 log(f"  loaded {i + 1}/{len(types)} layers ({time.perf_counter() - started:.0f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB)")
         self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", target.hc_count, target.hidden_size, target.rms_norm_eps, self.device,
-                                          combine=False, precision=os.environ.get("SHARAR_FLASHNEXT_MIXERS", "bf16"))
+                                          combine=False, precision=os.environ.get("SHARAR_FLASHNEXT_MIXERS", "fp8"))
         self.lm_head = TrunkLinear.load(w, ["lm_head.weight"], self.device, self.precision)
         w.close()
         torch.cuda.synchronize()

@@ -88,3 +88,15 @@ def test_expert_gemv(r):
     idx = torch.randint(0, e, (r,), device="cuda", dtype=torch.int32)
     ref = torch.stack([(w8[i].float() * scale[i]) @ x[j].float() for j, i in enumerate(idx.tolist())])
     _close(fk.expert_gemv(w8, scale, x, idx), ref.to(torch.bfloat16), 1e-2)
+
+
+@pytest.mark.parametrize("shape", [(1, 320, 10240), (4, 10240, 320), (2, 2560, 640)])
+def test_fp8_gemv_any(shape):
+    m, n, k = shape
+    w = (torch.randn(n, k, device="cuda") * 0.02)
+    ws = (w.abs().amax() / 448).reshape(1, 1)
+    w8 = (w / ws).to(torch.float8_e4m3fn)
+    x = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
+    q, scale, alpha = fk.quant_fp8_small(x.contiguous(), ws)
+    ref = (q.float() @ w8.float().T) * alpha
+    _close(fk.fp8_gemv_any(q, w8, alpha), ref.to(torch.bfloat16), 1e-2)

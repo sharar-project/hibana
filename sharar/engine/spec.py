@@ -84,6 +84,7 @@ class SpecDecoder:
         self.proposed = 0
         self.accepted = 0
         self.accept_seconds = 0.0
+        self.accept_decide_seconds = self.accept_commit_seconds = self.accept_feedback_seconds = 0.0  # timing=True only
         self.emitted = 0
         self.draft_seconds = 0.0
         self.verify_seconds = 0.0
@@ -126,6 +127,7 @@ class SpecDecoder:
                 "draft_ms_per_round": 1000 * self.draft_seconds / r,
                 "verify_ms_per_round": 1000 * self.verify_seconds / r,
                 "accept_ms_per_round": 1000 * self.accept_seconds / r,
+                "accept_split_ms": [round(1000 * x / r, 1) for x in (self.accept_decide_seconds, self.accept_commit_seconds, self.accept_feedback_seconds)],
             })
         return out
 
@@ -375,6 +377,9 @@ class SpecDecoder:
                     # block offsets (0 = first drafted token) emitted under the relaxed rule; the trainer masks them
                     record["rx"] = [j for j, f in enumerate(flags[i][:count]) if f]
                 r.trace_rounds.append(record)
+        if self.timing:
+            torch.cuda.synchronize()
+            t_accepted = time.perf_counter()
         replay = getattr(self, "replay", None)
         if replay is not None:
             # StateManager validates every stop-truncated count before one
@@ -401,7 +406,15 @@ class SpecDecoder:
             r.spec_proposed += self.k
             r.spec_accepted += a
             r.spec_emitted += count
+        if self.timing:
+            torch.cuda.synchronize()
+            t_committed = time.perf_counter()
+            self.accept_decide_seconds += t_accepted - t2
+            self.accept_commit_seconds += t_committed - t_accepted
         self.proposer.accepted_batch(reqs, outputs, features)
+        if self.timing:
+            torch.cuda.synchronize()
+            self.accept_feedback_seconds += time.perf_counter() - t_committed
         for i, (r, emitted) in enumerate(zip(reqs, outputs)):
             if r.trace_features is not None:
                 self._trace_features(r, r.committed_len - len(emitted), r.committed_len)

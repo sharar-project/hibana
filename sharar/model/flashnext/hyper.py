@@ -37,7 +37,8 @@ class HyperConnection:
         scale = 1.0 / hc if fused else 1.0
         self.down = TrunkLinear.from_bf16((down * scale).to(torch.bfloat16), precision)  # [rank, hc*hidden]
         self.up = TrunkLinear.from_bf16(up, precision)  # [hc*hidden, rank]
-        self.inject = TrunkLinear.from_bf16((inject * scale).to(torch.bfloat16), precision) if inject is not None else None  # [hc, hc*hidden]
+        # The inject matrix stays BF16: FP8 GEMMs need N % 16 == 0 and it has hc rows (80 KB, nothing to save).
+        self.inject = TrunkLinear.from_bf16((inject * scale).to(torch.bfloat16), "bf16") if inject is not None else None  # [hc, hc*hidden]
 
     @classmethod
     def load(cls, w, prefix: str, hc: int, hidden: int, eps: float, device, combine: bool = True, precision: str = "bf16", fused: bool = True) -> "HyperConnection":

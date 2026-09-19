@@ -68,9 +68,12 @@ class TrunkLinear:
                 from sharar.kernels.draft_fp8 import quant_dynamic
                 x_q, x_scale = quant_dynamic(flat)
                 alpha = None
-            if flat.shape[0] <= GEMV_MAX_ROWS and k % 512 == 0 and k <= 8192:  # the GEMV kernel's shape rule
+            if flat.shape[0] <= GEMV_MAX_ROWS and k % 512 == 0 and k <= 8192:  # the CUDA GEMV kernel's shape rule
                 from sharar.kernels.fp8_gemv_cuda import fp8_gemv_cuda
                 out = fp8_gemv_cuda(x_q, self.weight, alpha if alpha is not None else (x_scale * self.scale).reshape(1))
+            elif flat.shape[0] <= GEMV_MAX_ROWS and k % 16 == 0:  # other widths (mixers K=320/10240, shared down K=640)
+                from sharar.kernels.flashnext_fused import fp8_gemv_any
+                out = fp8_gemv_any(x_q, self.weight, alpha if alpha is not None else (x_scale * self.scale).reshape(1))
             else:
                 out = torch._scaled_mm(x_q, self.weight.T, scale_a=x_scale, scale_b=self.scale, out_dtype=torch.bfloat16)
         return out.reshape(*x.shape[:-1], self.out_features)
