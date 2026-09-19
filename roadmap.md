@@ -150,6 +150,35 @@ and hardware; kernel work at batch one is capped near 10%.
    request-owned constraint state before forced tool choice or structured
    output, prepared-weight caching and AOT kernels once profiles stabilize.
 
+10. **Qwen3.8-Flash-Next (second target, `docs/flashnext.md`), next steps in
+   order.** Served today through `config/flashnext.env` with MTP k=3: plain
+   decode 24.9 tok/s at batch one (SGLang 16.7), 92 tok/s at batch four,
+   MTP 1.99x on the JSON prompt, GSM8K-300 96.0% and HumanEval 94.5% at 1.8
+   to 1.9x SGLang's wall time. What remains, each a fresh multi-hour build:
+   1. Sparse-attention indexer for contexts past 2,048 tokens (dense is exact
+      below): compressed-key cache per attention layer (mean over groups of
+      four, Gemma norm, rope), top-512 block selection, expansion to token
+      indices with the pending tail, a vendored sparse attention kernel; SGLang
+      ships torch oracles for every step (`layers/attention/qsa/{mqa,kernel}.py`).
+      Gate: reference parity on a prompt longer than the budget.
+   2. Calibrated 3.25-bit trunk. Nearest-rounded copies give 31 ms per step
+      (32 tok/s) but fail the gate (GSM8K 92.0, HumanEval 89.6) and are no
+      faster at concurrency four, so `SHARAR_FLASHNEXT_TRUNK=w3` stays off;
+      a GPTQ pass over the BF16 trunk following `docs/w3-calibration.md` is
+      the fix. Gate: served GSM8K/HumanEval within noise of FP8.
+   3. MTP draft-step fusion: 11.6 ms per round for three launch-bound steps
+      (about 100 MB of weights each); fuse the head's small ops and its
+      expert path the way the trunk's were. Gate: tok/s at batch one on the
+      JSON and needle prompts.
+   4. Family-gate inputs regenerated for the target so its changes are
+      judged like the 27B's; per-row FP8 activation scales for the trunk
+      (batch-one parity on the 512-token code prompt is 84% top-1 at FP8
+      versus 91% at BF16).
+   5. If a deeper pipeline is wanted: `sharar/kernels/wait_flag.py` is a
+      graph-capturable device wait on a host flag, so the next decode graph
+      can be launched before its PLE rows are gathered; the measured host gap
+      after the parallel table reads is about 3 ms of the 40 ms step.
+
 Done since the last order, kept for reference: promotion hardening (top-16
 traces, KL distillation, attention subset, compiled trainer, continuation at
 3e-5, 0.5% regression gate, optional on-policy selector), hot draft reload
