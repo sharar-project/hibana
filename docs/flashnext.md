@@ -60,6 +60,9 @@ the host for graph-captured decode and verify); `Executor.register_state`.
 | Load | 115 s, 69.4 GiB (76.8 with pools and graphs) |
 | Bytes per decode token | 6.33 GB (26 ms at 239 GB/s) |
 | Plain decode, batch 1 / 4 | 20.7 tok/s (48.3 ms/step) / 80.3 aggregate (49.8 ms/step); SGLang 16.7 at batch 1 |
+| GPU time of one batch-1 decode step (graph replay) | 38.1 ms; about 3,600 kernels per step, so ~12 ms of tiny kernels over the 26 ms byte floor and ~10 ms of graph launch and syncs per step |
+| MTP k=3, batch 1 (`bench-decode --spec 3`) | needle prompt 20.6 -> 40.4 tok/s (1.96x, 81% accepted, 3.32 tok/round; 64/64 tokens agree with plain), JSON prompt 1.75x; per round draft 19 ms + verify 60 ms + accept 4 ms |
+| MTP k=3, batch 4 | 0.97x to 1.17x: a 16-row verify streams ~80 ms of experts, so short blocks (k=1..2) or plain decode win at batch 4 |
 
 Evidence and launchers: `~/sharar-results/reviews/2026-09-18-flash-next/`
 (`parity-*.json`, `components.log`, `decode-*.log`, `run_*.sh`).
