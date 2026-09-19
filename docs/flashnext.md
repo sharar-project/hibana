@@ -61,8 +61,9 @@ the host for graph-captured decode and verify); `Executor.register_state`.
 | Bytes per decode token | 6.33 GB (26 ms at 239 GB/s) |
 | Plain decode, batch 1 / 4 | 20.7 tok/s (48.3 ms/step) / 80.3 aggregate (49.8 ms/step); SGLang 16.7 at batch 1 |
 | GPU time of one batch-1 decode step (graph replay) | 38.1 ms; about 3,600 kernels per step, so ~12 ms of tiny kernels over the 26 ms byte floor and ~10 ms of graph launch and syncs per step |
-| MTP k=3, batch 1 (`bench-decode --spec 3`) | needle prompt 20.6 -> 40.4 tok/s (1.96x, 81% accepted, 3.32 tok/round; 64/64 tokens agree with plain), JSON prompt 1.75x; per round draft 19 ms + verify 60 ms + accept 4 ms |
-| MTP k=3, batch 4 | 0.97x to 1.17x: a 16-row verify streams ~80 ms of experts, so short blocks (k=1..2) or plain decode win at batch 4 |
+| Phase 3 fused kernels + FP8 mixers (2026-09-19 19:00) | batch-1 step 48.0 -> 42.1 to 43.2 ms (23.2 to 23.8 tok/s), batch 4 49.9 -> 42.9 to 43.2 ms (93 tok/s); parity unchanged |
+| MTP k=3, batch 1 (`bench-decode --spec 3`, reconstruct strategy) | JSON prompt 22.3 -> 44.4 tok/s (1.99x, 79% accepted, 3.32 tok/round), needle prompt 1.79x; per round draft 11.6 ms + verify 59 ms + accept 5 to 40 ms (the accept commit phase varies by prompt and run: 2 to 36 ms, 376 ms once; unexplained, profile next) |
+| MTP k=3, batch 4 | JSON 1.97x (172 tok/s), needle 1.54x (136 tok/s); k=2 is not better at either batch size |
 
 Evidence and launchers: `~/sharar-results/reviews/2026-09-18-flash-next/`
 (`parity-*.json`, `components.log`, `decode-*.log`, `run_*.sh`).
