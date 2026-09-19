@@ -103,20 +103,16 @@ class FlashNextMtpHead:
         return (h + e.unsqueeze(-2)).reshape(-1, self.hidden_width)
 
     def _moe(self, x: torch.Tensor) -> torch.Tensor:
+        from sharar.kernels.flashnext_fused import expert_gemv, moe_combine, route_topk, silu_mul
         m = x.shape[0]
-        probs = torch.softmax((x @ self.router.T).float(), dim=-1)
-        weights, ids = torch.topk(probs, self.topk, dim=-1)
-        weights = weights / weights.sum(-1, keepdim=True)
+        ids, weights = route_topk(x @ self.router.T, self.topk)
         flat = ids.reshape(-1)
-        w1 = self.gate_up[flat].to(torch.bfloat16) * self.gate_up_scale[flat].to(torch.bfloat16)[:, None, None]
-        gu = torch.bmm(w1, x.repeat_interleave(self.topk, 0).unsqueeze(-1)).squeeze(-1)  # [M*topk, 2I]
-        h = F.silu(gu[:, : self.inter]) * gu[:, self.inter :]
-        w2 = self.down[flat].to(torch.bfloat16) * self.down_scale[flat].to(torch.bfloat16)[:, None, None]
-        y = torch.bmm(w2, h.unsqueeze(-1)).squeeze(-1).view(m, self.topk, -1)  # [M, topk, H]
-        routed = (y.float() * weights.unsqueeze(-1)).sum(1)
-        sgu = self.shared_gate_up(x)
-        shared = self.shared_down(F.silu(sgu[:, : self.inter]) * sgu[:, self.inter :]).float() * torch.sigmoid(x.float() @ self.shared_gate.T)
-        return (routed + shared).to(torch.bfloat16)
+        xr = x.repeat_interleave(self.topk, 0)  # [M*topk, H]
+        h = silu_mul(expert_gemv(self.gate_up, self.gate_up_scale, xr, flat))  # [M*topk, I]
+        y = expert_gemv(self.down, self.down_scale, h, flat)  # [M*topk, H]
+        routed = (y.float() * weights.reshape(-1)[:, None]).view(m, self.topk, -1).sum(1).to(torch.bfloat16)
+        shared = self.shared_down(silu_mul(self.shared_gate_up(x)))
+        return moe_combine(routed, shared, x, self.shared_gate.reshape(-1))
 
     def _ctx(self, positions: torch.Tensor, write_pages: torch.Tensor, wrapper) -> ForwardContext:
         return ForwardContext(mode="verify", kv_pool=self.kv, state_pool=None, positions=positions, pages=write_pages,

@@ -42,6 +42,6 @@ class FlashNextAttention(Attention):
         return self._split_qkv(self.qkv(x), positions)
 
     def _finish(self, attn: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
+        from sharar.kernels.flashnext_fused import sigmoid_gate
         t = attn.shape[0]
-        gated = (attn.view(t, self.num_heads, self.head_dim).float() * torch.sigmoid(gate.float())).to(torch.bfloat16)
-        return self.o(gated.reshape(t, self.q_size))
+        return self.o(sigmoid_gate(attn.view(t, self.num_heads, self.head_dim), gate))

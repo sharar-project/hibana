@@ -37,7 +37,7 @@ def _load(graphs: bool = True, spec: int = 0) -> tuple[Qwen38, Executor, Snapsho
     spec_config = None
     if spec:
         from sharar.memory.spec_budget import SpecConfig
-        spec_config = SpecConfig("mtp", spec, "snapshots", "bf16", None)  # reserve the verify/draft budget in the pool plan
+        spec_config = SpecConfig("mtp", spec, os.environ.get("SHARAR_BENCH_VERIFY_STATE", "snapshots"), "bf16", None)  # reserve the verify/draft budget in the pool plan
     max_context = int(os.environ.get("SHARAR_BENCH_MAX_CONTEXT", "0")) or None  # smaller pools for large models
     ex = Executor(model, log=print, spec_config=spec_config, max_context=max_context)  # a spec_config enables speculation itself
     if graphs:

@@ -28,25 +28,33 @@ class HyperConnection:
     dynamic activation scale (`precision="fp8"`, opt-in via SHARAR_FLASHNEXT_MIXERS)."""
 
     def __init__(self, norm: torch.Tensor, down: torch.Tensor, up: torch.Tensor, inject: torch.Tensor | None, hc: int, hidden: int, eps: float,
-                 precision: str = "bf16"):
+                 precision: str = "bf16", fused: bool = True):
         from sharar.model.flashnext.linear import TrunkLinear
-        self.hc, self.hidden, self.eps = hc, hidden, eps
+        self.hc, self.hidden, self.eps, self.fused = hc, hidden, eps, fused
         self.norm = norm.contiguous()  # [hc*hidden]
-        self.down = TrunkLinear.from_bf16(down, precision)  # [rank, hc*hidden]
+        # The fused path folds the 1/hc of silu(down(x)/hc) and sigmoid(inject(x)/hc) into the matrices
+        # (a power of two: exact in BF16).
+        scale = 1.0 / hc if fused else 1.0
+        self.down = TrunkLinear.from_bf16((down * scale).to(torch.bfloat16), precision)  # [rank, hc*hidden]
         self.up = TrunkLinear.from_bf16(up, precision)  # [hc*hidden, rank]
-        self.inject = TrunkLinear.from_bf16(inject, precision) if inject is not None else None  # [hc, hc*hidden]
+        self.inject = TrunkLinear.from_bf16((inject * scale).to(torch.bfloat16), precision) if inject is not None else None  # [hc, hc*hidden]
 
     @classmethod
-    def load(cls, w, prefix: str, hc: int, hidden: int, eps: float, device, combine: bool = True, precision: str = "bf16") -> "HyperConnection":
+    def load(cls, w, prefix: str, hc: int, hidden: int, eps: float, device, combine: bool = True, precision: str = "bf16", fused: bool = True) -> "HyperConnection":
         g = lambda name: w.get(f"{prefix}.{name}").to(device)  # noqa: E731
         return cls(g("hc_norm.weight"), g("input_mix_weight_down.weight"), g("input_mix_weight_up.weight"),
-                   g("block_inject_weight.weight") if combine else None, hc, hidden, eps, precision)
+                   g("block_inject_weight.weight") if combine else None, hc, hidden, eps, precision, fused)
 
     @property
     def bytes(self) -> int:
         return self.norm.numel() * 2 + self.down.bytes + self.up.bytes + (self.inject.bytes if self.inject is not None else 0)
 
     def mix(self, hyper: torch.Tensor):
+        if self.fused:
+            from sharar.kernels import flashnext_fused as fk
+            normed = fk.grouped_gemma_rms(hyper, self.norm, self.eps, self.hidden)
+            mixed = fk.gate_mean(self.up(F.silu(self.down(normed))), normed, self.hc, self.hidden)
+            return mixed, (hyper, normed)
         normed = grouped_gemma_rms(hyper, self.norm, self.eps, self.hidden)
         gate = torch.sigmoid(self.up(F.silu(self.down(normed) / self.hc)))
         mixed = (gate.unflatten(-1, (self.hc, self.hidden)) * normed.unflatten(-1, (self.hc, self.hidden))).mean(-2)
@@ -54,6 +62,9 @@ class HyperConnection:
 
     def combine(self, block_output: torch.Tensor, residuals) -> torch.Tensor:
         hyper, normed = residuals
+        if self.fused:
+            from sharar.kernels import flashnext_fused as fk
+            return fk.inject_combine(hyper, block_output, self.inject(normed), self.hc, self.hidden)
         inject = 2 * torch.sigmoid(self.inject(normed) / self.hc)  # [T, hc]
         r = hyper.unflatten(-1, (self.hc, self.hidden))
         return (r + block_output.unsqueeze(-2) * inject.unsqueeze(-1)).flatten(-2).to(hyper.dtype)

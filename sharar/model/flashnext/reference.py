@@ -136,13 +136,13 @@ class FlashNextReference:
         d = self.device
         self.embed = w.get(f"{PREFIX}.embed_tokens.weight").to(d)
         self.lm_head = w.get("lm_head.weight").to(d)
-        self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", c.hc, c.hidden, c.eps, d, combine=False)
+        self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", c.hc, c.hidden, c.eps, d, combine=False, fused=False)
         self.layers = []
         for i in range(self.num_layers):
             p = f"{PREFIX}.layers.{i}"
             layer = {"kind": c.layer_types[i],
-                     "attn_hc": HyperConnection.load(w, f"{p}.attn_hyper_connection", c.hc, c.hidden, c.eps, d),
-                     "mlp_hc": HyperConnection.load(w, f"{p}.mlp_hyper_connection", c.hc, c.hidden, c.eps, d),
+                     "attn_hc": HyperConnection.load(w, f"{p}.attn_hyper_connection", c.hc, c.hidden, c.eps, d, fused=False),
+                     "mlp_hc": HyperConnection.load(w, f"{p}.mlp_hyper_connection", c.hc, c.hidden, c.eps, d, fused=False),
                      "router": w.get(f"{p}.mlp.gate.weight").to(d),
                      "shared_gate": w.get(f"{p}.mlp.shared_expert_gate.weight").to(d),
                      "shared": {n: w.get(f"{p}.mlp.shared_expert.{n}.weight").to(d) for n in ("gate_proj", "up_proj", "down_proj")},

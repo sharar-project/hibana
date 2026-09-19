@@ -29,6 +29,7 @@ class MoeLayer:
         self.inter = target.moe_intermediate_size
         self.router = w.get(f"{prefix}.gate.weight").to(device).contiguous()  # [E, H] bf16
         self.shared_gate = w.get(f"{prefix}.shared_expert_gate.weight").to(device).float().reshape(1, -1)  # [1, H]
+        self.shared_gate_vec = self.shared_gate.reshape(-1).contiguous()
         self.shared_gate_up = linear_cls.load(w, [f"{prefix}.shared_expert.gate_proj.weight", f"{prefix}.shared_expert.up_proj.weight"], device, precision)
         self.shared_down = linear_cls.load(w, [f"{prefix}.shared_expert.down_proj.weight"], device, precision)
         p = f"{prefix}.experts"
@@ -66,8 +67,11 @@ class MoeLayer:
                 + self.shared_gate_up.bytes + self.shared_down.bytes)
 
     def route(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        logits = (x @ self.router.T).float()
-        probs = torch.softmax(logits, dim=-1)
+        logits = x @ self.router.T
+        if x.shape[0] <= 64:
+            from sharar.kernels.flashnext_fused import route_topk
+            return route_topk(logits, self.topk)
+        probs = torch.softmax(logits.float(), dim=-1)
         weights, ids = torch.topk(probs, self.topk, dim=-1)
         weights = weights / weights.sum(-1, keepdim=True)
         return ids.to(torch.int32), weights.contiguous()
@@ -87,7 +91,6 @@ class MoeLayer:
         )
         if isinstance(routed, (list, tuple)):  # flashinfer 0.6 returns [output]
             routed = routed[0]
-        gu = self.shared_gate_up(x)
-        shared = self.shared_down(F.silu(gu[:, : self.inter]) * gu[:, self.inter :])
-        gate = torch.sigmoid(x.float() @ self.shared_gate.T)
-        return (routed.float() + gate * shared.float()).to(torch.bfloat16)
+        from sharar.kernels.flashnext_fused import moe_combine, silu_mul
+        shared = self.shared_down(silu_mul(self.shared_gate_up(x)))
+        return moe_combine(routed, shared, x, self.shared_gate_vec)

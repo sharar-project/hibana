@@ -60,12 +60,17 @@ class TrunkLinear:
                 from sharar.kernels import w3
                 if flat.shape[0] <= w3.MAX_ROWS:
                     return w3.w3_linear(flat, self.w3).reshape(*x.shape[:-1], self.out_features)
-            from sharar.kernels.draft_fp8 import quant_dynamic
-            x_q, x_scale = quant_dynamic(flat)
             k = flat.shape[1]
+            if flat.numel() <= 65536:  # decode rows: one-kernel quantization that also emits alpha
+                from sharar.kernels.flashnext_fused import quant_fp8_small
+                x_q, x_scale, alpha = quant_fp8_small(flat, self.scale)
+            else:
+                from sharar.kernels.draft_fp8 import quant_dynamic
+                x_q, x_scale = quant_dynamic(flat)
+                alpha = None
             if flat.shape[0] <= GEMV_MAX_ROWS and k % 512 == 0 and k <= 8192:  # the GEMV kernel's shape rule
                 from sharar.kernels.fp8_gemv_cuda import fp8_gemv_cuda
-                out = fp8_gemv_cuda(x_q, self.weight, (x_scale * self.scale).reshape(1))
+                out = fp8_gemv_cuda(x_q, self.weight, alpha if alpha is not None else (x_scale * self.scale).reshape(1))
             else:
                 out = torch._scaled_mm(x_q, self.weight.T, scale_a=x_scale, scale_b=self.scale, out_dtype=torch.bfloat16)
         return out.reshape(*x.shape[:-1], self.out_features)

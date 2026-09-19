@@ -20,7 +20,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from sharar.model.flashnext.hyper import grouped_gemma_rms
+from sharar.kernels.flashnext_fused import grouped_gemma_rms
 
 ROW_BYTES = 160
 
