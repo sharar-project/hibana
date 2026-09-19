@@ -62,10 +62,14 @@ the host for graph-captured decode and verify); `Executor.register_state`.
 | Plain decode, batch 1 / 4 | 20.7 tok/s (48.3 ms/step) / 80.3 aggregate (49.8 ms/step); SGLang 16.7 at batch 1 |
 | GPU time of one batch-1 decode step (graph replay) | 38.1 ms; about 3,600 kernels per step, so ~12 ms of tiny kernels over the 26 ms byte floor and ~10 ms of graph launch and syncs per step |
 | Phase 3 fused kernels + FP8 mixers (2026-09-19 19:00) | batch-1 step 48.0 -> 42.1 to 43.2 ms (23.2 to 23.8 tok/s), batch 4 49.9 -> 42.9 to 43.2 ms (93 tok/s); parity unchanged |
+| + parallel PLE row reads (20:15) | batch-1 step 40.1 ms (24.9 tok/s), batch 4 43.7 ms (91.6 tok/s). The serial memory-map gather paid up to sixteen NVMe latencies per token (4.7 ms cold); 32 threads of `pread` take 1.4 ms. GPU time per step is 32.5 ms, graph launch 0.05 ms |
 | MTP k=3, batch 1 (`bench-decode --spec 3`, reconstruct strategy) | JSON prompt 22.3 -> 44.4 tok/s (1.99x, 79% accepted, 3.32 tok/round), needle prompt 1.79x; per round draft 11.6 ms + verify 59 ms + accept 5 to 40 ms (the accept commit phase varies by prompt and run: 2 to 36 ms, 376 ms once; unexplained, profile next) |
 | MTP k=3, batch 4 | JSON 1.97x (172 tok/s), needle 1.54x (136 tok/s); k=2 is not better at either batch size |
 
-Evidence and launchers: `~/sharar-results/reviews/2026-09-18-flash-next/`
+Serving: `SHARAR_CONFIG_FILE=config/flashnext.env ./run-sharar.sh` (image
+`sharar:main-20260919`, port 30004, MTP k=3, reconstruct; the 27B and Flash-Next
+do not fit together, so stop production first). Evidence and launchers:
+`~/sharar-results/reviews/2026-09-18-flash-next/`
 (`parity-*.json`, `components.log`, `decode-*.log`, `run_*.sh`).
 
 ## Not done

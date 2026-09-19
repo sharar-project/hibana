@@ -29,7 +29,7 @@ budget separately. Automatic KV capacity depends on available memory.
 
 | Setting | Launcher default | Override |
 |---|---|---|
-| Target | `qwen38` | `SHARAR_TARGET=flashnext` / `sharar serve --target flashnext` serves Qwen3.8-Flash-Next (plain decode today: `SHARAR_SPEC=0`); it needs `SHARAR_FLASHNEXT_CACHE` (the RadixArk NVFP4 model cache) and takes `SHARAR_FLASHNEXT_TRUNK=fp8|bf16` |
+| Target | `qwen38` | `SHARAR_TARGET=flashnext` / `sharar serve --target flashnext` serves Qwen3.8-Flash-Next; `config/flashnext.env` is a complete launcher configuration for it (`SHARAR_CONFIG_FILE=config/flashnext.env ./run-sharar.sh`: MTP k=3, port 30004). It needs `SHARAR_FLASHNEXT_CACHE` (the RadixArk NVFP4 model cache), `SHARAR_DRAFT=pinned` and `SHARAR_DRAFT_PRECISION=bf16` (no parallel draft), and takes `SHARAR_FLASHNEXT_TRUNK=fp8|bf16` |
 | Proposer | DFlash2 | `SHARAR_PROPOSER` |
 | Draft proposals | 15 (16 target verification rows) | `SHARAR_SPEC` |
 | Draft precision | FP8 (the measured serving profile; the 3-bit draft copy applies to it) | `SHARAR_DRAFT_PRECISION=bf16` for the publisher's precision |
