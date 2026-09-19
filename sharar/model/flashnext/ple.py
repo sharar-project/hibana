@@ -20,16 +20,26 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from sharar.kernels.flashnext_fused import grouped_gemma_rms
 
 ROW_BYTES = 160
 
 
 class PleTable:
-    """Host memory maps of the FP8 shards, concatenated by row offset."""
+    """The FP8 shards on the host: memory maps for bulk gathers plus parallel `pread`s for the rows a
+    decode step needs. A token's sixteen rows are scattered over the 51 GB table, so a serial gather
+    pays sixteen NVMe latencies when they are not in the page cache (several milliseconds per step);
+    reading them from threads overlaps the misses."""
+
+    THREADS = 32
 
     def __init__(self, snap: Path, weight_map: dict[str, str], name: str, shards: int):
+        import os
+        from concurrent.futures import ThreadPoolExecutor
         self.maps: list[np.memmap] = []
+        self.fds: list[int] = []
+        self.offsets: list[int] = []  # byte offset of each shard's first row within its file
+        self._pool = ThreadPoolExecutor(max_workers=self.THREADS)
+        self._pread = os.pread
         starts = []
         rows = 0
         opened: dict[str, tuple[int, dict]] = {}
@@ -50,13 +60,34 @@ class PleTable:
             if end - begin != count * ROW_BYTES:
                 raise ValueError(f"PLE shard {tensor} byte extent mismatch")
             self.maps.append(np.memmap(snap / file, dtype=np.uint8, mode="r", offset=base + begin, shape=(count, ROW_BYTES)))
+            self.fds.append(os.open(snap / file, os.O_RDONLY))
+            self.offsets.append(base + begin)
             starts.append(rows)
             rows += count
         self.starts = np.asarray(starts, dtype=np.int64)
         self.rows = rows
 
     def gather(self, rows: np.ndarray) -> np.ndarray:
-        """rows: int64 array of any shape -> uint8 [..., ROW_BYTES]."""
+        """rows: int64 array of any shape -> uint8 [..., ROW_BYTES]; parallel preads, page-cache or NVMe."""
+        flat = rows.reshape(-1)
+        n = flat.shape[0]
+        out = np.empty((n, ROW_BYTES), dtype=np.uint8)
+        shard = np.searchsorted(self.starts, flat, side="right") - 1
+        local = flat - self.starts[shard]
+        fds, offsets = self.fds, self.offsets
+        pread = self._pread
+
+        def read(lo: int, hi: int) -> None:
+            for i in range(lo, hi):
+                s = int(shard[i])
+                out[i] = np.frombuffer(pread(fds[s], ROW_BYTES, offsets[s] + int(local[i]) * ROW_BYTES), dtype=np.uint8)
+
+        chunk = max(1, (n + self.THREADS - 1) // self.THREADS)
+        list(self._pool.map(lambda lo: read(lo, min(n, lo + chunk)), range(0, n, chunk)))
+        return out.reshape(*rows.shape, ROW_BYTES)
+
+    def gather_mapped(self, rows: np.ndarray) -> np.ndarray:
+        """The memory-map gather (serial page faults); kept as the reference for tests."""
         flat = rows.reshape(-1)
         out = np.empty((flat.shape[0], ROW_BYTES), dtype=np.uint8)
         shard = np.searchsorted(self.starts, flat, side="right") - 1
@@ -158,6 +189,7 @@ class PleLayer:
             seqs = [(i * s_len, s_len) for i in range(t // s_len)]
             prefixes, slots = [1] * len(seqs), None
         histories = None if ctx is None else ctx.ple_history
+        from sharar.kernels.flashnext_fused import grouped_gemma_rms  # Triton; imported here so host tools can use PleTable
         rows = ctx.ple_rows if ctx is not None and ctx.ple_rows is not None else self.rows_for(input_ids.cpu(), seqs, histories, eos)
         emb = (rows.view(torch.float8_e4m3fn).to(torch.bfloat16) * self.scale).to(torch.bfloat16).reshape(t, -1)  # [T, ple_dim]
         key = self.key_proj(emb)  # [T, hc*H]

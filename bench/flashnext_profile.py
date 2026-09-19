@@ -35,8 +35,26 @@ def main():
         g.replay()
     b.record(); torch.cuda.synchronize()
     print(f"  graph replay only: {a.elapsed_time(b) / 20:.1f} ms/step (GPU time of one decode step)", flush=True)
-    # host work per step outside the graph
+    # host cost of the launch itself (no sync): how long replay() blocks the host
     import time
+    torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    g.replay()
+    t_launch = time.perf_counter() - t0
+    torch.cuda.synchronize()
+    print(f"  graph launch host time: {t_launch * 1000:.2f} ms (replay() call)", flush=True)
+    # one full decode_step through the executor, phase-timed on the host
+    req0 = ex.admit(ids, SamplingParams(max_new_tokens=4, ignore_eos=True))
+    ex.prefill(req0)
+    torch.cuda.synchronize()
+    for i in range(3):
+        t0 = time.perf_counter()
+        ex.decode_step([req0])
+        t1 = time.perf_counter()
+        torch.cuda.synchronize()
+        print(f"  decode_step {i}: host wall {1000 * (t1 - t0):.2f} ms, to GPU idle {1000 * (time.perf_counter() - t0):.2f} ms", flush=True)
+    ex.release(req0)
+    # host work per step outside the graph
     req = ex.admit(ids, SamplingParams(max_new_tokens=2, ignore_eos=True))
     ex.prefill(req)
     if ex._ple is not None:
