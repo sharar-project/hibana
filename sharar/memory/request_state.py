@@ -41,7 +41,25 @@ class RequestState:
     cache_auxiliary: dict[int, dict] = field(default_factory=dict)
 
 
+class _Lap:
+    """Accumulate synchronized wall time per named sub-phase into a dict (profiling only)."""
+
+    def __init__(self, sink: dict, conv_device):
+        import time
+        self.sink, self.time, self.sync = sink, time, (torch.cuda.synchronize if conv_device.type == "cuda" else (lambda: None))
+        self.sync()
+        self.t = time.perf_counter()
+
+    def __call__(self, name: str) -> None:
+        self.sync()
+        now = self.time.perf_counter()
+        self.sink[name] = self.sink.get(name, 0.0) + (now - self.t)
+        self.t = now
+
+
 class StateManager:
+    commit_profile: dict | None = None  # set to a dict to time commit_reconstructed sub-phases (benchmarks)
+
     def __init__(self, kv_pool: KvPool, state_pool: StatePool, cache: RadixCache | None = None):
         self.kv = kv_pool
         self.recurrent = state_pool
@@ -222,19 +240,30 @@ class StateManager:
         poisons every affected request; rollback can free pages but cannot undo
         recurrent writes. Publication and proposer feedback follow all writes.
         """
+        prof = self.commit_profile  # optional sub-phase timing (synchronizes; benchmarks only)
+        lap = _Lap(prof, conv_device=self.recurrent.conv_all.device) if prof is not None else None
         slots = self._validate_reconstruction(requests, replay, conv_windows, verified_steps, counts)
         conv = self.recurrent.conv_all
         pages = self._retained_pages(requests, counts)
-        metadata = torch.tensor([slots, counts], dtype=torch.int32, pin_memory=conv.device.type == "cuda")
+        lap and lap("pages")
+        # Two aligned rows: Triton specializes kernels on pointer alignment, and a [2, B] row view
+        # of counts sits at 4*B bytes, which recompiled the reconstruction per batch size.
+        metadata = torch.zeros((2, (len(slots) + 3) // 4 * 4), dtype=torch.int32, pin_memory=conv.device.type == "cuda")
+        metadata[0, :len(slots)] = torch.tensor(slots, dtype=torch.int32)
+        metadata[1, :len(counts)] = torch.tensor(counts, dtype=torch.int32)
         metadata = metadata.to(conv.device, non_blocking=True)
+        lap and lap("metadata")
         try:
-            replay.run(self.recurrent, metadata[0], metadata[1])
+            replay.run(self.recurrent, metadata[0, :len(slots)], metadata[1, :len(counts)])
+            lap and lap("replay")
             for row, (req, count) in enumerate(zip(requests, counts)):
                 conv[:, req.slot].copy_(conv_windows[:, row, count - 1])
                 for name, win in (aux_windows or {}).items():
                     self.recurrent.aux[name][req.slot].copy_(win[row, count - 1])
+            lap and lap("windows")
             for req, count, retained in zip(requests, counts, pages):
                 self._publish(req, count, retained)
+            lap and lap("publish")
         except BaseException as exc:
             self.poison(requests, exc)
 

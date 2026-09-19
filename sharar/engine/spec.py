@@ -111,6 +111,7 @@ class SpecDecoder:
     def reset_stats(self) -> None:
         self.rounds = self.proposed = self.accepted = self.emitted = self.relaxed_accepts = 0
         self.draft_seconds = self.verify_seconds = self.accept_seconds = 0.0
+        self.accept_decide_seconds = self.accept_commit_seconds = self.accept_feedback_seconds = 0.0
 
     def stats(self) -> dict:
         r = max(1, self.rounds)

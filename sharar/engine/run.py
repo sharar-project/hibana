@@ -40,6 +40,8 @@ def _load(graphs: bool = True, spec: int = 0) -> tuple[Qwen38, Executor, Snapsho
         spec_config = SpecConfig("mtp", spec, os.environ.get("SHARAR_BENCH_VERIFY_STATE", "snapshots"), "bf16", None)  # reserve the verify/draft budget in the pool plan
     max_context = int(os.environ.get("SHARAR_BENCH_MAX_CONTEXT", "0")) or None  # smaller pools for large models
     ex = Executor(model, log=print, spec_config=spec_config, max_context=max_context)  # a spec_config enables speculation itself
+    if os.environ.get("SHARAR_COMMIT_PROFILE") == "1":
+        ex.state.commit_profile = {}
     if graphs:
         started = time.perf_counter()
         ex.capture_graphs()
@@ -376,8 +378,7 @@ def _bench_spec(ex, tok, prompts, max_new_tokens: int, batches: str) -> int:
             ex.flush_cache()
             plain = ex.generate_batch(items)
             ex.spec = spec
-            spec.rounds = spec.proposed = spec.accepted = spec.emitted = 0
-            spec.draft_seconds = spec.verify_seconds = 0.0
+            spec.reset_stats()  # every counter, including the accept-phase timers
             ex.flush_cache()
             fast = ex.generate_batch(items)
             same = sum(1 for x, y in zip(plain[0].output_ids, fast[0].output_ids) if x == y)
@@ -388,6 +389,10 @@ def _bench_spec(ex, tok, prompts, max_new_tokens: int, batches: str) -> int:
                   f"accept {100 * st['accept_rate']:.0f}%, {st['tokens_per_round']:.2f} tok/round, draft {st['draft_ms_per_round']:.1f} ms + verify {st['verify_ms_per_round']:.1f} ms + accept {st['accept_ms_per_round']:.1f} ms (decide/commit/feedback {st.get('accept_split_ms')}); "
                   f"first-row agreement {same}/{min(len(plain[0].output_ids), len(fast[0].output_ids))}")
             print(f"      spec text: {tok.decode(fast[0].output_ids, skip_special_tokens=True)[:80]!r}")
+            if ex.state.commit_profile:
+                rounds = max(1, st["rounds"])
+                print("      commit sub-phases ms/round:", {k: round(1000 * v / rounds, 2) for k, v in ex.state.commit_profile.items()})
+                ex.state.commit_profile.clear()
             results.append((name, b, f_tps / p_tps))
     print("SPEC-BENCH done")
     return 0

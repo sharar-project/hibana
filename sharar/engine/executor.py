@@ -496,6 +496,14 @@ class Executor:
             self.prefill(e)
             self.decode_step([d])
             self.decode_step([d, e])
+            if self.max_batch >= 4:  # every captured size, so no round pays a first-use compile
+                f = self.admit(random_ids(55, 16), SamplingParams(max_new_tokens=12))
+                g = self.admit(random_ids(65, 17), SamplingParams(max_new_tokens=12))
+                self.prefill(f)
+                self.prefill(g)
+                self.decode_step([d, e, f, g])
+                for r in (f, g):
+                    self.release(r)
             for r in (d, e):
                 self.release(r)
             self.spec.reset_stats()
