@@ -58,20 +58,27 @@ files, so the adaptation loop has no traffic to learn from. Agent harnesses
 (Claude Code, Codex, OpenCode) are the way to daily use; they need long
 context, their own APIs, fast sampled decoding and structured output. In order:
 
-1. **Long context, 262,144 tokens on the 27B** (branch `feat/long-context`).
-   The model is native to 262K and one 262K request is 8 GiB of FP8 KV, which
-   the current pool already holds; the limit was the validated profile and a
-   plan that reserved four full-context requests. Done: `--context-length` /
-   `SHARAR_MAX_CONTEXT` up to 262,144, the plan guarantees one request at that
-   length or four at 32K, `bench/long_context.py` (cold prefill, needle
-   retrieval at three depths, decode speed and acceptance per length). Gate:
-   needle retrieval at every length, unchanged pools and speed at 32K, then
-   the launcher default. Expected costs: attention rereads the whole KV every
-   round (about +17 ms per round at 128K, +35 ms at 262K) and a cold 262K
-   prefill takes minutes, so the NVMe session tier matters more after this.
-2. **Anthropic Messages API** (branch `feat/messages-api`): `/v1/messages`
-   and `count_tokens` over the chat route's rendering, parsing and sampling,
-   so Claude Code runs against Sharar; `/v1/responses` for Codex next.
+1. **Done 2026-09-23: long context, 262,144 tokens on the 27B, the launcher
+   default.** `--context-length` / `SHARAR_MAX_CONTEXT`; the plan guarantees one
+   request at that length or four at 32K. Measured with `bench/long_context.py`
+   (evidence `$SHARAR_RESULTS/reviews/2026-09-23-long-context/`): needle
+   retrieval correct at three depths at 10K, 32K, 64K, 128K and 262K; cold
+   prefill 3.8 / 15 / 39 / 112 / 351 s; exact decode 50 / 54 / 41 / 39 / 30
+   tok/s with rounds of 70 / 75 / 82 / 94 / 119 ms (the 10K round unchanged).
+   Found and fixed on the way: chunked prefill (2,048-token chunks, equal to
+   the snapshot interval) never snapshotted interior boundaries, so a prompt
+   edited more than 64 tokens before its end re-prefilled from scratch (113 s
+   at 128K); chunk ends are now snapshotted, at most 16 per prompt plus every
+   chunk end in the last 8K. Next: the NVMe session tier, since a cold 262K
+   prefill takes six minutes.
+2. **Done 2026-09-23: Anthropic Messages API.** `/v1/messages` and
+   `count_tokens` over the chat route, `tools/claude-sharar.sh`; a headless
+   Claude Code session fixed a two-bug repository in 16 s (6 turns, 7.7 tokens
+   per round, first-token median 0.37 s after the first 16.5K-token prompt).
+   Harness fixes in the same change: system messages inside the conversation,
+   OpenAI tool-call arguments as JSON strings, cached tokens in chat usage.
+   Open: map Claude Code's `output_config.effort` onto the template's reasoning
+   effort; `/v1/responses` only if Codex is wanted.
 3. **Fast sampled decoding with relaxed acceptance.** Measured 2026-09-23 on
    production at batch one (768 tokens, code prompt): greedy exact 106 tok/s,
    greedy relaxed 126, sampled at temperature 0.7 97 to 101, at 1.0 90 to 94.
