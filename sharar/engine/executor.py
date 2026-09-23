@@ -245,7 +245,8 @@ class Executor:
 
     def _session_disk(self, log=None):
         """The NVMe session store under SHARAR_SESSION_DIR (budget SHARAR_SESSION_GIB,
-        default 200), or None. Records are only shared between processes whose
+        default 200; sessions shorter than SHARAR_SESSION_MIN_TOKENS, default 4096,
+        are not written), or None. Records are only shared between processes whose
         cached bytes are interchangeable: same target revision, decode weights,
         geometry and prefill numerics."""
         import os
@@ -258,7 +259,8 @@ class Executor:
         identity = {"target": t.name, "revision": t.model_revision, "w3": getattr(self.model, "w3_identity", None),
                     "kv_bytes_per_token": t.kv_bytes_per_token, "state_bytes_per_slot": t.state_bytes_per_slot,
                     "stable_numerics": os.environ.get("SHARAR_STABLE_NUMERICS", "0")}
-        return SessionDisk(directory, int(float(os.environ.get("SHARAR_SESSION_GIB", "200")) * GIB), identity, self.device, log=log)
+        return SessionDisk(directory, int(float(os.environ.get("SHARAR_SESSION_GIB", "200")) * GIB), identity, self.device, log=log,
+                           min_tokens=int(os.environ.get("SHARAR_SESSION_MIN_TOKENS", "4096")))
 
     def persist_sessions(self, log=None) -> int:
         """At shutdown, with the engine stopped: park every cached session so

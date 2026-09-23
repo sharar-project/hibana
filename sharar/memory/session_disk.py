@@ -75,17 +75,20 @@ def _bytes(t: torch.Tensor) -> torch.Tensor:
 
 
 class SessionDisk:
-    def __init__(self, directory, budget_bytes: int, identity: dict, device: torch.device, log=None):
+    def __init__(self, directory, budget_bytes: int, identity: dict, device: torch.device, log=None, min_tokens: int = 0):
         self.dir = Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.budget = int(budget_bytes)
+        # Every record carries the 144 MiB recurrent snapshot, so a short session
+        # costs about as much disk as a long one and re-prefills in about a second.
+        self.min_tokens = int(min_tokens)
         self.identity = {**identity, "format": FORMAT}
         self.device = device
         self.records: dict[str, Record] = {}
         self.lock = threading.Lock()  # records and files: the writer thread and the engine thread
         self.pending: dict[int, threading.Event] = {}
         self.queue: queue.Queue = queue.Queue()
-        self.writes = self.reads = self.skipped = self.errors = self.deleted = 0
+        self.writes = self.reads = self.skipped = self.errors = self.deleted = self.short = 0
         self.write_seconds = self.read_seconds = 0.0
         self.last_error = None
         cuda = device.type == "cuda"
@@ -125,6 +128,9 @@ class SessionDisk:
     def submit(self, entry) -> None:
         """Queue a parked entry for writing unless a stored record already covers it."""
         if entry.on_disk:
+            return
+        if len(entry.key) < self.min_tokens:
+            self.short += 1
             return
         with self.lock:
             covered = any(len(r.key) >= len(entry.key) and r.key[:len(entry.key)] == entry.key for r in self.records.values())
@@ -320,7 +326,7 @@ class SessionDisk:
 
     def stats(self) -> dict:
         return {"records": len(self.records), "gib": round(self.used_bytes / GIB, 2), "budget_gib": round(self.budget / GIB, 1),
-                "writes": self.writes, "reads": self.reads, "skipped": self.skipped, "deleted": self.deleted,
+                "writes": self.writes, "reads": self.reads, "skipped": self.skipped, "too_short": self.short, "deleted": self.deleted,
                 "pending": len(self.pending), "errors": self.errors, "last_error": self.last_error,
                 "write_ms_avg": round(1000 * self.write_seconds / max(1, self.writes), 1),
                 "read_ms_avg": round(1000 * self.read_seconds / max(1, self.reads), 1)}
