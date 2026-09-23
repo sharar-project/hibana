@@ -101,8 +101,9 @@ context, their own APIs, fast sampled decoding and structured output. In order:
    server restart turn two 1.68 s, with 54,795 prompt tokens restored from
    disk (1.4 s load of 1.84 GiB, 24 ms restore). Turn two of a chat reuses
    exactly turn one's prompt plus output (checked with and without thinking),
-   which is the snapshot a record carries. Follow-ups: the load runs at 1.3
-   GB/s against the drive's 9.7 (double-buffer the staging copies); records
+   which is the snapshot a record carries. Restores now read straight into
+   pool pages (first writes into fresh managed slabs ran at 1.5 GB/s): the same
+   restart gives 0.57 s to first token, 321 ms of disk restore. Follow-ups: records
    carry only their end snapshot, so an edit earlier in a stored conversation
    still re-prefills (add the prompt-end and last chunk-end snapshots); first
    prefills are unchanged (attention at long context is the lever: about 250
