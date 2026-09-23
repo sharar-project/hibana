@@ -92,3 +92,19 @@ def test_a_mismatched_segment_fails_the_read(tmp_path):
     kv, state = pools(e, 16)
     state["ssm"] = torch.zeros(5, 2, 4)  # a different geometry
     assert store.restore_into(record, 0, torch.arange(10), kv, state, []) is None and store.stats()["errors"] == 1
+
+
+def test_segments_larger_than_the_staging_buffer_round_trip(tmp_path, monkeypatch):
+    import sharar.memory.session_disk as sd
+    monkeypatch.setattr(sd, "STAGING", 64)  # every segment spans several staging chunks
+    store = SessionDisk(tmp_path, 2**30, IDENTITY, CPU)
+    e = entry(range(300, 340), [40])
+    store.submit(e)
+    store.wait(e)
+    (record,) = store.find(list(range(300, 345)))
+    kv, state = pools(e, 64)
+    pages = torch.arange(40)
+    assert store.restore_into(record, 0, pages, kv, state, []) is not None
+    assert same(e.ssm, state["ssm"]) and same(e.conv, state["conv"])
+    whole = torch.cat([c for _, c in e.chunks], dim=2)
+    assert all(same(pool[pages], whole[i // 2, i % 2]) for i, pool in enumerate(kv))

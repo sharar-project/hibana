@@ -270,7 +270,9 @@ class SessionDisk:
                     if seg not in stored or stored[seg][1] != n:
                         raise ValueError(f"segment {seg} missing or resized")
                     f.seek(stored[seg][0])
-                    dst.copy_(self._read_chunk(f, n).view(dst.dtype).view(dst.shape))
+                    whole = torch.empty(dst.shape, dtype=dst.dtype, device=dst.device)  # dst may be strided (conv_all[:, slot])
+                    self._read_into(f, whole)
+                    dst.copy_(whole)
                 for identity, scalars, specs in aux_specs:
                     tensors = []
                     for i, (dtype, shape) in enumerate(specs):
@@ -280,7 +282,7 @@ class SessionDisk:
                         if seg not in stored or stored[seg][1] != n:
                             raise ValueError(f"segment {seg} missing or resized")
                         f.seek(stored[seg][0])
-                        t.view(torch.uint8).reshape(-1).copy_(self._read_chunk(f, n))
+                        self._read_into(f, t)
                         tensors.append(t)
                     payloads[identity] = (tuple(scalars), tensors)
                 record.last_access = time.time()
@@ -293,11 +295,22 @@ class SessionDisk:
         self.read_seconds += time.perf_counter() - t0
         return payloads
 
+    def _read_into(self, f, t: torch.Tensor) -> None:
+        """Fill a contiguous tensor from the file position, STAGING bytes at a time."""
+        flat = t.view(torch.uint8).reshape(-1)
+        for a in range(0, flat.numel(), STAGING):
+            n = min(STAGING, flat.numel() - a)
+            flat[a:a + n].copy_(self._read_chunk(f, n))
+
     def _read_chunk(self, f, n: int) -> torch.Tensor:
         """n <= STAGING bytes from the file onto the device (a bounce through pinned staging)."""
         view = self._read_staging[:n]
-        if f.readinto(memoryview(view.numpy())) != n:
-            raise ValueError("short read")
+        buf, got = memoryview(view.numpy()), 0
+        while got < n:  # an unbuffered read may return less than asked
+            k = f.readinto(buf[got:])
+            if not k:
+                raise ValueError("short read")
+            got += k
         if self.device.type != "cuda":
             return view.clone()
         if self._bounce is None:
