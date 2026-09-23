@@ -24,6 +24,7 @@ class Detokenizer:
         self.skip_special = skip_special
         self.text = ""
         self.stopped = False
+        self.stop_hit: str | None = None  # the stop string that ended the text
         self._prefix = 0  # ids before this are never decoded again
         self._read = 0  # ids in [prefix, read) were emitted; ids from here on are new
 
@@ -46,6 +47,7 @@ class Detokenizer:
             if idx >= 0:
                 full = full[:idx]
                 self.stopped = True
+                self.stop_hit = s
                 break
         delta = full[len(self.text):]
         self.text = full

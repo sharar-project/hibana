@@ -7,6 +7,8 @@ Admission also checks the output budget and speculative scratch capacity.
 | Endpoint | Purpose |
 |---|---|
 | `POST /v1/chat/completions` | Chat, optional reasoning and parsed tool calls |
+| `POST /v1/messages` | Anthropic Messages on the chat path: thinking, text and tool_use blocks |
+| `POST /v1/messages/count_tokens` | Rendered prompt length of a Messages request |
 | `POST /v1/completions` | Text completions |
 | `POST /generate` | Native text or token-ID input, output IDs and request metadata |
 | `POST /v1/tokenize` | Token counting/encoding |
@@ -45,7 +47,9 @@ Sharar does not execute tools. Clients perform calls and submit subsequent turns
 
 Thinking content is returned separately as `reasoning_content`; tool calls use
 `tool_calls`. Streaming chat can return final usage when
-`stream_options.include_usage` is true. The native `/generate` route accepts
+`stream_options.include_usage` is true. Chat and completion usage report the
+prompt tokens reused from the prefix cache as
+`prompt_tokens_details.cached_tokens`. The native `/generate` route accepts
 `input_ids` or `text`, and a `sampling_params` object; its metadata includes
 cached tokens and speculative work when used. `/generate` and OpenAI routes
 have different response schemas.
@@ -55,6 +59,74 @@ already in progress reports an SSE error. Client disconnects cancel their
 requests. Cache flush acknowledges invalidation; locked storage may remain
 until its readers finish, reported by `flush_pending`.
 
-The API's supported controls are checked in `tests/unit/test_chat_controls.py`;
+## Anthropic Messages
+
+`POST /v1/messages` translates the request into the chat input above and
+runs the same path: template, reasoning and tool-call parsing, sampling
+validation, the relaxed-acceptance default, `trace` and disconnect
+cancellation. `POST /v1/messages/count_tokens` returns the exact rendered
+prompt length as `{"input_tokens": N}`.
+
+| Field | Supported behavior |
+|---|---|
+| `model` | Any string; the single target serves it and the response echoes it |
+| `max_tokens` | Required; capped at the context left after the prompt, since clients size it for a larger window |
+| `system` | A string or text blocks |
+| `messages` | `user`, `assistant` and `system` turns (see below). Text; in assistant turns `thinking` (rendered as reasoning; signatures are not checked), `redacted_thinking` (dropped) and `tool_use`; in user turns `tool_result` with string or text-block content, in order with the turn's text |
+| `tools` | Custom tools become the chat tool schemas; typed server tools (`web_search_*` and similar) are dropped |
+| `tool_choice` | `auto` or omitted, and `none`, as in chat |
+| `thinking` | `enabled` or `adaptive` turn thinking on (`budget_tokens` is not enforced), `disabled` turns it off; omitted, `chat_template_kwargs.enable_thinking` decides, default on |
+| `temperature`, `top_p`, `top_k`, `stop_sequences`, `stream` | As the chat fields; omitted sampling fields keep the chat defaults (greedy), not Anthropic's temperature 1 |
+| `trace`, `accept_top_k`, `accept_margin`, `chat_template_kwargs` | Sharar's extensions, as in chat |
+
+`cache_control` markers are accepted and not acted on; the prefix cache
+reuses shared prefixes regardless. `metadata`, other top-level fields,
+`anthropic-version`, `anthropic-beta`, `x-api-key` and `?beta=true` are
+ignored. HTTP 400 in Anthropic's error shape: `image` and `document` blocks
+(text-only model), other content block types, `tool_choice` `any` or `tool`
+(forced calls need constrained decoding), a missing `max_tokens`, and a
+prompt that fills the context (`prompt is too long: N tokens > M maximum`).
+Queue saturation returns 429 `rate_limit_error`, an unavailable engine 503
+`overloaded_error`, and a stream already in progress an `error` event.
+`/get_server_info` counts rejected forced tool choices and dropped server
+tools under `messages_api` (`sharar_messages_*` in `/metrics`).
+
+Content is ordered thinking (signature `sharar-unsigned`), text, then
+`tool_use` blocks with parsed `input`. `stop_reason` is `end_turn`,
+`max_tokens`, `stop_sequence` (with `stop_sequence`) or `tool_use`. Usage
+reports the reused prefix as `cache_read_input_tokens` and the rest as
+`input_tokens`; `cache_creation_input_tokens` is 0. A stream sends
+`message_start`, `ping`, each block's start, deltas and stop (a thinking
+block ends with its `signature_delta`; a tool call arrives whole as one
+`input_json_delta`), then `message_delta` with the final usage and
+`message_stop`. `message_start` counts the whole prompt as `input_tokens`
+because the prefix match happens at admission.
+
+To use Sharar from Claude Code, run `tools/claude-sharar.sh` (interactive, or
+with `claude` arguments such as `-p "..."`; `SHARAR_URL` picks the server). It
+sets the variables below from Claude Code's gateway and model-configuration
+docs and keeps its own config directory (`~/.claude-sharar`). Claude Code only accepts model IDs that contain
+`claude` or `anthropic`; the server serves any name, so pick one that does:
+
+```bash
+export ANTHROPIC_BASE_URL=http://<host>:30001
+export ANTHROPIC_AUTH_TOKEN=sharar                  # not checked
+export ANTHROPIC_MODEL=claude-sharar-qwen3.8        # must contain "claude"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-sharar-qwen3.8   # background tasks and titles
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144        # the server's --context-length
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1   # no telemetry or update checks
+claude
+```
+
+Claude Code sends system messages inside `messages` (its environment block
+after the first user turn); they are rendered in place as user turns in
+`<system-reminder>` tags, since the template accepts one leading system
+message and moving them would change the cached prefix. Several leading
+system messages (OpenAI clients such as OpenCode) are merged. It asks for
+32,000 output tokens; the server caps `max_tokens` at the remaining context
+and answers `prompt is too long` when a conversation fills it.
+
+The API's supported controls are checked in `tests/unit/test_chat_controls.py`
+and `tests/unit/test_messages_api.py`;
 failure, disconnect and drain behavior has separate lifecycle tests. Current
 request-level cache modes/priorities are only a [proposal](request-cache-policy.md).

@@ -36,9 +36,36 @@ and the memory guard.
 | `./sharar-ctl logs [--train]` | Container logs |
 
 Any OpenAI-compatible client works against `http://127.0.0.1:30001/v1`
-(chat completions, completions, streaming, thinking, tool-call parsing); see
-the [API guide](docs/api.md). Context is 262K tokens, at most four concurrent
+(chat completions, completions, streaming, thinking, tool-call parsing), and
+Anthropic Messages clients against `http://127.0.0.1:30001`; see the
+[API guide](docs/api.md). Context is 262K tokens, at most four concurrent
 requests.
+
+## Use it from coding agents
+
+Agent harnesses run on Sharar unchanged: tool calls, streaming, thinking and
+long sessions. **Claude Code**, from the directory you want it to work in:
+
+```bash
+tools/claude-sharar.sh                      # interactive
+tools/claude-sharar.sh -p "fix the failing test and run the suite"
+```
+
+The script points Claude Code at the server (`SHARAR_URL`, default
+`http://127.0.0.1:30001`) under a model name Claude Code accepts, declares the
+server's context length, turns off telemetry, and keeps its own config
+directory (`~/.claude-sharar`) so your Anthropic login and settings are
+untouched. Claude Code warns that the model is not in its catalog and
+compacts sessions at 200K tokens; that is expected. **OpenAI-compatible
+harnesses** (OpenCode, Cline, Aider, Continue, Zed): base URL
+`http://127.0.0.1:30001/v1`, any API key and model name. From another machine,
+forward the port first: `ssh -N -L 30001:127.0.0.1:30001 <user>@<spark>`.
+
+The first request of a session prefills the harness's system prompt and tools
+(about 16K tokens for Claude Code, 8 s); later turns reuse the cache and start
+in under a second. Forced tool choice and JSON-schema output return 400 for
+now. Agent traffic is recorded like any other (`"trace": false` opts out), so
+`./sharar-ctl train` makes the drafter faster at your own agent work.
 
 ## Train the drafter on your traffic
 

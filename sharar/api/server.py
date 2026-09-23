@@ -1,5 +1,6 @@
-"""HTTP server: OpenAI-compatible chat/completions plus the SGLang-style
-/generate the benchmark harness speaks.
+"""HTTP server: OpenAI-compatible chat/completions, the Anthropic Messages
+API on the same chat path, and the SGLang-style /generate the benchmark
+harness speaks.
 
 The scheduler runs in one background thread (`EngineLoop`); request handlers
 enqueue work and await per-request asyncio queues that the loop fills after
@@ -17,13 +18,15 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request as HttpRequest
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from jinja2 import TemplateError
 
 from sharar import target as targets
+from sharar.api import messages as messages_api
 from sharar.api.chat_template import ChatTemplate
 from sharar.api.detok import Detokenizer
 from sharar.api.parsers.reasoning import ReasoningParser
-from sharar.api.parsers.tools import has_tool_call, parse_tool_calls
-from sharar.api.validation import _sampling_from, _stops, _validate_chat_controls
+from sharar.api.parsers.tools import TOOL_CALL_START, has_tool_call, parse_tool_calls
+from sharar.api.validation import _sampling_from, _stops, _template_kwargs, _validate_chat_controls
 from sharar.engine.loop import EngineUnavailable, Ticket, EngineLoop
 from sharar.engine.sampler import InvalidRequest
 from sharar.engine.scheduler import QueueFull, Scheduler
@@ -44,6 +47,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
     app = FastAPI(title="sharar", lifespan=lifespan)
     started = time.time()
+    # Messages API requests this server declines or reduces, to see what harnesses send.
+    messages_stats = {"forced_tool_choice_rejected": 0, "server_tools_ignored": 0}
 
     @app.exception_handler(InvalidRequest)
     async def invalid_request(http, exc):
@@ -60,9 +65,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         finally:
             engine.cancel(ticket)
 
-    async def _collect(ticket: Ticket, stop: list[str], http: HttpRequest | None) -> tuple[list[int], str, str]:
+    async def _collect(ticket: Ticket, detok: Detokenizer, http: HttpRequest | None) -> tuple[list[int], str, str]:
         """Drain a ticket to completion. Returns (ids, text, finish_reason)."""
-        detok = Detokenizer(tok, stop)
         ids: list[int] = []
         reason = ""
         while True:
@@ -86,6 +90,60 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             if finished:
                 return ids, detok.text, reason
 
+    def _chat_prompt(messages: list[dict], tools: list | None, thinking: bool, kwargs: dict) -> tuple[list[int], bool]:
+        """Render and encode a chat. Returns (ids, whether the output starts inside a thinking block)."""
+        rendered = tmpl.render(fold_system_messages(_tool_arguments_as_objects(messages)), enable_thinking=thinking, tools=tools, **kwargs)
+        return tok.encode(rendered), thinking and rendered.rstrip().endswith("<think>")
+
+    async def _submit(ids: list[int], params) -> Ticket:
+        try:
+            return await engine.submit(ids, params)
+        except QueueFull as exc:
+            raise HTTPException(429, str(exc))
+
+    async def _chat_steps(ticket: Ticket, detok: Detokenizer, http: HttpRequest, in_reasoning: bool, tools: list | None):
+        """Streamed chat output, one step per engine update: yields
+        (reasoning_delta, content_delta, tool_calls, finished, reason, n_out).
+        Content is held back once a tool call starts; the final step carries
+        the parsed calls, with reason "tool_calls" when there are any. Returns
+        early when the client disconnects; raises EngineUnavailable on engine failure."""
+        rp = ReasoningParser(in_reasoning)
+        out: list[int] = []
+        buffered_tool = ""
+        while True:
+            if await http.is_disconnected():
+                engine.cancel(ticket)
+                return
+            try:
+                new, finished, reason = await asyncio.wait_for(ticket.queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            if reason == "error":
+                raise EngineUnavailable("engine unavailable")
+            out += new
+            delta_text = detok.update(out)
+            if detok.stopped:
+                engine.cancel(ticket)
+                finished, reason = True, "stop"
+            r_delta, c_delta = rp.feed(delta_text)
+            if finished:
+                r2, c2 = rp.finish()
+                r_delta += r2
+                c_delta += c2
+            if c_delta and tools and (buffered_tool or has_tool_call(rp.content)):
+                # Content before a call that starts within this update is still content.
+                keep = 0 if buffered_tool else max(0, rp.content.find(TOOL_CALL_START) - (len(rp.content) - len(c_delta)))
+                buffered_tool = rp.content
+                c_delta = c_delta[:keep]
+            calls: list[dict] = []
+            if finished and buffered_tool:
+                _, calls = parse_tool_calls(buffered_tool, tools)
+                if calls:
+                    reason = "tool_calls"
+            yield r_delta, c_delta, calls, finished, reason, len(out)
+            if finished:
+                return
+
     # ---- plumbing ----
     @app.get("/health")
     @app.get("/ready")
@@ -102,12 +160,14 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         info = {**describe, "scheduler": engine.stats()}
         if engine.sched.ex.spec is not None:
             info["spec_stats"] = engine.sched.ex.spec.stats()
+        info["messages_api"] = dict(messages_stats)
         return info
 
     @app.get("/metrics")
     async def metrics():
         st = engine.stats()
         lines = [f"sharar_{k} {v}" for k, v in st.items() if isinstance(v, (int, float))]
+        lines += [f"sharar_messages_{k} {v}" for k, v in messages_stats.items()]
         return PlainTextResponse("\n".join(lines) + "\n")
 
     @app.post("/flush_cache")
@@ -201,7 +261,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                         break
                 yield "data: [DONE]\n\n"
             return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
-        out, text, reason = await _collect(ticket, stop, http)
+        out, text, reason = await _collect(ticket, Detokenizer(tok, stop), http)
         return {"text": text, "output_ids": out, "meta_info": meta(len(out), reason)}
 
     # ---- OpenAI completions ----
@@ -265,7 +325,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                         break
                 yield "data: [DONE]\n\n"
             return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
-        out, text, reason = await _collect(ticket, stop, http)
+        out, text, reason = await _collect(ticket, Detokenizer(tok, stop), http)
         choice = {"index": 0, "text": text, "finish_reason": reason}
         if return_token_ids:
             choice.update(token_ids=out, prompt_token_ids=ids)
@@ -279,103 +339,234 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         messages = body.get("messages") or []
         if not messages:
             raise HTTPException(400, "messages required")
-        kwargs = dict(body.get("chat_template_kwargs") or {})
-        thinking = bool(kwargs.pop("enable_thinking", True))
+        kwargs, thinking = _template_kwargs(body)
         tools = None if body.get("tool_choice") == "none" else body.get("tools")  # "none": generate without tool schemas
-        rendered = tmpl.render(messages, enable_thinking=thinking, tools=tools, **kwargs)
-        ids = tok.encode(rendered)
+        ids, in_reasoning = _chat_prompt(messages, tools, thinking, kwargs)
         params = _sampling_from(body, max_default=512)
         stop = _stops(body)
-        try:
-            ticket = await engine.submit(ids, params)
-        except QueueFull as exc:
-            raise HTTPException(429, str(exc))
+        ticket = await _submit(ids, params)
         cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
-        in_reasoning = thinking and rendered.rstrip().endswith("<think>")
         include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
 
         def usage(n_out: int, reasoning_tokens: int | None = None) -> dict:
-            u = {"prompt_tokens": len(ids), "completion_tokens": n_out, "total_tokens": len(ids) + n_out}
+            u = {"prompt_tokens": len(ids), "completion_tokens": n_out, "total_tokens": len(ids) + n_out,
+                 "prompt_tokens_details": {"cached_tokens": ticket.req.prefix_len}}
             if reasoning_tokens is not None:
                 u["reasoning_tokens"] = reasoning_tokens
             return u
 
         if body.get("stream"):
             async def events():
-                detok = Detokenizer(tok, stop)
-                rp = ReasoningParser(in_reasoning)
-                out: list[int] = []
-                buffered_tool = ""
                 sent_role = False
-                while True:
-                    if await http.is_disconnected():
-                        engine.cancel(ticket)
-                        break
-                    try:
-                        new, finished, reason = await asyncio.wait_for(ticket.queue.get(), timeout=0.5)
-                    except asyncio.TimeoutError:
-                        continue
-                    if reason == "error":
-                        yield 'data: {"error": {"message": "engine unavailable", "type": "server_error"}}\n\n'
-                        break
-                    out += new
-                    delta_text = detok.update(out)
-                    if detok.stopped:
-                        engine.cancel(ticket)
-                        finished, reason = True, "stop"
-                    r_delta, c_delta = rp.feed(delta_text)
-                    if finished:
-                        r2, c2 = rp.finish()
-                        r_delta += r2
-                        c_delta += c2
-                    delta: dict[str, Any] = {}
-                    if not sent_role:
-                        delta["role"] = "assistant"
-                        sent_role = True
-                    if r_delta:
-                        delta["reasoning_content"] = r_delta
-                    if c_delta:
-                        if tools and (buffered_tool or has_tool_call(rp.content)):
-                            buffered_tool = rp.content
-                        else:
+                try:
+                    async for r_delta, c_delta, calls, finished, reason, n_out in _chat_steps(
+                            ticket, Detokenizer(tok, stop), http, in_reasoning, tools):
+                        delta: dict[str, Any] = {}
+                        if not sent_role:
+                            delta["role"] = "assistant"
+                            sent_role = True
+                        if r_delta:
+                            delta["reasoning_content"] = r_delta
+                        if c_delta:
                             delta["content"] = c_delta
-                    finish = None
-                    if finished:
-                        finish = reason
-                        if buffered_tool:
-                            content, calls = parse_tool_calls(buffered_tool, tools)
-                            if calls:
-                                delta["tool_calls"] = [{"index": i, **c} for i, c in enumerate(calls)]
-                                finish = "tool_calls"
-                    if delta or finished:
-                        chunk = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": MODEL_ID,
-                                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
-                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                    if finished:
-                        if include_usage:
-                            yield f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_ID, 'choices': [], 'usage': usage(len(out))})}\n\n"
-                        break
+                        if calls:
+                            delta["tool_calls"] = [{"index": i, **c} for i, c in enumerate(calls)]
+                        if delta or finished:
+                            chunk = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": MODEL_ID,
+                                     "choices": [{"index": 0, "delta": delta, "finish_reason": reason if finished else None}]}
+                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                        if finished and include_usage:
+                            yield f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_ID, 'choices': [], 'usage': usage(n_out)})}\n\n"
+                except EngineUnavailable:
+                    yield 'data: {"error": {"message": "engine unavailable", "type": "server_error"}}\n\n'
                 yield "data: [DONE]\n\n"
             return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
 
-        out, text, reason = await _collect(ticket, stop, http)
-        rp = ReasoningParser(in_reasoning)
-        rp.feed(text)
-        rp.finish()
-        content, calls = (parse_tool_calls(rp.content, tools) if tools else (rp.content, []))
+        out, text, reason = await _collect(ticket, Detokenizer(tok, stop), http)
+        reasoning, content, calls = _split_chat(text, in_reasoning, tools)
         message: dict[str, Any] = {"role": "assistant", "content": content if content or not calls else None}
-        if rp.reasoning:
-            message["reasoning_content"] = rp.reasoning
+        if reasoning:
+            message["reasoning_content"] = reasoning
         if calls:
             message["tool_calls"] = calls
             reason = "tool_calls"
-        reasoning_tokens = len(tok.encode(rp.reasoning)) if rp.reasoning else 0
+        reasoning_tokens = len(tok.encode(reasoning)) if reasoning else 0
         return {"id": cid, "object": "chat.completion", "created": created, "model": MODEL_ID,
                 "choices": [{"index": 0, "message": message, "finish_reason": reason}],
                 "usage": usage(len(out), reasoning_tokens)}
 
+    # ---- Anthropic Messages ----
+    async def _messages_errors(handler, http: HttpRequest):
+        """Run a Messages handler, reporting failures in Anthropic's error shape."""
+        def error(status: int, kind: str, message: str) -> JSONResponse:
+            return JSONResponse(messages_api.error_body(kind, message), status_code=status)
+        try:
+            body = await http.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            return error(400, "invalid_request_error", "request body must be a JSON object")
+        try:
+            return await handler(body, http)
+        except InvalidRequest as exc:
+            return error(400, "invalid_request_error", str(exc))
+        except HTTPException as exc:
+            return error(exc.status_code, "rate_limit_error" if exc.status_code == 429 else "invalid_request_error", str(exc.detail))
+        except EngineUnavailable:
+            return error(503, "overloaded_error", "engine unavailable")
+
+    def _messages_prompt(body: dict, choice: str) -> tuple[messages_api.MessagesRequest, list[dict] | None, list[int], bool]:
+        req = messages_api.parse_request(body)
+        kwargs, thinking = _template_kwargs(body)
+        if req.thinking is not None:
+            thinking = req.thinking
+        tools = None if choice == "none" else req.tools
+        try:
+            ids, in_reasoning = _chat_prompt(req.messages, tools, thinking, kwargs)
+        except TemplateError as exc:
+            raise InvalidRequest(f"the conversation cannot be rendered: {exc}")
+        return req, tools, ids, in_reasoning
+
+    @app.post("/v1/messages")
+    async def messages(http: HttpRequest):
+        return await _messages_errors(_messages, http)
+
+    async def _messages(body: dict, http: HttpRequest):
+        choice = messages_api.tool_choice(body)
+        if choice in ("any", "tool"):
+            messages_stats["forced_tool_choice_rejected"] += 1
+            raise InvalidRequest(f"tool_choice type '{choice}' is not supported yet: forced tool calls need constrained "
+                                 "decoding; use 'auto' or 'none'")
+        model = body.get("model", MODEL_ID)
+        if not isinstance(model, str):
+            raise InvalidRequest("model must be a string")
+        max_tokens = body.get("max_tokens")
+        if max_tokens is None:
+            raise InvalidRequest("max_tokens is required")
+        req, tools, ids, in_reasoning = _messages_prompt(body, choice)
+        messages_stats["server_tools_ignored"] += req.ignored_tools
+        limit = describe.get("context_length", targets.DEFAULT_TARGET.context_length)
+        if len(ids) >= limit:
+            raise InvalidRequest(f"prompt is too long: {len(ids)} tokens > {limit - 1} maximum")
+        if isinstance(max_tokens, (int, float)) and not isinstance(max_tokens, bool):
+            max_tokens = min(max_tokens, limit - len(ids))  # clients size max_tokens for a larger window
+        sampling = {k: body[k] for k in ("temperature", "top_p", "top_k", "trace", "accept_top_k", "accept_margin") if k in body}
+        params = _sampling_from({**sampling, "max_tokens": max_tokens})
+        stop = _stops({"stop": body.get("stop_sequences")})
+        ticket = await _submit(ids, params)
+        mid = messages_api.new_id("msg")
+
+        def usage(n_out: int) -> dict:
+            cached = ticket.req.prefix_len
+            return {"input_tokens": len(ids) - cached, "output_tokens": n_out,
+                    "cache_creation_input_tokens": 0, "cache_read_input_tokens": cached}
+
+        detok = Detokenizer(tok, stop)
+        if body.get("stream"):
+            sse = messages_api.sse
+
+            async def events():
+                # The prefix match is not known before admission; message_delta reports the final split.
+                yield sse("message_start", {"type": "message_start", "message": {
+                    "id": mid, "type": "message", "role": "assistant", "model": model, "content": [],
+                    "stop_reason": None, "stop_sequence": None, "usage": {
+                        "input_tokens": len(ids), "output_tokens": 0,
+                        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}})
+                yield sse("ping", {"type": "ping"})
+                writer = messages_api.EventWriter()
+                try:
+                    async for r_delta, c_delta, calls, finished, reason, n_out in _chat_steps(
+                            ticket, detok, http, in_reasoning, tools):
+                        for event in writer.delta("thinking", r_delta) + writer.delta("text", c_delta):
+                            yield event
+                        if finished:
+                            for event in writer.finish(calls):
+                                yield event
+                            stop_reason, stop_sequence = messages_api.stop_reason(reason, detok.stop_hit)
+                            yield sse("message_delta", {"type": "message_delta", "delta": {
+                                "stop_reason": stop_reason, "stop_sequence": stop_sequence}, "usage": usage(n_out)})
+                            yield sse("message_stop", {"type": "message_stop"})
+                except EngineUnavailable:
+                    yield sse("error", messages_api.error_body("overloaded_error", "engine unavailable"))
+            return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
+
+        out, text, reason = await _collect(ticket, detok, http)
+        reasoning, content, calls = _split_chat(text, in_reasoning, tools)
+        stop_reason, stop_sequence = messages_api.stop_reason("tool_calls" if calls else reason, detok.stop_hit)
+        return {"id": mid, "type": "message", "role": "assistant", "model": model,
+                "content": messages_api.content_blocks(reasoning, content, calls),
+                "stop_reason": stop_reason, "stop_sequence": stop_sequence, "usage": usage(len(out))}
+
+    @app.post("/v1/messages/count_tokens")
+    async def count_tokens(http: HttpRequest):
+        async def count(body: dict, http: HttpRequest):
+            # A forced tool_choice does not change the prompt, so it is counted, not rejected.
+            _, _, ids, _ = _messages_prompt(body, messages_api.tool_choice(body))
+            return {"input_tokens": len(ids)}
+        return await _messages_errors(count, http)
+
     return app
+
+
+def _text_of(content) -> str:
+    if isinstance(content, list):
+        return "".join(part.get("text", "") for part in content if isinstance(part, dict))
+    return content if isinstance(content, str) else ""
+
+
+def fold_system_messages(messages: list[dict]) -> list[dict]:
+    """The template accepts one system message, first. Clients send more:
+    several leading ones (OpenCode) and instructions later in the
+    conversation (Claude Code). Merge the leading run; render a later one in
+    place as a user turn in <system-reminder> tags, which keeps the prefix
+    before it (and its cache) unchanged."""
+    lead = 0
+    while lead < len(messages) and isinstance(messages[lead], dict) and messages[lead].get("role") == "system":
+        lead += 1
+    out = []
+    if lead > 1:
+        out.append({"role": "system", "content": "\n\n".join(t for t in (_text_of(m.get("content")) for m in messages[:lead]) if t)})
+    else:
+        out += messages[:lead]
+    for message in messages[lead:]:
+        if isinstance(message, dict) and message.get("role") == "system":
+            message = {"role": "user", "content": f"<system-reminder>\n{_text_of(message.get('content'))}\n</system-reminder>"}
+        out.append(message)
+    return out
+
+
+def _tool_arguments_as_objects(messages: list[dict]) -> list[dict]:
+    """OpenAI clients send earlier tool calls' arguments as a JSON string; the
+    template iterates them as a mapping. Returns messages with parsed copies."""
+    out = []
+    for message in messages:
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if isinstance(calls, list) and any(isinstance((c or {}).get("function", {}).get("arguments"), str) for c in calls):
+            parsed = []
+            for c in calls:
+                args = (c or {}).get("function", {}).get("arguments")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args) if args.strip() else {}
+                    except ValueError:
+                        raise InvalidRequest(f"tool call arguments must be a JSON object, got {args[:80]!r}")
+                    if not isinstance(args, dict):
+                        raise InvalidRequest("tool call arguments must be a JSON object")
+                    c = {**c, "function": {**c["function"], "arguments": args}}
+                parsed.append(c)
+            message = {**message, "tool_calls": parsed}
+        out.append(message)
+    return out
+
+
+def _split_chat(text: str, in_reasoning: bool, tools: list | None) -> tuple[str, str, list[dict]]:
+    """Complete chat output as (reasoning, content, tool_calls)."""
+    rp = ReasoningParser(in_reasoning)
+    rp.feed(text)
+    rp.finish()
+    content, calls = (parse_tool_calls(rp.content, tools) if tools else (rp.content, []))
+    return rp.reasoning, content, calls
 
 
 def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
