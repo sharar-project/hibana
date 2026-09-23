@@ -24,6 +24,7 @@ from sharar.model.norm import GemmaRMSNorm
 from sharar.model.rope import PartialRotary
 from sharar.weights.modelopt import Nvfp4Linear
 from sharar.weights.safetensors import SnapshotWeights
+from sharar.kernels import plan_guard
 
 PREFIX = "mtp"
 
@@ -66,7 +67,7 @@ class MtpHead:
         # Host index pointers: plan() reads them on the CPU (a device tensor would sync).
         qo_indptr = torch.tensor([0] + list(torch.tensor(qo_lens).cumsum(0).tolist()), dtype=torch.int32)
         kv_indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_pages]).cumsum(0).tolist()), dtype=torch.int32)
-        self._attn.plan(
+        plan_guard.plan(self._attn,
             qo_indptr, kv_indptr, torch.cat(kv_pages), torch.ones(len(qo_lens), dtype=torch.int32),
             self.num_heads, self.num_kv_heads, self.head_dim, 1,
             causal=True, q_data_type=torch.bfloat16, kv_data_type=torch.bfloat16, sm_scale=self.head_dim**-0.5,

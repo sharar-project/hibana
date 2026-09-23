@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 import torch
 
 from sharar.target import Target
+from sharar.engine.debug import debug_sync
+from sharar.kernels import plan_guard
 from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import DecodeGraphs
 from sharar.engine.request import Request, State
@@ -84,6 +86,11 @@ class Executor:
         self._decode_wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(self._ws, "NHD", use_tensor_cores=True)
         self._prefill_ws = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=self.device)
         self._paged_prefill = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self._prefill_ws, "NHD")
+        # Eager verification plans its own wrapper: plan() uploads from a pinned buffer
+        # asynchronously, so one wrapper shared with prefill could be re-planned in the same
+        # scheduler step before the GPU read the previous plan.
+        self._verify_ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=self.device)
+        self._verify_prefill = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self._verify_ws, "NHD")
         self.ledger.record_cuda_allocated("workspaces")
         self.graphs: DecodeGraphs | None = None
         self.use_graphs = False
@@ -318,7 +325,7 @@ class Executor:
         qo_indptr = torch.tensor([0, new_tokens], dtype=torch.int32)
         kv_indptr = torch.tensor([0, prefix_pages.shape[0]], dtype=torch.int32)
         last_page_len = torch.ones(1, dtype=torch.int32)
-        self._paged_prefill.plan(
+        plan_guard.plan(self._paged_prefill,
             qo_indptr, kv_indptr, prefix_pages, last_page_len,
             self.target.num_attention_heads, self.target.num_kv_heads, self.target.head_dim, self.kv_pool.page_size,
             causal=False, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=self.target.head_dim**-0.5,
@@ -359,11 +366,15 @@ class Executor:
 
     def prefill(self, req: Request, max_tokens: int | None = None) -> int | None:
         batch = self._prepare_single_prefill(req, max_tokens)
-        return self._finish_prefill(batch, self.model.forward(batch.ids, batch.context))
+        out = self.model.forward(batch.ids, batch.context)
+        debug_sync("after prefill forward", [req])
+        return self._finish_prefill(batch, out)
 
     def prefill_batch(self, chunks: list[tuple[Request, int]]) -> None:
         batch = self._prepare_prefill(chunks)
-        self._finish_prefill(batch, self.model.forward(batch.ids, batch.context))
+        out = self.model.forward(batch.ids, batch.context)
+        debug_sync("after batched prefill forward", [r for r, _ in chunks])
+        self._finish_prefill(batch, out)
 
     def _prepare_single_prefill(self, req: Request, max_tokens: int | None) -> PrefillBatch:
         """Prefill up to `max_tokens` of the remaining prompt (all of it by
@@ -442,7 +453,7 @@ class Executor:
             checkpoint_seqs=[i for i, _, _ in checkpoints],
         )
         if any(prefix_lens):
-            self._paged_prefill.plan(
+            plan_guard.plan(self._paged_prefill,
                 torch.tensor(cu, dtype=torch.int32), torch.tensor(kv_indptr, dtype=torch.int32), torch.cat(kv_indices),
                 torch.ones(len(chunks), dtype=torch.int32),
                 self.target.num_attention_heads, self.target.num_kv_heads, self.target.head_dim, self.kv_pool.page_size,
@@ -582,7 +593,7 @@ class Executor:
         indptr = torch.tensor([0] + list(torch.tensor(counts).cumsum(0).tolist()), dtype=torch.int32)
         indices = torch.cat(pages)
         last_page_len = torch.ones(len(reqs), dtype=torch.int32)
-        self._decode_wrapper.plan(
+        plan_guard.plan(self._decode_wrapper,
             indptr, indices, last_page_len,
             self.target.num_attention_heads, self.target.num_kv_heads, self.target.head_dim, self.kv_pool.page_size,
             pos_encoding_mode="NONE", q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=self.target.head_dim**-0.5,
@@ -637,6 +648,7 @@ class Executor:
             if self.target.indexer_budget:
                 ctx.qsa_seqs = [(r.context_len - 1, 1, pages) for r, pages in zip(reqs, step_pages)]
             out = self.model.forward(tokens, ctx)
+            debug_sync("after plain decode forward", reqs)
             logits = self.model.logits(out["norm"])
         next_tokens = self.sampler.sample(logits, [r.params for r in reqs], [r.generator for r in reqs]).tolist()
         for i, (r, tok) in enumerate(zip(reqs, next_tokens)):
