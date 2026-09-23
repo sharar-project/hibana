@@ -79,16 +79,20 @@ context, their own APIs, fast sampled decoding and structured output. In order:
    OpenAI tool-call arguments as JSON strings, cached tokens in chat usage.
    Open: map Claude Code's `output_config.effort` onto the template's reasoning
    effort; `/v1/responses` only if Codex is wanted.
-3. **Fast sampled decoding with relaxed acceptance.** Measured 2026-09-23 on
-   production at batch one (768 tokens, code prompt): greedy exact 106 tok/s,
-   greedy relaxed 126, sampled at temperature 0.7 97 to 101, at 1.0 90 to 94.
-   The sampled path is not slow at batch one; the gap to the default is the
-   missing relaxed rule for sampled requests (typical acceptance: accept a
-   drafted token whose target probability clears an entropy-scaled threshold,
-   or a biased ratio, see the engine to-do below) and the device-resident
-   accept graphs, which exclude sampled batches, at batch two to four. Build
-   both, graph-capture the sampled verifier, judge like the greedy mode
-   (family gate, paired GSM8K/HumanEval, judged comparison).
+3. **Done 2026-09-23: sampled decoding, measured** (evidence
+   `$SHARAR_RESULTS/reviews/2026-09-23-sampled/`). The top-p nucleus now ranks
+   leading candidates instead of sorting the vocabulary (identical output):
+   the sampled round's overhead over greedy fell from 9.1 to 5.6 ms (74.3 vs
+   68.7 ms at batch one); the rest is the full-vocabulary softmax and the
+   per-request verifier. Relaxed acceptance for sampled requests (a drafted
+   token among the request's own top-k within the margin) is built, opt-in
+   per request and off by default: at temperature 0.6 it gave +4% throughput
+   and lost quality, GSM8K-300 96.0 to 94.0% (2 better, 8 worse) and HumanEval
+   94.5 to 91.5% (2/7), pooled 4 better against 15 worse (p about 0.02). A
+   sampled request's drafts are the draft's own samples, so relaxing accepts
+   tokens the target would not have chosen; a faster sampled path has to come
+   from the draft side (proposing the target's likely tokens) or from the
+   remaining 5.6 ms. Not pursued further now.
 4. **Forced tool choice and structured output with speculation.** Grammar
    masks on the verify rows and on the drafter's candidates, and grammar-forced
    tokens committed without drafting (jump-forward). Order against item 3 by
