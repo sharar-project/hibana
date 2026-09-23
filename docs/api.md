@@ -72,7 +72,7 @@ prompt length as `{"input_tokens": N}`.
 | `model` | Any string; the single target serves it and the response echoes it |
 | `max_tokens` | Required; capped at the context left after the prompt, since clients size it for a larger window |
 | `system` | A string or text blocks |
-| `messages` | Text; in assistant turns `thinking` (rendered as reasoning; signatures are not checked), `redacted_thinking` (dropped) and `tool_use`; in user turns `tool_result` with string or text-block content, in order with the turn's text |
+| `messages` | `user`, `assistant` and `system` turns (see below). Text; in assistant turns `thinking` (rendered as reasoning; signatures are not checked), `redacted_thinking` (dropped) and `tool_use`; in user turns `tool_result` with string or text-block content, in order with the turn's text |
 | `tools` | Custom tools become the chat tool schemas; typed server tools (`web_search_*` and similar) are dropped |
 | `tool_choice` | `auto` or omitted, and `none`, as in chat |
 | `thinking` | `enabled` or `adaptive` turn thinking on (`budget_tokens` is not enforced), `disabled` turns it off; omitted, `chat_template_kwargs.enable_thinking` decides, default on |
@@ -103,24 +103,26 @@ block ends with its `signature_delta`; a tool call arrives whole as one
 because the prefix match happens at admission.
 
 To use Sharar from Claude Code (variables from Claude Code's gateway and
-model-configuration docs):
+model-configuration docs). Claude Code only accepts model IDs that contain
+`claude` or `anthropic`; the server serves any name, so pick one that does:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://<host>:30001
-export ANTHROPIC_AUTH_TOKEN=sharar            # not checked
-export ANTHROPIC_MODEL=qwen3.8-27b            # any name; one target serves every tier
-export ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3.8-27b
-export ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3.8-27b
-export ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3.8-27b   # background tasks and titles
-export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1  # no telemetry or update checks
+export ANTHROPIC_AUTH_TOKEN=sharar                  # not checked
+export ANTHROPIC_MODEL=claude-sharar-qwen3.8        # must contain "claude"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-sharar-qwen3.8   # background tasks and titles
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144        # the server's --context-length
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1   # no telemetry or update checks
 claude
 ```
 
-Claude Code assumes a 200K window for a custom model name. The served context
-is 32,768 tokens including output unless the server runs with a larger
-`SHARAR_MAX_CONTEXT`; declare the real window through Claude Code's
-`modelOverrides` setting, or compact sessions before they reach the limit (the
-server answers `prompt is too long` when they do).
+Claude Code sends system messages inside `messages` (its environment block
+after the first user turn); they are rendered in place as user turns in
+`<system-reminder>` tags, since the template accepts one leading system
+message and moving them would change the cached prefix. Several leading
+system messages (OpenAI clients such as OpenCode) are merged. It asks for
+32,000 output tokens; the server caps `max_tokens` at the remaining context
+and answers `prompt is too long` when a conversation fills it.
 
 The API's supported controls are checked in `tests/unit/test_chat_controls.py`
 and `tests/unit/test_messages_api.py`;

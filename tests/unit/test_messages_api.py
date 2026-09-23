@@ -213,7 +213,7 @@ def test_model_is_echoed():
     ({k: v for k, v in body().items() if k != 'max_tokens'}, 'max_tokens'),
     (body(max_tokens=0), 'max_new_tokens'),
     (body(messages=[]), 'messages'),
-    (body(messages=[{'role': 'system', 'content': 'x'}]), 'role'),
+    (body(messages=[{'role': 'tool', 'content': 'x'}]), 'role'),
     (body(messages=[{'role': 'user', 'content': [{'type': 'image', 'source': {}}]}]), 'text-only'),
     (body(messages=[{'role': 'user', 'content': [{'type': 'document', 'source': {}}]}]), 'text-only'),
     (body(messages=[{'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'a',
@@ -502,3 +502,55 @@ def test_openai_string_tool_arguments_render_like_objects(snapshot):
     prompts, statuses = asyncio.run(scenario())
     assert statuses == [200, 200, 400]
     assert prompts[0] == prompts[1]
+
+
+def test_claude_code_request_shape_renders(snapshot):
+    # Claude Code 2.1.280: system blocks, a system message inside `messages`
+    # after the first user turn, adaptive thinking, context_management and output_config.
+    from sharar.api.chat_template import ChatTemplate
+    from sharar.tokenizer import SnapshotTokenizer
+
+    tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
+    request = {
+        'model': 'claude-sharar-qwen3.8', 'max_tokens': 32000, 'stream': False,
+        'thinking': {'type': 'adaptive', 'display': 'omitted'}, 'output_config': {'effort': 'high'},
+        'context_management': {'edits': [{'type': 'clear_thinking_20251015', 'keep': 'all'}]},
+        'metadata': {'user_id': '{}'}, 'tools': TOOLS,
+        'system': [{'type': 'text', 'text': 'x-billing: v1;'},
+                   {'type': 'text', 'text': 'You are an agent.', 'cache_control': {'type': 'ephemeral'}}],
+        'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': '<system-reminder>ctx</system-reminder>'},
+                                                  {'type': 'text', 'text': 'say hi'}]},
+                     {'role': 'system', 'content': [{'type': 'text', 'text': '# Environment\ncwd: /repo'}]}]}
+
+    async def scenario():
+        engine = fake_engine('hi')
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(create_app(engine, tok, tmpl, {})), base_url='http://test') as client:
+            response = await client.post('/v1/messages?beta=true', json=request)
+        return response, engine.submit.await_args.args[0]
+
+    response, ids = asyncio.run(scenario())
+    assert response.status_code == 200, response.text
+    text = tok.decode(ids, skip_special_tokens=False)
+    assert text.count('<|im_start|>system') == 1
+    assert '<|im_start|>user\n<system-reminder>\n# Environment\ncwd: /repo\n</system-reminder><|im_end|>' in text
+    assert text.index('say hi') < text.index('# Environment')
+
+
+def test_openai_leading_system_messages_merge(snapshot):
+    from sharar.api.chat_template import ChatTemplate
+    from sharar.tokenizer import SnapshotTokenizer
+
+    tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
+    request = {'max_tokens': 8, 'messages': [{'role': 'system', 'content': 'first'}, {'role': 'system', 'content': 'second'},
+                                             {'role': 'user', 'content': 'hi'}]}
+
+    async def scenario():
+        engine = fake_engine('ok')
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(create_app(engine, tok, tmpl, {})), base_url='http://test') as client:
+            response = await client.post('/v1/chat/completions', json=request)
+        return response, engine.submit.await_args.args[0]
+
+    response, ids = asyncio.run(scenario())
+    assert response.status_code == 200, response.text
+    text = tok.decode(ids, skip_special_tokens=False)
+    assert text.count('<|im_start|>system') == 1 and 'first\n\nsecond<|im_end|>' in text

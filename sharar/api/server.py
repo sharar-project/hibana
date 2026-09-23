@@ -92,7 +92,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
     def _chat_prompt(messages: list[dict], tools: list | None, thinking: bool, kwargs: dict) -> tuple[list[int], bool]:
         """Render and encode a chat. Returns (ids, whether the output starts inside a thinking block)."""
-        rendered = tmpl.render(_tool_arguments_as_objects(messages), enable_thinking=thinking, tools=tools, **kwargs)
+        rendered = tmpl.render(fold_system_messages(_tool_arguments_as_objects(messages)), enable_thinking=thinking, tools=tools, **kwargs)
         return tok.encode(rendered), thinking and rendered.rstrip().endswith("<think>")
 
     async def _submit(ids: list[int], params) -> Ticket:
@@ -507,6 +507,33 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         return await _messages_errors(count, http)
 
     return app
+
+
+def _text_of(content) -> str:
+    if isinstance(content, list):
+        return "".join(part.get("text", "") for part in content if isinstance(part, dict))
+    return content if isinstance(content, str) else ""
+
+
+def fold_system_messages(messages: list[dict]) -> list[dict]:
+    """The template accepts one system message, first. Clients send more:
+    several leading ones (OpenCode) and instructions later in the
+    conversation (Claude Code). Merge the leading run; render a later one in
+    place as a user turn in <system-reminder> tags, which keeps the prefix
+    before it (and its cache) unchanged."""
+    lead = 0
+    while lead < len(messages) and isinstance(messages[lead], dict) and messages[lead].get("role") == "system":
+        lead += 1
+    out = []
+    if lead > 1:
+        out.append({"role": "system", "content": "\n\n".join(t for t in (_text_of(m.get("content")) for m in messages[:lead]) if t)})
+    else:
+        out += messages[:lead]
+    for message in messages[lead:]:
+        if isinstance(message, dict) and message.get("role") == "system":
+            message = {"role": "user", "content": f"<system-reminder>\n{_text_of(message.get('content'))}\n</system-reminder>"}
+        out.append(message)
+    return out
 
 
 def _tool_arguments_as_objects(messages: list[dict]) -> list[dict]:

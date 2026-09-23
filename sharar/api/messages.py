@@ -59,10 +59,16 @@ def parse_request(body: dict) -> MessagesRequest:
     if not isinstance(turns, list) or not turns:
         raise InvalidRequest("messages must be a non-empty list")
     for m, turn in enumerate(turns):
-        if not isinstance(turn, dict) or turn.get("role") not in ("user", "assistant"):
-            raise InvalidRequest(f"messages.{m}: role must be 'user' or 'assistant'")
+        if not isinstance(turn, dict) or turn.get("role") not in ("user", "assistant", "system"):
+            raise InvalidRequest(f"messages.{m}: role must be 'user', 'assistant' or 'system'")
         content = turn.get("content")
-        if isinstance(content, str):
+        if turn["role"] == "system":  # instructions at this point of the conversation (see server.fold_system_messages)
+            if isinstance(content, list):
+                content = _text_parts(content, f"messages.{m}.content", ("messages", m), breakpoints)
+            elif not isinstance(content, str):
+                raise InvalidRequest(f"messages.{m}.content must be a string or a list of text blocks")
+            messages.append({"role": "system", "content": content})
+        elif isinstance(content, str):
             messages.append({"role": turn["role"], "content": content})
         elif isinstance(content, list):
             convert = _user_turn if turn["role"] == "user" else _assistant_turn
