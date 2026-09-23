@@ -125,3 +125,13 @@ def test_page_aux_rows_travel_with_the_session(tmp_path):
     pages = torch.randperm(64)[:30 - 4]
     assert store.restore_into(record, 4, pages, kv, state, [], page_aux=aux_pool) is not None
     assert same(aux_pool["qsa.3"][pages], rows[4:])
+
+
+def test_short_sessions_are_not_written(tmp_path):
+    store = SessionDisk(tmp_path, 2**30, IDENTITY, CPU, min_tokens=32)
+    short, long = entry(range(20), [20]), entry(range(100, 140), [40], seed=1)
+    store.submit(short)
+    store.submit(long)
+    store.wait(long)
+    assert not short.on_disk and long.on_disk
+    assert store.stats()["too_short"] == 1 and store.stats()["records"] == 1

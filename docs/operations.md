@@ -111,7 +111,10 @@ too (before 2026-09-23 anything over about 60K tokens was rejected).
 
 **Session store.** Parked sessions are also written, in the background, to
 `$SHARAR_RESULTS/sessions` (`SHARAR_SESSION_DIR`; `off` disables it; budget
-`SHARAR_SESSION_GIB`, default 200, least recently used records go first).
+`SHARAR_SESSION_GIB`, default 200, least recently used records go first;
+sessions shorter than `SHARAR_SESSION_MIN_TOKENS`, default 4,096, are not
+written: every record carries the 144 MiB recurrent snapshot, and a short
+session re-prefills in about a second).
 When the arena drops a session, or after a restart, the next request whose
 prompt extends it reads it back (NVMe at 9.7 GB/s: about a second for a
 262K-token session, against a 351-second prefill) and resumes exactly where
