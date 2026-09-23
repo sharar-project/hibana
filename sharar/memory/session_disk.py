@@ -2,8 +2,8 @@
 
 A session parked in the unified-memory arena (`cold_tier.py`) is copied to a
 file in the background; when the arena drops it (or the server restarts), the
-next request whose prompt extends its key reads it back into the arena and the
-ordinary restore path resumes it. Measured on this GB10 (2026-09-23): direct
+next request whose prompt extends its key reads it straight into fresh pool
+pages and a state slot, and the radix cache resumes it like any parked leaf. Measured on this GB10 (2026-09-23): direct
 reads 9.7 GB/s and writes 7.0 GB/s, so a 262K-token session (8.2 GiB of FP8 KV
 plus a 144 MiB recurrent snapshot) comes back in about a second instead of a
 351-second prefill.
@@ -33,7 +33,7 @@ import torch
 
 GIB = 2**30
 FORMAT = 1
-STAGING = 64 * 2**20
+STAGING = 128 * 2**20
 
 
 @dataclass
@@ -92,6 +92,7 @@ class SessionDisk:
         self._write_staging = torch.empty(STAGING, dtype=torch.uint8, pin_memory=cuda)
         self._read_staging = torch.empty(STAGING, dtype=torch.uint8, pin_memory=cuda)
         self._stream = torch.cuda.Stream(device) if cuda else None
+        self._bounce = None  # device bounce buffer for reads, allocated on first use
         self._scan()
         self.thread = threading.Thread(target=self._writer, name="sharar-session-writer", daemon=True)
         self.thread.start()
@@ -236,37 +237,86 @@ class SessionDisk:
                 self._delete(name)
 
     # ---- read ----
-    def read(self, record: Record, entry) -> bool:
-        """Fill a freshly allocated arena entry from the record; False on any mismatch or I/O error."""
+    def restore_into(self, record: Record, start: int, pages: torch.Tensor, kv: list[torch.Tensor],
+                     state: dict[str, torch.Tensor], aux_specs: list[tuple]) -> dict | None:
+        """Read a stored session straight into pool pages and a state slot:
+        tokens [start:] of every KV segment into `pages` of the matching
+        `kv` pool tensor (one per layer and K/V, in segment order), each
+        `state` segment ("conv", "ssm", "pool.<name>") into its destination
+        view, and the codec payloads into new device tensors. Returns
+        {identity: (scalars, tensors)} or None on any mismatch or I/O error.
+        Skipping the managed arena matters: first writes into fresh managed
+        slabs run at 1.5 GB/s against 8.6 GB/s from the file (2026-09-23)."""
         t0 = time.perf_counter()
-        segments = dict(_segments(entry))
+        stored = {seg: (offset, n) for seg, offset, n in record.meta["segments"]}
+        payloads = {}
         try:
             with self.lock, open(record.stem.with_suffix(".bin"), "rb", buffering=0) as f:
-                stored = {seg: (offset, n) for seg, offset, n in record.meta["segments"]}
-                for seg, tensors in segments.items():
-                    if seg not in stored or stored[seg][1] != sum(t.numel() * t.element_size() for t in tensors):
+                idx = pages.to(torch.int64)
+                for i, pool in enumerate(kv):
+                    seg = f"kv.{i // 2}.{i % 2}"
+                    rows = pool.view(torch.uint8).reshape(pool.shape[0], -1)
+                    row = rows.shape[1]
+                    if seg not in stored or stored[seg][1] != record.own * row:
+                        raise ValueError(f"segment {seg} missing or resized")
+                    f.seek(stored[seg][0] + start * row)
+                    per = max(1, STAGING // row)
+                    for a in range(0, record.own - start, per):
+                        n = min(per, record.own - start - a)
+                        chunk = self._read_chunk(f, n * row)
+                        rows.index_copy_(0, idx[a:a + n], chunk.view(n, row))
+                for seg, dst in state.items():
+                    n = dst.numel() * dst.element_size()
+                    if seg not in stored or stored[seg][1] != n:
                         raise ValueError(f"segment {seg} missing or resized")
                     f.seek(stored[seg][0])
-                    for t in tensors:
-                        self._read_tensor(f, t)
+                    whole = torch.empty(dst.shape, dtype=dst.dtype, device=dst.device)  # dst may be strided (conv_all[:, slot])
+                    self._read_into(f, whole)
+                    dst.copy_(whole)
+                for identity, scalars, specs in aux_specs:
+                    tensors = []
+                    for i, (dtype, shape) in enumerate(specs):
+                        seg = f"aux.{identity}.{i}"
+                        t = torch.empty(shape, dtype=dtype, device=self.device)
+                        n = t.numel() * t.element_size()
+                        if seg not in stored or stored[seg][1] != n:
+                            raise ValueError(f"segment {seg} missing or resized")
+                        f.seek(stored[seg][0])
+                        self._read_into(f, t)
+                        tensors.append(t)
+                    payloads[identity] = (tuple(scalars), tensors)
                 record.last_access = time.time()
                 os.utime(record.stem.with_suffix(".bin"))
         except (OSError, ValueError) as exc:
             self.errors += 1
             self.last_error = repr(exc)
-            return False
+            return None
         self.reads += 1
         self.read_seconds += time.perf_counter() - t0
-        return True
+        return payloads
 
-    def _read_tensor(self, f, t: torch.Tensor) -> None:
-        dst = t.view(torch.uint8).reshape(-1)
-        for a in range(0, dst.numel(), STAGING):
-            n = min(STAGING, dst.numel() - a)
-            view = self._read_staging[:n]
-            if f.readinto(memoryview(view.numpy())) != n:
+    def _read_into(self, f, t: torch.Tensor) -> None:
+        """Fill a contiguous tensor from the file position, STAGING bytes at a time."""
+        flat = t.view(torch.uint8).reshape(-1)
+        for a in range(0, flat.numel(), STAGING):
+            n = min(STAGING, flat.numel() - a)
+            flat[a:a + n].copy_(self._read_chunk(f, n))
+
+    def _read_chunk(self, f, n: int) -> torch.Tensor:
+        """n <= STAGING bytes from the file onto the device (a bounce through pinned staging)."""
+        view = self._read_staging[:n]
+        buf, got = memoryview(view.numpy()), 0
+        while got < n:  # an unbuffered read may return less than asked
+            k = f.readinto(buf[got:])
+            if not k:
                 raise ValueError("short read")
-            dst[a:a + n].copy_(view)
+            got += k
+        if self.device.type != "cuda":
+            return view.clone()
+        if self._bounce is None:
+            self._bounce = torch.empty(STAGING, dtype=torch.uint8, device=self.device)
+        self._bounce[:n].copy_(view)
+        return self._bounce[:n]
 
     def stats(self) -> dict:
         return {"records": len(self.records), "gib": round(self.used_bytes / GIB, 2), "budget_gib": round(self.budget / GIB, 1),

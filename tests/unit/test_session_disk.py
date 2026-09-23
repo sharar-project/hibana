@@ -1,6 +1,6 @@
 """The NVMe session store: parked entries written through, listed after a
-restart only under the same identity, read back byte-exact whatever the arena
-chunking, bounded by a budget, cleared by a flush."""
+restart only under the same identity, read back byte-exact into scattered pool
+pages whatever the arena chunking, bounded by a budget, cleared by a flush."""
 from types import SimpleNamespace
 
 import torch
@@ -24,14 +24,12 @@ def entry(key, chunk_sizes, seed=0, layers=3):
                    ("draft", "rev"): ((11, 42), [torch.randn(6, 5, generator=g).to(torch.bfloat16)])})
 
 
-def blank_like(e, chunk_sizes):
+def pools(e, pages):
+    """CPU stand-ins for the KV pool (one tensor per layer and K/V) and a state slot."""
     layers, rest = e.chunks[0][1].shape[0], e.chunks[0][1].shape[3:]
-    chunks, start = [], 0
-    for n in chunk_sizes:
-        chunks.append((start, torch.zeros((layers, 2, n, *rest), dtype=torch.uint8).view(torch.float8_e4m3fn)))
-        start += n
-    aux = {"__pool__": ((), [("ple_conv", torch.zeros(9, 4))]), ("draft", "rev"): ((11, 42), [torch.zeros(6, 5, dtype=torch.bfloat16)])}
-    return SimpleNamespace(key=e.key, own=e.own, chunks=chunks, conv=torch.zeros_like(e.conv), ssm=torch.zeros_like(e.ssm), auxiliary=aux)
+    kv = [torch.zeros((pages, *rest), dtype=torch.uint8).view(torch.float8_e4m3fn) for _ in range(2 * layers)]
+    state = {"conv": torch.zeros_like(e.conv), "ssm": torch.zeros_like(e.ssm), "pool.ple_conv": torch.zeros(9, 4)}
+    return kv, state
 
 
 def same(a, b):
@@ -48,13 +46,16 @@ def test_round_trip_across_a_restart_and_a_different_chunking(tmp_path):
     (record,) = restarted.find(list(range(100, 160)))
     assert record.key == e.key and record.own == 50 and not restarted.find(list(range(100, 140)))
     assert record.aux_specs({("draft", "rev"): None}) == [(("draft", "rev"), [11, 42], [(torch.bfloat16, (6, 5))])]
-    dst = blank_like(e, [50])  # one chunk instead of two
-    assert restarted.read(record, dst)
-    whole = torch.cat([kv for _, kv in e.chunks], dim=2)
-    assert same(whole, dst.chunks[0][1])
-    assert same(e.conv, dst.conv) and same(e.ssm, dst.ssm)
-    assert same(e.auxiliary["__pool__"][1][0][1], dst.auxiliary["__pool__"][1][0][1])
-    assert same(e.auxiliary[("draft", "rev")][1][0], dst.auxiliary[("draft", "rev")][1][0])
+    kv, state = pools(e, 128)
+    pages = torch.randperm(128)[:50 - 7]  # restore tokens [7:] into scattered pages
+    payloads = restarted.restore_into(record, 7, pages, kv, state, record.aux_specs({("draft", "rev"): None}))
+    whole = torch.cat([c for _, c in e.chunks], dim=2)  # [layers, 2, 50, ...]
+    for i, pool in enumerate(kv):
+        assert same(pool[pages], whole[i // 2, i % 2, 7:])
+    assert same(e.conv, state["conv"]) and same(e.ssm, state["ssm"])
+    assert same(e.auxiliary["__pool__"][1][0][1], state["pool.ple_conv"])
+    (scalars, (feat,)) = payloads[("draft", "rev")]
+    assert scalars == (11, 42) and same(e.auxiliary[("draft", "rev")][1][0], feat)
 
 
 def test_other_identities_are_not_listed_and_covered_keys_are_not_rewritten(tmp_path):
@@ -88,6 +89,22 @@ def test_a_mismatched_segment_fails_the_read(tmp_path):
     store.submit(e)
     store.wait(e)
     (record,) = store.find(list(range(12)))
-    wrong = blank_like(e, [10])
-    wrong.ssm = torch.zeros(5, 2, 4)  # a different geometry
-    assert not store.read(record, wrong) and store.stats()["errors"] == 1
+    kv, state = pools(e, 16)
+    state["ssm"] = torch.zeros(5, 2, 4)  # a different geometry
+    assert store.restore_into(record, 0, torch.arange(10), kv, state, []) is None and store.stats()["errors"] == 1
+
+
+def test_segments_larger_than_the_staging_buffer_round_trip(tmp_path, monkeypatch):
+    import sharar.memory.session_disk as sd
+    monkeypatch.setattr(sd, "STAGING", 64)  # every segment spans several staging chunks
+    store = SessionDisk(tmp_path, 2**30, IDENTITY, CPU)
+    e = entry(range(300, 340), [40])
+    store.submit(e)
+    store.wait(e)
+    (record,) = store.find(list(range(300, 345)))
+    kv, state = pools(e, 64)
+    pages = torch.arange(40)
+    assert store.restore_into(record, 0, pages, kv, state, []) is not None
+    assert same(e.ssm, state["ssm"]) and same(e.conv, state["conv"])
+    whole = torch.cat([c for _, c in e.chunks], dim=2)
+    assert all(same(pool[pages], whole[i // 2, i % 2]) for i, pool in enumerate(kv))
