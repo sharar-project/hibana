@@ -71,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--draft", default=None, help="trained DFlash2/DSpark checkpoint directory to serve instead of the pinned draft (default: SHARAR_DRAFT)")
     p_serve.add_argument("--traces", default=None, help="directory for opt-in request traces (default: SHARAR_TRACES; unset disables recording)")
     p_serve.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: SHARAR_TRACES_MAX_MIB or 32768)")
+    p_serve.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request, up to 262144 (default: SHARAR_MAX_CONTEXT, else the target profile's 32768)")
     p_serve.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests that do not set accept_top_k/accept_margin, as K:M (default: SHARAR_ACCEPT_DEFAULT, else 2:1.0); 'off' keeps every request exact")
     p_traces = sub.add_parser("traces", help="summarize a request trace directory")
     p_traces.add_argument("--dir", default=None, help="trace directory (default: SHARAR_TRACES)")
@@ -172,10 +173,15 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
         if not args.spec:
             accept_default = (1, 0.0)  # no speculation, nothing to relax
+        max_context = args.context_length if args.context_length is not None else int(os.environ.get("SHARAR_MAX_CONTEXT") or 0) or None
+        from sharar.engine.profile import MAX_CONTEXT
+        if max_context is not None and not 2 <= max_context <= MAX_CONTEXT:
+            parser.error(f"--context-length must be in [2, {MAX_CONTEXT}]")
         from sharar.api.server import serve
         serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state,
               draft_precision=args.draft_precision, traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
-              accept_default=accept_default, target=args.target or os.environ.get("SHARAR_TARGET") or None)
+              accept_default=accept_default, target=args.target or os.environ.get("SHARAR_TARGET") or None,
+              max_context=max_context)
         return 0
     if args.command == "train":
         import os

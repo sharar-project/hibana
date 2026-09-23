@@ -51,6 +51,43 @@ the [optimization inventory](docs/optimizations.md) and [draft adaptation](docs/
   chunking, so greedy continuations can change with batch shape, verification
   width or the drafter ([performance](docs/performance.md#limits)).
 
+## Harness-native serving (2026-09-23), ahead of the list below
+
+Production served no requests in three days and the trace sink holds two real
+files, so the adaptation loop has no traffic to learn from. Agent harnesses
+(Claude Code, Codex, OpenCode) are the way to daily use; they need long
+context, their own APIs, fast sampled decoding and structured output. In order:
+
+1. **Long context, 262,144 tokens on the 27B** (branch `feat/long-context`).
+   The model is native to 262K and one 262K request is 8 GiB of FP8 KV, which
+   the current pool already holds; the limit was the validated profile and a
+   plan that reserved four full-context requests. Done: `--context-length` /
+   `SHARAR_MAX_CONTEXT` up to 262,144, the plan guarantees one request at that
+   length or four at 32K, `bench/long_context.py` (cold prefill, needle
+   retrieval at three depths, decode speed and acceptance per length). Gate:
+   needle retrieval at every length, unchanged pools and speed at 32K, then
+   the launcher default. Expected costs: attention rereads the whole KV every
+   round (about +17 ms per round at 128K, +35 ms at 262K) and a cold 262K
+   prefill takes minutes, so the NVMe session tier matters more after this.
+2. **Anthropic Messages API** (branch `feat/messages-api`): `/v1/messages`
+   and `count_tokens` over the chat route's rendering, parsing and sampling,
+   so Claude Code runs against Sharar; `/v1/responses` for Codex next.
+3. **Fast sampled decoding with relaxed acceptance.** Measured 2026-09-23 on
+   production at batch one (768 tokens, code prompt): greedy exact 106 tok/s,
+   greedy relaxed 126, sampled at temperature 0.7 97 to 101, at 1.0 90 to 94.
+   The sampled path is not slow at batch one; the gap to the default is the
+   missing relaxed rule for sampled requests (typical acceptance: accept a
+   drafted token whose target probability clears an entropy-scaled threshold,
+   or a biased ratio, see the engine to-do below) and the device-resident
+   accept graphs, which exclude sampled batches, at batch two to four. Build
+   both, graph-capture the sampled verifier, judge like the greedy mode
+   (family gate, paired GSM8K/HumanEval, judged comparison).
+4. **Forced tool choice and structured output with speculation.** Grammar
+   masks on the verify rows and on the drafter's candidates, and grammar-forced
+   tokens committed without drafting (jump-forward). Order against item 3 by
+   what the harness logs show: the Messages route counts rejected forced
+   tool choices.
+
 ## Next work, in order
 
 Reviewed 2026-09-14 against the whole archive; the order is by expected gain

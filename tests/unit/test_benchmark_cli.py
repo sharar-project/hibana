@@ -117,7 +117,7 @@ def test_cli_end_to_end_writes_summary_and_reuses_inputs(tmp_path, monkeypatch, 
 
 
 @pytest.mark.parametrize('options', [['--repeats', '0'], ['--warmups', '-1'], ['--output-tokens', '1'],
-                                    ['--input-tokens', '32768'], ['--url', 'file:///tmp/server']])
+                                    ['--input-tokens', '262144'], ['--url', 'file:///tmp/server']])
 def test_cli_invalid_options_fail_before_launch(options, monkeypatch):
     monkeypatch.setattr(benchmark, 'resolve_aiperf', lambda _: pytest.fail('must reject before launching AIPerf'))
     assert main(['benchmark', *options]) == 1

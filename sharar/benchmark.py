@@ -120,8 +120,9 @@ def run(args):
     else:
         k, m = accept.split(':')
         _aiperf.ACCEPT = (int(k), float(m))
-    if args.input_tokens + args.output_tokens > 32768:
-        raise ValueError('Input and output token budgets must fit the validated 32768-token profile')
+    from sharar.engine.profile import MAX_CONTEXT
+    if args.input_tokens + args.output_tokens > MAX_CONTEXT:
+        raise ValueError(f'Input and output token budgets must fit the {MAX_CONTEXT}-token maximum context (the server must also be started with it)')
     url = args.url.rstrip('/')
     if url.endswith('/v1'):
         url = url[:-3]

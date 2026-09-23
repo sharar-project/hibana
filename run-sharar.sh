@@ -138,6 +138,11 @@ if [[ "$ACCEPT_DEFAULT" != "2:1.0" ]]; then
     || fail "image $IMAGE predates --accept-default; rebuild with docker/build.sh or unset SHARAR_ACCEPT_DEFAULT"
   serve_args+=(--accept-default "$ACCEPT_DEFAULT")
 fi
+if [[ -n "${SHARAR_MAX_CONTEXT:-}" ]]; then
+  docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--context-length" \
+    || fail "image $IMAGE predates --context-length; rebuild with docker/build.sh or unset SHARAR_MAX_CONTEXT"
+  serve_args+=(--context-length "$SHARAR_MAX_CONTEXT")   # per-request prompt plus output, up to 262144
+fi
 if [[ "$W3_DECODE" == 1 ]]; then
   docker run --rm --entrypoint python3 "$IMAGE" -c "import sharar.kernels.w3" 2>/dev/null \
     || fail "image $IMAGE predates the 3-bit decode path; rebuild with docker/build.sh or set SHARAR_W3_DECODE=0"

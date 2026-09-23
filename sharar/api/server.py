@@ -380,7 +380,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
 def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
           traces: str | None = None, traces_max_mib: int = 32768, draft_dir: str | None = None,
-          accept_default: tuple[int, float] = (1, 0.0), target: str | None = None) -> None:
+          accept_default: tuple[int, float] = (1, 0.0), target: str | None = None, max_context: int | None = None) -> None:
     from sharar.memory.spec_budget import SpecConfig
     from sharar.api.validation import set_accept_default
 
@@ -407,7 +407,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     tmpl = ChatTemplate(snap)
     log(f"loading {served.name}: {served.model_id}@{served.model_revision[:8]}")
     model = targets.load_model(served, snap, log=log)
-    ex = Executor(model, log=log, spec_config=spec_config)
+    ex = Executor(model, log=log, spec_config=spec_config, max_context=max_context)
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
     ex.enable_cold_tier(log=log)
