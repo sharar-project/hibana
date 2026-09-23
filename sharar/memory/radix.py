@@ -98,9 +98,6 @@ class RadixCache:
             if self._walk(entry.key) is not None:  # present again already
                 self.tier.discard(entry)  # an arena entry is dropped; a stored record stays
                 continue
-            entry = self.tier.load(entry)  # a stored session comes back into the arena first
-            if entry is None:
-                continue
             present, present_len, present_pages = self._present_prefix(entry.key)
             missing = len(entry.key) - present_len
             self.lock(present, 1)  # the surviving prefix must outlive the eviction below
@@ -110,7 +107,11 @@ class RadixCache:
                     continue
                 pages, page_ids = self.kv_pool.alloc_with_ids(missing)
                 slot = self.state_pool.alloc()
-                auxiliary = self.tier.restore(entry, pages, slot, start=present_len)
+                auxiliary = self.tier.restore(entry, pages, slot, start=present_len)  # arena entry or stored record
+                if auxiliary is None:  # the stored record could not be read
+                    self.kv_pool.free_ids(page_ids)
+                    self.state_pool.free(slot)
+                    continue
                 self.insert(entry.key, torch.cat([present_pages, pages]), {len(entry.key): slot}, {len(entry.key): auxiliary},
                             page_ids=[-1] * present_len + page_ids)
                 restored += 1

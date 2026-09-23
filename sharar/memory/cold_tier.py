@@ -360,42 +360,14 @@ class ColdTier:
         hits.sort(key=lambda e: len(e.key))
         return hits
 
-    def load(self, record) -> Parked | None:
-        """Read a stored session into the arena; None when it no longer fits or reads."""
-        if isinstance(record, Parked):
-            return record
-        items = [(identity, tuple(scalars), [torch.empty(shape, dtype=dtype, device=self.device) for dtype, shape in specs])
-                 for identity, scalars, specs in record.aux_specs(self.codecs)]
-        row = self._kv_row_bytes()
-        state_bytes = self._state_bytes() + sum((x.numel() * x.element_size() + 255) // 256 * 256 for _, _, ts in items for x in ts)
-        if record.own * row + state_bytes > self.arena.nbytes:
-            return None
-        per_chunk = self.arena.SLAB // row
-        sizes = [min(per_chunk, record.own - s) for s in range(0, record.own, per_chunk)]
-        handles = self._alloc_all([n * row for n in sizes] + [state_bytes])
-        if handles is None:
-            return None
-        t0 = time.perf_counter()
-        k0 = self.kv_pool.k[self.kv_pool.layer_ids[0]]
-        chunks, start = [], 0
-        for handle, n in zip(handles, sizes):
-            chunks.append((start, self.arena.view(handle, n * row, k0.dtype, (len(self.kv_pool.layer_ids), 2, n, *k0.shape[1:]))))
-            start += n
-        conv, ssm, aux = self._state_views(handles[-1], items)
-        entry = Parked(list(record.key), record.own, handles, record.own * row + state_bytes, chunks, conv, ssm, aux, None, on_disk=True)
-        if not self.disk.read(record, entry):
-            self._free(entry)
-            return None
-        self.entries.append(entry)
-        self.loads += 1
-        self.load_seconds += time.perf_counter() - t0
-        return entry
-
-    def restore(self, entry: Parked, pages: torch.Tensor, slot: int, start: int = 0) -> dict:
+    def restore(self, entry, pages: torch.Tensor, slot: int, start: int = 0) -> dict | None:
         """Copy the entry's tokens [start:] into freshly allocated pages (one
         per token) and its snapshot into `slot`, then drop it from the arena
-        (a stored copy stays in the session store). Returns the auxiliary dict
-        for the re-inserted node."""
+        (a stored copy stays in the session store). A stored record is read
+        straight from its file instead. Returns the auxiliary dict for the
+        re-inserted node, or None when a stored record could not be read."""
+        if not isinstance(entry, Parked):
+            return self._restore_record(entry, pages, slot, start)
         t0 = time.perf_counter()
         assert int(pages.shape[0]) == entry.own - start
         kvp = self.kv_pool
@@ -430,6 +402,24 @@ class ColdTier:
         self._free(entry)
         self.restores += 1
         self.restore_seconds += time.perf_counter() - t0
+        return aux
+
+    def _restore_record(self, record, pages: torch.Tensor, slot: int, start: int) -> dict | None:
+        t0 = time.perf_counter()
+        kvp, sp = self.kv_pool, self.state_pool
+        kv = [t for lid in kvp.layer_ids for t in (kvp.k[lid], kvp.v[lid])]
+        state = {"conv": sp.conv_all[:, slot], "ssm": sp.ssm_all[:, slot],
+                 **{f"pool.{name}": t[slot] for name, t in getattr(sp, "aux", {}).items()}}
+        payloads = self.disk.restore_into(record, start, pages, kv, state, record.aux_specs(self.codecs))
+        if payloads is None:
+            return None
+        aux = {}
+        for identity, (scalars, tensors) in payloads.items():
+            value = self.codecs[identity][1]((*scalars, *tensors), slot=slot)
+            if value is not None:
+                aux[identity] = value
+        self.loads += 1
+        self.load_seconds += time.perf_counter() - t0
         return aux
 
     def stats(self) -> dict:
