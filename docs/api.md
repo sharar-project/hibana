@@ -102,18 +102,25 @@ block ends with its `signature_delta`; a tool call arrives whole as one
 `message_stop`. `message_start` counts the whole prompt as `input_tokens`
 because the prefix match happens at admission.
 
-To use Sharar from Claude Code:
+To use Sharar from Claude Code (variables from Claude Code's gateway and
+model-configuration docs):
 
 ```bash
 export ANTHROPIC_BASE_URL=http://<host>:30001
-export ANTHROPIC_AUTH_TOKEN=sharar  # not checked
-export ANTHROPIC_MODEL=qwen3.8-27b  # any name
-export ANTHROPIC_SMALL_FAST_MODEL=qwen3.8-27b
+export ANTHROPIC_AUTH_TOKEN=sharar            # not checked
+export ANTHROPIC_MODEL=qwen3.8-27b            # any name; one target serves every tier
+export ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3.8-27b
+export ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3.8-27b
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3.8-27b   # background tasks and titles
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1  # no telemetry or update checks
 claude
 ```
 
-The served context is 32,768 tokens including output; Claude Code assumes a
-much larger window, so compact long sessions before they reach it.
+Claude Code assumes a 200K window for a custom model name. The served context
+is 32,768 tokens including output unless the server runs with a larger
+`SHARAR_MAX_CONTEXT`; declare the real window through Claude Code's
+`modelOverrides` setting, or compact sessions before they reach the limit (the
+server answers `prompt is too long` when they do).
 
 The API's supported controls are checked in `tests/unit/test_chat_controls.py`
 and `tests/unit/test_messages_api.py`;
