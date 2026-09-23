@@ -144,3 +144,98 @@ def test_checkpoint_features_follow_park_restore_and_slot_reuse():
     cache.flush()
     st.free(reused)
     assert features.bytes == 0 and not features.entries
+
+
+def _exact(before, kv, st, m):
+    after = _snapshot(kv, st, m.pages, m.snapshot_slot)
+    for (k0, v0), (k1, v1) in zip(before[0], after[0]):
+        assert torch.equal(k0.view(torch.uint8), k1.view(torch.uint8)) and torch.equal(v0.view(torch.uint8), v1.view(torch.uint8))
+    assert torch.equal(before[1], after[1]) and torch.equal(before[2], after[2])
+
+
+def _parked_session(kv, st, cache, ids, seed):
+    pages, slot = kv.alloc(len(ids)), st.alloc()
+    _fill_random(kv, st, pages, slot, seed)
+    before = _snapshot(kv, st, pages, slot)
+    cache.insert(ids, pages, {len(ids): slot})
+    cache.evict(need_pages=kv.num_pages)
+    return before
+
+
+def _scribble(kv, st):
+    for lid in kv.layer_ids:
+        kv.k[lid].zero_(); kv.v[lid].zero_()
+    st.conv_all.zero_(); st.ssm_all.zero_()
+
+
+def test_a_session_larger_than_a_slab_parks_in_chunks():
+    kv, st, cache = _pools(pages=12000, slots=6)
+    tier = cache.tier
+    tier.arena.SLAB = tier._state_bytes() + 4096  # the smallest slab that holds a snapshot: ~4.6K tokens of KV
+    tier.arena.nbytes = 8 * tier.arena.SLAB
+    per = tier.arena.SLAB // tier._kv_row_bytes()
+    ids = list(range(20000, 30000))
+    before = _parked_session(kv, st, cache, ids, 11)
+    (entry,) = tier.entries
+    assert [first for first, _ in entry.chunks] == list(range(0, len(ids), per)) and len(entry.chunks) >= 3
+    _scribble(kv, st)
+    assert cache.restore_parked(ids + [1]) == 1
+    _exact(before, kv, st, cache.match(ids, touch=False))
+
+
+def test_a_dropped_session_comes_back_from_the_store(tmp_path):
+    from sharar.memory.session_disk import SessionDisk
+    kv, st, cache = _pools()
+    feats = torch.arange(64 * 8, device="cuda", dtype=torch.bfloat16).view(64, 8)
+    seen = {}
+    disk = SessionDisk(tmp_path, 2**30, {"t": 1}, torch.device("cuda"))
+    cache.tier.disk = disk
+    cache.tier.register_codec("draft", lambda v: (v, 7, feats), lambda p, *, slot: seen.setdefault("imported", (p[0], p[1], p[2].clone())))
+    ids = list(range(7000, 7200))
+    pages, slot = kv.alloc(len(ids)), st.alloc()
+    _fill_random(kv, st, pages, slot, 12)
+    before = _snapshot(kv, st, pages, slot)
+    cache.insert(ids, pages, {len(ids): slot}, {len(ids): {"draft": 42}})
+    cache.evict(need_pages=kv.num_pages)
+    (entry,) = cache.tier.entries
+    disk.wait(entry)
+    assert entry.on_disk and disk.stats()["records"] == 1
+    cache.tier._drop_lru()  # the arena lets it go; the store keeps it
+    assert not cache.tier.entries
+    _scribble(kv, st)
+    assert cache.restore_parked(ids + [3]) == 1
+    _exact(before, kv, st, cache.match(ids, touch=False))
+    assert seen["imported"][:2] == (42, 7) and torch.equal(seen["imported"][2], feats)
+    assert cache.tier.stats()["disk_loads"] == 1 and disk.stats()["reads"] == 1
+
+
+def test_a_restarted_server_restores_a_stored_session(tmp_path):
+    from sharar.memory.cold_tier import ColdTier
+    from sharar.memory.session_disk import SessionDisk
+    kv, st, cache = _pools(pages=512)
+    cache.tier.disk = SessionDisk(tmp_path, 2**30, {"t": 1}, torch.device("cuda"))
+    ids = list(range(9000, 9300))
+    before = _parked_session(kv, st, cache, ids, 13)
+    cache.tier.disk.wait(cache.tier.entries[0])
+    kv2, st2, cache2 = _pools(pages=512)  # new pools, arena and store: a restart
+    cache2.tier = ColdTier(kv2, st2, 2**30, torch.device("cuda"), disk=SessionDisk(tmp_path, 2**30, {"t": 1}, torch.device("cuda")))
+    assert cache2.tier.disk.stats()["records"] == 1
+    assert cache2.restore_parked(ids + [5]) == 1
+    _exact(before, kv2, st2, cache2.match(ids, touch=False))
+    other = ColdTier(kv2, st2, 2**30, torch.device("cuda"), disk=SessionDisk(tmp_path, 2**30, {"t": 2}, torch.device("cuda")))
+    assert other.find(ids + [5]) == []  # another identity never sees it
+
+
+def test_shutdown_persists_cached_sessions(tmp_path):
+    from sharar.engine.executor import Executor
+    from sharar.memory.session_disk import SessionDisk
+    kv, st, cache = _pools()
+    cache.tier.disk = SessionDisk(tmp_path, 2**30, {"t": 1}, torch.device("cuda"))
+    ids = list(range(40000, 40128))
+    pages, slot = kv.alloc(len(ids)), st.alloc()
+    _fill_random(kv, st, pages, slot, 14)
+    cache.insert(ids, pages, {len(ids): slot})
+    ex = Executor.__new__(Executor)
+    ex.kv_pool, ex.state_pool = kv, st
+    ex.state = type("S", (), {"cache": cache})()
+    assert ex.persist_sessions() == 1 and cache.tier.disk.stats()["records"] == 1

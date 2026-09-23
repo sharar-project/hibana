@@ -59,7 +59,7 @@ class RadixCache:
         self.snapshot_evictions = 0
         self.cached_tokens = 0
         self.flushing = False
-        self.tier = None  # optional ColdTier: evicted leaves are parked in unified memory and restored on demand
+        self.tier = None  # optional ColdTier: evicted leaves are parked in unified memory (and on disk) and restored on demand
 
     # ---- cold tier ----
     def full_key(self, node: Node) -> list[int]:
@@ -91,12 +91,15 @@ class RadixCache:
         """Bring back every parked leaf that is a prefix of `ids`, shortest
         first, so a later turn of a parked session matches as if it had never
         been evicted. Returns the number of leaves restored."""
-        if self.tier is None or self.flushing or not self.tier.entries:
+        if self.tier is None or self.flushing or not (self.tier.entries or self.tier.disk is not None):
             return 0
         restored = 0
         for entry in self.tier.find(ids):
             if self._walk(entry.key) is not None:  # present again already
-                self.tier.discard(entry)
+                self.tier.discard(entry)  # an arena entry is dropped; a stored record stays
+                continue
+            entry = self.tier.load(entry)  # a stored session comes back into the arena first
+            if entry is None:
                 continue
             present, present_len, present_pages = self._present_prefix(entry.key)
             missing = len(entry.key) - present_len

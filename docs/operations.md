@@ -106,6 +106,20 @@ At 96 slots, DFlash2 feature retention reserves up to 1,900 MiB before planning
 KV. The cold tier uses the same physical DRAM; it adds no physical memory.
 `SHARAR_COLD_TIER_GIB` caps its managed-memory budget (the launcher forwards
 it; 0 disables the tier; unset sizes it from spare memory, up to 24 GiB).
+A parked session spans as many 2 GiB slabs as it needs, so long contexts park
+too (before 2026-09-23 anything over about 60K tokens was rejected).
+
+**Session store.** Parked sessions are also written, in the background, to
+`$SHARAR_RESULTS/sessions` (`SHARAR_SESSION_DIR`; `off` disables it; budget
+`SHARAR_SESSION_GIB`, default 200, least recently used records go first).
+When the arena drops a session, or after a restart, the next request whose
+prompt extends it reads it back (NVMe at 9.7 GB/s: about a second for a
+262K-token session, against a 351-second prefill) and resumes exactly where
+it was. Records are listed only by a process with the same target revision,
+decode weights, geometry and prefill numerics; `/flush_cache` deletes them.
+`cache.cold_tier.sessions` in `/get_server_info` reports records, reads,
+writes and errors. A new prompt still pays its first prefill; the store only
+removes the repeats.
 While host `MemAvailable` is under the 16 GiB floor the scheduler holds new
 admissions (`floor_holds` in `/get_server_info`) so running requests can
 finish and release memory before the external guard has to act.

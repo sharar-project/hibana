@@ -231,7 +231,8 @@ class Executor:
                 log("  cold tier: disabled (less than 1 GiB spare)")
             return
         try:
-            self.cache.tier = ColdTier(self.kv_pool, self.state_pool, int(budget_gib * GIB), self.device, log=log)
+            self.cache.tier = ColdTier(self.kv_pool, self.state_pool, int(budget_gib * GIB), self.device, log=log,
+                                       disk=self._session_disk(log))
         except (RuntimeError, MemoryError, OSError, ImportError) as exc:
             if log:
                 log(f"  cold tier: disabled ({exc})")
@@ -241,6 +242,36 @@ class Executor:
         if codec is not None:
             self.cache.tier.register_codec(*codec())
         self.ledger.record_cuda_allocated("cold_tier")
+
+    def _session_disk(self, log=None):
+        """The NVMe session store under SHARAR_SESSION_DIR (budget SHARAR_SESSION_GIB,
+        default 200), or None. Records are only shared between processes whose
+        cached bytes are interchangeable: same target revision, decode weights,
+        geometry and prefill numerics."""
+        import os
+        directory = os.environ.get("SHARAR_SESSION_DIR")
+        if not directory:
+            return None
+        from sharar.memory.ledger import GIB
+        from sharar.memory.session_disk import SessionDisk
+        t = self.target
+        identity = {"target": t.name, "revision": t.model_revision, "w3": getattr(self.model, "w3_identity", None),
+                    "kv_bytes_per_token": t.kv_bytes_per_token, "state_bytes_per_slot": t.state_bytes_per_slot,
+                    "stable_numerics": os.environ.get("SHARAR_STABLE_NUMERICS", "0")}
+        return SessionDisk(directory, int(float(os.environ.get("SHARAR_SESSION_GIB", "200")) * GIB), identity, self.device, log=log)
+
+    def persist_sessions(self, log=None) -> int:
+        """At shutdown, with the engine stopped: park every cached session so
+        the store holds it across the restart. Returns the number parked."""
+        tier = self.cache.tier if self.cache is not None else None
+        if tier is None or tier.disk is None:
+            return 0
+        before = tier.parks
+        self.cache.evict(need_pages=self.kv_pool.num_pages, need_slots=self.state_pool.num_slots)  # every unlocked leaf
+        tier.disk.drain()
+        if log:
+            log(f"session store: persisted {tier.parks - before} cached sessions ({tier.disk.stats()['records']} stored)")
+        return tier.parks - before
 
     def retract(self, req: Request) -> None:
         self.state.retract(req)
