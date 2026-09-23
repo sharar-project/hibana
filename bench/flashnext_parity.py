@@ -66,6 +66,30 @@ def compare(args):
     if args.model == "reference":
         from sharar.model.flashnext.reference import FlashNextReference
         ref = FlashNextReference(snapshot(), layers=args.layers)
+    elif args.model == "executor":
+        # The serving path: a real Executor with pools prefills in 2,048-token chunks (the sparse
+        # indexer needs pages); every chunk's hidden rows give that chunk's logits.
+        from sharar.engine.executor import Executor
+        from sharar.engine.sampler import SamplingParams
+        from sharar.model.flashnext.model import FlashNext
+        engine = FlashNext(snapshot(), precision=args.precision)
+        ex = Executor(engine, num_pages=40000, num_slots=8, max_context=32768, log=print)
+
+        class _Wrap:
+            ablate = frozenset()
+
+            def forward(self, ids):
+                req = ex.admit(list(ids), SamplingParams(max_new_tokens=1))
+                rows = []
+                while req.prefill_pos < req.prefill_len:
+                    batch = ex._prepare_single_prefill(req, 2048)
+                    out = engine.forward(batch.ids, batch.context)
+                    rows.append(engine.logits(out["norm"]).float())
+                    ex._finish_single_prefill(batch, out)
+                ex.release(req)
+                return {"logits": torch.cat(rows)}
+
+        ref = _Wrap()
     else:
         from sharar.model.flashnext.model import FlashNext
         engine = FlashNext(snapshot(), precision=args.precision)
@@ -144,7 +168,7 @@ def main():
     c = sub.add_parser("collect"); c.add_argument("--url", default="http://127.0.0.1:30003"); c.add_argument("--out", required=True)
     c.add_argument("--long", action="store_true", help="3K/6K/10K-token prompts, past the sparse-attention budget")
     m = sub.add_parser("compare"); m.add_argument("--sglang", required=True); m.add_argument("--out", required=True); m.add_argument("--layers", type=int, default=None)
-    m.add_argument("--model", choices=["reference", "engine"], default="reference")
+    m.add_argument("--model", choices=["reference", "engine", "executor"], default="reference")
     m.add_argument("--precision", default=None, help="engine trunk precision: bf16 or fp8 (default SHARAR_FLASHNEXT_TRUNK or fp8)")
     m.add_argument("--ablate", action="append", help="variant per flag: 'none' or '+'-joined names from {ple,fq,shared,hc,dense}; repeat for several (dense: attention ignores the indexer, the control for long prompts)")
     m.add_argument("--confident", type=float, default=0.8, help="SGLang top-1 probability above which a position counts as confident")

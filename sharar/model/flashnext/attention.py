@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Flash-Next's attention layers (24 q / 2 kv heads of 256, gated output, quarter rotary) on the
-27B's attention module with FP8-at-load projections. Dense over the context: exact while the
-context fits the sparse indexer's budget; the indexer is not ported yet."""
+27B's attention module with FP8-at-load projections, with the sparse-attention indexer
+(`indexer.py`): dense while every row sees at most the 2,048-token budget, otherwise each
+row attends over the pages its indexer selected (`kernels/qsa.py`)."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import torch
 
 from sharar.kernels import ops
 from sharar.model.attention import Attention
+from sharar.model.flashnext.indexer import FlashNextIndexer
 from sharar.model.flashnext.linear import TrunkLinear
 from sharar.model.norm import GemmaRMSNorm
 
@@ -29,10 +31,32 @@ class FlashNextAttention(Attention):
         self.k_norm = GemmaRMSNorm(w.get(f"{prefix}.k_norm.weight").to(device), self.eps)
         self.rope = rope
         self.ragged = ragged
+        self.indexer = FlashNextIndexer(w, prefix, layer_id, device, target) if target.indexer_budget else None
 
     @property
     def bytes(self) -> int:
-        return self.qkv.bytes + self.o.bytes
+        return self.qkv.bytes + self.o.bytes + (self.indexer.bytes if self.indexer is not None else 0)
+
+    def forward(self, x: torch.Tensor, ctx, x_q: torch.Tensor | None = None) -> torch.Tensor:
+        if self.indexer is None or ctx.qsa_seqs is None:
+            return super().forward(x, ctx, x_q)
+        q, k, v, gate = self._qkv(x, ctx.positions)
+        token_pages = ctx.out_pages if ctx.mode == "decode" else ctx.pages
+        selected = self.indexer.run(x, ctx, token_pages)
+        if selected is None:  # every row sees at most the budget: the dense path is exact
+            if ctx.mode == "decode":
+                ctx.kv_pool.write(self.layer_id, token_pages, k, v)
+                attn = ctx.decode_wrapper.run(q, ctx.kv_pool.cache(self.layer_id)).view(x.shape[0], self.q_size)
+            else:
+                attn = self._prefill_attention(q, k, v, ctx)
+            return self._finish(attn, gate)
+        from sharar.kernels.qsa import sparse_attention
+        ctx.kv_pool.write(self.layer_id, token_pages, k, v)
+        k_pool, v_pool = ctx.kv_pool.cache(self.layer_id)
+        n = k_pool.shape[0] * k_pool.shape[1]
+        attn = sparse_attention(q, k_pool.view(n, self.num_kv_heads, self.head_dim), v_pool.view(n, self.num_kv_heads, self.head_dim),
+                                *selected, self.head_dim ** -0.5)
+        return self._finish(attn.view(x.shape[0], self.q_size), gate)
 
     @property
     def input_scale(self):

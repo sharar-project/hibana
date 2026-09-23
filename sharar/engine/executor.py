@@ -67,6 +67,8 @@ class Executor:
         from sharar.memory.ledger import check_load_headroom
         check_load_headroom(num_pages * (self.target.kv_bytes_per_token + extra_page) + num_slots * self.target.state_bytes_per_slot + future + 8 * 2**30)
         self.kv_pool = KvPool(num_pages, self.device, target=self.target)
+        if hasattr(model, "register_pages"):
+            model.register_pages(self.kv_pool)  # e.g. Flash-Next's sparse-attention index keys (KvPool.page_aux)
         self.ledger.record_cuda_allocated("kv_pool")
         self.state_pool = StatePool(num_slots, self.device, target=self.target)
         if hasattr(model, "register_state"):
@@ -144,6 +146,12 @@ class Executor:
         self.spec = SpecDecoder(self, proposer, state_strategy)
 
     def capture_graphs(self, log=print) -> None:
+        if self.target.indexer_budget:
+            # The indexer keeps index keys and selections on the host-planned eager path
+            # (graphs would skip its key writes); decode and verification run eagerly.
+            if log:
+                log("  cuda graphs: off (sparse-attention indexer runs eagerly)")
+            return
         self.graphs = DecodeGraphs(self)
         self.graphs.capture(log=log)
         if self.spec is not None:
@@ -392,6 +400,8 @@ class Executor:
             ctx.checkpoint_slots.append(slot)
         if self._features_wanted() is not None:
             ctx.feature_request = self._features_wanted()
+        if self.target.indexer_budget:
+            ctx.qsa_seqs = [(start, t, req.pages[:end])]
         return PrefillBatch([(req, t)], ids, ctx, started)
 
     def _prepare_prefill(self, chunks: list[tuple[Request, int]]) -> PrefillBatch:
@@ -444,6 +454,8 @@ class Executor:
             ctx.ple_history = torch.tensor([self._ple_history(req, req.prefill_pos) for req, _ in chunks], dtype=torch.int64)
         if self._features_wanted() is not None:
             ctx.feature_request = self._features_wanted()
+        if self.target.indexer_budget:
+            ctx.qsa_seqs = [(req.prefill_pos, n, req.pages[:req.prefill_pos + n]) for req, n in chunks]
         return PrefillBatch(list(chunks), ids, ctx, started)
 
     def _ple_history(self, req: Request, start: int) -> list[int]:
@@ -622,6 +634,8 @@ class Executor:
                 ctx.ple_rows = self._ple_rows(reqs)
             if self._features_wanted() is not None:
                 ctx.feature_request = self._features_wanted()
+            if self.target.indexer_budget:
+                ctx.qsa_seqs = [(r.context_len - 1, 1, pages) for r, pages in zip(reqs, step_pages)]
             out = self.model.forward(tokens, ctx)
             logits = self.model.logits(out["norm"])
         next_tokens = self.sampler.sample(logits, [r.params for r in reqs], [r.generator for r in reqs]).tolist()

@@ -283,6 +283,8 @@ class SpecDecoder:
         )
         if getattr(self.ex, "_ple", None) is not None:
             ctx.ple_rows = self.ex._ple_rows_block(batch.requests, batch.proposal.tokens.tolist())
+        if self.ex.target.indexer_budget:
+            ctx.qsa_seqs = [(r.context_len - 1, s_len, pages) for r, pages in zip(batch.requests, batch.kv_pages)]
         indptr = [0]
         for pages in batch.kv_pages:
             indptr.append(indptr[-1] + pages.shape[0])

@@ -98,6 +98,13 @@ class FlashNext:
             log(f"  weights loaded in {time.perf_counter() - started:.0f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated "
                 f"({self.precision} trunk, {self.stream_bytes / 1e9:.2f} GB per decode token)")
 
+    def register_pages(self, kv_pool) -> None:
+        """Per-page rows beyond K/V in the executor's KV pool: the indexer's index keys."""
+        for layer in self.layers:
+            indexer = getattr(layer.mixer, "indexer", None)
+            if indexer is not None:
+                indexer.register(kv_pool)
+
     def register_state(self, pool) -> None:
         """Allocate this model's per-slot state beyond the GDN's in the executor's state pool."""
         if self.ple is not None:
