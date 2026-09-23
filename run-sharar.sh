@@ -139,6 +139,11 @@ if [[ "$ACCEPT_DEFAULT" != "2:1.0" ]]; then
     || fail "image $IMAGE predates --accept-default; rebuild with docker/build.sh or unset SHARAR_ACCEPT_DEFAULT"
   serve_args+=(--accept-default "$ACCEPT_DEFAULT")
 fi
+if [[ "${SHARAR_ACCEPT_DEFAULT_SAMPLED:-0}" == 1 ]]; then
+  docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--accept-default-sampled" \
+    || fail "image $IMAGE predates --accept-default-sampled; rebuild with docker/build.sh or unset SHARAR_ACCEPT_DEFAULT_SAMPLED"
+  serve_args+=(--accept-default-sampled)
+fi
 if [[ "$MAX_CONTEXT" != 32768 ]]; then
   docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--context-length" \
     || fail "image $IMAGE predates --context-length; rebuild with docker/build.sh or set SHARAR_MAX_CONTEXT=32768"

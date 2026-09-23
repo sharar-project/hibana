@@ -45,8 +45,8 @@ def test_params_validate_and_parse():
     SamplingParams(accept_top_k=2, accept_margin=1.0).validate()
     assert not SamplingParams().relaxed and not SamplingParams(accept_top_k=2).relaxed
     assert SamplingParams(accept_top_k=2, accept_margin=0.5).relaxed
-    for bad in (dict(accept_top_k=0), dict(accept_top_k=2.0), dict(accept_margin=-1.0), dict(accept_margin=float("nan")),
-                dict(accept_top_k=2, accept_margin=1.0, temperature=0.7)):
+    SamplingParams(accept_top_k=2, accept_margin=1.0, temperature=0.7).validate()  # sampled requests may relax too
+    for bad in (dict(accept_top_k=0), dict(accept_top_k=2.0), dict(accept_margin=-1.0), dict(accept_margin=float("nan"))):
         with pytest.raises(InvalidRequest):
             SamplingParams(**bad).validate()
     params = _sampling_from({"sampling_params": {"max_new_tokens": 4, "accept_top_k": 2.0, "accept_margin": 1.5}})
@@ -139,3 +139,17 @@ def test_relaxed_positions_are_recorded_masked_and_never_held_out(monkeypatch, t
     assert with_mask.sum() < without.sum()
     idx = (anchors[:, None] + torch.arange(4)[None, :]).clamp(max=len(ids) - 1)
     assert not bool((with_mask.bool() & banned[idx]).any())
+
+
+def test_accept_default_reaches_sampled_requests_only_when_enabled():
+    from sharar.api import validation
+    saved = validation.ACCEPT_DEFAULT, validation.ACCEPT_DEFAULT_SAMPLED
+    try:
+        validation.set_accept_default(2, 1.0)
+        assert _sampling_from({"max_tokens": 4}).relaxed
+        assert not _sampling_from({"max_tokens": 4, "temperature": 0.7}).relaxed
+        validation.set_accept_default(2, 1.0, sampled=True)
+        assert _sampling_from({"max_tokens": 4, "temperature": 0.7}).relaxed
+        assert not _sampling_from({"max_tokens": 4, "temperature": 0.7, "accept_top_k": 1}).relaxed
+    finally:
+        validation.ACCEPT_DEFAULT, validation.ACCEPT_DEFAULT_SAMPLED = saved

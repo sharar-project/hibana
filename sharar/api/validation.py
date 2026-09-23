@@ -2,15 +2,17 @@
 import math
 from sharar.engine.sampler import InvalidRequest, SamplingParams
 
-# Relaxed acceptance applied to greedy requests that set neither accept_top_k
-# nor accept_margin; (1, 0.0) means exact. Set once by serve() from --accept-default.
+# Relaxed acceptance applied to requests that set neither accept_top_k nor
+# accept_margin: greedy ones, and sampled ones when ACCEPT_DEFAULT_SAMPLED;
+# (1, 0.0) means exact. Set once by serve() from --accept-default(-sampled).
 ACCEPT_DEFAULT = (1, 0.0)
+ACCEPT_DEFAULT_SAMPLED = False
 
 
-def set_accept_default(top_k: int, margin: float) -> None:
-    global ACCEPT_DEFAULT
+def set_accept_default(top_k: int, margin: float, sampled: bool = False) -> None:
+    global ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED
     SamplingParams(accept_top_k=top_k, accept_margin=margin).validate()
-    ACCEPT_DEFAULT = (top_k, margin)
+    ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED = (top_k, margin), bool(sampled)
 
 
 def parse_accept_default(text: str | None) -> tuple[int, float]:
@@ -52,7 +54,7 @@ def _sampling_from(body: dict, max_default: int = 512) -> SamplingParams:
         accept_margin=body.get("accept_margin", sp.get("accept_margin", 0.0)),
     )
     if ("accept_top_k" not in body and "accept_top_k" not in sp and "accept_margin" not in body and "accept_margin" not in sp
-            and params.greedy and ACCEPT_DEFAULT != (1, 0.0)):
+            and (params.greedy or ACCEPT_DEFAULT_SAMPLED) and ACCEPT_DEFAULT != (1, 0.0)):
         params.accept_top_k, params.accept_margin = ACCEPT_DEFAULT
     params.validate()
     return params
