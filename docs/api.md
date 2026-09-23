@@ -45,7 +45,9 @@ Sharar does not execute tools. Clients perform calls and submit subsequent turns
 
 Thinking content is returned separately as `reasoning_content`; tool calls use
 `tool_calls`. Streaming chat can return final usage when
-`stream_options.include_usage` is true. The native `/generate` route accepts
+`stream_options.include_usage` is true. Chat and completion usage report the
+prompt tokens reused from the prefix cache as
+`prompt_tokens_details.cached_tokens`. The native `/generate` route accepts
 `input_ids` or `text`, and a `sampling_params` object; its metadata includes
 cached tokens and speculative work when used. `/generate` and OpenAI routes
 have different response schemas.

@@ -59,3 +59,29 @@ def test_completion_reports_exact_ids_and_usage(stream, report_ids, report_usage
             assert usage == {'prompt_tokens': 3, 'completion_tokens': 3, 'total_tokens': 6,
                              'prompt_tokens_details': {'cached_tokens': 2}}
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_chat_usage_reports_cached_prompt_tokens(stream):
+    async def scenario():
+        queue = asyncio.Queue()
+        queue.put_nowait(([5, 6], True, 'stop'))
+        ticket = SimpleNamespace(queue=queue, req=SimpleNamespace(prefix_len=2))
+        engine = SimpleNamespace(submit=AsyncMock(return_value=ticket), cancel=Mock())
+        tok = SimpleNamespace(encode=Mock(return_value=[10, 11, 12]), decode=lambda ids, **kw: 'ok')
+        template = SimpleNamespace(render=Mock(return_value='prompt'))
+        app = create_app(engine, tok, template, {})
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+            response = await client.post('/v1/chat/completions', json={
+                'messages': [{'role': 'user', 'content': 'hi'}], 'stream': stream,
+                'chat_template_kwargs': {'enable_thinking': False}, 'stream_options': {'include_usage': True}})
+        assert response.status_code == 200
+        if stream:
+            chunks = [json.loads(line[6:]) for line in response.text.splitlines()
+                      if line.startswith('data: ') and line != 'data: [DONE]']
+            usage = [chunk['usage'] for chunk in chunks if 'usage' in chunk][-1]
+        else:
+            usage = response.json()['usage']
+        assert usage['prompt_tokens'] == 3 and usage['completion_tokens'] == 2
+        assert usage['prompt_tokens_details'] == {'cached_tokens': 2}
+    asyncio.run(scenario())

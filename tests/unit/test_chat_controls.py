@@ -47,7 +47,7 @@ def test_unconstrained_chat_still_submits_and_returns_output(stream, controls, t
     async def scenario():
         queue = asyncio.Queue()
         queue.put_nowait(([2], True, 'stop'))
-        engine = SimpleNamespace(submit=AsyncMock(return_value=SimpleNamespace(queue=queue)), cancel=Mock())
+        engine = SimpleNamespace(submit=AsyncMock(return_value=SimpleNamespace(queue=queue, req=SimpleNamespace(prefix_len=0))), cancel=Mock())
         tok = SimpleNamespace(encode=Mock(return_value=[1]), decode=lambda ids, **kwargs: 'ok')
         template = SimpleNamespace(render=Mock(return_value='prompt'))
         app = create_app(engine, tok, template, {})

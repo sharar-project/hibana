@@ -296,7 +296,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
 
         def usage(n_out: int, reasoning_tokens: int | None = None) -> dict:
-            u = {"prompt_tokens": len(ids), "completion_tokens": n_out, "total_tokens": len(ids) + n_out}
+            u = {"prompt_tokens": len(ids), "completion_tokens": n_out, "total_tokens": len(ids) + n_out,
+                 "prompt_tokens_details": {"cached_tokens": ticket.req.prefix_len}}
             if reasoning_tokens is not None:
                 u["reasoning_tokens"] = reasoning_tokens
             return u
