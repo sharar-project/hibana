@@ -161,9 +161,11 @@ def test_chunked_prefill_is_resumable_at_chunk_boundaries():
 
 
 def test_long_prompts_cap_chunk_checkpoints():
-    from sharar.engine.executor import MAX_CHUNK_CHECKPOINTS
+    from sharar.engine.executor import CHECKPOINT_TAIL, MAX_CHUNK_CHECKPOINTS
     ex, state, (req,) = setup(slots=64, length=262000)
     chunked_prefill(ex, state, req)
     chunk_ends = [p for p in req.checkpoints if p % 2048 == 0 and p < 262000]
-    assert 0 < len(chunk_ends) <= MAX_CHUNK_CHECKPOINTS
-    assert all(p % 16384 == 0 for p in chunk_ends)
+    spaced = [p for p in chunk_ends if p < 262000 - CHECKPOINT_TAIL]
+    assert 0 < len(spaced) <= MAX_CHUNK_CHECKPOINTS and all(p % 16384 == 0 for p in spaced)
+    # The tail keeps every chunk end, so a changed final message falls back at most one chunk.
+    assert [p for p in chunk_ends if p >= 262000 - CHECKPOINT_TAIL] == [253952, 256000, 258048, 260096]

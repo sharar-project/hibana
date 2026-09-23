@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 CHECKPOINT_INTERVAL = 2048  # GDN snapshots inside long prefills (multiple of 64)
 MAX_CHUNK_CHECKPOINTS = 16  # chunk-end snapshots per prompt; longer prompts space them wider
+CHECKPOINT_TAIL = 8192  # chunk ends this close to the prompt end are always snapshotted
 
 
 @dataclass
@@ -306,13 +307,15 @@ class Executor:
         `_checkpoint_positions` (positions inside a forward) never lands, so
         without this a chunked prompt is resumable only near its end. At most
         MAX_CHUNK_CHECKPOINTS per prompt: a 262K prompt snapshots every 16K
-        rather than holding 128 slots of 144 MiB. Call after the forward and
-        before the proposer ingests it, so draft features attach at `end`."""
+        rather than holding 128 slots of 144 MiB, plus every chunk end in the
+        last CHECKPOINT_TAIL tokens, where a changed final message diverges.
+        Call after the forward and before the proposer ingests it, so draft
+        features attach at `end`."""
         n = req.prefill_len
         if self.cache is None or end >= n:
             return
         interval = CHECKPOINT_INTERVAL * max(1, -(-n // (CHECKPOINT_INTERVAL * MAX_CHUNK_CHECKPOINTS)))
-        if end // interval > start // interval:
+        if end // interval > start // interval or n - end <= CHECKPOINT_TAIL:
             self.state.checkpoint(req, end, copy=True)
 
     def prefill(self, req: Request, max_tokens: int | None = None) -> int | None:
