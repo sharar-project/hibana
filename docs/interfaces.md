@@ -269,7 +269,8 @@ release monolithic physical allocations; reclaimable slabs remain Phase 8.
 
 HTTP validation lives in `api/validation.py`; `engine/loop.py` owns the scheduler
 thread and request tickets. Endpoint adapters in `api/server.py` consume their
-events. A completed ticket is removed before its terminal notification crosses
+events; `api/messages.py` translates Anthropic Messages requests onto the chat
+adapter. A completed ticket is removed before its terminal notification crosses
 to the HTTP event loop. Proposer checkpoint-cache binding and cold-tier codecs
 are optional capabilities discovered once during executor setup; adapters
 without them retain the base proposer contract.
