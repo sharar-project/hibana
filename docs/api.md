@@ -29,6 +29,7 @@ Admission also checks the output budget and speculative scratch capacity.
 | `temperature`, `top_p`, `top_k`, `seed` | Validated sampling parameters |
 | `stop` | A nonempty string or list of nonempty stop strings |
 | `chat_template_kwargs.enable_thinking` | Thinking defaults to true; false disables it |
+| `reasoning_effort` | `low`, `medium`, `high` select the template's reasoning instruction (`low`, `medium`, `xhigh`; `high` and `max` map to `xhigh`, the default); unknown values keep the default; `chat_template_kwargs.reasoning_effort` takes precedence |
 | `tools` | Tool schemas passed to the template; generated calls are parsed |
 | `tool_choice` omitted/null/`auto` | Unconstrained model choice |
 | `tool_choice: "none"` | Omit tool schemas from the prompt and tool-call parsing |
@@ -76,6 +77,7 @@ prompt length as `{"input_tokens": N}`.
 | `tools` | Custom tools become the chat tool schemas; typed server tools (`web_search_*` and similar) are dropped |
 | `tool_choice` | `auto` or omitted, and `none`, as in chat |
 | `thinking` | `enabled` or `adaptive` turn thinking on (`budget_tokens` is not enforced), `disabled` turns it off; omitted, `chat_template_kwargs.enable_thinking` decides, default on |
+| `output_config.effort` | As chat `reasoning_effort`: Claude Code's default `high` is the template's `xhigh`, `/effort low` its `low` |
 | `temperature`, `top_p`, `top_k`, `stop_sequences`, `stream` | As the chat fields; omitted sampling fields keep the chat defaults (greedy), not Anthropic's temperature 1 |
 | `trace`, `accept_top_k`, `accept_margin`, `chat_template_kwargs` | Sharar's extensions, as in chat |
 

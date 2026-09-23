@@ -554,3 +554,35 @@ def test_openai_leading_system_messages_merge(snapshot):
     assert response.status_code == 200, response.text
     text = tok.decode(ids, skip_special_tokens=False)
     assert text.count('<|im_start|>system') == 1 and 'first\n\nsecond<|im_end|>' in text
+
+
+@pytest.mark.parametrize('field,effort,expected', [
+    ({'output_config': {'effort': 'low'}}, None, 'low'),
+    ({'output_config': {'effort': 'medium'}}, None, 'medium'),
+    ({'output_config': {'effort': 'high'}}, None, 'xhigh'),
+    ({'output_config': {'effort': 'max'}}, None, 'xhigh'),
+    ({'reasoning_effort': 'low'}, None, 'low'),
+    ({'output_config': {'effort': 'unheard-of'}}, None, None),
+    ({'output_config': {'effort': 'low'}, 'chat_template_kwargs': {'reasoning_effort': 'medium'}}, None, 'medium'),
+])
+def test_client_effort_selects_template_reasoning_effort(field, effort, expected):
+    from sharar.api.validation import _template_kwargs
+    kwargs, thinking = _template_kwargs(field)
+    assert kwargs.get('reasoning_effort') == expected and thinking
+
+
+def test_effort_reaches_the_rendered_prompt(snapshot):
+    from sharar.api.chat_template import ChatTemplate
+    from sharar.tokenizer import SnapshotTokenizer
+
+    tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
+
+    async def scenario(extra):
+        engine = fake_engine('ok')
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(create_app(engine, tok, tmpl, {})), base_url='http://test') as client:
+            response = await client.post('/v1/messages', json=body(thinking={'type': 'adaptive'}, **extra))
+        assert response.status_code == 200, response.text
+        return tok.decode(engine.submit.await_args.args[0], skip_special_tokens=False)
+
+    assert 'Reasoning effort is set to low.' in asyncio.run(scenario({'output_config': {'effort': 'low'}}))
+    assert 'Reasoning effort is set to xhigh.' in asyncio.run(scenario({'output_config': {'effort': 'high'}}))
