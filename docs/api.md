@@ -77,7 +77,7 @@ prompt length as `{"input_tokens": N}`.
 | `tools` | Custom tools become the chat tool schemas; typed server tools (`web_search_*` and similar) are dropped |
 | `tool_choice` | `auto` or omitted, and `none`, as in chat |
 | `thinking` | `enabled` or `adaptive` turn thinking on (`budget_tokens` is not enforced), `disabled` turns it off; omitted, `chat_template_kwargs.enable_thinking` decides, default on |
-| `output_config.effort` | As chat `reasoning_effort`: Claude Code's default `high` is the template's `xhigh`, `/effort low` its `low` |
+| `output_config.effort` | As chat `reasoning_effort`: Claude Code's default `high` is the template's `xhigh`, `/effort low` its `low` (the template's instruction only; on three short prompts on 2026-09-23 `low` did not shorten the answers) |
 | `temperature`, `top_p`, `top_k`, `stop_sequences`, `stream` | As the chat fields; omitted sampling fields keep the chat defaults (greedy), not Anthropic's temperature 1 |
 | `trace`, `accept_top_k`, `accept_margin`, `chat_template_kwargs` | Sharar's extensions, as in chat |
 
