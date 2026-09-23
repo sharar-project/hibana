@@ -177,7 +177,7 @@ def test_a_session_larger_than_a_slab_parks_in_chunks():
     ids = list(range(20000, 30000))
     before = _parked_session(kv, st, cache, ids, 11)
     (entry,) = tier.entries
-    assert [first for first, _ in entry.chunks] == list(range(0, len(ids), per)) and len(entry.chunks) >= 3
+    assert [chunk[0] for chunk in entry.chunks] == list(range(0, len(ids), per)) and len(entry.chunks) >= 3
     _scribble(kv, st)
     assert cache.restore_parked(ids + [1]) == 1
     _exact(before, kv, st, cache.match(ids, touch=False))
