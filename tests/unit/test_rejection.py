@@ -89,7 +89,7 @@ def test_vectorized_verify_matches_sequential_reference_in_distribution():
     for seed in range(n):
         a, c = verify_row(tokens, p, q, None, torch.Generator().manual_seed(seed))
         ref[(a, c)] += 1
-        a_t, c_t = verify_rows(tokens, p, q, None, torch.Generator().manual_seed(10_000 + seed))
+        a_t, c_t, _ = verify_rows(tokens, p, q, None, torch.Generator().manual_seed(10_000 + seed))
         vec[(int(a_t), int(c_t))] += 1
     for key in set(ref) | set(vec):
         # binomial tolerance: 4 sigma of n*p*(1-p) with p up to 1/2 is ~130 counts
@@ -102,9 +102,55 @@ def test_vectorized_verify_deterministic_draft_and_sparse_support():
 
     p = torch.tensor([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.3, 0.3, 0.4]])
     tokens = torch.tensor([0, 1])
-    a, c = verify_rows(tokens, p, None, None, torch.Generator().manual_seed(3))
+    a, c, _ = verify_rows(tokens, p, None, None, torch.Generator().manual_seed(3))
     assert 0 <= int(a) <= 2 and 0 <= int(c) < 3
     support = torch.tensor([[0, 2], [1, 2]])
     q = torch.tensor([[0.9, 0.1], [0.6, 0.4]])
-    a, c = verify_rows(tokens, p, q, support, torch.Generator().manual_seed(3))
+    a, c, _ = verify_rows(tokens, p, q, support, torch.Generator().manual_seed(3))
     assert 0 <= int(a) <= 2 and 0 <= int(c) < 3
+
+
+def test_candidate_nucleus_equals_the_full_sort():
+    from sharar.engine.rejection import _nucleus
+    g = torch.Generator().manual_seed(5)
+    for scale in (0.05, 1.0, 8.0):  # flat rows exercise the full-sort fallback
+        logits = torch.randn(8, 3000, generator=g) * scale
+        for top_p, top_k in ((0.95, 20), (0.9, 0), (0.99, 0), (0.5, 7)):
+            probs = logits.softmax(-1)
+            if top_k:
+                kth = logits.topk(top_k, dim=-1).values[..., -1:]
+                probs = logits.masked_fill(logits < kth, float('-inf')).softmax(-1)
+            ordered, indices = probs.sort(dim=-1, descending=True)
+            keep = ordered.cumsum(-1) - ordered < top_p
+            ref = torch.zeros_like(probs).scatter(-1, indices, ordered.masked_fill(~keep, 0))
+            ref = ref / ref.sum(-1, keepdim=True)
+            assert torch.equal(_nucleus(probs, top_p, top_k), ref)
+
+
+def test_plausible_uses_the_request_law():
+    from sharar.engine.rejection import plausible
+    p = torch.tensor([[0.5, 0.3, 0.2, 0.0], [0.6, 0.0, 0.1, 0.3], [0.25, 0.25, 0.25, 0.25]])
+    tokens = torch.tensor([1, 1, 3])
+    # row 0: rank 1, gap log(0.5/0.3)=0.51; row 1: zero probability; row 2: tie at the top
+    assert plausible(tokens, p, 2, 0.6).tolist() == [True, False, True]
+    assert plausible(tokens, p, 2, 0.5).tolist() == [False, False, True]
+    assert plausible(tokens, p, 1, 1.0).tolist() == [False, False, True]
+
+
+def test_relaxed_rows_accept_what_rejection_would_not():
+    from sharar.engine.rejection import verify_rows
+    k, V = 4, 6
+    p = torch.full((k + 1, V), 0.02)
+    p[:, 0] = 0.9  # the target strongly prefers token 0 everywhere
+    tokens = torch.tensor([1, 1, 1, 1])  # the draft proposes token 1 (p = 0.02) deterministically
+    exact_accepts = relaxed_accepts = 0
+    for seed in range(200):
+        a, c, rx = verify_rows(tokens, p, None, None, torch.Generator().manual_seed(seed))
+        exact_accepts += int(a)
+        assert not rx.any()
+        mask = torch.tensor([True, True, False, False])
+        a, c, rx = verify_rows(tokens, p, None, None, torch.Generator().manual_seed(seed), relaxed=mask)
+        relaxed_accepts += int(a)
+        assert int(a) >= 2  # the relaxed positions are always accepted
+        assert not (rx & ~mask).any() and not rx[int(a):].any()  # flags: relaxed-only accepts inside the prefix
+    assert exact_accepts < 20 and relaxed_accepts >= 400

@@ -72,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--traces", default=None, help="directory for opt-in request traces (default: SHARAR_TRACES; unset disables recording)")
     p_serve.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: SHARAR_TRACES_MAX_MIB or 32768)")
     p_serve.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request, up to 262144 (default: SHARAR_MAX_CONTEXT, else the target profile's 32768)")
+    p_serve.add_argument("--accept-default-sampled", action="store_true", default=None, help="also apply the relaxed acceptance default to sampled requests (default: SHARAR_ACCEPT_DEFAULT_SAMPLED=1, else greedy only)")
     p_serve.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests that do not set accept_top_k/accept_margin, as K:M (default: SHARAR_ACCEPT_DEFAULT, else 2:1.0); 'off' keeps every request exact")
     p_traces = sub.add_parser("traces", help="summarize a request trace directory")
     p_traces.add_argument("--dir", default=None, help="trace directory (default: SHARAR_TRACES)")
@@ -181,7 +182,9 @@ def main(argv: list[str] | None = None) -> int:
         serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state,
               draft_precision=args.draft_precision, traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
               accept_default=accept_default, target=args.target or os.environ.get("SHARAR_TARGET") or None,
-              max_context=max_context)
+              max_context=max_context,
+              accept_default_sampled=bool(args.accept_default_sampled if args.accept_default_sampled is not None
+                                          else os.environ.get("SHARAR_ACCEPT_DEFAULT_SAMPLED", "0") == "1"))
         return 0
     if args.command == "train":
         import os

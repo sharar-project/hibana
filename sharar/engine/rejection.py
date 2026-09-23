@@ -18,23 +18,48 @@ class Proposal:
     support: torch.Tensor | None = None  # int64 [B, k, C], unique per row
 
 
+NUCLEUS_CANDIDATES = 1024  # top-p without top-k: candidates ranked before falling back to a full sort
+
+
 def distribution(logits: torch.Tensor, params: SamplingParams) -> torch.Tensor:
     """The same target/draft temperature, top-k (ties included), top-p law."""
     row = logits.float()
     if params.greedy:
         return torch.zeros_like(row).scatter_(-1, row.argmax(-1, keepdim=True), 1)
     row = row / params.temperature
-    if 0 < params.top_k < row.shape[-1]:
-        kth = row.topk(params.top_k, dim=-1).values[..., -1:]
+    top_k = params.top_k if 0 < params.top_k < row.shape[-1] else 0
+    if top_k:
+        kth = row.topk(top_k, dim=-1).values[..., -1:]
         row = row.masked_fill(row < kth, float('-inf'))
     probs = row.softmax(-1)
     if params.top_p < 1:
-        ordered, indices = probs.sort(dim=-1, descending=True)
-        keep = ordered.cumsum(-1) - ordered < params.top_p
-        ordered = ordered.masked_fill(~keep, 0)
-        probs = torch.zeros_like(probs).scatter(-1, indices, ordered)
-        probs = probs / probs.sum(-1, keepdim=True)
+        probs = _nucleus(probs, params.top_p, top_k)
     return probs
+
+
+def _nucleus(probs: torch.Tensor, top_p: float, top_k: int) -> torch.Tensor:
+    """Keep the smallest descending-probability prefix reaching top_p.
+
+    A full sort of the vocabulary costs about 6 ms per 16-row verification on
+    the GB10. Rank only the leading candidates (top-k plus room for ties, or
+    NUCLEUS_CANDIDATES): when no row keeps its last candidate, every token
+    outside them comes later in the full order and is dropped too, so the
+    result equals the full sort's (up to the order of exactly equal
+    probabilities, which a sort leaves unspecified as well). Otherwise, one
+    host check away, the full sort decides."""
+    candidates = min(probs.shape[-1], top_k + 64 if top_k else NUCLEUS_CANDIDATES)
+    if candidates < probs.shape[-1]:
+        ordered, indices = probs.topk(candidates, dim=-1)
+        keep = ordered.cumsum(-1) - ordered < top_p
+        if not bool(keep[..., -1].any()):
+            ordered = ordered.masked_fill(~keep, 0)
+            out = torch.zeros_like(probs).scatter(-1, indices, ordered)
+            return out / out.sum(-1, keepdim=True)
+    ordered, indices = probs.sort(dim=-1, descending=True)
+    keep = ordered.cumsum(-1) - ordered < top_p
+    ordered = ordered.masked_fill(~keep, 0)
+    probs = torch.zeros_like(probs).scatter(-1, indices, ordered)
+    return probs / probs.sum(-1, keepdim=True)
 
 
 def corrected_distribution(p, q):
@@ -72,7 +97,17 @@ def verify_row(tokens, p, q, support, generator):
     return len(tokens), int(torch.multinomial(p[-1], 1, generator=generator))
 
 
-def verify_rows(tokens, p, q, support, generator):
+def plausible(tokens, p, top_k: int, margin: float):
+    """[k] bool: drafted token j among p_j's top `top_k` and within `margin` of
+    its most likely token in log-probability, with positive probability."""
+    k = tokens.shape[0]
+    p_y = p[torch.arange(k, device=p.device), tokens]
+    rank = (p[:k] > p_y.unsqueeze(-1)).sum(-1)
+    gap = p[:k].max(-1).values.log() - p_y.log()
+    return (p_y > 0) & (rank < top_k) & (gap <= margin)
+
+
+def verify_rows(tokens, p, q, support, generator, relaxed=None):
     """Vectorized rejection sampling for one request without host syncs.
 
     Same acceptance rule as `verify_row` (accept y_j with probability
@@ -84,7 +119,11 @@ def verify_rows(tokens, p, q, support, generator):
     (accepted count, correction token) for the caller to download in one
     batch. Unlike `verify_row` this path is not bit-identical to the
     sequential reference for a fixed seed; it is equal in distribution.
-    """
+
+    `relaxed` ([k] bool, `plausible`) also accepts those drafted tokens
+    whatever the draw; the correction at the first position failing both
+    tests is the residual as before. The third result marks accepted
+    positions that only the relaxed rule accepted ([k] bool)."""
     k = tokens.shape[0]
     idx = torch.arange(k, device=p.device)
     if q is None:  # deterministic draft: acceptance p[y], residual p without y
@@ -98,10 +137,13 @@ def verify_rows(tokens, p, q, support, generator):
     threshold = (p_y / q_y.clamp_min(1e-30)).clamp_max(1)
     threshold = torch.where(q_y > 0, threshold, torch.zeros_like(threshold))
     u = torch.rand(k, device=p.device, generator=generator)
-    accepted = torch.cumprod((u < threshold).to(torch.int64), dim=0).sum()
+    exact = u < threshold
+    ok = exact if relaxed is None else exact | relaxed
+    prefix = torch.cumprod(ok.to(torch.int64), dim=0)
+    accepted = prefix.sum()
     residual = corrected_distribution(p[:k], q_rows)
     residual = torch.where(residual.isfinite(), residual, torch.zeros_like(residual))
     laws = torch.cat([residual, p[k:k + 1]], dim=0)  # law at rejection position a, or the bonus law
     law = laws.index_select(0, accepted.reshape(1))
     correction = torch.multinomial(law, 1, generator=generator).reshape(())
-    return accepted, correction
+    return accepted, correction, prefix.bool() & ~exact

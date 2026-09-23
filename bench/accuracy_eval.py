@@ -4,8 +4,10 @@
     python3 bench/accuracy_eval.py --task humaneval --label w3 --output DIR
     python3 bench/accuracy_eval.py compare DIR/exact-gsm8k.json DIR/w3-gsm8k.json
 
-Greedy, thinking disabled, identical prompts for every arm; `--accept K:M` pins the
-acceptance rule per request (1:0 = exact, 2:1.0 = the relaxed default). HumanEval
+Greedy (or `--temperature T`: sampled with top_p 0.95, top_k 20 and one seed per
+item shared by every arm), thinking disabled, identical prompts for every arm;
+`--accept K:M` pins the acceptance rule per request (1:0 = exact, 2:1.0 = the
+relaxed default). HumanEval
 completions run in a subprocess with no network, a CPU and memory limit and a
 timeout. Results hold per-item correctness so two arms compare paired (McNemar).
 """
@@ -20,6 +22,7 @@ import resource
 import subprocess
 import sys
 import tempfile
+import zlib
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -34,9 +37,14 @@ def post(url: str, body: dict, timeout: float = 900) -> dict:
         return json.loads(r.read())
 
 
+SAMPLING = {"temperature": 0.0}  # --temperature T samples with top_p 0.95, top_k 20 (the checkpoint's generation config)
+
+
 def ask(url: str, content: str, max_tokens: int, accept: tuple[int, float]) -> tuple[str, dict]:
-    body = {"model": "sharar", "messages": [{"role": "user", "content": content}], "temperature": 0.0, "max_tokens": max_tokens,
+    body = {"model": "sharar", "messages": [{"role": "user", "content": content}], **SAMPLING, "max_tokens": max_tokens,
             "chat_template_kwargs": {"enable_thinking": False}, "accept_top_k": accept[0], "accept_margin": accept[1], "trace": False}
+    if body["temperature"] > 0:
+        body["seed"] = zlib.crc32(content.encode())  # the same seed per item in every arm
     out = post(url, body)
     return out["choices"][0]["message"].get("content") or "", out.get("usage") or {}
 
@@ -155,12 +163,15 @@ def main() -> int:
     ap.add_argument("--url", default="http://127.0.0.1:30001")
     ap.add_argument("--task", choices=("gsm8k", "humaneval"), required=True)
     ap.add_argument("--label", required=True)
+    ap.add_argument("--temperature", type=float, default=0.0, help="sample at this temperature (top_p 0.95, top_k 20, one seed per prompt shared by every arm)")
     ap.add_argument("--accept", default="1:0", help="K:M acceptance pinned on every request (1:0 exact)")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--max-tokens", type=int, default=0)
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--output", type=Path, required=True)
     args = ap.parse_args()
+    if args.temperature > 0:
+        SAMPLING.update(temperature=args.temperature, top_p=0.95, top_k=20)
     k, m = args.accept.split(":")
     accept = (int(k), float(m))
     if args.task == "gsm8k":
@@ -177,7 +188,7 @@ def main() -> int:
     acc = sum(r["correct"] for r in rows) / len(rows)
     with urllib.request.urlopen(f"{args.url}/get_server_info", timeout=10) as r:
         info = json.loads(r.read())
-    result = {"label": args.label, "task": args.task, "accept": accept, "n": len(rows), "accuracy": acc, "wall_seconds": wall,
+    result = {"label": args.label, "task": args.task, "accept": accept, "sampling": dict(SAMPLING), "n": len(rows), "accuracy": acc, "wall_seconds": wall,
               "max_tokens": max_tokens, "speculative": info.get("speculative"), "items": rows}
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / f"{args.label}-{args.task}.json").write_text(json.dumps(result, indent=1))

@@ -15,7 +15,7 @@ from sharar.engine.context import ForwardContext
 from sharar.engine.request import Request
 from sharar.memory.kv_pool import KV_DTYPE
 from sharar.engine.contracts import Proposer, StepInputs, VerifiedFeatures
-from sharar.engine.rejection import Proposal, distribution, verify_rows
+from sharar.engine.rejection import Proposal, distribution, plausible, verify_rows
 from sharar.engine.accept_graphs import AcceptGraphs, ENABLED as DEVICE_ACCEPT
 
 
@@ -333,7 +333,7 @@ class SpecDecoder:
             # Sampled batch: acceptance and the correction/bonus token are
             # computed on the device per row (vectorized rejection sampling,
             # `rejection.verify_rows`) and downloaded once with the drafts.
-            acc_rows, corr_rows, target_rows = [], [], []
+            acc_rows, corr_rows, target_rows, flag_rows = [], [], [], []
             for i, req in enumerate(reqs):
                 if req.params.greedy:
                     target_ids = z[i].argmax(-1)
@@ -342,21 +342,25 @@ class SpecDecoder:
                     acc_rows.append(a_t)
                     corr_rows.append(target_ids.index_select(0, a_t.reshape(1)).reshape(()))
                     target_rows.append(target_ids)  # greedy rows keep every argmax for traces
+                    flag_rows.append(torch.zeros_like(match))
                 else:
-                    a_t, c_t = verify_rows(y[i], distribution(z[i], req.params),
-                                           proposal.probabilities[i] if proposal.probabilities is not None else None,
-                                           proposal.support[i] if proposal.support is not None else None, req.generator)
+                    p = distribution(z[i], req.params)
+                    relaxed_i = plausible(y[i], p, req.params.accept_top_k, req.params.accept_margin) if req.params.relaxed else None
+                    a_t, c_t, rx_t = verify_rows(y[i], p, proposal.probabilities[i] if proposal.probabilities is not None else None,
+                                                 proposal.support[i] if proposal.support is not None else None, req.generator,
+                                                 relaxed=relaxed_i)
                     acc_rows.append(a_t)
                     corr_rows.append(c_t)
+                    flag_rows.append(rx_t.to(torch.int64))
                     target_rows.append(torch.full((s_len,), -1, dtype=y.dtype, device=y.device).index_put_((a_t.reshape(1),), c_t.reshape(1)))
             packed = torch.cat([y, torch.stack(acc_rows).unsqueeze(1).to(y.dtype), torch.stack(corr_rows).unsqueeze(1).to(y.dtype),
-                                torch.stack(target_rows).to(y.dtype)], dim=1).tolist()
+                                torch.stack(target_rows).to(y.dtype), torch.stack(flag_rows).to(y.dtype)], dim=1).tolist()
             y_l = [row[:k] for row in packed]
             acc = [row[k] for row in packed]
-            used = [0] * len(reqs)
-            flags = [[0] * k for _ in reqs]
             # Sampled rows carry only their correction at index a (-1 elsewhere).
-            z_l = [row[k + 2:] for row in packed]
+            z_l = [row[k + 2:k + 2 + s_len] for row in packed]
+            flags = [row[k + 2 + s_len:] for row in packed]  # block offsets accepted only by the relaxed rule
+            used = [sum(f) for f in flags]
         outputs = []
         for i, r in enumerate(reqs):
             a = acc[i]

@@ -27,11 +27,13 @@ class SamplingParams:
     stop_token_ids: tuple[int, ...] = (248046, 248044)  # <|im_end|>, <|endoftext|>
     ignore_eos: bool = False
     trace: bool = True  # may this request be written to the opt-in trace sink
-    # Relaxed speculative acceptance (greedy requests only): a drafted token is
-    # also accepted when the target ranks it within its top accept_top_k and
-    # its logit is within accept_margin of the argmax (a log-probability
-    # ratio). Off unless both are set; outputs then are not the target's exact
-    # greedy continuation.
+    # Relaxed speculative acceptance: a drafted token is also accepted when the
+    # target ranks it within its top accept_top_k and its log-probability is
+    # within accept_margin of the most likely token (for greedy requests the
+    # raw logits; for sampled requests the request's own tempered, top-k/top-p
+    # law, so a token the request could never sample is never accepted). Off
+    # unless both are set; outputs then are neither the exact greedy
+    # continuation nor exact samples of the target distribution.
     accept_top_k: int = 1
     accept_margin: float = 0.0
 
@@ -56,8 +58,6 @@ class SamplingParams:
             raise InvalidRequest("accept_top_k must be an integer >= 1")
         if type(self.accept_margin) not in (int, float) or not math.isfinite(self.accept_margin) or self.accept_margin < 0:
             raise InvalidRequest("accept_margin must be a finite number >= 0")
-        if self.relaxed and not self.greedy:
-            raise InvalidRequest("relaxed acceptance (accept_top_k > 1 with accept_margin > 0) requires temperature 0")
 
     @property
     def greedy(self) -> bool:
