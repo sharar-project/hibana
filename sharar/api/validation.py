@@ -68,6 +68,12 @@ def _stops(body: dict) -> list[str]:
     return stops
 
 
+def _template_kwargs(body: dict) -> tuple[dict, bool]:
+    """chat_template_kwargs without enable_thinking, and the thinking switch (default on)."""
+    kwargs = dict(body.get("chat_template_kwargs") or {})
+    return kwargs, bool(kwargs.pop("enable_thinking", True))
+
+
 def _validate_chat_controls(body: dict) -> None:
     """Accept only unconstrained output; fail before rendering or admission."""
     choice = body.get("tool_choice")

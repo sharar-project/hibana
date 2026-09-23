@@ -23,7 +23,7 @@ from sharar.api.chat_template import ChatTemplate
 from sharar.api.detok import Detokenizer
 from sharar.api.parsers.reasoning import ReasoningParser
 from sharar.api.parsers.tools import has_tool_call, parse_tool_calls
-from sharar.api.validation import _sampling_from, _stops, _validate_chat_controls
+from sharar.api.validation import _sampling_from, _stops, _template_kwargs, _validate_chat_controls
 from sharar.engine.loop import EngineUnavailable, Ticket, EngineLoop
 from sharar.engine.sampler import InvalidRequest
 from sharar.engine.scheduler import QueueFull, Scheduler
@@ -60,9 +60,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         finally:
             engine.cancel(ticket)
 
-    async def _collect(ticket: Ticket, stop: list[str], http: HttpRequest | None) -> tuple[list[int], str, str]:
+    async def _collect(ticket: Ticket, detok: Detokenizer, http: HttpRequest | None) -> tuple[list[int], str, str]:
         """Drain a ticket to completion. Returns (ids, text, finish_reason)."""
-        detok = Detokenizer(tok, stop)
         ids: list[int] = []
         reason = ""
         while True:
@@ -85,6 +84,58 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                 return ids, detok.text, "stop"
             if finished:
                 return ids, detok.text, reason
+
+    def _chat_prompt(messages: list[dict], tools: list | None, thinking: bool, kwargs: dict) -> tuple[list[int], bool]:
+        """Render and encode a chat. Returns (ids, whether the output starts inside a thinking block)."""
+        rendered = tmpl.render(messages, enable_thinking=thinking, tools=tools, **kwargs)
+        return tok.encode(rendered), thinking and rendered.rstrip().endswith("<think>")
+
+    async def _submit(ids: list[int], params) -> Ticket:
+        try:
+            return await engine.submit(ids, params)
+        except QueueFull as exc:
+            raise HTTPException(429, str(exc))
+
+    async def _chat_steps(ticket: Ticket, detok: Detokenizer, http: HttpRequest, in_reasoning: bool, tools: list | None):
+        """Streamed chat output, one step per engine update: yields
+        (reasoning_delta, content_delta, tool_calls, finished, reason, n_out).
+        Content is held back once a tool call starts; the final step carries
+        the parsed calls, with reason "tool_calls" when there are any. Returns
+        early when the client disconnects; raises EngineUnavailable on engine failure."""
+        rp = ReasoningParser(in_reasoning)
+        out: list[int] = []
+        buffered_tool = ""
+        while True:
+            if await http.is_disconnected():
+                engine.cancel(ticket)
+                return
+            try:
+                new, finished, reason = await asyncio.wait_for(ticket.queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            if reason == "error":
+                raise EngineUnavailable("engine unavailable")
+            out += new
+            delta_text = detok.update(out)
+            if detok.stopped:
+                engine.cancel(ticket)
+                finished, reason = True, "stop"
+            r_delta, c_delta = rp.feed(delta_text)
+            if finished:
+                r2, c2 = rp.finish()
+                r_delta += r2
+                c_delta += c2
+            if c_delta and tools and (buffered_tool or has_tool_call(rp.content)):
+                buffered_tool = rp.content
+                c_delta = ""
+            calls: list[dict] = []
+            if finished and buffered_tool:
+                _, calls = parse_tool_calls(buffered_tool, tools)
+                if calls:
+                    reason = "tool_calls"
+            yield r_delta, c_delta, calls, finished, reason, len(out)
+            if finished:
+                return
 
     # ---- plumbing ----
     @app.get("/health")
@@ -201,7 +252,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                         break
                 yield "data: [DONE]\n\n"
             return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
-        out, text, reason = await _collect(ticket, stop, http)
+        out, text, reason = await _collect(ticket, Detokenizer(tok, stop), http)
         return {"text": text, "output_ids": out, "meta_info": meta(len(out), reason)}
 
     # ---- OpenAI completions ----
@@ -265,7 +316,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                         break
                 yield "data: [DONE]\n\n"
             return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
-        out, text, reason = await _collect(ticket, stop, http)
+        out, text, reason = await _collect(ticket, Detokenizer(tok, stop), http)
         choice = {"index": 0, "text": text, "finish_reason": reason}
         if return_token_ids:
             choice.update(token_ids=out, prompt_token_ids=ids)
@@ -279,20 +330,14 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         messages = body.get("messages") or []
         if not messages:
             raise HTTPException(400, "messages required")
-        kwargs = dict(body.get("chat_template_kwargs") or {})
-        thinking = bool(kwargs.pop("enable_thinking", True))
+        kwargs, thinking = _template_kwargs(body)
         tools = None if body.get("tool_choice") == "none" else body.get("tools")  # "none": generate without tool schemas
-        rendered = tmpl.render(messages, enable_thinking=thinking, tools=tools, **kwargs)
-        ids = tok.encode(rendered)
+        ids, in_reasoning = _chat_prompt(messages, tools, thinking, kwargs)
         params = _sampling_from(body, max_default=512)
         stop = _stops(body)
-        try:
-            ticket = await engine.submit(ids, params)
-        except QueueFull as exc:
-            raise HTTPException(429, str(exc))
+        ticket = await _submit(ids, params)
         cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
-        in_reasoning = thinking and rendered.rstrip().endswith("<think>")
         include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
 
         def usage(n_out: int, reasoning_tokens: int | None = None) -> dict:
@@ -304,79 +349,54 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
         if body.get("stream"):
             async def events():
-                detok = Detokenizer(tok, stop)
-                rp = ReasoningParser(in_reasoning)
-                out: list[int] = []
-                buffered_tool = ""
                 sent_role = False
-                while True:
-                    if await http.is_disconnected():
-                        engine.cancel(ticket)
-                        break
-                    try:
-                        new, finished, reason = await asyncio.wait_for(ticket.queue.get(), timeout=0.5)
-                    except asyncio.TimeoutError:
-                        continue
-                    if reason == "error":
-                        yield 'data: {"error": {"message": "engine unavailable", "type": "server_error"}}\n\n'
-                        break
-                    out += new
-                    delta_text = detok.update(out)
-                    if detok.stopped:
-                        engine.cancel(ticket)
-                        finished, reason = True, "stop"
-                    r_delta, c_delta = rp.feed(delta_text)
-                    if finished:
-                        r2, c2 = rp.finish()
-                        r_delta += r2
-                        c_delta += c2
-                    delta: dict[str, Any] = {}
-                    if not sent_role:
-                        delta["role"] = "assistant"
-                        sent_role = True
-                    if r_delta:
-                        delta["reasoning_content"] = r_delta
-                    if c_delta:
-                        if tools and (buffered_tool or has_tool_call(rp.content)):
-                            buffered_tool = rp.content
-                        else:
+                try:
+                    async for r_delta, c_delta, calls, finished, reason, n_out in _chat_steps(
+                            ticket, Detokenizer(tok, stop), http, in_reasoning, tools):
+                        delta: dict[str, Any] = {}
+                        if not sent_role:
+                            delta["role"] = "assistant"
+                            sent_role = True
+                        if r_delta:
+                            delta["reasoning_content"] = r_delta
+                        if c_delta:
                             delta["content"] = c_delta
-                    finish = None
-                    if finished:
-                        finish = reason
-                        if buffered_tool:
-                            content, calls = parse_tool_calls(buffered_tool, tools)
-                            if calls:
-                                delta["tool_calls"] = [{"index": i, **c} for i, c in enumerate(calls)]
-                                finish = "tool_calls"
-                    if delta or finished:
-                        chunk = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": MODEL_ID,
-                                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
-                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                    if finished:
-                        if include_usage:
-                            yield f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_ID, 'choices': [], 'usage': usage(len(out))})}\n\n"
-                        break
+                        if calls:
+                            delta["tool_calls"] = [{"index": i, **c} for i, c in enumerate(calls)]
+                        if delta or finished:
+                            chunk = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": MODEL_ID,
+                                     "choices": [{"index": 0, "delta": delta, "finish_reason": reason if finished else None}]}
+                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                        if finished and include_usage:
+                            yield f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_ID, 'choices': [], 'usage': usage(n_out)})}\n\n"
+                except EngineUnavailable:
+                    yield 'data: {"error": {"message": "engine unavailable", "type": "server_error"}}\n\n'
                 yield "data: [DONE]\n\n"
             return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
 
-        out, text, reason = await _collect(ticket, stop, http)
-        rp = ReasoningParser(in_reasoning)
-        rp.feed(text)
-        rp.finish()
-        content, calls = (parse_tool_calls(rp.content, tools) if tools else (rp.content, []))
+        out, text, reason = await _collect(ticket, Detokenizer(tok, stop), http)
+        reasoning, content, calls = _split_chat(text, in_reasoning, tools)
         message: dict[str, Any] = {"role": "assistant", "content": content if content or not calls else None}
-        if rp.reasoning:
-            message["reasoning_content"] = rp.reasoning
+        if reasoning:
+            message["reasoning_content"] = reasoning
         if calls:
             message["tool_calls"] = calls
             reason = "tool_calls"
-        reasoning_tokens = len(tok.encode(rp.reasoning)) if rp.reasoning else 0
+        reasoning_tokens = len(tok.encode(reasoning)) if reasoning else 0
         return {"id": cid, "object": "chat.completion", "created": created, "model": MODEL_ID,
                 "choices": [{"index": 0, "message": message, "finish_reason": reason}],
                 "usage": usage(len(out), reasoning_tokens)}
 
     return app
+
+
+def _split_chat(text: str, in_reasoning: bool, tools: list | None) -> tuple[str, str, list[dict]]:
+    """Complete chat output as (reasoning, content, tool_calls)."""
+    rp = ReasoningParser(in_reasoning)
+    rp.feed(text)
+    rp.finish()
+    content, calls = (parse_tool_calls(rp.content, tools) if tools else (rp.content, []))
+    return rp.reasoning, content, calls
 
 
 def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
