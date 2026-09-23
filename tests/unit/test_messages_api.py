@@ -472,3 +472,33 @@ def test_rendering_matches_the_openai_route(snapshot):
     assert '<think>\nI should call the tool.\n</think>\n\nChecking.\n\n<tool_call>\n<function=get_weather>\n<parameter=city>\nParis' in text
     assert '<|im_start|>user\n<tool_response>\nsunny\n</tool_response><|im_end|>\n<|im_start|>user\nThanks, and tomorrow?<|im_end|>' in text
     assert text.endswith('<|im_start|>assistant\n<think>\n')
+
+
+def test_openai_string_tool_arguments_render_like_objects(snapshot):
+    # OpenAI clients (OpenCode, Cline, Aider) send earlier calls' arguments as a JSON string.
+    from sharar.api.chat_template import ChatTemplate
+    from sharar.tokenizer import SnapshotTokenizer
+
+    tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
+
+    def history(arguments):
+        return {'max_tokens': 16, 'tools': [{'type': 'function', 'function': {
+                    'name': 'get_weather', 'description': 'Weather for a city', 'parameters': TOOLS[0]['input_schema']}}],
+                'messages': [{'role': 'user', 'content': 'Weather in Paris?'},
+                             {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'call_1', 'type': 'function', 'function': {
+                                 'name': 'get_weather', 'arguments': arguments}}]},
+                             {'role': 'tool', 'tool_call_id': 'call_1', 'content': 'sunny'}]}
+
+    async def scenario():
+        prompts, statuses = [], []
+        for arguments in ({'city': 'Paris', 'days': 2}, '{"city": "Paris", "days": 2}', '{"city": '):
+            engine = fake_engine('ok')
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(create_app(engine, tok, tmpl, {})), base_url='http://test') as client:
+                response = await client.post('/v1/chat/completions', json=history(arguments))
+            statuses.append(response.status_code)
+            prompts.append(engine.submit.await_args.args[0] if response.status_code == 200 else None)
+        return prompts, statuses
+
+    prompts, statuses = asyncio.run(scenario())
+    assert statuses == [200, 200, 400]
+    assert prompts[0] == prompts[1]

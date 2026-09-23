@@ -92,7 +92,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
     def _chat_prompt(messages: list[dict], tools: list | None, thinking: bool, kwargs: dict) -> tuple[list[int], bool]:
         """Render and encode a chat. Returns (ids, whether the output starts inside a thinking block)."""
-        rendered = tmpl.render(messages, enable_thinking=thinking, tools=tools, **kwargs)
+        rendered = tmpl.render(_tool_arguments_as_objects(messages), enable_thinking=thinking, tools=tools, **kwargs)
         return tok.encode(rendered), thinking and rendered.rstrip().endswith("<think>")
 
     async def _submit(ids: list[int], params) -> Ticket:
@@ -507,6 +507,30 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         return await _messages_errors(count, http)
 
     return app
+
+
+def _tool_arguments_as_objects(messages: list[dict]) -> list[dict]:
+    """OpenAI clients send earlier tool calls' arguments as a JSON string; the
+    template iterates them as a mapping. Returns messages with parsed copies."""
+    out = []
+    for message in messages:
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if isinstance(calls, list) and any(isinstance((c or {}).get("function", {}).get("arguments"), str) for c in calls):
+            parsed = []
+            for c in calls:
+                args = (c or {}).get("function", {}).get("arguments")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args) if args.strip() else {}
+                    except ValueError:
+                        raise InvalidRequest(f"tool call arguments must be a JSON object, got {args[:80]!r}")
+                    if not isinstance(args, dict):
+                        raise InvalidRequest("tool call arguments must be a JSON object")
+                    c = {**c, "function": {**c["function"], "arguments": args}}
+                parsed.append(c)
+            message = {**message, "tool_calls": parsed}
+        out.append(message)
+    return out
 
 
 def _split_chat(text: str, in_reasoning: bool, tools: list | None) -> tuple[str, str, list[dict]]:
