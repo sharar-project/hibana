@@ -1,5 +1,6 @@
-"""HTTP server: OpenAI-compatible chat/completions plus the SGLang-style
-/generate the benchmark harness speaks.
+"""HTTP server: OpenAI-compatible chat/completions, the Anthropic Messages
+API on the same chat path, and the SGLang-style /generate the benchmark
+harness speaks.
 
 The scheduler runs in one background thread (`EngineLoop`); request handlers
 enqueue work and await per-request asyncio queues that the loop fills after
@@ -17,8 +18,10 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request as HttpRequest
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from jinja2 import TemplateError
 
 from sharar import target as targets
+from sharar.api import messages as messages_api
 from sharar.api.chat_template import ChatTemplate
 from sharar.api.detok import Detokenizer
 from sharar.api.parsers.reasoning import ReasoningParser
@@ -44,6 +47,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
     app = FastAPI(title="sharar", lifespan=lifespan)
     started = time.time()
+    # Messages API requests this server declines or reduces, to see what harnesses send.
+    messages_stats = {"forced_tool_choice_rejected": 0, "server_tools_ignored": 0}
 
     @app.exception_handler(InvalidRequest)
     async def invalid_request(http, exc):
@@ -155,12 +160,14 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         info = {**describe, "scheduler": engine.stats()}
         if engine.sched.ex.spec is not None:
             info["spec_stats"] = engine.sched.ex.spec.stats()
+        info["messages_api"] = dict(messages_stats)
         return info
 
     @app.get("/metrics")
     async def metrics():
         st = engine.stats()
         lines = [f"sharar_{k} {v}" for k, v in st.items() if isinstance(v, (int, float))]
+        lines += [f"sharar_messages_{k} {v}" for k, v in messages_stats.items()]
         return PlainTextResponse("\n".join(lines) + "\n")
 
     @app.post("/flush_cache")
@@ -388,6 +395,116 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         return {"id": cid, "object": "chat.completion", "created": created, "model": MODEL_ID,
                 "choices": [{"index": 0, "message": message, "finish_reason": reason}],
                 "usage": usage(len(out), reasoning_tokens)}
+
+    # ---- Anthropic Messages ----
+    async def _messages_errors(handler, http: HttpRequest):
+        """Run a Messages handler, reporting failures in Anthropic's error shape."""
+        def error(status: int, kind: str, message: str) -> JSONResponse:
+            return JSONResponse(messages_api.error_body(kind, message), status_code=status)
+        try:
+            body = await http.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            return error(400, "invalid_request_error", "request body must be a JSON object")
+        try:
+            return await handler(body, http)
+        except InvalidRequest as exc:
+            return error(400, "invalid_request_error", str(exc))
+        except HTTPException as exc:
+            return error(exc.status_code, "rate_limit_error" if exc.status_code == 429 else "invalid_request_error", str(exc.detail))
+        except EngineUnavailable:
+            return error(503, "overloaded_error", "engine unavailable")
+
+    def _messages_prompt(body: dict, choice: str) -> tuple[messages_api.MessagesRequest, list[dict] | None, list[int], bool]:
+        req = messages_api.parse_request(body)
+        kwargs, thinking = _template_kwargs(body)
+        if req.thinking is not None:
+            thinking = req.thinking
+        tools = None if choice == "none" else req.tools
+        try:
+            ids, in_reasoning = _chat_prompt(req.messages, tools, thinking, kwargs)
+        except TemplateError as exc:
+            raise InvalidRequest(f"the conversation cannot be rendered: {exc}")
+        return req, tools, ids, in_reasoning
+
+    @app.post("/v1/messages")
+    async def messages(http: HttpRequest):
+        return await _messages_errors(_messages, http)
+
+    async def _messages(body: dict, http: HttpRequest):
+        choice = messages_api.tool_choice(body)
+        if choice in ("any", "tool"):
+            messages_stats["forced_tool_choice_rejected"] += 1
+            raise InvalidRequest(f"tool_choice type '{choice}' is not supported yet: forced tool calls need constrained "
+                                 "decoding; use 'auto' or 'none'")
+        model = body.get("model", MODEL_ID)
+        if not isinstance(model, str):
+            raise InvalidRequest("model must be a string")
+        max_tokens = body.get("max_tokens")
+        if max_tokens is None:
+            raise InvalidRequest("max_tokens is required")
+        req, tools, ids, in_reasoning = _messages_prompt(body, choice)
+        messages_stats["server_tools_ignored"] += req.ignored_tools
+        limit = describe.get("context_length", targets.DEFAULT_TARGET.context_length)
+        if len(ids) >= limit:
+            raise InvalidRequest(f"prompt is too long: {len(ids)} tokens > {limit - 1} maximum")
+        if isinstance(max_tokens, (int, float)) and not isinstance(max_tokens, bool):
+            max_tokens = min(max_tokens, limit - len(ids))  # clients size max_tokens for a larger window
+        sampling = {k: body[k] for k in ("temperature", "top_p", "top_k", "trace", "accept_top_k", "accept_margin") if k in body}
+        params = _sampling_from({**sampling, "max_tokens": max_tokens})
+        stop = _stops({"stop": body.get("stop_sequences")})
+        ticket = await _submit(ids, params)
+        mid = messages_api.new_id("msg")
+
+        def usage(n_out: int) -> dict:
+            cached = ticket.req.prefix_len
+            return {"input_tokens": len(ids) - cached, "output_tokens": n_out,
+                    "cache_creation_input_tokens": 0, "cache_read_input_tokens": cached}
+
+        detok = Detokenizer(tok, stop)
+        if body.get("stream"):
+            sse = messages_api.sse
+
+            async def events():
+                # The prefix match is not known before admission; message_delta reports the final split.
+                yield sse("message_start", {"type": "message_start", "message": {
+                    "id": mid, "type": "message", "role": "assistant", "model": model, "content": [],
+                    "stop_reason": None, "stop_sequence": None, "usage": {
+                        "input_tokens": len(ids), "output_tokens": 0,
+                        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}})
+                yield sse("ping", {"type": "ping"})
+                writer = messages_api.EventWriter()
+                try:
+                    async for r_delta, c_delta, calls, finished, reason, n_out in _chat_steps(
+                            ticket, detok, http, in_reasoning, tools):
+                        for event in writer.delta("thinking", r_delta) + writer.delta("text", c_delta):
+                            yield event
+                        if finished:
+                            for event in writer.finish(calls):
+                                yield event
+                            stop_reason, stop_sequence = messages_api.stop_reason(reason, detok.stop_hit)
+                            yield sse("message_delta", {"type": "message_delta", "delta": {
+                                "stop_reason": stop_reason, "stop_sequence": stop_sequence}, "usage": usage(n_out)})
+                            yield sse("message_stop", {"type": "message_stop"})
+                except EngineUnavailable:
+                    yield sse("error", messages_api.error_body("overloaded_error", "engine unavailable"))
+            return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
+
+        out, text, reason = await _collect(ticket, detok, http)
+        reasoning, content, calls = _split_chat(text, in_reasoning, tools)
+        stop_reason, stop_sequence = messages_api.stop_reason("tool_calls" if calls else reason, detok.stop_hit)
+        return {"id": mid, "type": "message", "role": "assistant", "model": model,
+                "content": messages_api.content_blocks(reasoning, content, calls),
+                "stop_reason": stop_reason, "stop_sequence": stop_sequence, "usage": usage(len(out))}
+
+    @app.post("/v1/messages/count_tokens")
+    async def count_tokens(http: HttpRequest):
+        async def count(body: dict, http: HttpRequest):
+            # A forced tool_choice does not change the prompt, so it is counted, not rejected.
+            _, _, ids, _ = _messages_prompt(body, messages_api.tool_choice(body))
+            return {"input_tokens": len(ids)}
+        return await _messages_errors(count, http)
 
     return app
 
