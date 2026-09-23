@@ -65,6 +65,30 @@ class FlashNextIndexer:
             row += n
         return pages, (pages >= 0).sum(1, dtype=torch.int32)
 
+    def maintain(self, x: torch.Tensor, ctx, token_pages: torch.Tensor) -> None:
+        """Graph-safe key maintenance for rows inside the budget: store every row's raw
+        key and compress every row's group through itself from `ctx.qsa_members`; rows
+        that do not complete a group write their result to the dummy page (`qsa_writes`)."""
+        h, d = self.heads, self.dim
+        aux = ctx.kv_pool.page_aux[self.name]
+        aux[token_pages.long(), 0] = F.linear(x, self.qk)[:, h * d:]
+        keys = aux[ctx.qsa_members.long(), 0].float().mean(dim=1).to(x.dtype)
+        keys = gemma_rms(keys.unsqueeze(1), self.k_norm, self.eps)
+        first = (ctx.positions - (self.ratio - 1)).clamp_min(0)
+        aux[ctx.qsa_writes.long(), 1] = rope_neox(keys, first, self.rotary_dim, self.theta)[:, 0]
+
+    @staticmethod
+    def static_rows(seqs, ratio: int, device) -> tuple[torch.Tensor, torch.Tensor]:
+        """(members [rows, ratio], writes [rows]) int32 for `maintain` from qsa_seqs-style
+        (first position, new tokens, pages) per sequence."""
+        members, writes = [], []
+        back = torch.arange(ratio - 1, -1, -1, device=device)
+        for first, n, pages in seqs:
+            pos = torch.arange(first, first + n, device=device)
+            members.append(pages[(pos[:, None] - back).clamp_min(0)])
+            writes.append(torch.where(pos % ratio == ratio - 1, pages[pos], torch.zeros_like(pages[pos])))
+        return torch.cat(members).to(torch.int32), torch.cat(writes).to(torch.int32)
+
     def _compress(self, aux, seqs, device, dtype) -> None:
         r = self.ratio
         ends = [(p, s) for s, (first, n, _) in enumerate(seqs) for p in range(first, first + n) if p % r == r - 1]

@@ -86,3 +86,43 @@ def test_indexer_selection_matches_the_reference(budget):
     for p, chosen in selections.items():
         want = {lookup[j] for j in mask[p].nonzero().flatten().tolist()}
         assert chosen == want, f"row {p}: {len(chosen ^ want)} pages differ"
+
+
+def test_graph_safe_maintenance_matches_the_eager_keys_under_replay():
+    """`maintain` (captured once, replayed with fresh per-step rows) writes the same raw and
+    compressed keys as the eager path; rows that complete no group only touch page 0."""
+    from sharar.memory.kv_pool import KvPool
+    from sharar.model.flashnext.indexer import FlashNextIndexer
+    from sharar.target import FLASHNEXT
+    dev, hidden, ratio, total = torch.device("cuda"), 256, 4, 300
+    ix = _indexer(hidden, 2048, ratio, dev)
+    eager_pool, graph_pool = KvPool(total + 64, dev, target=FLASHNEXT), KvPool(total + 64, dev, target=FLASHNEXT)
+    ix.register(eager_pool)
+    ix.register(graph_pool)
+    seq_pages = (torch.randperm(total + 63, device=dev) + 1)[:total].to(torch.int32)
+    x = torch.randn(total, hidden, device=dev).to(torch.bfloat16)
+    prefill = 100
+    ctx = SimpleNamespace(kv_pool=eager_pool, positions=torch.arange(prefill, device=dev), qsa_seqs=[(0, prefill, seq_pages[:prefill])])
+    assert ix.run(x[:prefill], ctx, seq_pages[:prefill]) is None
+    graph_pool.page_aux[ix.name].copy_(eager_pool.page_aux[ix.name])  # the same prefix in both pools
+    # graph: one decode row captured, replayed per token with new static rows
+    static = {"x": torch.zeros(1, hidden, dtype=torch.bfloat16, device=dev), "pos": torch.zeros(1, dtype=torch.int64, device=dev),
+              "page": torch.zeros(1, dtype=torch.int32, device=dev), "members": torch.zeros(1, ratio, dtype=torch.int32, device=dev),
+              "writes": torch.zeros(1, dtype=torch.int32, device=dev)}
+    gctx = SimpleNamespace(kv_pool=graph_pool, positions=static["pos"], qsa_members=static["members"], qsa_writes=static["writes"])
+    ix.maintain(static["x"], gctx, static["page"])  # warm up
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        ix.maintain(static["x"], gctx, static["page"])
+    for p in range(prefill, total):
+        seq = [(p, 1, seq_pages[: p + 1])]
+        ix.run(x[p:p + 1], SimpleNamespace(kv_pool=eager_pool, positions=torch.arange(p, p + 1, device=dev), qsa_seqs=seq), seq_pages[p:p + 1])
+        members, writes = FlashNextIndexer.static_rows(seq, ratio, dev)
+        static["x"].copy_(x[p:p + 1]); static["pos"].fill_(p); static["page"].copy_(seq_pages[p:p + 1])
+        static["members"].copy_(members); static["writes"].copy_(writes)
+        graph.replay()
+    used = seq_pages.long()
+    eager, replayed = eager_pool.page_aux[ix.name][used], graph_pool.page_aux[ix.name][used]
+    assert torch.equal(eager[:, 0], replayed[:, 0])  # raw keys
+    complete = torch.arange(total, device=dev) % ratio == ratio - 1
+    assert torch.equal(eager[complete, 1], replayed[complete, 1])  # compressed keys at every group end

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from sharar.engine.context import ForwardContext
-from sharar.engine.graphs import capture_sizes, check_context_capacity
+from sharar.engine.graphs import _qsa_static, capture_sizes, check_context_capacity, fill_qsa
 from sharar.memory.kv_pool import KV_DTYPE
 
 if TYPE_CHECKING:
@@ -49,6 +49,7 @@ class VerifyGraphs:
             "kv_indices": torch.zeros(b * self.max_context, dtype=torch.int32, device=d),
             "last_page_len": torch.ones(b, dtype=torch.int32, device=d),
             "ple_rows": (torch.zeros((b * s, self.ex._ple.heads, 160), dtype=torch.uint8, device=d) if getattr(self.ex, "_ple", None) is not None else None),
+            **_qsa_static(self.ex.target, b * s, d),
         }
         st["wrapper"] = _prefill_wrapper(self._ws, st)
         st["ctx"] = ForwardContext(
@@ -60,6 +61,7 @@ class VerifyGraphs:
             verify_replay=self.spec.replay.layer_inputs if self.spec.replay is not None else {},
             verify_conv_windows=self.spec.conv_windows, verify_aux_windows=self.spec.aux_windows,
             paged_prefill_wrapper=st["wrapper"], ple_rows=st["ple_rows"],
+            qsa_members=st["qsa_members"], qsa_writes=st["qsa_writes"],
         )
         return st
 
@@ -105,7 +107,7 @@ class VerifyGraphs:
         raise ValueError(b)
 
     def run(self, tokens: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, slots: torch.Tensor, kv_all: list[torch.Tensor], *, sampled=False,
-            ple_rows: torch.Tensor | None = None):
+            ple_rows: torch.Tensor | None = None, qsa: tuple[torch.Tensor, torch.Tensor] | None = None):
         """Returns (norm rows [b*s, H], argmax or logits [b*s(, V)], ctx, features,
         logits [b*s, V]) for the real rows; padded rows use slot 0 and page 0.
         The logits view is overwritten by the next replay."""
@@ -116,6 +118,7 @@ class VerifyGraphs:
         n = b * s
         if ple_rows is not None:
             st["ple_rows"][:n].copy_(ple_rows)
+        fill_qsa(st, qsa, n)
         st["tokens"][:n].copy_(tokens)
         st["positions"][:n].copy_(positions)
         st["pages"][:n].copy_(pages)

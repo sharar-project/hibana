@@ -38,7 +38,11 @@ class FlashNextAttention(Attention):
         return self.qkv.bytes + self.o.bytes + (self.indexer.bytes if self.indexer is not None else 0)
 
     def forward(self, x: torch.Tensor, ctx, x_q: torch.Tensor | None = None) -> torch.Tensor:
-        if self.indexer is None or ctx.qsa_seqs is None:
+        if self.indexer is None:
+            return super().forward(x, ctx, x_q)
+        if ctx.qsa_seqs is None:
+            if ctx.qsa_members is not None:  # graph replay inside the budget: keys only, dense attention
+                self.indexer.maintain(x, ctx, ctx.out_pages if ctx.mode == "decode" else ctx.pages)
             return super().forward(x, ctx, x_q)
         q, k, v, gate = self._qkv(x, ctx.positions)
         token_pages = ctx.out_pages if ctx.mode == "decode" else ctx.pages

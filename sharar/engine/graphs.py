@@ -23,6 +23,26 @@ def capture_sizes(max_batch: int) -> tuple[int, ...]:
     return ServingProfile(max_batch=max_batch).graph_sizes
 
 
+def _qsa_static(target, rows: int, device) -> dict:
+    """Index-key maintenance buffers for a sparse-attention target (none otherwise)."""
+    if not target.indexer_budget:
+        return {"qsa_members": None, "qsa_writes": None}
+    return {"qsa_members": torch.zeros((rows, target.indexer_compress_ratio), dtype=torch.int32, device=device),
+            "qsa_writes": torch.zeros(rows, dtype=torch.int32, device=device)}
+
+
+def fill_qsa(st: dict, qsa, rows: int) -> None:
+    """Copy one step's (members, writes) into the graph's buffers; padded rows use page 0."""
+    if st.get("qsa_members") is None:
+        return
+    if qsa is None:
+        raise ValueError("a sparse-attention target's graph needs its index-key rows")
+    st["qsa_members"][:rows].copy_(qsa[0])
+    st["qsa_writes"][:rows].copy_(qsa[1])
+    st["qsa_members"][rows:].zero_()
+    st["qsa_writes"][rows:].zero_()
+
+
 def check_context_capacity(counts: list[int], capacity: int) -> None:
     if not counts or any(n < 1 or n > capacity for n in counts):
         raise ValueError(f"KV lengths {counts} exceed graph capacity {capacity}")
@@ -53,6 +73,7 @@ class DecodeGraphs:
             "last_page_len_host": torch.ones(b, dtype=torch.int32),
             "logits": None,
             "ple_rows": (torch.zeros((b, self.ex._ple.heads, 160), dtype=torch.uint8, device=d) if getattr(self.ex, "_ple", None) is not None else None),
+            **_qsa_static(self.ex.target, b, d),
         }
 
     def _plan(self, b: int, counts: list[int], pages: list[torch.Tensor]) -> None:
@@ -87,6 +108,8 @@ class DecodeGraphs:
             decode_wrapper=self._wrappers[b],
             batch_size=b,
             ple_rows=st["ple_rows"],
+            qsa_members=st["qsa_members"],
+            qsa_writes=st["qsa_writes"],
         )
 
     def capture(self, log=print) -> None:
@@ -129,7 +152,7 @@ class DecodeGraphs:
         raise ValueError(f"batch {b} exceeds captured sizes {self.sizes}")
 
     def run(self, tokens: list[int], positions: list[int], slots: list[int], out_pages: torch.Tensor, pages: list[torch.Tensor], *, return_features=False,
-            ple_rows: torch.Tensor | None = None):
+            ple_rows: torch.Tensor | None = None, qsa: tuple[torch.Tensor, torch.Tensor] | None = None):
         """Returns logits [b, V] for the b real rows."""
         b = len(tokens)
         size = self.pick(b)
@@ -137,6 +160,7 @@ class DecodeGraphs:
         pad = size - b
         if ple_rows is not None:
             st["ple_rows"][:b].copy_(ple_rows)
+        fill_qsa(st, qsa, b)
         st["tokens"].copy_(torch.tensor(tokens + [0] * pad, dtype=torch.int64))
         st["positions"].copy_(torch.tensor(positions + [0] * pad, dtype=torch.int64))
         st["slots"].copy_(torch.tensor(slots + [0] * pad, dtype=torch.int32))

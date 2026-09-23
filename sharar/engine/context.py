@@ -79,6 +79,11 @@ class ForwardContext:
     # Sparse-attention indexer (Flash-Next): per sequence in token order, (first new position,
     # new tokens, every page of the sequence through its last new token). None: no indexer.
     qsa_seqs: list | None = None
+    # Graph-safe index-key maintenance (every row inside the indexer budget, so no selection):
+    # int32 [rows, ratio] pages of each row's group through itself, and [rows] the page that
+    # receives the compressed key (page 0, the dummy, when the row does not complete a group).
+    qsa_members: torch.Tensor | None = None
+    qsa_writes: torch.Tensor | None = None
 
     @property
     def query_start_loc(self) -> torch.Tensor:
