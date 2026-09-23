@@ -26,6 +26,8 @@ if TYPE_CHECKING:
     from sharar.model.qwen38 import Qwen38
 
 CHECKPOINT_INTERVAL = 2048  # GDN snapshots inside long prefills (multiple of 64)
+MAX_CHUNK_CHECKPOINTS = 16  # chunk-end snapshots per prompt; longer prompts space them wider
+CHECKPOINT_TAIL = 8192  # chunk ends this close to the prompt end are always snapshotted
 
 
 @dataclass
@@ -299,6 +301,23 @@ class Executor:
             positions.append(last)
         return sorted(positions)
 
+    def _chunk_checkpoint(self, req: Request, start: int, end: int) -> None:
+        """Snapshot the state at the end of a prefill chunk that crosses a
+        checkpoint interval. Chunks end on CHECKPOINT_INTERVAL multiples, where
+        `_checkpoint_positions` (positions inside a forward) never lands, so
+        without this a chunked prompt is resumable only near its end. At most
+        MAX_CHUNK_CHECKPOINTS per prompt: a 262K prompt snapshots every 16K
+        rather than holding 128 slots of 144 MiB, plus every chunk end in the
+        last CHECKPOINT_TAIL tokens, where a changed final message diverges.
+        Call after the forward and before the proposer ingests it, so draft
+        features attach at `end`."""
+        n = req.prefill_len
+        if self.cache is None or end >= n:
+            return
+        interval = CHECKPOINT_INTERVAL * max(1, -(-n // (CHECKPOINT_INTERVAL * MAX_CHUNK_CHECKPOINTS)))
+        if end // interval > start // interval or n - end <= CHECKPOINT_TAIL:
+            self.state.checkpoint(req, end, copy=True)
+
     def prefill(self, req: Request, max_tokens: int | None = None) -> int | None:
         batch = self._prepare_single_prefill(req, max_tokens)
         return self._finish_prefill(batch, self.model.forward(batch.ids, batch.context))
@@ -428,6 +447,8 @@ class Executor:
         if finishing:
             logits = self.model.logits(out["norm"][[last_rows[i] for i in finishing]])
             tokens = self.sampler.sample(logits, [chunks[i][0].params for i in finishing], [chunks[i][0].generator for i in finishing]).tolist()
+        for req, n_new in chunks:
+            self._chunk_checkpoint(req, req.prefill_pos, req.prefill_pos + n_new)
         if self.spec is not None:
             for i, (req, n_new) in enumerate(chunks):
                 rows = {"norm": out["norm"][cu[i]:cu[i + 1]]}
@@ -455,6 +476,7 @@ class Executor:
         end = start + t
         new_ids = req.prefill_ids[start:end]
         self.state.commit_prefill(req, end)
+        self._chunk_checkpoint(req, start, end)
         if self.spec is not None:
             self.spec.ingest_prefill(req, new_ids, start, out)
         token = None

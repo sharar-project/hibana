@@ -21,6 +21,9 @@ GIB = 2**30
 # The default target's per-token and per-slot bytes, for tools written against the 27B.
 KV_BYTES_PER_TOKEN = DEFAULT_TARGET.kv_bytes_per_token
 STATE_BYTES_PER_SLOT = DEFAULT_TARGET.state_bytes_per_slot
+# Per-request context every running request is guaranteed at once; longer
+# contexts are guaranteed for one request (the 32K profile's plan is unchanged).
+SHARED_CONTEXT = 32768
 
 
 def mem_available_bytes() -> int:
@@ -79,26 +82,31 @@ class Ledger:
     ) -> Plan:
         """Size the pools from what is available now.
 
-        Guarantees room for `max_running` requests at `context_len` (KV pages
-        and committed state slots) plus the prefill activation reserve and the
-        floor; the remainder, times `cache_fraction`, goes to prefix-cache
-        capacity. A cached request costs about three state snapshots (441 MiB)
-        against 256 MiB of KV for an 8K prompt, and the Phase 3 soak showed
-        slots, not pages, drive eviction, so the split is 40% pages / 60% slots.
+        Guarantees KV pages for one request at `context_len` or `max_running`
+        requests at `SHARED_CONTEXT`, whichever is more, and committed state
+        slots for `max_running` requests, plus the prefill activation reserve
+        and the floor; the remainder, times `cache_fraction`, goes to
+        prefix-cache capacity. Admission budgets each request's actual tokens,
+        so a long request and shorter ones share the pool and a request that
+        does not fit waits. A cached request costs about three state snapshots
+        (441 MiB) against 256 MiB of KV for an 8K prompt, and the Phase 3 soak
+        showed slots, not pages, drive eviction, so the split is 40% pages /
+        60% slots.
         """
         context_len = self.target.context_length if context_len is None else context_len
         kv_bytes_per_token, state_bytes_per_slot = self.target.kv_bytes_per_token, self.target.state_bytes_per_slot
         available = mem_available_bytes()
         budget = available - self.floor_bytes - prefill_reserve_bytes - future_bytes
         page_bytes = kv_bytes_per_token + extra_page_bytes
-        must_kv = max_running * context_len * page_bytes
+        must_tokens = max(context_len, max_running * min(context_len, SHARED_CONTEXT))
+        must_kv = must_tokens * page_bytes
         must_state = (max_running + 1) * state_bytes_per_slot  # +1 dummy slot 0
         if budget < must_kv + must_state:
             raise MemoryError(
                 f"only {available / GIB:.1f} GiB available; need {(must_kv + must_state + prefill_reserve_bytes + future_bytes + self.floor_bytes) / GIB:.1f} GiB"
             )
         spare = int((budget - must_kv - must_state) * cache_fraction)
-        kv_tokens = min(kv_token_target, max_running * context_len + int(spare * 0.4) // page_bytes)
+        kv_tokens = min(kv_token_target, must_tokens + int(spare * 0.4) // page_bytes)
         state_slots = min(state_slot_target, max_running + 1 + int(spare * 0.6) // state_bytes_per_slot)
         return Plan(kv_tokens=kv_tokens, state_slots=state_slots, reserved_bytes=prefill_reserve_bytes + future_bytes)
 

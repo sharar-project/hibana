@@ -37,7 +37,7 @@ and the memory guard.
 
 Any OpenAI-compatible client works against `http://127.0.0.1:30001/v1`
 (chat completions, completions, streaming, thinking, tool-call parsing); see
-the [API guide](docs/api.md). Context is 32K tokens, at most four concurrent
+the [API guide](docs/api.md). Context is 262K tokens, at most four concurrent
 requests.
 
 ## Train the drafter on your traffic

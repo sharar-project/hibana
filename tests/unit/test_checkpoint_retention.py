@@ -134,3 +134,38 @@ def test_full_snapshot_cache_can_admit_without_pinning_every_slot():
     state.release(req)
     state.flush()
     assert state.recurrent.free_count == 3 and state.kv.free_count == 1019
+
+
+def chunked_prefill(ex, state, req, chunk=2048):
+    """What serving does: 2,048-token forwards, then the prompt-end copy."""
+    n = req.prefill_len
+    for start in range(0, n, chunk):
+        end = min(n, start + chunk)
+        for _, pos, slot in state.prefill_checkpoints([(req, ex._checkpoint_positions(start, end, n))]):
+            state.recurrent.values[slot] = pos
+        state.recurrent.values[req.slot] = end
+        state.commit_prefill(req, end)
+        ex._chunk_checkpoint(req, start, end)
+    state.checkpoint(req, n, copy=True)
+
+
+def test_chunked_prefill_is_resumable_at_chunk_boundaries():
+    ex, state, (req,) = setup(slots=24, length=10000)
+    chunked_prefill(ex, state, req)
+    assert {2048, 4096, 6144, 8192} <= set(req.checkpoints)
+    assert all(state.recurrent.values[req.checkpoints[p]] == p for p in (2048, 4096, 6144, 8192))
+    state.release(req)
+    edited = req.prompt_ids[:5000] + [99] * 5000  # the prompt changes mid-way
+    match = state.cache.match(edited[:-1])
+    assert match.length == 4096 and state.recurrent.values[match.snapshot_slot] == 4096
+
+
+def test_long_prompts_cap_chunk_checkpoints():
+    from sharar.engine.executor import CHECKPOINT_TAIL, MAX_CHUNK_CHECKPOINTS
+    ex, state, (req,) = setup(slots=64, length=262000)
+    chunked_prefill(ex, state, req)
+    chunk_ends = [p for p in req.checkpoints if p % 2048 == 0 and p < 262000]
+    spaced = [p for p in chunk_ends if p < 262000 - CHECKPOINT_TAIL]
+    assert 0 < len(spaced) <= MAX_CHUNK_CHECKPOINTS and all(p % 16384 == 0 for p in spaced)
+    # The tail keeps every chunk end, so a changed final message falls back at most one chunk.
+    assert [p for p in chunk_ends if p >= 262000 - CHECKPOINT_TAIL] == [253952, 256000, 258048, 260096]

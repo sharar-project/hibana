@@ -17,6 +17,7 @@ DRAFT_PRECISION="${SHARAR_DRAFT_PRECISION:-fp8}"  # the measured serving profile
 TRACES_DIR="${SHARAR_TRACES:-}"                    # opt-in request traces for draft adaptation (unset = off)
 DRAFT_DIR="${SHARAR_DRAFT:-}"                      # trained draft checkpoint directory; unset follows draft-runs/current; 'pinned' forces the publisher draft
 TRACES_MAX_MIB="${SHARAR_TRACES_MAX_MIB:-32768}"
+MAX_CONTEXT="${SHARAR_MAX_CONTEXT:-262144}"   # prompt plus output per request, up to the model's native 262144
 ACCEPT_DEFAULT="${SHARAR_ACCEPT_DEFAULT:-2:1.0}"      # relaxed acceptance for greedy requests that do not choose (K:M; off = exact)
 W3_DECODE="${SHARAR_W3_DECODE:-1}"   # 3-bit decode copies of the MLPs and FP8 projections for calls of at most 64 rows (1/0)
 W3_HEAD="${SHARAR_W3_HEAD:-0}"       # also the lm_head (1/0)
@@ -137,6 +138,11 @@ if [[ "$ACCEPT_DEFAULT" != "2:1.0" ]]; then
   docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--accept-default" \
     || fail "image $IMAGE predates --accept-default; rebuild with docker/build.sh or unset SHARAR_ACCEPT_DEFAULT"
   serve_args+=(--accept-default "$ACCEPT_DEFAULT")
+fi
+if [[ "$MAX_CONTEXT" != 32768 ]]; then
+  docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--context-length" \
+    || fail "image $IMAGE predates --context-length; rebuild with docker/build.sh or set SHARAR_MAX_CONTEXT=32768"
+  serve_args+=(--context-length "$MAX_CONTEXT")
 fi
 if [[ "$W3_DECODE" == 1 ]]; then
   docker run --rm --entrypoint python3 "$IMAGE" -c "import sharar.kernels.w3" 2>/dev/null \

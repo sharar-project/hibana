@@ -3,6 +3,11 @@
 from dataclasses import dataclass
 
 
+# Contexts up to the target's native 262,144 positions are served; batches of up to
+# four requests share the KV pool, and admission budgets each request's actual tokens.
+MAX_CONTEXT = 262144
+
+
 @dataclass(frozen=True)
 class ServingProfile:
     max_context: int = 32768
@@ -12,7 +17,7 @@ class ServingProfile:
     prefill_budget: int = 4096
 
     def __post_init__(self):
-        for name, upper in (("max_context", 32768), ("max_batch", 4)):
+        for name, upper in (("max_context", MAX_CONTEXT), ("max_batch", 4)):
             value = getattr(self, name)
             lower = 2 if name == "max_context" else 1
             if type(value) is not int or not lower <= value <= upper:

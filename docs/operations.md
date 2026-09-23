@@ -34,6 +34,7 @@ budget separately. Automatic KV capacity depends on available memory.
 | Draft proposals | 15 (16 target verification rows) | `SHARAR_SPEC` |
 | Draft precision | FP8 (the measured serving profile; the 3-bit draft copy applies to it) | `SHARAR_DRAFT_PRECISION=bf16` for the publisher's precision |
 | Accepted state | Reconstruction | `SHARAR_VERIFY_STATE` |
+| Context per request (prompt plus output) | 262,144 (the model's native length) | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length` (the engine's own default is 32,768). The pool guarantees one request at that length (8 GiB of FP8 KV at 262K) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
 | Image | `sharar:qwen38-27b` | `SHARAR_IMAGE` |
 | Container / port | `sharar-qwen38` / 30001 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
 | Request traces | Off | `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
