@@ -5,7 +5,8 @@
 
 collect sends each prompt's token ids through /generate with return_logprob and stores, per
 position, the target token's logprob and the top-5 logprobs. compare runs the reference on the
-same ids and reports next-token argmax agreement, the logprob difference of the actual token,
+same ids and reports next-token argmax agreement (split into the dense region, where every
+block is selected, and the sparse region past the indexer budget), the logprob difference of the actual token,
 and top-1/top-5 agreement at the final position. Prompts: the first tokens of three frozen
 family prompts plus two short texts, all inside the dense-attention limit of the reference.
 """
@@ -29,11 +30,13 @@ def snapshot() -> Path:
     return sorted(SNAP_ROOT.iterdir())[-1]
 
 
-def prompts(lengths=(64, 200, 512)) -> list[dict]:
+def prompts(lengths=(64, 200, 512), long=False) -> list[dict]:
+    frozen = json.loads(INPUTS.read_text())["tasks"]
+    if long:  # past the indexer budget: the sparse selection decides what attention sees
+        return [{"id": f"{task['id']}[:{n}]", "ids": task["input_ids"][:n]} for task, n in zip(frozen[:3], (3000, 6000, 10000))]
     from sharar.tokenizer import SnapshotTokenizer
     tok = SnapshotTokenizer(snapshot())
     out = [{"id": f"text{i}", "ids": tok.encode(t)} for i, t in enumerate(TEXTS)]
-    frozen = json.loads(INPUTS.read_text())["tasks"]
     for task, n in zip(frozen[:3], lengths):
         out.append({"id": f"{task['id']}[:{n}]", "ids": task["input_ids"][:n]})
     return out
@@ -41,7 +44,7 @@ def prompts(lengths=(64, 200, 512)) -> list[dict]:
 
 def collect(args):
     rows = []
-    for p in prompts():
+    for p in prompts(long=args.long):
         body = {"input_ids": p["ids"], "sampling_params": {"max_new_tokens": 1, "temperature": 0},
                 "return_logprob": True, "logprob_start_len": 0, "top_logprobs_num": 5}
         req = urllib.request.Request(f"{args.url}/generate", data=json.dumps(body).encode(), headers={"content-type": "application/json"})
@@ -108,6 +111,15 @@ def compare(args):
                 b = f"{(p['t'] // 64) * 64:04d}"
                 buckets.setdefault(b, []).append(a)
             worst = sorted(positions, key=lambda p: -abs(p["lp_r"] - p["lp_s"]))[:6]
+            limit = getattr(getattr(ref, "cfg", None), "max_dense_prompt", 2051)
+            regions = {}
+            for name, keep in (("dense", lambda t: t - 1 < limit), ("sparse", lambda t: t - 1 >= limit)):  # row t-1 predicts position t
+                sel = [(p, a) for p, a in zip(positions, agree) if keep(p["t"])]
+                sel_conf = [a for p, a in sel if p["s_top1_lp"] > confident]
+                if sel:
+                    regions[name] = {"n": len(sel), "argmax": round(sum(a for _, a in sel) / len(sel), 4),
+                                     "confident": round(sum(sel_conf) / max(1, len(sel_conf)), 4), "confident_n": len(sel_conf),
+                                     "logprob_diff_mean": round(sum(p["lp_r"] - p["lp_s"] for p, _ in sel) / len(sel), 4)}
             nxt_s = row["output_token_logprobs"][0][1]
             nxt_r = int(logp[n - 1].argmax())
             s_top5 = [x[1] for x in row["output_top_logprobs"][0]]
@@ -115,7 +127,7 @@ def compare(args):
             rep = {"id": row["id"], "ablate": variant, "tokens": n, "seconds": round(secs, 1),
                    "argmax_agreement": round(sum(agree) / max(1, len(agree)), 4),
                    "top5_agreement": round(sum(p["r_top1"] in p["s_top5"] for p in positions) / max(1, len(positions)), 4),
-                   "confident_agreement": round(sum(conf) / max(1, len(conf)), 4), "confident_n": len(conf),
+                   "confident_agreement": round(sum(conf) / max(1, len(conf)), 4), "confident_n": len(conf), "regions": regions,
                    "agreement_by_64": {b: round(sum(v) / len(v), 3) for b, v in sorted(buckets.items())},
                    "logprob_diff_mean": round(sum(diffs) / max(1, len(diffs)), 4), "logprob_diff_max_abs": round(max(abs(d) for d in diffs) if diffs else 0, 4),
                    "next_token_match": nxt_s == nxt_r, "next_top5_sglang": s_top5, "next_top5_reference": r_top5,
@@ -130,10 +142,11 @@ def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("collect"); c.add_argument("--url", default="http://127.0.0.1:30003"); c.add_argument("--out", required=True)
+    c.add_argument("--long", action="store_true", help="3K/6K/10K-token prompts, past the sparse-attention budget")
     m = sub.add_parser("compare"); m.add_argument("--sglang", required=True); m.add_argument("--out", required=True); m.add_argument("--layers", type=int, default=None)
     m.add_argument("--model", choices=["reference", "engine"], default="reference")
     m.add_argument("--precision", default=None, help="engine trunk precision: bf16 or fp8 (default SHARAR_FLASHNEXT_TRUNK or fp8)")
-    m.add_argument("--ablate", action="append", help="variant per flag: 'none' or '+'-joined names from {ple,fq,shared,hc}; repeat for several")
+    m.add_argument("--ablate", action="append", help="variant per flag: 'none' or '+'-joined names from {ple,fq,shared,hc,dense}; repeat for several (dense: attention ignores the indexer, the control for long prompts)")
     m.add_argument("--confident", type=float, default=0.8, help="SGLang top-1 probability above which a position counts as confident")
     args = ap.parse_args()
     (collect if args.cmd == "collect" else compare)(args)

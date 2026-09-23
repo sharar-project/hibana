@@ -99,7 +99,9 @@ class Target:
 
     @property
     def kv_bytes_per_token(self) -> int:
-        return 2 * self.num_kv_heads * self.head_dim * self.kv_bytes_per_element * len(self.attention_layer_ids)
+        kv = 2 * self.num_kv_heads * self.head_dim * self.kv_bytes_per_element * len(self.attention_layer_ids)
+        # A sparse-attention indexer keeps a raw and a compressed BF16 index key per token and layer.
+        return kv + (2 * self.indexer_head_dim * 2 * len(self.attention_layer_ids) if self.indexer_budget else 0)
 
     @property
     def conv_dim(self) -> int:

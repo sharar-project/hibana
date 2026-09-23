@@ -59,8 +59,10 @@ class Record:
 def _segments(entry) -> list[tuple[str, list[torch.Tensor]]]:
     """The byte segments of a parked entry, in file order; each is the
     concatenation of its tensors' bytes."""
-    layers = entry.chunks[0][1].shape[0] if entry.chunks else 0
-    out = [(f"kv.{j}.{t}", [kv[j, t] for _, kv in entry.chunks]) for j in range(layers) for t in range(2)]
+    layers = entry.chunks[0][1].shape[0] if entry.chunks else 0  # chunks are (first token, KV view, page aux views)
+    out = [(f"kv.{j}.{t}", [chunk[1][j, t] for chunk in entry.chunks]) for j in range(layers) for t in range(2)]
+    for name in (entry.chunks[0][2] if entry.chunks and len(entry.chunks[0]) > 2 else {}):
+        out.append((f"paux.{name}", [chunk[2][name] for chunk in entry.chunks]))
     out += [("conv", [entry.conv]), ("ssm", [entry.ssm])]
     for identity, (scalars, views) in entry.auxiliary.items():
         if identity == "__pool__":
@@ -238,10 +240,11 @@ class SessionDisk:
 
     # ---- read ----
     def restore_into(self, record: Record, start: int, pages: torch.Tensor, kv: list[torch.Tensor],
-                     state: dict[str, torch.Tensor], aux_specs: list[tuple]) -> dict | None:
+                     state: dict[str, torch.Tensor], aux_specs: list[tuple], page_aux: dict | None = None) -> dict | None:
         """Read a stored session straight into pool pages and a state slot:
         tokens [start:] of every KV segment into `pages` of the matching
-        `kv` pool tensor (one per layer and K/V, in segment order), each
+        `kv` pool tensor (one per layer and K/V, in segment order) and of
+        every page aux segment into its `page_aux` pool tensor, each
         `state` segment ("conv", "ssm", "pool.<name>") into its destination
         view, and the codec payloads into new device tensors. Returns
         {identity: (scalars, tensors)} or None on any mismatch or I/O error.
@@ -253,8 +256,9 @@ class SessionDisk:
         try:
             with self.lock, open(record.stem.with_suffix(".bin"), "rb", buffering=0) as f:
                 idx = pages.to(torch.int64)
-                for i, pool in enumerate(kv):
-                    seg = f"kv.{i // 2}.{i % 2}"
+                per_page = [(f"kv.{i // 2}.{i % 2}", pool) for i, pool in enumerate(kv)]
+                per_page += [(f"paux.{name}", pool) for name, pool in (page_aux or {}).items()]
+                for seg, pool in per_page:
                     rows = pool.view(torch.uint8).reshape(pool.shape[0], -1)
                     row = rows.shape[1]
                     if seg not in stored or stored[seg][1] != record.own * row:

@@ -41,6 +41,6 @@ def test_flashnext_target_geometry():
     assert (t.hidden_size, t.num_layers, t.vocab_size) == (2560, 48, 248320)
     assert len(t.attention_layer_ids) == 12 and len(t.gdn_layer_ids) == 36 and t.attention_layer_ids[:2] == [3, 7]
     assert (t.conv_dim, t.conv_state_len) == (QWEN38.conv_dim, QWEN38.conv_state_len)  # the GDN geometry is the 27B's
-    assert t.kv_bytes_per_token == 2 * 2 * 256 * 12 and t.rotary_dim == 64
+    assert t.kv_bytes_per_token == 2 * 2 * 256 * 12 + 2 * 128 * 2 * 12 and t.rotary_dim == 64  # FP8 K/V plus BF16 raw and compressed index keys
     assert (t.num_experts, t.experts_per_token, t.moe_intermediate_size) == (512, 10, 640)
     assert t.ple_layer_ids == (2,) and t.hc_count == 4 and t.indexer_budget == 2048

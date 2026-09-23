@@ -6,10 +6,10 @@ its equations so the engine's kernels can be judged against it layer by
 layer. Everything is BF16 like the checkpoint except the routed experts,
 which are ModelOpt NVFP4 W4A4: weights are dequantized exactly, activations
 are fake-quantized to E2M1 blocks of 16 with the checkpoint's static input
-scale, and the product runs in FP32. Sparse attention is exact only while
-the prompt fits the indexer budget (2,048 tokens plus the pending group): the
-top-k over compressed blocks then selects every block, so attention is dense
-causal. Longer prompts need the indexer, which the engine port carries.
+scale, and the product runs in FP32. While the prompt fits the indexer
+budget (2,048 tokens plus the pending group) the top-k over compressed
+blocks selects every block, so attention is dense causal. Longer prompts run the sparse indexer (`qsa_token_mask`) and attend
+over its selection in row chunks.
 
 Weights are read straight from the safetensors shards by their checkpoint
 names; the 51 GB n-gram table stays on the host as a memory map and only the
@@ -58,6 +58,7 @@ class FlashNextConfig:
         self.ple_dim, self.ple_conv = t["ple_embed_dim"], t["ple_conv_kernel_size"]
         self.indexer_budget, self.indexer_ratio = t["indexer_budget"], t["indexer_compress_ratio"]
         self.max_dense_prompt = self.indexer_budget + self.indexer_ratio - 1
+        self.indexer_heads, self.indexer_dim = t["indexer_n_heads"], t["indexer_head_dim"]
 
 
 def gemma_rms(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
@@ -75,6 +76,44 @@ def rope_neox(x: torch.Tensor, positions: torch.Tensor, rotary_dim: int, theta: 
     a, b = r[..., : rotary_dim // 2], r[..., rotary_dim // 2 :]
     rotated = torch.cat([a * cos - b * sin, b * cos + a * sin], dim=-1).to(x.dtype)
     return torch.cat([rotated, rest], dim=-1)
+
+
+def qsa_token_mask(q: torch.Tensor, keys: torch.Tensor, budget: int, ratio: int) -> torch.Tensor:
+    """[T, T] bool, True where query row i attends to token j, for one sequence
+    starting at position 0 (Qwen Sparse Attention, as SGLang's qsa package).
+
+    q [T, H, D] are the normed, rotated index queries; keys [G, D] the
+    compressed keys of the G = T // ratio complete groups (mean of the group's
+    raw index keys, Gemma norm, rotated at the group's first position). Row i
+    sees the (i + 1) // ratio groups that end at or before it, scores them
+    relu(q . k) summed over heads / sqrt(D), keeps the top budget // ratio,
+    and adds the tail of its own incomplete group (at most ratio - 1 tokens,
+    itself included). With at most budget // ratio groups everything is kept:
+    dense causal attention."""
+    t, d = q.shape[0], q.shape[-1]
+    g = keys.shape[0]
+    rows = torch.arange(t, device=q.device)
+    visible = (rows + 1) // ratio
+    mask = torch.zeros((t, t), dtype=torch.bool, device=q.device)
+    tail_start = visible * ratio
+    cols = torch.arange(t, device=q.device)
+    mask |= (cols[None, :] >= tail_start[:, None]) & (cols[None, :] <= rows[:, None])
+    if g == 0:
+        return mask
+    top = budget // ratio
+    for a in range(0, t, 1024):  # [rows, groups] logits in row chunks
+        b = min(t, a + 1024)
+        logits = torch.relu(torch.einsum("thd,gd->tgh", q[a:b].float(), keys.float())).sum(-1) / d ** 0.5
+        seen = torch.arange(g, device=q.device)[None, :] < visible[a:b, None]
+        logits = logits.masked_fill(~seen, -float("inf"))
+        width = min(top, g)
+        values, chosen = logits.topk(width, dim=-1)
+        chosen = torch.where(torch.isfinite(values), chosen, torch.full_like(chosen, -1))
+        groups = torch.zeros((b - a, g + 1), dtype=torch.bool, device=q.device)
+        groups.scatter_(1, torch.where(chosen >= 0, chosen, torch.full_like(chosen, g)), True)
+        member = groups[:, :g].repeat_interleave(ratio, dim=1)  # [rows, g * ratio]
+        mask[a:b, : g * ratio] |= member
+    return mask
 
 
 class ExpertBank:
@@ -155,6 +194,8 @@ class FlashNextReference:
                 q = f"{p}.self_attn"
                 layer.update({n: w.get(f"{q}.{n}").to(d) for n in ("q_proj.weight", "k_proj.weight", "v_proj.weight", "o_proj.weight",
                                                                     "q_norm.weight", "k_norm.weight")})
+                layer.update({f"indexer.{n}": w.get(f"{q}.indexer.{n}").to(d)
+                              for n in ("index_qk_proj.weight", "q_layernorm.weight", "k_layernorm.weight")})
             if i == c.ple_layer:
                 layer["ple"] = self._load_ple(f"{p}.ple")
             self.layers.append(layer)
@@ -297,9 +338,33 @@ class FlashNextReference:
         rep = c.heads // c.kv_heads
         k = k.repeat_interleave(rep, dim=1)
         v = v.repeat_interleave(rep, dim=1)
-        attn = F.scaled_dot_product_attention(q.transpose(0, 1).float(), k.transpose(0, 1).float(), v.transpose(0, 1).float(), is_causal=True, scale=c.head_dim**-0.5)
-        attn = attn.transpose(0, 1).to(x.dtype) * torch.sigmoid(gate.float()).to(x.dtype)
+        if t <= c.max_dense_prompt or "dense" in self.ablate:  # every block selected (or the dense control): causal attention
+            attn = F.scaled_dot_product_attention(q.transpose(0, 1).float(), k.transpose(0, 1).float(), v.transpose(0, 1).float(), is_causal=True, scale=c.head_dim**-0.5)
+            attn = attn.transpose(0, 1)
+        else:
+            mask = self._qsa_mask(x, positions, L)
+            attn = torch.empty((t, c.heads, c.head_dim), dtype=torch.float32, device=x.device)
+            kf, vf = k.transpose(0, 1).float(), v.transpose(0, 1).float()
+            for a in range(0, t, 512):  # [heads, rows, T] scores in row chunks
+                b = min(t, a + 512)
+                attn[a:b] = F.scaled_dot_product_attention(q[a:b].transpose(0, 1).float(), kf, vf, attn_mask=mask[a:b],
+                                                           scale=c.head_dim**-0.5).transpose(0, 1)
+        attn = attn.to(x.dtype) * torch.sigmoid(gate.float()).to(x.dtype)
         return F.linear(attn.reshape(t, -1), L["o_proj.weight"])
+
+    def _qsa_mask(self, x: torch.Tensor, positions: torch.Tensor, L: dict) -> torch.Tensor:
+        """The indexer's selection for this layer (index keys are not cached: the reference prefills whole prompts)."""
+        c = self.cfg
+        t, h, dim, ratio = x.shape[0], c.indexer_heads, c.indexer_dim, c.indexer_ratio
+        qk = F.linear(x, L["indexer.index_qk_proj.weight"])
+        q = gemma_rms(qk[:, : h * dim].reshape(t, h, dim), L["indexer.q_layernorm.weight"], c.eps)
+        q = rope_neox(q, positions, c.rotary_dim, c.rope_theta)
+        g = t // ratio
+        raw = qk[: g * ratio, h * dim:].reshape(g, ratio, 1, dim)
+        keys = raw.float().mean(dim=1).to(x.dtype)  # fp32 mean, stored in the activation dtype
+        keys = gemma_rms(keys, L["indexer.k_layernorm.weight"], c.eps)
+        keys = rope_neox(keys, positions[: g * ratio : ratio], c.rotary_dim, c.rope_theta)
+        return qsa_token_mask(q, keys[:, 0], c.indexer_budget, ratio)
 
     def _moe(self, x: torch.Tensor, L: dict) -> torch.Tensor:
         c = self.cfg
@@ -349,8 +414,6 @@ class FlashNextReference:
     @torch.inference_mode()
     def forward(self, ids: list[int], capture: bool = False) -> dict:
         c, d = self.cfg, self.device
-        if len(ids) > c.max_dense_prompt:
-            raise ValueError(f"reference is exact only up to {c.max_dense_prompt} tokens (dense sparse attention)")
         tokens = torch.tensor(ids, dtype=torch.int64, device=d)
         positions = torch.arange(len(ids), device=d)
         x = F.embedding(tokens, self.embed)
