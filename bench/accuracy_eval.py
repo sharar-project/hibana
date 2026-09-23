@@ -163,7 +163,7 @@ def main() -> int:
     ap.add_argument("--url", default="http://127.0.0.1:30001")
     ap.add_argument("--task", choices=("gsm8k", "humaneval"), required=True)
     ap.add_argument("--label", required=True)
-    ap.add_argument("--temperature", type=float, default=0.0, help="sample at this temperature (top_p 0.95, top_k 20, seed = item index)")
+    ap.add_argument("--temperature", type=float, default=0.0, help="sample at this temperature (top_p 0.95, top_k 20, one seed per prompt shared by every arm)")
     ap.add_argument("--accept", default="1:0", help="K:M acceptance pinned on every request (1:0 exact)")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--max-tokens", type=int, default=0)
