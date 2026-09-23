@@ -180,6 +180,12 @@ if [[ -n "${SHARAR_COLD_TIER_GIB:-}" ]]; then
   [[ "$SHARAR_COLD_TIER_GIB" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "SHARAR_COLD_TIER_GIB must be a non-negative number of GiB"
   args+=(--env "SHARAR_COLD_TIER_GIB=$SHARAR_COLD_TIER_GIB")   # managed-memory budget for parked sessions (0 disables the tier)
 fi
+SESSION_DIR="${SHARAR_SESSION_DIR:-$RESULTS_DIR/sessions}"   # NVMe store for parked sessions (off disables)
+if [[ "$SESSION_DIR" != off ]]; then
+  [[ "${SHARAR_SESSION_GIB:-200}" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "SHARAR_SESSION_GIB must be a number of GiB"
+  mkdir -p "$SESSION_DIR"
+  args+=(--volume "$SESSION_DIR:/sessions" --env SHARAR_SESSION_DIR=/sessions --env "SHARAR_SESSION_GIB=${SHARAR_SESSION_GIB:-200}")
+fi
 if [[ -n "$TRACES_DIR" ]]; then
   [[ "$TRACES_MAX_MIB" =~ ^[1-9][0-9]*$ ]] || fail "SHARAR_TRACES_MAX_MIB must be a positive integer"
   mkdir -p "$TRACES_DIR"

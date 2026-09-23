@@ -163,23 +163,26 @@ def ctypes_ptr(n):
 class Parked:
     key: list[int]  # full token prefix from the root
     own: int  # tokens owned by the parked leaf (the last `own` of key)
-    offset: tuple[int, int]  # arena handle (slab, offset)
+    handles: list[tuple[int, int]]  # arena chunks: the KV chunks, then the state chunk
     nbytes: int
-    kv: torch.Tensor  # [layers, own, ...] view into the arena
+    chunks: list[tuple[int, torch.Tensor]]  # (first token, [layers, 2, n, ...] KV view), each within one slab
     conv: torch.Tensor | None
     ssm: torch.Tensor | None
-    auxiliary: dict = field(default_factory=dict)  # identity -> exported payload (host side)
+    auxiliary: dict = field(default_factory=dict)  # identity -> (scalars, views); "__pool__" -> ((), [(name, view)])
     ready: torch.cuda.Event | None = None
     last_access: float = field(default_factory=time.monotonic)
+    on_disk: bool = False  # a complete copy exists in the session store
 
 
 class ColdTier:
-    def __init__(self, kv_pool, state_pool, budget_bytes: int, device: torch.device, log=None):
+    def __init__(self, kv_pool, state_pool, budget_bytes: int, device: torch.device, log=None, disk=None):
         self.kv_pool, self.state_pool, self.device = kv_pool, state_pool, device
         self.arena = ManagedArena(budget_bytes, device)
+        self.disk = disk  # optional SessionDisk: parked entries are written through and restored after drops or restarts
         self.entries: list[Parked] = []
         self.codecs: dict = {}  # identity -> (export, import)
-        self.parks = self.restores = self.drops = self.rejects = 0
+        self.parks = self.restores = self.drops = self.rejects = self.loads = 0
+        self.load_seconds = 0.0
         self.last_reject = None
         self.park_seconds = self.restore_seconds = 0.0
         if log:
@@ -228,60 +231,93 @@ class ColdTier:
             tensors = [x for x in payload if torch.is_tensor(x)]
             aux_items.append((identity, scalars, tensors))
         aux_bytes = sum((x.numel() * x.element_size() + 255) // 256 * 256 for _, _, ts in aux_items for x in ts)
-        nbytes = own * self._kv_row_bytes() + self._state_bytes() + aux_bytes
-        if nbytes > self.arena.nbytes or nbytes > self.arena.SLAB:
+        row = self._kv_row_bytes()
+        state_bytes = self._state_bytes() + aux_bytes
+        nbytes = own * row + state_bytes
+        if nbytes > self.arena.nbytes or state_bytes > self.arena.SLAB:
             self.rejects += 1
             self.last_reject = f"too large: {nbytes / GIB:.2f} GiB"
             return False
-        while (offset := self.arena.alloc(nbytes)) is None:
-            if not self.entries:
-                self.rejects += 1  # nothing to drop and the host or the budget refuses a slab
-                self.last_reject = f"no slab: {nbytes / GIB:.2f} GiB, slabs {len(self.arena.slabs)}"
-                return False
-            self._drop_lru()
+        per_chunk = self.arena.SLAB // row  # a long session spans slabs in token chunks
+        sizes = [min(per_chunk, own - s) for s in range(0, own, per_chunk)]
+        handles = self._alloc_all([n * row for n in sizes] + [state_bytes])
+        if handles is None:
+            self.rejects += 1  # nothing left to drop and the host or the budget refuses a slab
+            self.last_reject = f"no slab: {nbytes / GIB:.2f} GiB, slabs {len(self.arena.slabs)}"
+            return False
         t0 = time.perf_counter()
         kvp = self.kv_pool
         layers = kvp.layer_ids
         k0 = kvp.k[layers[0]]
-        per_layer = k0[0].numel() * k0.element_size()
-        slab_i, base0 = offset
-        kv = self.arena.view(offset, own * per_layer * 2 * len(layers), k0.dtype, (len(layers), 2, own, *k0.shape[1:]))
         idx = pages.to(torch.int64)
-        for j, lid in enumerate(layers):
-            torch.index_select(kvp.k[lid], 0, idx, out=kv[j, 0])
-            torch.index_select(kvp.v[lid], 0, idx, out=kv[j, 1])
-        base = base0 + own * per_layer * 2 * len(layers)
+        chunks, start = [], 0
+        for handle, n in zip(handles, sizes):
+            kv = self.arena.view(handle, n * row, k0.dtype, (len(layers), 2, n, *k0.shape[1:]))
+            for j, lid in enumerate(layers):
+                torch.index_select(kvp.k[lid], 0, idx[start:start + n], out=kv[j, 0])
+                torch.index_select(kvp.v[lid], 0, idx[start:start + n], out=kv[j, 1])
+            chunks.append((start, kv))
+            start += n
+        conv, ssm, aux = self._state_views(handles[-1], aux_items)
+        sp = self.state_pool
+        conv.copy_(sp.conv_all[:, slot])
+        ssm.copy_(sp.ssm_all[:, slot])
+        for name, v in aux.get("__pool__", ((), []))[1]:
+            v.copy_(sp.aux[name][slot])
+        for identity, scalars, tensors in aux_items:
+            for x, v in zip(tensors, aux[identity][1]):
+                v.copy_(x)
+        ev = torch.cuda.Event()
+        ev.record()
+        entry = Parked(list(key), own, handles, nbytes, chunks, conv, ssm, aux, ev)
+        self.entries.append(entry)
+        self.parks += 1
+        self.park_seconds += time.perf_counter() - t0
+        if self.disk is not None:
+            self.disk.submit(entry)  # written through in the background; drops wait for it
+        return True
+
+    def _state_views(self, handle: tuple[int, int], aux_items) -> tuple[torch.Tensor, torch.Tensor, dict]:
+        """Views for the snapshot, the pool's per-slot auxiliary state and the
+        codec payload tensors, laid out in one arena chunk."""
+        slab_i, base = handle
         sp = self.state_pool
         conv_n = sp.conv_all[:, 0].numel() * sp.conv_all.element_size()
         conv = self.arena.view((slab_i, base), conv_n, sp.conv_all.dtype, tuple(sp.conv_all[:, 0].shape))
         ssm_n = sp.ssm_all[:, 0].numel() * sp.ssm_all.element_size()
         ssm = self.arena.view((slab_i, base + conv_n), ssm_n, sp.ssm_all.dtype, tuple(sp.ssm_all[:, 0].shape))
-        conv.copy_(sp.conv_all[:, slot])
-        ssm.copy_(sp.ssm_all[:, slot])
         cursor = base + conv_n + ssm_n
-        pool_aux = {}
+        pool_aux = []
         for name, t in getattr(sp, "aux", {}).items():
             n = t[0].numel() * t.element_size()
-            v = self.arena.view((slab_i, cursor), n, t.dtype, tuple(t[0].shape))
-            v.copy_(t[slot])
-            pool_aux[name] = v
+            pool_aux.append((name, self.arena.view((slab_i, cursor), n, t.dtype, tuple(t[0].shape))))
             cursor += n
-        aux = {"__pool__": ((), list(pool_aux.items()))} if pool_aux else {}
+        aux = {"__pool__": ((), pool_aux)} if pool_aux else {}
         for identity, scalars, tensors in aux_items:
             views = []
             for x in tensors:
                 n = x.numel() * x.element_size()
-                v = self.arena.view((slab_i, cursor), n, x.dtype, tuple(x.shape))
-                v.copy_(x)
-                views.append(v)
+                views.append(self.arena.view((slab_i, cursor), n, x.dtype, tuple(x.shape)))
                 cursor += (n + 255) // 256 * 256
             aux[identity] = (scalars, views)
-        ev = torch.cuda.Event()
-        ev.record()
-        self.entries.append(Parked(list(key), own, offset, nbytes, kv, conv, ssm, aux, ev))
-        self.parks += 1
-        self.park_seconds += time.perf_counter() - t0
-        return True
+        return conv, ssm, aux
+
+    def _alloc_all(self, sizes: list[int]) -> list[tuple[int, int]] | None:
+        """Every chunk or none, dropping least recently used entries to make room."""
+        while True:
+            handles = []
+            for size in sizes:
+                handle = self.arena.alloc(size)
+                if handle is None:
+                    break
+                handles.append(handle)
+            if len(handles) == len(sizes):
+                return handles
+            for handle in handles:
+                self.arena.free(handle)
+            if not self.entries:
+                return None
+            self._drop_lru()
 
     def _drop_lru(self) -> None:
         if not self.entries:
@@ -289,40 +325,90 @@ class ColdTier:
         victim = min(self.entries, key=lambda e: e.last_access)
         self._drop(victim)
 
-    def discard(self, entry: Parked) -> None:
-        self._drop(entry)
+    def discard(self, entry) -> None:
+        if isinstance(entry, Parked):
+            self._drop(entry)
 
     def clear(self) -> None:
         for entry in list(self.entries):
             self._drop(entry)
+        if self.disk is not None:
+            self.disk.clear()  # a flush invalidates stored sessions too
 
     def _drop(self, entry: Parked) -> None:
         if entry.ready is not None:
             entry.ready.synchronize()  # the arena bytes are reused: the park copy must have landed
+        if self.disk is not None:
+            self.disk.wait(entry)  # and the write-through must have read them
         self.entries.remove(entry)
-        self.arena.free(entry.offset)
-        self.arena.release_empty()
+        self._free(entry)
         self.drops += 1
 
+    def _free(self, entry: Parked) -> None:
+        for handle in entry.handles:
+            self.arena.free(handle)
+        self.arena.release_empty()
+
     # ---- find / restore ----
-    def find(self, ids: list[int]) -> list[Parked]:
-        """Parked entries whose key is a prefix of ids, shortest first."""
+    def find(self, ids: list[int]) -> list:
+        """Parked entries whose key is a prefix of ids, shortest first: in the
+        arena (Parked) or only in the session store (its index records)."""
         hits = [e for e in self.entries if len(e.key) <= len(ids) and ids[: len(e.key)] == e.key]
+        if self.disk is not None:
+            present = {tuple(e.key) for e in self.entries}
+            hits += [r for r in self.disk.find(ids) if tuple(r.key) not in present]
         hits.sort(key=lambda e: len(e.key))
         return hits
 
+    def load(self, record) -> Parked | None:
+        """Read a stored session into the arena; None when it no longer fits or reads."""
+        if isinstance(record, Parked):
+            return record
+        items = [(identity, tuple(scalars), [torch.empty(shape, dtype=dtype, device=self.device) for dtype, shape in specs])
+                 for identity, scalars, specs in record.aux_specs(self.codecs)]
+        row = self._kv_row_bytes()
+        state_bytes = self._state_bytes() + sum((x.numel() * x.element_size() + 255) // 256 * 256 for _, _, ts in items for x in ts)
+        if record.own * row + state_bytes > self.arena.nbytes:
+            return None
+        per_chunk = self.arena.SLAB // row
+        sizes = [min(per_chunk, record.own - s) for s in range(0, record.own, per_chunk)]
+        handles = self._alloc_all([n * row for n in sizes] + [state_bytes])
+        if handles is None:
+            return None
+        t0 = time.perf_counter()
+        k0 = self.kv_pool.k[self.kv_pool.layer_ids[0]]
+        chunks, start = [], 0
+        for handle, n in zip(handles, sizes):
+            chunks.append((start, self.arena.view(handle, n * row, k0.dtype, (len(self.kv_pool.layer_ids), 2, n, *k0.shape[1:]))))
+            start += n
+        conv, ssm, aux = self._state_views(handles[-1], items)
+        entry = Parked(list(record.key), record.own, handles, record.own * row + state_bytes, chunks, conv, ssm, aux, None, on_disk=True)
+        if not self.disk.read(record, entry):
+            self._free(entry)
+            return None
+        self.entries.append(entry)
+        self.loads += 1
+        self.load_seconds += time.perf_counter() - t0
+        return entry
+
     def restore(self, entry: Parked, pages: torch.Tensor, slot: int, start: int = 0) -> dict:
         """Copy the entry's tokens [start:] into freshly allocated pages (one
-        per token) and its snapshot into `slot`, then drop it. Returns the
-        auxiliary dict for the re-inserted node."""
+        per token) and its snapshot into `slot`, then drop it from the arena
+        (a stored copy stays in the session store). Returns the auxiliary dict
+        for the re-inserted node."""
         t0 = time.perf_counter()
         assert int(pages.shape[0]) == entry.own - start
         kvp = self.kv_pool
         idx = pages.to(torch.int64)
-        for j, lid in enumerate(kvp.layer_ids):
-            # index_copy_ has no fp8 kernel: scatter through a byte view of the same storage
-            kvp.k[lid].view(torch.uint8).index_copy_(0, idx, entry.kv[j, 0, start:].view(torch.uint8))
-            kvp.v[lid].view(torch.uint8).index_copy_(0, idx, entry.kv[j, 1, start:].view(torch.uint8))
+        for first, kv in entry.chunks:
+            lo, hi = max(first, start), first + kv.shape[2]
+            if lo >= hi:
+                continue
+            dst = idx[lo - start:hi - start]
+            for j, lid in enumerate(kvp.layer_ids):
+                # index_copy_ has no fp8 kernel: scatter through a byte view of the same storage
+                kvp.k[lid].view(torch.uint8).index_copy_(0, dst, kv[j, 0, lo - first:].view(torch.uint8))
+                kvp.v[lid].view(torch.uint8).index_copy_(0, dst, kv[j, 1, lo - first:].view(torch.uint8))
         sp = self.state_pool
         sp.conv_all[:, slot].copy_(entry.conv)
         sp.ssm_all[:, slot].copy_(entry.ssm)
@@ -337,10 +423,11 @@ class ColdTier:
                 value = codec[1]((*scalars, *views), slot=slot)
                 if value is not None:
                     aux[identity] = value
-        torch.cuda.current_stream().synchronize()  # the arena chunk is freed below; make sure the reads landed
+        torch.cuda.current_stream().synchronize()  # the arena chunks are freed below; make sure the reads landed
+        if self.disk is not None:
+            self.disk.wait(entry)
         self.entries.remove(entry)
-        self.arena.free(entry.offset)
-        self.arena.release_empty()
+        self._free(entry)
         self.restores += 1
         self.restore_seconds += time.perf_counter() - t0
         return aux
@@ -353,4 +440,6 @@ class ColdTier:
             "last_reject": self.last_reject,
             "park_ms_avg": round(1000 * self.park_seconds / max(1, self.parks), 2),
             "restore_ms_avg": round(1000 * self.restore_seconds / max(1, self.restores), 2),
+            "disk_loads": self.loads, "disk_load_ms_avg": round(1000 * self.load_seconds / max(1, self.loads), 2),
+            **({"sessions": self.disk.stats()} if self.disk is not None else {}),
         }
