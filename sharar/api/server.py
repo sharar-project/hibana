@@ -10,6 +10,7 @@ every step. All GPU work stays on the engine thread.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import time
 import uuid
@@ -32,6 +33,9 @@ from sharar.engine.sampler import InvalidRequest
 from sharar.engine.scheduler import QueueFull, Scheduler
 from sharar.tokenizer import SnapshotTokenizer
 
+
+
+MAX_CHOICES = 16  # n per chat request: the scheduler queues what exceeds four running
 
 
 def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, describe: dict) -> FastAPI:
@@ -344,6 +348,13 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         ids, in_reasoning = _chat_prompt(messages, tools, thinking, kwargs)
         params = _sampling_from(body, max_default=512)
         stop = _stops(body)
+        n = body.get("n", 1)
+        if type(n) is not int or not 1 <= n <= MAX_CHOICES:
+            raise InvalidRequest(f"n must be an integer in [1, {MAX_CHOICES}]")
+        if n > 1:
+            if body.get("stream"):
+                raise InvalidRequest("n > 1 requires stream: false")
+            return await _chat_choices(ids, params, stop, in_reasoning, tools, n, http)
         ticket = await _submit(ids, params)
         cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
@@ -395,6 +406,34 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         return {"id": cid, "object": "chat.completion", "created": created, "model": MODEL_ID,
                 "choices": [{"index": 0, "message": message, "finish_reason": reason}],
                 "usage": usage(len(out), reasoning_tokens)}
+
+    async def _chat_choices(ids, params, stop, in_reasoning, tools, n, http):
+        """n choices from one prefill. A one-token primer prefills the prompt
+        and, when the engine reaps it at the start of its next step, publishes
+        it to the prefix cache; the n samples are admitted after that reap, so
+        each resumes from the cached prompt (at most 64 tokens re-prefilled)
+        and they decode side by side. Seeds are seed + i when a seed is given."""
+        primer = await _submit(ids, dataclasses.replace(params, max_new_tokens=1, trace=False, seed=None))
+        await _collect(primer, Detokenizer(tok, []), http)
+        base = params.seed
+        tickets = [await _submit(ids, dataclasses.replace(params, seed=None if base is None else base + i)) for i in range(n)]
+        results = await asyncio.gather(*[_collect(t, Detokenizer(tok, stop), http) for t in tickets])
+        choices, completion, reasoning_total = [], 0, 0
+        for i, (out, text, reason) in enumerate(results):
+            reasoning, content, calls = _split_chat(text, in_reasoning, tools)
+            message: dict[str, Any] = {"role": "assistant", "content": content if content or not calls else None}
+            if reasoning:
+                message["reasoning_content"] = reasoning
+                reasoning_total += len(tok.encode(reasoning))
+            if calls:
+                message["tool_calls"] = calls
+                reason = "tool_calls"
+            choices.append({"index": i, "message": message, "finish_reason": reason})
+            completion += len(out)
+        usage = {"prompt_tokens": len(ids), "completion_tokens": completion, "total_tokens": len(ids) + completion,
+                 "prompt_tokens_details": {"cached_tokens": primer.req.prefix_len}, "reasoning_tokens": reasoning_total}
+        return {"id": f"chatcmpl-{uuid.uuid4().hex[:24]}", "object": "chat.completion", "created": int(time.time()),
+                "model": MODEL_ID, "choices": choices, "usage": usage}
 
     # ---- Anthropic Messages ----
     async def _messages_errors(handler, http: HttpRequest):

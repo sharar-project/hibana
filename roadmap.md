@@ -108,7 +108,24 @@ context, their own APIs, fast sampled decoding and structured output. In order:
    still re-prefills (add the prompt-end and last chunk-end snapshots); first
    prefills are unchanged (attention at long context is the lever: about 250
    of the 351 s at 262K).
-5. **Forced tool choice and structured output with speculation.** Grammar
+5. **Test-time scaling, first result (2026-09-23).** `n` choices share one
+   prefill (a one-token primer publishes the prompt; 4 choices of a 6.4K
+   prompt prefilled 6,635 tokens in total). `bench/tts_eval.py` on 200 MATH-500
+   problems, thinking off (evidence `$SHARAR_RESULTS/reviews/2026-09-23-tts/`):
+   greedy 77.0% in 594 s (four problems in flight, 352 tok/s aggregate);
+   self-consistency n=4 at T 0.7 83.0% (16 better, 4 worse) in 3,451 s;
+   n=8 86.5% (21/2) in 6,860 s; level 5 58.6 -> 72.4 -> 75.9%. pass@8 is
+   87.5%, one point above the vote: at this scale a verifier or reward-weighted
+   particles could add little; the lever is cost. The runs used 244 tok/s
+   against greedy's 352 because one problem at a time leaves slots idle while
+   its slowest choice finishes, and 19% of greedy answers had no boxed answer
+   (mostly repetition to the 2,048-token cap), part of what sampling fixes.
+   Next on this track, in order: keep four sequences busy (two problems in
+   flight), stop a problem's remaining choices once a majority is settled
+   (adaptive consistency), then thinking-on runs, where single-sample accuracy
+   and cost both rise; SMC-style particles only if pass@n pulls away from the
+   vote on harder sets.
+6. **Forced tool choice and structured output with speculation.** Grammar
    masks on the verify rows and on the drafter's candidates, and grammar-forced
    tokens committed without drafting (jump-forward). Order against item 3 by
    what the harness logs show: the Messages route counts rejected forced
