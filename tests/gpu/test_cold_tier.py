@@ -212,12 +212,12 @@ def test_a_dropped_session_comes_back_from_the_store(tmp_path):
 def test_a_restarted_server_restores_a_stored_session(tmp_path):
     from sharar.memory.cold_tier import ColdTier
     from sharar.memory.session_disk import SessionDisk
-    kv, st, cache = _pools()
+    kv, st, cache = _pools(pages=512)
     cache.tier.disk = SessionDisk(tmp_path, 2**30, {"t": 1}, torch.device("cuda"))
     ids = list(range(9000, 9300))
     before = _parked_session(kv, st, cache, ids, 13)
     cache.tier.disk.wait(cache.tier.entries[0])
-    kv2, st2, cache2 = _pools()  # new pools, arena and store: a restart
+    kv2, st2, cache2 = _pools(pages=512)  # new pools, arena and store: a restart
     cache2.tier = ColdTier(kv2, st2, 2**30, torch.device("cuda"), disk=SessionDisk(tmp_path, 2**30, {"t": 1}, torch.device("cuda")))
     assert cache2.tier.disk.stats()["records"] == 1
     assert cache2.restore_parked(ids + [5]) == 1
