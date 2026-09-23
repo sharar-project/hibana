@@ -645,5 +645,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     finally:
         engine.drain(timeout=5)
         engine.thread.join(timeout=6)
+        if not engine.thread.is_alive():
+            ex.persist_sessions(log)  # cached sessions survive the restart in the session store
         if sink is not None:
             sink.close()

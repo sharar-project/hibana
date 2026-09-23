@@ -135,6 +135,11 @@ class SessionDisk:
         self.pending[id(entry)] = done
         self.queue.put((entry, done))
 
+    def drain(self) -> None:
+        """Wait for every queued write."""
+        for done in list(self.pending.values()):
+            done.wait()
+
     def wait(self, entry) -> None:
         done = self.pending.get(id(entry))
         if done is not None:

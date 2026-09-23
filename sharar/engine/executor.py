@@ -260,6 +260,19 @@ class Executor:
                     "stable_numerics": os.environ.get("SHARAR_STABLE_NUMERICS", "0")}
         return SessionDisk(directory, int(float(os.environ.get("SHARAR_SESSION_GIB", "200")) * GIB), identity, self.device, log=log)
 
+    def persist_sessions(self, log=None) -> int:
+        """At shutdown, with the engine stopped: park every cached session so
+        the store holds it across the restart. Returns the number parked."""
+        tier = self.cache.tier if self.cache is not None else None
+        if tier is None or tier.disk is None:
+            return 0
+        before = tier.parks
+        self.cache.evict(need_pages=self.kv_pool.num_pages, need_slots=self.state_pool.num_slots)  # every unlocked leaf
+        tier.disk.drain()
+        if log:
+            log(f"session store: persisted {tier.parks - before} cached sessions ({tier.disk.stats()['records']} stored)")
+        return tier.parks - before
+
     def retract(self, req: Request) -> None:
         self.state.retract(req)
         if self.spec is not None:

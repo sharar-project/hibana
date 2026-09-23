@@ -224,3 +224,18 @@ def test_a_restarted_server_restores_a_stored_session(tmp_path):
     _exact(before, kv2, st2, cache2.match(ids, touch=False))
     other = ColdTier(kv2, st2, 2**30, torch.device("cuda"), disk=SessionDisk(tmp_path, 2**30, {"t": 2}, torch.device("cuda")))
     assert other.find(ids + [5]) == []  # another identity never sees it
+
+
+def test_shutdown_persists_cached_sessions(tmp_path):
+    from sharar.engine.executor import Executor
+    from sharar.memory.session_disk import SessionDisk
+    kv, st, cache = _pools()
+    cache.tier.disk = SessionDisk(tmp_path, 2**30, {"t": 1}, torch.device("cuda"))
+    ids = list(range(40000, 40128))
+    pages, slot = kv.alloc(len(ids)), st.alloc()
+    _fill_random(kv, st, pages, slot, 14)
+    cache.insert(ids, pages, {len(ids): slot})
+    ex = Executor.__new__(Executor)
+    ex.kv_pool, ex.state_pool = kv, st
+    ex.state = type("S", (), {"cache": cache})()
+    assert ex.persist_sessions() == 1 and cache.tier.disk.stats()["records"] == 1
