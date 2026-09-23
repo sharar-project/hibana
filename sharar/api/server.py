@@ -22,7 +22,7 @@ from sharar import target as targets
 from sharar.api.chat_template import ChatTemplate
 from sharar.api.detok import Detokenizer
 from sharar.api.parsers.reasoning import ReasoningParser
-from sharar.api.parsers.tools import has_tool_call, parse_tool_calls
+from sharar.api.parsers.tools import TOOL_CALL_START, has_tool_call, parse_tool_calls
 from sharar.api.validation import _sampling_from, _stops, _template_kwargs, _validate_chat_controls
 from sharar.engine.loop import EngineUnavailable, Ticket, EngineLoop
 from sharar.engine.sampler import InvalidRequest
@@ -126,8 +126,10 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                 r_delta += r2
                 c_delta += c2
             if c_delta and tools and (buffered_tool or has_tool_call(rp.content)):
+                # Content before a call that starts within this update is still content.
+                keep = 0 if buffered_tool else max(0, rp.content.find(TOOL_CALL_START) - (len(rp.content) - len(c_delta)))
                 buffered_tool = rp.content
-                c_delta = ""
+                c_delta = c_delta[:keep]
             calls: list[dict] = []
             if finished and buffered_tool:
                 _, calls = parse_tool_calls(buffered_tool, tools)
