@@ -26,7 +26,8 @@ tower (not loaded).
 | `reference.py` | plain-torch prefill, exact to the SGLang server at the noise floor (parity tool) |
 | `hyper.py` | hyper-connection mix/combine and the grouped Gemma norm (shared with the reference) |
 | `linear.py` | `TrunkLinear`: FP8 at load with a dynamic activation scale (`SHARAR_FLASHNEXT_TRUNK=bf16` for parity) |
-| `gdn.py`, `attention.py` | the 27B modules with these projections and the sigmoid gate; dense attention |
+| `gdn.py`, `attention.py` | the 27B modules with these projections and the sigmoid gate; the attention layers run the indexer |
+| `indexer.py` | sparse-attention indexer: index keys in page aux rows, group compression, top-512 selection |
 | `moe.py` | FlashInfer `cutlass_fused_moe` on the checkpoint's packing (fc1 rows are `[up; gate]`) |
 | `ple.py` | table as numpy memory maps of the 128 shards; hash, gather, gate, convolution; window state in `StatePool.aux` |
 | `model.py` | `FlashNext`: the executor's model contract; `norm` is the hyper stream, `logits()` applies the mixer |
@@ -74,9 +75,36 @@ do not fit together, so stop production first). Evidence and launchers:
 `~/sharar-results/reviews/2026-09-18-flash-next/`
 (`parity-*.json`, `components.log`, `decode-*.log`, `run_*.sh`).
 
+## Sparse attention past 2,048 tokens (2026-09-23)
+
+`indexer.py` ports SGLang's Qwen Sparse Attention: every token's raw index key
+and each completed group's compressed key live in its KV page (`KvPool.page_aux`,
+so they follow pages through the prefix cache, the cold tier and the session
+store); a row past the budget scores the visible groups, keeps the top 512 plus
+its pending tail and attends over those pages through SGLang's sparse kernel
+(`kernels/qsa.py`, vendored). Below the budget the dense path runs unchanged.
+Evidence `$SHARAR_RESULTS/reviews/2026-09-24-qsa/`:
+
+| Check | Result |
+|---|---|
+| Selection vs SGLang's torch operators (CPU, sparse and dense cases) | identical |
+| Engine indexer vs reference selection (GPU: chunked prefill split inside a group, decode steps, scrambled pages) | identical on every row |
+| Reference vs SGLang past 2,051 tokens (3K / 6K / 10K prompts) | argmax 91.5 / 87.5 / 94.3%, confident 95.6 / 93.6 / 97.3%, next token 3/3 |
+| Serving path (executor), BF16 trunk, same region | confident 89.6 / 95.1 / 95.0% |
+| Serving path, FP8 trunk, same region | confident 94.2 / 83.4 / 89.7%: the FP8 trunk compounds over long contexts (per-row scales are the known fix) |
+| Served needle retrieval, depths 0.1/0.5/0.9 at 4K, 8K, 16K, 32K | 12/12 |
+| Served decode at 4K / 8K / 16K / 32K (MTP k=3, eager) | 26.5 / 29.2 / 31.2 / 28.5 tok/s exact, flat with context |
+| Served GSM8K 150 at concurrency 4 | 97.3% |
+
+While the indexer is on, decode and verification run eagerly (graphs would skip
+its key writes), which costs speed at short contexts (plain decode had 24.9
+tok/s and MTP up to 44 tok/s with graphs). Running eagerly exposed a FlashInfer
+re-planning race (`kernels/plan_guard.py`). Cold prefill: 32K in 21.7 s.
+
 ## Not done
 
-Sparse-attention indexer (dense is exact only to 2,048 tokens), layer feature
+Graph capture with the indexer (static selection buffers), a fused scoring
+kernel for decode (it gathers every group key per step), layer feature
 capture (DFlash2-style drafters), W3 trunk and experts, fused hyper-connection
 and small-GEMV kernels, per-row FP8 scales for the trunk, family-gate inputs,
 accuracy gate, production image. Determinism: cold prefills and eager decode

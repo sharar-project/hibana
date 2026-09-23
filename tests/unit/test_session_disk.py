@@ -15,7 +15,7 @@ def entry(key, chunk_sizes, seed=0, layers=3):
     g = torch.Generator().manual_seed(seed)
     chunks, start = [], 0
     for n in chunk_sizes:
-        chunks.append((start, torch.randint(0, 255, (layers, 2, n, 4, 8), generator=g, dtype=torch.uint8).view(torch.float8_e4m3fn)))
+        chunks.append((start, torch.randint(0, 255, (layers, 2, n, 4, 8), generator=g, dtype=torch.uint8).view(torch.float8_e4m3fn), {}))
         start += n
     return SimpleNamespace(
         key=list(key), own=start, chunks=chunks, ready=None, on_disk=False,
@@ -26,7 +26,7 @@ def entry(key, chunk_sizes, seed=0, layers=3):
 
 def pools(e, pages):
     """CPU stand-ins for the KV pool (one tensor per layer and K/V) and a state slot."""
-    layers, rest = e.chunks[0][1].shape[0], e.chunks[0][1].shape[3:]
+    layers, rest = e.chunks[0][1].shape[0], e.chunks[0][1].shape[3:]  # chunks: (first, kv, page aux)
     kv = [torch.zeros((pages, *rest), dtype=torch.uint8).view(torch.float8_e4m3fn) for _ in range(2 * layers)]
     state = {"conv": torch.zeros_like(e.conv), "ssm": torch.zeros_like(e.ssm), "pool.ple_conv": torch.zeros(9, 4)}
     return kv, state
@@ -49,7 +49,7 @@ def test_round_trip_across_a_restart_and_a_different_chunking(tmp_path):
     kv, state = pools(e, 128)
     pages = torch.randperm(128)[:50 - 7]  # restore tokens [7:] into scattered pages
     payloads = restarted.restore_into(record, 7, pages, kv, state, record.aux_specs({("draft", "rev"): None}))
-    whole = torch.cat([c for _, c in e.chunks], dim=2)  # [layers, 2, 50, ...]
+    whole = torch.cat([c[1] for c in e.chunks], dim=2)  # [layers, 2, 50, ...]
     for i, pool in enumerate(kv):
         assert same(pool[pages], whole[i // 2, i % 2, 7:])
     assert same(e.conv, state["conv"]) and same(e.ssm, state["ssm"])
@@ -106,5 +106,22 @@ def test_segments_larger_than_the_staging_buffer_round_trip(tmp_path, monkeypatc
     pages = torch.arange(40)
     assert store.restore_into(record, 0, pages, kv, state, []) is not None
     assert same(e.ssm, state["ssm"]) and same(e.conv, state["conv"])
-    whole = torch.cat([c for _, c in e.chunks], dim=2)
+    whole = torch.cat([c[1] for c in e.chunks], dim=2)
     assert all(same(pool[pages], whole[i // 2, i % 2]) for i, pool in enumerate(kv))
+
+
+
+def test_page_aux_rows_travel_with_the_session(tmp_path):
+    store = SessionDisk(tmp_path, 2**30, IDENTITY, CPU)
+    e = entry(range(500, 530), [18, 12])
+    g = torch.Generator().manual_seed(9)
+    rows = torch.randn(30, 2, 16, generator=g).to(torch.bfloat16)  # e.g. raw and compressed index keys
+    e.chunks = [(first, kv, {"qsa.3": rows[first:first + kv.shape[2]]}) for first, kv, _ in e.chunks]
+    store.submit(e)
+    store.wait(e)
+    (record,) = store.find(list(range(500, 535)))
+    kv, state = pools(e, 64)
+    aux_pool = {"qsa.3": torch.zeros(64, 2, 16, dtype=torch.bfloat16)}
+    pages = torch.randperm(64)[:30 - 4]
+    assert store.restore_into(record, 4, pages, kv, state, [], page_aux=aux_pool) is not None
+    assert same(aux_pool["qsa.3"][pages], rows[4:])

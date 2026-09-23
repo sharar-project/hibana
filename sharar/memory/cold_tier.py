@@ -165,7 +165,7 @@ class Parked:
     own: int  # tokens owned by the parked leaf (the last `own` of key)
     handles: list[tuple[int, int]]  # arena chunks: the KV chunks, then the state chunk
     nbytes: int
-    chunks: list[tuple[int, torch.Tensor]]  # (first token, [layers, 2, n, ...] KV view), each within one slab
+    chunks: list[tuple[int, torch.Tensor, dict]]  # (first token, [layers, 2, n, ...] KV view, {page aux name: [n, ...] view}), each within one slab
     conv: torch.Tensor | None
     ssm: torch.Tensor | None
     auxiliary: dict = field(default_factory=dict)  # identity -> (scalars, views); "__pool__" -> ((), [(name, view)])
@@ -189,9 +189,28 @@ class ColdTier:
             log(f"  cold tier: up to {budget_bytes / GIB:.1f} GiB of managed memory for evicted sessions (2 GiB slabs on demand)")
 
     # ---- sizes ----
-    def _kv_row_bytes(self) -> int:
+    def _kv_only_row_bytes(self) -> int:
         k = self.kv_pool.k[self.kv_pool.layer_ids[0]]
         return k[0].numel() * k.element_size() * 2 * len(self.kv_pool.layer_ids)
+
+    def _kv_row_bytes(self) -> int:
+        """Bytes one token's page holds: K/V of every layer plus the page aux rows."""
+        return self._kv_only_row_bytes() + sum(t[0].numel() * t.element_size() for t in self.kv_pool.page_aux.values())
+
+    def _chunk_views(self, handle: tuple[int, int], n: int) -> tuple[torch.Tensor, dict]:
+        """A chunk's KV view followed by one view per page aux tensor."""
+        kvp = self.kv_pool
+        k0 = kvp.k[kvp.layer_ids[0]]
+        kv_bytes = n * self._kv_only_row_bytes()
+        kv = self.arena.view(handle, kv_bytes, k0.dtype, (len(kvp.layer_ids), 2, n, *k0.shape[1:]))
+        slab_i, offset = handle
+        offset += kv_bytes
+        aux = {}
+        for name, t in kvp.page_aux.items():
+            nbytes = n * t[0].numel() * t.element_size()
+            aux[name] = self.arena.view((slab_i, offset), nbytes, t.dtype, (n, *t.shape[1:]))
+            offset += nbytes
+        return kv, aux
 
     def _state_bytes(self) -> int:
         sp = self.state_pool
@@ -247,16 +266,16 @@ class ColdTier:
             return False
         t0 = time.perf_counter()
         kvp = self.kv_pool
-        layers = kvp.layer_ids
-        k0 = kvp.k[layers[0]]
         idx = pages.to(torch.int64)
         chunks, start = [], 0
         for handle, n in zip(handles, sizes):
-            kv = self.arena.view(handle, n * row, k0.dtype, (len(layers), 2, n, *k0.shape[1:]))
-            for j, lid in enumerate(layers):
+            kv, aux = self._chunk_views(handle, n)
+            for j, lid in enumerate(kvp.layer_ids):
                 torch.index_select(kvp.k[lid], 0, idx[start:start + n], out=kv[j, 0])
                 torch.index_select(kvp.v[lid], 0, idx[start:start + n], out=kv[j, 1])
-            chunks.append((start, kv))
+            for name, view in aux.items():
+                torch.index_select(kvp.page_aux[name], 0, idx[start:start + n], out=view)
+            chunks.append((start, kv, aux))
             start += n
         conv, ssm, aux = self._state_views(handles[-1], aux_items)
         sp = self.state_pool
@@ -372,7 +391,7 @@ class ColdTier:
         assert int(pages.shape[0]) == entry.own - start
         kvp = self.kv_pool
         idx = pages.to(torch.int64)
-        for first, kv in entry.chunks:
+        for first, kv, aux in entry.chunks:
             lo, hi = max(first, start), first + kv.shape[2]
             if lo >= hi:
                 continue
@@ -381,6 +400,8 @@ class ColdTier:
                 # index_copy_ has no fp8 kernel: scatter through a byte view of the same storage
                 kvp.k[lid].view(torch.uint8).index_copy_(0, dst, kv[j, 0, lo - first:].view(torch.uint8))
                 kvp.v[lid].view(torch.uint8).index_copy_(0, dst, kv[j, 1, lo - first:].view(torch.uint8))
+            for name, view in aux.items():
+                kvp.page_aux[name].index_copy_(0, dst, view[lo - first:])
         sp = self.state_pool
         sp.conv_all[:, slot].copy_(entry.conv)
         sp.ssm_all[:, slot].copy_(entry.ssm)
@@ -410,7 +431,7 @@ class ColdTier:
         kv = [t for lid in kvp.layer_ids for t in (kvp.k[lid], kvp.v[lid])]
         state = {"conv": sp.conv_all[:, slot], "ssm": sp.ssm_all[:, slot],
                  **{f"pool.{name}": t[slot] for name, t in getattr(sp, "aux", {}).items()}}
-        payloads = self.disk.restore_into(record, start, pages, kv, state, record.aux_specs(self.codecs))
+        payloads = self.disk.restore_into(record, start, pages, kv, state, record.aux_specs(self.codecs), page_aux=kvp.page_aux)
         if payloads is None:
             return None
         aux = {}

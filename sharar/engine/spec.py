@@ -15,8 +15,10 @@ from sharar.engine.context import ForwardContext
 from sharar.engine.request import Request
 from sharar.memory.kv_pool import KV_DTYPE
 from sharar.engine.contracts import Proposer, StepInputs, VerifiedFeatures
+from sharar.engine.debug import debug_sync
 from sharar.engine.rejection import Proposal, distribution, plausible, verify_rows
 from sharar.engine.accept_graphs import AcceptGraphs, ENABLED as DEVICE_ACCEPT
+from sharar.kernels import plan_guard
 
 
 @dataclass
@@ -158,8 +160,11 @@ class SpecDecoder:
     # ---- one round ----
     @torch.inference_mode()
     def round(self, reqs: list[Request]) -> None:
+        debug_sync("before spec round", reqs)
         batch = self.prepare(reqs)
+        debug_sync("after draft (prepare)", reqs)
         self.verify(batch)
+        debug_sync("after verify and accept", reqs)
 
     def prepare(self, reqs: list[Request]) -> Verification:
         """Reserve and draft one target verification batch."""
@@ -234,8 +239,15 @@ class SpecDecoder:
             relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens, b_sz, s_len)
             self._accept_batch(batch, z, VerifiedFeatures(norm, layers), topk=self._target_topk(batch.requests, logits, b_sz, s_len), relaxed=relaxed)
             return
-        ctx = self.context(batch, self.ex._paged_prefill)
+        ctx = self.context(batch, self._eager_wrapper())
         self.finish(batch, self.ex.model.forward(batch.tokens, ctx))
+
+    def _eager_wrapper(self):
+        """The eager verification's own paged-prefill wrapper (Executor._verify_prefill). plan()
+        uploads its metadata from a pinned buffer asynchronously, so sharing the prefill wrapper
+        let a cache-hit prefill and a verification in the same scheduler step overwrite each
+        other's plan before the GPU read it (illegal memory access under load, 2026-09-23)."""
+        return getattr(self.ex, "_verify_prefill", self.ex._paged_prefill)  # test doubles have only one
 
     def _relaxed_matches(self, reqs, logits, y, b_sz: int, s_len: int):
         """[b, k] bool: drafted token within the request's top-k and logit margin of the target's argmax.
@@ -283,10 +295,12 @@ class SpecDecoder:
         )
         if getattr(self.ex, "_ple", None) is not None:
             ctx.ple_rows = self.ex._ple_rows_block(batch.requests, batch.proposal.tokens.tolist())
+        if self.ex.target.indexer_budget:
+            ctx.qsa_seqs = [(r.context_len - 1, s_len, pages) for r, pages in zip(batch.requests, batch.kv_pages)]
         indptr = [0]
         for pages in batch.kv_pages:
             indptr.append(indptr[-1] + pages.shape[0])
-        wrapper.plan(cu_host, torch.tensor(indptr, dtype=torch.int32), torch.cat(batch.kv_pages),
+        plan_guard.plan(wrapper, cu_host, torch.tensor(indptr, dtype=torch.int32), torch.cat(batch.kv_pages),
                      torch.ones(b_sz, dtype=torch.int32), self.ex.target.num_attention_heads, self.ex.target.num_kv_heads,
                      self.ex.target.head_dim, 1, causal=True, q_data_type=torch.bfloat16,
                      kv_data_type=KV_DTYPE, sm_scale=self.ex.target.head_dim**-0.5)

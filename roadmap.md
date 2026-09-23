@@ -235,12 +235,12 @@ and hardware; kernel work at batch one is capped near 10%.
    decode 24.9 tok/s at batch one (SGLang 16.7), 92 tok/s at batch four,
    MTP 1.99x on the JSON prompt, GSM8K-300 96.0% and HumanEval 94.5% at 1.8
    to 1.9x SGLang's wall time. What remains, each a fresh multi-hour build:
-   1. Sparse-attention indexer for contexts past 2,048 tokens (dense is exact
-      below): compressed-key cache per attention layer (mean over groups of
-      four, Gemma norm, rope), top-512 block selection, expansion to token
-      indices with the pending tail, a vendored sparse attention kernel; SGLang
-      ships torch oracles for every step (`layers/attention/qsa/{mqa,kernel}.py`).
-      Gate: reference parity on a prompt longer than the budget.
+   1. Done 2026-09-23: sparse-attention indexer (`docs/flashnext.md#sparse-attention-past-2048-tokens-2026-09-23`):
+      selection identical to SGLang's operators and to the reference, served
+      needles 12/12 to 32K, decode flat with context, GSM8K 97.3% at
+      concurrency four. Next here: capture graphs with the indexer (eager now,
+      slower at short contexts), a fused decode scoring kernel, per-row FP8
+      trunk scales (the FP8 trunk loses agreement past 6K).
    2. Calibrated 3.25-bit trunk. Nearest-rounded copies give 31 ms per step
       (32 tok/s) but fail the gate (GSM8K 92.0, HumanEval 89.6) and are no
       faster at concurrency four, so `SHARAR_FLASHNEXT_TRUNK=w3` stays off;

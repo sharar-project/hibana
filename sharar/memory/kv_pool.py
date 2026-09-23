@@ -32,6 +32,10 @@ class KvPool:
         shape = (num_pages, page_size, self.num_kv_heads, self.head_dim)
         self.k = {i: torch.zeros(shape, dtype=dtype, device=device) for i in self.layer_ids}
         self.v = {i: torch.zeros(shape, dtype=dtype, device=device) for i in self.layer_ids}
+        # Per-page rows that belong to a token like its K/V and travel with the page
+        # through the prefix cache, the cold tier and the session store (Flash-Next's
+        # sparse-attention index keys). Registered by the model before pools are shared.
+        self.page_aux: dict[str, torch.Tensor] = {}
         # Simple free list; page 0 is reserved as the dummy page for padded batch rows.
         self._free = list(range(num_pages - 1, 0, -1))
 
@@ -42,7 +46,15 @@ class KvPool:
     @property
     def bytes(self) -> int:
         n = self.num_pages * self.page_size * self.num_kv_heads * self.head_dim
-        return n * 2 * len(self.layer_ids) * self.k[self.layer_ids[0]].element_size()
+        kv = n * 2 * len(self.layer_ids) * self.k[self.layer_ids[0]].element_size()
+        return kv + sum(t.numel() * t.element_size() for t in self.page_aux.values())
+
+    def register_page_aux(self, name: str, row_shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
+        """A [num_pages, *row_shape] tensor indexed by page id like K/V."""
+        if name in self.page_aux:
+            raise ValueError(f"page aux {name!r} registered twice")
+        self.page_aux[name] = torch.zeros((self.num_pages * self.page_size, *row_shape), dtype=dtype, device=self.device)
+        return self.page_aux[name]
 
     def alloc(self, n: int) -> torch.Tensor:
         return self.alloc_with_ids(n)[0]

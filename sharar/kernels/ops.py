@@ -15,6 +15,7 @@ from sharar.kernels.fp8_quant import quant_fp8
 from sharar.kernels.nvfp4_quant import nvfp4_quantize
 from sharar.weights.modelopt import FP8_MAX, Fp8Linear, Nvfp4Linear
 from sharar.kernels import stable, verify_gemm, w3
+from sharar.kernels import plan_guard
 
 # cuBLAS FP8 GEMM reaches ~60% of DRAM bandwidth at M<=4 on SM121 (profile in
 # docs/phase2.md); the streaming GEMV is used up to this many rows.
@@ -150,7 +151,7 @@ class RaggedAttention:
         if self._planned == key:
             return
         indptr = torch.tensor([0] + list(torch.tensor(seq_lens).cumsum(0).tolist()), dtype=torch.int32)  # host: no sync in plan()
-        self._wrapper.plan(
+        plan_guard.plan(self._wrapper,
             indptr,
             indptr,
             self.num_qo_heads,

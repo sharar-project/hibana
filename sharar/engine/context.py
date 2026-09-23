@@ -76,6 +76,9 @@ class ForwardContext:
     ple_rows: torch.Tensor | None = None
     # Verify: auxiliary per-slot state after each step, name -> [max_batch, steps, ...] buffer the model fills
     verify_aux_windows: dict = field(default_factory=dict)
+    # Sparse-attention indexer (Flash-Next): per sequence in token order, (first new position,
+    # new tokens, every page of the sequence through its last new token). None: no indexer.
+    qsa_seqs: list | None = None
 
     @property
     def query_start_loc(self) -> torch.Tensor:
