@@ -89,7 +89,21 @@ context, their own APIs, fast sampled decoding and structured output. In order:
    accept graphs, which exclude sampled batches, at batch two to four. Build
    both, graph-capture the sampled verifier, judge like the greedy mode
    (family gate, paired GSM8K/HumanEval, judged comparison).
-4. **Forced tool choice and structured output with speculation.** Grammar
+4. **Done 2026-09-23: NVMe session store** (`sharar/memory/session_disk.py`,
+   evidence `$SHARAR_RESULTS/reviews/2026-09-23-sessions/`). Parked sessions
+   span slabs (long contexts no longer rejected), are written through to
+   `$SHARAR_RESULTS/sessions`, and are persisted at shutdown. Restart test on a
+   54.8K-token conversation: turn one cold 31.1 s to first token; after a
+   server restart turn two 1.68 s, with 54,795 prompt tokens restored from
+   disk (1.4 s load of 1.84 GiB, 24 ms restore). Turn two of a chat reuses
+   exactly turn one's prompt plus output (checked with and without thinking),
+   which is the snapshot a record carries. Follow-ups: the load runs at 1.3
+   GB/s against the drive's 9.7 (double-buffer the staging copies); records
+   carry only their end snapshot, so an edit earlier in a stored conversation
+   still re-prefills (add the prompt-end and last chunk-end snapshots); first
+   prefills are unchanged (attention at long context is the lever: about 250
+   of the 351 s at 262K).
+5. **Forced tool choice and structured output with speculation.** Grammar
    masks on the verify rows and on the drafter's candidates, and grammar-forced
    tokens committed without drafting (jump-forward). Order against item 3 by
    what the harness logs show: the Messages route counts rejected forced
