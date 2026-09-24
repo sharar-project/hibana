@@ -238,9 +238,10 @@ and hardware; kernel work at batch one is capped near 10%.
    1. Done 2026-09-23: sparse-attention indexer (`docs/flashnext.md#sparse-attention-past-2048-tokens-2026-09-23`):
       selection identical to SGLang's operators and to the reference, served
       needles 12/12 to 32K, decode flat with context, GSM8K 97.3% at
-      concurrency four. Next here: capture graphs with the indexer (eager now,
-      slower at short contexts), a fused decode scoring kernel, per-row FP8
-      trunk scales (the FP8 trunk loses agreement past 6K).
+      concurrency four. Done 2026-09-24: CUDA graphs with the indexer at every
+      context length (on-device selection kernel; 37 to 46 tok/s at 4K to 64K,
+      50.6 / 54.7 short), and the FP8 trunk measured within rounding noise of
+      BF16 (per-row / per-channel scales not needed).
    2. Calibrated 3.25-bit trunk. Nearest-rounded copies give 31 ms per step
       (32 tok/s) but fail the gate (GSM8K 92.0, HumanEval 89.6) and are no
       faster at concurrency four, so `SHARAR_FLASHNEXT_TRUNK=w3` stays off;

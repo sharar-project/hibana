@@ -222,12 +222,13 @@ class SpecDecoder:
         b_sz, k = batch.proposal.tokens.shape
         s_len = k + 1
         seqs = [(r.context_len - 1, s_len, pages) for r, pages in zip(batch.requests, batch.kv_pages)]
-        if self.ex.use_graphs and self.verify_graphs is not None and self.ex.graph_safe(seqs):
-            graphs = self.width_graphs.get(k, self.verify_graphs)
+        dense = self.ex.within_budget(seqs)
+        graphs = self.width_graphs.get(k, self.verify_graphs)
+        if self.ex.use_graphs and graphs is not None and (dense or graphs.sparse):
             ple_rows = self.ex._ple_rows_block(batch.requests, batch.proposal.tokens.tolist()) if getattr(self.ex, "_ple", None) is not None else None
             norm_rows, z_flat, ctx, layers, logits = graphs.run(batch.tokens, batch.positions, batch.pages,
                                                                batch.slots, batch.kv_pages, sampled=batch.sampled, ple_rows=ple_rows,
-                                                               qsa=self.ex.qsa_rows(seqs))
+                                                               qsa=self.ex.qsa_rows(seqs), sparse=not dense)
             accept = getattr(graphs, "accept", None)
             if accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests):
                 if self.timing:

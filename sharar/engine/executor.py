@@ -152,10 +152,10 @@ class Executor:
             bind(self.state_pool)
         self.spec = SpecDecoder(self, proposer, state_strategy)
 
-    def graph_safe(self, seqs) -> bool:
-        """Whether a decode or verification batch may replay a graph. A sparse-attention
-        target's graphs only maintain index keys, so every row must see at most the
-        indexer budget (selection past it runs eagerly)."""
+    def within_budget(self, seqs) -> bool:
+        """Whether every row of a decode or verification batch sees at most the indexer
+        budget (always true without an indexer): the dense graphs then serve it exactly;
+        otherwise the selecting graphs (`graphs.sparse_graphs`) or the eager path."""
         t = self.target
         return not t.indexer_budget or all(first + n - 1 < t.indexer_budget + t.indexer_compress_ratio - 1 for first, n, _ in seqs)
 
@@ -629,7 +629,8 @@ class Executor:
         new_pages = self.state.reserve(reqs, 1)
         step_pages = [self.state.step_pages(r) for r in reqs]
         seqs = [(r.context_len - 1, 1, pages) for r, pages in zip(reqs, step_pages)]
-        if self.use_graphs and self.graphs is not None and self.graph_safe(seqs):
+        dense = self.within_budget(seqs)
+        if self.use_graphs and self.graphs is not None and (dense or self.graphs.sparse):
             result = self.graphs.run(
                 [r.output_ids[-1] for r in reqs],
                 [r.context_len - 1 for r in reqs],
@@ -639,6 +640,7 @@ class Executor:
                 return_features=self.spec is not None,
                 ple_rows=self._ple_rows(reqs) if self._ple is not None else None,
                 qsa=self.qsa_rows(seqs),
+                sparse=not dense,
             )
             if self.spec is not None:
                 logits, out = result

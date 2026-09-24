@@ -181,6 +181,10 @@ if [[ -n "${SHARAR_DEVICE_ACCEPT:-}" ]]; then
   [[ "$SHARAR_DEVICE_ACCEPT" == 0 || "$SHARAR_DEVICE_ACCEPT" == 1 ]] || fail "SHARAR_DEVICE_ACCEPT must be 0 or 1"
   args+=(--env "SHARAR_DEVICE_ACCEPT=$SHARAR_DEVICE_ACCEPT")   # device-resident acceptance graphs (engine/accept_graphs.py)
 fi
+if [[ -n "${SHARAR_QSA_SPARSE_GRAPHS:-}" ]]; then
+  [[ "$SHARAR_QSA_SPARSE_GRAPHS" == 0 || "$SHARAR_QSA_SPARSE_GRAPHS" == 1 ]] || fail "SHARAR_QSA_SPARSE_GRAPHS must be 0 or 1"
+  args+=(--env "SHARAR_QSA_SPARSE_GRAPHS=$SHARAR_QSA_SPARSE_GRAPHS")   # Flash-Next selecting graphs past the indexer budget (0: eager)
+fi
 if [[ -n "${SHARAR_COLD_TIER_GIB:-}" ]]; then
   [[ "$SHARAR_COLD_TIER_GIB" =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "SHARAR_COLD_TIER_GIB must be a non-negative number of GiB"
   args+=(--env "SHARAR_COLD_TIER_GIB=$SHARAR_COLD_TIER_GIB")   # managed-memory budget for parked sessions (0 disables the tier)

@@ -1,6 +1,8 @@
 """CUDA graphs for the decode step at fixed batch sizes.
 
-One graph per batch size in CAPTURE_SIZES. A decode batch of b rows is padded
+One graph per batch size in CAPTURE_SIZES (two for a sparse-attention target: the
+dense one, used while every row is inside the indexer budget, and one that selects
+on the device, `kernels/qsa_select.py`). A decode batch of b rows is padded
 to the smallest captured size with dummy rows that use state slot 0 and KV
 page 0, both reserved for that purpose. FlashInfer's decode wrapper is built
 with use_cuda_graph=True and fixed index buffers; plan() runs before every
@@ -8,6 +10,9 @@ replay (host side) and run() is inside the graph.
 """
 
 from __future__ import annotations
+
+import dataclasses
+import os
 
 import torch
 
@@ -43,6 +48,17 @@ def fill_qsa(st: dict, qsa, rows: int) -> None:
     st["qsa_writes"][rows:].zero_()
 
 
+def sparse_graphs(target) -> bool:
+    """Whether a sparse-attention target also captures selecting graphs (SHARAR_QSA_SPARSE_GRAPHS=0: rows
+    past the budget run eagerly)."""
+    return bool(target.indexer_budget) and os.environ.get("SHARAR_QSA_SPARSE_GRAPHS", "1") != "0"
+
+
+def sparse_ctx(ctx: ForwardContext, table: torch.Tensor, indptr: torch.Tensor, row_seq: torch.Tensor, capacity: int, ratio: int) -> ForwardContext:
+    """The selecting variant of a graph's context: rows find their pages through the plan's own buffers."""
+    return dataclasses.replace(ctx, qsa_table=table, qsa_indptr=indptr, qsa_row_seq=row_seq, qsa_gcap=capacity // ratio)
+
+
 def check_context_capacity(counts: list[int], capacity: int) -> None:
     if not counts or any(n < 1 or n > capacity for n in counts):
         raise ValueError(f"KV lengths {counts} exceed graph capacity {capacity}")
@@ -55,7 +71,8 @@ class DecodeGraphs:
         self.sizes = capture_sizes(executor.max_batch)
         self.max_context = executor.max_context
         self._pool = torch.cuda.graph_pool_handle()
-        self._graphs: dict[int, torch.cuda.CUDAGraph] = {}
+        self.sparse = sparse_graphs(executor.target)
+        self._graphs: dict[tuple[int, bool], torch.cuda.CUDAGraph] = {}
         self._static: dict[int, dict] = {}
         self._wrappers: dict[int, flashinfer.BatchDecodeWithPagedKVCacheWrapper] = {}
         self._ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=self.device)
@@ -74,6 +91,7 @@ class DecodeGraphs:
             "logits": None,
             "ple_rows": (torch.zeros((b, self.ex._ple.heads, 160), dtype=torch.uint8, device=d) if getattr(self.ex, "_ple", None) is not None else None),
             **_qsa_static(self.ex.target, b, d),
+            "row_seq": torch.arange(b, dtype=torch.int64, device=d),
         }
 
     def _plan(self, b: int, counts: list[int], pages: list[torch.Tensor]) -> None:
@@ -95,9 +113,9 @@ class DecodeGraphs:
             sm_scale=self.ex.target.head_dim**-0.5,
         )
 
-    def _ctx(self, b: int) -> ForwardContext:
+    def _ctx(self, b: int, sparse: bool = False) -> ForwardContext:
         st = self._static[b]
-        return ForwardContext(
+        ctx = ForwardContext(
             feature_request=self.ex.spec.proposer.requirements.features if self.ex.spec is not None else FeatureRequest(),
             mode="decode",
             kv_pool=self.ex.kv_pool,
@@ -111,6 +129,9 @@ class DecodeGraphs:
             qsa_members=st["qsa_members"],
             qsa_writes=st["qsa_writes"],
         )
+        if sparse:
+            ctx = sparse_ctx(ctx, st["indices"], st["indptr"], st["row_seq"], self.max_context, self.ex.target.indexer_compress_ratio)
+        return ctx
 
     def capture(self, log=print) -> None:
         import flashinfer
@@ -129,21 +150,22 @@ class DecodeGraphs:
             # Dummy rows: slot 0, one page (page 0). Position 0 keeps rope in range.
             dummy_pages = [torch.zeros(1, dtype=torch.int32, device=self.device) for _ in range(b)]
             self._plan(b, [1] * b, dummy_pages)
-            ctx = self._ctx(b)
-            # Warm up (Triton/FlashInfer JIT, allocator) then capture.
-            for _ in range(2):
-                out = self.ex.model.forward(st["tokens"], ctx)
-                self.ex.model.logits(out["norm"])
-            torch.cuda.synchronize()
-            g = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(g, pool=self._pool):
-                out = self.ex.model.forward(st["tokens"], ctx)
-                st["logits"] = self.ex.model.logits(out["norm"])
-                st["out"] = out
-            self._graphs[b] = g
-            torch.cuda.synchronize()
-            if log:
-                log(f"  captured decode graph for batch {b}")
+            for sparse in (False, True) if self.sparse else (False,):
+                ctx = self._ctx(b, sparse)
+                # Warm up (Triton/FlashInfer JIT, allocator) then capture.
+                for _ in range(2):
+                    out = self.ex.model.forward(st["tokens"], ctx)
+                    self.ex.model.logits(out["norm"])
+                torch.cuda.synchronize()
+                g = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(g, pool=self._pool):
+                    out = self.ex.model.forward(st["tokens"], ctx)
+                    st["logits", sparse] = self.ex.model.logits(out["norm"])
+                    st["out", sparse] = out
+                self._graphs[b, sparse] = g
+                torch.cuda.synchronize()
+                if log:
+                    log(f"  captured {'selecting ' if sparse else ''}decode graph for batch {b}")
 
     def pick(self, b: int) -> int:
         for s in self.sizes:
@@ -152,8 +174,8 @@ class DecodeGraphs:
         raise ValueError(f"batch {b} exceeds captured sizes {self.sizes}")
 
     def run(self, tokens: list[int], positions: list[int], slots: list[int], out_pages: torch.Tensor, pages: list[torch.Tensor], *, return_features=False,
-            ple_rows: torch.Tensor | None = None, qsa: tuple[torch.Tensor, torch.Tensor] | None = None):
-        """Returns logits [b, V] for the b real rows."""
+            ple_rows: torch.Tensor | None = None, qsa: tuple[torch.Tensor, torch.Tensor] | None = None, sparse: bool = False):
+        """Returns logits [b, V] for the b real rows; `sparse` replays the selecting graph."""
         b = len(tokens)
         size = self.pick(b)
         st = self._static[size]
@@ -170,10 +192,11 @@ class DecodeGraphs:
         counts = [p.shape[0] for p in pages] + [1] * pad
         all_pages = list(pages) + [torch.zeros(1, dtype=torch.int32, device=self.device) for _ in range(pad)]
         self._plan(size, counts, all_pages)
-        self._graphs[size].replay()
+        self._graphs[size, sparse].replay()
+        out, logits = st["out", sparse], st["logits", sparse]
         if return_features:
-            features = {"norm": st["out"]["norm"][:b]}
-            if "features" in st["out"]:
-                features["features"] = {lid: rows[:b] for lid, rows in st["out"]["features"].items()}
-            return st["logits"][:b], features
-        return st["logits"][:b]
+            features = {"norm": out["norm"][:b]}
+            if "features" in out:
+                features["features"] = {lid: rows[:b] for lid, rows in out["features"].items()}
+            return logits[:b], features
+        return logits[:b]

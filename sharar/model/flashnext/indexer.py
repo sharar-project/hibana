@@ -15,6 +15,7 @@ against the reference forward); the attention itself is `kernels/qsa.py`.
 
 Keys are maintained on every forward; selection runs only when some row is
 past the budget, otherwise attention stays the dense path it is equal to.
+Selection is `kernels/qsa_select.py`: fixed shapes, so graphs replay it too.
 """
 
 from __future__ import annotations
@@ -49,33 +50,46 @@ class FlashNextIndexer:
         """Store this forward's index keys and complete its groups; return the
         selected pages per row ([T, width] int32, valid first) and counts ([T]),
         or None when every row sees at most the budget (dense attention)."""
-        t, h, d, r = x.shape[0], self.heads, self.dim, self.ratio
+        h, d = self.heads, self.dim
         aux = ctx.kv_pool.page_aux[self.name]
         qk = F.linear(x, self.qk)
         aux[token_pages.long(), 0] = qk[:, h * d:]
         self._compress(aux, ctx.qsa_seqs, x.device, x.dtype)
         if all(first + n - 1 < self.width for first, n, _ in ctx.qsa_seqs):
             return None
-        q = gemma_rms(qk[:, : h * d].reshape(t, h, d), self.q_norm, self.eps)
-        q = rope_neox(q, ctx.positions, self.rotary_dim, self.theta)
-        pages = torch.full((t, self.width), -1, dtype=torch.int32, device=x.device)
-        row = 0
-        for first, n, seq_pages in ctx.qsa_seqs:
-            pages[row:row + n] = self._select(q[row:row + n], aux, first, n, seq_pages.long())
-            row += n
-        return pages, (pages >= 0).sum(1, dtype=torch.int32)
+        seqs = ctx.qsa_seqs
+        table = torch.cat([pages.to(torch.int32) for _, _, pages in seqs])
+        indptr = torch.tensor([0] + [len(pages) for _, _, pages in seqs], dtype=torch.int64).cumsum(0)
+        base = torch.repeat_interleave(indptr[:-1], torch.tensor([n for _, n, _ in seqs])).to(device=x.device, dtype=torch.int32)
+        gcap = max((first + n) // self.ratio for first, n, _ in seqs)
+        parts = [self.select(qk[a:a + 256], ctx.positions[a:a + 256], aux, table, base[a:a + 256], gcap)
+                 for a in range(0, x.shape[0], 256)]  # [rows, groups] scores in row chunks
+        return torch.cat([p for p, _ in parts]), torch.cat([c for _, c in parts])
 
-    def maintain(self, x: torch.Tensor, ctx, token_pages: torch.Tensor) -> None:
-        """Graph-safe key maintenance for rows inside the budget: store every row's raw
-        key and compress every row's group through itself from `ctx.qsa_members`; rows
-        that do not complete a group write their result to the dummy page (`qsa_writes`)."""
+    def select(self, qk: torch.Tensor, positions: torch.Tensor, aux: torch.Tensor, table: torch.Tensor, base: torch.Tensor,
+               gcap: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Selection for rows at `positions` from their index projections `qk`; `base` is each
+        row's offset in the flat page `table`, `gcap` the groups the widest row may see."""
+        from sharar.kernels.qsa_select import select_pages
+        t, h, d = qk.shape[0], self.heads, self.dim
+        q = gemma_rms(qk[:, : h * d].reshape(t, h, d), self.q_norm, self.eps)
+        q = rope_neox(q, positions, self.rotary_dim, self.theta)
+        return select_pages(q, aux, table, base, positions, self.ratio, self.budget, gcap, d ** -0.5)
+
+    def maintain(self, x: torch.Tensor, ctx, token_pages: torch.Tensor) -> torch.Tensor:
+        """Graph-safe key maintenance: store every row's raw key and compress every
+        row's group through itself from `ctx.qsa_members`; rows that do not complete a
+        group write their result to the dummy page (`qsa_writes`). Returns the index
+        projection (the queries of `select`)."""
         h, d = self.heads, self.dim
         aux = ctx.kv_pool.page_aux[self.name]
-        aux[token_pages.long(), 0] = F.linear(x, self.qk)[:, h * d:]
+        qk = F.linear(x, self.qk)
+        aux[token_pages.long(), 0] = qk[:, h * d:]
         keys = aux[ctx.qsa_members.long(), 0].float().mean(dim=1).to(x.dtype)
         keys = gemma_rms(keys.unsqueeze(1), self.k_norm, self.eps)
         first = (ctx.positions - (self.ratio - 1)).clamp_min(0)
         aux[ctx.qsa_writes.long(), 1] = rope_neox(keys, first, self.rotary_dim, self.theta)[:, 0]
+        return qk
 
     @staticmethod
     def static_rows(seqs, ratio: int, device) -> tuple[torch.Tensor, torch.Tensor]:
@@ -99,33 +113,3 @@ class FlashNextIndexer:
         keys = gemma_rms(keys.unsqueeze(1), self.k_norm, self.eps)
         first_positions = torch.tensor([p - r + 1 for p, _ in ends], dtype=torch.int64, device=device)
         aux[members[:, -1], 1] = rope_neox(keys, first_positions, self.rotary_dim, self.theta)[:, 0]
-
-    def _select(self, q: torch.Tensor, aux, first: int, n: int, seq_pages: torch.Tensor) -> torch.Tensor:
-        r, d = self.ratio, self.dim
-        device = q.device
-        positions = torch.arange(first, first + n, device=device)
-        visible = (positions + 1) // r
-        groups = (first + n) // r  # complete groups visible to the last row
-        top = min(self.budget // r, groups)
-        rows = torch.full((n, self.width), -1, dtype=torch.int64, device=device)
-        if top:
-            keys = aux[seq_pages[r - 1: groups * r: r], 1].float()  # [G, d]
-            chosen = torch.empty((n, top), dtype=torch.int64, device=device)
-            for a in range(0, n, 256):  # [rows, groups] scores in row chunks
-                b = min(n, a + 256)
-                logits = torch.zeros((b - a, groups), dtype=torch.float32, device=device)
-                for head in range(self.heads):
-                    logits += torch.relu(q[a:b, head].float() @ keys.T)
-                logits /= d ** 0.5
-                logits.masked_fill_(torch.arange(groups, device=device)[None, :] >= visible[a:b, None], -float("inf"))
-                values, idx = logits.topk(top, dim=-1)
-                chosen[a:b] = torch.where(torch.isfinite(values), idx, torch.full_like(idx, -1))
-            members = chosen.unsqueeze(-1) * r + torch.arange(r, device=device)  # [n, top, r] positions
-            members = torch.where(chosen.unsqueeze(-1) >= 0, members, torch.full_like(members, -1)).reshape(n, top * r)
-            rows[:, : top * r] = members
-        tail = (visible * r).unsqueeze(1) + torch.arange(r - 1, device=device)  # the pending group, itself included
-        tail = torch.where(tail <= positions.unsqueeze(1), tail, torch.full_like(tail, -1))
-        rows[:, self.width - (r - 1):] = tail
-        order = torch.argsort((rows < 0).to(torch.int8), dim=1, stable=True)  # valid entries first, in order
-        rows = rows.gather(1, order)
-        return torch.where(rows >= 0, seq_pages[rows.clamp_min(0)], torch.full_like(rows, -1)).to(torch.int32)
