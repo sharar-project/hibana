@@ -40,12 +40,18 @@ class FlashNextAttention(Attention):
     def forward(self, x: torch.Tensor, ctx, x_q: torch.Tensor | None = None) -> torch.Tensor:
         if self.indexer is None:
             return super().forward(x, ctx, x_q)
-        if ctx.qsa_seqs is None:
-            if ctx.qsa_members is not None:  # graph replay inside the budget: keys only, dense attention
-                self.indexer.maintain(x, ctx, ctx.out_pages if ctx.mode == "decode" else ctx.pages)
-            return super().forward(x, ctx, x_q)
-        q, k, v, gate = self._qkv(x, ctx.positions)
         token_pages = ctx.out_pages if ctx.mode == "decode" else ctx.pages
+        if ctx.qsa_seqs is None:  # graph replay (or no indexer bookkeeping)
+            if ctx.qsa_members is None:
+                return super().forward(x, ctx, x_q)
+            qk = self.indexer.maintain(x, ctx, token_pages)
+            if ctx.qsa_table is None:  # every row inside the budget: dense attention
+                return super().forward(x, ctx, x_q)
+            aux = ctx.kv_pool.page_aux[self.indexer.name]
+            selected = self.indexer.select(qk, ctx.positions, aux, ctx.qsa_table, ctx.qsa_indptr[ctx.qsa_row_seq], ctx.qsa_gcap)
+            q, k, v, gate = self._qkv(x, ctx.positions)
+            return self._sparse(q, k, v, gate, selected, ctx, token_pages)
+        q, k, v, gate = self._qkv(x, ctx.positions)
         selected = self.indexer.run(x, ctx, token_pages)
         if selected is None:  # every row sees at most the budget: the dense path is exact
             if ctx.mode == "decode":
@@ -54,13 +60,16 @@ class FlashNextAttention(Attention):
             else:
                 attn = self._prefill_attention(q, k, v, ctx)
             return self._finish(attn, gate)
+        return self._sparse(q, k, v, gate, selected, ctx, token_pages)
+
+    def _sparse(self, q, k, v, gate, selected, ctx, token_pages) -> torch.Tensor:
         from sharar.kernels.qsa import sparse_attention
         ctx.kv_pool.write(self.layer_id, token_pages, k, v)
         k_pool, v_pool = ctx.kv_pool.cache(self.layer_id)
         n = k_pool.shape[0] * k_pool.shape[1]
         attn = sparse_attention(q, k_pool.view(n, self.num_kv_heads, self.head_dim), v_pool.view(n, self.num_kv_heads, self.head_dim),
                                 *selected, self.head_dim ** -0.5)
-        return self._finish(attn.view(x.shape[0], self.q_size), gate)
+        return self._finish(attn.view(q.shape[0], self.q_size), gate)
 
     @property
     def input_scale(self):

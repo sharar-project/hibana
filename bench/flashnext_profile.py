@@ -25,7 +25,7 @@ def main():
     r = ex.generate(ids, params)
     print(f"  graphs: {1000 * r.decode_seconds / r.decode_steps:.1f} ms/step over {r.decode_steps} steps", flush=True)
     # GPU-only step time: replay the batch-1 graph with its static inputs unchanged
-    g = ex.graphs._graphs[1]
+    g = ex.graphs._graphs[1, False]
     for _ in range(3):
         g.replay()
     torch.cuda.synchronize()

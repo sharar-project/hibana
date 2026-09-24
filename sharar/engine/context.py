@@ -84,6 +84,12 @@ class ForwardContext:
     # receives the compressed key (page 0, the dummy, when the row does not complete a group).
     qsa_members: torch.Tensor | None = None
     qsa_writes: torch.Tensor | None = None
+    # Graph-safe selection (some row past the budget): the flat page table the attention plan
+    # reads, its per-sequence offsets, each row's sequence and the static group capacity.
+    qsa_table: torch.Tensor | None = None
+    qsa_indptr: torch.Tensor | None = None
+    qsa_row_seq: torch.Tensor | None = None
+    qsa_gcap: int = 0
 
     @property
     def query_start_loc(self) -> torch.Tensor:

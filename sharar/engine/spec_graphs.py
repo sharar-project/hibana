@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from sharar.engine.context import ForwardContext
-from sharar.engine.graphs import _qsa_static, capture_sizes, check_context_capacity, fill_qsa
+from sharar.engine.graphs import _qsa_static, capture_sizes, check_context_capacity, fill_qsa, sparse_ctx, sparse_graphs
 from sharar.memory.kv_pool import KV_DTYPE
 
 if TYPE_CHECKING:
@@ -34,8 +34,9 @@ class VerifyGraphs:
         self.sizes = capture_sizes(spec.ex.max_batch)
         self._pool = torch.cuda.graph_pool_handle()
         self._ws = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=self.device)
+        self.sparse = sparse_graphs(spec.ex.target)
         self._st: dict[int, dict] = {}
-        self._graphs: dict[int, torch.cuda.CUDAGraph] = {}
+        self._graphs: dict[tuple[int, bool], torch.cuda.CUDAGraph] = {}
 
     def _static(self, b: int) -> dict:
         d, s = self.device, self.s_len
@@ -63,6 +64,10 @@ class VerifyGraphs:
             paged_prefill_wrapper=st["wrapper"], ple_rows=st["ple_rows"],
             qsa_members=st["qsa_members"], qsa_writes=st["qsa_writes"],
         )
+        if self.sparse:
+            st["row_seq"] = torch.arange(b * s, device=d) // s
+            st["ctx_sparse"] = sparse_ctx(st["ctx"], st["kv_indices"], st["kv_indptr"], st["row_seq"], self.max_context,
+                                          self.ex.target.indexer_compress_ratio)
         return st
 
     def _plan(self, st: dict, kv_all: list[torch.Tensor]) -> None:
@@ -95,10 +100,29 @@ class VerifyGraphs:
                 logits = self.ex.model.logits(out["norm"])
                 st["argmax"] = logits.argmax(-1)
                 st["logits"] = logits  # materialized by the graph anyway; traces read the target's top-k from it
-            self._graphs[b] = g
+            self._graphs[b, False] = g
             torch.cuda.synchronize()
+            if self.sparse:  # the selecting variant writes the same outputs (device acceptance reads them)
+                for _ in range(2):
+                    self._sparse_body(st)
+                torch.cuda.synchronize()
+                g = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(g, pool=self._pool):
+                    self._sparse_body(st)
+                self._graphs[b, True] = g
+                torch.cuda.synchronize()
             if log:
-                log(f"  captured verify graph for batch {b}")
+                log(f"  captured {'dense and selecting ' if self.sparse else ''}verify graph for batch {b}")
+
+    @torch.inference_mode()  # the dense capture's outputs are inference tensors
+    def _sparse_body(self, st: dict) -> None:
+        out = self.ex.model.forward(st["tokens"], st["ctx_sparse"])
+        st["norm"].copy_(out["norm"])
+        for lid, rows in (out.get("features") or {}).items():
+            st["features"][lid].copy_(rows)
+        logits = self.ex.model.logits(out["norm"])
+        st["logits"].copy_(logits)
+        st["argmax"].copy_(logits.argmax(-1))
 
     def pick(self, b: int) -> int:
         for s in self.sizes:
@@ -107,10 +131,11 @@ class VerifyGraphs:
         raise ValueError(b)
 
     def run(self, tokens: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, slots: torch.Tensor, kv_all: list[torch.Tensor], *, sampled=False,
-            ple_rows: torch.Tensor | None = None, qsa: tuple[torch.Tensor, torch.Tensor] | None = None):
+            ple_rows: torch.Tensor | None = None, qsa: tuple[torch.Tensor, torch.Tensor] | None = None, sparse: bool = False):
         """Returns (norm rows [b*s, H], argmax or logits [b*s(, V)], ctx, features,
         logits [b*s, V]) for the real rows; padded rows use slot 0 and page 0.
-        The logits view is overwritten by the next replay."""
+        The logits view is overwritten by the next replay. `sparse` replays the
+        selecting graph (some row past the indexer budget)."""
         b = slots.shape[0]
         size = self.pick(b)
         st = self._st[size]
@@ -130,6 +155,6 @@ class VerifyGraphs:
             st["slots"][b:].zero_()
         pad_kv = [torch.zeros(s + 1, dtype=torch.int32, device=self.device) for _ in range(size - b)]
         self._plan(st, list(kv_all) + pad_kv)
-        self._graphs[size].replay()
+        self._graphs[size, sparse].replay()
         layers = {lid: value[:n] for lid, value in st["features"].items()} if st["features"] else None
         return st["norm"][:n], st["logits" if sampled else "argmax"][:n], st["ctx"], layers, st["logits"][:n]

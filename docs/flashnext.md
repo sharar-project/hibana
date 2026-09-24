@@ -91,22 +91,57 @@ Evidence `$SHARAR_RESULTS/reviews/2026-09-24-qsa/`:
 | Engine indexer vs reference selection (GPU: chunked prefill split inside a group, decode steps, scrambled pages) | identical on every row |
 | Reference vs SGLang past 2,051 tokens (3K / 6K / 10K prompts) | argmax 91.5 / 87.5 / 94.3%, confident 95.6 / 93.6 / 97.3%, next token 3/3 |
 | Serving path (executor), BF16 trunk, same region | confident 89.6 / 95.1 / 95.0% |
-| Serving path, FP8 trunk, same region | confident 94.2 / 83.4 / 89.7%: the FP8 trunk compounds over long contexts (per-row scales are the known fix) |
+| Serving path, FP8 trunk, same region | confident 94.2 / 83.4 / 89.7% (one prompt each; against the BF16 trunk on 8 prompts the FP8 gap is mostly rounding noise, see below) |
 | Served needle retrieval, depths 0.1/0.5/0.9 at 4K, 8K, 16K, 32K | 12/12 |
 | Served decode at 4K / 8K / 16K / 32K (MTP k=3, eager) | 26.5 / 29.2 / 31.2 / 28.5 tok/s exact, flat with context |
 | Served GSM8K 150 at concurrency 4 | 97.3% |
 
-While the indexer is on, decode and verification run eagerly (graphs would skip
-its key writes), which costs speed at short contexts (plain decode had 24.9
-tok/s and MTP up to 44 tok/s with graphs). Running eagerly exposed a FlashInfer
-re-planning race (`kernels/plan_guard.py`). Cold prefill: 32K in 21.7 s.
+Running eagerly exposed a FlashInfer re-planning race (`kernels/plan_guard.py`).
+Cold prefill: 32K in 21.7 s.
+
+## CUDA graphs with the indexer (2026-09-24)
+
+Decode and verification replay graphs at every context length. Inside the
+budget the dense graphs run with graph-safe key maintenance
+(`FlashNextIndexer.maintain`: raw keys and group compression from static rows);
+once any row is past it, a second set of graphs selects on the device:
+`kernels/qsa_select.py` scores every visible group through the plan's own page
+table in one Triton kernel (relu-sum over the four index heads), takes the top
+512 of a fixed-width buffer (the context capacity / 4) and assembles the pages
+as before, so no shape depends on the context. The eager path uses the same
+kernel (3.6x faster than the torch scoring at 262K for one row).
+`SHARAR_QSA_SPARSE_GRAPHS=0` keeps rows past the budget eager. Evidence
+`$SHARAR_RESULTS/reviews/2026-09-24-qsa-graphs/` and `2026-09-24-qsa-select/`:
+
+| Check | Result |
+|---|---|
+| Kernel vs the torch selection (1 to 256 rows, 3K to 70K tokens, padded capacity) | identical sets |
+| Engine indexer vs reference selection (GPU) | identical except one float tie at the top-k boundary |
+| Selecting graph replay vs eager selection (two rows, 40 steps) | identical |
+| Served decode, short context, graphs (greedy exact / relaxed) | 50.6 / 54.7 tok/s (eager 26 to 31) |
+| Served decode at 4K / 16K / 64K, selecting graphs (exact / relaxed) | 39.8 / 45.9, 36.6 / 44.6, 36.8 / 42.6 tok/s |
+| Same, eager selection (`SHARAR_QSA_SPARSE_GRAPHS=0`) | 29.7 / 34.1, 27.3 / 33.2, 28.2 / 32.9 tok/s, identical spec rounds and acceptances |
+| Four concurrent requests at 5K to 12K (needles; 256-token walkthroughs) | 4/4 correct both ways; 20.1 s vs 24.6 s wall |
+| Served needles 4K / 16K / 64K, depths 0.1 / 0.5 / 0.9 | 9/9 |
+| Served GSM8K 150 at concurrency 4 | 96.7% (dense graphs only: 96.0%) |
+
+## FP8 trunk scales (2026-09-24, #5)
+
+`bench/flashnext_quant.py` scores a trunk precision against the BF16 trunk on
+the serving path (8 prompts of 8,000 tokens), with BF16 at another prefill
+chunk size as the noise floor: argmax 85.7 / 90.6% and KL 0.36 / 0.27 nats
+(dense / sparse rows) from rounding alone. The per-tensor FP8 trunk sits at
+82.6 / 87.4% and 0.49 / 0.36; per-row activation scales, per-channel weight
+scales, both, or keeping attention, GDN, shared experts or head and PLE in
+BF16 all land within the spread between variants. The trunk stays per-tensor
+FP8. `SHARAR_TRUNK_KEEP_BF16=<regex>` localizes quantization error for the
+calibrated FP4 trunk. Evidence `$SHARAR_RESULTS/reviews/2026-09-24-fp8-scales/`.
 
 ## Not done
 
-Graph capture with the indexer (static selection buffers), a fused scoring
-kernel for decode (it gathers every group key per step), layer feature
+Speculation for sampled requests (MTP is greedy-only, #22), layer feature
 capture (DFlash2-style drafters), W3 trunk and experts, fused hyper-connection
-and small-GEMV kernels, per-row FP8 scales for the trunk, family-gate inputs,
+and small-GEMV kernels, family-gate inputs,
 accuracy gate, production image. Determinism: cold prefills and eager decode
 are bit-identical to each other; a prefix-cache-hit continuation diverges from
 the cold one (token 9 on the 512-token code prompt), consistent with the FP8
