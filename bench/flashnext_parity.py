@@ -59,6 +59,38 @@ def collect(args):
     Path(args.out).write_text(json.dumps(rows))
 
 
+def executor_model(precision, chunk: int = 2048):
+    """The serving path: a real Executor with pools prefills in 2,048-token chunks (the sparse
+    indexer needs pages); every chunk's hidden rows give that chunk's logits."""
+    import torch
+    from sharar.engine.executor import Executor
+    from sharar.engine.sampler import SamplingParams
+    from sharar.model.flashnext.model import FlashNext
+    engine = FlashNext(snapshot(), precision=precision)
+    ex = Executor(engine, num_pages=40000, num_slots=8, max_context=32768, log=print)
+
+    class _Wrap:
+        ablate = frozenset()
+
+        def chunks(self, ids):
+            """Each prefill chunk's logits in turn ([rows, V] fp32); full-vocab logits of long prompts are
+            gigabytes, so callers that only need statistics reduce one chunk at a time."""
+            req = ex.admit(list(ids), SamplingParams(max_new_tokens=1))
+            try:
+                while req.prefill_pos < req.prefill_len:
+                    batch = ex._prepare_single_prefill(req, chunk)
+                    out = engine.forward(batch.ids, batch.context)
+                    yield engine.logits(out["norm"]).float()
+                    ex._finish_single_prefill(batch, out)
+            finally:
+                ex.release(req)
+
+        def forward(self, ids):
+            return {"logits": torch.cat(list(self.chunks(ids)))}
+
+    return _Wrap()
+
+
 def compare(args):
     import math
     import torch
@@ -67,29 +99,7 @@ def compare(args):
         from sharar.model.flashnext.reference import FlashNextReference
         ref = FlashNextReference(snapshot(), layers=args.layers)
     elif args.model == "executor":
-        # The serving path: a real Executor with pools prefills in 2,048-token chunks (the sparse
-        # indexer needs pages); every chunk's hidden rows give that chunk's logits.
-        from sharar.engine.executor import Executor
-        from sharar.engine.sampler import SamplingParams
-        from sharar.model.flashnext.model import FlashNext
-        engine = FlashNext(snapshot(), precision=args.precision)
-        ex = Executor(engine, num_pages=40000, num_slots=8, max_context=32768, log=print)
-
-        class _Wrap:
-            ablate = frozenset()
-
-            def forward(self, ids):
-                req = ex.admit(list(ids), SamplingParams(max_new_tokens=1))
-                rows = []
-                while req.prefill_pos < req.prefill_len:
-                    batch = ex._prepare_single_prefill(req, 2048)
-                    out = engine.forward(batch.ids, batch.context)
-                    rows.append(engine.logits(out["norm"]).float())
-                    ex._finish_single_prefill(batch, out)
-                ex.release(req)
-                return {"logits": torch.cat(rows)}
-
-        ref = _Wrap()
+        ref = executor_model(args.precision)
     else:
         from sharar.model.flashnext.model import FlashNext
         engine = FlashNext(snapshot(), precision=args.precision)

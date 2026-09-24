@@ -1,16 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 """Trunk projections. The checkpoint ships them in BF16; the engine keeps an FP8 copy with one
 weight scale and quantizes activations per call (the draft's dynamic scheme), or the BF16
-matrix itself for parity runs. A 3-bit decode copy can be attached later like the draft's."""
+matrix itself for parity runs. A 3-bit decode copy can be attached later like the draft's.
+
+SHARAR_TRUNK_KEEP_BF16=<regex> keeps the matching projections in BF16 (a diagnostic: which
+module's quantization moves the logits, `bench/flashnext_quant.py`). Finer FP8 scales (per
+row, per output channel) were measured and do not beat numerical noise (#5)."""
 
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass
 
 import torch
 
 FP8_MAX = 448.0
 GEMV_MAX_ROWS = 4
+KEEP_BF16 = re.compile(os.environ["SHARAR_TRUNK_KEEP_BF16"]) if os.environ.get("SHARAR_TRUNK_KEEP_BF16") else None
 
 
 @dataclass
@@ -43,6 +50,8 @@ class TrunkLinear:
         """One projection, or several fused along the output dimension."""
         parts = [w.get(n).to(device) for n in names]
         weight = parts[0] if len(parts) == 1 else torch.cat(parts, dim=0)
+        if KEEP_BF16 is not None and KEEP_BF16.search(names[0]):
+            precision = "bf16"
         return cls.from_bf16(weight, precision)
 
     @property
