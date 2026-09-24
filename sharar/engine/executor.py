@@ -152,13 +152,21 @@ class Executor:
             bind(self.state_pool)
         self.spec = SpecDecoder(self, proposer, state_strategy)
 
+    def graph_safe(self, seqs) -> bool:
+        """Whether a decode or verification batch may replay a graph. A sparse-attention
+        target's graphs only maintain index keys, so every row must see at most the
+        indexer budget (selection past it runs eagerly)."""
+        t = self.target
+        return not t.indexer_budget or all(first + n - 1 < t.indexer_budget + t.indexer_compress_ratio - 1 for first, n, _ in seqs)
+
+    def qsa_rows(self, seqs):
+        """Per-row index-key maintenance rows for a sparse-attention target's graphs (None otherwise)."""
+        if not self.target.indexer_budget:
+            return None
+        from sharar.model.flashnext.indexer import FlashNextIndexer
+        return FlashNextIndexer.static_rows(seqs, self.target.indexer_compress_ratio, self.device)
+
     def capture_graphs(self, log=print) -> None:
-        if self.target.indexer_budget:
-            # The indexer keeps index keys and selections on the host-planned eager path
-            # (graphs would skip its key writes); decode and verification run eagerly.
-            if log:
-                log("  cuda graphs: off (sparse-attention indexer runs eagerly)")
-            return
         self.graphs = DecodeGraphs(self)
         self.graphs.capture(log=log)
         if self.spec is not None:
@@ -620,7 +628,8 @@ class Executor:
         reqs = plain
         new_pages = self.state.reserve(reqs, 1)
         step_pages = [self.state.step_pages(r) for r in reqs]
-        if self.use_graphs and self.graphs is not None:
+        seqs = [(r.context_len - 1, 1, pages) for r, pages in zip(reqs, step_pages)]
+        if self.use_graphs and self.graphs is not None and self.graph_safe(seqs):
             result = self.graphs.run(
                 [r.output_ids[-1] for r in reqs],
                 [r.context_len - 1 for r in reqs],
@@ -629,6 +638,7 @@ class Executor:
                 step_pages,
                 return_features=self.spec is not None,
                 ple_rows=self._ple_rows(reqs) if self._ple is not None else None,
+                qsa=self.qsa_rows(seqs),
             )
             if self.spec is not None:
                 logits, out = result
@@ -648,7 +658,7 @@ class Executor:
             if self._features_wanted() is not None:
                 ctx.feature_request = self._features_wanted()
             if self.target.indexer_budget:
-                ctx.qsa_seqs = [(r.context_len - 1, 1, pages) for r, pages in zip(reqs, step_pages)]
+                ctx.qsa_seqs = seqs
             out = self.model.forward(tokens, ctx)
             debug_sync("after plain decode forward", reqs)
             logits = self.model.logits(out["norm"])
