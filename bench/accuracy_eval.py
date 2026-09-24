@@ -38,11 +38,14 @@ def post(url: str, body: dict, timeout: float = 900) -> dict:
 
 
 SAMPLING = {"temperature": 0.0}  # --temperature T samples with top_p 0.95, top_k 20 (the checkpoint's generation config)
+SERVER = {"model": "sharar", "plain": False}  # --model / --plain: another OpenAI-compatible server (no Sharar-only fields)
 
 
 def ask(url: str, content: str, max_tokens: int, accept: tuple[int, float]) -> tuple[str, dict]:
-    body = {"model": "sharar", "messages": [{"role": "user", "content": content}], **SAMPLING, "max_tokens": max_tokens,
-            "chat_template_kwargs": {"enable_thinking": False}, "accept_top_k": accept[0], "accept_margin": accept[1], "trace": False}
+    body = {"model": SERVER["model"], "messages": [{"role": "user", "content": content}], **SAMPLING, "max_tokens": max_tokens,
+            "chat_template_kwargs": {"enable_thinking": False}}
+    if not SERVER["plain"]:
+        body.update(accept_top_k=accept[0], accept_margin=accept[1], trace=False)
     if body["temperature"] > 0:
         body["seed"] = zlib.crc32(content.encode())  # the same seed per item in every arm
     out = post(url, body)
@@ -169,7 +172,10 @@ def main() -> int:
     ap.add_argument("--max-tokens", type=int, default=0)
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--output", type=Path, required=True)
+    ap.add_argument("--model", default="sharar")
+    ap.add_argument("--plain", action="store_true", help="another OpenAI-compatible server: no accept/trace fields, no /get_server_info")
     args = ap.parse_args()
+    SERVER.update(model=args.model, plain=args.plain)
     if args.temperature > 0:
         SAMPLING.update(temperature=args.temperature, top_p=0.95, top_k=20)
     k, m = args.accept.split(":")
@@ -186,8 +192,10 @@ def main() -> int:
     rows = run(args.url, items, accept, max_tokens, args.concurrency)
     wall = time.perf_counter() - t0
     acc = sum(r["correct"] for r in rows) / len(rows)
-    with urllib.request.urlopen(f"{args.url}/get_server_info", timeout=10) as r:
-        info = json.loads(r.read())
+    info = {}
+    if not args.plain:
+        with urllib.request.urlopen(f"{args.url}/get_server_info", timeout=10) as r:
+            info = json.loads(r.read())
     result = {"label": args.label, "task": args.task, "accept": accept, "sampling": dict(SAMPLING), "n": len(rows), "accuracy": acc, "wall_seconds": wall,
               "max_tokens": max_tokens, "speculative": info.get("speculative"), "items": rows}
     args.output.mkdir(parents=True, exist_ok=True)
