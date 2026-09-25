@@ -1,0 +1,187 @@
+{
+  "version": "h2h_v1",
+  "note": "Head-to-head prompts (#26). Chat API, thinking off, same prompts and sampling for every engine.",
+  "max_tokens": 1024,
+  "sampling": {
+    "greedy": {
+      "temperature": 0.0
+    },
+    "t07": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": 20
+    },
+    "t10": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20
+    }
+  },
+  "decode": [
+    {
+      "id": "code-lru",
+      "cat": "code",
+      "prompt": "Write a Python module implementing an LRU cache class with get, put, delete and resize, plus a thread-safe wrapper. Include docstrings and pytest unit tests."
+    },
+    {
+      "id": "code-btree",
+      "cat": "code",
+      "prompt": "Write a Rust implementation of a B-tree map with insert, get and remove, including node splitting and merging, with unit tests."
+    },
+    {
+      "id": "code-http",
+      "cat": "code",
+      "prompt": "Write a small asynchronous HTTP rate limiter in TypeScript for an Express app using a token bucket per client IP, with configuration options and Jest tests."
+    },
+    {
+      "id": "code-sql",
+      "cat": "code",
+      "prompt": "Design a PostgreSQL schema for a library system (books, authors, members, loans, reservations) and write the SQL DDL plus five useful queries with explanations."
+    },
+    {
+      "id": "code-refactor",
+      "cat": "code",
+      "prompt": "Here is a function:\n\ndef process(data):\n    out = []\n    for i in range(len(data)):\n        if data[i] != None:\n            if data[i] > 0:\n                out.append(data[i] * 2)\n            else:\n                out.append(0)\n    return out\n\nRefactor it into idiomatic, typed Python, explain each change, and add tests covering edge cases."
+    },
+    {
+      "id": "code-go",
+      "cat": "code",
+      "prompt": "Write a Go program that walks a directory tree concurrently with a bounded worker pool, computes SHA-256 hashes of all files, and reports duplicates. Include error handling and comments."
+    },
+    {
+      "id": "math-trains",
+      "cat": "math",
+      "prompt": "Two trains leave stations 420 km apart at the same time, heading toward each other. One travels at 80 km/h and the other at 60 km/h. A bird flies back and forth between them at 120 km/h until they meet. Solve step by step: when do they meet, where, and how far does the bird fly?"
+    },
+    {
+      "id": "math-prob",
+      "cat": "math",
+      "prompt": "A bag has 5 red, 4 blue and 3 green marbles. Three are drawn without replacement. Compute step by step the probability that all three are different colors, that at least two are red, and the expected number of blue marbles."
+    },
+    {
+      "id": "math-proof",
+      "cat": "math",
+      "prompt": "Prove that the square root of 2 is irrational, then prove that there are infinitely many primes, and finally show that the sum of the first n odd numbers is n squared. Explain each step clearly."
+    },
+    {
+      "id": "math-finance",
+      "cat": "math",
+      "prompt": "A loan of $250,000 at 6.5% annual interest is repaid monthly over 30 years. Derive the payment formula, compute the monthly payment, the total interest, and the balance after 10 years, showing all steps."
+    },
+    {
+      "id": "prose-history",
+      "cat": "prose",
+      "prompt": "Write an essay of about 700 words on how the printing press changed European society between 1450 and 1600, covering religion, science, politics and literacy."
+    },
+    {
+      "id": "prose-story",
+      "cat": "prose",
+      "prompt": "Write a short story of about 600 words about a lighthouse keeper who discovers that the light is being used to send messages to someone across the sea."
+    },
+    {
+      "id": "prose-explain",
+      "cat": "prose",
+      "prompt": "Explain to a curious teenager how vaccines train the immune system, what mRNA vaccines do differently, and why booster shots are sometimes needed. Use analogies."
+    },
+    {
+      "id": "prose-email",
+      "cat": "prose",
+      "prompt": "Draft a thoughtful email to a team announcing a reorganization that merges two departments, explaining the reasons, what changes for people, the timeline, and how to raise concerns."
+    },
+    {
+      "id": "de-essay",
+      "cat": "multilingual",
+      "prompt": "Schreibe einen ausführlichen Aufsatz auf Deutsch über die Vor- und Nachteile von Homeoffice für Unternehmen und Beschäftigte, mit Beispielen und einem Fazit."
+    },
+    {
+      "id": "fr-explain",
+      "cat": "multilingual",
+      "prompt": "Explique en français, de manière détaillée, le fonctionnement de la photosynthèse et son importance pour le climat, en utilisant des exemples concrets."
+    },
+    {
+      "id": "zh-guide",
+      "cat": "multilingual",
+      "prompt": "请用中文详细介绍如何规划一次为期七天的日本旅行，包括交通、住宿、美食和文化体验的建议。"
+    },
+    {
+      "id": "es-story",
+      "cat": "multilingual",
+      "prompt": "Escribe en español un relato de unas 500 palabras sobre una familia que abre una panadería en un pequeño pueblo de montaña."
+    },
+    {
+      "id": "json-extract",
+      "cat": "structured",
+      "prompt": "Generate a JSON array of 12 fictional employees, each with id, name, email, department, title, start_date, salary and a list of skills. Output only valid JSON."
+    },
+    {
+      "id": "yaml-config",
+      "cat": "structured",
+      "prompt": "Write a complete Kubernetes deployment for a web app with a Deployment, Service, Ingress, HorizontalPodAutoscaler and ConfigMap in YAML, with comments explaining each field."
+    },
+    {
+      "id": "chat-short",
+      "cat": "chat",
+      "prompt": "What are the main differences between TCP and UDP? Give a concise answer with a small comparison table."
+    },
+    {
+      "id": "chat-advice",
+      "cat": "chat",
+      "prompt": "I have two job offers: one pays more but has a long commute, the other is remote with slightly lower pay. How should I think about the decision?"
+    }
+  ],
+  "long": {
+    "lengths": [
+      16384,
+      65536,
+      131072
+    ],
+    "question": "\n\nWhat is the special magic number mentioned in the text above? Reply with the number only.",
+    "max_tokens": 16
+  },
+  "concurrency": {
+    "streams": 4,
+    "prompts": [
+      "code-lru",
+      "code-http",
+      "math-prob",
+      "prose-history",
+      "de-essay",
+      "json-extract",
+      "code-go",
+      "prose-explain"
+    ]
+  },
+  "probes": {
+    "note": "hasso5703/dgx-spark-qwen38 bench.sh verbatim: engine-default template (thinking on), each twice; the published figure is the median of the greedy non-prose runs",
+    "items": [
+      {
+        "id": "hasso-code",
+        "temperature": 0.0,
+        "max_tokens": 1200,
+        "median": true,
+        "prompt": "Write a Python class LRUCache with O(1) get/put using OrderedDict, plus a small test."
+      },
+      {
+        "id": "hasso-reasoning",
+        "temperature": 0.0,
+        "max_tokens": 1200,
+        "median": true,
+        "prompt": "A train leaves Paris at 14:00 at 160 km/h toward Lyon (465 km). Another leaves Lyon at 14:30 at 120 km/h toward Paris. When do they meet? Show your work."
+      },
+      {
+        "id": "hasso-math",
+        "temperature": 0.6,
+        "max_tokens": 2048,
+        "median": false,
+        "prompt": "Natalia sold clips to 48 friends in April, half as many in May, and 3x May's amount in June. How many clips did she sell in total? Think step by step."
+      },
+      {
+        "id": "hasso-prose",
+        "temperature": 0.0,
+        "max_tokens": 800,
+        "median": false,
+        "prompt": "Describe in detail a walk through an autumn forest: the colors of the leaves, the sounds, the smell after rain, and the thoughts that cross your mind."
+      }
+    ]
+  }
+}
