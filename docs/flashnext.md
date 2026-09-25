@@ -137,6 +137,50 @@ BF16 all land within the spread between variants. The trunk stays per-tensor
 FP8. `SHARAR_TRUNK_KEEP_BF16=<regex>` localizes quantization error for the
 calibrated FP4 trunk. Evidence `$SHARAR_RESULTS/reviews/2026-09-24-fp8-scales/`.
 
+## Draft-only lm_head (2026-09-25)
+
+The three MTP draft steps each read the target's FP8 lm_head (0.63 GB), about 8 of the draft's
+10 ms per round (#35). The draft only proposes, so its head can be cheaper without changing what
+exact acceptance emits. `SHARAR_DRAFT_HEAD=w3` gives the draft a 3.25-bit copy of the head
+(0.24 GiB more memory); its top 8 candidates are rescored with the target's own FP8 rows, so the
+draft picks what the full head would pick unless the two disagree on a near-tie
+(`SHARAR_DRAFT_HEAD_RESCORE`, default 8; 0 takes the 3-bit argmax). It combines with the reduced
+vocabulary (`SHARAR_DRAFT_VOCAB`). Evidence `$SHARAR_RESULTS/reviews/2026-09-25-draft-head/`:
+
+| Check (`bench/draft_head.py`: hidden rows recorded during generation, 1,257 draft steps over 5 prompts) | FP8 head | 3-bit | 3-bit, top 8 rescored | FP8, 65K rows |
+|---|---:|---:|---:|---:|
+| ms per draft step, 1 / 4 rows (graph replay) | 2.74 / 2.72 | 1.03 / 1.07 | 1.09 / 1.13 | 0.67 / 0.67 |
+| Picks equal to the FP8 head's (all / multilingual) | 1 / 1 | 0.939 / 0.886 | **0.991 / 0.980** | 0.966 / 0.886 |
+
+A shortlist of 4, 8 or 16 gives the same 0.9905: the remainder are near-ties the served head's
+FP8 activation rounding breaks the other way, not tokens missing from the shortlist.
+
+Served, image `sharar:draft-head`, `config/flashnext.env`, `bench/h2h.py` (22 prompts per mode),
+arms interleaved FP8 / 3-bit / FP8 / 3-bit:
+
+| Arm | probes | greedy median | t=0.7 median | tokens per round |
+|---|---:|---:|---:|---:|
+| FP8 head | 53.9 / 53.2 | 50.9 / 50.1 | 45.9 / 46.3 | 3.01 / 3.02 |
+| 3-bit, rescored | 56.2 / 56.4 | 54.8 / 55.2 | 49.7 / 50.7 | 3.02 / 3.02 |
+
+Paired per prompt: greedy x1.087 [1.075, 1.100], t=0.7 x1.077 [1.065, 1.090], faster on all 22
+prompts in both modes and in every category (multilingual x1.06 greedy, x1.08 sampled). The launcher
+default in `config/flashnext.env` is `w3`; the code default stays the target's head.
+
+## Draft depth (2026-09-25)
+
+With the cheaper draft head, deeper MTP drafts pay on average (the cap is now 8). Same harness,
+arms k = 3, 5, 4, 3, 5; paired per prompt against k = 3:
+
+| k | greedy median | t=0.7 median | greedy paired | t=0.7 paired | by category (greedy) | four streams |
+|---|---:|---:|---:|---:|---|---|
+| 3 | 54.9 / 54.3 | 47.4 / 49.5 | | | | 96 / 93 |
+| 4 | 56.5 | 52.4 | x1.040 [1.010, 1.071] | x1.032 [1.003, 1.062] | code 1.09, math 1.10, prose 0.94 | 97 |
+| 5 | 58.3 / 58.9 | 53.9 / 52.1 | x1.053 [1.005, 1.103] | x1.034 [0.986, 1.085] | code 1.16, math 1.14, prose 0.92, multilingual 0.98 | 98 / 95 |
+
+Deeper drafts win where acceptance is high and lose where it is low; `config/flashnext.env` uses
+k = 4. Adaptive depth (stop drafting when the draft is unsure) is the follow-up.
+
 ## Not done
 
 Speculation for sampled requests (MTP is greedy-only, #22), layer feature

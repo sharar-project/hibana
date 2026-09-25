@@ -141,7 +141,7 @@ def test_profile_limits_and_load_budget(monkeypatch):
     # context, batch and scheduling limits.
     from sharar.memory.spec_budget import SpecConfig
     assert SpecConfig('dflash2', 15).depth == 15
-    for name, depth in [('dflash2', 16), ('dspark', 8), ('mtp', 5)]:
+    for name, depth in [('dflash2', 16), ('dspark', 8), ('mtp', 9)]:
         with pytest.raises(ValueError, match='proposer/depth'):
             SpecConfig(name, depth)
     monkeypatch.setattr(ledger, 'mem_available_bytes', lambda: 63 * 2**30)
