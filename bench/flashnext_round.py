@@ -31,7 +31,7 @@ PROMPTS = {
     "math": "A loan of $250,000 at 6.5% annual interest is repaid monthly over 30 years. Derive the payment formula, compute the monthly payment, the total interest, and the balance after 10 years, showing all steps.",
 }
 CATEGORIES = [  # first match wins
-    ("moe", r"moe|expert|cutlass.*grouped|fused_moe|route|swizzle"),
+    ("moe", r"moe|expert|groupproblemshape|grouped|fused_moe|route|swizzle"),
     ("attention", r"flashinfer|BatchDecode|BatchPrefill|sparse_gqa|attention|qsa|score_kernel"),
     ("gdn", r"chunk_|recurrent|delta|gdn|fla_|gated_delta|conv1d|causal_conv"),
     ("gemv/gemm", r"gemv|gemm|scaled_mm|cutlass|cublas|sm\d+_xmma|Kernel2|nvjet|w3_"),
@@ -109,7 +109,8 @@ def m_curve(ex, model, tok, out, context: int):
             seen.append(int(torch.unique(ids).numel()))
             return ids, w
         return route
-    base = chat_ids(tok, PROMPTS["prose"] * 40)[:context]
+    base = chat_ids(tok, " ".join(PROMPTS.values()) * 200)[:context]
+    assert len(base) == context, len(base)
     for m in (1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64):
         ids = base + chat_ids(tok, PROMPTS["code"])[:m] if m <= 40 else base + (chat_ids(tok, PROMPTS["code"]) * 3)[:m]
         req = ex.admit(ids, SamplingParams(max_new_tokens=1))
@@ -148,10 +149,12 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--tokens", type=int, default=256)
     ap.add_argument("--context", type=int, default=2000)
+    ap.add_argument("--skip-rounds", action="store_true")
     args = ap.parse_args()
     model, ex, tok = _load(graphs=True, spec=3)
     out = {"rounds": [], "m_curve": []}
-    rounds(ex, tok, out, args.tokens)
+    if not args.skip_rounds:
+        rounds(ex, tok, out, args.tokens)
     m_curve(ex, model, tok, out, args.context)
     Path(args.out).write_text(json.dumps(out, indent=1))
     print("done", flush=True)
