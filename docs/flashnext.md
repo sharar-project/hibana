@@ -167,6 +167,20 @@ Paired per prompt: greedy x1.087 [1.075, 1.100], t=0.7 x1.077 [1.065, 1.090], fa
 prompts in both modes and in every category (multilingual x1.06 greedy, x1.08 sampled). The launcher
 default in `config/flashnext.env` is `w3`; the code default stays the target's head.
 
+## Draft depth (2026-09-25)
+
+With the cheaper draft head, deeper MTP drafts pay on average (the cap is now 8). Same harness,
+arms k = 3, 5, 4, 3, 5; paired per prompt against k = 3:
+
+| k | greedy median | t=0.7 median | greedy paired | t=0.7 paired | by category (greedy) | four streams |
+|---|---:|---:|---:|---:|---|---|
+| 3 | 54.9 / 54.3 | 47.4 / 49.5 | | | | 96 / 93 |
+| 4 | 56.5 | 52.4 | x1.040 [1.010, 1.071] | x1.032 [1.003, 1.062] | code 1.09, math 1.10, prose 0.94 | 97 |
+| 5 | 58.3 / 58.9 | 53.9 / 52.1 | x1.053 [1.005, 1.103] | x1.034 [0.986, 1.085] | code 1.16, math 1.14, prose 0.92, multilingual 0.98 | 98 / 95 |
+
+Deeper drafts win where acceptance is high and lose where it is low; `config/flashnext.env` uses
+k = 4. Adaptive depth (stop drafting when the draft is unsure) is the follow-up.
+
 ## Not done
 
 Speculation for sampled requests (MTP is greedy-only, #22), layer feature
