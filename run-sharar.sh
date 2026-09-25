@@ -181,6 +181,10 @@ if [[ -n "${SHARAR_DEVICE_ACCEPT:-}" ]]; then
   [[ "$SHARAR_DEVICE_ACCEPT" == 0 || "$SHARAR_DEVICE_ACCEPT" == 1 ]] || fail "SHARAR_DEVICE_ACCEPT must be 0 or 1"
   args+=(--env "SHARAR_DEVICE_ACCEPT=$SHARAR_DEVICE_ACCEPT")   # device-resident acceptance graphs (engine/accept_graphs.py)
 fi
+if [[ -n "${SHARAR_DRAFT_VOCAB:-}" ]]; then
+  [[ "$SHARAR_DRAFT_VOCAB" =~ ^[0-9]+$ ]] || fail "SHARAR_DRAFT_VOCAB must be a row count (0 = the full lm_head)"
+  args+=(--env "SHARAR_DRAFT_VOCAB=$SHARAR_DRAFT_VOCAB")   # MTP drafts over the N most likely ids (proposers/draft_vocab.py)
+fi
 if [[ -n "${SHARAR_QSA_SPARSE_GRAPHS:-}" ]]; then
   [[ "$SHARAR_QSA_SPARSE_GRAPHS" == 0 || "$SHARAR_QSA_SPARSE_GRAPHS" == 1 ]] || fail "SHARAR_QSA_SPARSE_GRAPHS must be 0 or 1"
   args+=(--env "SHARAR_QSA_SPARSE_GRAPHS=$SHARAR_QSA_SPARSE_GRAPHS")   # Flash-Next selecting graphs past the indexer budget (0: eager)
