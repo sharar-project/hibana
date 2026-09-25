@@ -19,10 +19,19 @@ class MtpState:
     valid_prefix: bool = True
 
 
+def draft_argmax(head, hidden: torch.Tensor) -> torch.Tensor:
+    """The head's draft token: its reduced-vocabulary argmax when it has one (`set_draft_vocab`)."""
+    pick = getattr(head, "draft_argmax", None)
+    return pick(hidden) if pick is not None else head.logits(hidden).argmax(-1)
+
+
 class MtpProposer:
     def __init__(self, head, context: ProposerContext, k: int = 3):
         self.head, self.context, self.k = head, context, k
-        self.requirements = ProposerRequirements("mtp", FeatureRequest(final_norm=True), persistent_bytes=head.bytes)
+        # Drafts are the head's argmax: deterministic proposals, so sampled requests verify them
+        # exactly as point masses (engine/rejection.py), like the parallel drafts.
+        self.requirements = ProposerRequirements("mtp", FeatureRequest(final_norm=True), persistent_bytes=head.bytes,
+                                                 greedy_only=False)
         self.graphs = None
         self._host_tokens = torch.empty(context.max_batch * (k + 1), dtype=torch.int64,
                                         pin_memory=context.device.type == "cuda")
@@ -109,7 +118,7 @@ class MtpProposer:
             hidden, token = self.graphs.run(tokens, hidden, positions, pages, kv)
             return hidden.clone(), token.clone()  # graph outputs are borrowed until next replay
         hidden = self.head.forward(tokens, hidden, positions, pages, [1] * len(kv), kv)
-        return hidden, self.head.logits(hidden).argmax(-1)
+        return hidden, draft_argmax(self.head, hidden)
 
     def accepted_batch(self, requests, emitted, features):
         # The normal acceptance download completes the preceding upload. Keep

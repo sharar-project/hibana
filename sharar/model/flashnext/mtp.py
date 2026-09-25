@@ -147,3 +147,15 @@ class FlashNextMtpHead:
     @torch.inference_mode()
     def logits(self, d: torch.Tensor) -> torch.Tensor:
         return self.lm_head(self.mixer.mix(d)[0])
+
+    def set_draft_vocab(self, ids: torch.Tensor) -> None:
+        """Draft over these token ids only (`proposers/draft_vocab.py`): a draft step reads
+        len(ids) rows of the shared lm_head instead of the vocabulary."""
+        from sharar.proposers.draft_vocab import ReducedHead
+        self.draft_head = ReducedHead(self.lm_head, ids)
+
+    def draft_argmax(self, d: torch.Tensor) -> torch.Tensor:
+        """The draft token (a global id): argmax over the reduced vocabulary when one is set."""
+        if getattr(self, "draft_head", None) is None:
+            return self.logits(d).argmax(-1)
+        return self.draft_head.argmax(self.mixer.mix(d)[0])

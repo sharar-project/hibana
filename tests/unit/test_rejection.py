@@ -72,6 +72,30 @@ def test_sampled_proposals_use_request_rng_and_shared_stop_aware_commit(monkeypa
     assert ex.kv_pool.free_count == 1024 and ex.state_pool.free_count == 15
 
 
+def test_deterministic_proposals_serve_sampled_requests(monkeypatch):
+    """A proposer without a draft law (MTP's argmax drafts) speculates for sampled requests:
+    point-mass rejection, the request's own RNG, identical output alone and in a batch."""
+    ex = tiny_executor(monkeypatch)
+    class Toy(NGramProposer):
+        requirements = ProposerRequirements('toy', greedy_only=False)
+        def ready(self, req):
+            return True
+        def propose(self, requests, pages, inputs, *, graphs):
+            return torch.stack([torch.tensor([7, 7, 7][:self.k]) for _ in requests])
+    ex.set_proposer(Toy(ProposerContext(ex.device, 4, 512)))
+    params = SamplingParams(max_new_tokens=11, temperature=1, top_k=-1, top_p=1, seed=7)
+    single = ex.generate([1, 2, 3], params).output_ids
+    batch = ex.generate_batch([([1, 2, 3], params) for _ in range(4)])
+    assert all(r.output_ids == single and r.spec_rounds > 0 and r.committed_len == 13 for r in batch)
+
+
+def test_mtp_proposer_serves_sampled_requests():
+    from types import SimpleNamespace
+    from sharar.proposers.mtp import MtpProposer
+    proposer = MtpProposer(SimpleNamespace(bytes=0), ProposerContext(torch.device('cpu'), 4, 512))
+    assert proposer.requirements.greedy_only is False
+
+
 def test_vectorized_verify_matches_sequential_reference_in_distribution():
     """verify_rows draws differently from verify_row (all k uniforms at once) but
     must agree in distribution: acceptance counts and correction tokens."""
