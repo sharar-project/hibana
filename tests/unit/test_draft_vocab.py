@@ -29,3 +29,21 @@ def test_draft_argmax_prefers_the_heads_reduced_pick():
     assert draft_argmax(full, None).tolist() == [1]
     reduced = SimpleNamespace(logits=None, draft_argmax=lambda h: torch.tensor([42]))
     assert draft_argmax(reduced, None).tolist() == [42]
+
+
+def test_pad_rows_repeats_the_last_id_to_the_tile():
+    from sharar.proposers.draft_vocab import _pad_rows
+    ids = torch.arange(130)
+    padded = _pad_rows(ids, 128)
+    assert padded.numel() == 256 and torch.equal(padded[:130], ids) and (padded[130:] == 129).all()
+    assert _pad_rows(torch.arange(128), 128).numel() == 128
+
+
+def test_full_fp8_draft_head_is_the_targets_own():
+    from sharar.model.flashnext.linear import TrunkLinear
+    from sharar.proposers.draft_vocab import ReducedHead
+    lm_head = TrunkLinear(torch.randn(10, 4).to(torch.bfloat16))
+    head = ReducedHead(lm_head)
+    assert head.head is lm_head and head.bytes == 0
+    x = torch.randn(3, 4).to(torch.bfloat16)
+    assert torch.equal(head.argmax(x), (x @ lm_head.weight.T).argmax(-1))

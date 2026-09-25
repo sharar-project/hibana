@@ -85,7 +85,8 @@ class FlashNextMtpHead:
     def bytes(self) -> int:
         weights = (self.fc_e.bytes + self.fc_h.bytes + self.attn.bytes + self.attn_hc.bytes + self.mlp_hc.bytes + self.mixer.bytes
                    + self.router.numel() * 2 + self.gate_up.numel() + self.down.numel() + self.shared_gate_up.bytes + self.shared_down.bytes)
-        return weights + self.kv.bytes
+        draft_head = getattr(self, "draft_head", None)
+        return weights + self.kv.bytes + (draft_head.bytes if draft_head is not None else 0)
 
     def plan(self, qo_lens: list[int], kv_pages: list[torch.Tensor]) -> None:
         t = self.target
@@ -148,11 +149,15 @@ class FlashNextMtpHead:
     def logits(self, d: torch.Tensor) -> torch.Tensor:
         return self.lm_head(self.mixer.mix(d)[0])
 
-    def set_draft_vocab(self, ids: torch.Tensor) -> None:
-        """Draft over these token ids only (`proposers/draft_vocab.py`): a draft step reads
-        len(ids) rows of the shared lm_head instead of the vocabulary."""
+    def set_draft_head(self, ids: torch.Tensor | None = None, fmt: str = "fp8", rescore: int = 0) -> None:
+        """Draft through a head of its own (`proposers/draft_vocab.py`): over these token ids only
+        (len(ids) rows of the shared lm_head instead of the vocabulary) and/or a 3-bit copy whose
+        top `rescore` candidates the shared lm_head rescores."""
         from sharar.proposers.draft_vocab import ReducedHead
-        self.draft_head = ReducedHead(self.lm_head, ids)
+        self.draft_head = ReducedHead(self.lm_head, ids, fmt, rescore)
+
+    def set_draft_vocab(self, ids: torch.Tensor) -> None:
+        self.set_draft_head(ids)
 
     def draft_argmax(self, d: torch.Tensor) -> torch.Tensor:
         """The draft token (a global id): argmax over the reduced vocabulary when one is set."""
