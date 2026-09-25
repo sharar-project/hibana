@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import torch
 
+from sharar.proposers.mtp import draft_argmax
+
 from sharar.target import DEFAULT_TARGET
 from sharar.engine.graphs import capture_sizes, check_context_capacity
 from sharar.engine.spec_graphs import _prefill_wrapper
@@ -59,7 +61,7 @@ class DraftGraphs:
             d = mtp.forward_static(st["tokens"], st["hidden"], st["positions"], st["pages"])
         finally:
             mtp._attn = saved
-        return d, mtp.logits(d).argmax(-1)
+        return d, draft_argmax(mtp, d)
 
     def capture(self, log=None) -> None:
         for b in self.sizes:

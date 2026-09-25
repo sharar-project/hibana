@@ -1,4 +1,6 @@
 """Checkpoint-specific construction at startup; the executor consumes contracts."""
+import os
+
 from sharar.target import DEFAULT_TARGET
 
 MAX_DEPTHS = {"mtp": 4, "ngram": 4, "dspark": 7, "dflash2": 15}
@@ -38,6 +40,10 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
         finally:
             w.close()
         head.target = model.target
+        vocab = int(os.environ.get("SHARAR_DRAFT_VOCAB", "0"))  # reduced draft vocabulary rows (0: the full lm_head)
+        if vocab and hasattr(head, "set_draft_vocab"):
+            from sharar.proposers.draft_vocab import draft_vocab
+            head.set_draft_vocab(draft_vocab(model.target.snapshot_dir(), vocab, head.lm_head.out_features))
         adapter = MtpProposer(head, context, k)
     elif proposer == "ngram":
         from sharar.proposers.ngram import NGramProposer
