@@ -3,7 +3,7 @@ import os
 
 from sharar.target import DEFAULT_TARGET
 
-MAX_DEPTHS = {"mtp": 4, "ngram": 4, "dspark": 7, "dflash2": 15}
+MAX_DEPTHS = {"mtp": 8, "ngram": 4, "dspark": 7, "dflash2": 15}
 
 
 def draft_snapshot(proposer, draft_dir=None, target=None):

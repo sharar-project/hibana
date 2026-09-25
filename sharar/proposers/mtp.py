@@ -31,7 +31,7 @@ class MtpProposer:
         # Drafts are the head's argmax: deterministic proposals, so sampled requests verify them
         # exactly as point masses (engine/rejection.py), like the parallel drafts.
         self.requirements = ProposerRequirements("mtp", FeatureRequest(final_norm=True), persistent_bytes=head.bytes,
-                                                 greedy_only=False)
+                                                 greedy_only=False, max_depth=8)
         self.graphs = None
         self._host_tokens = torch.empty(context.max_batch * (k + 1), dtype=torch.int64,
                                         pin_memory=context.device.type == "cuda")
