@@ -144,18 +144,157 @@ def m_curve(ex, model, tok, out, context: int):
         print(json.dumps(row), flush=True)
 
 
+def verify_breakdown(ex, tok, out, tokens: int):
+    """Synchronized host timers around each piece of a speculative round, CUDA events around graph replays."""
+    import sharar.engine.spec_graphs as sg
+    acc = defaultdict(float)
+    spec = ex.spec
+
+    def timed(name, fn):
+        def wrapper(*a, **kw):
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            r = fn(*a, **kw)
+            torch.cuda.synchronize()
+            acc[name] += time.perf_counter() - t0
+            return r
+        return wrapper
+
+    def timed_replay(name, graph):
+        orig = graph.replay
+
+        def replay():
+            a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            torch.cuda.synchronize()
+            a.record(); orig(); b.record()
+            torch.cuda.synchronize()
+            acc[name] += a.elapsed_time(b) / 1000
+        graph.replay = replay
+    patches = []
+    for obj, name in ((ex, "_ple_rows_block"), (ex, "qsa_rows"), (spec, "prepare"), (spec, "verify"), (spec, "_accept")):
+        orig = getattr(obj, name)
+        patches.append((obj, name, orig))
+        setattr(obj, name, timed(name, orig))
+    for depth, graphs in spec.width_graphs.items():
+        patches.append((graphs, "_plan", graphs._plan))
+        graphs._plan = timed("verify plan()", graphs._plan)
+        for g in graphs._graphs.values():
+            timed_replay("verify graph replay (GPU)", g)
+    if getattr(spec.proposer, "graphs", None) is not None:
+        for g in spec.proposer.graphs._graphs.values():
+            timed_replay("draft graph replays (GPU)", g)
+    orig_fill = sg.fill_qsa
+    sg.fill_qsa = timed("fill_qsa", orig_fill)
+    ids = chat_ids(tok, PROMPTS["code"])
+    params = SamplingParams(max_new_tokens=tokens, ignore_eos=True)
+    ex.generate(ids, params)
+    ex.flush_cache()
+    acc.clear(); spec.reset_stats()
+    r = ex.generate(ids, params)
+    rounds_n = max(1, spec.rounds)
+    row = {"rounds": spec.rounds, "decode_ms_per_round": round(1000 * r.decode_seconds / rounds_n, 2),
+           **{k: round(1000 * v / rounds_n, 2) for k, v in sorted(acc.items(), key=lambda kv: -kv[1])}}
+    out["verify_breakdown"] = row
+    print(json.dumps(row), flush=True)
+    sg.fill_qsa = orig_fill
+    for obj, name, orig in patches:
+        setattr(obj, name, orig)
+
+
+def gap_profile(ex, tok, out, tokens: int):
+    """GPU idle gaps inside a round, unsynchronized: CUDA events recorded before and after every graph
+    replay (a before-event completes when the GPU reaches it, so after-draft -> before-verify is the time
+    the GPU waited for the host between draft and verify, after-verify -> before-next-draft likewise)."""
+    spec = ex.spec
+    marks = []  # (kind, event)
+
+    def instrument(graph, kind):
+        orig = graph.replay
+
+        def replay():
+            a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            a.record(); orig(); b.record()
+            marks.append((kind, a, b))
+        graph.replay = replay
+        return orig
+    restore = []
+    for graphs in spec.width_graphs.values():
+        for g in graphs._graphs.values():
+            restore.append((g, instrument(g, "verify")))
+    for g in spec.proposer.graphs._graphs.values():
+        restore.append((g, instrument(g, "draft")))
+    ids = chat_ids(tok, PROMPTS["code"])
+    params = SamplingParams(max_new_tokens=tokens, ignore_eos=True)
+    ex.generate(ids, params)
+    ex.flush_cache()
+    marks.clear(); spec.reset_stats()
+    t0 = time.perf_counter()
+    r = ex.generate(ids, params)
+    torch.cuda.synchronize()
+    gaps = defaultdict(list)
+    busy = defaultdict(float)
+    for (k1, a1, b1), (k2, a2, b2) in zip(marks, marks[1:]):
+        gaps[f"{k1} -> {k2}"].append(b1.elapsed_time(a2))
+    for k, a, b in marks:
+        busy[k] += a.elapsed_time(b)
+    first, last = marks[0][1], marks[-1][2]
+    span = first.elapsed_time(last)
+    n = max(1, spec.rounds)
+    row = {"rounds": spec.rounds, "decode_wall_ms_per_round": round(1000 * r.decode_seconds / n, 2),
+           "event_span_ms_per_round": round(span / n, 2),
+           "replay_ms_per_round": {k: round(v / n, 2) for k, v in busy.items()},
+           "gap_ms": {k: {"count": len(v), "mean": round(sum(v) / len(v), 3), "per_round": round(sum(v) / n, 2)} for k, v in gaps.items()}}
+    out["gap_profile"] = row
+    print(json.dumps(row), flush=True)
+    for g, orig in restore:
+        g.replay = orig
+
+
+def host_profile(ex, tok, out, tokens: int):
+    """cProfile of graphed generation: where host time goes per round (cumulative, by function)."""
+    import cProfile
+    import io
+    import pstats
+    ids = chat_ids(tok, PROMPTS["code"])
+    params = SamplingParams(max_new_tokens=tokens, ignore_eos=True)
+    ex.generate(ids, params)
+    ex.flush_cache()
+    ex.spec.reset_stats()
+    prof = cProfile.Profile()
+    prof.enable()
+    ex.generate(ids, params)
+    prof.disable()
+    buf = io.StringIO()
+    stats = pstats.Stats(prof, stream=buf).sort_stats("tottime")
+    stats.print_stats(40)
+    text = buf.getvalue()
+    out["host_profile"] = {"rounds": ex.spec.rounds, "text": text}
+    print(f"rounds {ex.spec.rounds}", flush=True)
+    print(text, flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--tokens", type=int, default=256)
     ap.add_argument("--context", type=int, default=2000)
     ap.add_argument("--skip-rounds", action="store_true")
+    ap.add_argument("--only-breakdown", action="store_true")
+    ap.add_argument("--host-profile", action="store_true")
+    ap.add_argument("--gap-profile", action="store_true")
     args = ap.parse_args()
     model, ex, tok = _load(graphs=True, spec=3)
     out = {"rounds": [], "m_curve": []}
-    if not args.skip_rounds:
-        rounds(ex, tok, out, args.tokens)
-    m_curve(ex, model, tok, out, args.context)
+    if args.gap_profile:
+        gap_profile(ex, tok, out, args.tokens)
+    elif args.host_profile:
+        host_profile(ex, tok, out, args.tokens)
+    elif args.only_breakdown:
+        verify_breakdown(ex, tok, out, args.tokens)
+    else:
+        if not args.skip_rounds:
+            rounds(ex, tok, out, args.tokens)
+        m_curve(ex, model, tok, out, args.context)
     Path(args.out).write_text(json.dumps(out, indent=1))
     print("done", flush=True)
 
