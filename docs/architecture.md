@@ -236,6 +236,50 @@ One helper for static buffers per captured size, padding, plan-then-replay and
 variants, used by decode, verify, accept and both draft bodies. Each graph
 keeps its own body; the helper removes the duplicated bookkeeping.
 
+## Repository boundaries
+
+`sharar/memory/` is the engine's memory manager, not an application feature:
+the paged FP8 KV pool, the GDN state pool, the radix prefix cache, the
+`StateManager` ownership boundary, the unified-memory ledger, the cold tier,
+the NVMe session store and the speculation budget. It stays in the engine;
+it may be renamed `sharar/cache/` in the cleanup if that reads better.
+
+| Code | Where | Why |
+|---|---|---|
+| Engine, models, kernels, weights, memory, **proposers** | this repo, `sharar/` | Proposers sit on the hot path: they share the verify graphs, state ownership, kernels and the draft head with the target. Every speed change touches both sides; a cross-repo interface would have to be versioned per change. |
+| **Drafter training** (`sharar/train/`) | this repo, optional extra (`pip install sharar[train]`) | Training imports the serving draft body (`model/parallel_draft.py`, `proposers/parallel.py`) so the differentiable forward matches serving exactly, and promotion hot-reloads into the running server. One-way dependency: `train` imports the engine, the engine never imports `train`. |
+| **Target-model training** (OPD #34, LoRA, RL) | a separate repo when it starts | Large, slow-moving, its own dependencies; uses Sharar as the rollout server and loads the target through the model contract. |
+| **HTTP-level evals and benchmarks** (`bench/h2h.py`, `accuracy_eval.py`, `tts_eval.py`, `long_context.py`, the family-gate client, frozen datasets) | a separate repo (`sharar-evals`) | They import nothing from `sharar` and already run against SGLang, vLLM and Atlas; frozen inputs and results are pinned by their own versions. Every result records both SHAs. |
+| **In-process benches and gates** (`bench/flashnext_round.py`, `draft_head.py`, MoE/W3 microbenchmarks, `bench/gate_hooks.py`) | this repo, `bench/` | They reach into engine internals and must version with them. |
+
+## Performance contract
+
+The refactor must not cost speed and should make the next gains cheaper.
+
+**Rules.**
+- Abstractions resolve at construction and capture time, never per call: a
+  `Linear` picks its kernel for each captured row count once; capabilities
+  are read when the speculator is installed; the model's `StepExtras` fills
+  static buffers the graphs already own. Inside a CUDA graph the Python layer
+  costs nothing; what matters is host work between replays.
+- Host time per round is a first-class metric: every refactor PR reports the
+  GPU idle gaps (`bench/flashnext_round.py --gap-profile` on Flash-Next, the
+  engine-loop round on the 27B) and may not increase them.
+- Gate per PR, both targets: greedy outputs bit-identical, round cost within
+  the family gate's noise (it resolves 0.05%), h2h single-stream and
+  four-stream tok/s within run noise, load time and memory unchanged.
+
+**What each step buys** (measured opportunities it unblocks):
+
+| Step | Opportunity it makes cheap | Measured size |
+|---|---|---|
+| 1 `EngineConfig` | per-request profiles; `--fast` bundles | +10-22% from relaxed acceptance and deeper drafts already measured, today behind env vars |
+| 2 speculator parts | adaptive depth (#43); draft-only head on the 27B | k=5 gave code +16% / prose -8% on Flash-Next: adaptive keeps the gain; 27B head ~1% |
+| 3 planner + graph sets | plans prepared before the draft sync; one graph per round (draft + verify + accept), the step toward #25 | Flash-Next GPU idle 6.5 ms of 65 ms per round (#36) |
+| 4 model contract | PLE row reads and QSA rows prepared off the critical path | ~2 ms of the 3.5 ms draft-to-verify gap |
+| 5 one `Linear` | calibrated low-bit trunk for Flash-Next (#6) through the existing GPTQ pipeline; the small-M MoE kernel (#37) as a format | ~9 ms per forward (#25); ~4-6 ms per step |
+| 6-8 features, MTP body, `Trainable` | Flash-Next DFlash2 (#7); MTP trained on traffic (#40); device acceptance for MTP (#18) | 27B drafter training gave +12.9%; device acceptance ~2-3 ms per round |
+
 ## Migration order
 
 Small pull requests, each keeping both targets serving. Gate for every
