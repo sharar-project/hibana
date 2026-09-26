@@ -1,10 +1,8 @@
 """Target precision boundaries, fractional FP4 scales and graph mutation."""
-import os
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 tests')
 
 
 @pytest.mark.parametrize('rows,k', [(1,128), (16,5120), (37,17408), (128,17408)])

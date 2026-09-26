@@ -1,10 +1,8 @@
 """Prepared metadata must preserve exact chunk output and recurrent state."""
-import os
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 kernels')
 
 
 @pytest.mark.parametrize('lengths', [[1], [3], [16], [17], [63], [64], [65], [129], [1, 3], [63, 65, 129]])

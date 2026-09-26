@@ -1,10 +1,8 @@
 """Real-weight verifier GEMMs: reference parity and changed graph inputs."""
-import os
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 tests')
 
 
 @pytest.fixture(scope='module', params=['qkv', 'gate_up', 'down'])

@@ -1,11 +1,9 @@
 """Bitwise reconstruction against the actual verify recurrence, all commits."""
 from types import SimpleNamespace
-import os
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 kernel tests')
 
 
 @pytest.mark.parametrize('batch', [1, 2, 3, 4])

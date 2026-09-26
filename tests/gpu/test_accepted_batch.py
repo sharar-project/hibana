@@ -1,7 +1,6 @@
 """Pinned external drafts: FP32 projection oracle and real commit/cache checks."""
 import gc
 import json
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +10,6 @@ from sharar.engine.contracts import VerifiedFeatures
 from sharar.engine.sampler import SamplingParams
 from sharar.proposers.parallel import DraftState
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 checkpoint tests')
 
 
 @pytest.fixture(scope='module', params=['dflash2', 'dspark'])

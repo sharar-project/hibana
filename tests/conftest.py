@@ -40,7 +40,3 @@ def snapshot():
 def results_dir() -> Path:
     return Path(os.environ.get("SHARAR_RESULTS", "/tmp/sharar-results"))
 
-
-@pytest.fixture(scope="session")
-def reference_url() -> str:
-    return os.environ.get("SHARAR_REFERENCE_URL", "http://127.0.0.1:30000")

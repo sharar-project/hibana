@@ -3,12 +3,10 @@
 These checks cover the two experimental Triton modes. Serving uses the
 native CUDA norm with the FP32 sum and its reference reduction order.
 """
-import os
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in CUDA tests')
 
 
 @pytest.mark.parametrize('rows', [1, 16, 257])

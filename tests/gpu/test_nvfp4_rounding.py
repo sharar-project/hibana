@@ -1,10 +1,8 @@
 """Exact E2M1 tie and signed-zero regression checks against CUDA quantization."""
-import os
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 tests')
 
 
 @pytest.mark.parametrize('scale', [0.5, 1.0, 2.0, 16.0])

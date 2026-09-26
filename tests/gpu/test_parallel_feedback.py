@@ -1,10 +1,8 @@
 """Exercise graph reuse, changing accepted lengths, private slots and ring wrap."""
 from types import SimpleNamespace
 import torch
-import os
 import pytest
 
-pytestmark = pytest.mark.skipif(os.environ.get("SHARAR_RUN_GPU") != "1", reason="opt-in GB10 tests")
 from sharar.proposers.parallel_feedback import FeedbackGraphs
 
 

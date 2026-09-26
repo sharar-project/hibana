@@ -1,10 +1,8 @@
 """Compiled target normalization precision, ownership and graph mutation."""
-import os
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 tests')
 
 
 @pytest.mark.parametrize('rows', [1, 16, 64])

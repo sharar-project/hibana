@@ -1,10 +1,8 @@
 """Real DFlash2 integration: conditional selection, cache reuse and mixed laws."""
-import os
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 checkpoint tests')
 
 
 @pytest.fixture(scope='module', params=['bf16', 'fp8'])

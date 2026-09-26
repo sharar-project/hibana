@@ -28,46 +28,21 @@ and `.venv-cpu/bin/python tools/check_distribution.py` to build an sdist and
 wheel and probe installed runtime assets outside the checkout. CI runs these
 checks; a source-only or editable installation does not validate packaging.
 
-Use [operations](docs/operations.md) for the current container setup. Shared
-benchmark infrastructure lives in `bench/support/`; completed experiments
-live in `bench/archive/`. Preserve frozen workload content and checksums when
-moving readers. Dated reports and manifests stay together in `docs/archive/`.
-
-Inside a prepared GB10 container with the snapshot, frozen parity artifacts
-at `$SHARAR_RESULTS/parity`, writable compilation cache and exclusive model
-memory, run:
+The GPU suite (`tests/gpu`, about 11 minutes, both targets) runs from the host
+in the runtime image with this checkout mounted:
 
 ```bash
-bash tools/check.sh gpu
+tools/gpu-tests.sh                 # or: tools/check.sh gpu-container
+tools/gpu-tests.sh tests/gpu/test_qsa.py -x
 ```
 
-The real-checkpoint fixture uses bounded pools: 35,000 KV pages and 12 recurrent
-slots. Keep the external memory guard active for that container. The loader
-requires 40 GiB `MemAvailable`: a 24 GiB allowance based on the measured 21.3 GiB
-streaming-load peak plus the 16 GiB host floor. Runtime separately checks the
-prospective pool/draft budget before allocation. See [7D evidence](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/phase7d.md).
-Performance measurements need exclusive GPU use. The check command does not
-stop or replace a running service.
-
-Anything that changes arithmetic (kernels, dispatch thresholds, draft
-precision, verify shapes, proposers) is judged by the family gate,
-`tools/family-gate.py` ([bench/README.md](bench/README.md#the-family-gate)):
-paired 21-task intervals against a native pass, with the noise floor from a
-repeated native pass. Bit-identical outputs are not required and not a
-substitute: the target's arithmetic already changes with the row count, so
-outputs drift whenever shapes move. Compare row-count changes under
-`SHARAR_STABLE_NUMERICS=1` as well. Read the gate this way: the round-cost
-interval decides cost (it resolves 0.05%); the tokens-per-round interval
-decides acceptance only when it excludes 1, and it is about ±3% wide on the
-101-family default set (±7% on the old 18-family set) for any change that
-moves continuations, so do not select among variants on its point estimate. The three-prompt `tools/benchmark.sh`
-remains the reporting cell for end-to-end numbers, never the decision.
-A change to the target's arithmetic or to acceptance also runs
-`evals.accuracy_eval` in the `sharar-evals` repository (GSM8K and HumanEval, paired against the exact
-configuration) before it becomes a default; the gate measures speed and
-acceptance, not correctness.
-When an optimization lands, changes its default or is retired, update its
-row in the [optimization inventory](docs/optimizations.md) in the same change.
+It mounts the model caches, the calibrated W3 artifact and `$SHARAR_RESULTS`
+at their container paths (read from `config/gb10.env` and
+`config/flashnext.env`; `SHARAR_TEST_IMAGE` picks another image) and sets
+`SHARAR_RUN_GPU=1`; without it the GPU modules are not collected. Nothing else
+may use the GPU meanwhile. Shared benchmark infrastructure lives in
+`bench/support/`; preserve frozen workload content and checksums when moving
+readers.
 
 ## Add a setting
 
