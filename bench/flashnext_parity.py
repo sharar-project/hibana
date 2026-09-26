@@ -93,7 +93,6 @@ def executor_model(precision, chunk: int = 2048):
 
 
 def compare(args):
-    import math
     import torch
     rows = json.loads(Path(args.sglang).read_text())
     if args.model == "reference":
