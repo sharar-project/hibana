@@ -37,9 +37,30 @@ from pathlib import Path
 
 import torch
 
-ENABLED = os.environ.get("SHARAR_W3_DECODE", "0") == "1"
-HEAD = os.environ.get("SHARAR_W3_HEAD", "0") == "1"      # also pack the lm_head
-DRAFT = os.environ.get("SHARAR_W3_DRAFT", "0") == "1"    # also pack the parallel draft's FP8 matrices
+
+
+def enabled() -> bool:
+    """SHARAR_W3_DECODE: serve calls of at most MAX_ROWS rows from the 3-bit copies."""
+    from sharar.engine.config import current
+    return current().w3_decode
+
+
+def head_enabled() -> bool:
+    """SHARAR_W3_HEAD: also pack the lm_head."""
+    from sharar.engine.config import current
+    return current().w3_head
+
+
+def draft_enabled() -> bool:
+    """SHARAR_W3_DRAFT: also pack the parallel draft's FP8 matrices."""
+    from sharar.engine.config import current
+    return current().w3_draft
+
+
+def default_codebook() -> str:
+    """SHARAR_W3_CODEBOOK (lloyd)."""
+    from sharar.engine.config import current
+    return current().w3_codebook
 MAX_ROWS = 64
 GROUP = 32
 CHUNK = 128
@@ -50,7 +71,6 @@ CODEBOOKS = {
     "uniform": (-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5),
     "lloyd": (-3.5, -2.25, -1.25, -0.40625, 0.40625, 1.25, 2.25, 3.5),
 }
-DEFAULT_CODEBOOK = os.environ.get("SHARAR_W3_CODEBOOK", "lloyd")
 _SRC = Path(__file__).resolve().parent / "csrc" / "w3_gemm.cu"
 
 
@@ -75,6 +95,7 @@ def lut_of(codebook: tuple[float, ...]) -> int:
 
 
 def _codebook(codebook) -> tuple[float, ...]:
+    codebook = default_codebook() if codebook is None else codebook
     levels = CODEBOOKS[codebook] if isinstance(codebook, str) else tuple(float(v) for v in codebook)
     if len(levels) != 8 or list(levels) != sorted(levels):
         raise ValueError("a codebook is eight ascending levels")
@@ -89,7 +110,7 @@ def _rotations(device) -> torch.Tensor:
     return 16 * (s // 4) + (s % 4)  # rot(s)
 
 
-def pack(weight: torch.Tensor, codebook=DEFAULT_CODEBOOK, rows_per_chunk: int = 4096) -> W3Weight:
+def pack(weight: torch.Tensor, codebook=None, rows_per_chunk: int = 4096) -> W3Weight:
     """Nearest-level 3-bit quantization of a [N, K] float matrix (N % 128 == 0, K % 128 == 0) in fragment order.
 
     Rows are processed `rows_per_chunk` at a time so the integer temporaries stay
@@ -149,7 +170,7 @@ def _pack_codes_rows(q: torch.Tensor, scale_fp8: torch.Tensor, row_scale: torch.
 
 
 def pack_codes(q: torch.Tensor, scale_fp8: torch.Tensor, row_scale: torch.Tensor,
-               codebook=DEFAULT_CODEBOOK, rows_per_chunk: int = 4096) -> W3Weight:
+               codebook=None, rows_per_chunk: int = 4096) -> W3Weight:
     """Pack calibrated codes and their exact scales without quantizing again."""
     n, k = q.shape
     if n % 128 or k % CHUNK or rows_per_chunk < 128 or rows_per_chunk % 128:
@@ -200,7 +221,8 @@ def dequantize(w3: W3Weight) -> torch.Tensor:
 def _module():
     from torch.utils.cpp_extension import load
 
-    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", os.environ.get("SHARAR_CUDA_ARCH", "12.1a"))
+    from sharar.engine.config import current
+    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", current().cuda_arch)
     # Images can restore older source timestamps into a shared build cache.
     # Separate source revisions so Ninja cannot reuse another revision's object.
     revision = hashlib.sha256(_SRC.read_bytes()).hexdigest()[:16]
@@ -286,12 +308,14 @@ def _dequant_fp8(lin) -> torch.Tensor:
     return lin.weight.float() * lin.weight_scale.float()
 
 
-def attach_model(model, log=print, head: bool | None = None, codebook=DEFAULT_CODEBOOK) -> dict:
+def attach_model(model, log=print, head: bool | None = None, codebook=None) -> dict:
     """Pack 3-bit decode copies for every MLP and FP8 projection of a loaded Qwen38 (and the lm_head when `head`)."""
+    codebook = default_codebook() if codebook is None else codebook
     total = 0
     count = 0
     from sharar.weights.w3_checkpoint import CalibratedWeights, model_linears
-    directory = os.environ.get("SHARAR_W3_CHECKPOINT")
+    from sharar.engine.config import current
+    directory = current().w3_checkpoint
     calibrated = CalibratedWeights(directory) if directory else None
     linears = list(model_linears(model))
     if calibrated is not None and set(calibrated.weights) != {name for name, _ in linears}:
@@ -303,7 +327,7 @@ def attach_model(model, log=print, head: bool | None = None, codebook=DEFAULT_CO
             total += lin.w3.bytes; count += 1
     torch.cuda.synchronize()
     model.w3_identity = calibrated.identity if calibrated else "nearest:" + str(codebook)
-    if (HEAD if head is None else head) and getattr(model.lm_head, "w3", None) is None:
+    if (head_enabled() if head is None else head) and getattr(model.lm_head, "w3", None) is None:
         model.lm_head.w3 = pack(_dequant_nvfp4(model.lm_head), codebook)
         total += model.lm_head.w3.bytes; count += 1
     _module()  # build the kernel before serving starts
@@ -311,8 +335,9 @@ def attach_model(model, log=print, head: bool | None = None, codebook=DEFAULT_CO
     return {"matrices": count, "bytes": total}
 
 
-def attach_draft(draft, log=print, codebook=DEFAULT_CODEBOOK) -> dict:
+def attach_draft(draft, log=print, codebook=None) -> dict:
     """Pack 3-bit copies of the parallel draft's FP8 matrices (q, o, gate_up, down of every layer)."""
+    codebook = default_codebook() if codebook is None else codebook
     total = 0
     count = 0
     for name, lin in draft.fp8_weights.items():

@@ -20,7 +20,8 @@ _SRC = Path(__file__).resolve().parent / "csrc" / "fp8_gemv.cu"
 def _module():
     from torch.utils.cpp_extension import load
 
-    arch = os.environ.get("SHARAR_CUDA_ARCH", "12.1a")
+    from sharar.engine.config import current
+    arch = current().cuda_arch
     os.environ.setdefault("TORCH_CUDA_ARCH_LIST", arch)
     return load(
         name="sharar_fp8_gemv",

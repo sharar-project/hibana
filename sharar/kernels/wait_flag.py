@@ -15,7 +15,8 @@ _SRC = Path(__file__).resolve().parent / "csrc" / "wait_flag.cu"
 def _module():
     from torch.utils.cpp_extension import load
 
-    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", os.environ.get("SHARAR_CUDA_ARCH", "12.1a"))
+    from sharar.engine.config import current
+    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", current().cuda_arch)
     return load(name="sharar_wait_flag", sources=[str(_SRC)], extra_cuda_cflags=["-O3"], verbose=False)
 
 

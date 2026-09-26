@@ -289,7 +289,7 @@ green. Numerics-changing work is not mixed into these.
 
 | Step | Change | Unblocks |
 |---|---|---|
-| 1 | `EngineConfig`: one object, no import-time environment reads; `/get_server_info` shows it | every later step; #27 |
+| 1 | `EngineConfig`: one object, no import-time environment reads; `/get_server_info` shows it (#44, done) | every later step; #27 |
 | 2 | Speculator capabilities and optional protocols; shared draft head (`Linear` over rows) usable by DFlash2 and both MTP heads | #43, draft head on the 27B |
 | 3 | Attention planner and graph-set helper | steps 4 and 6; fewer plan races |
 | 4 | Model contract: `StepExtras` and `state_spec`; PLE and QSA leave `engine/` | a third model; Flash-Next DFlash2 |

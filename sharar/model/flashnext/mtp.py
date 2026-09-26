@@ -45,7 +45,8 @@ class FlashNextMtpHead:
         self.norm_e = GemmaRMSNorm(g("pre_fc_norm_embedding.weight"), eps)
         self.norm_h = GemmaRMSNorm(g("pre_fc_norm_hidden.weight"), eps)  # over the whole hc*H vector
         p = f"{PREFIX}.layers.0"
-        mixers = os.environ.get("SHARAR_FLASHNEXT_MIXERS", "fp8")
+        from sharar.engine.config import current
+        mixers = current().flashnext_mixers
         self.attn_hc = HyperConnection.load(w, f"{p}.attn_hyper_connection", self.hc, self.hidden_size, eps, device, precision=mixers)
         self.mlp_hc = HyperConnection.load(w, f"{p}.mlp_hyper_connection", self.hc, self.hidden_size, eps, device, precision=mixers)
         self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", self.hc, self.hidden_size, eps, device, combine=False, precision=mixers)

@@ -17,7 +17,8 @@ from sharar.cache.kv_pool import KV_DTYPE
 from sharar.engine.contracts import Proposer, StepInputs, VerifiedFeatures
 from sharar.engine.debug import debug_sync
 from sharar.engine.rejection import Proposal, distribution, plausible, verify_rows
-from sharar.engine.accept_graphs import AcceptGraphs, ENABLED as DEVICE_ACCEPT
+from sharar.engine import accept_graphs
+from sharar.engine.accept_graphs import AcceptGraphs
 from sharar.kernels import plan_guard
 
 
@@ -72,7 +73,7 @@ class SpecDecoder:
         self.verify_graphs = None
         # Device-resident acceptance for all-greedy graph batches (engine/accept_graphs.py);
         # SHARAR_DEVICE_ACCEPT=0 keeps the host path for every round.
-        self.device_accept = DEVICE_ACCEPT
+        self.device_accept = accept_graphs.enabled()
         # Set by benchmarks: synchronize around the draft/verify/accept phases
         # to attribute time. Off in serving so the host can queue graphs ahead.
         self.timing = False

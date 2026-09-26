@@ -161,7 +161,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     @app.get("/get_server_info")
     @app.get("/describe")
     async def server_info():
-        info = {**describe, "scheduler": engine.stats()}
+        from sharar.engine.config import current
+        info = {**describe, "config": current().describe(), "scheduler": engine.stats()}
         if engine.sched.ex.spec is not None:
             info["spec_stats"] = engine.sched.ex.spec.stats()
         info["messages_api"] = dict(messages_stats)

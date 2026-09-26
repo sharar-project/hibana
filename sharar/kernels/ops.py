@@ -50,7 +50,7 @@ def fp4_quantize(x: torch.Tensor, input_scale_inv: torch.Tensor) -> tuple[torch.
 
 def w3_decode(lin, m: int) -> bool:
     """True when this call runs the 3-bit decode copy instead of the NVFP4/FP8 weights."""
-    return w3.ENABLED and lin.w3 is not None and m <= w3.MAX_ROWS
+    return lin.w3 is not None and m <= w3.MAX_ROWS and w3.enabled()
 
 
 def nvfp4_linear(x: torch.Tensor, lin: Nvfp4Linear, prequantized: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:
@@ -113,7 +113,7 @@ def fp8_linear(x: torch.Tensor | None, lin: Fp8Linear, x_q: torch.Tensor | None 
     m = x_q.shape[0]
     if w3_decode(lin, m):
         return w3.w3_linear(x_q, lin.w3, x_scale=lin.input_scale).view(*lead, lin.out_features)
-    if stable.ENABLED:
+    if stable.enabled():
         rows = stable.padded_rows(m, (lin.out_features, lin.weight.shape[1]))
         if rows != m:  # keep cuBLASLt on its wide-M algorithm; the padded rows are discarded
             padded = torch.zeros((rows, x_q.shape[1]), dtype=x_q.dtype, device=x_q.device)

@@ -30,17 +30,19 @@ def _canary_checks():
 def _load(graphs: bool = True, spec: int = 0) -> tuple[Qwen38, Executor, SnapshotTokenizer]:
     import os
     from sharar import target as targets
-    target = targets.get(os.environ.get("SHARAR_TARGET") or None)
+    from sharar.engine.config import current
+    cfg = current()
+    target = targets.get(cfg.target)
     snap = target.snapshot_dir()
     print(f"loading {target.model_id}@{target.model_revision[:8]} ({target.name})")
     model = targets.load_model(target, snap)
     spec_config = None
     if spec:
         from sharar.cache.spec_budget import SpecConfig
-        spec_config = SpecConfig("mtp", spec, os.environ.get("SHARAR_BENCH_VERIFY_STATE", "snapshots"), "bf16", None)  # reserve the verify/draft budget in the pool plan
-    max_context = int(os.environ.get("SHARAR_BENCH_MAX_CONTEXT", "0")) or None  # smaller pools for large models
+        spec_config = SpecConfig("mtp", spec, cfg.bench_verify_state, "bf16", None)  # reserve the verify/draft budget in the pool plan
+    max_context = cfg.bench_max_context or None  # smaller pools for large models
     ex = Executor(model, log=print, spec_config=spec_config, max_context=max_context)  # a spec_config enables speculation itself
-    if os.environ.get("SHARAR_COMMIT_PROFILE") == "1":
+    if cfg.commit_profile:
         ex.state.commit_profile = {}
     if graphs:
         started = time.perf_counter()

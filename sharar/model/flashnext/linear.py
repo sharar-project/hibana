@@ -17,7 +17,6 @@ import torch
 
 FP8_MAX = 448.0
 GEMV_MAX_ROWS = 4
-KEEP_BF16 = re.compile(os.environ["SHARAR_TRUNK_KEEP_BF16"]) if os.environ.get("SHARAR_TRUNK_KEEP_BF16") else None
 
 
 @dataclass
@@ -50,7 +49,9 @@ class TrunkLinear:
         """One projection, or several fused along the output dimension."""
         parts = [w.get(n).to(device) for n in names]
         weight = parts[0] if len(parts) == 1 else torch.cat(parts, dim=0)
-        if KEEP_BF16 is not None and KEEP_BF16.search(names[0]):
+        from sharar.engine.config import current
+        keep = current().trunk_keep_bf16
+        if keep and re.search(keep, names[0]):
             precision = "bf16"
         return cls.from_bf16(weight, precision)
 

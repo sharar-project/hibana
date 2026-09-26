@@ -1,15 +1,12 @@
 """SHARAR_DEBUG_SYNC=1: synchronize and name the phase, so an asynchronous CUDA
 fault is reported by the phase that launched it, with the batch it served."""
 
-import os
-
 import torch
-
-ENABLED = os.environ.get("SHARAR_DEBUG_SYNC") == "1"
 
 
 def debug_sync(phase: str, reqs=None) -> None:
-    if not ENABLED or not torch.cuda.is_available():
+    from sharar.engine.config import current
+    if not current().debug_sync or not torch.cuda.is_available():
         return
     try:
         torch.cuda.synchronize()

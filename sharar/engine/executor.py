@@ -243,9 +243,9 @@ class Executor:
         if self.cache is None or self.cache.tier is not None:
             return
         if budget_gib is None:
-            env = os.environ.get("SHARAR_COLD_TIER_GIB")
-            if env is not None:
-                budget_gib = float(env)
+            from sharar.engine.config import current
+            if current().cold_tier_gib is not None:
+                budget_gib = current().cold_tier_gib
             else:
                 spare = mem_available_bytes() - self.ledger.floor_bytes - 8 * GIB - 4 * GIB
                 budget_gib = min(24.0, spare / GIB)
@@ -273,7 +273,9 @@ class Executor:
         cached bytes are interchangeable: same target revision, decode weights,
         geometry and prefill numerics."""
         import os
-        directory = os.environ.get("SHARAR_SESSION_DIR")
+        from sharar.engine.config import current
+        cfg = current()
+        directory = cfg.session_dir
         if not directory:
             return None
         from sharar.cache.ledger import GIB
@@ -281,9 +283,9 @@ class Executor:
         t = self.target
         identity = {"target": t.name, "revision": t.model_revision, "w3": getattr(self.model, "w3_identity", None),
                     "kv_bytes_per_token": t.kv_bytes_per_token, "state_bytes_per_slot": t.state_bytes_per_slot,
-                    "stable_numerics": os.environ.get("SHARAR_STABLE_NUMERICS", "0")}
-        return SessionDisk(directory, int(float(os.environ.get("SHARAR_SESSION_GIB", "200")) * GIB), identity, self.device, log=log,
-                           min_tokens=int(os.environ.get("SHARAR_SESSION_MIN_TOKENS", "4096")))
+                    "stable_numerics": "1" if cfg.stable_numerics else "0"}
+        return SessionDisk(directory, int(cfg.session_gib * GIB), identity, self.device, log=log,
+                           min_tokens=cfg.session_min_tokens)
 
     def persist_sessions(self, log=None) -> int:
         """At shutdown, with the engine stopped: park every cached session so

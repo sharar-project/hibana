@@ -61,6 +61,13 @@ launch the intended configuration. Updating Git or rebuilding a tag does not
 replace a running container. Validate the chosen image/profile before a
 production rollout; source benchmark qualification is separate from deployment.
 
+### Settings
+
+Every `SHARAR_*` variable the launcher forwards is read once into one
+`EngineConfig` (`sharar/engine/config.py`) when the server starts; the command
+line overrides it. `GET /get_server_info` returns the effective value under
+`config`, so a run records exactly what it served.
+
 ## Training the drafter
 
 `./sharar-ctl train` stops serving and trains the DFlash2 drafter on the

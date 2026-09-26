@@ -112,7 +112,7 @@ class ParallelDraftModel:
                 if self.is_fp8_name(name):
                     self.fp8_weights[name] = DraftFp8Linear.from_bf16(self.weights.pop(name))
             from sharar.kernels import w3
-            if w3.ENABLED and w3.DRAFT:
+            if w3.enabled() and w3.draft_enabled():
                 w3.attach_draft(self)
 
     # Keys that define the cached draft context (rings, retained features, cold

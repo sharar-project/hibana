@@ -17,6 +17,15 @@ def _load_env() -> None:
 _load_env()
 
 
+@pytest.fixture(autouse=True)
+def _engine_config():
+    """Each test starts from the environment (#44): a value one test installs never leaks into the next."""
+    from sharar.engine import config
+    config.reset()
+    yield
+    config.reset()
+
+
 @pytest.fixture(scope="session")
 def snapshot():
     from sharar import config

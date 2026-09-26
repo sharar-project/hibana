@@ -28,7 +28,10 @@ import torch
 
 from sharar.engine.accept import MAX_STOPS, accept_block
 
-ENABLED = os.environ.get("SHARAR_DEVICE_ACCEPT", "0") == "1"  # opt-in: exact, +2% at batch one, no serving gain at batch four yet (roadmap item 3)
+def enabled() -> bool:
+    """SHARAR_DEVICE_ACCEPT."""
+    from sharar.engine.config import current
+    return current().device_accept  # opt-in: exact, +2% at batch one, no serving gain at batch four yet (roadmap item 3)
 META = 3 + MAX_STOPS  # budget, start, ring slot, stop ids
 
 
