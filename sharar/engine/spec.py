@@ -39,6 +39,17 @@ class Verification:
 class SpecDecoder:
     aux_windows: dict = {}  # class attribute: test decoders skip __init__
 
+    @property
+    def verify_depth(self) -> int:
+        """The depth a fixed policy verifies (benchmarks set it to a captured narrower width)."""
+        policy = getattr(self, "depth_policy", None)
+        return policy.depth if policy is not None else self.k
+
+    @verify_depth.setter
+    def verify_depth(self, depth: int) -> None:
+        from sharar.engine.depth import FixedDepth
+        self.depth_policy = FixedDepth(depth)
+
     def __init__(self, executor, proposer: Proposer, state_strategy: str = "snapshots"):
         if state_strategy not in ("snapshots", "reconstruct"):
             raise ValueError("unknown verify state strategy")
@@ -140,18 +151,18 @@ class SpecDecoder:
 
     def start(self, req, token) -> None:
         self.proposer.start(req, token)
-        self._trace_features(req, req.committed_len - min(req.committed_len, getattr(self.proposer, "window", 0)), req.committed_len)
+        window = self.proposer.window if self.proposer.requirements.capabilities.trace_features else 0
+        self._trace_features(req, req.committed_len - min(req.committed_len, window), req.committed_len)
 
     def _trace_features(self, req, start: int, end: int) -> None:
         """Copy the projected context rows the draft just received into the request's trace recorder."""
         recorder = req.trace_features
         if recorder is None or end <= start:
             return
-        rows_for = getattr(self.proposer, "projected_rows", None)
-        if rows_for is None or not self.proposer.ready(req) and not req.finished:
+        if not self.proposer.requirements.capabilities.trace_features or not self.proposer.ready(req) and not req.finished:
             return
         try:
-            recorder.append(rows_for(req, start, end - start), start)
+            recorder.append(self.proposer.projected_rows(req, start, end - start), start)
         except ValueError:
             recorder.valid = False
 
@@ -170,7 +181,8 @@ class SpecDecoder:
     def prepare(self, reqs: list[Request]) -> Verification:
         """Reserve and draft one target verification batch."""
         ex = self.ex
-        k = getattr(self, 'verify_depth', self.k)
+        policy = getattr(self, 'depth_policy', None)
+        k = policy.choose(reqs) if policy is not None else self.k
         if k not in getattr(self, 'verify_depths', (self.k,)):
             raise ValueError('uncaptured verification depth')
         s_len = k + 1

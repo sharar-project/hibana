@@ -102,6 +102,8 @@ class ParallelDraftModel:
         if (cfg['hidden_size'], cfg['num_attention_heads'], cfg['num_key_value_heads'], cfg['head_dim']) != (5120, 32, 8, 128):
             raise ValueError('unvalidated draft dimensions')
         self.target, self.device = target, target.device
+        from sharar.proposers.draft_head import TargetHead
+        self.draft_head = TargetHead(lambda x: self.target.logits(x))  # the vocabulary projection the selector reads (#45); resolved per call
         self.features = tuple(cfg['dflash_config']['target_layer_ids'])
         self.window = cfg['sliding_window'] or max_context
         self.cos, self.sin = frequencies(cfg, max_context + 32, self.device)
@@ -239,9 +241,10 @@ class ParallelDraftModel:
 
     def selector(self, hidden, anchor):
         """DFlash2's sparse conditional lattice, including predecessor effects."""
-        logits = self.target.logits(hidden.reshape(-1, 5120)).view(*hidden.shape[:2], -1)
         # Keep the reference top-k until a deterministic fused kernel is gated.
-        values, candidates = logits.topk(self.cfg['dflash_config']['selector_top_k'], dim=-1)
+        k = self.cfg['dflash_config']['selector_top_k']
+        values, candidates = self.draft_head.topk(hidden.reshape(-1, 5120), k)
+        values, candidates = values.view(*hidden.shape[:2], k), candidates.view(*hidden.shape[:2], k)
         p = 'candidate_selector.'
         gate = hidden @ self.weights[p + 'hidden_projection.weight'].T
         predecessors = torch.cat([anchor[:, None, None].expand(-1, 1, candidates.shape[-1]), candidates[:, :-1]], dim=1)

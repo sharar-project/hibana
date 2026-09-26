@@ -7,7 +7,7 @@ and CUDA graph lifetimes are specified in docs/interfaces.md.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict
+from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, runtime_checkable
 
 if TYPE_CHECKING:
     import torch
@@ -33,6 +33,18 @@ class ForwardResult(TypedDict):
 
 
 @dataclass(frozen=True)
+class Capabilities:
+    """What a proposer offers beyond the `Proposer` lifecycle (#45). The engine reads these flags
+    instead of probing for methods; `check_capabilities` verifies each promised protocol."""
+    device_feedback: bool = False   # DeviceFeedback: accepted_prepare / feedback_device / accepted_publish (device acceptance)
+    reloadable: bool = False        # Reloadable: reload(snapshot) -> served source, between rounds
+    checkpoint_cache: bool = False  # CheckpointCache: bind_checkpoint_cache(pool) and a feature_cache with stats
+    cold_payload: bool = False      # ColdPayload: auxiliary_codec() -> (identity, export, import) for parked sessions
+    trace_features: bool = False    # TraceFeatures: projected_rows(req, start, count) and a context `window`
+    draft_head: bool = False        # DraftHeadChoice: set_draft_head(ids, fmt, rescore) on the head
+
+
+@dataclass(frozen=True)
 class ProposerRequirements:
     name: str
     features: FeatureRequest = FeatureRequest()
@@ -40,6 +52,7 @@ class ProposerRequirements:
     scratch_bytes: int = 0
     greedy_only: bool = True
     max_depth: int = 4
+    capabilities: Capabilities = Capabilities()
 
 
 @dataclass(frozen=True)
@@ -79,6 +92,49 @@ class Proposer(Protocol):
         ...
     def release(self, req: Request) -> None: ...
     def capture_graphs(self, log=None) -> None: ...
+
+
+@runtime_checkable
+class DeviceFeedback(Protocol):
+    def accepted_prepare(self, requests: list[Request]): ...
+    def feedback_device(self, features, starts, ring_slots, counts, steps) -> None: ...
+    def accepted_publish(self, requests: list[Request], emitted: list[list[int]]) -> None: ...
+
+
+@runtime_checkable
+class Reloadable(Protocol):
+    def reload(self, snapshot) -> str: ...
+
+
+@runtime_checkable
+class CheckpointCache(Protocol):
+    feature_cache: object
+    def bind_checkpoint_cache(self, pool) -> None: ...
+
+
+@runtime_checkable
+class ColdPayload(Protocol):
+    def auxiliary_codec(self): ...
+
+
+@runtime_checkable
+class TraceFeatures(Protocol):
+    window: int
+    def projected_rows(self, req: Request, start: int, count: int): ...
+
+
+PROTOCOLS = {"device_feedback": DeviceFeedback, "reloadable": Reloadable, "checkpoint_cache": CheckpointCache,
+             "cold_payload": ColdPayload, "trace_features": TraceFeatures}
+
+
+def check_capabilities(proposer) -> None:
+    """Every capability a proposer declares must come with its protocol's methods."""
+    caps = proposer.requirements.capabilities
+    for name, protocol in PROTOCOLS.items():
+        if getattr(caps, name) and not isinstance(proposer, protocol):
+            raise TypeError(f"{proposer.requirements.name} declares {name} without the {protocol.__name__} methods")
+    if caps.draft_head and not callable(getattr(getattr(proposer, "head", None), "set_draft_head", None)):
+        raise TypeError(f"{proposer.requirements.name} declares draft_head without head.set_draft_head")
 
 
 class ExecutionBackend(Protocol):

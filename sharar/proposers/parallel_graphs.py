@@ -34,7 +34,7 @@ class ParallelGraphs:
                 if p.name == 'dflash2':
                     st['candidates'], st['scores'] = p.model.selector(st['hidden'], st['tokens'][:, 0])
                 else:
-                    st['logits'] = p.model.target.logits(hidden.reshape(-1, 5120)).view(batch, p.k, -1)
+                    st['logits'] = p.model.draft_head.logits(hidden.reshape(-1, 5120)).view(batch, p.k, -1)
             for _ in range(2):
                 forward()
             torch.cuda.synchronize()

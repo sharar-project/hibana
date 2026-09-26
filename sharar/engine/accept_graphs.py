@@ -21,7 +21,6 @@ reconstruct nothing into the dummy recurrent slot and write the dummy ring.
 
 from __future__ import annotations
 
-import os
 import time
 
 import torch
@@ -50,8 +49,7 @@ class AcceptGraphs:
     def supported(spec) -> bool:
         p = spec.proposer
         return (spec.replay is not None and spec.device.type == "cuda"
-                and all(hasattr(p, name) for name in ("accepted_prepare", "feedback_device", "accepted_publish"))
-                and not p.requirements.features.final_norm)
+                and p.requirements.capabilities.device_feedback and not p.requirements.features.final_norm)
 
     def eligible(self, requests) -> bool:
         return all(r.params.greedy and (r.params.ignore_eos or len(r.params.stop_token_ids) <= MAX_STOPS) for r in requests)

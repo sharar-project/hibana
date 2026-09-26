@@ -1,5 +1,4 @@
 """Checkpoint-specific construction at startup; the executor consumes contracts."""
-import os
 
 from sharar.target import DEFAULT_TARGET
 
@@ -44,7 +43,7 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
         cfg = current()
         vocab = cfg.draft_vocab  # reduced draft vocabulary rows (0: the full lm_head)
         fmt = cfg.draft_head  # the draft head's own precision: fp8 (the target's head) or w3
-        if (vocab or fmt != "fp8") and not hasattr(head, "set_draft_head"):
+        if (vocab or fmt != "fp8") and not getattr(head, "DRAFT_HEADS", False):
             raise ValueError("SHARAR_DRAFT_VOCAB / SHARAR_DRAFT_HEAD need the Flash-Next MTP head")
         if vocab or fmt != "fp8":
             from sharar.proposers.draft_vocab import draft_vocab

@@ -177,7 +177,8 @@ def test_mtp_bonus_and_cached_prefix_never_read_unwritten_draft_kv(monkeypatch):
         out[:, 7] = 10
         return out
     ex.model.logits = logits
-    head = SimpleNamespace(bytes=0, write_kv=write, forward=forward, logits=logits)
+    from sharar.proposers.draft_head import TargetHead
+    head = SimpleNamespace(bytes=0, write_kv=write, forward=forward, logits=logits, draft_head=TargetHead(logits), head_input=lambda d: d)
     proposer = MtpProposer(head, ProposerContext(ex.device, 4, 512))
     ex.set_proposer(proposer)
     for _ in range(2):

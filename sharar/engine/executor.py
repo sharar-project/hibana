@@ -147,9 +147,11 @@ class Executor:
             raise ValueError("unsupported proposal width")
         if any(type(i) is not int or not 0 <= i < self.target.num_layers for i in proposer.requirements.features.layers):
             raise ValueError("invalid target feature layer")
-        bind = getattr(proposer, 'bind_checkpoint_cache', None)
-        if bind is not None and self.cache is not None:
-            bind(self.state_pool)
+        from sharar.engine.contracts import check_capabilities
+        check_capabilities(proposer)
+        caps = proposer.requirements.capabilities
+        if caps.checkpoint_cache and self.cache is not None:
+            proposer.bind_checkpoint_cache(self.state_pool)
         self.spec = SpecDecoder(self, proposer, state_strategy)
 
     def within_budget(self, seqs) -> bool:
@@ -222,7 +224,7 @@ class Executor:
         if self.cache is None:
             return None
         stats = self.cache.stats()
-        features = getattr(self.spec.proposer, 'feature_cache', None) if self.spec is not None else None
+        features = self.spec.proposer.feature_cache if self.spec is not None and self.spec.proposer.requirements.capabilities.checkpoint_cache else None
         if features is not None:
             stats['draft_features'] = {'entries': len(features.entries), 'bytes': features.bytes,
                                        'capacity_bytes': features.capacity,
@@ -236,7 +238,6 @@ class Executor:
         what is available now beyond the host floor, the prefill reserve and a
         4 GiB margin, capped at 24 GiB. Call after the proposer exists so its
         auxiliary state travels with parked sessions."""
-        import os
         from sharar.cache.cold_tier import ColdTier
         from sharar.cache.ledger import GIB, mem_available_bytes
 
@@ -261,9 +262,8 @@ class Executor:
                 log(f"  cold tier: disabled ({exc})")
             return
         proposer = self.spec.proposer if self.spec is not None else None
-        codec = getattr(proposer, "auxiliary_codec", None)
-        if codec is not None:
-            self.cache.tier.register_codec(*codec())
+        if proposer is not None and proposer.requirements.capabilities.cold_payload:
+            self.cache.tier.register_codec(*proposer.auxiliary_codec())
         self.ledger.record_cuda_allocated("cold_tier")
 
     def _session_disk(self, log=None):
@@ -272,7 +272,6 @@ class Executor:
         are not written), or None. Records are only shared between processes whose
         cached bytes are interchangeable: same target revision, decode weights,
         geometry and prefill numerics."""
-        import os
         from sharar.engine.config import current
         cfg = current()
         directory = cfg.session_dir
@@ -310,7 +309,7 @@ class Executor:
     def release(self, req: Request) -> None:
         if req.released:
             return
-        if self.spec is not None and hasattr(self.spec.proposer, "prepare_release"):
+        if self.spec is not None:
             self.spec.proposer.prepare_release(req)
         self.state.release(req)
         if self.spec is not None:
@@ -323,12 +322,10 @@ class Executor:
         """Copy a checkpoint (None = the pinned publisher draft) into the serving
         draft between rounds; returns the served source. Only parallel drafts
         (DSpark, DFlash2) hold a reloadable model."""
-        if self.spec is None or not hasattr(self.spec.proposer, "model") or not hasattr(self.spec.proposer.model, "load_weights"):
+        if self.spec is None or not self.spec.proposer.requirements.capabilities.reloadable:
             raise ValueError("no reloadable draft is being served")
         from sharar.proposers.factory import draft_snapshot
-        snapshot = draft_snapshot(self.spec.proposer.name, draft_dir)
-        self.spec.proposer.model.load_weights(snapshot)
-        return self.spec.proposer.model.source
+        return self.spec.proposer.reload(draft_snapshot(self.spec.proposer.name, draft_dir))
 
     # ---- steps ----
     def _plan_paged_prefill(self, prefix_pages: torch.Tensor, new_tokens: int) -> None:
