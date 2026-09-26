@@ -63,7 +63,7 @@ def chat_ids(tok, prompt: str) -> list[int]:
     return tok.encode(f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
 
 
-def rounds(ex, tok, out, tokens: int):
+def rounds(ex, tok, out, tokens: int, profiled: bool = True):
     ex.spec.timing = True
     for name, prompt in PROMPTS.items():
         ids = chat_ids(tok, prompt)
@@ -79,6 +79,8 @@ def rounds(ex, tok, out, tokens: int):
         out["rounds"].append(row)
         print(json.dumps(row), flush=True)
     ex.spec.timing = False
+    if not profiled:
+        return
     ids = chat_ids(tok, PROMPTS["code"])
     params = SamplingParams(max_new_tokens=96, ignore_eos=True)
     ex.flush_cache()
@@ -275,6 +277,7 @@ def main():
     ap.add_argument("--tokens", type=int, default=256)
     ap.add_argument("--context", type=int, default=2000)
     ap.add_argument("--skip-rounds", action="store_true")
+    ap.add_argument("--rounds-only", action="store_true", help="the per-prompt round split, without the profiled generation and the M curve")
     ap.add_argument("--only-breakdown", action="store_true")
     ap.add_argument("--host-profile", action="store_true")
     ap.add_argument("--gap-profile", action="store_true")
@@ -289,8 +292,9 @@ def main():
         verify_breakdown(ex, tok, out, args.tokens)
     else:
         if not args.skip_rounds:
-            rounds(ex, tok, out, args.tokens)
-        m_curve(ex, model, tok, out, args.context)
+            rounds(ex, tok, out, args.tokens, profiled=not args.rounds_only)
+        if not args.rounds_only:
+            m_curve(ex, model, tok, out, args.context)
     Path(args.out).write_text(json.dumps(out, indent=1))
     print("done", flush=True)
 
