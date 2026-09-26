@@ -105,6 +105,29 @@ class FlashNext:
             if indexer is not None:
                 indexer.register(kv_pool)
 
+    def linears(self):
+        """Every trunk projection by name (`weights/linear.py`): attention qkv/o, GDN in_qkv/in_z/out,
+        shared-expert gate_up/down, PLE key/value, the hyper-connection mixers' down/up, and the lm_head.
+        The routed experts are not linears (the fused MoE kernel reads them)."""
+        for layer in self.layers:
+            p = f"layers.{layer.index}"
+            for name in ("qkv", "o", "in_qkv", "in_z", "out"):
+                lin = getattr(layer.mixer, name, None)
+                if lin is not None:
+                    yield f"{p}.mixer.{name}", lin
+            yield f"{p}.mlp.shared_gate_up", layer.moe.shared_gate_up
+            yield f"{p}.mlp.shared_down", layer.moe.shared_down
+            if layer.ple is not None:
+                yield f"{p}.ple.key_proj", layer.ple.key_proj
+                yield f"{p}.ple.value_proj", layer.ple.value_proj
+            for hc_name in ("attn_hc", "mlp_hc"):
+                hc = getattr(layer, hc_name)
+                yield f"{p}.{hc_name}.down", hc.down
+                yield f"{p}.{hc_name}.up", hc.up
+        yield "mixer.down", self.mixer.down
+        yield "mixer.up", self.mixer.up
+        yield "lm_head", self.lm_head
+
     def forward_extras(self):
         """The side inputs this model's forwards need beyond the ForwardContext (model/flashnext/extras.py)."""
         if self._extras is None:

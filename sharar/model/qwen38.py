@@ -110,6 +110,12 @@ class Qwen38:
         if w3.enabled():
             w3.attach_model(self, log=log)
 
+    def linears(self):
+        """Every projection that has a decode copy, by name (`weights/linear.py`): MLP gate_up/down,
+        GDN in_qkv/in_z/out, attention qkv/o."""
+        from sharar.weights.w3_checkpoint import model_linears
+        return model_linears(self)
+
     def forward_extras(self):
         """No side inputs beyond the ForwardContext (the model contract, docs/architecture.md)."""
         return None

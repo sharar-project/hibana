@@ -293,7 +293,7 @@ green. Numerics-changing work is not mixed into these.
 | 2 | Speculator capabilities and optional protocols; shared draft head (`Linear` over rows) usable by DFlash2 and both MTP heads (#45, done: `Capabilities`, `proposers/draft_head.py`, `engine/depth.py`) | #43, draft head on the 27B |
 | 3 | Attention planner and graph-set helper (#46, done: `kernels/attention_plan.py`, `engine/graph_set.py`) | steps 4 and 6; fewer plan races |
 | 4 | Model contract: `StepExtras` and `state_spec`; PLE and QSA leave `engine/` (#47, done: `forward_extras()`, `ForwardContext.extras`, `model/flashnext/extras.py`) | a third model; Flash-Next DFlash2 |
-| 5 | One `Linear` with formats; `TargetModel.linears()`; generic calibration | calibrated W3 for Flash-Next (#6) |
+| 5 | One `Linear` with formats; `TargetModel.linears()`; generic calibration (#48, done as one interface: `weights/linear.py`, `linears()` on both models, `w3.attach` over any linears; each format keeps its dispatch, the calibration driver stays per checkpoint) | calibrated W3 for Flash-Next (#6) |
 | 6 | Feature taps on both models (`stream_width`, layer taps through the hyper stream); DFlash2 width from the target | Flash-Next DFlash2 (#7) |
 | 7 | One `MtpLayer` body for both targets | 27B MTP at Flash-Next quality |
 | 8 | `Trainable` interface; MTP trainer second | #40, #7 training |

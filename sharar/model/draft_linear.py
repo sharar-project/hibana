@@ -22,6 +22,17 @@ class DraftFp8Linear:
     def bytes(self):
         return self.weight.numel() + self.scale.numel() * self.scale.element_size()
 
+    @property
+    def out_features(self) -> int:
+        return self.weight.shape[0]
+
+    @property
+    def in_features(self) -> int:
+        return self.weight.shape[1]
+
+    def dequantize(self) -> torch.Tensor:
+        return self.weight.float() * self.scale.float()
+
     def __call__(self, x):
         from sharar.kernels.draft_fp8 import quant_dynamic
         flat = x.reshape(-1, x.shape[-1]).contiguous()

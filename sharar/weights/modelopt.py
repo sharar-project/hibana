@@ -35,6 +35,21 @@ class Fp8Linear:
     def out_features(self) -> int:
         return self.weight.shape[0]
 
+    @property
+    def in_features(self) -> int:
+        return self.weight.shape[1]
+
+    @property
+    def bytes(self) -> int:
+        return self.w3.bytes if self.w3 is not None else self.weight.numel()
+
+    def dequantize(self) -> torch.Tensor:
+        return self.weight.float() * self.weight_scale.float()
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        from sharar.kernels import ops
+        return ops.fp8_linear(x, self)
+
 
 @dataclass
 class Nvfp4Linear:
@@ -45,6 +60,20 @@ class Nvfp4Linear:
     out_features: int
     in_features: int
     w3: object = None  # optional 3-bit decode copy (sharar.kernels.w3.W3Weight)
+
+    @property
+    def bytes(self) -> int:
+        return self.w3.bytes if self.w3 is not None else self.weight.numel() + self.weight_scale_swizzled.numel()
+
+    def dequantize(self) -> torch.Tensor:
+        groups = self.in_features // 16
+        scales = unswizzle_block_scales(self.weight_scale_swizzled.reshape(-1), self.out_features, groups)
+        # unpack_fp4 applies the block scales; alpha = input_scale * weight_scale_2 restores the global scale
+        return unpack_fp4(self.weight, scales) * (self.alpha * self.input_scale_inv).float()
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        from sharar.kernels import ops
+        return ops.nvfp4_linear(x, self)
 
 
 def _to_fp8(x: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:

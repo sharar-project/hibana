@@ -297,38 +297,43 @@ def w3_linear(x: torch.Tensor, w3: W3Weight, x_scale: torch.Tensor | None = None
 # ------------------------------------------------------------------ attaching to the served model
 
 def _dequant_nvfp4(lin) -> torch.Tensor:
-    from sharar.weights.modelopt import unpack_fp4, unswizzle_block_scales
-    groups = lin.in_features // 16
-    scales = unswizzle_block_scales(lin.weight_scale_swizzled.reshape(-1), lin.out_features, groups)
-    # unpack_fp4 applies the block scales; alpha = input_scale * weight_scale_2 restores the global scale
-    return unpack_fp4(lin.weight, scales) * (lin.alpha * lin.input_scale_inv).float()
+    """Kept for tools/check_distribution.py: `Nvfp4Linear.dequantize()`."""
+    return lin.dequantize()
 
 
-def _dequant_fp8(lin) -> torch.Tensor:
-    return lin.weight.float() * lin.weight_scale.float()
+def attach(linears, codebook=None) -> tuple[int, int]:
+    """Nearest-level 3-bit copies for (name, linear) pairs that have none (`weights/linear.py` interface);
+    returns (matrices packed, bytes)."""
+    codebook = default_codebook() if codebook is None else codebook
+    count = total = 0
+    for _, lin in linears:
+        if getattr(lin, "w3", None) is None:
+            lin.w3 = pack(lin.dequantize(), codebook)
+            total += lin.w3.bytes; count += 1
+    return count, total
 
 
 def attach_model(model, log=print, head: bool | None = None, codebook=None) -> dict:
-    """Pack 3-bit decode copies for every MLP and FP8 projection of a loaded Qwen38 (and the lm_head when `head`)."""
+    """Pack 3-bit decode copies for every projection `model.linears()` lists (calibrated ones from
+    SHARAR_W3_CHECKPOINT when set), and the lm_head when `head`."""
     codebook = default_codebook() if codebook is None else codebook
     total = 0
     count = 0
-    from sharar.weights.w3_checkpoint import CalibratedWeights, model_linears
+    from sharar.weights.w3_checkpoint import CalibratedWeights
     from sharar.engine.config import current
     directory = current().w3_checkpoint
     calibrated = CalibratedWeights(directory) if directory else None
-    linears = list(model_linears(model))
+    linears = list(model.linears())
     if calibrated is not None and set(calibrated.weights) != {name for name, _ in linears}:
         raise ValueError("calibrated W3 checkpoint must contain every target layer projection")
     for name, lin in linears:
         if getattr(lin, "w3", None) is None:
-            lin.w3 = calibrated.load(name, lin) if calibrated else pack(
-                _dequant_nvfp4(lin) if hasattr(lin, "weight_scale_swizzled") else _dequant_fp8(lin), codebook)
+            lin.w3 = calibrated.load(name, lin) if calibrated else pack(lin.dequantize(), codebook)
             total += lin.w3.bytes; count += 1
     torch.cuda.synchronize()
     model.w3_identity = calibrated.identity if calibrated else "nearest:" + str(codebook)
     if (head_enabled() if head is None else head) and getattr(model.lm_head, "w3", None) is None:
-        model.lm_head.w3 = pack(_dequant_nvfp4(model.lm_head), codebook)
+        model.lm_head.w3 = pack(model.lm_head.dequantize(), codebook)
         total += model.lm_head.w3.bytes; count += 1
     _module()  # build the kernel before serving starts
     log(f"  w3: packed {count} matrices, {total / 2**30:.2f} GiB of 3-bit decode weights (codebook {codebook})")
@@ -340,10 +345,7 @@ def attach_draft(draft, log=print, codebook=None) -> dict:
     codebook = default_codebook() if codebook is None else codebook
     total = 0
     count = 0
-    for name, lin in draft.fp8_weights.items():
-        if getattr(lin, "w3", None) is None:
-            lin.w3 = pack(lin.weight.float() * lin.scale.float(), codebook)
-            total += lin.w3.bytes; count += 1
+    count, total = attach(draft.fp8_weights.items(), codebook)
     torch.cuda.synchronize()
     log(f"  w3: packed {count} draft matrices, {total / 2**30:.2f} GiB")
     return {"matrices": count, "bytes": total}

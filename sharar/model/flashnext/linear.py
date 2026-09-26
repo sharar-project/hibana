@@ -9,7 +9,6 @@ row, per output channel) were measured and do not beat numerical noise (#5)."""
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
 
@@ -66,6 +65,9 @@ class TrunkLinear:
     @property
     def bytes(self) -> int:
         return self.w3.bytes if self.w3 is not None else self.weight.numel() * self.weight.element_size()
+
+    def dequantize(self) -> torch.Tensor:
+        return self.weight.float() * self.scale.float() if self.scale is not None else self.weight.float()
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         flat = x.reshape(-1, x.shape[-1])

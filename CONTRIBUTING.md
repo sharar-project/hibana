@@ -153,6 +153,10 @@ accepting older records.
 
 ## Add a GB10 kernel
 
+A new weight format implements the `Linear` interface (`weights/linear.py`:
+call, `out_features`/`in_features`, `bytes`, `dequantize()`, optional `w3`
+copy) and keeps its own row-count dispatch; models list their projections with
+`linears()` so 3-bit copies (`w3.attach`) and calibration work on any model.
 Attention calls plan through `kernels/attention_plan.py` (`AttentionPlanner`, one
 per KV geometry: host index pointers, `plan_guard` for eager wrappers, no guard
 for graph-bound buffers); new CUDA graphs use `engine/graph_set.py` (`pick`,
