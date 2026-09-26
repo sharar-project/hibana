@@ -18,6 +18,7 @@ FORMAT_VERSION = 1
 
 
 def model_linears(model):
+    """The 27B's projections by checkpoint-independent name (`Qwen38.linears()`)."""
     for layer in model.layers:
         for name in ("gate_up", "down"):
             yield f"layers.{layer.index}.mlp.{name}", getattr(layer.mlp, name)

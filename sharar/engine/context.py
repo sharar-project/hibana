@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from sharar import config
 from sharar.engine.contracts import FeatureRequest
 from sharar.cache.kv_pool import KvPool
 from sharar.cache.state_pool import StatePool
@@ -69,27 +68,11 @@ class ForwardContext:
     # then cloned instead of updated in place.
     capture: bool = False
     feature_request: FeatureRequest = FeatureRequest()
-    # Prefix-lookup embeddings (Flash-Next): the two tokens before each sequence's new tokens,
-    # int64 [B, 2] on the host (None = EOS history), and optionally the table rows already
-    # gathered for the forward's tokens (uint8 [T, heads, row_bytes] on the device).
-    ple_history: torch.Tensor | None = None
-    ple_rows: torch.Tensor | None = None
     # Verify: auxiliary per-slot state after each step, name -> [max_batch, steps, ...] buffer the model fills
     verify_aux_windows: dict = field(default_factory=dict)
-    # Sparse-attention indexer (Flash-Next): per sequence in token order, (first new position,
-    # new tokens, every page of the sequence through its last new token). None: no indexer.
-    qsa_seqs: list | None = None
-    # Graph-safe index-key maintenance (every row inside the indexer budget, so no selection):
-    # int32 [rows, ratio] pages of each row's group through itself, and [rows] the page that
-    # receives the compressed key (page 0, the dummy, when the row does not complete a group).
-    qsa_members: torch.Tensor | None = None
-    qsa_writes: torch.Tensor | None = None
-    # Graph-safe selection (some row past the budget): the flat page table the attention plan
-    # reads, its per-sequence offsets, each row's sequence and the static group capacity.
-    qsa_table: torch.Tensor | None = None
-    qsa_indptr: torch.Tensor | None = None
-    qsa_row_seq: torch.Tensor | None = None
-    qsa_gcap: int = 0
+    # The model's own side inputs for this forward (its `forward_extras()`; e.g. Flash-Next's PLE rows and
+    # sparse-attention bookkeeping, model/flashnext/extras.py). None for a model without any.
+    extras: object = None
 
     @property
     def query_start_loc(self) -> torch.Tensor:

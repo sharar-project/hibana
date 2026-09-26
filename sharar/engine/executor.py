@@ -41,7 +41,7 @@ class PrefillBatch:
 
 class Executor:
     timing = False  # benchmarks set True: synchronize to attribute prefill wall time (class attribute: test executors skip __init__)
-    _ple = None  # the model's prefix-lookup embedding layer when it has one (Flash-Next); class attribute for the same reason
+    extras = None  # the model's forward side inputs (`forward_extras()`, e.g. Flash-Next's); class attribute for the same reason
 
     def __init__(self, model: Qwen38, num_pages: int | None = None, num_slots: int | None = None, max_batch: int = 4, use_cache: bool = True, log=None, max_context: int | None = None, spec_config=None):
         self.target: Target = model.target
@@ -52,7 +52,7 @@ class Executor:
         self.max_context = max_context
         self.model = model
         self.device = model.device
-        self._ple = getattr(model, "ple", None)  # prefix-lookup embeddings need the tokens before each forward
+        self.extras = model.forward_extras()  # what the model's forwards need beyond the context (None for the 27B)
         self.ledger = Ledger(target=self.target)
         self.ledger.record_cuda_allocated("weights")
         future, extra_page = 2 * 2**30, 0
@@ -68,12 +68,10 @@ class Executor:
         from sharar.cache.ledger import check_load_headroom
         check_load_headroom(num_pages * (self.target.kv_bytes_per_token + extra_page) + num_slots * self.target.state_bytes_per_slot + future + 8 * 2**30)
         self.kv_pool = KvPool(num_pages, self.device, target=self.target)
-        if hasattr(model, "register_pages"):
-            model.register_pages(self.kv_pool)  # e.g. Flash-Next's sparse-attention index keys (KvPool.page_aux)
+        model.register_pages(self.kv_pool)  # per-page rows beyond K/V, e.g. Flash-Next's sparse-attention index keys (KvPool.page_aux)
         self.ledger.record_cuda_allocated("kv_pool")
         self.state_pool = StatePool(num_slots, self.device, target=self.target)
-        if hasattr(model, "register_state"):
-            model.register_state(self.state_pool)  # e.g. the PLE convolution window (StatePool.aux)
+        model.register_state(self.state_pool)  # per-slot state beyond the GDN's, e.g. the PLE convolution window (StatePool.aux)
         self.ledger.record_cuda_allocated("state_pool")
         cache = RadixCache(self.kv_pool, self.state_pool, self.device) if use_cache else None
         self.state = StateManager(self.kv_pool, self.state_pool, cache)
@@ -162,19 +160,10 @@ class Executor:
             proposer.bind_checkpoint_cache(self.state_pool)
         self.spec = SpecDecoder(self, proposer, state_strategy)
 
-    def within_budget(self, seqs) -> bool:
-        """Whether every row of a decode or verification batch sees at most the indexer
-        budget (always true without an indexer): the dense graphs then serve it exactly;
-        otherwise the selecting graphs (`graphs.sparse_graphs`) or the eager path."""
-        t = self.target
-        return not t.indexer_budget or all(first + n - 1 < t.indexer_budget + t.indexer_compress_ratio - 1 for first, n, _ in seqs)
-
-    def qsa_rows(self, seqs):
-        """Per-row index-key maintenance rows for a sparse-attention target's graphs (None otherwise)."""
-        if not self.target.indexer_budget:
-            return None
-        from sharar.model.flashnext.indexer import FlashNextIndexer
-        return FlashNextIndexer.static_rows(seqs, self.target.indexer_compress_ratio, self.device)
+    def variant(self, seqs) -> str:
+        """The graph variant a decode or verification batch needs: "dense" unless the model's side inputs say
+        otherwise (Flash-Next past its indexer budget: "selecting", or the eager path when not captured)."""
+        return self.extras.variant(seqs) if self.extras is not None else "dense"
 
     def capture_graphs(self, log=print) -> None:
         self.graphs = DecodeGraphs(self)
@@ -417,15 +406,13 @@ class Executor:
         if start:
             self._plan_paged_prefill(req.pages[:start], t)
             ctx.paged_prefill_wrapper = self._paged_prefill
-        if self._ple is not None:
-            ctx.ple_history = torch.tensor([self._ple_history(req, start)], dtype=torch.int64)
         for _, pos, slot in self.state.prefill_checkpoints([(req, self._checkpoint_positions(start, end, n))]):
             ctx.checkpoint_positions.append(pos)
             ctx.checkpoint_slots.append(slot)
         if self._features_wanted() is not None:
             ctx.feature_request = self._features_wanted()
-        if self.target.indexer_budget:
-            ctx.qsa_seqs = [(start, t, req.pages[:end])]
+        if self.extras is not None:
+            ctx.extras = self.extras.for_prefill([(req, start, t, req.pages[:end])])
         return PrefillBatch([(req, t)], ids, ctx, started)
 
     def _prepare_prefill(self, chunks: list[tuple[Request, int]]) -> PrefillBatch:
@@ -470,32 +457,11 @@ class Executor:
                                          torch.cat(kv_indices), torch.ones(len(chunks), dtype=torch.int32), causal=False)
             ctx.paged_prefill_wrapper = self._paged_prefill
         ids = upload(ids_list, torch.int64, d)
-        if self._ple is not None:
-            ctx.ple_history = torch.tensor([self._ple_history(req, req.prefill_pos) for req, _ in chunks], dtype=torch.int64)
         if self._features_wanted() is not None:
             ctx.feature_request = self._features_wanted()
-        if self.target.indexer_budget:
-            ctx.qsa_seqs = [(req.prefill_pos, n, req.pages[:req.prefill_pos + n]) for req, n in chunks]
+        if self.extras is not None:
+            ctx.extras = self.extras.for_prefill([(req, req.prefill_pos, n, req.pages[:req.prefill_pos + n]) for req, n in chunks])
         return PrefillBatch(list(chunks), ids, ctx, started)
-
-    def _ple_history(self, req: Request, start: int) -> list[int]:
-        """The two tokens before absolute position `start` of the request (EOS before the sequence)."""
-        full = req.prompt_ids + req.output_ids
-        eos = self.model.eos
-        return [full[i] if i >= 0 else eos for i in (start - 2, start - 1)]
-
-    def _ple_rows_block(self, reqs: list[Request], drafts: list[list[int]]) -> torch.Tensor:
-        """Table rows for each request's verify block (its pending token then the drafted ones) -> device uint8 [B*(k+1), heads, row_bytes]."""
-        k = len(drafts[0])
-        tokens = torch.tensor([[r.output_ids[-1], *d] for r, d in zip(reqs, drafts)], dtype=torch.int64).reshape(-1)
-        histories = torch.tensor([self._ple_history(r, r.context_len - 1) for r in reqs], dtype=torch.int64)
-        return self._ple.rows_for(tokens, [(i * (k + 1), k + 1) for i in range(len(reqs))], histories, self.model.eos)
-
-    def _ple_rows(self, reqs: list[Request]) -> torch.Tensor:
-        """Table rows for each request's pending decode token (host gather) -> device uint8 [B, heads, row_bytes]."""
-        tokens = torch.tensor([r.output_ids[-1] for r in reqs], dtype=torch.int64)
-        histories = torch.tensor([self._ple_history(r, r.context_len - 1) for r in reqs], dtype=torch.int64)
-        return self._ple.rows_for(tokens, [(i, 1) for i in range(len(reqs))], histories, self.model.eos)
 
     def _finish_prefill(self, batch: PrefillBatch, out) -> int | None:
         chunks, started = batch.chunks, batch.started
@@ -626,8 +592,8 @@ class Executor:
         new_pages = self.state.reserve(reqs, 1)
         step_pages = [self.state.step_pages(r) for r in reqs]
         seqs = [(r.context_len - 1, 1, pages) for r, pages in zip(reqs, step_pages)]
-        dense = self.within_budget(seqs)
-        if self.use_graphs and self.graphs is not None and (dense or self.graphs.sparse):
+        variant = self.variant(seqs)
+        if self.use_graphs and self.graphs is not None and variant in self.graphs.variants:
             result = self.graphs.run(
                 [r.output_ids[-1] for r in reqs],
                 [r.context_len - 1 for r in reqs],
@@ -635,9 +601,8 @@ class Executor:
                 new_pages,
                 step_pages,
                 return_features=self.spec is not None,
-                ple_rows=self._ple_rows(reqs) if self._ple is not None else None,
-                qsa=self.qsa_rows(seqs),
-                sparse=not dense,
+                side=(reqs, seqs),
+                variant=variant,
             )
             if self.spec is not None:
                 logits, out = result
@@ -652,12 +617,10 @@ class Executor:
                 slots=upload([r.slot for r in reqs], torch.int32, self.device),
                 out_pages=new_pages, decode_wrapper=self._decode_wrapper, batch_size=len(reqs),
             )
-            if self._ple is not None:
-                ctx.ple_rows = self._ple_rows(reqs)
             if self._features_wanted() is not None:
                 ctx.feature_request = self._features_wanted()
-            if self.target.indexer_budget:
-                ctx.qsa_seqs = seqs
+            if self.extras is not None:
+                ctx.extras = self.extras.for_decode(reqs, seqs)
             out = self.model.forward(tokens, ctx)
             debug_sync("after plain decode forward", reqs)
             logits = self.model.logits(out["norm"])

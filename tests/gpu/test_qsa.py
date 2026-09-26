@@ -59,7 +59,7 @@ def test_indexer_selection_matches_the_reference(budget):
     def forward(first, n):
         projected.append(torch.nn.functional.linear(x[first:first + n], ix.qk))
         ctx = SimpleNamespace(kv_pool=pool, positions=torch.arange(first, first + n, device=dev),
-                              qsa_seqs=[(first, n, seq_pages[: first + n])])
+                              extras=SimpleNamespace(qsa_seqs=[(first, n, seq_pages[: first + n])]))
         out = ix.run(x[first:first + n], ctx, seq_pages[first:first + n])
         if out is not None:
             pages, counts = out
@@ -112,21 +112,21 @@ def test_graph_safe_maintenance_matches_the_eager_keys_under_replay():
     seq_pages = (torch.randperm(total + 63, device=dev) + 1)[:total].to(torch.int32)
     x = torch.randn(total, hidden, device=dev).to(torch.bfloat16)
     prefill = 100
-    ctx = SimpleNamespace(kv_pool=eager_pool, positions=torch.arange(prefill, device=dev), qsa_seqs=[(0, prefill, seq_pages[:prefill])])
+    ctx = SimpleNamespace(kv_pool=eager_pool, positions=torch.arange(prefill, device=dev), extras=SimpleNamespace(qsa_seqs=[(0, prefill, seq_pages[:prefill])]))
     assert ix.run(x[:prefill], ctx, seq_pages[:prefill]) is None
     graph_pool.page_aux[ix.name].copy_(eager_pool.page_aux[ix.name])  # the same prefix in both pools
     # graph: one decode row captured, replayed per token with new static rows
     static = {"x": torch.zeros(1, hidden, dtype=torch.bfloat16, device=dev), "pos": torch.zeros(1, dtype=torch.int64, device=dev),
               "page": torch.zeros(1, dtype=torch.int32, device=dev), "members": torch.zeros(1, ratio, dtype=torch.int32, device=dev),
               "writes": torch.zeros(1, dtype=torch.int32, device=dev)}
-    gctx = SimpleNamespace(kv_pool=graph_pool, positions=static["pos"], qsa_members=static["members"], qsa_writes=static["writes"])
+    gctx = SimpleNamespace(kv_pool=graph_pool, positions=static["pos"], extras=SimpleNamespace(qsa_members=static["members"], qsa_writes=static["writes"]))
     ix.maintain(static["x"], gctx, static["page"])  # warm up
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         ix.maintain(static["x"], gctx, static["page"])
     for p in range(prefill, total):
         seq = [(p, 1, seq_pages[: p + 1])]
-        ix.run(x[p:p + 1], SimpleNamespace(kv_pool=eager_pool, positions=torch.arange(p, p + 1, device=dev), qsa_seqs=seq), seq_pages[p:p + 1])
+        ix.run(x[p:p + 1], SimpleNamespace(kv_pool=eager_pool, positions=torch.arange(p, p + 1, device=dev), extras=SimpleNamespace(qsa_seqs=seq)), seq_pages[p:p + 1])
         members, writes = FlashNextIndexer.static_rows(seq, ratio, dev)
         static["x"].copy_(x[p:p + 1]); static["pos"].fill_(p); static["page"].copy_(seq_pages[p:p + 1])
         static["members"].copy_(members); static["writes"].copy_(writes)
@@ -199,14 +199,14 @@ def test_selecting_graph_matches_the_eager_selection():
     xs = [torch.randn(cap, hidden, device=dev).to(torch.bfloat16) for _ in lengths]
     for pool in (eager_pool, graph_pool):  # the same prefill in both pools
         for pages, x, n in zip(seqs_pages, xs, lengths):
-            ctx = SimpleNamespace(kv_pool=pool, positions=torch.arange(n, device=dev), qsa_seqs=[(0, n, pages[:n])])
+            ctx = SimpleNamespace(kv_pool=pool, positions=torch.arange(n, device=dev), extras=SimpleNamespace(qsa_seqs=[(0, n, pages[:n])]))
             ix.run(x[:n], ctx, pages[:n])
     b = len(lengths)
     st = {"x": torch.zeros(b, hidden, dtype=torch.bfloat16, device=dev), "pos": torch.zeros(b, dtype=torch.int64, device=dev),
           "page": torch.zeros(b, dtype=torch.int32, device=dev), "members": torch.zeros(b, ratio, dtype=torch.int32, device=dev),
           "writes": torch.zeros(b, dtype=torch.int32, device=dev), "table": torch.zeros(b * cap, dtype=torch.int32, device=dev),
           "indptr": torch.arange(0, (b + 1) * cap, cap, dtype=torch.int32, device=dev), "row_seq": torch.arange(b, device=dev)}
-    gctx = SimpleNamespace(kv_pool=graph_pool, positions=st["pos"], qsa_members=st["members"], qsa_writes=st["writes"])
+    gctx = SimpleNamespace(kv_pool=graph_pool, positions=st["pos"], extras=SimpleNamespace(qsa_members=st["members"], qsa_writes=st["writes"]))
     aux = graph_pool.page_aux[ix.name]
 
     def body():
@@ -221,7 +221,7 @@ def test_selecting_graph_matches_the_eager_selection():
         seqs = [(n + step, 1, pages[: n + step + 1]) for n, pages in zip(lengths, seqs_pages)]
         x = torch.cat([xs[i][n + step: n + step + 1] for i, n in enumerate(lengths)])
         want_pages, want_counts = ix.run(x, SimpleNamespace(kv_pool=eager_pool, positions=torch.tensor([s[0] for s in seqs], device=dev),
-                                                            qsa_seqs=seqs), torch.cat([p[s[0]:s[0] + 1] for s, p in zip(seqs, seqs_pages)]))
+                                                            extras=SimpleNamespace(qsa_seqs=seqs)), torch.cat([p[s[0]:s[0] + 1] for s, p in zip(seqs, seqs_pages)]))
         members, writes = FlashNextIndexer.static_rows(seqs, ratio, dev)
         st["x"].copy_(x); st["pos"].copy_(torch.tensor([s[0] for s in seqs])); st["members"].copy_(members); st["writes"].copy_(writes)
         st["page"].copy_(torch.cat([p[s[0]:s[0] + 1] for s, p in zip(seqs, seqs_pages)]))

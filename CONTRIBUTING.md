@@ -89,7 +89,10 @@ model package under `sharar/model/` whose forward returns `ForwardResult`
 and exposes `.target`. Register the loader in `target.load_model` under a
 new `Target.family`; model-specific facts become optional `Target` fields
 (absent for the 27B), per-slot state beyond the GDN's goes through
-`StatePool.register_aux`, and a family's model cache is named by
+`StatePool.register_aux` (`register_state`), per-page rows through
+`KvPool.register_page_aux` (`register_pages`), side inputs a forward needs
+through `forward_extras()` on `ForwardContext.extras` (never new
+`ForwardContext` fields or model checks in `engine/`), and a family's model cache is named by
 `Target.cache_env`. `sharar/model/flashnext/` is the worked example. The
 engine, pools and graphs read `executor.target`; do not add module-level
 constants for a new model, and keep `config.py` describing the 27B for the
@@ -150,6 +153,10 @@ accepting older records.
 
 ## Add a GB10 kernel
 
+A new weight format implements the `Linear` interface (`weights/linear.py`:
+call, `out_features`/`in_features`, `bytes`, `dequantize()`, optional `w3`
+copy) and keeps its own row-count dispatch; models list their projections with
+`linears()` so 3-bit copies (`w3.attach`) and calibration work on any model.
 Attention calls plan through `kernels/attention_plan.py` (`AttentionPlanner`, one
 per KV geometry: host index pointers, `plan_guard` for eager wrappers, no guard
 for graph-bound buffers); new CUDA graphs use `engine/graph_set.py` (`pick`,

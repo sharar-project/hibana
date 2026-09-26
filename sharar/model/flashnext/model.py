@@ -9,8 +9,6 @@ is FP8 at load (`SHARAR_FLASHNEXT_TRUNK=bf16` keeps the checkpoint's BF16 for pa
 
 from __future__ import annotations
 
-import json
-import os
 import time
 from pathlib import Path
 
@@ -68,6 +66,7 @@ class FlashNext:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", log=print, target: Target = FLASHNEXT, precision: str | None = None, **_ignored):
         from sharar.cache.ledger import check_load_headroom
         self.target = target
+        self._extras = None
         self.precision = precision or current().flashnext_trunk  # bf16 | fp8 | w3 (3.25-bit decode copies over FP8)
         check_load_headroom(target.weight_load_peak_bytes)
         self.device = torch.device(device)
@@ -105,6 +104,36 @@ class FlashNext:
             indexer = getattr(layer.mixer, "indexer", None)
             if indexer is not None:
                 indexer.register(kv_pool)
+
+    def linears(self):
+        """Every trunk projection by name (`weights/linear.py`): attention qkv/o, GDN in_qkv/in_z/out,
+        shared-expert gate_up/down, PLE key/value, the hyper-connection mixers' down/up, and the lm_head.
+        The routed experts are not linears (the fused MoE kernel reads them)."""
+        for layer in self.layers:
+            p = f"layers.{layer.index}"
+            for name in ("qkv", "o", "in_qkv", "in_z", "out"):
+                lin = getattr(layer.mixer, name, None)
+                if lin is not None:
+                    yield f"{p}.mixer.{name}", lin
+            yield f"{p}.mlp.shared_gate_up", layer.moe.shared_gate_up
+            yield f"{p}.mlp.shared_down", layer.moe.shared_down
+            if layer.ple is not None:
+                yield f"{p}.ple.key_proj", layer.ple.key_proj
+                yield f"{p}.ple.value_proj", layer.ple.value_proj
+            for hc_name in ("attn_hc", "mlp_hc"):
+                hc = getattr(layer, hc_name)
+                yield f"{p}.{hc_name}.down", hc.down
+                yield f"{p}.{hc_name}.up", hc.up
+        yield "mixer.down", self.mixer.down
+        yield "mixer.up", self.mixer.up
+        yield "lm_head", self.lm_head
+
+    def forward_extras(self):
+        """The side inputs this model's forwards need beyond the ForwardContext (model/flashnext/extras.py)."""
+        if self._extras is None:
+            from sharar.model.flashnext.extras import FlashNextExtras
+            self._extras = FlashNextExtras(self)
+        return self._extras
 
     def register_state(self, pool) -> None:
         """Allocate this model's per-slot state beyond the GDN's in the executor's state pool."""
