@@ -7,6 +7,7 @@ import torch
 from sharar.proposers.mtp import draft_argmax
 
 from sharar.target import DEFAULT_TARGET
+from sharar.engine import graph_set
 from sharar.engine.graphs import capture_sizes, check_context_capacity
 from sharar.engine.spec_graphs import _prefill_wrapper
 
@@ -47,11 +48,8 @@ class DraftGraphs:
         d = self.device
         b = len(kv_all)
         indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_all]).cumsum(0).tolist()), dtype=torch.int32)  # host: no sync in plan()
-        st["wrapper"].plan(
-            torch.arange(0, b + 1, dtype=torch.int32), indptr, torch.cat(kv_all), torch.ones(b, dtype=torch.int32),
-            self.target.num_attention_heads, self.target.num_kv_heads, self.target.head_dim, 1,
-            causal=True, q_data_type=torch.bfloat16, kv_data_type=torch.bfloat16, sm_scale=self.target.head_dim**-0.5,
-        )
+        self.mtp.attention.paged_prefill(st["wrapper"], torch.arange(0, b + 1, dtype=torch.int32), indptr, torch.cat(kv_all),
+                                         torch.ones(b, dtype=torch.int32), causal=True, guard=False)  # graph-bound buffers
 
     def _forward(self, st: dict) -> tuple[torch.Tensor, torch.Tensor]:
         mtp = self.mtp
@@ -67,23 +65,16 @@ class DraftGraphs:
         for b in self.sizes:
             st = self._static(b)
             self._plan(st, [torch.zeros(2, dtype=torch.int32, device=self.device) for _ in range(b)])
-            for _ in range(2):
-                self._forward(st)
-            torch.cuda.synchronize()
-            g = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(g, pool=self._pool):
+
+            def body():
                 st["out_hidden"], st["out_argmax"] = self._forward(st)
+            self._graphs[b] = graph_set.capture(self._pool, body, warmup=lambda: self._forward(st))
             self._st[b] = st
-            self._graphs[b] = g
-            torch.cuda.synchronize()
             if log:
                 log(f"  captured draft graph for batch {b}")
 
     def pick(self, b: int) -> int:
-        for s in self.sizes:
-            if s >= b:
-                return s
-        raise ValueError(b)
+        return graph_set.pick(self.sizes, b)
 
     def run(self, tokens: torch.Tensor, hidden: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, kv_all: list[torch.Tensor]):
         b = tokens.shape[0]

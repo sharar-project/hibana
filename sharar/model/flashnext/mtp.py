@@ -24,7 +24,6 @@ from sharar.model.flashnext.attention import FlashNextAttention
 from sharar.model.flashnext.hyper import HyperConnection
 from sharar.model.flashnext.linear import TrunkLinear
 from sharar.model.norm import GemmaRMSNorm
-from sharar.kernels import plan_guard
 
 PREFIX = "mtp"
 
@@ -68,6 +67,8 @@ class FlashNextMtpHead:
         self.kv = KvPool(num_pages, device, layer_ids=[0], dtype=torch.bfloat16, target=t)
         self._ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
         self._attn = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self._ws, "NHD")
+        from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
+        self.attention = AttentionPlanner(AttentionGeometry.of_target(t, 1, torch.bfloat16))  # BF16 draft KV, page 1
 
     @staticmethod
     def _fp8_experts(w, name: str, device) -> tuple[torch.Tensor, torch.Tensor]:
@@ -95,11 +96,7 @@ class FlashNextMtpHead:
         t = self.target
         qo_indptr = torch.tensor([0] + list(torch.tensor(qo_lens).cumsum(0).tolist()), dtype=torch.int32)  # host: plan() reads them on the CPU
         kv_indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_pages]).cumsum(0).tolist()), dtype=torch.int32)
-        plan_guard.plan(self._attn,
-            qo_indptr, kv_indptr, torch.cat(kv_pages), torch.ones(len(qo_lens), dtype=torch.int32),
-            t.num_attention_heads, t.num_kv_heads, t.head_dim, 1,
-            causal=True, q_data_type=torch.bfloat16, kv_data_type=torch.bfloat16, sm_scale=t.head_dim**-0.5,
-        )
+        self.attention.paged_prefill(self._attn, qo_indptr, kv_indptr, torch.cat(kv_pages), torch.ones(len(qo_lens), dtype=torch.int32), causal=True)
 
     # ---- pieces ----
     def _fuse(self, tokens: torch.Tensor, hidden: torch.Tensor) -> torch.Tensor:

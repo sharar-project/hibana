@@ -150,6 +150,11 @@ accepting older records.
 
 ## Add a GB10 kernel
 
+Attention calls plan through `kernels/attention_plan.py` (`AttentionPlanner`, one
+per KV geometry: host index pointers, `plan_guard` for eager wrappers, no guard
+for graph-bound buffers); new CUDA graphs use `engine/graph_set.py` (`pick`,
+`capture`) and keep their own static buffers and body.
+
 Keep the semantic operation in `kernels/ops.py` or its existing model module;
 put the specialized implementation in `kernels/`. Select it explicitly at
 initialization. State the supported shapes, layouts, dtypes, scratch needs,

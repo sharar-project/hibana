@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from sharar.engine import graph_set
 from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import _qsa_static, capture_sizes, check_context_capacity, fill_qsa, sparse_ctx, sparse_graphs
-from sharar.cache.kv_pool import KV_DTYPE
 
 if TYPE_CHECKING:
     import flashinfer
@@ -76,11 +76,8 @@ class VerifyGraphs:
         b, s = len(kv_all), self.s_len
         # Host index pointers: plan() reads them on the CPU (a device tensor would sync).
         indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_all]).cumsum(0).tolist()), dtype=torch.int32)
-        st["wrapper"].plan(
-            torch.arange(0, b * s + 1, s, dtype=torch.int32), indptr, torch.cat(kv_all), torch.ones(b, dtype=torch.int32),
-            self.ex.target.num_attention_heads, self.ex.target.num_kv_heads, self.ex.target.head_dim, 1,
-            causal=True, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=self.ex.target.head_dim**-0.5,
-        )
+        self.ex.attention.paged_prefill(st["wrapper"], torch.arange(0, b * s + 1, s, dtype=torch.int32), indptr, torch.cat(kv_all),
+                                        torch.ones(b, dtype=torch.int32), causal=True, guard=False, page_size=1)  # graph-bound buffers
 
     def capture(self, log=None) -> None:
         for b in self.sizes:
@@ -88,29 +85,20 @@ class VerifyGraphs:
             self._st[b] = st
             # dummy plan: each row attends to page 0 plus its own rows (pages 0)
             self._plan(st, [torch.zeros(self.s_len + 1, dtype=torch.int32, device=self.device) for _ in range(b)])
-            for _ in range(2):
-                out = self.ex.model.forward(st["tokens"], st["ctx"])
-                self.ex.model.logits(out["norm"]).argmax(-1)
-            torch.cuda.synchronize()
-            g = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(g, pool=self._pool):
+
+            def warm():
+                self.ex.model.logits(self.ex.model.forward(st["tokens"], st["ctx"])["norm"]).argmax(-1)
+
+            def body():
                 out = self.ex.model.forward(st["tokens"], st["ctx"])
                 st["norm"] = out["norm"]
                 st["features"] = out.get("features")
                 logits = self.ex.model.logits(out["norm"])
                 st["argmax"] = logits.argmax(-1)
                 st["logits"] = logits  # materialized by the graph anyway; traces read the target's top-k from it
-            self._graphs[b, False] = g
-            torch.cuda.synchronize()
+            self._graphs[b, False] = graph_set.capture(self._pool, body, warmup=warm)
             if self.sparse:  # the selecting variant writes the same outputs (device acceptance reads them)
-                for _ in range(2):
-                    self._sparse_body(st)
-                torch.cuda.synchronize()
-                g = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(g, pool=self._pool):
-                    self._sparse_body(st)
-                self._graphs[b, True] = g
-                torch.cuda.synchronize()
+                self._graphs[b, True] = graph_set.capture(self._pool, lambda: self._sparse_body(st))
             if log:
                 log(f"  captured {'dense and selecting ' if self.sparse else ''}verify graph for batch {b}")
 
@@ -125,10 +113,7 @@ class VerifyGraphs:
         st["argmax"].copy_(logits.argmax(-1))
 
     def pick(self, b: int) -> int:
-        for s in self.sizes:
-            if s >= b:
-                return s
-        raise ValueError(b)
+        return graph_set.pick(self.sizes, b)
 
     def run(self, tokens: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, slots: torch.Tensor, kv_all: list[torch.Tensor], *, sampled=False,
             ple_rows: torch.Tensor | None = None, qsa: tuple[torch.Tensor, torch.Tensor] | None = None, sparse: bool = False):

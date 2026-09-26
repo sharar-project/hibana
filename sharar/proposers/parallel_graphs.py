@@ -1,6 +1,7 @@
 """Fixed batch buckets for parallel draft backbones and vocabulary projection."""
 import torch
 
+from sharar.engine import graph_set
 from sharar.engine.graphs import capture_sizes
 
 
@@ -35,14 +36,7 @@ class ParallelGraphs:
                     st['candidates'], st['scores'] = p.model.selector(st['hidden'], st['tokens'][:, 0])
                 else:
                     st['logits'] = p.model.draft_head.logits(hidden.reshape(-1, 5120)).view(batch, p.k, -1)
-            for _ in range(2):
-                forward()
-            torch.cuda.synchronize()
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph, pool=self.pool):
-                forward()
-            self.graphs[batch] = graph
-            torch.cuda.synchronize()
+            self.graphs[batch] = graph_set.capture(self.pool, forward)
             if log:
                 log(f'  captured {p.name} backbone/projection graph for batch {batch}')
 

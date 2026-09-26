@@ -25,6 +25,7 @@ import time
 
 import torch
 
+from sharar.engine import graph_set
 from sharar.engine.accept import MAX_STOPS, accept_block
 
 def enabled() -> bool:
@@ -90,14 +91,7 @@ class AcceptGraphs:
         for b in self.vg.sizes:
             st = self._static(b)
             self._st[b] = st
-            for _ in range(2):
-                self._body(b, st)
-            torch.cuda.synchronize()
-            g = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(g, pool=self._pool):
-                self._body(b, st)
-            self._graphs[b] = g
-            torch.cuda.synchronize()
+            self._graphs[b] = graph_set.capture(self._pool, lambda: self._body(b, st))
         if log:
             log(f"  captured device accept graphs: {len(self._graphs)}")
 

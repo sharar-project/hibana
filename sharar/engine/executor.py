@@ -11,7 +11,6 @@ import torch
 
 from sharar.target import Target
 from sharar.engine.debug import debug_sync
-from sharar.kernels import plan_guard
 from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import DecodeGraphs
 from sharar.engine.request import Request, State
@@ -101,6 +100,15 @@ class Executor:
         if spec_config is not None:
             self.enable_spec(spec_config.depth, log=log, proposer=spec_config.name, state_strategy=spec_config.state_strategy,
                              draft_precision=spec_config.draft_precision, draft_dir=spec_config.draft_dir)
+
+    @property
+    def attention(self):
+        """The planner for every target attention call (#46): prefill, decode and verification, eager and graph-bound."""
+        planner = self.__dict__.get("_attention")
+        if planner is None:  # built on first use (test executors skip __init__)
+            from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
+            planner = self._attention = AttentionPlanner(AttentionGeometry.of_target(self.target, self.kv_pool.page_size, KV_DTYPE))
+        return planner
 
     @property
     def cache(self):
@@ -334,11 +342,7 @@ class Executor:
         qo_indptr = torch.tensor([0, new_tokens], dtype=torch.int32)
         kv_indptr = torch.tensor([0, prefix_pages.shape[0]], dtype=torch.int32)
         last_page_len = torch.ones(1, dtype=torch.int32)
-        plan_guard.plan(self._paged_prefill,
-            qo_indptr, kv_indptr, prefix_pages, last_page_len,
-            self.target.num_attention_heads, self.target.num_kv_heads, self.target.head_dim, self.kv_pool.page_size,
-            causal=False, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=self.target.head_dim**-0.5,
-        )
+        self.attention.paged_prefill(self._paged_prefill, qo_indptr, kv_indptr, prefix_pages, last_page_len, causal=False)
 
     def _checkpoint_positions(self, start: int, end: int, total: int) -> list[int]:
         """Absolute positions aligned to this forward's 64-token GDN chunks.
@@ -462,12 +466,8 @@ class Executor:
             checkpoint_seqs=[i for i, _, _ in checkpoints],
         )
         if any(prefix_lens):
-            plan_guard.plan(self._paged_prefill,
-                torch.tensor(cu, dtype=torch.int32), torch.tensor(kv_indptr, dtype=torch.int32), torch.cat(kv_indices),
-                torch.ones(len(chunks), dtype=torch.int32),
-                self.target.num_attention_heads, self.target.num_kv_heads, self.target.head_dim, self.kv_pool.page_size,
-                causal=False, q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=self.target.head_dim**-0.5,
-            )
+            self.attention.paged_prefill(self._paged_prefill, torch.tensor(cu, dtype=torch.int32), torch.tensor(kv_indptr, dtype=torch.int32),
+                                         torch.cat(kv_indices), torch.ones(len(chunks), dtype=torch.int32), causal=False)
             ctx.paged_prefill_wrapper = self._paged_prefill
         ids = upload(ids_list, torch.int64, d)
         if self._ple is not None:
@@ -604,11 +604,7 @@ class Executor:
         indptr = torch.tensor([0] + list(torch.tensor(counts).cumsum(0).tolist()), dtype=torch.int32)
         indices = torch.cat(pages)
         last_page_len = torch.ones(len(reqs), dtype=torch.int32)
-        plan_guard.plan(self._decode_wrapper,
-            indptr, indices, last_page_len,
-            self.target.num_attention_heads, self.target.num_kv_heads, self.target.head_dim, self.kv_pool.page_size,
-            pos_encoding_mode="NONE", q_data_type=torch.bfloat16, kv_data_type=KV_DTYPE, sm_scale=self.target.head_dim**-0.5,
-        )
+        self.attention.decode(self._decode_wrapper, indptr, indices, last_page_len)
 
     def decode_step(self, reqs: list[Request]) -> list[int]:
         """Process the last generated token of every request and sample the next.

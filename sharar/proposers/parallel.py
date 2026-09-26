@@ -111,6 +111,8 @@ class ParallelProposer:
                                                                           cold_payload=True, trace_features=True))
         self.workspace = torch.empty(128 * 2**20, dtype=torch.uint8, device=device)
         self.attention = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self.workspace, 'NHD')
+        from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
+        self.planner = AttentionPlanner(AttentionGeometry(32, 8, 128, window_left=self.window - 1 if name == 'dflash2' else -1))
         self.graphs = None
         self.cache_hits = self.cache_fallbacks = 0
 
@@ -235,10 +237,8 @@ class ParallelProposer:
         s = self.noise_steps
         lengths = [len(p) for p in histories]
         indptr = torch.tensor([0] + list(torch.tensor(lengths).cumsum(0).tolist()), dtype=torch.int32)
-        wrapper.plan(torch.arange(0, (batch + 1) * s, s, dtype=torch.int32), indptr,
-                     torch.cat(histories).to(torch.int32), torch.ones(batch, dtype=torch.int32),
-                     32, 8, 128, 1, causal=False, q_data_type=torch.bfloat16, kv_data_type=torch.bfloat16,
-                     sm_scale=128**-.5, window_left=self.window - 1 if self.name == 'dflash2' else -1)
+        self.planner.paged_prefill(wrapper, torch.arange(0, (batch + 1) * s, s, dtype=torch.int32), indptr,
+                                   torch.cat(histories).to(torch.int32), torch.ones(batch, dtype=torch.int32), causal=False, guard=False)
 
     def propose(self, requests, pages, inputs, *, graphs):
         self._feedback_enabled = graphs

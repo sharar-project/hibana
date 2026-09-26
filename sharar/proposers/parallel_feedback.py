@@ -1,6 +1,8 @@
 """Exact-count graphs for single-request accepted-feature projection and KV."""
 import torch
 
+from sharar.engine import graph_set
+
 
 class FeedbackGraphs:
     def __init__(self, proposer):
@@ -33,14 +35,7 @@ class FeedbackGraphs:
                 p.features.view(-1, 5120)[rows] = hidden
                 p.model.context_kv(hidden, positions, p.caches, pages)
 
-            for _ in range(2):
-                forward()
-            torch.cuda.synchronize()
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph, pool=self.pool):
-                forward()
-            self.graphs[count] = graph
-            torch.cuda.synchronize()
+            self.graphs[count] = graph_set.capture(self.pool, forward)
         if log:
             log(f'  captured exact-count draft feedback graphs: {len(self.graphs)}')
 
