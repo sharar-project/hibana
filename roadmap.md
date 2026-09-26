@@ -1,7 +1,7 @@
 # Sharar roadmap
 
 Updated 2026-09-17. This is the current work order. Historical milestones and
-their original gates are in the [archived roadmap](docs/archive/roadmap-2026-09-11.md).
+their original gates are in the [archived roadmap](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/roadmap-2026-09-11.md).
 
 ## Supported baseline
 
@@ -24,7 +24,7 @@ the [optimization inventory](docs/optimizations.md) and [draft adaptation](docs/
   GSM8K from 92.04% to 94.47% and family decode throughput by 8.6%
   [5.1%, 12.3%] against the current nearest-rounded W3 profile. The kernel
   and stored weight size are unchanged. See the
-  [calibration and adaptation study](docs/archive/studies/w3-calibration-adaptation.md).
+  [calibration and adaptation study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-calibration-adaptation.md).
 - Calibrated-target drafter adaptation: 300 steps over 240 coding-proxy
   requests, with separate validation and test files, selected step 200.
   Actual FP8/W3 serving improves by 3.60% at concurrency one and 4.43%
@@ -37,12 +37,12 @@ the [optimization inventory](docs/optimizations.md) and [draft adaptation](docs/
   draft features, shared GDN prefill planning, accepted-state reconstruction,
   prefix caching, managed-memory cold storage and the host memory guard.
   Narrower verification, mixed forwarding, numerical kernel replacements and
-  scheduler variants failed their gates ([decision index](docs/archive/README.md)).
+  scheduler variants failed their gates ([decision index](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/README.md)).
 - Draft adaptation: opt-in traces with serving-exact features, `sharar train`
   (checked against the serving proposer, the publisher's model and SpecForge),
   trained-draft serving, `sharar-ctl` and the start/stop launcher. On a
   repository-coding workload a 1,000-request serve-then-train loop raised
-  serving throughput 12.4% ([report](docs/archive/studies/gb10-draft-training.md)).
+  serving throughput 12.4% ([report](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/gb10-draft-training.md)).
   Continuation sessions use a smaller rate and a fixed regression set in the
   promotion gate; on-policy selector supervision is available (`--on-policy`).
 - API: chat with auto/null/none tool choice, thinking, streaming; forced tool
@@ -144,12 +144,12 @@ and hardware; kernel work at batch one is capped near 10%.
    an opt-in (`--lookup-branch`, parked on branch `feat/lookup-branch`): a
    host-side n-gram continuation verified as a second 16-row block beside
    the DFlash2 chain, whichever block accepts more wins. The offline screen
-   ([study](docs/archive/studies/ngram-branch-screen.md)) predicted +14% tokens
+   ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/ngram-branch-screen.md)) predicted +14% tokens
    per round on repository coding; served at batch one the branch gave
    +1.4% tokens per round and throughput within the 1% window noise
    (repository test set 45.4 to 45.6/45.3 TPS; ShareGPT +2.5/+1.5%; five
    real requests +2.8/+0.7%), with the mechanism audited correct
-   ([study](docs/archive/studies/lookup-branch.md)). The branch wins inside
+   ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/lookup-branch.md)). The branch wins inside
    copy spans where the chain is already near the 16-token cap and would
    have accepted the same tokens next round, so gained tokens save few
    rounds. A 31- or 63-row branch would lift the cap only for verbatim
@@ -157,7 +157,7 @@ and hardware; kernel work at batch one is capped near 10%.
    pursued. Lesson for every future screen: a per-round union oracle on
    recorded histories over-values tokens the chain already handles.
 2. **Done: the family gate replaces the bit-exact gate and the three-prompt
-   benchmark as the decision tool** ([study](docs/archive/studies/family-gate.md)).
+   benchmark as the decision tool** ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/family-gate.md)).
    `tools/family-gate.py` runs paired 22-task passes in exclusive windows
    with the noise floor; `bench/family_inputs.py` regenerates the frozen
    inputs byte-identically; the code benchmark prompt no longer answers with
@@ -176,9 +176,9 @@ and hardware; kernel work at batch one is capped near 10%.
    grow the family set to about 100 tasks with the generator in
    `bench/family_inputs.py` so acceptance claims of a few percent become
    testable. Done 2026-09-16: `family-eval-v3`, 101 families, ±3.0% measured
-   ([study](docs/archive/studies/family-set-v3.md)).
+   ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/family-set-v3.md)).
 3. **Half done: the accept path is device-resident, the server does not
-   gain yet** ([study](docs/archive/studies/device-accept.md)). One captured
+   gain yet** ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/device-accept.md)). One captured
    graph per batch bucket decides acceptance (exact or relaxed, budget, stop
    tokens), reconstructs the state, commits the convolution windows and
    feeds the draft rings before the single host wait; ownership stays with
@@ -266,7 +266,7 @@ traces, KL distillation, attention subset, compiled trainer, continuation at
 (`POST /reload_draft`), and the target numerics study (shape sensitivity is
 cuBLAS's BF16 b/a projection, cuBLASLt FP8 at 27 to 32 rows and the gated
 norm's rows-per-block heuristic; M-invariant kernels opt-in in main behind
-`SHARAR_STABLE_NUMERICS=1`, [study](docs/archive/studies/target-numerics.md)).
+`SHARAR_STABLE_NUMERICS=1`, [study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/target-numerics.md)).
 
 ## Research directions (2026-09-15)
 
@@ -277,7 +277,7 @@ ceiling, and accepts 4.7 tokens per round against an oracle near 8. Only
 fewer bytes, more accepted tokens, or a second GPU move the number.
 
 - **Relaxed acceptance, opt-in per request: built and measured**
-  ([study](docs/archive/studies/relaxed-acceptance.md)). `accept_top_k` and
+  ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/relaxed-acceptance.md)). `accept_top_k` and
   `accept_margin` accept a drafted token the target ranks within its top-k
   and within a logit margin of the argmax. Coding replays: top-2 within 1.0
   logit +9.8% at batch one and +5.7% at batch four with 4% of emitted tokens
@@ -290,8 +290,8 @@ fewer bytes, more accepted tokens, or a second GPU move the number.
   and training traces; a few hundred prompts per setting would be needed to
   see a 55/45 preference.
 - **Three-bit decode weights beside NVFP4 prefill weights: built, tensor-core
-  kernel at the memory ceiling for batch one to four** ([kernel study](docs/archive/studies/w3-cuda.md),
-  [first study](docs/archive/studies/w3-decode.md)). `sharar/kernels/w3.py` +
+  kernel at the memory ceiling for batch one to four** ([kernel study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-cuda.md),
+  [first study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-decode.md)). `sharar/kernels/w3.py` +
   `csrc/w3_gemm.cu`: 3.25 bits per weight (3-bit codes into an eight-level
   E4M3 codebook, E4M3 scale per 32, FP32 row scale), bit planes stored in
   mma-fragment order so a lane expands four codes with three rotates, three
@@ -314,7 +314,7 @@ fewer bytes, more accepted tokens, or a second GPU move the number.
   both; per-row activation scales lose more. The launcher default flipped
   to layers and draft on (a05457d). GPTQ calibration from the FP8 release
   now passes paired accuracy and the full family gate; see the
-  [new study](docs/archive/studies/w3-calibration-adaptation.md) and
+  [new study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-calibration-adaptation.md) and
   [artifact guide](docs/w3-calibration.md). Drafter adaptation on fresh
   calibrated-target traces also passes held-out serving checks. The remaining kernel opportunity
   is 64-row occupancy (attention qkv at 156 GB/s).
@@ -339,7 +339,7 @@ Completed 2026-09-17: trace storage counters are maintained by the writer,
 rotation includes feature bytes, and TTFT percentiles are computed on the
 HTTP side from an immutable snapshot. W3 dequantization also imports its
 helpers from the installed runtime instead of the benchmark package. See the
-[runtime and calibration study](docs/archive/studies/w3-calibration-adaptation.md).
+[runtime and calibration study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-calibration-adaptation.md).
 
 Completed 2026-09-18: the detokenizer decodes a bounded window (the emitted
 tokens since the last stable boundary plus the new ones) instead of the whole
@@ -364,7 +364,7 @@ cumulative output ID list per chunk because SGLang clients expect it.
 
 ## Contribution gates
 
-- Preserve [request ownership](docs/phase7a.md), private KV tails, recurrent
+- Preserve [request ownership](docs/ownership.md), private KV tails, recurrent
   commits, graph-buffer lifetimes and stop-truncated draft feedback.
 - Identify source, image, precision, input/output work and memory geometry for
   every performance claim. Retain failed runs and exact comparison limits.
@@ -384,4 +384,4 @@ cumulative output ID list per chunk because SGLang clients expect it.
 
 Do not repeat unchanged rejected selectors, numerical kernel replacements,
 mixed-forward policies or scheduler experiments. Consult the
-[decision index](docs/archive/README.md) before starting another screen.
+[decision index](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/README.md) before starting another screen.

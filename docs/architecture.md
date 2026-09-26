@@ -6,7 +6,7 @@ move to so that every capability works on both targets from shared parts
 (Qwen3.8-27B and Qwen3.8-Flash-Next), one target per process. Other hardware
 is out of scope until it exists here. Written 2026-09-25 against main
 `e3d7746`; the ownership rules this page relies on are in
-[interfaces](interfaces.md) and [ownership invariants](phase7a.md).
+[interfaces](interfaces.md) and [ownership invariants](ownership.md).
 
 ## Current shape
 

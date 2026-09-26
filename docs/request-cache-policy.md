@@ -3,7 +3,7 @@
 Request-level fields below are not implemented. Current cache entries own
 target KV, a recurrent snapshot and compatible draft features together; see
 [the ownership contract](interfaces.md) and [current performance](performance.md).
-The earlier duplicate-save experiment is [archived](archive/studies/request-cache-policy.md).
+The earlier duplicate-save experiment is [archived](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/request-cache-policy.md).
 
 ## Proposed request contract
 

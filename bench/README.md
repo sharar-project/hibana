@@ -22,7 +22,7 @@ Defaults: the frozen `code` task, 10,000 input tokens, exactly 1,000 output
 tokens, temperature zero, seed 42, concurrency one, one excluded full warmup
 and three timed requests. `--workload all` adds `design` and `reasoning`.
 The three built-in prompts reproduce the first input row of each task in the
-recorded [AIPerf TPS comparison](../docs/archive/studies/gb10-tps.md). The packaged historical
+recorded [AIPerf TPS comparison](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/gb10-tps.md). The packaged historical
 source fixture is independent of edits to current engine code. Prompt
 tokenization occurs outside timing; each run saves the exact IDs it uses.
 
@@ -110,8 +110,8 @@ candidate runs that pass with the BF16 draft. Inputs come from
 `families` row of the comparison (101 families) as the decision, the `benchmarks`
 row as context, and never a single task; the round-cost interval resolves 0.05%,
 the tokens-per-round interval is about ±3% wide for any continuation-changing
-change on the 101-family set ([study](../docs/archive/studies/family-set-v3.md); it was ±7%
-on the 18-family `v2` set, [study](../docs/archive/studies/family-gate.md)). Results and logs land in
+change on the 101-family set ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/family-set-v3.md); it was ±7%
+on the 18-family `v2` set, [study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/family-gate.md)). Results and logs land in
 `$SHARAR_RESULTS/reviews/<date>-family-gate/<label>/`. Row-count changes
 should also be compared under `SHARAR_STABLE_NUMERICS=1`, the shape-stable
 research baseline, so that continuation drift does not masquerade as a gain.
@@ -145,8 +145,8 @@ Shared recording, HTTP, identity, retained-batch and CUDA-timing helpers live in
 drivers remain top-level because maintained callers still share their workload
 or numerical helpers; moving them wholesale would hide an active dependency.
 
-See the [decision archive](../docs/archive/README.md) for historical studies and
-the [old command guide](../docs/archive/benchmark-guide-2026-09-11.md) for commands
+See the [decision archive](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/README.md) for historical studies and
+the [old command guide](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/benchmark-guide-2026-09-11.md) for commands
 at their original revisions. Raw tensors, outputs and traces stay outside Git.
 
 ## Draft adaptation tools

@@ -16,18 +16,18 @@ warm-cache target construction from 63.23 to 11.99 seconds, with all 304
 matrices byte-identical. This excludes drafter loading and graph capture and
 does not improve steady decode. Broad kernel substitutions and extra decode
 between prefill forwards did not qualify for serving. See the
-[profile, controls and negative results](archive/studies/w3-runtime-profile.md).
+[profile, controls and negative results](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-runtime-profile.md).
 
 The subsequent narrow 64-row QKV specialization improves cached 10K
 batch-four family decode by **0.66% [0.61%, 0.71%]** across two paired process
 blocks covering all 101 families, with identical outputs and round work.
 Batch-one/two controls show no material change. HTTP comparisons do not
 establish a general serving-throughput gain; their cache pressure and run
-variation are recorded in the [qualification study](archive/studies/w3-qkv-tiling.md).
+variation are recorded in the [qualification study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-qkv-tiling.md).
 The specialization and source-keyed W3 build cache are local source changes
 awaiting deployment.
 
-The [MLP hardware-counter follow-up](archive/studies/w3-mlp-profile.md)
+The [MLP hardware-counter follow-up](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-mlp-profile.md)
 profiles the large gate/up and down matrices at 16/32/64 rows. Cold-cache
 captures show memory-load waits and 255-register kernels with local spills
 at 64 rows. The profiler does not expose direct DRAM counters on this
@@ -48,7 +48,7 @@ the 3-bit layer and draft copies); see [operations](operations.md).
 | 7 | 8 | 129.25 |
 | 3 | 4 | 104.80 |
 
-The [width study](archive/studies/gb10-bs4-engine.md) held draft generation at
+The [width study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/gb10-bs4-engine.md) held draft generation at
 15 and truncated target verification. It does not measure a fully shortened
 drafter or prove that k=15 wins every prompt. Smaller widths changed outputs
 and produced mixed BS1 results; no adaptive width policy was qualified.
@@ -61,7 +61,7 @@ held-out tokens per round 5.367 to 5.739 and served throughput on held-out
 prompts 46.3 to 52.3 tokens/s (+12.9%, batch one, FP8 draft, three repeats);
 a 1,000-request serve-then-train loop raised acceptance while serving from
 27.5% to 31.5% of proposals and throughput 129 to 145 tokens/s at concurrency
-four. See the [draft training report](archive/studies/gb10-draft-training.md)
+four. See the [draft training report](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/gb10-draft-training.md)
 and [draft adaptation](draft-adaptation.md).
 
 ## Integrated changes
@@ -73,8 +73,8 @@ and [draft adaptation](draft-adaptation.md).
 | Four simulated conversation sessions, 96 slots | 28.78 → 78.48 aggregate TPS (2.73×) | Two blocks in one fresh process per variant; three fixed 128-output turns per lane |
 | Retention, cold controls | Approximately unchanged | Native BS1 −0.14% to +0.06%; BS4 −0.10% |
 
-See the [BS1 report](archive/studies/gb10-bs1-speedups.md) and
-[retention report](archive/studies/gb10-agent-retention.md) for complete results.
+See the [BS1 report](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/gb10-bs1-speedups.md) and
+[retention report](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/gb10-agent-retention.md) for complete results.
 Warm recovery comes with sufficient feature capacity: an enlarged independent
 LRU also recovered the tested throughput. Checkpoint ownership supplies
 predictable lifetime and reclamation. Caps are 460 MiB at 24 state slots and
@@ -88,7 +88,7 @@ On the standard 10K/1K batch-one cell with identical prompt IDs, mean
 end-to-end output TPS over code, design and reasoning: SGLang DFlash2 30.4,
 Sharar exact 36.5 (1.19x), the relaxed default 44.2 (1.44x), 3-bit decode
 weights 47.4 (1.59x), both together 52.3 (1.75x); see the
-[comparison](archive/studies/sglang-comparison-2026-09-16.md) and the
+[comparison](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/sglang-comparison-2026-09-16.md) and the
 controlled numbers behind it in the gate studies. The CUDA 3-bit kernel with
 the head and draft (2026-09-17, decode x1.488 on the gate against the first
 build's x1.174) projects to about 1.9x end-to-end exact and 2.1x with the
@@ -104,7 +104,7 @@ as served).
 The short-resume scheduler reduced mixed throughput 7.27% and lengthened
 streaming gaps. Smaller BS4 widths, mixed forwarding, numerical FP8 replacement
 and selector/compression screens failed their stated gates. Their evidence is
-in the [decision archive](archive/README.md); their reported microbenchmark
+in the [decision archive](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/README.md); their reported microbenchmark
 savings cannot be added into a throughput forecast.
 
 The 1.5× cold BS1/BS4 goal with a fixed target remains open.
@@ -123,14 +123,14 @@ gates, cuBLASLt's FP8 GEMM for the 5120x6144 output projections at 27 to 32
 rows, and the gated norm's rows-per-block choice, with FlashInfer's prefill
 schedule a rare fourth. M-invariant replacements for the first three make a
 prefix bit-exact across prefill lengths for under 1% prefill cost ([target
-numerics study](archive/studies/target-numerics.md)); since 2026-09-15 they
+numerics study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/target-numerics.md)); since 2026-09-15 they
 ship in main behind `SHARAR_STABLE_NUMERICS=1`, off by default, as the
 research baseline for row-count experiments: the one-time shift in greedy
 outputs changed served acceptance on a small prompt set, and chunked and
 cached-prefix prefills still take different attention paths. HTTP task trajectories and batch
 membership can differ; synthetic fixed-output traces do not establish
 generated-code quality or completed tool tasks
-([quality limitations](archive/studies/greedy-quality.md)).
+([quality limitations](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/greedy-quality.md)).
 
 For new measurements, use [the benchmark guide](../bench/README.md). Keep cold
 requests, warm resumes, decode TPS and end-to-end TPS distinct.

@@ -2,7 +2,7 @@
 
 The target's prefill of a fixed prefix changes with the total row count M
 because three kernels choose their arithmetic by M (measured in
-docs/archive/studies/target-numerics.md): cuBLAS's BF16 GEMM for the GDN b/a
+target-numerics study, tag archive/pre-cleanup-2026-09-26): cuBLAS's BF16 GEMM for the GDN b/a
 projection (six algorithm classes below 4096 rows, rounding flips in most
 layers), cuBLASLt's FP8 GEMM for the 5120x6144 output projections (one
 different algorithm for M in 27..32) and the gated RMS norm's rows-per-block

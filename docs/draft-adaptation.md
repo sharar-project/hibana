@@ -5,7 +5,7 @@ serves, so accepted tokens per verification round rise on that workload. Only
 the drafter changes: the target, its vocabulary head, the verifier and every
 engine contract stay fixed, so the gates are held-out tokens per round on the
 user's own newest traffic, served throughput, and memory. This page is the
-guide; the dated evidence is the [draft training report](archive/studies/gb10-draft-training.md).
+guide; the dated evidence is the [draft training report](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/gb10-draft-training.md).
 
 ## Using it
 
@@ -126,7 +126,7 @@ to compare drafts on throughput and tokens per round.
 
 ## Results and limits
 
-The [2026-09-17 calibrated-W3 run](archive/studies/w3-calibration-adaptation.md)
+The [2026-09-17 calibrated-W3 run](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-calibration-adaptation.md)
 uses separate source files for training, validation and final testing.
 Step 200 of a 300-step session improves BF16 validation tokens per round by
 5.83%; the selected checkpoint improves actual FP8/W3 served throughput by

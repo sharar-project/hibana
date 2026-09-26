@@ -121,7 +121,7 @@ or read lengths back from CUDA. Planning does not set `ctx.cu_seqlens` for a
 cold single request, because that would change `ctx.batched` and select a
 different attention path. Standalone chunk callers may omit the prepared
 metadata and use the existing fallback. See [the exact-state and timing
-evidence](archive/studies/prefill-plan.md).
+evidence](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/prefill-plan.md).
 
 For `T` flattened tokens and hidden size `H`, `ForwardResult['norm']` is BF16
 `[T,H]`: the final Gemma RMSNorm output consumed by the target LM head.
@@ -203,7 +203,7 @@ work is bounded by `max_batch * (k + 1)` rows. Metadata uses one asynchronous
 upload; no GPU scalar extraction is added. Single-row feedback and interior
 checkpoint cases use the per-row helper. MTP's batch callback runs its existing
 row calculations; n-gram feedback is empty. Target state/page ownership remains
-with StateManager. [Batching evidence](archive/studies/accepted-batch.md) records BF16 shape
+with StateManager. [Batching evidence](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/accepted-batch.md) records BF16 shape
 differences, cache/snapshot routing, and measured costs. Third-party proposers
 implementing the former `accepted(req, ..., row)` callback must migrate to
 `accepted_batch`; a loop over their existing calculation is sufficient.
@@ -212,7 +212,7 @@ For an all-greedy DFlash2 batch, `kernels/draft_selection.py` traverses that
 lattice on the device and returns owned IDs. It preserves candidate rank/tie
 semantics, borrows score/candidate graph views only for the ordered kernel
 launch, and adds no target-state ownership. Mixed/sampled batches keep the
-conditional-law path below. See [the measured selection change](archive/studies/draft-selection.md).
+conditional-law path below. See [the measured selection change](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/draft-selection.md).
 
 For sampled verification, probabilities are FP32 after temperature/top-k/top-p
 and all selector/Markov effects. Dense q has shape `[B,k,V]`; sparse q and its
@@ -331,7 +331,7 @@ failure so pool-pressure retry cannot reuse partially advanced recurrent state.
 Rollback frees reservations; it does not undo in-place writes. Full snapshots
 remain the default and bitwise control. No CPU reads of hot state, BF16 state
 compression or managed-memory faults are introduced. See the
-[direct reconstruction evidence](archive/studies/direct-state.md).
+[direct reconstruction evidence](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/direct-state.md).
 
 Rejected width/latency policies and mixed prefill/verification execution are
 archived at commit `56605f0`, including their benchmark runner. They expose no
