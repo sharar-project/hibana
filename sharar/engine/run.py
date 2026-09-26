@@ -36,7 +36,7 @@ def _load(graphs: bool = True, spec: int = 0) -> tuple[Qwen38, Executor, Snapsho
     model = targets.load_model(target, snap)
     spec_config = None
     if spec:
-        from sharar.memory.spec_budget import SpecConfig
+        from sharar.cache.spec_budget import SpecConfig
         spec_config = SpecConfig("mtp", spec, os.environ.get("SHARAR_BENCH_VERIFY_STATE", "snapshots"), "bf16", None)  # reserve the verify/draft budget in the pool plan
     max_context = int(os.environ.get("SHARAR_BENCH_MAX_CONTEXT", "0")) or None  # smaller pools for large models
     ex = Executor(model, log=print, spec_config=spec_config, max_context=max_context)  # a spec_config enables speculation itself
@@ -306,7 +306,7 @@ def soak_cli(prompts_path: str, rounds: int, prompt_len: int) -> int:
     """Cycle distinct long prompts with partial reuse; watch the floor and the pools."""
     import random
 
-    from sharar.memory.ledger import GIB, mem_available_bytes
+    from sharar.cache.ledger import GIB, mem_available_bytes
 
     prompts = read_prompts(Path(prompts_path))
     model, ex, tok = _load(graphs=True)

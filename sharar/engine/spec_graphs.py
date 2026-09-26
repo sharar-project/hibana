@@ -8,7 +8,7 @@ import torch
 
 from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import _qsa_static, capture_sizes, check_context_capacity, fill_qsa, sparse_ctx, sparse_graphs
-from sharar.memory.kv_pool import KV_DTYPE
+from sharar.cache.kv_pool import KV_DTYPE
 
 if TYPE_CHECKING:
     import flashinfer

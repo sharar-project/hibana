@@ -5,7 +5,7 @@ target checkpoint, its vocabulary head and the numerical serving profile fixed
 unless a change explicitly validates a new one; the DFlash2 drafter is the one
 component trained on recorded traffic. Favor a small implementation with
 explicit tensor ownership over a registry or framework. Read [the interfaces](docs/interfaces.md),
-[the roadmap](roadmap.md), and [request ownership](docs/phase7a.md).
+[the roadmap](roadmap.md), and [request ownership](docs/ownership.md).
 
 ## Run checks
 
@@ -45,7 +45,7 @@ The real-checkpoint fixture uses bounded pools: 35,000 KV pages and 12 recurrent
 slots. Keep the external memory guard active for that container. The loader
 requires 40 GiB `MemAvailable`: a 24 GiB allowance based on the measured 21.3 GiB
 streaming-load peak plus the 16 GiB host floor. Runtime separately checks the
-prospective pool/draft budget before allocation. See [7D evidence](docs/archive/studies/phase7d.md).
+prospective pool/draft budget before allocation. See [7D evidence](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/phase7d.md).
 Performance measurements need exclusive GPU use. The check command does not
 stop or replace a running service.
 
@@ -63,7 +63,7 @@ decides acceptance only when it excludes 1, and it is about ±3% wide on the
 moves continuations, so do not select among variants on its point estimate. The three-prompt `tools/benchmark.sh`
 remains the reporting cell for end-to-end numbers, never the decision.
 A change to the target's arithmetic or to acceptance also runs
-`bench/accuracy_eval.py` (GSM8K and HumanEval, paired against the exact
+`evals.accuracy_eval` in the `sharar-evals` repository (GSM8K and HumanEval, paired against the exact
 configuration) before it becomes a default; the gate measures speed and
 acceptance, not correctness.
 When an optimization lands, changes its default or is retired, update its
@@ -107,7 +107,7 @@ External sampled proposals include their actual transformed conditional q,
 including selector/Markov effects. `engine/rejection.py` is the common reference
 algorithm; test tiny distributions independently of model rounding. MTP/n-gram
 sampled requests still use ordinary decode. Tree proposals are not implemented.
-Declare prospective memory in `memory/spec_budget.py`, and retain/restore draft
+Declare prospective memory in `cache/spec_budget.py`, and retain/restore draft
 features through identity-keyed metadata without taking ownership of target
 pages. Both full snapshots and accepted-state reconstruction use the same
 StateManager commit and stop/continuation tests.
@@ -148,7 +148,7 @@ choice and check exact checkpoint/committed state when changing this path.
 ## Add a cache policy
 
 Policy chooses admission, snapshot placement and eviction candidates inside
-`memory/`. `StateManager` transfers request ownership; `RadixCache` owns cached
+`cache/`. `StateManager` transfers request ownership; `RadixCache` owns cached
 pages/snapshots and locks. Keep those responsibilities intact. Test shared
 prefixes, partial hits, active flush, retraction, speculative truncation and
 exact continuation after reuse. Measure saved workload time per total byte,
@@ -173,7 +173,7 @@ same target work, separating kernel-cost comparisons from generation runs when
 changed continuations alter the amount of work; the affected tests, raw
 samples, emitted tokens and memory; and a keep/remove decision against the
 declared threshold, negative results included. The full historical plan is
-[archived](docs/archive/gb10-experiments-2026-09.md). Describe the mechanism,
+[archived](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/gb10-experiments-2026-09.md). Describe the mechanism,
 what traffic or synchronization it removes, the control experiment, and the
 condition that would make us abandon it. Keep tuning and algorithm/architecture
 experiments distinguishable. Report source/image/compiler identities, all raw

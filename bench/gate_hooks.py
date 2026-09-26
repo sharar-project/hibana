@@ -3,18 +3,9 @@
 A hook is `fn(stage, executor, args)` called at 'model' (after the weights
 load; executor is None), 'spec' (after enable_spec, before graph capture) and
 'ready' (after warmup). Hooks here are the live ones the gate runs; completed
-screens keep theirs in `bench/archive/gb10_family_candidates.py` and are
-re-exported so a gate order can name them without the archive path.
+screens are in git history (tag `archive/pre-cleanup-2026-09-26`).
 """
 from __future__ import annotations
-
-from bench.archive.gb10_family_candidates import (  # noqa: F401  re-exported for `--candidates`
-    draft_nvfp4_body,
-    draft_nvfp4_body_fc8,
-    exact_bundle_fp8_m16,
-    fp8_m16,
-    top32,
-)
 
 
 def stable_numerics(stage, ex, args):

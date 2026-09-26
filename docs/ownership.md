@@ -2,7 +2,7 @@
 
 These invariants remain required for changes to scheduling, speculation,
 caching and HTTP lifecycle. The original repair status and source are
-[archived](archive/studies/phase7a.md).
+[archived](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/ownership.md).
 
 | Repair | Result |
 |---|---|

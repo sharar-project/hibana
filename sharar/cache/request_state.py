@@ -13,9 +13,9 @@ import torch
 
 if TYPE_CHECKING:
     from sharar.engine.request import Request
-    from sharar.memory.kv_pool import KvPool
-    from sharar.memory.state_pool import StatePool
-    from sharar.memory.radix import Match, RadixCache
+    from sharar.cache.kv_pool import KvPool
+    from sharar.cache.state_pool import StatePool
+    from sharar.cache.radix import Match, RadixCache
 
 
 @dataclass

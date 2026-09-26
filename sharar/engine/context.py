@@ -13,8 +13,8 @@ import torch
 
 from sharar import config
 from sharar.engine.contracts import FeatureRequest
-from sharar.memory.kv_pool import KvPool
-from sharar.memory.state_pool import StatePool
+from sharar.cache.kv_pool import KvPool
+from sharar.cache.state_pool import StatePool
 
 if TYPE_CHECKING:
     from sharar.model.gdn_plan import GdnPrefillPlan

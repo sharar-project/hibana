@@ -22,7 +22,7 @@ Defaults: the frozen `code` task, 10,000 input tokens, exactly 1,000 output
 tokens, temperature zero, seed 42, concurrency one, one excluded full warmup
 and three timed requests. `--workload all` adds `design` and `reasoning`.
 The three built-in prompts reproduce the first input row of each task in the
-recorded [AIPerf TPS comparison](../docs/archive/studies/gb10-tps.md). The packaged historical
+recorded [AIPerf TPS comparison](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/gb10-tps.md). The packaged historical
 source fixture is independent of edits to current engine code. Prompt
 tokenization occurs outside timing; each run saves the exact IDs it uses.
 
@@ -110,8 +110,8 @@ candidate runs that pass with the BF16 draft. Inputs come from
 `families` row of the comparison (101 families) as the decision, the `benchmarks`
 row as context, and never a single task; the round-cost interval resolves 0.05%,
 the tokens-per-round interval is about ±3% wide for any continuation-changing
-change on the 101-family set ([study](../docs/archive/studies/family-set-v3.md); it was ±7%
-on the 18-family `v2` set, [study](../docs/archive/studies/family-gate.md)). Results and logs land in
+change on the 101-family set ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/family-set-v3.md); it was ±7%
+on the 18-family `v2` set, [study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/family-gate.md)). Results and logs land in
 `$SHARAR_RESULTS/reviews/<date>-family-gate/<label>/`. Row-count changes
 should also be compared under `SHARAR_STABLE_NUMERICS=1`, the shape-stable
 research baseline, so that continuation drift does not masquerade as a gain.
@@ -129,9 +129,8 @@ research baseline, so that continuation drift does not masquerade as a gain.
 | `bench.gb10_agent_http` | Growing simulated conversations and mixed HTTP arrivals |
 | `bench.gb10_runtime_ab` | Current calibrated target and selected drafter over cold, warm and mixed HTTP workloads at concurrency 1, 2 and 4; optional candidate hook |
 | `bench.gb10_round_profile` | Separate unprofiled, Nsight and CUDA-event phase windows on frozen prompts; `--draft` selects the served drafter |
-| `bench.gb10_audit`, `bench.gb10_matrix` | Generation profiling and real-operand matrix diagnostics |
-| `bench/ngram_branch_screen.py` | CPU-only coverage screen of a prompt-lookup n-gram branch beside DFlash2 on recorded traces |
-| `bench/accuracy_eval.py` | GSM8K exact-match and HumanEval pass@1 against a running server, acceptance pinned per request; `compare` pairs arms with McNemar |
+| `bench.gb10_matrix` | Real-operand matrix diagnostics |
+| `sharar-evals` (separate repository) | HTTP evaluations: h2h, GSM8K/HumanEval accuracy, test-time scaling, long context, output identity |
 | `bench/w3_bench.py` | 3-bit decode GEMM: correctness against the dequantized reference and DRAM bandwidth per decode shape at 16, 32 and 64 rows (weights rotated past L2, CUDA-graph timing), split-K sweep |
 | `bench/w3_calibrate.py` | Fit checksummed W3 target copies from FP8 source weights and frozen activation inputs; [workflow](../docs/w3-calibration.md) |
 
@@ -139,21 +138,15 @@ Use each driver's `--help` and its linked [performance evidence](../docs/perform
 to freeze inputs, output budgets, warmups, precision and geometry before running.
 Run candidate and control in separate fresh, guarded GPU processes. A source
 reorganization does not make old protocols current or establish new TPS gains.
-The agent HTTP `--schedule` flag explicitly selects the rejected archived
-scheduler; it is an experiment and does not change serving defaults.
-
-The old `bench.gb10_prefix_policy` command exits with a migration message:
-current retention makes its two capacity labels identical. Reproduce its
-duplicate-save study at `ea6a9de`; measure current retention using the drivers above.
 
 Shared recording, HTTP, identity, retained-batch and CUDA-timing helpers live in
-[support](support/README.md). Completed experimental kernels and policies live
-in [archive](archive/README.md), with their reference tests retained. Some older
+[support](support/README.md). Completed experiments are in git history
+(the `archive/*` tags keep the study branches). Some older
 drivers remain top-level because maintained callers still share their workload
 or numerical helpers; moving them wholesale would hide an active dependency.
 
-See the [decision archive](../docs/archive/README.md) for historical studies and
-the [old command guide](../docs/archive/benchmark-guide-2026-09-11.md) for commands
+See the [decision archive](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/README.md) for historical studies and
+the [old command guide](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/benchmark-guide-2026-09-11.md) for commands
 at their original revisions. Raw tensors, outputs and traces stay outside Git.
 
 ## Draft adaptation tools
@@ -170,7 +163,6 @@ at their original revisions. Raw tensors, outputs and traces stay outside Git.
   and the publisher's reference model, and the objective against SpecForge,
   then runs a short training smoke. `bench/support/target_features.py`
   recomputes raw target features for it.
-- `bench/draft_validate.py` and `bench/draft_profile.py` are the earlier
-  publisher-oracle and profiling gates for external drafts.
+- `bench/draft_validate.py` is the earlier publisher-oracle gate for external drafts.
 
 See [draft adaptation](../docs/draft-adaptation.md).

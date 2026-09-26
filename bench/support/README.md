@@ -13,4 +13,4 @@ select serving policies or execute benchmarks at import time.
 
 CPU tests import recording/HTTP helpers directly. Source identity records all
 benchmark Python modules so moved helpers remain covered by run provenance.
-Keep numerical experiments in their drivers or [archive](../archive/README.md).
+Keep numerical experiments in their drivers or [archive](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/bench/archive/README.md).

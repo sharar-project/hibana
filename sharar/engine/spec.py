@@ -13,7 +13,7 @@ import torch
 
 from sharar.engine.context import ForwardContext
 from sharar.engine.request import Request
-from sharar.memory.kv_pool import KV_DTYPE
+from sharar.cache.kv_pool import KV_DTYPE
 from sharar.engine.contracts import Proposer, StepInputs, VerifiedFeatures
 from sharar.engine.debug import debug_sync
 from sharar.engine.rejection import Proposal, distribution, plausible, verify_rows

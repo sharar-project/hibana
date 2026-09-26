@@ -20,7 +20,7 @@ import torch.nn.functional as F
 
 from sharar.engine.context import ForwardContext
 from sharar.kernels import ops
-from sharar.memory.kv_pool import KvPool
+from sharar.cache.kv_pool import KvPool
 from sharar.model.flashnext.attention import FlashNextAttention
 from sharar.model.flashnext.hyper import HyperConnection
 from sharar.model.flashnext.linear import TrunkLinear

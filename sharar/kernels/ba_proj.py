@@ -7,7 +7,7 @@ tiles in order, and the SPLIT_K partial sums are added in a fixed order. So
 the arithmetic of a row does not depend on M, on which block the row lands in
 or on how many blocks run. cuBLAS's BF16 GEMM changes algorithm with M and
 flips BF16 roundings of these gates in most layers
-(docs/archive/studies/target-numerics.md). The split keeps small-M calls off
+(target-numerics study, tag archive/pre-cleanup-2026-09-26). The split keeps small-M calls off
 a single SM: 48 layers of a 16-row prefill cost 0.7 ms instead of 3.8 ms.
 """
 from __future__ import annotations

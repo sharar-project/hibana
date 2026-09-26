@@ -3,8 +3,8 @@ guarantees one full-context request without reserving it for every slot."""
 import pytest
 
 from sharar.engine.profile import MAX_CONTEXT, ServingProfile
-from sharar.memory import ledger as ledger_mod
-from sharar.memory.ledger import GIB, SHARED_CONTEXT, Ledger
+from sharar.cache import ledger as ledger_mod
+from sharar.cache.ledger import GIB, SHARED_CONTEXT, Ledger
 from sharar.target import DEFAULT_TARGET
 
 

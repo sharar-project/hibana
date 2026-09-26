@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from sharar.model.parallel_draft import convolve, ParallelDraftModel
 from sharar.proposers.parallel import FeatureCache
-from sharar.memory.spec_budget import verify_bytes
+from sharar.cache.spec_budget import verify_bytes
 
 
 def test_convolution_resets_at_each_block_and_uses_both_dynamic_taps():
@@ -82,7 +82,7 @@ def test_selector_retains_corrections_smaller_than_a_bf16_logit_step():
 
 
 def test_prospective_draft_budget_reduces_optional_cache_before_allocation(monkeypatch):
-    from sharar.memory import ledger
+    from sharar.cache import ledger
     monkeypatch.setattr(ledger, 'mem_available_bytes', lambda: 64 * 2**30)
     book = ledger.Ledger()
     control = book.plan(state_slot_target=1000)

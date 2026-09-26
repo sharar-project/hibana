@@ -17,7 +17,7 @@ from sharar.engine.sampler import InvalidRequest, SamplingParams
 from sharar.engine.scheduler import Scheduler
 from sharar.engine.spec import SpecDecoder
 from sharar.engine.traces import FeatureRecorder, PinnedPool, TraceSink, iter_records, load_features, summarize
-from sharar.memory.request_state import Reservation, StateManager
+from sharar.cache.request_state import Reservation, StateManager
 from tests.unit.test_scheduler import FakeExecutor
 
 

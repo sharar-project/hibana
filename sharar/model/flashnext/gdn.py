@@ -7,7 +7,7 @@ from __future__ import annotations
 import torch
 
 from sharar.kernels.fla.layernorm_gated import rms_norm_gated
-from sharar.memory.state_pool import CONV_DIM
+from sharar.cache.state_pool import CONV_DIM
 from sharar.model.flashnext.linear import TrunkLinear
 from sharar.model.gdn import GatedDeltaNet
 

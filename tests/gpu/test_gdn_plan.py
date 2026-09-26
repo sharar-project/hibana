@@ -55,7 +55,7 @@ def test_reordered_checkpoints_preserve_core_and_exact_snapshots():
     from sharar import config
     from sharar.engine.context import ForwardContext
     from sharar.model.gdn import GatedDeltaNet
-    from sharar.memory.state_pool import CONV_DIM, CONV_STATE_LEN
+    from sharar.cache.state_pool import CONV_DIM, CONV_STATE_LEN
 
     torch.manual_seed(72)
     layer = GatedDeltaNet.__new__(GatedDeltaNet)

@@ -19,7 +19,7 @@ import torch
 from sharar.engine.context import ForwardContext
 from sharar.engine.contracts import FeatureRequest
 from sharar.engine.profile import ServingProfile
-from sharar.memory.kv_pool import KV_DTYPE
+from sharar.cache.kv_pool import KV_DTYPE
 
 CAPTURE_SIZES = (1, 2, 4)
 

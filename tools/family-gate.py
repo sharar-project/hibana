@@ -9,8 +9,8 @@ first pass and restored after the last, whatever happens.
 
     tools/family-gate.py --label stable-vs-native --order N,C1,N \
         --candidates env:SHARAR_STABLE_NUMERICS=1
-    tools/family-gate.py --label shelved --order N,C1,C2,N \
-        --candidates bench.gate_hooks:fp8_m16,bench.gate_hooks:draft_nvfp4_body|bf16
+    tools/family-gate.py --label w3 --order N,C1,C2,N \
+        --candidates bench.gate_hooks:w3_decode,bench.gate_hooks:w3_decode_head_draft
 
 Order tokens: N = native (FP8 draft unless --draft-precision), B = native with
 the BF16 draft, Ck = the k-th entry of --candidates. A candidate is a hook

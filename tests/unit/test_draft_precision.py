@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from sharar.memory.spec_budget import SpecConfig
+from sharar.cache.spec_budget import SpecConfig
 from sharar.model.draft_linear import DraftFp8Linear
 
 

@@ -133,7 +133,7 @@ def test_interior_snapshot_eviction_drops_its_features_only(monkeypatch):
 def test_prospective_budget_accounts_for_each_recurrent_feature_window(monkeypatch, tmp_path):
     import json
     from sharar import config
-    from sharar.memory import spec_budget
+    from sharar.cache import spec_budget
     from sharar.proposers.parallel import PINS
     snapshot = tmp_path / 'models--target' / 'snapshots' / 'revision'
     name, revision = PINS['dflash2']

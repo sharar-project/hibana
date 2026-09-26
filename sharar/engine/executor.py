@@ -16,14 +16,14 @@ from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import DecodeGraphs
 from sharar.engine.request import Request, State
 from sharar.engine.sampler import InvalidRequest, Sampler, SamplingParams
-from sharar.memory.kv_pool import KV_DTYPE, KvPool
-from sharar.memory.ledger import Ledger
-from sharar.memory.radix import RadixCache
-from sharar.memory.request_state import StateManager
+from sharar.cache.kv_pool import KV_DTYPE, KvPool
+from sharar.cache.ledger import Ledger
+from sharar.cache.radix import RadixCache
+from sharar.cache.request_state import StateManager
 from sharar.engine.contracts import ProposerContext, Proposer
 from sharar.engine.profile import ServingProfile
 from sharar.engine.upload import upload
-from sharar.memory.state_pool import StatePool
+from sharar.cache.state_pool import StatePool
 if TYPE_CHECKING:
     from sharar.model.qwen38 import Qwen38
 
@@ -58,7 +58,7 @@ class Executor:
         self.ledger.record_cuda_allocated("weights")
         future, extra_page = 2 * 2**30, 0
         if spec_config is not None:
-            from sharar.memory.spec_budget import budget
+            from sharar.cache.spec_budget import budget
             future, extra_page = budget(spec_config, max_batch, max_context, cache_slots=num_slots or 96, target=self.target)
         if num_pages is None or num_slots is None:
             plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future, extra_page_bytes=extra_page)
@@ -66,7 +66,7 @@ class Executor:
             num_slots = num_slots or plan.state_slots
         if type(num_pages) is not int or num_pages < 2 or type(num_slots) is not int or num_slots < 2:
             raise ValueError("pools need at least one usable entry plus the reserved dummy entry")
-        from sharar.memory.ledger import check_load_headroom
+        from sharar.cache.ledger import check_load_headroom
         check_load_headroom(num_pages * (self.target.kv_bytes_per_token + extra_page) + num_slots * self.target.state_bytes_per_slot + future + 8 * 2**30)
         self.kv_pool = KvPool(num_pages, self.device, target=self.target)
         if hasattr(model, "register_pages"):
@@ -122,8 +122,8 @@ class Executor:
         """Select the adapter and its numerical profile once, before capture."""
         if self.graphs is not None or self.spec is not None:
             raise ValueError("enable speculation once, before graph capture")
-        from sharar.memory.spec_budget import SpecConfig, budget
-        from sharar.memory.ledger import check_load_headroom
+        from sharar.cache.spec_budget import SpecConfig, budget
+        from sharar.cache.ledger import check_load_headroom
         fixed, per_page = budget(SpecConfig(proposer, k, state_strategy, draft_precision), self.max_batch, self.max_context,
                                  cache_slots=self.state_pool.num_slots, target=self.target)
         check_load_headroom(fixed + per_page * self.kv_pool.num_pages + 8 * 2**30)
@@ -232,13 +232,13 @@ class Executor:
 
     def enable_cold_tier(self, budget_gib: float | None = None, log=None) -> None:
         """Park evicted prefix-cache leaves in a unified-memory arena instead of
-        dropping them (`memory/cold_tier.py`). Budget: SHARAR_COLD_TIER_GIB, else
+        dropping them (`cache/cold_tier.py`). Budget: SHARAR_COLD_TIER_GIB, else
         what is available now beyond the host floor, the prefill reserve and a
         4 GiB margin, capped at 24 GiB. Call after the proposer exists so its
         auxiliary state travels with parked sessions."""
         import os
-        from sharar.memory.cold_tier import ColdTier
-        from sharar.memory.ledger import GIB, mem_available_bytes
+        from sharar.cache.cold_tier import ColdTier
+        from sharar.cache.ledger import GIB, mem_available_bytes
 
         if self.cache is None or self.cache.tier is not None:
             return
@@ -276,8 +276,8 @@ class Executor:
         directory = os.environ.get("SHARAR_SESSION_DIR")
         if not directory:
             return None
-        from sharar.memory.ledger import GIB
-        from sharar.memory.session_disk import SessionDisk
+        from sharar.cache.ledger import GIB
+        from sharar.cache.session_disk import SessionDisk
         t = self.target
         identity = {"target": t.name, "revision": t.model_revision, "w3": getattr(self.model, "w3_identity", None),
                     "kv_bytes_per_token": t.kv_bytes_per_token, "state_bytes_per_slot": t.state_bytes_per_slot,

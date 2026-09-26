@@ -46,7 +46,7 @@ The loader stages each mapped tensor in ordinary CPU storage before copying
 it to CUDA. On GB10 this reduced warm-cache target construction from 63.2 to
 12.0 seconds while preserving all 304 matrices byte for byte. It changes
 loading, not decode arithmetic or throughput; see the
-[runtime profile](archive/studies/w3-runtime-profile.md).
+[runtime profile](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-runtime-profile.md).
 
 A fitted artifact is a candidate until it passes the family gate and paired
 GSM8K/HumanEval evaluation against the intended serving profile. Collect fresh

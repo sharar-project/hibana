@@ -65,7 +65,7 @@ class DecoderLayer:
 
 class FlashNext:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", log=print, target: Target = FLASHNEXT, precision: str | None = None, **_ignored):
-        from sharar.memory.ledger import check_load_headroom
+        from sharar.cache.ledger import check_load_headroom
         self.target = target
         self.precision = precision or os.environ.get("SHARAR_FLASHNEXT_TRUNK", "fp8")  # bf16 | fp8 | w3 (3.25-bit decode copies over FP8)
         check_load_headroom(target.weight_load_peak_bytes)

@@ -162,7 +162,7 @@ The implementation is in [w3_gemm.cu](../sharar/kernels/csrc/w3_gemm.cu).
 Memory bandwidth matters, but unpacking instructions, scaling, registers,
 cache behavior and the amount of work per launch also affect speed. A
 smaller representation does not guarantee a faster kernel at every shape.
-The [MLP counter study](archive/studies/w3-mlp-profile.md) shows how we
+The [MLP counter study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-mlp-profile.md) shows how we
 measure these limits and reject changes that make the kernel slower.
 
 ## 6. Which parts of Sharar actually use it?
@@ -291,15 +291,15 @@ was essentially unchanged; more accepted tokens per round explained the
 gain. Subsequent draft adaptation improved served throughput on a separate
 coding proxy by 3.60% at concurrency one and 4.43% at concurrency four.
 Do not add or multiply these results into an unmeasured universal speedup.
-See the [calibration and adaptation study](archive/studies/w3-calibration-adaptation.md)
+See the [calibration and adaptation study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-calibration-adaptation.md)
 for controls, datasets and limitations.
 
 The newer CPU staging fix speeds up loading the artifact, not its
 arithmetic. The narrowly targeted QKV kernel change has a separate
 controlled batch-four decode gain of about 0.66%; a general HTTP gain was
 not established. Those findings are documented in the
-[runtime profile](archive/studies/w3-runtime-profile.md) and
-[QKV qualification](archive/studies/w3-qkv-tiling.md).
+[runtime profile](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-runtime-profile.md) and
+[QKV qualification](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-qkv-tiling.md).
 
 ## 10. How novel is this?
 

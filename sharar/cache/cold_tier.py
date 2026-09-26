@@ -89,7 +89,7 @@ class ManagedArena:
     def _new_slab(self) -> dict | None:
         if self.slab_bytes + self.SLAB > max(self.nbytes, self.SLAB):
             return None
-        from sharar.memory.ledger import mem_available_bytes
+        from sharar.cache.ledger import mem_available_bytes
 
         if mem_available_bytes() - self.SLAB < self.floor_bytes + 4 * GIB:
             return None  # the host is tight: do not grow the tier

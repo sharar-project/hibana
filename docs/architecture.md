@@ -6,7 +6,7 @@ move to so that every capability works on both targets from shared parts
 (Qwen3.8-27B and Qwen3.8-Flash-Next), one target per process. Other hardware
 is out of scope until it exists here. Written 2026-09-25 against main
 `e3d7746`; the ownership rules this page relies on are in
-[interfaces](interfaces.md) and [ownership invariants](phase7a.md).
+[interfaces](interfaces.md) and [ownership invariants](ownership.md).
 
 ## Current shape
 
@@ -238,7 +238,7 @@ keeps its own body; the helper removes the duplicated bookkeeping.
 
 ## Repository boundaries
 
-`sharar/memory/` is the engine's memory manager, not an application feature:
+`sharar/cache/` is the engine's memory manager, not an application feature:
 the paged FP8 KV pool, the GDN state pool, the radix prefix cache, the
 `StateManager` ownership boundary, the unified-memory ledger, the cold tier,
 the NVMe session store and the speculation budget. It stays in the engine
@@ -249,7 +249,7 @@ and is renamed `sharar/cache/` in the cleanup (#23).
 | Engine, models, kernels, weights, memory, **proposers** | this repo, `sharar/` | Proposers sit on the hot path: they share the verify graphs, state ownership, kernels and the draft head with the target. Every speed change touches both sides; a cross-repo interface would have to be versioned per change. |
 | **Drafter training** (`sharar/train/`) | this repo, optional extra (`pip install sharar[train]`) | Training imports the serving draft body (`model/parallel_draft.py`, `proposers/parallel.py`) so the differentiable forward matches serving exactly, and promotion hot-reloads into the running server. One-way dependency: `train` imports the engine, the engine never imports `train`. |
 | **Target-model training** (OPD #34, LoRA, RL) | a separate repo when it starts | Large, slow-moving, its own dependencies; uses Sharar as the rollout server and loads the target through the model contract. |
-| **HTTP-level evals and benchmarks** (`bench/h2h.py`, `accuracy_eval.py`, `tts_eval.py`, `long_context.py`, the family-gate client, frozen datasets) | a separate repo (`sharar-evals`) | They import nothing from `sharar` and already run against SGLang, vLLM and Atlas; frozen inputs and results are pinned by their own versions. Every result records both SHAs. |
+| **HTTP-level evals and benchmarks** (`evals.h2h`, `accuracy_eval`, `tts_eval`, `long_context`, `identity`; frozen dataset hashes) | `abdelfattah-lab/sharar-evals` (split 2026-09-26) | They import nothing from `sharar` and already run against SGLang, vLLM and Atlas; frozen inputs and results are pinned by their own versions. Every result records both SHAs. |
 | **In-process benches and gates** (`bench/flashnext_round.py`, `draft_head.py`, MoE/W3 microbenchmarks, `bench/gate_hooks.py`) | this repo, `bench/` | They reach into engine internals and must version with them. |
 
 ## Performance contract
