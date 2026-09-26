@@ -2,7 +2,6 @@
 serving proposer, the NVFP4 head backward uses a faithful dequantization, and
 one optimizer step updates the serving weights in place."""
 import gc
-import os
 
 import pytest
 import torch
@@ -11,7 +10,6 @@ import torch.nn.functional as F
 from sharar.engine.contracts import StepInputs
 from sharar.engine.sampler import SamplingParams
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 checkpoint tests')
 
 
 @pytest.fixture(scope='module')

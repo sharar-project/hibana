@@ -1,11 +1,9 @@
 """Cold tier: an evicted prefix leaf is parked in unified memory and restored
 bit-exactly (pages, GDN snapshot, draft auxiliary) when its session returns."""
-import os
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get("SHARAR_RUN_GPU") != "1" or not torch.cuda.is_available(), reason="GB10 only")
 
 
 def _pools(pages=256, slots=6):

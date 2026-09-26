@@ -1,10 +1,8 @@
 """Exact conditional-rank traversal, including ties and graph input lifetimes."""
-import os
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 kernel tests')
 
 
 def reference(candidates, scores):

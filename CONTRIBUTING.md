@@ -28,18 +28,21 @@ and `.venv-cpu/bin/python tools/check_distribution.py` to build an sdist and
 wheel and probe installed runtime assets outside the checkout. CI runs these
 checks; a source-only or editable installation does not validate packaging.
 
-Use [operations](docs/operations.md) for the current container setup. Shared
-benchmark infrastructure lives in `bench/support/`; completed experiments
-live in `bench/archive/`. Preserve frozen workload content and checksums when
-moving readers. Dated reports and manifests stay together in `docs/archive/`.
-
-Inside a prepared GB10 container with the snapshot, frozen parity artifacts
-at `$SHARAR_RESULTS/parity`, writable compilation cache and exclusive model
-memory, run:
+The GPU suite (`tests/gpu`, about 11 minutes, both targets) runs from the host
+in the runtime image with this checkout mounted:
 
 ```bash
-bash tools/check.sh gpu
+tools/gpu-tests.sh                 # or: tools/check.sh gpu-container
+tools/gpu-tests.sh tests/gpu/test_qsa.py -x
 ```
+
+It mounts the model caches, the calibrated W3 artifact and `$SHARAR_RESULTS`
+at their container paths (read from `config/gb10.env` and
+`config/flashnext.env`; `SHARAR_TEST_IMAGE` picks another image) and sets
+`SHARAR_RUN_GPU=1`; without it the GPU modules are not collected. Inside an
+already prepared GB10 container use `bash tools/check.sh gpu`. Shared benchmark
+infrastructure lives in `bench/support/`; preserve frozen workload content and
+checksums when moving readers.
 
 The real-checkpoint fixture uses bounded pools: 35,000 KV pages and 12 recurrent
 slots. Keep the external memory guard active for that container. The loader

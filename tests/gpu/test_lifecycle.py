@@ -18,7 +18,6 @@ from sharar.cache.radix import RadixCache
 from sharar.parity.prompts import build_prompts, random_ids
 from sharar.tokenizer import SnapshotTokenizer
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 checkpoint tests')
 
 
 def test_cache_restore_matches_manual_restore_at_every_layer(setup, tmp_path):

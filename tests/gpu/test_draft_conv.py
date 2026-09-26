@@ -1,10 +1,8 @@
 """Check BF16 rounding and block boundaries against the unfused implementation."""
-import os
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 tests')
 
 
 @pytest.mark.parametrize('batch,steps', [(1, 8), (1, 16), (3, 16), (4, 8), (4, 16)])

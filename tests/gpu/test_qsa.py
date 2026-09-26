@@ -1,13 +1,11 @@
 """Flash-Next sparse attention on the GPU: the vendored kernel against a torch
 computation, and the engine indexer (chunked prefill, then decode, on scrambled
 pages) against the reference selection `qsa_token_mask`."""
-import os
 from types import SimpleNamespace
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get("SHARAR_RUN_GPU") != "1" or not torch.cuda.is_available(), reason="GB10 only")
 
 
 def test_sparse_attention_matches_torch():

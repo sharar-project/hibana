@@ -1,5 +1,4 @@
 """Calibrated codes preserve the W3 kernel and CUDA graph contracts."""
-import os
 
 import pytest
 import torch
@@ -7,7 +6,6 @@ import torch
 from sharar.kernels import w3
 from sharar.weights.w3_calibration import quantize
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 tests')
 
 
 def test_captured_calibration_matches_eager():

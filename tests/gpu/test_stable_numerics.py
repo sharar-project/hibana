@@ -1,10 +1,8 @@
 """The M-invariant b/a kernel matches an FP32 reference and does not depend on M; the FP8 pad is exact."""
-import os
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 tests')
 
 
 @torch.inference_mode()

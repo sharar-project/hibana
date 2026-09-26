@@ -1,10 +1,8 @@
 """Mixed-prefix prefill must retain new BF16 K/V and sequence boundaries."""
-import os
 
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(os.environ.get('SHARAR_RUN_GPU') != '1', reason='opt-in GB10 tests')
 
 
 @pytest.mark.parametrize('prefixes', [(0,0), (17,0), (0,31), (17,31)])

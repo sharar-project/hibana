@@ -1,8 +1,6 @@
 import pytest
 import torch
-import os
 
-pytestmark = pytest.mark.skipif(os.environ.get("SHARAR_RUN_GPU") != "1", reason="opt-in GB10 tests")
 
 @pytest.mark.parametrize('tokens',[1,3,16,31,37,47,64,2048])
 @pytest.mark.parametrize('heads,dim',[(1,5120),(8,128),(32,128)])
