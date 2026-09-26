@@ -16,6 +16,7 @@ from pathlib import Path
 
 import torch
 
+from sharar.engine.config import current
 from sharar.engine.context import ForwardContext, scratch_prefill_context
 from sharar.engine.contracts import ForwardResult
 from sharar.kernels import ops
@@ -67,7 +68,6 @@ class FlashNext:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", log=print, target: Target = FLASHNEXT, precision: str | None = None, **_ignored):
         from sharar.cache.ledger import check_load_headroom
         self.target = target
-        from sharar.engine.config import current
         self.precision = precision or current().flashnext_trunk  # bf16 | fp8 | w3 (3.25-bit decode copies over FP8)
         check_load_headroom(target.weight_load_peak_bytes)
         self.device = torch.device(device)

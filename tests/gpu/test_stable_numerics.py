@@ -33,10 +33,11 @@ def test_fp8_window_pad_reproduces_the_wide_algorithm(monkeypatch):
     finally:
         w.close()
     x = torch.randn(64, 6144, device='cuda', dtype=torch.bfloat16)
-    monkeypatch.setattr(stable, 'ENABLED', False)
+    from sharar.engine import config as engine_config
+    engine_config.install(engine_config.current().replace(stable_numerics=False))
     wide = ops.fp8_linear(x, out_proj)
     narrow = ops.fp8_linear(x[:30], out_proj)
     assert not torch.equal(narrow, wide[:30])  # cuBLASLt's 27..32 algorithm
-    monkeypatch.setattr(stable, 'ENABLED', True)
+    engine_config.install(engine_config.current().replace(stable_numerics=True))
     assert torch.equal(ops.fp8_linear(x[:30], out_proj), wide[:30])
     assert torch.equal(ops.fp8_linear(x[:26], out_proj), wide[:26])
