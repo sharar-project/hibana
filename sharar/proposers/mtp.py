@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import torch
 from sharar.target import DEFAULT_TARGET
 
-from sharar.engine.contracts import FeatureRequest, ProposerContext, ProposerRequirements
+from sharar.engine.contracts import Capabilities, FeatureRequest, ProposerContext, ProposerRequirements
 
 
 @dataclass
@@ -20,9 +20,8 @@ class MtpState:
 
 
 def draft_argmax(head, hidden: torch.Tensor) -> torch.Tensor:
-    """The head's draft token: its reduced-vocabulary argmax when it has one (`set_draft_vocab`)."""
-    pick = getattr(head, "draft_argmax", None)
-    return pick(hidden) if pick is not None else head.logits(hidden).argmax(-1)
+    """The head's draft token through its draft head (`proposers/draft_head.py`): the target's own head by default."""
+    return head.draft_head.argmax(head.head_input(hidden))
 
 
 class MtpProposer:
@@ -31,7 +30,8 @@ class MtpProposer:
         # Drafts are the head's argmax: deterministic proposals, so sampled requests verify them
         # exactly as point masses (engine/rejection.py), like the parallel drafts.
         self.requirements = ProposerRequirements("mtp", FeatureRequest(final_norm=True), persistent_bytes=head.bytes,
-                                                 greedy_only=False, max_depth=8)
+                                                 greedy_only=False, max_depth=8,
+                                                 capabilities=Capabilities(draft_head=getattr(head, "DRAFT_HEADS", False)))
         self.graphs = None
         self._host_tokens = torch.empty(context.max_batch * (k + 1), dtype=torch.int64,
                                         pin_memory=context.device.type == "cuda")

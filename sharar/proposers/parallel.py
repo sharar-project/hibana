@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 import torch
 
 from sharar.target import DEFAULT_TARGET
-from sharar.engine.contracts import FeatureRequest, ProposerRequirements
+from sharar.engine.contracts import Capabilities, FeatureRequest, ProposerRequirements
 from sharar.engine.rejection import Proposal, distribution
 
 PINS = {
@@ -106,11 +106,18 @@ class ParallelProposer:
         self.features = torch.empty((context.max_batch + 1, self.window, 5120), dtype=torch.bfloat16, device=device)
         self.feature_cache = FeatureCache(context.max_batch * self.window * 5120 * 2)
         self.requirements = ProposerRequirements(name, FeatureRequest(layers=model.features),
-                                                persistent_bytes=self.bytes, greedy_only=False, max_depth=15 if name == 'dflash2' else 7)
+                                                persistent_bytes=self.bytes, greedy_only=False, max_depth=15 if name == 'dflash2' else 7,
+                                                capabilities=Capabilities(device_feedback=True, reloadable=True, checkpoint_cache=True,
+                                                                          cold_payload=True, trace_features=True))
         self.workspace = torch.empty(128 * 2**20, dtype=torch.uint8, device=device)
         self.attention = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self.workspace, 'NHD')
         self.graphs = None
         self.cache_hits = self.cache_fallbacks = 0
+
+    def reload(self, snapshot):
+        """Copy a checkpoint into the serving draft between rounds (Reloadable); returns the served source."""
+        self.model.load_weights(snapshot)
+        return self.model.source
 
     def bind_checkpoint_cache(self, pool):
         if self.feature_cache.entries:
@@ -258,7 +265,7 @@ class ParallelProposer:
                 hidden = hidden[:, 1:]
                 candidates, scores = self.model.selector(hidden, inputs.tokens)
             else:
-                base_logits = self.model.target.logits(hidden.reshape(-1, 5120)).view(batch, self.k, -1)
+                base_logits = self.model.draft_head.logits(hidden.reshape(-1, 5120)).view(batch, self.k, -1)
         sampled = any(not r.params.greedy for r in requests)
         if self.name == 'dflash2' and not sampled:
             from sharar.kernels.draft_selection import greedy_lattice

@@ -17,7 +17,8 @@ import torch
 from bench.flashnext_round import PROMPTS, chat_ids
 from sharar.engine.run import _load
 from sharar.engine.sampler import SamplingParams
-from sharar.proposers.draft_vocab import ReducedHead, draft_vocab
+from sharar.proposers.draft_head import ShortlistHead
+from sharar.proposers.draft_vocab import draft_vocab
 
 EXTRA = {
     "json": "Return a JSON array of 12 objects describing fictional employees, each with id, name, email, department, start_date, salary and a nested address object. Output only the JSON.",
@@ -56,16 +57,21 @@ def main():
     args = ap.parse_args()
     model, ex, tok = _load(graphs=False, spec=3)
     head = ex.spec.proposer.head
-    if getattr(head, "draft_head", None) is not None:
+    from sharar.proposers.draft_head import TargetHead
+    if not isinstance(head.draft_head, TargetHead):
         raise SystemExit("run with the served head (SHARAR_DRAFT_HEAD and SHARAR_DRAFT_VOCAB unset)")
-    served = head.draft_argmax
+    served = head.draft_head
     rows = {}
     current = []
 
-    def record(d):
-        current.append(head.mixer.mix(d)[0].detach().clone())
-        return served(d)
-    head.draft_argmax = record
+    class Recorder:
+        """The served head, recording every row a draft step projects."""
+        bytes = 0
+
+        def argmax(self, x):
+            current.append(x.detach().clone())
+            return served.argmax(x)
+    head.draft_head = Recorder()
     stats = {}
     for name, prompt in {**PROMPTS, **EXTRA}.items():
         current.clear()
@@ -76,18 +82,18 @@ def main():
         s = ex.spec.stats()
         stats[name] = {"draft_rows": rows[name].shape[0], "tokens_per_round": round(s.get("tokens_per_round", 0), 3)}
         print(name, json.dumps(stats[name]), flush=True)
-    head.draft_argmax = served
+    head.draft_head = served
 
     reference = lambda x: head.lm_head(x).argmax(-1)  # noqa: E731  the served pick
     snap = model.target.snapshot_dir()
     n = head.lm_head.out_features
-    candidates = {"fp8": ReducedHead(head.lm_head), "w3": ReducedHead(head.lm_head, fmt="w3")}
+    candidates = {"fp8": ShortlistHead(head.lm_head), "w3": ShortlistHead(head.lm_head, fmt="w3")}
     for r in args.rescore:
-        candidates[f"w3-r{r}"] = ReducedHead(head.lm_head, fmt="w3", rescore=r)
+        candidates[f"w3-r{r}"] = ShortlistHead(head.lm_head, fmt="w3", rescore=r)
     for v in args.vocab:
         ids = draft_vocab(snap, v, n)
-        candidates[f"fp8-{v}"] = ReducedHead(head.lm_head, ids)
-        candidates[f"w3-{v}-r8"] = ReducedHead(head.lm_head, ids, "w3", 8)
+        candidates[f"fp8-{v}"] = ShortlistHead(head.lm_head, ids)
+        candidates[f"w3-{v}-r8"] = ShortlistHead(head.lm_head, ids, "w3", 8)
     out = {"prompts": stats, "heads": {}}
     every = torch.cat(list(rows.values()))
     for label, cand in candidates.items():

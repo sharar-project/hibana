@@ -106,16 +106,25 @@ regenerated family-gate inputs before it is served.
    graph capture. A CLI shortcut belongs in `Executor.enable_spec()` and the
    CLI choices; scheduler, radix internals and HTTP request handling stay out
    of the change.
-3. Add CPU tests for readiness, fallback, boundary/stop behavior and cleanup.
+3. Declare optional features in `ProposerRequirements.capabilities`
+   (`engine/contracts.py`): device acceptance feedback, reload, checkpoint
+   feature cache, cold-tier payload, trace features, a configurable draft head.
+   The engine reads the flags, never probes for methods, and
+   `check_capabilities` rejects a flag without its protocol. End the draft in a
+   draft head (`proposers/draft_head.py`: the target's head by default, or a
+   shortlist) so cheaper heads apply to every speculator; draft depth comes from
+   the spec driver's depth policy (`engine/depth.py`).
+4. Add CPU tests for readiness, fallback, boundary/stop behavior and cleanup.
    Exercise the shared verifier using the tiny target in `test_contracts.py`.
    Then run the GPU continuation suite, feature lifetime checks and a fixed
    workload comparison against the unchanged adapter.
 
-The verifier accepts flat proposals: MTP/n-gram k≤4, DSpark k≤7, DFlash2 k≤15.
+The verifier accepts flat proposals: MTP k≤8, n-gram k≤4, DSpark k≤7, DFlash2 k≤15.
 External sampled proposals include their actual transformed conditional q,
 including selector/Markov effects. `engine/rejection.py` is the common reference
 algorithm; test tiny distributions independently of model rounding. MTP/n-gram
-sampled requests still use ordinary decode. Tree proposals are not implemented.
+sampled requests are verified as point masses (MTP) or with their q (parallel drafts); n-gram
+sampled requests use ordinary decode. Tree proposals are not implemented.
 Declare prospective memory in `cache/spec_budget.py`, and retain/restore draft
 features through identity-keyed metadata without taking ownership of target
 pages. Both full snapshots and accepted-state reconstruction use the same

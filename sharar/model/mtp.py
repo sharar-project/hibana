@@ -30,11 +30,16 @@ PREFIX = "mtp"
 
 
 class MtpHead:
+    DRAFT_HEADS = False  # only the target's NVFP4 head (a shortlist head needs FP8 rows)
+
     def __init__(self, w: SnapshotWeights, device: torch.device, embed: torch.Tensor, lm_head: Nvfp4Linear, rope: PartialRotary, num_pages: int):
         self.device = device
         self.embed = embed
         self.lm_head = lm_head
         self.rope = rope
+        self.hidden_width = config.HIDDEN_SIZE  # the hidden row the proposer carries
+        from sharar.proposers.draft_head import TargetHead
+        self.draft_head = TargetHead(self.logits)  # the target's NVFP4 head (#45)
         eps = config.RMS_NORM_EPS
         g = lambda name: w.get(f"{PREFIX}.{name}").to(device)  # noqa: E731
         self.fc = g("fc.weight")  # [5120, 10240]
@@ -142,3 +147,6 @@ class MtpHead:
     @torch.inference_mode()
     def logits(self, d: torch.Tensor) -> torch.Tensor:
         return ops.nvfp4_linear(d, self.lm_head)
+
+    def head_input(self, d: torch.Tensor) -> torch.Tensor:
+        return d

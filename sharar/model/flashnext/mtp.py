@@ -12,7 +12,6 @@ lm_head. Chained drafting feeds d back as the next hidden. Same call surface as 
 
 from __future__ import annotations
 
-import os
 
 import flashinfer
 import torch
@@ -31,10 +30,14 @@ PREFIX = "mtp"
 
 
 class FlashNextMtpHead:
+    DRAFT_HEADS = True  # set_draft_head: reduced vocabulary and/or 3-bit shortlist (#35)
+
     def __init__(self, w, device: torch.device, model, num_pages: int, precision: str | None = None):
         t = self.target = model.target
         self.device = device
         self.embed, self.lm_head, self.rope, self.mixer_target = model.embed, model.lm_head, model.rope, model.mixer
+        from sharar.proposers.draft_head import TargetHead
+        self.draft_head = TargetHead(self.lm_head)  # replaced by set_draft_head (#35)
         self.hidden_size, self.hc = t.hidden_size, t.hc_count
         self.hidden_width = self.hc * self.hidden_size  # the "hidden" the proposer carries per row
         precision = precision or model.precision
@@ -86,8 +89,7 @@ class FlashNextMtpHead:
     def bytes(self) -> int:
         weights = (self.fc_e.bytes + self.fc_h.bytes + self.attn.bytes + self.attn_hc.bytes + self.mlp_hc.bytes + self.mixer.bytes
                    + self.router.numel() * 2 + self.gate_up.numel() + self.down.numel() + self.shared_gate_up.bytes + self.shared_down.bytes)
-        draft_head = getattr(self, "draft_head", None)
-        return weights + self.kv.bytes + (draft_head.bytes if draft_head is not None else 0)
+        return weights + self.kv.bytes + self.draft_head.bytes
 
     def plan(self, qo_lens: list[int], kv_pages: list[torch.Tensor]) -> None:
         t = self.target
@@ -150,18 +152,13 @@ class FlashNextMtpHead:
     def logits(self, d: torch.Tensor) -> torch.Tensor:
         return self.lm_head(self.mixer.mix(d)[0])
 
+    def head_input(self, d: torch.Tensor) -> torch.Tensor:
+        """What the vocabulary projection reads: the MTP's own mixer over the hyper stream."""
+        return self.mixer.mix(d)[0]
+
     def set_draft_head(self, ids: torch.Tensor | None = None, fmt: str = "fp8", rescore: int = 0) -> None:
-        """Draft through a head of its own (`proposers/draft_vocab.py`): over these token ids only
+        """Draft through a head of its own (`proposers/draft_head.py`): over these token ids only
         (len(ids) rows of the shared lm_head instead of the vocabulary) and/or a 3-bit copy whose
         top `rescore` candidates the shared lm_head rescores."""
-        from sharar.proposers.draft_vocab import ReducedHead
-        self.draft_head = ReducedHead(self.lm_head, ids, fmt, rescore)
-
-    def set_draft_vocab(self, ids: torch.Tensor) -> None:
-        self.set_draft_head(ids)
-
-    def draft_argmax(self, d: torch.Tensor) -> torch.Tensor:
-        """The draft token (a global id): argmax over the reduced vocabulary when one is set."""
-        if getattr(self, "draft_head", None) is None:
-            return self.logits(d).argmax(-1)
-        return self.draft_head.argmax(self.mixer.mix(d)[0])
+        from sharar.proposers.draft_head import ShortlistHead
+        self.draft_head = ShortlistHead(self.lm_head, ids, fmt, rescore)
