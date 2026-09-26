@@ -241,8 +241,8 @@ keeps its own body; the helper removes the duplicated bookkeeping.
 `sharar/memory/` is the engine's memory manager, not an application feature:
 the paged FP8 KV pool, the GDN state pool, the radix prefix cache, the
 `StateManager` ownership boundary, the unified-memory ledger, the cold tier,
-the NVMe session store and the speculation budget. It stays in the engine;
-it may be renamed `sharar/cache/` in the cleanup if that reads better.
+the NVMe session store and the speculation budget. It stays in the engine
+and is renamed `sharar/cache/` in the cleanup (#23).
 
 | Code | Where | Why |
 |---|---|---|
