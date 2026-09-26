@@ -155,7 +155,7 @@ vocabulary (`SHARAR_DRAFT_VOCAB`). Evidence `$SHARAR_RESULTS/reviews/2026-09-25-
 A shortlist of 4, 8 or 16 gives the same 0.9905: the remainder are near-ties the served head's
 FP8 activation rounding breaks the other way, not tokens missing from the shortlist.
 
-Served, image `sharar:draft-head`, `config/flashnext.env`, `bench/h2h.py` (22 prompts per mode),
+Served, image `sharar:draft-head`, `config/flashnext.env`, `evals.h2h` (22 prompts per mode, `sharar-evals`),
 arms interleaved FP8 / 3-bit / FP8 / 3-bit:
 
 | Arm | probes | greedy median | t=0.7 median | tokens per round |

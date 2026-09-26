@@ -130,7 +130,7 @@ research baseline, so that continuation drift does not masquerade as a gain.
 | `bench.gb10_runtime_ab` | Current calibrated target and selected drafter over cold, warm and mixed HTTP workloads at concurrency 1, 2 and 4; optional candidate hook |
 | `bench.gb10_round_profile` | Separate unprofiled, Nsight and CUDA-event phase windows on frozen prompts; `--draft` selects the served drafter |
 | `bench.gb10_matrix` | Real-operand matrix diagnostics |
-| `bench/accuracy_eval.py` | GSM8K exact-match and HumanEval pass@1 against a running server, acceptance pinned per request; `compare` pairs arms with McNemar |
+| `sharar-evals` (separate repository) | HTTP evaluations: h2h, GSM8K/HumanEval accuracy, test-time scaling, long context, output identity |
 | `bench/w3_bench.py` | 3-bit decode GEMM: correctness against the dequantized reference and DRAM bandwidth per decode shape at 16, 32 and 64 rows (weights rotated past L2, CUDA-graph timing), split-K sweep |
 | `bench/w3_calibrate.py` | Fit checksummed W3 target copies from FP8 source weights and frozen activation inputs; [workflow](../docs/w3-calibration.md) |
 
