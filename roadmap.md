@@ -22,7 +22,7 @@ benchmark (#26). Architecture and the capability matrix: [architecture](docs/arc
 
 ## Order
 
-1. **Cleanup** (#23): lighter tree, the HTTP evals move to `sharar-evals` (#53).
+1. **Cleanup** (#23): lighter tree (done), the HTTP evals in `sharar-evals` (#53, done); test suite audit (#54).
 2. **Architecture refactors**, one at a time, each bit-identical on both targets
    with round cost and host idle not higher (#24):
    #44 EngineConfig → #45 speculator capabilities, shared draft head, depth policy →
