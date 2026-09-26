@@ -54,10 +54,10 @@ class FlashNextIndexer:
         aux = ctx.kv_pool.page_aux[self.name]
         qk = F.linear(x, self.qk)
         aux[token_pages.long(), 0] = qk[:, h * d:]
-        self._compress(aux, ctx.qsa_seqs, x.device, x.dtype)
-        if all(first + n - 1 < self.width for first, n, _ in ctx.qsa_seqs):
+        seqs = ctx.extras.qsa_seqs
+        self._compress(aux, seqs, x.device, x.dtype)
+        if all(first + n - 1 < self.width for first, n, _ in seqs):
             return None
-        seqs = ctx.qsa_seqs
         table = torch.cat([pages.to(torch.int32) for _, _, pages in seqs])
         indptr = torch.tensor([0] + [len(pages) for _, _, pages in seqs], dtype=torch.int64).cumsum(0)
         base = torch.repeat_interleave(indptr[:-1], torch.tensor([n for _, n, _ in seqs])).to(device=x.device, dtype=torch.int32)
@@ -78,17 +78,18 @@ class FlashNextIndexer:
 
     def maintain(self, x: torch.Tensor, ctx, token_pages: torch.Tensor) -> torch.Tensor:
         """Graph-safe key maintenance: store every row's raw key and compress every
-        row's group through itself from `ctx.qsa_members`; rows that do not complete a
+        row's group through itself from `ctx.extras.qsa_members`; rows that do not complete a
         group write their result to the dummy page (`qsa_writes`). Returns the index
         projection (the queries of `select`)."""
         h, d = self.heads, self.dim
         aux = ctx.kv_pool.page_aux[self.name]
         qk = F.linear(x, self.qk)
         aux[token_pages.long(), 0] = qk[:, h * d:]
-        keys = aux[ctx.qsa_members.long(), 0].float().mean(dim=1).to(x.dtype)
+        side = ctx.extras
+        keys = aux[side.qsa_members.long(), 0].float().mean(dim=1).to(x.dtype)
         keys = gemma_rms(keys.unsqueeze(1), self.k_norm, self.eps)
         first = (ctx.positions - (self.ratio - 1)).clamp_min(0)
-        aux[ctx.qsa_writes.long(), 1] = rope_neox(keys, first, self.rotary_dim, self.theta)[:, 0]
+        aux[side.qsa_writes.long(), 1] = rope_neox(keys, first, self.rotary_dim, self.theta)[:, 0]
         return qk
 
     @staticmethod

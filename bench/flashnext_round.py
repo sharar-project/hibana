@@ -146,7 +146,6 @@ def m_curve(ex, model, tok, out, context: int):
 
 def verify_breakdown(ex, tok, out, tokens: int):
     """Synchronized host timers around each piece of a speculative round, CUDA events around graph replays."""
-    import sharar.engine.spec_graphs as sg
     acc = defaultdict(float)
     spec = ex.spec
 
@@ -171,7 +170,7 @@ def verify_breakdown(ex, tok, out, tokens: int):
             acc[name] += a.elapsed_time(b) / 1000
         graph.replay = replay
     patches = []
-    for obj, name in ((ex, "_ple_rows_block"), (ex, "qsa_rows"), (spec, "prepare"), (spec, "verify"), (spec, "_accept")):
+    for obj, name in ((ex.extras, "_verify_rows"), (ex.extras, "fill"), (spec, "prepare"), (spec, "verify"), (spec, "_accept")):
         orig = getattr(obj, name)
         patches.append((obj, name, orig))
         setattr(obj, name, timed(name, orig))
@@ -183,8 +182,6 @@ def verify_breakdown(ex, tok, out, tokens: int):
     if getattr(spec.proposer, "graphs", None) is not None:
         for g in spec.proposer.graphs._graphs.values():
             timed_replay("draft graph replays (GPU)", g)
-    orig_fill = sg.fill_qsa
-    sg.fill_qsa = timed("fill_qsa", orig_fill)
     ids = chat_ids(tok, PROMPTS["code"])
     params = SamplingParams(max_new_tokens=tokens, ignore_eos=True)
     ex.generate(ids, params)
@@ -196,7 +193,6 @@ def verify_breakdown(ex, tok, out, tokens: int):
            **{k: round(1000 * v / rounds_n, 2) for k, v in sorted(acc.items(), key=lambda kv: -kv[1])}}
     out["verify_breakdown"] = row
     print(json.dumps(row), flush=True)
-    sg.fill_qsa = orig_fill
     for obj, name, orig in patches:
         setattr(obj, name, orig)
 

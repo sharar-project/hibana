@@ -9,8 +9,6 @@ is FP8 at load (`SHARAR_FLASHNEXT_TRUNK=bf16` keeps the checkpoint's BF16 for pa
 
 from __future__ import annotations
 
-import json
-import os
 import time
 from pathlib import Path
 
@@ -68,6 +66,7 @@ class FlashNext:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", log=print, target: Target = FLASHNEXT, precision: str | None = None, **_ignored):
         from sharar.cache.ledger import check_load_headroom
         self.target = target
+        self._extras = None
         self.precision = precision or current().flashnext_trunk  # bf16 | fp8 | w3 (3.25-bit decode copies over FP8)
         check_load_headroom(target.weight_load_peak_bytes)
         self.device = torch.device(device)
@@ -105,6 +104,13 @@ class FlashNext:
             indexer = getattr(layer.mixer, "indexer", None)
             if indexer is not None:
                 indexer.register(kv_pool)
+
+    def forward_extras(self):
+        """The side inputs this model's forwards need beyond the ForwardContext (model/flashnext/extras.py)."""
+        if self._extras is None:
+            from sharar.model.flashnext.extras import FlashNextExtras
+            self._extras = FlashNextExtras(self)
+        return self._extras
 
     def register_state(self, pool) -> None:
         """Allocate this model's per-slot state beyond the GDN's in the executor's state pool."""

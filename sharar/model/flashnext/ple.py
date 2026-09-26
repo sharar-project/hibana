@@ -188,9 +188,10 @@ class PleLayer:
             s_len = ctx.verify_steps
             seqs = [(i * s_len, s_len) for i in range(t // s_len)]
             prefixes, slots = [1] * len(seqs), None
-        histories = None if ctx is None else ctx.ple_history
+        side = None if ctx is None else ctx.extras  # FlashNextSideInputs (model/flashnext/extras.py)
+        histories = None if side is None else side.ple_history
         from sharar.kernels.flashnext_fused import grouped_gemma_rms  # Triton; imported here so host tools can use PleTable
-        rows = ctx.ple_rows if ctx is not None and ctx.ple_rows is not None else self.rows_for(input_ids.cpu(), seqs, histories, eos)
+        rows = side.ple_rows if side is not None and side.ple_rows is not None else self.rows_for(input_ids.cpu(), seqs, histories, eos)
         emb = (rows.view(torch.float8_e4m3fn).to(torch.bfloat16) * self.scale).to(torch.bfloat16).reshape(t, -1)  # [T, ple_dim]
         key = self.key_proj(emb)  # [T, hc*H]
         value = self.value_proj(emb)  # [T, H]

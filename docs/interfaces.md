@@ -36,11 +36,14 @@ and `Target.cache_env` names the model cache (`SHARAR_FLASHNEXT_CACHE`).
 Two small extensions carry its extra state through the existing contracts:
 `StatePool.register_aux` allocates per-slot tensors that are cleared, copied
 and parked with the recurrent states (the PLE's convolution window lives
-there), and `ForwardContext.ple_history` / `ple_rows` give a forward the two
-tokens before each sequence and, for graph-captured decode, the table rows
-the executor gathered on the host. The sparse attention runs dense, which is
-exact while a context fits the indexer budget (2,048 tokens); the indexer,
-the verify path of the PLE and layer feature capture are not ported yet.
+there), and the model's `forward_extras()` puts everything else a forward
+needs on `ForwardContext.extras`: the PLE history and table rows and the
+sparse-attention bookkeeping (`model/flashnext/extras.py`). The engine builds
+them through that object for eager forwards, lets it own and fill the graphs'
+static side inputs, and asks it for the graph variant ("dense" or
+"selecting") a batch needs; a model without side inputs returns None (the
+27B). Every model implements `forward_extras`, `register_pages` and
+`register_state`.
 Checkpoint construction lives in `proposers/factory.py`. `max_depth` and feature
 requirements let the executor validate an adapter without knowing its name.
 

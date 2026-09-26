@@ -233,13 +233,12 @@ class SpecDecoder:
         b_sz, k = batch.proposal.tokens.shape
         s_len = k + 1
         seqs = [(r.context_len - 1, s_len, pages) for r, pages in zip(batch.requests, batch.kv_pages)]
-        dense = self.ex.within_budget(seqs)
+        variant = self.ex.variant(seqs)
         graphs = self.width_graphs.get(k, self.verify_graphs)
-        if self.ex.use_graphs and graphs is not None and (dense or graphs.sparse):
-            ple_rows = self.ex._ple_rows_block(batch.requests, batch.proposal.tokens.tolist()) if getattr(self.ex, "_ple", None) is not None else None
+        if self.ex.use_graphs and graphs is not None and variant in graphs.variants:
             norm_rows, z_flat, ctx, layers, logits = graphs.run(batch.tokens, batch.positions, batch.pages,
-                                                               batch.slots, batch.kv_pages, sampled=batch.sampled, ple_rows=ple_rows,
-                                                               qsa=self.ex.qsa_rows(seqs), sparse=not dense)
+                                                               batch.slots, batch.kv_pages, sampled=batch.sampled,
+                                                               side=(batch.requests, batch.proposal.tokens, seqs), variant=variant)
             accept = getattr(graphs, "accept", None)
             if accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests):
                 if self.timing:
@@ -307,10 +306,9 @@ class SpecDecoder:
             verify_replay=self.replay.layer_inputs if self.replay is not None else {},
             verify_conv_windows=self.conv_windows, verify_aux_windows=self.aux_windows,
         )
-        if getattr(self.ex, "_ple", None) is not None:
-            ctx.ple_rows = self.ex._ple_rows_block(batch.requests, batch.proposal.tokens.tolist())
-        if self.ex.target.indexer_budget:
-            ctx.qsa_seqs = [(r.context_len - 1, s_len, pages) for r, pages in zip(batch.requests, batch.kv_pages)]
+        if getattr(self.ex, "extras", None) is not None:
+            ctx.extras = self.ex.extras.for_verify(batch.requests, batch.proposal.tokens,
+                                                   [(r.context_len - 1, s_len, pages) for r, pages in zip(batch.requests, batch.kv_pages)])
         indptr = [0]
         for pages in batch.kv_pages:
             indptr.append(indptr[-1] + pages.shape[0])

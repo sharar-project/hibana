@@ -36,8 +36,10 @@ tower (not loaded).
 Engine extensions: `Target.family`/`cache_env` and optional family fields;
 `StatePool.register_aux` (per-slot state cleared, copied and parked with the
 GDN states; verify windows committed like the conv windows);
-`ForwardContext.ple_history` / `ple_rows` (the executor gathers table rows on
-the host for graph-captured decode and verify); `Executor.register_state`.
+`FlashNext.forward_extras()` (`extras.py`: the PLE history and table rows and
+the indexer bookkeeping on `ForwardContext.extras`, built for eager forwards
+and filled into graph buffers before a replay; the engine only asks it which
+graph variant a batch needs); `register_pages` / `register_state`.
 
 ## Conventions that cost a day
 

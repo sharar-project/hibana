@@ -8,7 +8,9 @@ import torch
 
 from sharar.engine import graph_set
 from sharar.engine.context import ForwardContext
-from sharar.engine.graphs import _qsa_static, capture_sizes, check_context_capacity, fill_qsa, sparse_ctx, sparse_graphs
+import dataclasses
+
+from sharar.engine.graphs import capture_sizes, check_context_capacity, graph_variants
 
 if TYPE_CHECKING:
     import flashinfer
@@ -34,9 +36,9 @@ class VerifyGraphs:
         self.sizes = capture_sizes(spec.ex.max_batch)
         self._pool = torch.cuda.graph_pool_handle()
         self._ws = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=self.device)
-        self.sparse = sparse_graphs(spec.ex.target)
+        self.variants = graph_variants(spec.ex)
         self._st: dict[int, dict] = {}
-        self._graphs: dict[tuple[int, bool], torch.cuda.CUDAGraph] = {}
+        self._graphs: dict[tuple[int, str], torch.cuda.CUDAGraph] = {}
 
     def _static(self, b: int) -> dict:
         d, s = self.device, self.s_len
@@ -49,8 +51,7 @@ class VerifyGraphs:
             "kv_indptr": torch.zeros(b + 1, dtype=torch.int32, device=d),
             "kv_indices": torch.zeros(b * self.max_context, dtype=torch.int32, device=d),
             "last_page_len": torch.ones(b, dtype=torch.int32, device=d),
-            "ple_rows": (torch.zeros((b * s, self.ex._ple.heads, 160), dtype=torch.uint8, device=d) if getattr(self.ex, "_ple", None) is not None else None),
-            **_qsa_static(self.ex.target, b * s, d),
+            "side": self.ex.extras.buffers(b * s) if self.ex.extras is not None else None,  # the model's static side inputs
         }
         st["wrapper"] = _prefill_wrapper(self._ws, st)
         st["ctx"] = ForwardContext(
@@ -61,13 +62,12 @@ class VerifyGraphs:
             verify_scratch=torch.arange(b, dtype=torch.int32, device=d), inter_ssm=self.spec.inter_ssm,
             verify_replay=self.spec.replay.layer_inputs if self.spec.replay is not None else {},
             verify_conv_windows=self.spec.conv_windows, verify_aux_windows=self.spec.aux_windows,
-            paged_prefill_wrapper=st["wrapper"], ple_rows=st["ple_rows"],
-            qsa_members=st["qsa_members"], qsa_writes=st["qsa_writes"],
+            paged_prefill_wrapper=st["wrapper"], extras=st["side"],
         )
-        if self.sparse:
+        if "selecting" in self.variants:
             st["row_seq"] = torch.arange(b * s, device=d) // s
-            st["ctx_sparse"] = sparse_ctx(st["ctx"], st["kv_indices"], st["kv_indptr"], st["row_seq"], self.max_context,
-                                          self.ex.target.indexer_compress_ratio)
+            st["ctx_sparse"] = dataclasses.replace(st["ctx"], extras=self.ex.extras.selecting(
+                st["side"], st["kv_indices"], st["kv_indptr"], st["row_seq"], self.max_context))
         return st
 
     def _plan(self, st: dict, kv_all: list[torch.Tensor]) -> None:
@@ -96,11 +96,11 @@ class VerifyGraphs:
                 logits = self.ex.model.logits(out["norm"])
                 st["argmax"] = logits.argmax(-1)
                 st["logits"] = logits  # materialized by the graph anyway; traces read the target's top-k from it
-            self._graphs[b, False] = graph_set.capture(self._pool, body, warmup=warm)
-            if self.sparse:  # the selecting variant writes the same outputs (device acceptance reads them)
-                self._graphs[b, True] = graph_set.capture(self._pool, lambda: self._sparse_body(st))
+            self._graphs[b, "dense"] = graph_set.capture(self._pool, body, warmup=warm)
+            if "selecting" in self.variants:  # the selecting variant writes the same outputs (device acceptance reads them)
+                self._graphs[b, "selecting"] = graph_set.capture(self._pool, lambda: self._sparse_body(st))
             if log:
-                log(f"  captured {'dense and selecting ' if self.sparse else ''}verify graph for batch {b}")
+                log(f"  captured {'dense and selecting ' if 'selecting' in self.variants else ''}verify graph for batch {b}")
 
     @torch.inference_mode()  # the dense capture's outputs are inference tensors
     def _sparse_body(self, st: dict) -> None:
@@ -116,19 +116,19 @@ class VerifyGraphs:
         return graph_set.pick(self.sizes, b)
 
     def run(self, tokens: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, slots: torch.Tensor, kv_all: list[torch.Tensor], *, sampled=False,
-            ple_rows: torch.Tensor | None = None, qsa: tuple[torch.Tensor, torch.Tensor] | None = None, sparse: bool = False):
+            side=None, variant: str = "dense"):
         """Returns (norm rows [b*s, H], argmax or logits [b*s(, V)], ctx, features,
         logits [b*s, V]) for the real rows; padded rows use slot 0 and page 0.
-        The logits view is overwritten by the next replay. `sparse` replays the
-        selecting graph (some row past the indexer budget)."""
+        The logits view is overwritten by the next replay. `side` is (requests,
+        drafts, seqs) for the model's side inputs; `variant` the graph to replay
+        ("selecting": some row past Flash-Next's indexer budget)."""
         b = slots.shape[0]
         size = self.pick(b)
         st = self._st[size]
         s = self.s_len
         n = b * s
-        if ple_rows is not None:
-            st["ple_rows"][:n].copy_(ple_rows)
-        fill_qsa(st, qsa, n)
+        if st["side"] is not None:
+            self.ex.extras.fill(st["side"], side[0], side[1], side[2], n)
         st["tokens"][:n].copy_(tokens)
         st["positions"][:n].copy_(positions)
         st["pages"][:n].copy_(pages)
@@ -140,6 +140,6 @@ class VerifyGraphs:
             st["slots"][b:].zero_()
         pad_kv = [torch.zeros(s + 1, dtype=torch.int32, device=self.device) for _ in range(size - b)]
         self._plan(st, list(kv_all) + pad_kv)
-        self._graphs[size, sparse].replay()
+        self._graphs[size, variant].replay()
         layers = {lid: value[:n] for lid, value in st["features"].items()} if st["features"] else None
         return st["norm"][:n], st["logits" if sampled else "argmax"][:n], st["ctx"], layers, st["logits"][:n]

@@ -8,7 +8,6 @@ where residual is the stream before this layer's MLP output is added.
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 
@@ -110,6 +109,16 @@ class Qwen38:
                 f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated")
         if w3.enabled():
             w3.attach_model(self, log=log)
+
+    def forward_extras(self):
+        """No side inputs beyond the ForwardContext (the model contract, docs/architecture.md)."""
+        return None
+
+    def register_pages(self, kv_pool) -> None:
+        """No per-page rows beyond K/V."""
+
+    def register_state(self, pool) -> None:
+        """No per-slot state beyond the GDN's."""
 
     @torch.inference_mode()
     def forward(self, input_ids: torch.Tensor, ctx: ForwardContext, capture: bool = False) -> ForwardResult:

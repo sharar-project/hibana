@@ -41,14 +41,15 @@ class FlashNextAttention(Attention):
         if self.indexer is None:
             return super().forward(x, ctx, x_q)
         token_pages = ctx.out_pages if ctx.mode == "decode" else ctx.pages
-        if ctx.qsa_seqs is None:  # graph replay (or no indexer bookkeeping)
-            if ctx.qsa_members is None:
+        side = ctx.extras  # FlashNextSideInputs (model/flashnext/extras.py), None outside the engine
+        if side is None or side.qsa_seqs is None:  # graph replay (or no indexer bookkeeping)
+            if side is None or side.qsa_members is None:
                 return super().forward(x, ctx, x_q)
             qk = self.indexer.maintain(x, ctx, token_pages)
-            if ctx.qsa_table is None:  # every row inside the budget: dense attention
+            if side.qsa_table is None:  # every row inside the budget: dense attention
                 return super().forward(x, ctx, x_q)
             aux = ctx.kv_pool.page_aux[self.indexer.name]
-            selected = self.indexer.select(qk, ctx.positions, aux, ctx.qsa_table, ctx.qsa_indptr[ctx.qsa_row_seq], ctx.qsa_gcap)
+            selected = self.indexer.select(qk, ctx.positions, aux, side.qsa_table, side.qsa_indptr[side.qsa_row_seq], side.qsa_gcap)
             q, k, v, gate = self._qkv(x, ctx.positions)
             return self._sparse(q, k, v, gate, selected, ctx, token_pages)
         q, k, v, gate = self._qkv(x, ctx.positions)

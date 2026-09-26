@@ -57,10 +57,10 @@ def main():
     # host work per step outside the graph
     req = ex.admit(ids, SamplingParams(max_new_tokens=2, ignore_eos=True))
     ex.prefill(req)
-    if ex._ple is not None:
+    if ex.extras is not None and ex.extras.ple is not None:
         t0 = time.perf_counter()
         for _ in range(50):
-            ex._ple_rows([req])
+            ex.extras._decode_rows([req])
         torch.cuda.synchronize()
         print(f"  host PLE rows per step: {(time.perf_counter() - t0) / 50 * 1000:.2f} ms", flush=True)
     t0 = time.perf_counter()
