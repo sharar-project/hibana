@@ -8,9 +8,13 @@ def test_padded_rows_steps_over_the_measured_window_only():
     assert stable.padded_rows(16, (5120, 6144)) == 16  # verify rows are untouched
 
 
-def test_flag_reads_the_environment(monkeypatch):
-    import importlib
+def test_flag_reads_the_installed_config(monkeypatch):
+    from sharar.engine import config
     monkeypatch.setenv("SHARAR_STABLE_NUMERICS", "1")
-    assert importlib.reload(stable).ENABLED
+    config.reset()
+    assert stable.enabled()
+    with config.using(config.current().replace(stable_numerics=False)):
+        assert not stable.enabled()
     monkeypatch.delenv("SHARAR_STABLE_NUMERICS")
-    assert not importlib.reload(stable).ENABLED
+    config.reset()
+    assert not stable.enabled()

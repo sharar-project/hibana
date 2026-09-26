@@ -51,7 +51,8 @@ def fill_qsa(st: dict, qsa, rows: int) -> None:
 def sparse_graphs(target) -> bool:
     """Whether a sparse-attention target also captures selecting graphs (SHARAR_QSA_SPARSE_GRAPHS=0: rows
     past the budget run eagerly)."""
-    return bool(target.indexer_budget) and os.environ.get("SHARAR_QSA_SPARSE_GRAPHS", "1") != "0"
+    from sharar.engine.config import current
+    return bool(target.indexer_budget) and current().qsa_sparse_graphs
 
 
 def sparse_ctx(ctx: ForwardContext, table: torch.Tensor, indptr: torch.Tensor, row_seq: torch.Tensor, capacity: int, ratio: int) -> ForwardContext:

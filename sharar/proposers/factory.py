@@ -40,14 +40,16 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
         finally:
             w.close()
         head.target = model.target
-        vocab = int(os.environ.get("SHARAR_DRAFT_VOCAB", "0"))  # reduced draft vocabulary rows (0: the full lm_head)
-        fmt = os.environ.get("SHARAR_DRAFT_HEAD", "fp8")  # the draft head's own precision: fp8 (the target's head) or w3
+        from sharar.engine.config import current
+        cfg = current()
+        vocab = cfg.draft_vocab  # reduced draft vocabulary rows (0: the full lm_head)
+        fmt = cfg.draft_head  # the draft head's own precision: fp8 (the target's head) or w3
         if (vocab or fmt != "fp8") and not hasattr(head, "set_draft_head"):
             raise ValueError("SHARAR_DRAFT_VOCAB / SHARAR_DRAFT_HEAD need the Flash-Next MTP head")
         if vocab or fmt != "fp8":
             from sharar.proposers.draft_vocab import draft_vocab
             ids = draft_vocab(model.target.snapshot_dir(), vocab, head.lm_head.out_features) if vocab else None
-            head.set_draft_head(ids, fmt, int(os.environ.get("SHARAR_DRAFT_HEAD_RESCORE", "8")))  # shortlist rescored by the target's head
+            head.set_draft_head(ids, fmt, cfg.draft_head_rescore)  # shortlist rescored by the target's head
         adapter = MtpProposer(head, context, k)
     elif proposer == "ngram":
         from sharar.proposers.ngram import NGramProposer

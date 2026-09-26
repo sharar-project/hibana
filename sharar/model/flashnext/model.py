@@ -16,6 +16,7 @@ from pathlib import Path
 
 import torch
 
+from sharar.engine.config import current
 from sharar.engine.context import ForwardContext, scratch_prefill_context
 from sharar.engine.contracts import ForwardResult
 from sharar.kernels import ops
@@ -39,7 +40,7 @@ class DecoderLayer:
         self.index, self.kind = index, kind
         hc, hidden, eps = target.hc_count, target.hidden_size, target.rms_norm_eps
         self.ple = PleLayer(w, snap, f"{p}.ple", device, target, TrunkLinear, precision) if (index + 1) in target.ple_layer_ids else None
-        mixers = os.environ.get("SHARAR_FLASHNEXT_MIXERS", "fp8")
+        mixers = current().flashnext_mixers
         self.attn_hc = HyperConnection.load(w, f"{p}.attn_hyper_connection", hc, hidden, eps, device, precision=mixers)
         self.mlp_hc = HyperConnection.load(w, f"{p}.mlp_hyper_connection", hc, hidden, eps, device, precision=mixers)
         if kind == "full_attention":
@@ -67,7 +68,7 @@ class FlashNext:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", log=print, target: Target = FLASHNEXT, precision: str | None = None, **_ignored):
         from sharar.cache.ledger import check_load_headroom
         self.target = target
-        self.precision = precision or os.environ.get("SHARAR_FLASHNEXT_TRUNK", "fp8")  # bf16 | fp8 | w3 (3.25-bit decode copies over FP8)
+        self.precision = precision or current().flashnext_trunk  # bf16 | fp8 | w3 (3.25-bit decode copies over FP8)
         check_load_headroom(target.weight_load_peak_bytes)
         self.device = torch.device(device)
         cfg = target.load_model_config(snap)
@@ -85,7 +86,7 @@ class FlashNext:
             if log and (i + 1) % 8 == 0:
                 log(f"  loaded {i + 1}/{len(types)} layers ({time.perf_counter() - started:.0f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB)")
         self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", target.hc_count, target.hidden_size, target.rms_norm_eps, self.device,
-                                          combine=False, precision=os.environ.get("SHARAR_FLASHNEXT_MIXERS", "fp8"))
+                                          combine=False, precision=current().flashnext_mixers)
         self.lm_head = TrunkLinear.load(w, ["lm_head.weight"], self.device, self.precision)
         w.close()
         torch.cuda.synchronize()

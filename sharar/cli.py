@@ -151,40 +151,45 @@ def main(argv: list[str] | None = None) -> int:
 
         return canaries_cli(args.reference, args.max_new_tokens, args.batch, graphs=not args.eager, spec=args.spec)
     if args.command == "serve":
-        import os
-
+        from sharar.engine import config as engine_config
         from sharar.proposers.factory import MAX_DEPTHS
 
+        cfg = engine_config.EngineConfig.from_env()
         if args.spec is None:
-            env = os.environ.get("SHARAR_SPEC")
+            env = cfg.spec
             args.spec = int(env) if env not in (None, "", "auto") else {"mtp": 3}.get(args.proposer, MAX_DEPTHS[args.proposer])
         if args.draft_precision == 'fp8' and (not args.spec or args.proposer not in ('dspark', 'dflash2')):
             parser.error('--draft-precision fp8 requires an enabled parallel draft')
-        traces = args.traces or os.environ.get("SHARAR_TRACES") or None
-        draft_dir = args.draft or os.environ.get("SHARAR_DRAFT") or None
+        traces = args.traces or cfg.traces
+        draft_dir = args.draft or cfg.draft_dir
         if draft_dir and (not args.spec or args.proposer not in ('dspark', 'dflash2')):
             parser.error('--draft requires an enabled parallel draft')
-        max_mib = args.traces_max_mib if args.traces_max_mib is not None else int(os.environ.get("SHARAR_TRACES_MAX_MIB") or 32768)
+        max_mib = args.traces_max_mib if args.traces_max_mib is not None else cfg.traces_max_mib
         if max_mib < 1:
             parser.error("--traces-max-mib must be a positive integer")
         from sharar.api.validation import parse_accept_default
         try:
-            accept_default = parse_accept_default(args.accept_default if args.accept_default is not None else os.environ.get("SHARAR_ACCEPT_DEFAULT", "2:1.0"))
+            accept_default = parse_accept_default(args.accept_default if args.accept_default is not None else cfg.accept_default)
         except ValueError as exc:
             parser.error(str(exc))
         if not args.spec:
             accept_default = (1, 0.0)  # no speculation, nothing to relax
-        max_context = args.context_length if args.context_length is not None else int(os.environ.get("SHARAR_MAX_CONTEXT") or 0) or None
+        max_context = args.context_length if args.context_length is not None else cfg.max_context
         from sharar.engine.profile import MAX_CONTEXT
         if max_context is not None and not 2 <= max_context <= MAX_CONTEXT:
             parser.error(f"--context-length must be in [2, {MAX_CONTEXT}]")
+        target = args.target or cfg.target
+        accept_default_sampled = bool(args.accept_default_sampled if args.accept_default_sampled is not None else cfg.accept_default_sampled)
+        # One configuration for the process: the environment with the command line applied (#44).
+        engine_config.install(cfg.replace(spec=str(args.spec), traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
+                                          target=target, max_context=max_context, accept_default=f"{accept_default[0]}:{accept_default[1]}",
+                                          accept_default_sampled=accept_default_sampled))
         from sharar.api.server import serve
         serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state,
               draft_precision=args.draft_precision, traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
-              accept_default=accept_default, target=args.target or os.environ.get("SHARAR_TARGET") or None,
+              accept_default=accept_default, target=target,
               max_context=max_context,
-              accept_default_sampled=bool(args.accept_default_sampled if args.accept_default_sampled is not None
-                                          else os.environ.get("SHARAR_ACCEPT_DEFAULT_SAMPLED", "0") == "1"))
+              accept_default_sampled=accept_default_sampled)
         return 0
     if args.command == "train":
         import os
@@ -193,7 +198,8 @@ def main(argv: list[str] | None = None) -> int:
 
         from sharar.train.trainer import StopRequest, TrainConfig, load_runtime, resolve_draft, run
 
-        traces = args.traces or os.environ.get("SHARAR_TRACES")
+        from sharar.engine.config import EngineConfig
+        traces = args.traces or EngineConfig.from_env().traces
         if not traces:
             parser.error("give --traces or set SHARAR_TRACES")
         draft = args.draft
@@ -227,7 +233,8 @@ def main(argv: list[str] | None = None) -> int:
 
         from sharar.engine.traces import summarize
 
-        directory = args.dir or os.environ.get("SHARAR_TRACES")
+        from sharar.engine.config import EngineConfig
+        directory = args.dir or EngineConfig.from_env().traces
         if not directory:
             parser.error("give --dir or set SHARAR_TRACES")
         print(json.dumps(summarize(directory), indent=2))

@@ -69,6 +69,15 @@ acceptance, not correctness.
 When an optimization lands, changes its default or is retired, update its
 row in the [optimization inventory](docs/optimizations.md) in the same change.
 
+## Add a setting
+
+Settings are fields of `EngineConfig` (`sharar/engine/config.py`): a `SHARAR_*`
+name, its default and a one-line comment. Read `current()` where you build the
+thing the setting shapes (a model, a linear, a proposer, a graph), not at import
+and not per call on the hot path; `tests/unit/test_engine_config.py` fails on any
+other `SHARAR_*` environment read under `sharar/`. The launcher keeps forwarding
+the same variable names; `/get_server_info` reports the installed value.
+
 ## Add a target
 
 A target is a pinned checkpoint with a `Target` value in `sharar/target.py`

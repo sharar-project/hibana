@@ -88,7 +88,7 @@ class InputCovariances:
 def run(args):
     from sharar.engine.context import scratch_prefill_context
     from sharar.model.qwen38 import Qwen38
-    if w3.ENABLED:
+    if w3.enabled():
         raise ValueError("calibration must start with SHARAR_W3_DECODE=0")
     args.output.mkdir(parents=True, exist_ok=True)
     if (args.output / 'manifest.json').exists():

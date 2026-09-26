@@ -124,7 +124,9 @@ class Target:
     # ---- snapshot and host validation ----
     def snapshot_dir(self, cache_dir: str | os.PathLike | None = None) -> Path:
         """Return the pinned snapshot directory or raise if it is incomplete."""
-        root = Path(cache_dir or os.environ.get(self.cache_env) or os.environ.get("SHARAR_HF_CACHE") or os.environ.get("HF_HOME") or "")
+        from sharar.engine.config import current
+        cfg = current()
+        root = Path(cache_dir or cfg.model_cache(self.cache_env) or cfg.hf_cache or "")
         if not str(root):
             raise FileNotFoundError("set SHARAR_HF_CACHE (or HF_HOME) to the model cache")
         for base in (root, root / "hub"):

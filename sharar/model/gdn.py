@@ -85,7 +85,7 @@ class GatedDeltaNet:
         return mixed_qkv, z, b, a
 
     def _project_ba(self, x):
-        if stable.ENABLED:
+        if stable.enabled():
             from sharar.kernels.ba_proj import ba_project
             ba = ba_project(x, self.in_ba)  # M-invariant arithmetic; cuBLAS's choice changes with M
         else:

@@ -14,9 +14,11 @@ tokens); its effect on earlier rows is rare and documented.
 """
 from __future__ import annotations
 
-import os
+def enabled() -> bool:
+    """SHARAR_STABLE_NUMERICS (EngineConfig.stable_numerics)."""
+    from sharar.engine.config import current
+    return current().stable_numerics
 
-ENABLED = os.environ.get("SHARAR_STABLE_NUMERICS", "0") == "1"
 
 # (out_features, in_features) -> [(first unstable M, first stable M above it)]
 FP8_SCALED_MM_WINDOWS: dict[tuple[int, int], list[tuple[int, int]]] = {(5120, 6144): [(27, 33)]}

@@ -28,9 +28,6 @@ from sharar.weights.modelopt import load_nvfp4_linear
 from sharar.weights.safetensors import SnapshotWeights
 
 PREFIX = "model.language_model"
-# Retained compatibility switch for prequantized MLP inputs. Both routes now
-# use the phase-specific norm and the same BF16-to-NVFP4 boundary.
-FUSED_NORM_NVFP4 = os.environ.get("SHARAR_FUSED_NORM_NVFP4", "0") == "1"
 
 
 class DecoderLayer:
@@ -46,13 +43,17 @@ class DecoderLayer:
         else:
             self.mixer = GatedDeltaNet(w, f"{p}.linear_attn", index, device, target=target)
         self.mlp = Mlp(w, f"{p}.mlp", device, fused_silu_quant=fused_silu_quant)
+        # Retained compatibility switch for prequantized MLP inputs (SHARAR_FUSED_NORM_NVFP4). Both routes
+        # use the phase-specific norm and the same BF16-to-NVFP4 boundary.
+        from sharar.engine.config import current
+        self.fused_norm_nvfp4 = current().fused_norm_nvfp4
 
     def forward(self, hidden: torch.Tensor, residual: torch.Tensor | None, ctx: ForwardContext) -> tuple[torch.Tensor, torch.Tensor]:
         inplace = not ctx.capture
         # Input norm also emits the FP8 input of the mixer's first projection.
         hidden, hidden_q, residual = self.input_norm.fused_add_quant(hidden, residual, self.mixer.input_scale, inplace=inplace, verify=ctx.mode == "verify")
         hidden = self.mixer.forward(hidden, ctx, hidden_q)
-        if FUSED_NORM_NVFP4:
+        if self.fused_norm_nvfp4:
             # Preserve the same target arithmetic with prequantized MLP inputs.
             pre, residual = self.post_norm.fused_add_nvfp4(hidden, residual, self.mlp.gate_up.input_scale_inv, inplace=inplace, verify=ctx.mode == "verify")
             hidden = self.mlp.forward_prequantized(pre)
@@ -70,7 +71,8 @@ class Qwen38:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", fused_silu_quant: bool = True, log=print, target: Target = QWEN38):
         from sharar.cache.ledger import check_load_headroom
         from sharar.kernels import w3
-        if os.environ.get("SHARAR_W3_CHECKPOINT") and not w3.ENABLED:
+        from sharar.engine.config import current
+        if current().w3_checkpoint and not w3.enabled():
             raise ValueError("SHARAR_W3_CHECKPOINT requires SHARAR_W3_DECODE=1")
         self.target = target
         check_load_headroom(target.weight_load_peak_bytes)
@@ -106,7 +108,7 @@ class Qwen38:
         if log:
             log(f"  weights loaded in {time.perf_counter() - started:.0f}s, "
                 f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated")
-        if w3.ENABLED:
+        if w3.enabled():
             w3.attach_model(self, log=log)
 
     @torch.inference_mode()

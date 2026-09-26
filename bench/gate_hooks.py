@@ -13,8 +13,8 @@ def stable_numerics(stage, ex, args):
     baseline for any change that alters the verify row count: the b/a projection,
     the FP8 5120x6144 window and the gated norm stop depending on M."""
     if stage == 'model':
-        from sharar.kernels import stable
-        stable.ENABLED = True
+        from sharar.engine import config
+        config.install(config.current().replace(stable_numerics=True))
         print('  stable_numerics: SHARAR_STABLE_NUMERICS path enabled for this process', flush=True)
 
 
@@ -27,8 +27,8 @@ def bf16_draft(stage, ex, args):
 def w3_decode(stage, ex, args):
     """Three-bit decode weights for every MLP and FP8 projection (sharar/kernels/w3.py), NVFP4/FP8 kept for prefill."""
     if stage == 'model':
-        from sharar.kernels import w3
-        w3.ENABLED = True
+        from sharar.engine import config
+        config.install(config.current().replace(w3_decode=True))
         print('  w3_decode: 3-bit decode path enabled; packing after load', flush=True)
     if stage == 'spec':
         from sharar.kernels import w3
@@ -38,15 +38,15 @@ def w3_decode(stage, ex, args):
 def w3_head(stage, ex, args):
     """With w3_decode: also serve the lm_head from a 3-bit copy (SHARAR_W3_HEAD=1). Order it before w3_decode."""
     if stage == 'model':
-        from sharar.kernels import w3
-        w3.HEAD = True
+        from sharar.engine import config
+        config.install(config.current().replace(w3_head=True))
 
 
 def w3_draft(stage, ex, args):
     """With w3_decode: also serve the parallel draft's FP8 matrices from 3-bit copies (SHARAR_W3_DRAFT=1). Order it before w3_decode."""
     if stage == 'model':
-        from sharar.kernels import w3
-        w3.DRAFT = True
+        from sharar.engine import config
+        config.install(config.current().replace(w3_draft=True))
 
 
 def w3_decode_head(stage, ex, args):
