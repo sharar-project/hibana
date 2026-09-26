@@ -64,23 +64,3 @@ def test_driver_launch_is_attributed_to_innermost_scope():
          'dur': 100, 'args': {'correlation': 9}},
     ]})
     assert result['groups'][0]['owner'] == 'sharar.reconstruction'
-
-
-def test_residual_selector_zero_weights_reproduce_conditional_native_walk():
-    import torch
-    from bench.archive.gb10_selector_fit import evaluate
-
-    row = {'output_offset': 1, 'proposal_ids': [20, 40],
-           'candidates': [[10, 20], [30, 40]],
-           'scores': [[[0., 1.], [9., 0.]], [[9., 0.], [0., 1.]]],
-           'emitted_ids': [20, 40, 50]}
-    ids = [1, 20, 40, 50]
-    summarize_capture([row], ids, depth=2)
-    capture = {'rows': [row], 'depth': 2, 'output_ids': ids}
-    result = evaluate(capture, torch.zeros(8))
-    assert result['native_emitted_sum'] == result['candidate_emitted_sum'] == 3
-    # Bias toward candidate rank zero changes the first choice and shortens
-    # the prefix; evaluation must walk its own preceding ranks.
-    weights = torch.zeros(8)
-    weights[1] = -10
-    assert evaluate(capture, weights)['candidate_emitted_sum'] == 1

@@ -117,7 +117,6 @@ def main():
     ap.add_argument('--inputs', type=Path, required=True)
     ap.add_argument('--output', type=Path, required=True)
     ap.add_argument('--label', required=True)
-    ap.add_argument('--schedule', action='store_true')
     ap.add_argument('--slots', type=int, default=24)
     ap.add_argument('--pages', type=int, default=100000)
     ap.add_argument('--chat-fixture', action='store_true')
@@ -128,8 +127,8 @@ def main():
     report = {'completed': False, 'identity': identity(args), 'label': args.label,
               'input_sha256': sha_file(args.inputs), 'driver_sha256': sha_file(Path(__file__)),
               'geometry': {'num_pages': args.pages, 'num_slots': args.slots, 'max_batch': 4},
-              'schedule': args.schedule, 'helper_sha256': {name: sha_file(Path(__file__).with_name(name))
-                                                          for name in ('agent_schedule.py', 'gb10_bs4_http.py',
+              'helper_sha256': {name: sha_file(Path(__file__).with_name(name))
+                                                          for name in ('gb10_bs4_http.py',
                                                                        'gb10_agent_retention.py', 'gb10_bs4_engine.py')}, 'cells': []}
     save(args.output / 'report.json', report)
     with torch.inference_mode():
@@ -150,10 +149,6 @@ def main():
             from sharar.api.chat_template import ChatTemplate
             chats = chat_suffixes(tokenizer, ChatTemplate(config.snapshot_dir()), tasks, families)
             report['chat_fixtures'] = chats
-        if args.schedule:
-            from bench.archive.agent_schedule import AgentScheduler
-            import sharar.engine.scheduler as scheduler_module
-            scheduler_module.Scheduler = AgentScheduler
         with server(ex, SchedulerConfig()) as (url, sched):
             # Exercise the actual cold/append/mixed HTTP shapes once before
             # timing. Keep the excluded warmup, including every output, on disk.
