@@ -176,6 +176,10 @@ if [[ "${SHARAR_TARGET:-}" == flashnext ]]; then
   [[ -d "$FN_CACHE/models--RadixArk--Qwen3.8-Flash-Next-NVFP4/snapshots" ]] || fail "no Flash-Next snapshot under $FN_CACHE"
   args+=(--volume "$FN_CACHE:/cache/flash-next:ro" --env SHARAR_FLASHNEXT_CACHE=/cache/flash-next
          --env "SHARAR_FLASHNEXT_TRUNK=${SHARAR_FLASHNEXT_TRUNK:-fp8}")   # trunk precision at load: fp8 (default) or bf16
+  if [[ -n "${SHARAR_FLASHNEXT_W3_CHECKPOINT:-}" ]]; then   # calibrated 3-bit trunk copies (#6, bench/flashnext_w3_calibrate.py)
+    [[ -f "$SHARAR_FLASHNEXT_W3_CHECKPOINT/manifest.json" ]] || fail "no manifest.json in SHARAR_FLASHNEXT_W3_CHECKPOINT"
+    args+=(--volume "$SHARAR_FLASHNEXT_W3_CHECKPOINT:/fn-w3:ro" --env SHARAR_FLASHNEXT_W3_CHECKPOINT=/fn-w3)
+  fi
 fi
 if [[ -n "${SHARAR_DEVICE_ACCEPT:-}" ]]; then
   [[ "$SHARAR_DEVICE_ACCEPT" == 0 || "$SHARAR_DEVICE_ACCEPT" == 1 ]] || fail "SHARAR_DEVICE_ACCEPT must be 0 or 1"
