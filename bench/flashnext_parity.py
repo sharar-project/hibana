@@ -20,14 +20,15 @@ import urllib.request
 from pathlib import Path
 
 INPUTS = Path("/home/yke/sharar-results/reviews/2026-09-15-profile/inputs/task-inputs.json")
-SNAP_ROOT = Path(__import__("os").environ.get("FN_SNAP_ROOT", "/home/yke/data/huggingface-flash-next/models--RadixArk--Qwen3.8-Flash-Next-NVFP4/snapshots"))
 INPUTS = Path(__import__("os").environ.get("FN_INPUTS", str(INPUTS)))
 TEXTS = ["The quick brown fox jumps over the lazy dog. Then it ran into the forest, where",
          "def fibonacci(n):\n    \"\"\"Return the n-th Fibonacci number.\"\"\"\n    if n < 2:\n        return n\n    return"]
 
 
 def snapshot() -> Path:
-    return sorted(SNAP_ROOT.iterdir())[-1]
+    """The pinned Flash-Next snapshot through the target (SHARAR_FLASHNEXT_CACHE), so host and container runs agree."""
+    from sharar.target import FLASHNEXT
+    return FLASHNEXT.snapshot_dir()
 
 
 def prompts(lengths=(64, 200, 512), long=False) -> list[dict]:
