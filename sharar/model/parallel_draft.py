@@ -103,7 +103,7 @@ class ParallelDraftModel:
             raise ValueError('unvalidated draft dimensions')
         self.target, self.device = target, target.device
         from sharar.proposers.draft_head import TargetHead
-        self.draft_head = TargetHead(target.logits)  # the vocabulary projection the selector reads (#45)
+        self.draft_head = TargetHead(lambda x: self.target.logits(x))  # the vocabulary projection the selector reads (#45); resolved per call
         self.features = tuple(cfg['dflash_config']['target_layer_ids'])
         self.window = cfg['sliding_window'] or max_context
         self.cos, self.sin = frequencies(cfg, max_context + 32, self.device)
