@@ -14,7 +14,7 @@ from sharar import config
 from sharar.engine.executor import Executor
 from sharar.engine.sampler import InvalidRequest, SamplingParams
 from sharar.engine.scheduler import Scheduler
-from sharar.memory.radix import RadixCache
+from sharar.cache.radix import RadixCache
 from sharar.parity.prompts import build_prompts, random_ids
 from sharar.tokenizer import SnapshotTokenizer
 

@@ -9,10 +9,10 @@ pytestmark = pytest.mark.skipif(os.environ.get("SHARAR_RUN_GPU") != "1" or not t
 
 
 def _pools(pages=256, slots=6):
-    from sharar.memory.kv_pool import KvPool
-    from sharar.memory.radix import RadixCache
-    from sharar.memory.state_pool import StatePool
-    from sharar.memory.cold_tier import ColdTier
+    from sharar.cache.kv_pool import KvPool
+    from sharar.cache.radix import RadixCache
+    from sharar.cache.state_pool import StatePool
+    from sharar.cache.cold_tier import ColdTier
 
     dev = torch.device("cuda")
     kv, st = KvPool(pages, dev), StatePool(slots, dev)
@@ -94,7 +94,7 @@ def test_parked_child_needs_its_parent_and_lru_drop_frees_arena():
     assert kv.free_count == free_before - (len(b) - len(a))  # only the suffix was allocated
     assert cache.match(b, touch=False).length == len(b)
     # LRU drop when the arena cannot fit a new entry: a fresh tier whose single slab holds one leaf
-    from sharar.memory.cold_tier import ColdTier
+    from sharar.cache.cold_tier import ColdTier
     one = cache.tier._kv_row_bytes() * len(b) + cache.tier._state_bytes()
     cache.tier = ColdTier(kv, st, one + 4096, cache.device)
     cache.tier.arena.SLAB = one + 4096
@@ -184,7 +184,7 @@ def test_a_session_larger_than_a_slab_parks_in_chunks():
 
 
 def test_a_dropped_session_comes_back_from_the_store(tmp_path):
-    from sharar.memory.session_disk import SessionDisk
+    from sharar.cache.session_disk import SessionDisk
     kv, st, cache = _pools()
     feats = torch.arange(64 * 8, device="cuda", dtype=torch.bfloat16).view(64, 8)
     seen = {}
@@ -210,8 +210,8 @@ def test_a_dropped_session_comes_back_from_the_store(tmp_path):
 
 
 def test_a_restarted_server_restores_a_stored_session(tmp_path):
-    from sharar.memory.cold_tier import ColdTier
-    from sharar.memory.session_disk import SessionDisk
+    from sharar.cache.cold_tier import ColdTier
+    from sharar.cache.session_disk import SessionDisk
     kv, st, cache = _pools(pages=512)
     cache.tier.disk = SessionDisk(tmp_path, 2**30, {"t": 1}, torch.device("cuda"))
     ids = list(range(9000, 9300))
@@ -228,7 +228,7 @@ def test_a_restarted_server_restores_a_stored_session(tmp_path):
 
 def test_shutdown_persists_cached_sessions(tmp_path):
     from sharar.engine.executor import Executor
-    from sharar.memory.session_disk import SessionDisk
+    from sharar.cache.session_disk import SessionDisk
     kv, st, cache = _pools()
     cache.tier.disk = SessionDisk(tmp_path, 2**30, {"t": 1}, torch.device("cuda"))
     ids = list(range(40000, 40128))

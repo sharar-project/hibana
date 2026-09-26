@@ -107,7 +107,7 @@ External sampled proposals include their actual transformed conditional q,
 including selector/Markov effects. `engine/rejection.py` is the common reference
 algorithm; test tiny distributions independently of model rounding. MTP/n-gram
 sampled requests still use ordinary decode. Tree proposals are not implemented.
-Declare prospective memory in `memory/spec_budget.py`, and retain/restore draft
+Declare prospective memory in `cache/spec_budget.py`, and retain/restore draft
 features through identity-keyed metadata without taking ownership of target
 pages. Both full snapshots and accepted-state reconstruction use the same
 StateManager commit and stop/continuation tests.
@@ -148,7 +148,7 @@ choice and check exact checkpoint/committed state when changing this path.
 ## Add a cache policy
 
 Policy chooses admission, snapshot placement and eviction candidates inside
-`memory/`. `StateManager` transfers request ownership; `RadixCache` owns cached
+`cache/`. `StateManager` transfers request ownership; `RadixCache` owns cached
 pages/snapshots and locks. Keep those responsibilities intact. Test shared
 prefixes, partial hits, active flush, retraction, speculative truncation and
 exact continuation after reuse. Measure saved workload time per total byte,

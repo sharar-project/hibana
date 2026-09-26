@@ -612,7 +612,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
           traces: str | None = None, traces_max_mib: int = 32768, draft_dir: str | None = None,
           accept_default: tuple[int, float] = (1, 0.0), target: str | None = None, max_context: int | None = None,
           accept_default_sampled: bool = False) -> None:
-    from sharar.memory.spec_budget import SpecConfig
+    from sharar.cache.spec_budget import SpecConfig
     from sharar.api.validation import set_accept_default
 
     if accept_default != (1, 0.0) and not spec:

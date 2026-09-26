@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from sharar.memory.spec_budget import SpecConfig
+from sharar.cache.spec_budget import SpecConfig
 from sharar.proposers.factory import draft_snapshot
 
 

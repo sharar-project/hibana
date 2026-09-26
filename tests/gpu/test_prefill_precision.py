@@ -13,7 +13,7 @@ def test_mixed_prefix_attention_matches_dense_reference(prefixes):
     import flashinfer
     from sharar.engine.context import ForwardContext
     from sharar.kernels.ops import RaggedAttention
-    from sharar.memory.kv_pool import KvPool
+    from sharar.cache.kv_pool import KvPool
     from sharar.model.attention import Attention
 
     torch.manual_seed(317)

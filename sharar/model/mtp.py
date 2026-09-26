@@ -19,7 +19,7 @@ import torch
 from sharar import config
 from sharar.kernels import ops
 from sharar.kernels.qk_norm_rope import qk_norm_rope
-from sharar.memory.kv_pool import KvPool
+from sharar.cache.kv_pool import KvPool
 from sharar.model.norm import GemmaRMSNorm
 from sharar.model.rope import PartialRotary
 from sharar.weights.modelopt import Nvfp4Linear

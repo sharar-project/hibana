@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import torch
 
-from sharar.memory.session_disk import SessionDisk
+from sharar.cache.session_disk import SessionDisk
 
 IDENTITY = {"target": "qwen38", "revision": "r1", "w3": "cal:1"}
 CPU = torch.device("cpu")
@@ -95,7 +95,7 @@ def test_a_mismatched_segment_fails_the_read(tmp_path):
 
 
 def test_segments_larger_than_the_staging_buffer_round_trip(tmp_path, monkeypatch):
-    import sharar.memory.session_disk as sd
+    import sharar.cache.session_disk as sd
     monkeypatch.setattr(sd, "STAGING", 64)  # every segment spans several staging chunks
     store = SessionDisk(tmp_path, 2**30, IDENTITY, CPU)
     e = entry(range(300, 340), [40])

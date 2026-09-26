@@ -19,9 +19,9 @@ from sharar.engine.scheduler import Scheduler, SchedulerConfig
 from sharar.engine.spec import SpecDecoder
 from sharar.engine.contracts import ProposerContext
 from sharar.proposers.mtp import MtpProposer, MtpState
-from sharar.memory.request_state import StateManager
-from sharar.memory.radix import RadixCache
-from sharar.memory.state_pool import StatePool
+from sharar.cache.request_state import StateManager
+from sharar.cache.radix import RadixCache
+from sharar.cache.state_pool import StatePool
 from tests.unit.test_scheduler import FakeExecutor, FakePool
 
 

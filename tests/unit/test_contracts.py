@@ -134,12 +134,12 @@ def test_feature_and_context_requirements_are_checked_before_buffers(monkeypatch
 
 
 def test_profile_limits_and_load_budget(monkeypatch):
-    from sharar.memory import ledger
+    from sharar.cache import ledger
     profile = ServingProfile(max_batch=3, max_context=512)
     assert profile.graph_sizes == (1, 2, 3)
     # Startup validates the proposer's width; the serving profile owns only
     # context, batch and scheduling limits.
-    from sharar.memory.spec_budget import SpecConfig
+    from sharar.cache.spec_budget import SpecConfig
     assert SpecConfig('dflash2', 15).depth == 15
     for name, depth in [('dflash2', 16), ('dspark', 8), ('mtp', 9)]:
         with pytest.raises(ValueError, match='proposer/depth'):

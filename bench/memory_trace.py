@@ -9,7 +9,7 @@ import time
 
 import torch
 
-from sharar.memory.ledger import mem_available_bytes
+from sharar.cache.ledger import mem_available_bytes
 
 
 @contextmanager

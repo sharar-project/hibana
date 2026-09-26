@@ -3,8 +3,8 @@ import pytest
 
 from sharar import config
 from sharar.target import DEFAULT_TARGET, FLASHNEXT, QWEN38, TARGETS, get
-from sharar.memory import ledger, state_pool
-from sharar.memory.spec_budget import verify_bytes
+from sharar.cache import ledger, state_pool
+from sharar.cache.spec_budget import verify_bytes
 
 
 def test_default_target_matches_the_pinned_constants():

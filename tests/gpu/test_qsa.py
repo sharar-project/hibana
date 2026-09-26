@@ -45,7 +45,7 @@ def _indexer(hidden, budget, ratio, device):
 
 @pytest.mark.parametrize("budget", [64, 2048])
 def test_indexer_selection_matches_the_reference(budget):
-    from sharar.memory.kv_pool import KvPool
+    from sharar.cache.kv_pool import KvPool
     from sharar.model.flashnext.reference import gemma_rms, qsa_token_mask, rope_neox
     from sharar.target import FLASHNEXT
     dev, hidden, ratio = torch.device("cuda"), 256, 4
@@ -103,7 +103,7 @@ def test_indexer_selection_matches_the_reference(budget):
 def test_graph_safe_maintenance_matches_the_eager_keys_under_replay():
     """`maintain` (captured once, replayed with fresh per-step rows) writes the same raw and
     compressed keys as the eager path; rows that complete no group only touch page 0."""
-    from sharar.memory.kv_pool import KvPool
+    from sharar.cache.kv_pool import KvPool
     from sharar.model.flashnext.indexer import FlashNextIndexer
     from sharar.target import FLASHNEXT
     dev, hidden, ratio, total = torch.device("cuda"), 256, 4, 300
@@ -187,7 +187,7 @@ def test_selection_kernel_matches_the_torch_selection(budget, length, rows):
 def test_selecting_graph_matches_the_eager_selection():
     """`maintain` + `select` captured once for a batch of two decode rows past the budget and
     replayed per step with fresh static inputs selects what the eager path selects."""
-    from sharar.memory.kv_pool import KvPool
+    from sharar.cache.kv_pool import KvPool
     from sharar.model.flashnext.indexer import FlashNextIndexer
     from sharar.target import FLASHNEXT
     dev, hidden, ratio, budget = torch.device("cuda"), 256, 4, 64

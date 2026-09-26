@@ -114,7 +114,7 @@ def run(ex, tok, output):
     import torch
     from sharar.engine.sampler import SamplingParams
     from sharar.parity.prompts import PARAGRAPH
-    from sharar.memory.ledger import mem_available_bytes
+    from sharar.cache.ledger import mem_available_bytes
     output = Path(output)
     output.mkdir()
     ids = tok.encode(PARAGRAPH * 256)

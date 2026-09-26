@@ -68,7 +68,7 @@ class DecoderLayer:
 
 class Qwen38:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", fused_silu_quant: bool = True, log=print, target: Target = QWEN38):
-        from sharar.memory.ledger import check_load_headroom
+        from sharar.cache.ledger import check_load_headroom
         from sharar.kernels import w3
         if os.environ.get("SHARAR_W3_CHECKPOINT") and not w3.ENABLED:
             raise ValueError("SHARAR_W3_CHECKPOINT requires SHARAR_W3_DECODE=1")

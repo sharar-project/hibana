@@ -13,7 +13,7 @@ from sharar.engine.sampler import SamplingParams
 from sharar.engine.scheduler import Scheduler
 from sharar.engine.spec import SpecDecoder
 from sharar.engine.contracts import VerifiedFeatures
-from sharar.memory.request_state import StateManager, Reservation
+from sharar.cache.request_state import StateManager, Reservation
 from tests.unit.test_radix import make
 from tests.unit.test_scheduler import FakeExecutor
 

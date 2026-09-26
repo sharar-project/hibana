@@ -7,7 +7,7 @@ import torch
 from sharar import config
 from sharar.engine.context import ForwardContext
 from sharar.kernels import ops
-from sharar.memory.state_pool import StatePool
+from sharar.cache.state_pool import StatePool
 from sharar.model.qwen38 import PREFIX, DecoderLayer
 from sharar.model.rope import PartialRotary
 from sharar.parity.prompts import random_ids

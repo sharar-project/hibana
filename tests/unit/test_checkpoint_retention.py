@@ -5,8 +5,8 @@ import torch
 from sharar.engine.executor import Executor
 from sharar.engine.request import Request
 from sharar.engine.sampler import SamplingParams
-from sharar.memory.radix import RadixCache
-from sharar.memory.request_state import StateManager
+from sharar.cache.radix import RadixCache
+from sharar.cache.request_state import StateManager
 from tests.unit.test_radix import FakePool
 
 

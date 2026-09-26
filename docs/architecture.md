@@ -238,7 +238,7 @@ keeps its own body; the helper removes the duplicated bookkeeping.
 
 ## Repository boundaries
 
-`sharar/memory/` is the engine's memory manager, not an application feature:
+`sharar/cache/` is the engine's memory manager, not an application feature:
 the paged FP8 KV pool, the GDN state pool, the radix prefix cache, the
 `StateManager` ownership boundary, the unified-memory ledger, the cold tier,
 the NVMe session store and the speculation budget. It stays in the engine

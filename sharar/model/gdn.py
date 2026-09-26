@@ -22,7 +22,7 @@ from sharar.kernels.fla.fused_sigmoid_gating_recurrent import fused_sigmoid_gati
 from sharar.kernels.fla.layernorm_gated import rms_norm_gated
 from sharar.kernels.fp8_quant import quant_fp8
 from sharar.kernels.verify_conv import verify_convolve
-from sharar.memory.state_pool import CONV_DIM, CONV_STATE_LEN
+from sharar.cache.state_pool import CONV_DIM, CONV_STATE_LEN
 from sharar.model.gdn_plan import prepare_gdn_prefill
 from sharar.weights.modelopt import Fp8Linear, load_fp8_linear
 from sharar.weights.safetensors import SnapshotWeights

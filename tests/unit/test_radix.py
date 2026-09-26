@@ -1,6 +1,6 @@
 import torch
 
-from sharar.memory.radix import RadixCache
+from sharar.cache.radix import RadixCache
 
 
 class FakePool:

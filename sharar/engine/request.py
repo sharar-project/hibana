@@ -9,7 +9,7 @@ from enum import Enum
 import torch
 
 from sharar.engine.sampler import SamplingParams
-from sharar.memory.request_state import RequestState
+from sharar.cache.request_state import RequestState
 
 
 class State(str, Enum):

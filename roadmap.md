@@ -93,7 +93,7 @@ context, their own APIs, fast sampled decoding and structured output. In order:
    tokens the target would not have chosen; a faster sampled path has to come
    from the draft side (proposing the target's likely tokens) or from the
    remaining 5.6 ms. Not pursued further now.
-4. **Done 2026-09-23: NVMe session store** (`sharar/memory/session_disk.py`,
+4. **Done 2026-09-23: NVMe session store** (`sharar/cache/session_disk.py`,
    evidence `$SHARAR_RESULTS/reviews/2026-09-23-sessions/`). Parked sessions
    span slabs (long contexts no longer rejected), are written through to
    `$SHARAR_RESULTS/sessions`, and are persisted at shutdown. Restart test on a
