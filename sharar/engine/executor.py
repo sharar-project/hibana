@@ -575,16 +575,18 @@ class Executor:
             self.release(r)
         if self.spec is not None:
             # Two speculative rounds at batch 1 and 2 so the first real request
-            # does not pay the lazy kernel loads of the verify/accept path.
-            d = self.admit(random_ids(50, 14), SamplingParams(max_new_tokens=12))
-            e = self.admit(random_ids(60, 15), SamplingParams(max_new_tokens=12))
+            # does not pay the lazy kernel loads of the verify/accept path. The
+            # random prompts can emit EOS; ignore it so every step keeps four live rows.
+            spec_params = SamplingParams(max_new_tokens=12, ignore_eos=True)
+            d = self.admit(random_ids(50, 14), spec_params)
+            e = self.admit(random_ids(60, 15), spec_params)
             self.prefill(d)
             self.prefill(e)
             self.decode_step([d])
             self.decode_step([d, e])
             if self.max_batch >= 4:  # every captured size, so no round pays a first-use compile
-                f = self.admit(random_ids(55, 16), SamplingParams(max_new_tokens=12))
-                g = self.admit(random_ids(65, 17), SamplingParams(max_new_tokens=12))
+                f = self.admit(random_ids(55, 16), spec_params)
+                g = self.admit(random_ids(65, 17), spec_params)
                 self.prefill(f)
                 self.prefill(g)
                 self.decode_step([d, e, f, g])
