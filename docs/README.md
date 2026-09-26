@@ -8,6 +8,7 @@ to the source recorded in each report.
 |---|---|
 | [Operations](operations.md) | Build, launch, defaults, memory guard and development |
 | [API](api.md) | Supported endpoints, request controls and streaming behavior |
+| [Architecture](architecture.md) | Current engine shape, capability matrix for both targets, proposed seams and migration order (#24) |
 | [Interfaces](interfaces.md) | Execution, proposer, cache and graph-buffer contracts |
 | [Ownership invariants](phase7a.md) | Termination, cancellation, flush, retraction and failure |
 | [Performance](performance.md) | Current BS1/BS4 and resumed-session evidence |
