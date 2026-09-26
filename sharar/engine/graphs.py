@@ -12,14 +12,13 @@ replay (host side) and run() is inside the graph.
 from __future__ import annotations
 
 import dataclasses
-import os
 
 import torch
 
+from sharar.engine import graph_set
 from sharar.engine.context import ForwardContext
 from sharar.engine.contracts import FeatureRequest
 from sharar.engine.profile import ServingProfile
-from sharar.cache.kv_pool import KV_DTYPE
 
 CAPTURE_SIZES = (1, 2, 4)
 
@@ -100,19 +99,7 @@ class DecodeGraphs:
         st = self._static[b]
         indptr = torch.tensor([0] + list(torch.tensor(counts).cumsum(0).tolist()), dtype=torch.int32)  # host: no sync in plan()
         indices = torch.cat(pages)
-        self._wrappers[b].plan(
-            indptr,
-            indices,
-            st["last_page_len_host"],
-            self.ex.target.num_attention_heads,
-            self.ex.target.num_kv_heads,
-            self.ex.target.head_dim,
-            self.ex.kv_pool.page_size,
-            pos_encoding_mode="NONE",
-            q_data_type=torch.bfloat16,
-            kv_data_type=KV_DTYPE,
-            sm_scale=self.ex.target.head_dim**-0.5,
-        )
+        self.ex.attention.decode(self._wrappers[b], indptr, indices, st["last_page_len_host"], guard=False)  # graph-bound buffers
 
     def _ctx(self, b: int, sparse: bool = False) -> ForwardContext:
         st = self._static[b]
@@ -153,26 +140,20 @@ class DecodeGraphs:
             self._plan(b, [1] * b, dummy_pages)
             for sparse in (False, True) if self.sparse else (False,):
                 ctx = self._ctx(b, sparse)
-                # Warm up (Triton/FlashInfer JIT, allocator) then capture.
-                for _ in range(2):
-                    out = self.ex.model.forward(st["tokens"], ctx)
-                    self.ex.model.logits(out["norm"])
-                torch.cuda.synchronize()
-                g = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(g, pool=self._pool):
+
+                def warm():
+                    self.ex.model.logits(self.ex.model.forward(st["tokens"], ctx)["norm"])
+
+                def body():
                     out = self.ex.model.forward(st["tokens"], ctx)
                     st["logits", sparse] = self.ex.model.logits(out["norm"])
                     st["out", sparse] = out
-                self._graphs[b, sparse] = g
-                torch.cuda.synchronize()
+                self._graphs[b, sparse] = graph_set.capture(self._pool, body, warmup=warm)
                 if log:
                     log(f"  captured {'selecting ' if sparse else ''}decode graph for batch {b}")
 
     def pick(self, b: int) -> int:
-        for s in self.sizes:
-            if s >= b:
-                return s
-        raise ValueError(f"batch {b} exceeds captured sizes {self.sizes}")
+        return graph_set.pick(self.sizes, b)
 
     def run(self, tokens: list[int], positions: list[int], slots: list[int], out_pages: torch.Tensor, pages: list[torch.Tensor], *, return_features=False,
             ple_rows: torch.Tensor | None = None, qsa: tuple[torch.Tensor, torch.Tensor] | None = None, sparse: bool = False):

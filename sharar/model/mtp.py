@@ -24,7 +24,6 @@ from sharar.model.norm import GemmaRMSNorm
 from sharar.model.rope import PartialRotary
 from sharar.weights.modelopt import Nvfp4Linear
 from sharar.weights.safetensors import SnapshotWeights
-from sharar.kernels import plan_guard
 
 PREFIX = "mtp"
 
@@ -62,6 +61,8 @@ class MtpHead:
         self.kv = KvPool(num_pages, device, layer_ids=[0], dtype=torch.bfloat16)
         self._ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
         self._attn = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self._ws, "NHD")
+        from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
+        self.attention = AttentionPlanner(AttentionGeometry(self.num_heads, self.num_kv_heads, self.head_dim))  # BF16 draft KV, page 1
 
     @property
     def bytes(self) -> int:
@@ -72,11 +73,7 @@ class MtpHead:
         # Host index pointers: plan() reads them on the CPU (a device tensor would sync).
         qo_indptr = torch.tensor([0] + list(torch.tensor(qo_lens).cumsum(0).tolist()), dtype=torch.int32)
         kv_indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_pages]).cumsum(0).tolist()), dtype=torch.int32)
-        plan_guard.plan(self._attn,
-            qo_indptr, kv_indptr, torch.cat(kv_pages), torch.ones(len(qo_lens), dtype=torch.int32),
-            self.num_heads, self.num_kv_heads, self.head_dim, 1,
-            causal=True, q_data_type=torch.bfloat16, kv_data_type=torch.bfloat16, sm_scale=self.head_dim**-0.5,
-        )
+        self.attention.paged_prefill(self._attn, qo_indptr, kv_indptr, torch.cat(kv_pages), torch.ones(len(qo_lens), dtype=torch.int32), causal=True)
 
     @torch.inference_mode()
     def write_kv(self, tokens: torch.Tensor, hidden: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor) -> None:

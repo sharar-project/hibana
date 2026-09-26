@@ -13,13 +13,11 @@ import torch
 
 from sharar.engine.context import ForwardContext
 from sharar.engine.request import Request
-from sharar.cache.kv_pool import KV_DTYPE
 from sharar.engine.contracts import Proposer, StepInputs, VerifiedFeatures
 from sharar.engine.debug import debug_sync
 from sharar.engine.rejection import Proposal, distribution, plausible, verify_rows
 from sharar.engine import accept_graphs
 from sharar.engine.accept_graphs import AcceptGraphs
-from sharar.kernels import plan_guard
 
 
 @dataclass
@@ -316,10 +314,8 @@ class SpecDecoder:
         indptr = [0]
         for pages in batch.kv_pages:
             indptr.append(indptr[-1] + pages.shape[0])
-        plan_guard.plan(wrapper, cu_host, torch.tensor(indptr, dtype=torch.int32), torch.cat(batch.kv_pages),
-                     torch.ones(b_sz, dtype=torch.int32), self.ex.target.num_attention_heads, self.ex.target.num_kv_heads,
-                     self.ex.target.head_dim, 1, causal=True, q_data_type=torch.bfloat16,
-                     kv_data_type=KV_DTYPE, sm_scale=self.ex.target.head_dim**-0.5)
+        self.ex.attention.paged_prefill(wrapper, cu_host, torch.tensor(indptr, dtype=torch.int32), torch.cat(batch.kv_pages),
+                                        torch.ones(b_sz, dtype=torch.int32), causal=True, page_size=1)
         ctx.paged_prefill_wrapper = wrapper
         return ctx
 

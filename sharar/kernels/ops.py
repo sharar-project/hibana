@@ -15,7 +15,6 @@ from sharar.kernels.fp8_quant import quant_fp8
 from sharar.kernels.nvfp4_quant import nvfp4_quantize
 from sharar.weights.modelopt import FP8_MAX, Fp8Linear, Nvfp4Linear
 from sharar.kernels import stable, verify_gemm, w3
-from sharar.kernels import plan_guard
 
 # cuBLAS FP8 GEMM reaches ~60% of DRAM bandwidth at M<=4 on SM121 (profile in
 # docs/phase2.md); the streaming GEMV is used up to this many rows.
@@ -144,24 +143,16 @@ class RaggedAttention:
         self.num_qo_heads = num_qo_heads
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
+        from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
+        self._planner = AttentionPlanner(AttentionGeometry(num_qo_heads, num_kv_heads, head_dim))
         self._planned: tuple | None = None
 
     def plan(self, seq_lens: list[int], device: torch.device) -> None:
         key = tuple(seq_lens)
         if self._planned == key:
             return
-        indptr = torch.tensor([0] + list(torch.tensor(seq_lens).cumsum(0).tolist()), dtype=torch.int32)  # host: no sync in plan()
-        plan_guard.plan(self._wrapper,
-            indptr,
-            indptr,
-            self.num_qo_heads,
-            self.num_kv_heads,
-            self.head_dim,
-            causal=True,
-            sm_scale=self.head_dim**-0.5,
-            q_data_type=torch.bfloat16,
-            kv_data_type=torch.bfloat16,
-        )
+        from sharar.kernels.attention_plan import host_indptr
+        self._planner.ragged_prefill(self._wrapper, host_indptr(seq_lens))  # host: no sync in plan()
         self._planned = key
 
     def run(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
