@@ -28,6 +28,7 @@ import numpy as np
 EXPERT_BYTES = 2_764_824  # one NVFP4 expert of the checkpoint: fc1 (up, gate) and fc2 weights with block scales
 DOMAINS = ("code", "math", "prose", "multilingual", "structured", "chat", "agent")
 P1_BINS = (0.0, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0001)
+EQUAL_TOKENS = 1500  # size-matched skew: the fewer tokens a sample has, the fewer experts carry its mass
 
 
 # ---- pure functions (tests/unit/test_route_stats.py) ----
@@ -60,6 +61,18 @@ def effective_experts(mass: np.ndarray) -> np.ndarray:
     with np.errstate(divide="ignore", invalid="ignore"):
         h = -np.where(p > 0, p * np.log(p), 0.0).sum(-1)
     return np.exp(h)
+
+
+def top_set_overlap(a: np.ndarray, b: np.ndarray, share: float) -> np.ndarray:
+    """Mass [L, E] of two samples -> [L] Jaccard overlap of the expert sets that carry `share` of each one's mass."""
+    out = np.zeros(a.shape[0])
+    for layer in range(a.shape[0]):
+        sets = []
+        for m in (a[layer], b[layer]):
+            n = int(experts_for_share(m, share))
+            sets.append(set(np.argsort(-m, kind="stable")[:n].tolist()))
+        out[layer] = len(sets[0] & sets[1]) / len(sets[0] | sets[1])
+    return out
 
 
 def rank_shares(probs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -140,6 +153,30 @@ def skew(arm: dict, experts: int) -> dict:
                      "experts_50pct": summary(n50), "experts_90pct": summary(n90), "effective_experts": summary(eff),
                      "top_expert_share": summary(top), "unused_experts": summary(unused),
                      "per_layer": {"experts_50pct": n50.tolist(), "experts_90pct": n90.tolist(), "effective": np.round(eff, 1).tolist()}}
+    # Size-matched: the same number of token rows drawn from each domain (fixed seed), so domains compare fairly.
+    rng = np.random.default_rng(0)
+    masses, halves = {}, {}
+    for name in DOMAINS:
+        idx = np.nonzero(kept & (rows["cat"] == name))[0]
+        if len(idx) < EQUAL_TOKENS:
+            continue
+        pick = np.sort(rng.choice(idx, EQUAL_TOKENS, replace=False))
+        mass, _ = mass_per_expert(rows["ids"][pick], rows["probs"][pick], experts)
+        masses[name] = mass
+        # The overlap's noise floor: the domain's prompts split in two halves (alternate requests), one sample each.
+        reqs = np.unique(rows["request"][idx])
+        parts = [idx[np.isin(rows["request"][idx], reqs[h::2])] for h in (0, 1)]
+        if len(reqs) >= 2 and min(len(p) for p in parts) >= EQUAL_TOKENS:
+            a, b = (np.sort(rng.choice(p, EQUAL_TOKENS, replace=False)) for p in parts)
+            halves[name] = (mass_per_expert(rows["ids"][a], rows["probs"][a], experts)[0],
+                            mass_per_expert(rows["ids"][b], rows["probs"][b], experts)[0])
+        out[name]["equal_tokens"] = {"tokens": EQUAL_TOKENS, "experts_50pct": summary(experts_for_share(mass, 0.5)),
+                                     "experts_90pct": summary(experts_for_share(mass, 0.9))}
+    names = sorted(masses)
+    out["overlap_50pct_sets"] = {"tokens_per_domain": EQUAL_TOKENS, "domains": names,
+                                 "diagonal": "the domain's prompts in two halves, one sample each (None: too few tokens per half)",
+                                 "mean_jaccard_over_layers": [[round(float(top_set_overlap(*(halves[x] if x == y else (masses[x], masses[y])), 0.5).mean()), 3)
+                                                               if x != y or x in halves else None for y in names] for x in names]}
     return out
 
 
@@ -241,9 +278,22 @@ def tables(report: dict) -> str:
         lines += ["| domain | tokens | experts for 50% (median / range over layers) | for 90% | effective experts | top expert share | unused experts |",
                   "|---|---:|---:|---:|---:|---:|---:|"]
         for d, s in r["skew"].items():
+            if d == "overlap_50pct_sets":
+                continue
             lines.append(f"| {d} | {s['tokens']} | {s['experts_50pct']['median']:.0f} ({s['experts_50pct']['min']:.0f}-{s['experts_50pct']['max']:.0f}) "
                          f"| {s['experts_90pct']['median']:.0f} ({s['experts_90pct']['min']:.0f}-{s['experts_90pct']['max']:.0f}) "
                          f"| {s['effective_experts']['median']:.0f} | {s['top_expert_share']['median']:.3f} | {s['unused_experts']['median']:.0f} |")
+        eq = {d: s["equal_tokens"] for d, s in r["skew"].items() if isinstance(s, dict) and "equal_tokens" in s}
+        if eq:
+            n = next(iter(eq.values()))["tokens"]
+            lines += ["", f"Size-matched ({n} tokens per domain): experts for 50% / 90% of the mass, median over layers: "
+                      + "; ".join(f"{d} {v['experts_50pct']['median']:.0f} / {v['experts_90pct']['median']:.0f}" for d, v in eq.items()) + "."]
+            ov = r["skew"]["overlap_50pct_sets"]
+            lines += ["", "| overlap of 50%-mass expert sets (Jaccard, mean over layers) | " + " | ".join(ov["domains"]) + " |",
+                      "|---|" + "---:|" * len(ov["domains"])]
+            for name, row in zip(ov["domains"], ov["mean_jaccard_over_layers"]):
+                lines.append(f"| {name} | " + " | ".join(f"{x:.2f}" if x is not None else "-" for x in row) + " |")
+            lines.append("Diagonal: the domain's prompts split in two halves, one sample of each (the noise floor for new prompts of the same domain).")
         rk = r["ranks"]
         lines += ["", "| rank | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |", "|---|" + "---:|" * 10,
                   "| mean share | " + " | ".join(f"{x:.3f}" for x in rk["rank_share_mean"]) + " |",

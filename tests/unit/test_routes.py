@@ -221,6 +221,8 @@ def test_route_stats_masses_ranks_and_acceptance():
     assert np.allclose(mass[0], [0.75 + 0.75, 0.25, 0.25, 0.0]) and counts[0].tolist() == [2, 1, 1, 0]
     assert route_stats.experts_for_share(mass, 0.5).tolist() == [1] and route_stats.experts_for_share(mass, 0.9).tolist() == [3]
     assert np.isclose(route_stats.effective_experts(np.array([1.0, 1.0, 0.0])), 2.0)
+    a, b = np.array([[5.0, 4.0, 0.0, 1.0]]), np.array([[5.0, 0.0, 4.0, 1.0]])
+    assert route_stats.top_set_overlap(a, b, 0.8).tolist() == [1 / 3]  # {0, 1} against {0, 2}
     share, topk = route_stats.rank_shares(probs)
     assert np.allclose(share[0], [0.75, 0.25]) and np.isclose(topk[0], 0.6)
     p1 = np.array([[0.95, 0.4], [0.2, 0.9], [0.96, 0.96]])
@@ -264,7 +266,7 @@ def test_dataset_and_statistics_from_a_trace_directory(tmp_path):
     d, w = zip(*(route_stats.first_use_split(ids[r0:r0 + 3], a, E) for r0, a in ((1, 2), (4, 0), (8, 2), (11, 0))))
     assert b["rejected_first_use"]["fraction_of_round_expert_bytes"] == round(float(np.sum(w) / np.sum(d)), 4)
     s = route_stats.skew(arm, E)
-    assert s["all"]["tokens"] == 10 and set(s) == {"all", "code", "prose"}  # 1 decode + 3 + 1 kept verify rows per request
+    assert s["all"]["tokens"] == 10 and set(s) == {"all", "code", "prose", "overlap_50pct_sets"}  # 1 decode + 3 + 1 kept verify rows per request
     a = route_stats.acceptance(arm)
     assert a["accept_rate_by_position"] == [0.5, 1.0]
     assert "### arm-greedy" in route_stats.tables({"arms": {"arm-greedy": {"tokens": 10, "skew": s, "ranks": route_stats.ranks(arm),
