@@ -324,6 +324,9 @@ def run_inprocess(label: str, cmd: list[str], out: Path, done: Path, minutes: fl
         return
     out.mkdir(parents=True, exist_ok=True)
     with gpu_window(f"{label} in-process layers 1-2"):
+        if done.exists():  # another gate run finished this (shared baseline) while we waited
+            log(f"{label}: in-process layers already done ({done})")
+            return
         (out / "command.json").write_text(json.dumps(cmd, indent=1) + "\n")
         with (out / "worker.log").open("a") as logf, (out / "memory.jsonl").open("a") as trace:
             proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT)
@@ -424,12 +427,17 @@ def run_served(label: str, served: Served, todo: list[dict], l3: Path, needles: 
     """Run the missing shards (and the needle smoke) in GPU windows of at most `minutes` each."""
     l3.mkdir(parents=True, exist_ok=True)
     needle_file = l3 / "needles.jsonl"
+    def pending():
+        return [sh for sh in todo if not shard_path(l3, sh).exists()], needles and not (l3 / "needles.done").exists()
+
     while True:
-        missing = [sh for sh in todo if not shard_path(l3, sh).exists()]
-        want_needles = needles and not (l3 / "needles.done").exists()
+        missing, want_needles = pending()
         if not missing and not want_needles:
             return
         with gpu_window(f"{label} layer 3 ({len(missing)} shards{', needles' if want_needles else ''})"):
+            missing, want_needles = pending()  # another gate run may have filled the shared baseline meanwhile
+            if not missing and not want_needles:
+                return
             started = time.monotonic()
             served.start()
             try:

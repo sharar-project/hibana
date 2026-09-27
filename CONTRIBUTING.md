@@ -68,9 +68,57 @@ remains the reporting cell for end-to-end numbers, never the decision.
 A change to the target's arithmetic or to acceptance also runs
 `evals.accuracy_eval` in the `sharar-evals` repository (GSM8K and HumanEval, paired against the exact
 configuration) before it becomes a default; the gate measures speed and
-acceptance, not correctness.
+acceptance, not correctness. A lossy option (one that changes what the model
+emits on purpose) is judged by the lossy-change gate below instead.
 When an optimization lands, changes its default or is retired, update its
 row in the [optimization inventory](docs/optimizations.md) in the same change.
+
+## Judge a lossy option
+
+A lossy speed option (low-bit weights, fewer or pruned experts, relaxed
+acceptance, a reduced draft vocabulary) never enters the `exact` profile. It
+enters `balanced` or `fast` only through the lossy-change gate (#31), one
+command for either target:
+
+```bash
+tools/lossy-gate.py --target flashnext --name my-option --profile exact --env SHARAR_X=1
+tools/lossy-gate.py --target qwen38 --name fast --profile fast
+```
+
+The candidate is a serving profile plus `SHARAR_*` overrides on the target's
+launcher config, paired against the `exact` profile on the same image. The tool
+runs unattended, takes the GPU lock for each phase, resumes after an
+interruption, and writes `$SHARAR_RESULTS/reviews/<date>-lossy-gate-<name>/`
+(`SUMMARY.md`, `scorecard.json`, one verdict line). Its three layers run
+cheapest first:
+
+1. **Distribution distance** (in-process, minutes): argmax agreement and
+   KL(exact || candidate) on the exact model's own greedy continuations of 28
+   frozen prompts (code, math, prose, multilingual, structured, short chat),
+   64 rows per forward (the decode path, where 3-bit copies act). The floor is
+   the exact model at 32 rows per forward. Reported per domain.
+2. **Speculation health** (same process): tokens per round, round cost and
+   decode tok/s per prompt with the profile's acceptance rule; the floor is a
+   repeated baseline pass. The verdict's speed delta comes from here.
+3. **Task battery** (served over HTTP, paired per item, McNemar): a screen
+   (GSM8K 300, HumanEval 164, MGSM 24 per language, needles at 16K and 64K),
+   then the full sets (GSM8K 1,319, HumanEval, MBPP 500, MGSM 2,750) when the
+   screen is close.
+
+The verdict (intervals are 95%; pooled = all tasks of the stage):
+
+| Profile | Rule |
+|---|---|
+| `exact` | layers 1 and 2 within their floors in every domain (the change is lossless; layer 3 is skipped) |
+| rejected | no speed gain (decode interval upper bound at or below 1.00), or a task or the pooled battery significantly worse (McNemar p < 0.05 with more losses than wins), or a pooled loss above 2.0 points |
+| `balanced` | not rejected, full stage run, pooled interval lower bound at or above -1.0 point and every task within -1.0 point |
+| `fast` | not rejected otherwise: the loss is not significant and at most 2.0 points |
+
+The screen escalates to the full sets unless it rejects the candidate or its
+pooled interval already excludes a loss of more than 1.0 point. Layer 1 grants
+nothing beyond `exact`: it says which domain a change hurts and is the cheap
+early warning. Relaxed acceptance does not move layer 1 (the distribution is
+unchanged); it shows in layers 2 and 3. Sampled requests are not scored.
 
 ## Add a setting
 
