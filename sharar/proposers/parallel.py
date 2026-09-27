@@ -357,8 +357,9 @@ class ParallelProposer:
             raise ValueError('accepted rows do not follow private draft prefixes')
         return [req.committed_len for req in requests], [s.slot for s in states]
 
-    def feedback_device(self, features, starts, ring_slots, counts, steps):
-        """Project every verify row and scatter the first counts[i] of each request into its ring.
+    def feedback_device(self, features, starts, ring_slots, counts, steps, *, norm=None, tokens=None, pages=None):
+        """Project every verify row and scatter the first counts[i] of each request into its ring
+        (the verify block's norm rows, tokens and pages are for sequential drafts; unused here).
 
         Static shapes for graph capture: features {lid: [b*steps, H]} verify
         outputs, starts/ring_slots/counts [b] int64 on the device. Rows past a
