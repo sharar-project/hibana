@@ -59,6 +59,10 @@ class _Lap:
 
 class StateManager:
     commit_profile: dict | None = None  # set to a dict to time commit_reconstructed sub-phases (benchmarks)
+    # Wide batches (the throughput profile, #59): prefill snapshots never take the recurrent slots that
+    # admitting up to `admission_slots` live requests needs (0: snapshots take any free slot, as at batch four).
+    admission_slots = 0
+    live = 0  # admitted requests that still own a slot
 
     def __init__(self, kv_pool: KvPool, state_pool: StatePool, cache: RadixCache | None = None):
         self.kv = kv_pool
@@ -119,6 +123,7 @@ class StateManager:
             raise
         req.match, req.slot, req.pages = match, slot, pages
         req.page_ids = list(own_ids)
+        self.live += 1
         req.cache_enabled = self.cache is not None
         req.prefix_len = req.committed_len = req.prefill_pos = prefix
 
@@ -127,9 +132,10 @@ class StateManager:
             return None
         if position in req.checkpoints:
             return req.checkpoints[position]
-        if not self.recurrent.free_count:
-            self.cache.evict(need_slots=1)
-        if not self.recurrent.free_count:
+        keep = max(0, self.admission_slots - self.live)  # slots the next admissions need
+        if self.recurrent.free_count <= keep:
+            self.cache.evict(need_slots=keep + 1)
+        if self.recurrent.free_count <= keep:
             # Only recycle this request's completed snapshots. Positions beyond
             # committed_len are destinations of the upcoming forward; reusing
             # them would alias two kernel writes. Cache loans are never ours.
@@ -339,6 +345,8 @@ class StateManager:
         req.released = True
 
     def _drop(self, req: Request, *, cached: bool = False) -> None:
+        if req.slot >= 0:
+            self.live -= 1
         if req.match is not None:
             self.cache.lock(req.match.node, -1)
             req.match = None

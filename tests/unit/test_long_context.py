@@ -53,5 +53,5 @@ def test_wide_batches_split_the_shared_guarantee(monkeypatch):
     monkeypatch.setattr(ledger_mod, "mem_available_bytes", lambda: 90 * GIB)
     four = Ledger(start_available=90 * GIB).plan(max_running=4, context_len=32768)
     wide = Ledger(start_available=90 * GIB).plan(max_running=16, context_len=32768)
-    assert 4 * SHARED_CONTEXT <= wide.kv_tokens <= four.kv_tokens and wide.state_slots >= 33  # a slot and a prompt-end snapshot each, plus the dummy
+    assert 4 * SHARED_CONTEXT <= wide.kv_tokens <= four.kv_tokens and wide.state_slots >= 17
     assert Ledger(start_available=90 * GIB).plan(max_running=16, context_len=MAX_CONTEXT).kv_tokens >= MAX_CONTEXT

@@ -75,6 +75,8 @@ class Executor:
         self.ledger.record_cuda_allocated("state_pool")
         cache = RadixCache(self.kv_pool, self.state_pool, self.device) if use_cache else None
         self.state = StateManager(self.kv_pool, self.state_pool, cache)
+        if max_batch > 4:  # a snapshot must not hold the slot a wide batch's next request needs
+            self.state.admission_slots = max_batch
         self.sampler = Sampler(self.device)
         self.max_batch = max_batch
         self._ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=self.device)
