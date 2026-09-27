@@ -26,14 +26,14 @@ def _prefill_wrapper(ws: torch.Tensor, st: dict) -> flashinfer.BatchPrefillWithP
 
 
 class VerifyGraphs:
-    def __init__(self, spec, depth=None):
+    def __init__(self, spec, depth=None, sizes=None):
         self.spec = spec
         self.ex = spec.ex
         self.device = spec.device
         depth = spec.k if depth is None else depth
         self.s_len = depth + 1
         self.max_context = spec.ex.max_context + depth
-        self.sizes = capture_sizes(spec.ex.max_batch)
+        self.sizes = capture_sizes(spec.ex.max_batch) if sizes is None else tuple(sizes)  # a depth per batch bucket captures its buckets only
         self._pool = torch.cuda.graph_pool_handle()
         self._ws = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=self.device)
         self.variants = graph_variants(spec.ex)

@@ -31,7 +31,7 @@ class MtpProposer:
         # exactly as point masses (engine/rejection.py), like the parallel drafts.
         self.requirements = ProposerRequirements("mtp", FeatureRequest(final_norm=True), persistent_bytes=head.bytes,
                                                  greedy_only=False, max_depth=8,
-                                                 capabilities=Capabilities(draft_head=getattr(head, "DRAFT_HEADS", False)))
+                                                 capabilities=Capabilities(draft_head=getattr(head, "DRAFT_HEADS", False), short_drafts=True))
         self.graphs = None
         self._host_tokens = torch.empty(context.max_batch * (k + 1), dtype=torch.int64,
                                         pin_memory=context.device.type == "cuda")
@@ -96,7 +96,8 @@ class MtpProposer:
     def ready(self, req):
         return isinstance(req.proposer_state, MtpState) and req.proposer_state.valid_prefix and req.proposer_state.pending_token is not None
 
-    def propose(self, requests, pages, inputs, *, graphs):
+    def propose(self, requests, pages, inputs, *, graphs, depth=None):
+        """[batch, depth] drafts, one sequential head step each (depth: the round's verify depth, else k)."""
         hids, kv = [], []
         for i, req in enumerate(requests):
             state = self._state(req)
@@ -107,7 +108,7 @@ class MtpProposer:
             kv.append(torch.cat([req.pages[1:pos], pages[i, :1]]))
         hidden, token = self._step(inputs.tokens, torch.cat(hids), inputs.positions, pages[:, 0].contiguous(), kv, graphs)
         drafts = [token]
-        for j in range(2, self.k + 1):
+        for j in range(2, (self.k if depth is None else depth) + 1):
             kv = [torch.cat([r.pages[1:r.context_len - 1], pages[i, :j]]) for i, r in enumerate(requests)]
             hidden, token = self._step(drafts[-1], hidden, inputs.positions + j - 1, pages[:, j - 1].contiguous(), kv, graphs)
             drafts.append(token)

@@ -13,12 +13,18 @@ CONFIG_FILE="${SHARAR_CONFIG_FILE:-$SCRIPT_DIR/config/gb10.env}"
 #   balanced  relaxed greedy acceptance top-2 within 1.0 logit; the 27B's calibrated 3-bit decode copies
 #   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy and
 #             sampled requests, the 27B's calibrated 3-bit copies, Flash-Next's calibrated 3-bit trunk
+#   throughput  fast, with up to 16 requests decoded together (#59: evals, many agents) and shallower
+#             verification when more than four share a round; single-request speed is fast's
 PROFILE="${SHARAR_PROFILE:-fast}"
+P_MAX_BATCH=4; P_SPEC_DEPTHS=""
 case "$PROFILE" in
   exact)    P_ACCEPT=off;   P_ACCEPT_SAMPLED=0; P_W3=0; P_W3_DRAFT=0; P_FN_W3=off ;;
   balanced) P_ACCEPT=2:1.0; P_ACCEPT_SAMPLED=0; P_W3=1; P_W3_DRAFT=1; P_FN_W3=off ;;
   fast)     P_ACCEPT=3:2.0; P_ACCEPT_SAMPLED=1; P_W3=1; P_W3_DRAFT=1; P_FN_W3=auto ;;
-  *) echo "sharar launch failed: SHARAR_PROFILE must be exact, balanced or fast" >&2; exit 1 ;;
+  throughput) P_ACCEPT=3:2.0; P_ACCEPT_SAMPLED=1; P_W3=1; P_W3_DRAFT=1; P_FN_W3=auto; P_MAX_BATCH=16
+            # verify depth per batch bucket (BUCKET:DEPTH, 0 = plain decode), measured per target (docs/optimizations.md#serving-profiles)
+            if [[ "${SHARAR_TARGET:-}" == flashnext ]]; then P_SPEC_DEPTHS=8:1,16:1; else P_SPEC_DEPTHS=8:2,16:2; fi ;;
+  *) echo "sharar launch failed: SHARAR_PROFILE must be exact, balanced, fast or throughput" >&2; exit 1 ;;
 esac
 IMAGE="${SHARAR_IMAGE:-sharar:qwen38-27b}"
 CONTAINER="${SHARAR_CONTAINER:-sharar-qwen38}"
@@ -31,6 +37,8 @@ TRACES_DIR="${SHARAR_TRACES:-}"                    # opt-in request traces for d
 DRAFT_DIR="${SHARAR_DRAFT:-}"                      # trained draft checkpoint directory; unset follows draft-runs/current; 'pinned' forces the publisher draft
 TRACES_MAX_MIB="${SHARAR_TRACES_MAX_MIB:-32768}"
 MAX_CONTEXT="${SHARAR_MAX_CONTEXT:-262144}"   # prompt plus output per request, up to the model's native 262144
+MAX_BATCH="${SHARAR_MAX_BATCH:-$P_MAX_BATCH}"       # most requests decoded together, 1-16
+SPEC_DEPTHS="${SHARAR_SPEC_DEPTHS-$P_SPEC_DEPTHS}"   # verify depth per batch bucket, e.g. 8:1,16:0 (empty: SHARAR_SPEC everywhere)
 ACCEPT_DEFAULT="${SHARAR_ACCEPT_DEFAULT:-$P_ACCEPT}"      # relaxed acceptance for greedy requests that do not choose (K:M; off = exact)
 ACCEPT_DEFAULT_SAMPLED="${SHARAR_ACCEPT_DEFAULT_SAMPLED:-$P_ACCEPT_SAMPLED}"  # the same default for sampled requests (1/0)
 W3_DECODE="${SHARAR_W3_DECODE:-$P_W3}"   # 3-bit decode copies of the MLPs and FP8 projections for calls of at most 64 rows (1/0)
@@ -66,6 +74,8 @@ fi
 
 [[ "$DRAFT_PRECISION" == bf16 || "$DRAFT_PRECISION" == fp8 ]] || fail "SHARAR_DRAFT_PRECISION must be bf16 or fp8"
 for v in W3_DECODE W3_HEAD W3_DRAFT; do [[ "${!v}" == 0 || "${!v}" == 1 ]] || fail "SHARAR_$v must be 0 or 1"; done
+[[ "$MAX_BATCH" =~ ^[0-9]+$ ]] && (( MAX_BATCH >= 1 && MAX_BATCH <= 16 )) || fail "SHARAR_MAX_BATCH must be in [1, 16]"
+[[ -z "$SPEC_DEPTHS" || "$SPEC_DEPTHS" =~ ^[0-9]+:[0-9]+(,[0-9]+:[0-9]+)*$ ]] || fail "SHARAR_SPEC_DEPTHS must be BUCKET:DEPTH pairs, e.g. 8:1,16:0"
 # Flash-Next's calibrated 3-bit trunk copies (#6, bench/flashnext_w3_calibrate.py): a directory, `off`, or the
 # profile's choice (fast: $SHARAR_RESULTS/w3-checkpoints/flashnext-current when that exists).
 FN_W3="${SHARAR_FLASHNEXT_W3_CHECKPOINT:-$P_FN_W3}"
@@ -124,7 +134,8 @@ Sharar preflight OK
   Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}
   Cold tier: ${SHARAR_COLD_TIER_GIB:-automatic (spare memory up to 24 GiB)}${SHARAR_COLD_TIER_GIB:+ GiB (SHARAR_COLD_TIER_GIB)}
   Device-resident acceptance: ${SHARAR_DEVICE_ACCEPT:-image default} (SHARAR_DEVICE_ACCEPT)
-  Serving profile: $PROFILE (SHARAR_PROFILE: exact / balanced / fast; measured costs in docs/optimizations.md#serving-profiles)
+  Serving profile: $PROFILE (SHARAR_PROFILE: exact / balanced / fast / throughput; measured costs in docs/optimizations.md#serving-profiles)
+  Batch: up to $MAX_BATCH requests (SHARAR_MAX_BATCH), verify depth by batch ${SPEC_DEPTHS:-$SPEC everywhere} (SHARAR_SPEC_DEPTHS)
   Relaxed acceptance default: $ACCEPT_DEFAULT, sampled requests $(onoff "$ACCEPT_DEFAULT_SAMPLED") (requests may set accept_top_k/accept_margin; 1 = exact)
   Three-bit decode copies: layers $(onoff "$W3_DECODE"), lm_head $(onoff "$W3_HEAD"), draft $(onoff "$W3_DRAFT")$([[ "$W3_DRAFT" == 1 && "$DRAFT_PRECISION" != fp8 ]] && echo ' (no effect: the draft copy needs the FP8 draft)') (SHARAR_W3_DECODE / SHARAR_W3_HEAD / SHARAR_W3_DRAFT)
   Draft: ${DRAFT_DIR:-pinned $DRAFT_REVISION}
@@ -169,6 +180,12 @@ if [[ "$MAX_CONTEXT" != 32768 ]]; then
   docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--context-length" \
     || fail "image $IMAGE predates --context-length; rebuild with docker/build.sh or set SHARAR_MAX_CONTEXT=32768"
   serve_args+=(--context-length "$MAX_CONTEXT")
+fi
+if [[ "$MAX_BATCH" != 4 || -n "$SPEC_DEPTHS" ]]; then
+  docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--max-batch" \
+    || fail "image $IMAGE predates --max-batch; rebuild with docker/build.sh or unset SHARAR_MAX_BATCH/SHARAR_SPEC_DEPTHS"
+  serve_args+=(--max-batch "$MAX_BATCH")
+  [[ -n "$SPEC_DEPTHS" && "$SPEC" != 0 ]] && serve_args+=(--spec-depths "$SPEC_DEPTHS")
 fi
 if [[ "$W3_DECODE" == 1 ]]; then
   docker run --rm --entrypoint python3 "$IMAGE" -c "import sharar.kernels.w3" 2>/dev/null \

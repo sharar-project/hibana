@@ -42,6 +42,7 @@ class Capabilities:
     cold_payload: bool = False      # ColdPayload: auxiliary_codec() -> (identity, export, import) for parked sessions
     trace_features: bool = False    # TraceFeatures: projected_rows(req, start, count) and a context `window`
     draft_head: bool = False        # DraftHeadChoice: set_draft_head(ids, fmt, rescore) on the head
+    short_drafts: bool = False      # propose(..., depth=d) drafts only the d tokens a shallower round verifies (sequential drafts)
 
 
 @dataclass(frozen=True)
