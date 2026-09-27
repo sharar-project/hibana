@@ -8,6 +8,7 @@ import torch
 from sharar.target import DEFAULT_TARGET
 
 from sharar.engine.contracts import Capabilities, FeatureRequest, ProposerContext, ProposerRequirements
+from sharar.engine.rejection import DraftColumns, Proposal
 
 
 @dataclass
@@ -37,6 +38,10 @@ class MtpProposer:
                                         pin_memory=context.device.type == "cuda")
         self._upload_done = torch.cuda.Event() if context.device.type == "cuda" else None
         self._upload_pending = False
+        # Each drafted column's host copy, behind its step (DraftColumns): Flash-Next reads a draft
+        # token's PLE rows while the next step runs.
+        self._host_drafts = torch.empty((k, context.max_batch), dtype=torch.int64, pin_memory=context.device.type == "cuda")
+        self._draft_events = [torch.cuda.Event() for _ in range(k)] if context.device.type == "cuda" else None
         target = getattr(head, 'target', DEFAULT_TARGET)
         self.target = target
         self.cache_identity = (target.model_id, target.model_revision, "native-mtp", "final_norm-v1", "bf16-kv-target-forced-v1")
@@ -107,11 +112,19 @@ class MtpProposer:
             kv.append(torch.cat([req.pages[1:pos], pages[i, :1]]))
         hidden, token = self._step(inputs.tokens, torch.cat(hids), inputs.positions, pages[:, 0].contiguous(), kv, graphs)
         drafts = [token]
+        self._column(0, token)
         for j in range(2, self.k + 1):
             kv = [torch.cat([r.pages[1:r.context_len - 1], pages[i, :j]]) for i, r in enumerate(requests)]
             hidden, token = self._step(drafts[-1], hidden, inputs.positions + j - 1, pages[:, j - 1].contiguous(), kv, graphs)
             drafts.append(token)
-        return torch.stack(drafts, dim=1)
+            self._column(j - 1, token)
+        columns = DraftColumns(self._host_drafts, self._draft_events, len(requests)) if self._draft_events is not None else None
+        return Proposal(torch.stack(drafts, dim=1), columns=columns)
+
+    def _column(self, j: int, token: torch.Tensor) -> None:
+        if self._draft_events is not None:
+            self._host_drafts[j, :token.shape[0]].copy_(token, non_blocking=True)
+            self._draft_events[j].record()
 
     def _step(self, tokens, hidden, positions, pages, kv, graphs):
         if graphs and self.graphs is not None:

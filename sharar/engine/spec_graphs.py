@@ -120,7 +120,7 @@ class VerifyGraphs:
         """Returns (norm rows [b*s, H], argmax or logits [b*s(, V)], ctx, features,
         logits [b*s, V]) for the real rows; padded rows use slot 0 and page 0.
         The logits view is overwritten by the next replay. `side` is (requests,
-        drafts, seqs) for the model's side inputs; `variant` the graph to replay
+        drafts, seqs, draft columns or None) for the model's side inputs; `variant` the graph to replay
         ("selecting": some row past Flash-Next's indexer budget)."""
         b = slots.shape[0]
         size = self.pick(b)
@@ -141,7 +141,7 @@ class VerifyGraphs:
         # so the host plans while the draft graphs still run (#36).
         self._plan(st, list(kv_all) + pad_kv)
         if st["side"] is not None:
-            self.ex.extras.fill(st["side"], side[0], side[1], side[2], n)
+            self.ex.extras.fill(st["side"], side[0], side[1], side[2], n, columns=side[3])
         self._graphs[size, variant].replay()
         layers = {lid: value[:n] for lid, value in st["features"].items()} if st["features"] else None
         return st["norm"][:n], st["logits" if sampled else "argmax"][:n], st["ctx"], layers, st["logits"][:n]

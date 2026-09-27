@@ -211,7 +211,7 @@ class SpecDecoder:
             raise ValueError("proposer must return int64 [batch, k] on the target device")
         y = y[:, :k]
         proposal = Proposal(y, proposal.probabilities[:, :k] if proposal.probabilities is not None else None,
-                            proposal.support[:, :k] if proposal.support is not None else None)
+                            proposal.support[:, :k] if proposal.support is not None else None, proposal.columns)
         new_pages_flat = new_pages[:, :s_len].reshape(-1)
         if timing:
             torch.cuda.synchronize()
@@ -238,7 +238,7 @@ class SpecDecoder:
         if self.ex.use_graphs and graphs is not None and variant in graphs.variants:
             norm_rows, z_flat, ctx, layers, logits = graphs.run(batch.tokens, batch.positions, batch.pages,
                                                                batch.slots, batch.kv_pages, sampled=batch.sampled,
-                                                               side=(batch.requests, batch.proposal.tokens, seqs), variant=variant)
+                                                               side=(batch.requests, batch.proposal.tokens, seqs, batch.proposal.columns), variant=variant)
             accept = getattr(graphs, "accept", None)
             if accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests):
                 if self.timing:

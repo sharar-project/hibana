@@ -179,8 +179,11 @@ def verify_breakdown(ex, tok, out, tokens: int):
             acc[name] += a.elapsed_time(b) / 1000
         graph.replay = replay
     patches = []
-    for obj, name in ((ex.extras, "_verify_rows"), (ex.extras, "fill"), (spec, "prepare"), (spec, "verify"), (spec, "_accept")):
-        orig = getattr(obj, name)
+    for obj, name in ((ex.extras, "_verify_rows"), (ex.extras, "_stream_verify_rows"), (ex.extras, "fill"), (spec, "prepare"),
+                      (spec, "verify"), (spec, "_accept")):
+        orig = getattr(obj, name, None)
+        if orig is None:
+            continue
         patches.append((obj, name, orig))
         setattr(obj, name, timed(name, orig))
     for depth, graphs in spec.width_graphs.items():

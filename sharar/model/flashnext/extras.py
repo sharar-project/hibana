@@ -51,6 +51,8 @@ class FlashNextExtras:
         self.model, self.ple, self.device, self.eos = model, model.ple, model.device, model.eos
         self.budget, self.ratio = t.indexer_budget, t.indexer_compress_ratio
         self.variants = ("dense", "selecting") if self.budget and current().qsa_sparse_graphs else ("dense",)
+        self._staging: torch.Tensor | None = None  # pinned PLE rows of a streamed verification (`_stream_verify_rows`)
+        self._staged = torch.cuda.Event() if self.device.type == "cuda" else None
 
     # ---- dense or selecting ----
     def variant(self, seqs) -> str:
@@ -76,6 +78,29 @@ class FlashNextExtras:
         tokens = torch.tensor([[r.output_ids[-1], *d] for r, d in zip(reqs, drafts)], dtype=torch.int64).reshape(-1)
         histories = torch.tensor([self._history(r, r.context_len - 1) for r in reqs], dtype=torch.int64)
         return self.ple.rows_for(tokens, [(i * (k + 1), k + 1) for i in range(len(reqs))], histories, self.eos)
+
+    def _stream_verify_rows(self, out: torch.Tensor, reqs, columns, k: int) -> None:
+        """`_verify_rows` column by column into `out` (device uint8 [B*(k+1), heads, row_bytes]): the pending
+        tokens' rows while the first draft step runs, drafted token j's while step j+1 runs (`DraftColumns`),
+        so only the last column's read follows the drafts (#36). One upload from pinned memory."""
+        from sharar.model.flashnext.ple import ROW_BYTES
+        b, heads = len(reqs), self.ple.heads
+        if self._staging is None or self._staging.shape[0] < b * (k + 1):
+            self._staging = torch.empty((b * (k + 1), heads, ROW_BYTES), dtype=torch.uint8, pin_memory=self._staged is not None)
+        elif self._staged is not None:
+            self._staged.synchronize()  # the previous upload has read the staging rows (it precedes the last verify)
+        host = self._staging[:b * (k + 1)].numpy().reshape(b, k + 1, heads, ROW_BYTES)
+        seqs = [self._history(r, r.context_len - 1) + [r.output_ids[-1]] for r in reqs]
+        for j in range(k + 1):
+            if j:
+                for seq, token in zip(seqs, columns.column(j - 1)):
+                    seq.append(token)
+            ids = torch.tensor([seq[-1] for seq in seqs], dtype=torch.int64)
+            histories = torch.tensor([seq[-3:-1] for seq in seqs], dtype=torch.int64)
+            host[:, j] = self.ple.table.gather(self.ple.token_ids(ids, histories, self.eos).numpy())
+        out.copy_(self._staging[:b * (k + 1)], non_blocking=True)
+        if self._staged is not None:
+            self._staged.record()
 
     # ---- eager forwards ----
     def for_prefill(self, chunks) -> FlashNextSideInputs:
@@ -108,10 +133,11 @@ class FlashNextExtras:
             side.qsa_writes = torch.zeros(rows, dtype=torch.int32, device=d)
         return side
 
-    def fill(self, side: FlashNextSideInputs, reqs, drafts: torch.Tensor | None, seqs, rows: int) -> None:
+    def fill(self, side: FlashNextSideInputs, reqs, drafts: torch.Tensor | None, seqs, rows: int, columns=None) -> None:
         """Copy one step's values into a graph's static side inputs: `rows` real rows (padded rows keep page 0).
         The indexer rows come first: they need only positions and pages, while a verification's PLE rows
-        wait for the drafted tokens, so the host launches them while the draft graphs still run (#36)."""
+        wait for the drafted tokens, so the host launches them while the draft graphs still run (#36).
+        `columns` (`DraftColumns`, sequential drafts) lets the PLE rows follow the draft step by step."""
         if side.qsa_members is not None:
             from sharar.model.flashnext.indexer import FlashNextIndexer
             members, writes = FlashNextIndexer.static_rows(seqs, self.ratio, self.device)
@@ -120,7 +146,12 @@ class FlashNextExtras:
             side.qsa_members[rows:].zero_()
             side.qsa_writes[rows:].zero_()
         if side.ple_rows is not None:
-            side.ple_rows[:rows].copy_(self._decode_rows(reqs) if drafts is None else self._verify_rows(reqs, drafts.tolist()))
+            if drafts is None:
+                side.ple_rows[:rows].copy_(self._decode_rows(reqs))
+            elif columns is not None:
+                self._stream_verify_rows(side.ple_rows[:rows], reqs, columns, drafts.shape[1])
+            else:
+                side.ple_rows[:rows].copy_(self._verify_rows(reqs, drafts.tolist()))
 
     def selecting(self, side: FlashNextSideInputs, table: torch.Tensor, indptr: torch.Tensor, row_seq: torch.Tensor,
                   capacity: int) -> FlashNextSideInputs:

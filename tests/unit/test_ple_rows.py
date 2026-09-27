@@ -1,12 +1,17 @@
-"""Flash-Next PLE rows on the host (#36): the page-cache-first gather against the memory-map reference."""
+"""Flash-Next PLE rows on the host (#36): the page-cache-first gather, the per-column hash and the
+verification rows read column by column as the draft steps end, each against the reference path."""
 
 import json
 
 import numpy as np
 import pytest
+import torch
 
-from sharar.model.flashnext.ple import ROW_BYTES, PleTable
+from sharar.engine.rejection import DraftColumns
+from sharar.model.flashnext.extras import FlashNextExtras
+from sharar.model.flashnext.ple import ROW_BYTES, PleLayer, PleTable
 
+EOS = 7
 NAME = "ple.ngram_embedding"
 
 
@@ -44,3 +49,49 @@ def test_gather_matches_the_memory_maps(table):
     table._nowait = False  # every row through the threads
     assert (table.gather(rows) == reference).all()
     assert (table.gather(rows[:1, :1]) == reference[:1, :1]).all()
+
+
+class _Hash:
+    ngram, heads_per_ngram, heads = 3, 2, 4
+    multipliers = torch.tensor([1000003, 999983, 1000033], dtype=torch.int64)
+    vocab_sizes = torch.tensor([53, 59, 61, 67], dtype=torch.int64)
+    offsets = torch.tensor([0, 53, 112, 173], dtype=torch.int64)
+    ngram_ids, token_ids, _hash, rows_for = PleLayer.ngram_ids, PleLayer.token_ids, PleLayer._hash, PleLayer.rows_for
+
+
+def test_column_hash_matches_the_sequence_hash():
+    h = _Hash()
+    for history in (None, torch.tensor([3, 4]), torch.tensor([EOS, 4]), torch.tensor([3, EOS])):
+        ids = torch.tensor([5, EOS, 9, 11, EOS, EOS, 2, 6])
+        full = h.ngram_ids(ids, history, EOS)
+        ext = [EOS, EOS] + ids.tolist() if history is None else history.tolist() + ids.tolist()
+        hist = torch.tensor([ext[j:j + 2] for j in range(len(ids))])
+        assert torch.equal(h.token_ids(ids, hist, EOS), full)
+
+
+class _Event:
+    def synchronize(self):
+        pass
+
+
+def test_streamed_verify_rows_match_the_block(table):
+    ple = _Hash()
+    ple.table, ple.device = table, torch.device("cpu")
+    extras = object.__new__(FlashNextExtras)
+    extras.ple, extras.device, extras.eos = ple, torch.device("cpu"), EOS
+    extras._staging, extras._staged = None, None
+
+    class Req:
+        def __init__(self, prompt, output):
+            self.prompt_ids, self.output_ids = prompt, output
+            self.context_len = len(prompt) + len(output)
+
+    reqs = [Req([1, 2, 3], [4]), Req([9], [EOS]), Req([5, EOS, 6, 8], [2, 3])]
+    drafts = torch.tensor([[11, 12, 13, 14], [EOS, 15, 16, 17], [18, EOS, EOS, 19]])
+    reference = extras._verify_rows(reqs, drafts.tolist())
+    k = drafts.shape[1]
+    columns = DraftColumns(drafts.t().contiguous(), [_Event()] * k, len(reqs))
+    for _ in range(2):  # the second round reuses the staging rows
+        out = torch.zeros_like(reference)
+        extras._stream_verify_rows(out, reqs, columns, k)
+        assert torch.equal(out, reference)

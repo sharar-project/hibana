@@ -158,13 +158,20 @@ class PleLayer:
         between it and the current token, else EOS; back-1 is always t-1, back-2 is t-2 unless t-1
         or t-2 is EOS.
         """
-        if self.ngram != 3:
-            raise NotImplementedError("the PLE hash is spelled out for 3-grams")
         h = torch.full((2,), eos, dtype=torch.int64) if history is None else history.to(torch.int64)
         ext = torch.cat([h, ids.to(torch.int64)])
-        back1, back2 = ext[1:-1], ext[:-2]
+        return self._hash(ids.to(torch.int64), ext[1:-1], ext[:-2], eos)
+
+    def token_ids(self, ids: torch.Tensor, histories: torch.Tensor, eos: int) -> torch.Tensor:
+        """One token per row, each after its own two tokens: ids int64 [N], histories int64 [N, 2] (host) ->
+        int64 [N, heads]; the rows `ngram_ids` gives each token inside its sequence (a verification column)."""
+        return self._hash(ids.to(torch.int64), histories[:, 1].to(torch.int64), histories[:, 0].to(torch.int64), eos)
+
+    def _hash(self, cur: torch.Tensor, back1: torch.Tensor, back2: torch.Tensor, eos: int) -> torch.Tensor:
+        if self.ngram != 3:
+            raise NotImplementedError("the PLE hash is spelled out for 3-grams")
         back2 = torch.where((back1 == eos) | (back2 == eos), torch.full_like(back2, eos), back2)
-        shifted = [ids.to(torch.int64), back1, back2]
+        shifted = [cur, back1, back2]
         blocks = []
         for n in range(2, self.ngram + 1):
             mix = shifted[0] * self.multipliers[0]
