@@ -42,6 +42,7 @@ class PrefillBatch:
 class Executor:
     timing = False  # benchmarks set True: synchronize to attribute prefill wall time (class attribute: test executors skip __init__)
     extras = None  # the model's forward side inputs (`forward_extras()`, e.g. Flash-Next's); class attribute for the same reason
+    route_tap = None  # the model's router trace buffers (`route_tap()`, engine/routes.py) while SHARAR_TRACE_ROUTER is on
 
     def __init__(self, model: Qwen38, num_pages: int | None = None, num_slots: int | None = None, max_batch: int = 4, use_cache: bool = True, log=None, max_context: int | None = None, spec_config=None):
         self.target: Target = model.target
@@ -53,6 +54,7 @@ class Executor:
         self.model = model
         self.device = model.device
         self.extras = model.forward_extras()  # what the model's forwards need beyond the context (None for the 27B)
+        self.route_tap = model.route_tap()  # router traces (None for the 27B or with recording off)
         self.ledger = Ledger(target=self.target)
         self.ledger.record_cuda_allocated("weights")
         future, extra_page = 2 * 2**30, 0
@@ -608,6 +610,7 @@ class Executor:
                 logits, out = result
             else:
                 logits = result
+            forward_rows = self.graphs.pick(len(reqs))
         else:
             positions = upload([r.context_len - 1 for r in reqs], torch.int64, self.device)
             tokens = upload([r.output_ids[-1] for r in reqs], torch.int64, self.device)
@@ -624,7 +627,16 @@ class Executor:
             out = self.model.forward(tokens, ctx)
             debug_sync("after plain decode forward", reqs)
             logits = self.model.logits(out["norm"])
+            forward_rows = len(reqs)
+        routes = (self.route_tap is not None and any(r.trace_routes is not None for r in reqs)
+                  and self.route_tap.stage(len(reqs), forward_rows=forward_rows))
         next_tokens = self.sampler.sample(logits, [r.params for r in reqs], [r.generator for r in reqs]).tolist()
+        if routes:
+            from sharar.engine.routes import DECODE
+            ids, probs, _, _ = self.route_tap.take()
+            for i, r in enumerate(reqs):
+                if r.trace_routes is not None:
+                    r.trace_routes.add(DECODE, -1, r.context_len - 1, ids[i:i + 1], probs[i:i + 1])
         for i, (r, tok) in enumerate(zip(reqs, next_tokens)):
             pending = r.output_ids[-1]
             self.state.commit(r, 1)

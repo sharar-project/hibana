@@ -36,6 +36,7 @@ class Verification:
 
 class SpecDecoder:
     aux_windows: dict = {}  # class attribute: test decoders skip __init__
+    _routes_staged = False  # router traces: this round's routes are queued for the host (engine/routes.py)
 
     @property
     def verify_depth(self) -> int:
@@ -211,7 +212,8 @@ class SpecDecoder:
             raise ValueError("proposer must return int64 [batch, k] on the target device")
         y = y[:, :k]
         proposal = Proposal(y, proposal.probabilities[:, :k] if proposal.probabilities is not None else None,
-                            proposal.support[:, :k] if proposal.support is not None else None)
+                            proposal.support[:, :k] if proposal.support is not None else None,
+                            proposal.confidence[:, :k] if proposal.confidence is not None else None)
         new_pages_flat = new_pages[:, :s_len].reshape(-1)
         if timing:
             torch.cuda.synchronize()
@@ -239,6 +241,7 @@ class SpecDecoder:
             norm_rows, z_flat, ctx, layers, logits = graphs.run(batch.tokens, batch.positions, batch.pages,
                                                                batch.slots, batch.kv_pages, sampled=batch.sampled,
                                                                side=(batch.requests, batch.proposal.tokens, seqs), variant=variant)
+            self._stage_routes(batch, graphs.pick(b_sz) * s_len)
             accept = getattr(graphs, "accept", None)
             if accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests):
                 if self.timing:
@@ -254,6 +257,35 @@ class SpecDecoder:
             return
         ctx = self.context(batch, self._eager_wrapper())
         self.finish(batch, self.ex.model.forward(batch.tokens, ctx))
+
+    def _stage_routes(self, batch: Verification, forward_rows: int) -> None:
+        """Router traces: queue the host copy of this verification's routes (and the round's draft routes)
+        when a request records them; the acceptance download completes it."""
+        tap = getattr(self.ex, "route_tap", None)
+        self._routes_staged = (tap is not None and any(r.trace_routes is not None for r in batch.requests)
+                               and tap.stage(batch.tokens.shape[0], len(batch.requests), forward_rows))
+
+    def _trace_routes(self, reqs, k: int) -> None:
+        """File the staged verify rows (pending token, then the k drafts) and draft routes under each recording
+        request's current round (`spec_rounds`, the index of its trace round record). Call after the acceptance
+        download, before the emitted tokens are pushed and the round is counted."""
+        if not self._routes_staged:
+            return
+        self._routes_staged = False
+        from sharar.engine.routes import VERIFY
+        ids, probs, draft_ids, draft_probs = self.ex.route_tap.take()
+        s = k + 1
+        for i, r in enumerate(reqs):
+            if r.trace_routes is not None:
+                r.trace_routes.add(VERIFY, r.spec_rounds, r.context_len - 1, ids[i * s:(i + 1) * s], probs[i * s:(i + 1) * s],
+                                   draft_ids[i] if draft_ids is not None else None, draft_probs[i] if draft_probs is not None else None)
+
+    @staticmethod
+    def _confidence_rows(reqs, confidence):
+        """The draft's (top-1 probability, top-1 minus top-2) per position as host lists, when a request records rounds."""
+        if confidence is None or not any(r.trace_rounds is not None for r in reqs):
+            return None
+        return confidence.float().tolist()
 
     def _eager_wrapper(self):
         """The eager verification's own paged-prefill wrapper (Executor._verify_prefill). plan()
@@ -321,6 +353,7 @@ class SpecDecoder:
         """Accept owned target output; preserve the common stop/commit/feedback path."""
         b_sz, k = batch.proposal.tokens.shape
         s_len = k + 1
+        self._stage_routes(batch, b_sz * s_len)
         norm = out["norm"].view(b_sz, s_len, -1) if self.proposer.requirements.features.final_norm else None
         layers = {lid: value.view(b_sz, s_len, -1) for lid, value in out["features"].items()} if "features" in out else None
         logits = self.ex.model.logits(out["norm"])
@@ -330,9 +363,9 @@ class SpecDecoder:
 
     def _accept_batch(self, batch, z, features, topk=None, relaxed=None):
         self._accept(batch.requests, batch.proposal.tokens, z, features, batch.started, batch.prepared,
-                     proposal=batch.proposal if batch.sampled else None, topk=topk, relaxed=relaxed)
+                     proposal=batch.proposal if batch.sampled else None, topk=topk, relaxed=relaxed, confidence=batch.proposal.confidence)
 
-    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, topk=None, relaxed=None) -> None:
+    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, topk=None, relaxed=None, confidence=None) -> None:
         if self.timing:
             torch.cuda.synchronize()
         t2 = time.perf_counter()
@@ -385,6 +418,7 @@ class SpecDecoder:
             z_l = [row[k + 2:k + 2 + s_len] for row in packed]
             flags = [row[k + 2 + s_len:] for row in packed]  # block offsets accepted only by the relaxed rule
             used = [sum(f) for f in flags]
+        conf = self._confidence_rows(reqs, confidence)
         outputs = []
         for i, r in enumerate(reqs):
             a = acc[i]
@@ -405,7 +439,11 @@ class SpecDecoder:
                 if used[i]:
                     # block offsets (0 = first drafted token) emitted under the relaxed rule; the trainer masks them
                     record["rx"] = [j for j, f in enumerate(flags[i][:count]) if f]
+                if conf is not None:  # the draft's confidence per drafted position (router traces)
+                    record["p1"] = [round(c[0], 5) for c in conf[i]]
+                    record["m"] = [round(c[1], 5) for c in conf[i]]
                 r.trace_rounds.append(record)
+        self._trace_routes(reqs, k)
         if self.timing:
             torch.cuda.synchronize()
             t_accepted = time.perf_counter()

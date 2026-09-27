@@ -121,7 +121,7 @@ Sharar preflight OK
   Model: RadixArk/Qwen3.8-27B-NVFP4@$MODEL_REVISION
   Host memory: $((mem_total / 1048576)) GiB total, $((mem_avail / 1048576)) GiB available; runtime floor $((GUARD_MIN_AVAILABLE_KIB / 1048576)) GiB
   Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (proposer: $PROPOSER, drafts: $SPEC, draft precision: $DRAFT_PRECISION, verify state: $VERIFY_STATE)
-  Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}
+  Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}${TRACES_DIR:+, router traces $([[ "${SHARAR_TRACE_ROUTER:-0}" == 1 ]] && echo on || echo off) (SHARAR_TRACE_ROUTER)}
   Cold tier: ${SHARAR_COLD_TIER_GIB:-automatic (spare memory up to 24 GiB)}${SHARAR_COLD_TIER_GIB:+ GiB (SHARAR_COLD_TIER_GIB)}
   Device-resident acceptance: ${SHARAR_DEVICE_ACCEPT:-image default} (SHARAR_DEVICE_ACCEPT)
   Serving profile: $PROFILE (SHARAR_PROFILE: exact / balanced / fast; measured costs in docs/optimizations.md#serving-profiles)
@@ -233,6 +233,10 @@ if [[ -n "$TRACES_DIR" ]]; then
   mkdir -p "$TRACES_DIR"
   args+=(--volume "$TRACES_DIR:/traces")
   serve_args+=(--traces /traces --traces-max-mib "$TRACES_MAX_MIB")
+  # Router traces (#32, sharar/engine/routes.py): MoE routes and draft confidence in the traces (Flash-Next)
+  if [[ "${SHARAR_TRACE_ROUTER:-0}" == 1 ]]; then
+    args+=(--env SHARAR_TRACE_ROUTER=1 --env "SHARAR_TRACE_ROUTER_SAMPLE=${SHARAR_TRACE_ROUTER_SAMPLE:-0.1}")
+  fi
 fi
 cid="$("${args[@]}" "$IMAGE" "${serve_args[@]}")"
 mkdir -p "$RESULTS_DIR"

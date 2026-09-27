@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from sharar.proposers.mtp import draft_argmax
+from sharar.proposers.mtp import draft_choice
 
 from sharar.target import DEFAULT_TARGET
 from sharar.engine import graph_set
@@ -51,7 +51,7 @@ class DraftGraphs:
         self.mtp.attention.paged_prefill(st["wrapper"], torch.arange(0, b + 1, dtype=torch.int32), indptr, torch.cat(kv_all),
                                          torch.ones(b, dtype=torch.int32), causal=True, guard=False)  # graph-bound buffers
 
-    def _forward(self, st: dict) -> tuple[torch.Tensor, torch.Tensor]:
+    def _forward(self, st: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         mtp = self.mtp
         saved = mtp._attn
         mtp._attn = st["wrapper"]
@@ -59,7 +59,7 @@ class DraftGraphs:
             d = mtp.forward_static(st["tokens"], st["hidden"], st["positions"], st["pages"])
         finally:
             mtp._attn = saved
-        return d, draft_argmax(mtp, d)
+        return d, *draft_choice(mtp, d, self.proposer.with_confidence)
 
     def capture(self, log=None) -> None:
         for b in self.sizes:
@@ -67,7 +67,7 @@ class DraftGraphs:
             self._plan(st, [torch.zeros(2, dtype=torch.int32, device=self.device) for _ in range(b)])
 
             def body():
-                st["out_hidden"], st["out_argmax"] = self._forward(st)
+                st["out_hidden"], st["out_argmax"], st["out_confidence"] = self._forward(st)
             self._graphs[b] = graph_set.capture(self._pool, body, warmup=lambda: self._forward(st))
             self._st[b] = st
             if log:
@@ -91,4 +91,5 @@ class DraftGraphs:
         pad = [torch.zeros(2, dtype=torch.int32, device=self.device) for _ in range(size - b)]
         self._plan(st, list(kv_all) + pad)
         self._graphs[size].replay()
-        return st["out_hidden"][:b], st["out_argmax"][:b]
+        conf = st["out_confidence"]
+        return st["out_hidden"][:b], st["out_argmax"][:b], conf[:b] if conf is not None else None

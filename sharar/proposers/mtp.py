@@ -7,7 +7,9 @@ from dataclasses import dataclass
 import torch
 from sharar.target import DEFAULT_TARGET
 
+from sharar.engine.config import current
 from sharar.engine.contracts import Capabilities, FeatureRequest, ProposerContext, ProposerRequirements
+from sharar.engine.rejection import Proposal
 
 
 @dataclass
@@ -24,6 +26,13 @@ def draft_argmax(head, hidden: torch.Tensor) -> torch.Tensor:
     return head.draft_head.argmax(head.head_input(hidden))
 
 
+def draft_choice(head, hidden: torch.Tensor, with_confidence: bool) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """`draft_argmax`, and with `with_confidence` the draft head's [rows, 2] confidence in it (router traces)."""
+    if not with_confidence:
+        return draft_argmax(head, hidden), None
+    return head.draft_head.argmax_confidence(head.head_input(hidden))
+
+
 class MtpProposer:
     def __init__(self, head, context: ProposerContext, k: int = 3):
         self.head, self.context, self.k = head, context, k
@@ -33,6 +42,10 @@ class MtpProposer:
                                                  greedy_only=False, max_depth=8,
                                                  capabilities=Capabilities(draft_head=getattr(head, "DRAFT_HEADS", False)))
         self.graphs = None
+        # Router traces (engine/routes.py): the draft's confidence per step and, when the head has a router tap,
+        # its routes per step. Read once here; the draft graphs capture the extra outputs.
+        self.with_confidence = current().trace_router
+        self.route_tap = getattr(head, "route_tap", None)
         self._host_tokens = torch.empty(context.max_batch * (k + 1), dtype=torch.int64,
                                         pin_memory=context.device.type == "cuda")
         self._upload_done = torch.cuda.Event() if context.device.type == "cuda" else None
@@ -105,20 +118,27 @@ class MtpProposer:
                 raise ValueError("draft pending input does not match committed prefix")
             hids.append(state.pending_hidden)
             kv.append(torch.cat([req.pages[1:pos], pages[i, :1]]))
-        hidden, token = self._step(inputs.tokens, torch.cat(hids), inputs.positions, pages[:, 0].contiguous(), kv, graphs)
-        drafts = [token]
+        hidden, token, conf = self._step(inputs.tokens, torch.cat(hids), inputs.positions, pages[:, 0].contiguous(), kv, graphs, 0)
+        drafts, confs = [token], [conf]
         for j in range(2, self.k + 1):
             kv = [torch.cat([r.pages[1:r.context_len - 1], pages[i, :j]]) for i, r in enumerate(requests)]
-            hidden, token = self._step(drafts[-1], hidden, inputs.positions + j - 1, pages[:, j - 1].contiguous(), kv, graphs)
+            hidden, token, conf = self._step(drafts[-1], hidden, inputs.positions + j - 1, pages[:, j - 1].contiguous(), kv, graphs, j - 1)
             drafts.append(token)
+            confs.append(conf)
+        if self.with_confidence:
+            return Proposal(torch.stack(drafts, dim=1), confidence=torch.stack(confs, dim=1))
         return torch.stack(drafts, dim=1)
 
-    def _step(self, tokens, hidden, positions, pages, kv, graphs):
+    def _step(self, tokens, hidden, positions, pages, kv, graphs, step: int):
         if graphs and self.graphs is not None:
-            hidden, token = self.graphs.run(tokens, hidden, positions, pages, kv)
-            return hidden.clone(), token.clone()  # graph outputs are borrowed until next replay
-        hidden = self.head.forward(tokens, hidden, positions, pages, [1] * len(kv), kv)
-        return hidden, draft_argmax(self.head, hidden)
+            hidden, token, conf = self.graphs.run(tokens, hidden, positions, pages, kv)
+            hidden, token, conf = hidden.clone(), token.clone(), conf.clone() if conf is not None else None  # graph outputs are borrowed until next replay
+        else:
+            hidden = self.head.forward(tokens, hidden, positions, pages, [1] * len(kv), kv)
+            token, conf = draft_choice(self.head, hidden, self.with_confidence)
+        if self.route_tap is not None:
+            self.route_tap.keep_draft(step, tokens.shape[0])
+        return hidden, token, conf
 
     def accepted_batch(self, requests, emitted, features):
         # The normal acceptance download completes the preceding upload. Keep

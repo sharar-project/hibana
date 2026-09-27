@@ -17,6 +17,12 @@ from typing import Callable
 import torch
 
 
+def confidence(logits: torch.Tensor) -> torch.Tensor:
+    """[..., V] logits -> FP32 [..., 2]: the top-1 softmax probability and its margin over the top-2."""
+    top = torch.softmax(logits.float(), dim=-1).topk(2, dim=-1).values
+    return torch.stack([top[..., 0], top[..., 0] - top[..., 1]], dim=-1)
+
+
 class TargetHead:
     """The target's vocabulary projection as a draft head: `logits_fn(x)` over every row."""
 
@@ -34,6 +40,11 @@ class TargetHead:
 
     def argmax(self, x: torch.Tensor) -> torch.Tensor:
         return self.logits_fn(x).argmax(-1)
+
+    def argmax_confidence(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """The argmax and the head's `confidence` in it (router traces)."""
+        logits = self.logits_fn(x)
+        return logits.argmax(-1), confidence(logits)
 
     def topk(self, x: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor]:
         """(values, global ids), each [..., k]."""
@@ -81,12 +92,19 @@ class ShortlistHead:
         return local if self.ids is None else self.ids[local]
 
     def argmax(self, x: torch.Tensor) -> torch.Tensor:
-        flat = x.reshape(-1, x.shape[-1])
+        return self._argmax(x.reshape(-1, x.shape[-1]))[0]
+
+    def argmax_confidence(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """The argmax and the `confidence` of this head's own logits (the 3-bit or shortlisted rows)."""
+        token, logits = self._argmax(x.reshape(-1, x.shape[-1]))
+        return token, confidence(logits)
+
+    def _argmax(self, flat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         logits = self._logits(flat)
         if self.rescore:
             cand, exact = self._shortlist(flat, logits, self.rescore)
-            return cand.gather(-1, exact.argmax(-1, keepdim=True)).squeeze(-1)
-        return self._global(logits.argmax(-1))
+            return cand.gather(-1, exact.argmax(-1, keepdim=True)).squeeze(-1), logits
+        return self._global(logits.argmax(-1)), logits
 
     def topk(self, x: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor]:
         flat = x.reshape(-1, x.shape[-1])

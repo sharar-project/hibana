@@ -16,6 +16,7 @@ class Proposal:
     tokens: torch.Tensor  # int64 [B, k]
     probabilities: torch.Tensor | None = None  # FP32 [B, k, V] or sparse support
     support: torch.Tensor | None = None  # int64 [B, k, C], unique per row
+    confidence: torch.Tensor | None = None  # FP32 [B, k, 2]: the draft's top-1 probability and top-1 minus top-2 (router traces only)
 
 
 NUCLEUS_CANDIDATES = 1024  # top-p without top-k: candidates ranked before falling back to a full sort

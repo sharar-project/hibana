@@ -52,6 +52,7 @@ class Request(RequestState):
     trace_rounds: list[dict] | None = None
     trace_features: object = None  # FeatureRecorder while recording projected draft context, else None
     trace_topk: object = None  # TopkRecorder for the target's top-k logits per verified row, else None
+    trace_routes: object = None  # RouteRecorder (engine/routes.py) while recording router traces, else None
 
     @property
     def prefill_len(self) -> int:
