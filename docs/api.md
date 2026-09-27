@@ -137,56 +137,7 @@ request-level cache modes/priorities are only a [proposal](request-cache-policy.
 
 ### Pi
 
-Install the Pi coding agent:
-
-```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-```
-
-Configure `~/.pi/agent/models.json`:
-
-```json
-{
-  "providers": {
-    "sharar": {
-      "baseUrl": "http://127.0.0.1:30001/v1",
-      "api": "openai-completions",
-      "apiKey": "sharar-local",
-      "compat": {"thinkingFormat": "qwen-chat-template"},
-      "models": [{
-        "id": "qwen38-27b-nvfp4",
-        "reasoning": true,
-        "contextWindow": 262144,
-        "maxTokens": 8192
-      }]
-    }
-  }
-}
-```
-
-`apiKey` can be any string. Set `contextWindow` to the server's
-`context_length` from `GET /get_server_info`; it must match the launch
-configuration (`SHARAR_MAX_CONTEXT`, default `262144`). Sharar ignores the
-request's `model` field on `/v1/chat/completions`.
-
-Run Pi from the directory you want it to work in:
-
-```bash
-pi --provider sharar --model qwen38-27b-nvfp4
-```
-
-#### Subagents
-
-Pi has no built-in subagents; we verified the official `examples/extensions/subagent` bundled with Pi 0.87.1, loaded automatically from `~/.pi/agent/extensions/subagent`. For a fresh install with an unused backup path:
-
-```bash
-pi_sa_pkg="$(npm root -g)/@earendil-works/pi-coding-agent"
-cp -a "$HOME/.pi" "$HOME/.pi.bak-sa1"
-mkdir -p "$HOME/.pi/agent/extensions/subagent" "$HOME/.pi/agent/agents"
-cp "$pi_sa_pkg/examples/extensions/subagent/"{index.ts,agents.ts} "$HOME/.pi/agent/extensions/subagent/"
-cp "$pi_sa_pkg/examples/extensions/subagent/agents/"{scout,planner,reviewer,worker}.md "$HOME/.pi/agent/agents/"
-```
-
-Using the `sharar` provider above, replace `model:` in each copied agent profile with `model: sharar/qwen38-27b-nvfp4`, merge `"defaultProvider": "sharar"` and `"defaultModel": "qwen38-27b-nvfp4"` into `~/.pi/agent/settings.json`, and keep the default `agentScope: "user"` so parent and children use Sharar.
-Verified single, parallel and chained subagents and a real bug-fix task, with 1–8 subagents per call.
-Within one parallel call, the extension runs up to four subagents at once; Sharar also serves up to four requests at once, and extra work waits for a free slot.
+Configure [Pi's `models.json`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md) with provider `sharar`, API `openai-completions`, base URL `http://127.0.0.1:30001/v1`, and any API key.
+For Qwen3.8, use `compat: {"thinkingFormat": "qwen-chat-template"}` and a model with `id: "qwen38-27b-nvfp4"`, `reasoning: true`, and `maxTokens: 8192`.
+Match `contextWindow` to the server's `context_length` from `GET /get_server_info`, then run `pi --provider sharar --model qwen38-27b-nvfp4`.
+For subagents, follow the [official example](https://github.com/earendil-works/pi/tree/main/packages/coding-agent/examples/extensions/subagent) and pin each child's `model` to `sharar/qwen38-27b-nvfp4`.
