@@ -58,6 +58,7 @@ The script points Claude Code at the server with its own config directory
 OpenAI-compatible harnesses (OpenCode, Cline, Aider, Continue, Zed) use base URL
 `http://127.0.0.1:30001/v1` with any API key and model name. After the first
 request of a session, later turns start in under a second.
+For **Pi**, see the [Pi configuration](docs/api.md#pi).
 
 ## Train the drafter on your traffic
 

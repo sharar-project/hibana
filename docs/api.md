@@ -128,8 +128,49 @@ message and moving them would change the cached prefix. Several leading
 system messages (OpenAI clients such as OpenCode) are merged. It asks for
 32,000 output tokens; the server caps `max_tokens` at the remaining context
 and answers `prompt is too long` when a conversation fills it.
+The OpenAI chat endpoint handles role `developer` the same way as `system`.
 
 The API's supported controls are checked in `tests/unit/test_chat_controls.py`
 and `tests/unit/test_messages_api.py`;
 failure, disconnect and drain behavior has separate lifecycle tests. Current
 request-level cache modes/priorities are only a [proposal](request-cache-policy.md).
+
+### Pi
+
+Install the Pi coding agent:
+
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+```
+
+Configure `~/.pi/agent/models.json`:
+
+```json
+{
+  "providers": {
+    "sharar": {
+      "baseUrl": "http://127.0.0.1:30001/v1",
+      "api": "openai-completions",
+      "apiKey": "sharar-local",
+      "compat": {"thinkingFormat": "qwen-chat-template"},
+      "models": [{
+        "id": "qwen38-27b-nvfp4",
+        "reasoning": true,
+        "contextWindow": 262144,
+        "maxTokens": 8192
+      }]
+    }
+  }
+}
+```
+
+`apiKey` can be any string. Set `contextWindow` to the server's
+`context_length` from `GET /get_server_info`; it must match the launch
+configuration (`SHARAR_MAX_CONTEXT`, default `262144`). Sharar ignores the
+request's `model` field on `/v1/chat/completions`.
+
+Run Pi from the directory you want it to work in:
+
+```bash
+pi --provider sharar --model qwen38-27b-nvfp4
+```
