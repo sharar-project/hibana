@@ -205,6 +205,7 @@ def blocks(arm: dict, experts: int) -> dict:
     by_prefix = np.zeros((k + 1, rows["ids"].shape[1]), dtype=np.float64)
     split = {"distinct": np.zeros(rows["ids"].shape[1]), "rejected": np.zeros(rows["ids"].shape[1])}
     by_domain, by_accept = {}, {}
+    by_depth = np.zeros((k + 1, 2))  # truncated depth d: the block's first d + 1 rows, accepted min(a, d)
     n = 0
     for i in range(len(rounds["request"])):
         r0, kk, a = int(rounds["row0"][i]), int(rounds["k"][i]), int(rounds["accepted"][i])
@@ -219,6 +220,9 @@ def blocks(arm: dict, experts: int) -> dict:
         dom += (d.sum(), w.sum(), 1)
         acc = by_accept.setdefault(a, np.zeros(3))
         acc += (d.sum(), w.sum(), 1)
+        for depth in range(1, k + 1):
+            dd, ww = first_use_split(ids[:depth + 1], min(a, depth), experts)
+            by_depth[depth] += (dd.sum(), ww.sum())
         n += 1
     by_prefix /= max(1, n)
     layers = by_prefix.shape[1]
@@ -237,6 +241,10 @@ def blocks(arm: dict, experts: int) -> dict:
             "per_layer_summary": summary(frac_layer),
             "by_domain": {c: {"fraction": round(float(v[1] / v[0]), 4), "rounds": int(v[2]),
                               "rejected_mb_per_round": round(float(v[1] / v[2] * EXPERT_BYTES / 1e6), 1)} for c, v in sorted(by_domain.items())},
+            "by_truncated_depth": {int(dd): {"fraction": round(float(by_depth[dd, 1] / by_depth[dd, 0]), 4),
+                                             "expert_mb_per_round": round(float(by_depth[dd, 0] / n * EXPERT_BYTES / 1e6), 1),
+                                             "rejected_mb_per_round": round(float(by_depth[dd, 1] / n * EXPERT_BYTES / 1e6), 1)}
+                                   for dd in range(1, k + 1)},
             "by_accepted": {int(a): {"fraction": round(float(v[1] / v[0]), 4), "rounds": int(v[2]),
                                      "distinct_per_layer": round(float(v[0] / v[2] / layers), 1)} for a, v in sorted(by_accept.items())},
         },
@@ -314,6 +322,11 @@ def tables(report: dict) -> str:
                   "| domain | rounds | fraction | rejected MB per round |", "|---|---:|---:|---:|"]
         for d, v in rj["by_domain"].items():
             lines.append(f"| {d} | {v['rounds']} | {v['fraction']:.3f} | {v['rejected_mb_per_round']} |")
+        td = rj["by_truncated_depth"]
+        lines += ["", "The same rounds cut to depth d (rows 0..d, accepted min(a, d)):", "",
+                  "| depth d | " + " | ".join(str(x) for x in td) + " |", "|---|" + "---:|" * len(td),
+                  "| rejected fraction | " + " | ".join(f"{v['fraction']:.3f}" for v in td.values()) + " |",
+                  "| rejected / all expert MB per round | " + " | ".join(f"{v['rejected_mb_per_round']:.0f} / {v['expert_mb_per_round']:.0f}" for v in td.values()) + " |"]
         lines += ["", "| accepted drafts | rounds | fraction | distinct experts per layer |", "|---:|---:|---:|---:|"]
         for a, v in rj["by_accepted"].items():
             lines.append(f"| {a} | {v['rounds']} | {v['fraction']:.3f} | {v['distinct_per_layer']} |")

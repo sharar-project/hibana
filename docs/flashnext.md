@@ -183,6 +183,25 @@ arms k = 3, 5, 4, 3, 5; paired per prompt against k = 3:
 Deeper drafts win where acceptance is high and lose where it is low; `config/flashnext.env` uses
 k = 4. Adaptive depth (stop drafting when the draft is unsure) is the follow-up.
 
+## Router statistics (2026-09-27, #32)
+
+`SHARAR_TRACE_ROUTER=1` records every decode and verify row's top-10 experts and router probabilities,
+the MTP layer's routes per draft step and the draft's confidence per position into the traces
+([operations](operations.md#request-traces), `sharar/engine/routes.py`); off it changes nothing
+(greedy outputs bit-identical to main, round time -0.4%), on it costs +0.1% per round in steady state.
+`bench/flashnext_routes.py` captures a frozen mix (h2h prompts plus tool-calling agent turns) and
+`bench/route_stats.py` reports on it. Evidence and the dataset (77K tokens, 19K verify rounds, schema in
+`data/README.md`): `$SHARAR_RESULTS/reviews/2026-09-27-router-stats/`.
+
+| Question | Answer (fast k=4 as served; exact k=8) |
+|---|---|
+| Experts for 50% / 90% of the router mass, per layer | 110 / 320 over the whole mix; 36-48 / 166-201 within one domain (1,500-token samples) |
+| Overlap of the 50%-mass sets between domains | Jaccard 0.01-0.22; new prompts of the same domain 0.26-0.44 |
+| Combine weight of ranks 7-10 / 9-10 | 26.2% / 12.2% (layers 20-28% / 9-13%); the top 10 keep 14% of the softmax |
+| Distinct experts per layer, verify block of 1 / 5 / 9 rows | 10 / 30.8 / 45.4 |
+| Expert bytes first used by rejected rows | 16.2% at k=4 (code and math 6%, prose and multilingual 29%); 43.7% at k=8 exact (27.8% at d=4, same rounds) |
+| Acceptance by draft top-1 probability (exact) | >= 0.99: 0.96-0.98; below 0.5: 0.10-0.37, at every position |
+
 ## Not done
 
 Speculation for sampled requests (MTP is greedy-only, #22), layer feature
