@@ -538,6 +538,8 @@ class Executor:
         self.prefill_batch([(b, 40), (c, 70)])
         for r in (a, b, c):
             self.release(r)
+        if self.max_batch > 4:
+            self.flush_cache()  # sixteen live warmup rows need every state slot the plan guarantees
         if self.spec is not None:
             # Two speculative rounds at batch 1 and 2 so the first real request
             # does not pay the lazy kernel loads of the verify/accept path. The

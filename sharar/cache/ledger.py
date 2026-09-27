@@ -88,7 +88,8 @@ class Ledger:
         Guarantees KV pages for one request at `context_len` or `max_running`
         requests at `SHARED_CONTEXT` (above `SHARED_REQUESTS` requests, the
         same total split between them), whichever is more, and committed state
-        slots for `max_running` requests, plus the prefill activation reserve
+        slots for `max_running` requests (and their prompt-end snapshots above
+        `SHARED_REQUESTS`), plus the prefill activation reserve
         and the floor; the remainder, times `cache_fraction`, goes to
         prefix-cache capacity. Admission budgets each request's actual tokens,
         so a long request and shorter ones share the pool and a request that
@@ -105,14 +106,17 @@ class Ledger:
         shared = SHARED_CONTEXT * min(max_running, SHARED_REQUESTS) // max_running
         must_tokens = max(context_len, max_running * min(context_len, shared))
         must_kv = must_tokens * page_bytes
-        must_state = (max_running + 1) * state_bytes_per_slot  # +1 dummy slot 0
+        # +1 dummy slot 0. Each running request also keeps its prompt-end snapshot until it finishes; the
+        # spare covers four of them, a wider batch reserves them (else admission stalls at about half the batch).
+        must_slots = max_running + 1 + (max_running if max_running > SHARED_REQUESTS else 0)
+        must_state = must_slots * state_bytes_per_slot
         if budget < must_kv + must_state:
             raise MemoryError(
                 f"only {available / GIB:.1f} GiB available; need {(must_kv + must_state + prefill_reserve_bytes + future_bytes + self.floor_bytes) / GIB:.1f} GiB"
             )
         spare = int((budget - must_kv - must_state) * cache_fraction)
         kv_tokens = min(kv_token_target, must_tokens + int(spare * 0.4) // page_bytes)
-        state_slots = min(state_slot_target, max_running + 1 + int(spare * 0.6) // state_bytes_per_slot)
+        state_slots = min(state_slot_target, must_slots + int(spare * 0.6) // state_bytes_per_slot)
         return Plan(kv_tokens=kv_tokens, state_slots=state_slots, reserved_bytes=prefill_reserve_bytes + future_bytes)
 
     def above_floor(self) -> bool:

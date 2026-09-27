@@ -162,9 +162,16 @@ An adapter receives `ProposerContext(device, max_batch, max_context)`, a fixed
 width `k` and immutable `ProposerRequirements`. Install once before capturing
 graphs. The executor rejects unsupported width/context/features before
 allocating shared verify buffers. MTP/n-gram support k=1–4, DSpark k=1–7,
-and DFlash2 k=1–15. Target verify graphs have B=1/2/4
-buckets. Normal startup captures the selected verification depth; benchmarks
-can explicitly capture additional supported depths.
+and DFlash2 k=1–15. Target verify graphs have B=1/2/4 buckets (B=8/16 too
+when `max_batch` is 16, the throughput profile). Normal startup captures the
+selected verification depth; benchmarks can explicitly capture additional
+supported depths. `SHARAR_SPEC_DEPTHS` sets a depth per batch bucket
+(`engine/depth.py` `BatchDepth`): each depth's verify graphs cover only its
+buckets, and a bucket at depth 0 decodes plainly while the proposer still
+ingests every committed row, so speculation resumes when the batch shrinks. A
+proposer that declares `Capabilities.short_drafts` (MTP) receives
+`propose(..., depth=d)` and drafts only the `d` tokens a shallower round
+verifies; others draft `k` and the round verifies the first `d`.
 
 `ingest_prefill(req, ids, start, result)` consumes each freshly computed chunk;
 `start(req, token)` publishes its first emitted token. `ready(req)` selects
