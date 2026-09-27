@@ -174,3 +174,20 @@ Run Pi from the directory you want it to work in:
 ```bash
 pi --provider sharar --model qwen38-27b-nvfp4
 ```
+
+#### Subagents
+
+Pi has no built-in subagents; we verified the official `examples/extensions/subagent` bundled with Pi 0.87.1, loaded automatically from `~/.pi/agent/extensions/subagent`. For a fresh install with an unused backup path:
+
+```bash
+pi_sa_pkg="$(npm root -g)/@earendil-works/pi-coding-agent"
+cp -a "$HOME/.pi" "$HOME/.pi.bak-sa1"
+mkdir -p "$HOME/.pi/agent/extensions/subagent" "$HOME/.pi/agent/agents"
+cp "$pi_sa_pkg/examples/extensions/subagent/"{index.ts,agents.ts} "$HOME/.pi/agent/extensions/subagent/"
+cp "$pi_sa_pkg/examples/extensions/subagent/agents/"{scout,planner,reviewer,worker}.md "$HOME/.pi/agent/agents/"
+```
+
+Using the `sharar` provider above, replace `model:` in each copied agent profile with `model: sharar/qwen38-27b-nvfp4`, merge `"defaultProvider": "sharar"` and `"defaultModel": "qwen38-27b-nvfp4"` into `~/.pi/agent/settings.json`, and keep the default `agentScope: "user"` so parent and children use Sharar.
+Verified single, parallel and chained subagents and a real bug-fix task, with 1–8 subagents per call.
+Within one parallel call, the extension runs up to four subagents at once; Sharar also serves up to four requests at once, and extra work waits for a free slot.
+The model sometimes names an agent that does not exist or uses `python` instead of `python3`, and corrected itself in the recorded runs; these were model behaviours, not server errors.
