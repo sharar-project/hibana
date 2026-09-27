@@ -420,6 +420,51 @@ def kernel_gaps(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = 
     print(json.dumps(row), flush=True)
 
 
+def accept_check(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = None):
+    """Host against device-resident acceptance (SHARAR_DEVICE_ACCEPT) on the same prompts: outputs, the
+    tokens each round emitted per request, and the first round whose boundaries differ. The device pass
+    projects the draft KV over the whole bucket, so drafts may drift (MtpProposer.feedback_device)."""
+    spec = ex.spec
+    params = _params(tokens, accept)
+    rows = []
+    for name, prompts in _batches(tok, batch):
+        runs = {}
+        for device in (False, True, False, True):
+            spec.device_accept = device
+            ex.flush_cache()
+            reqs = [ex.admit(ids, params) for ids in prompts]
+            for r in reqs:
+                ex.prefill(r)
+            active, chunks = [r for r in reqs if not r.finished], []
+            spec.reset_stats()
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            while active:
+                before = [len(r.output_ids) for r in reqs]
+                ex.decode_step(active)
+                chunks.append([len(r.output_ids) - b for r, b in zip(reqs, before)])
+                active = [r for r in active if not r.finished]
+            torch.cuda.synchronize()
+            wall = time.perf_counter() - t0
+            runs.setdefault(device, []).append({"outputs": [r.output_ids[:] for r in reqs], "chunks": chunks,
+                                                "ms_per_round": 1000 * wall / max(1, spec.rounds), "tokens_per_round": spec.emitted / max(1, spec.rounds) / len(reqs)})
+            for r in reqs:
+                r.cacheable = False
+                ex.release(r)
+        h, d = runs[False][0], runs[True][0]
+        agree = next((j for j, (a, b) in enumerate(zip(h["chunks"], d["chunks"])) if a != b), min(len(h["chunks"]), len(d["chunks"])))
+        first = [next((j for j, (a, b) in enumerate(zip(oh, od)) if a != b), None) for oh, od in zip(h["outputs"], d["outputs"])]
+        row = {"prompt": name, "batch": batch, "accept": accept or "exact", "host_repeatable": runs[False][0]["outputs"] == runs[False][1]["outputs"],
+               "device_repeatable": runs[True][0]["outputs"] == runs[True][1]["outputs"], "identical_outputs": h["outputs"] == d["outputs"],
+               "first_differing_token": first, "rounds_agree": agree, "rounds": [len(h["chunks"]), len(d["chunks"])],
+               "tokens_per_round": [round(h["tokens_per_round"], 3), round(d["tokens_per_round"], 3)],
+               "ms_per_round_synchronous_loop": [round(x["ms_per_round"], 2) for x in (*runs[False], *runs[True])]}
+        rows.append(row)
+        print(json.dumps(row), flush=True)
+    spec.device_accept = False
+    out.setdefault("accept_check", []).extend(rows)
+
+
 def host_profile(ex, tok, out, tokens: int):
     """cProfile of graphed generation: where host time goes per round (cumulative, by function)."""
     import cProfile
@@ -458,11 +503,14 @@ def main():
     ap.add_argument("--batch", default="1", help="--gap-profile / --kernel-gaps: requests per generation, a comma list (1,4)")
     ap.add_argument("--accept", default=None, help="relaxed acceptance K:M for every request (the fast profile: 3:2.0)")
     ap.add_argument("--ple-cold", action="store_true", help="--gap-profile also with the PLE table out of the page cache")
+    ap.add_argument("--accept-check", action="store_true", help="host against device-resident acceptance: outputs and round boundaries")
     args = ap.parse_args()
     model, ex, tok = _load(graphs=True, spec=args.spec)
     out = {"rounds": [], "m_curve": []}
-    if args.gap_profile or args.kernel_gaps or args.only_breakdown:  # these combine in one load
+    if args.gap_profile or args.kernel_gaps or args.only_breakdown or args.accept_check:  # these combine in one load
         for batch in (int(b) for b in args.batch.split(",")):
+            if args.accept_check:
+                accept_check(ex, tok, out, args.tokens, batch, args.accept)
             if args.gap_profile:
                 gap_profile(ex, tok, out, args.tokens, batch, args.accept)
                 if args.ple_cold:
