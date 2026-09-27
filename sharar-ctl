@@ -4,7 +4,7 @@
 Host-side and dependency-free (Python 3 standard library only); it drives the
 container launchers `run-sharar.sh` and `run-sharar-train.sh`.
 
-  sharar-ctl serve [--no-traces] [--pinned | --draft DIR] [--fp8]
+  sharar-ctl serve [--no-traces] [--pinned | --draft DIR] [--fp8] [--exact | --balanced | --fast]
   sharar-ctl stop
   sharar-ctl status
   sharar-ctl train            # stop serving, train until `train stop`
@@ -118,6 +118,8 @@ def cmd_serve(args, env, dry) -> int:
         env["SHARAR_DRAFT"] = str(Path(args.draft).resolve())
     if args.fp8:
         env["SHARAR_DRAFT_PRECISION"] = "fp8"
+    if args.profile:
+        env["SHARAR_PROFILE"] = args.profile
     return run([str(ROOT / "run-sharar.sh")], env, dry)
 
 
@@ -337,6 +339,11 @@ def main(argv=None) -> int:
     p.add_argument("--pinned", action="store_true", help="serve the publisher draft even if one was promoted")
     p.add_argument("--draft", default=None, help="serve this checkpoint directory")
     p.add_argument("--fp8", action="store_true", help="FP8 draft precision (the optimized measured profile)")
+    g = p.add_mutually_exclusive_group()
+    for name, text in (("exact", "the target's own distribution: exact acceptance, no lossy weight copies"),
+                       ("balanced", "relaxed greedy acceptance top-2/1.0, the 27B's calibrated 3-bit copies"),
+                       ("fast", "the default: every measured speed option, lossy ones included (docs/optimizations.md#serving-profiles)")):
+        g.add_argument(f"--{name}", dest="profile", action="store_const", const=name, help=text)
     sub.add_parser("stop", help="stop serving")
     sub.add_parser("status", help="serving, training, current draft and trace directory")
     p = sub.add_parser("train", help="stop serving and train the drafter on the recorded traces")

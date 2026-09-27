@@ -37,6 +37,7 @@ def _str(env: Mapping[str, str], name: str, default: str | None = None) -> str |
 @dataclass(frozen=True)
 class EngineConfig:
     # --- target and files
+    profile: str = "fast"                     # SHARAR_PROFILE: exact / balanced / fast (resolved by the launcher, reported here)
     target: str | None = None                 # SHARAR_TARGET: qwen38 (default) or flashnext
     hf_cache: str | None = None               # SHARAR_HF_CACHE, else HF_HOME: the 27B's model cache
     flashnext_cache: str | None = None        # SHARAR_FLASHNEXT_CACHE: Flash-Next's model cache
@@ -84,6 +85,7 @@ class EngineConfig:
         e = os.environ if env is None else env
         cold = _str(e, "SHARAR_COLD_TIER_GIB")
         return cls(
+            profile=_str(e, "SHARAR_PROFILE", "fast"),
             target=_str(e, "SHARAR_TARGET"),
             hf_cache=_str(e, "SHARAR_HF_CACHE") or _str(e, "HF_HOME"),
             flashnext_cache=_str(e, "SHARAR_FLASHNEXT_CACHE"),

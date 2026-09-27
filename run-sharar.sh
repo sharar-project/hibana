@@ -7,6 +7,19 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SHARAR_CONFIG_FILE:-$SCRIPT_DIR/config/gb10.env}"
 [[ -r "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+# Serving profile (#27, docs/optimizations.md#serving-profiles): the default for every speed/fidelity knob
+# below that the environment or the config file does not set explicitly.
+#   exact     the target's own distribution: exact acceptance, no lossy weight copies (benchmarks, traces)
+#   balanced  relaxed greedy acceptance top-2 within 1.0 logit; the 27B's calibrated 3-bit decode copies
+#   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy and
+#             sampled requests, the 27B's calibrated 3-bit copies, Flash-Next's calibrated 3-bit trunk
+PROFILE="${SHARAR_PROFILE:-fast}"
+case "$PROFILE" in
+  exact)    P_ACCEPT=off;   P_ACCEPT_SAMPLED=0; P_W3=0; P_W3_DRAFT=0; P_FN_W3=off ;;
+  balanced) P_ACCEPT=2:1.0; P_ACCEPT_SAMPLED=0; P_W3=1; P_W3_DRAFT=1; P_FN_W3=off ;;
+  fast)     P_ACCEPT=3:2.0; P_ACCEPT_SAMPLED=1; P_W3=1; P_W3_DRAFT=1; P_FN_W3=auto ;;
+  *) echo "sharar launch failed: SHARAR_PROFILE must be exact, balanced or fast" >&2; exit 1 ;;
+esac
 IMAGE="${SHARAR_IMAGE:-sharar:qwen38-27b}"
 CONTAINER="${SHARAR_CONTAINER:-sharar-qwen38}"
 PORT="${SHARAR_PORT:-30001}"
@@ -18,11 +31,12 @@ TRACES_DIR="${SHARAR_TRACES:-}"                    # opt-in request traces for d
 DRAFT_DIR="${SHARAR_DRAFT:-}"                      # trained draft checkpoint directory; unset follows draft-runs/current; 'pinned' forces the publisher draft
 TRACES_MAX_MIB="${SHARAR_TRACES_MAX_MIB:-32768}"
 MAX_CONTEXT="${SHARAR_MAX_CONTEXT:-262144}"   # prompt plus output per request, up to the model's native 262144
-ACCEPT_DEFAULT="${SHARAR_ACCEPT_DEFAULT:-2:1.0}"      # relaxed acceptance for greedy requests that do not choose (K:M; off = exact)
-W3_DECODE="${SHARAR_W3_DECODE:-1}"   # 3-bit decode copies of the MLPs and FP8 projections for calls of at most 64 rows (1/0)
+ACCEPT_DEFAULT="${SHARAR_ACCEPT_DEFAULT:-$P_ACCEPT}"      # relaxed acceptance for greedy requests that do not choose (K:M; off = exact)
+ACCEPT_DEFAULT_SAMPLED="${SHARAR_ACCEPT_DEFAULT_SAMPLED:-$P_ACCEPT_SAMPLED}"  # the same default for sampled requests (1/0)
+W3_DECODE="${SHARAR_W3_DECODE:-$P_W3}"   # 3-bit decode copies of the MLPs and FP8 projections for calls of at most 64 rows (1/0)
 W3_HEAD="${SHARAR_W3_HEAD:-0}"       # also the lm_head (1/0)
-W3_DRAFT="${SHARAR_W3_DRAFT:-1}"     # also the parallel draft's FP8 matrices (1/0; needs W3_DECODE)
-W3_CHECKPOINT="${SHARAR_W3_CHECKPOINT:-}" # calibrated target decode copies; unset uses nearest rounding
+W3_DRAFT="${SHARAR_W3_DRAFT:-$P_W3_DRAFT}"     # also the parallel draft's FP8 matrices (1/0; needs W3_DECODE)
+W3_CHECKPOINT="${SHARAR_W3_CHECKPOINT:-}" # calibrated target decode copies (an artifact location: used when W3_DECODE=1)
 DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"   # incoai/Qwen3.8-27B-DFlash2
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
@@ -52,8 +66,13 @@ fi
 
 [[ "$DRAFT_PRECISION" == bf16 || "$DRAFT_PRECISION" == fp8 ]] || fail "SHARAR_DRAFT_PRECISION must be bf16 or fp8"
 for v in W3_DECODE W3_HEAD W3_DRAFT; do [[ "${!v}" == 0 || "${!v}" == 1 ]] || fail "SHARAR_$v must be 0 or 1"; done
+# Flash-Next's calibrated 3-bit trunk copies (#6, bench/flashnext_w3_calibrate.py): a directory, `off`, or the
+# profile's choice (fast: $SHARAR_RESULTS/w3-checkpoints/flashnext-current when that exists).
+FN_W3="${SHARAR_FLASHNEXT_W3_CHECKPOINT:-$P_FN_W3}"
+[[ "$FN_W3" == auto ]] && FN_W3="$([[ -f "$RESULTS_DIR/w3-checkpoints/flashnext-current/manifest.json" ]] && realpath "$RESULTS_DIR/w3-checkpoints/flashnext-current" || echo off)"
+[[ "$FN_W3" == off || -f "$FN_W3/manifest.json" ]] || fail "no manifest.json in SHARAR_FLASHNEXT_W3_CHECKPOINT ($FN_W3)"
+[[ "$W3_DECODE" == 1 ]] || W3_CHECKPOINT=""   # the checkpoint is where calibrated copies live; without decode copies it is unused
 if [[ -n "$W3_CHECKPOINT" ]]; then
-  [[ "$W3_DECODE" == 1 ]] || fail "SHARAR_W3_CHECKPOINT requires SHARAR_W3_DECODE=1"
   [[ -f "$W3_CHECKPOINT/manifest.json" ]] || fail "SHARAR_W3_CHECKPOINT needs a completed manifest.json"
   W3_CHECKPOINT="$(realpath "$W3_CHECKPOINT")"
 fi
@@ -105,10 +124,12 @@ Sharar preflight OK
   Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}
   Cold tier: ${SHARAR_COLD_TIER_GIB:-automatic (spare memory up to 24 GiB)}${SHARAR_COLD_TIER_GIB:+ GiB (SHARAR_COLD_TIER_GIB)}
   Device-resident acceptance: ${SHARAR_DEVICE_ACCEPT:-image default} (SHARAR_DEVICE_ACCEPT)
-  Relaxed acceptance default: $ACCEPT_DEFAULT (requests may set accept_top_k/accept_margin; 1 = exact)
+  Serving profile: $PROFILE (SHARAR_PROFILE: exact / balanced / fast; measured costs in docs/optimizations.md#serving-profiles)
+  Relaxed acceptance default: $ACCEPT_DEFAULT, sampled requests $(onoff "$ACCEPT_DEFAULT_SAMPLED") (requests may set accept_top_k/accept_margin; 1 = exact)
   Three-bit decode copies: layers $(onoff "$W3_DECODE"), lm_head $(onoff "$W3_HEAD"), draft $(onoff "$W3_DRAFT")$([[ "$W3_DRAFT" == 1 && "$DRAFT_PRECISION" != fp8 ]] && echo ' (no effect: the draft copy needs the FP8 draft)') (SHARAR_W3_DECODE / SHARAR_W3_HEAD / SHARAR_W3_DRAFT)
   Draft: ${DRAFT_DIR:-pinned $DRAFT_REVISION}
   W3 target checkpoint: ${W3_CHECKPOINT:-nearest rounding from the pinned serving weights}
+  Flash-Next 3-bit trunk copies: $FN_W3 (SHARAR_FLASHNEXT_W3_CHECKPOINT; Flash-Next only)
 EOT
 [[ "${1:-}" == "--check" ]] && exit 0
 
@@ -125,7 +146,7 @@ args=(docker run --detach --name "$CONTAINER"
   --volume "$STATE_DIR:/state"
   --env TRITON_LIBCUDA_PATH=$DRIVER_LIB_DIR
   --env SHARAR_SPEC=$SPEC
-  --env SHARAR_W3_DECODE=$W3_DECODE --env SHARAR_W3_HEAD=$W3_HEAD --env SHARAR_W3_DRAFT=$W3_DRAFT
+  --env SHARAR_W3_DECODE=$W3_DECODE --env SHARAR_W3_HEAD=$W3_HEAD --env SHARAR_W3_DRAFT=$W3_DRAFT --env SHARAR_PROFILE=$PROFILE
 )
 source "$SCRIPT_DIR/tools/gb10-container.sh"
 gb10_container_args
@@ -139,7 +160,7 @@ if [[ "$ACCEPT_DEFAULT" != "2:1.0" ]]; then
     || fail "image $IMAGE predates --accept-default; rebuild with docker/build.sh or unset SHARAR_ACCEPT_DEFAULT"
   serve_args+=(--accept-default "$ACCEPT_DEFAULT")
 fi
-if [[ "${SHARAR_ACCEPT_DEFAULT_SAMPLED:-0}" == 1 ]]; then
+if [[ "$ACCEPT_DEFAULT_SAMPLED" == 1 && "$ACCEPT_DEFAULT" != off ]]; then
   docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--accept-default-sampled" \
     || fail "image $IMAGE predates --accept-default-sampled; rebuild with docker/build.sh or unset SHARAR_ACCEPT_DEFAULT_SAMPLED"
   serve_args+=(--accept-default-sampled)
@@ -176,9 +197,8 @@ if [[ "${SHARAR_TARGET:-}" == flashnext ]]; then
   [[ -d "$FN_CACHE/models--RadixArk--Qwen3.8-Flash-Next-NVFP4/snapshots" ]] || fail "no Flash-Next snapshot under $FN_CACHE"
   args+=(--volume "$FN_CACHE:/cache/flash-next:ro" --env SHARAR_FLASHNEXT_CACHE=/cache/flash-next
          --env "SHARAR_FLASHNEXT_TRUNK=${SHARAR_FLASHNEXT_TRUNK:-fp8}")   # trunk precision at load: fp8 (default) or bf16
-  if [[ -n "${SHARAR_FLASHNEXT_W3_CHECKPOINT:-}" ]]; then   # calibrated 3-bit trunk copies (#6, bench/flashnext_w3_calibrate.py)
-    [[ -f "$SHARAR_FLASHNEXT_W3_CHECKPOINT/manifest.json" ]] || fail "no manifest.json in SHARAR_FLASHNEXT_W3_CHECKPOINT"
-    args+=(--volume "$SHARAR_FLASHNEXT_W3_CHECKPOINT:/fn-w3:ro" --env SHARAR_FLASHNEXT_W3_CHECKPOINT=/fn-w3)
+  if [[ "$FN_W3" != off ]]; then
+    args+=(--volume "$FN_W3:/fn-w3:ro" --env SHARAR_FLASHNEXT_W3_CHECKPOINT=/fn-w3)
   fi
 fi
 if [[ -n "${SHARAR_DEVICE_ACCEPT:-}" ]]; then
