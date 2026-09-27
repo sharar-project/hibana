@@ -110,14 +110,18 @@ The verdict (intervals are 95%; pooled = all tasks of the stage):
 | Profile | Rule |
 |---|---|
 | `exact` | layers 1 and 2 within their floors in every domain (the change is lossless; layer 3 is skipped) |
-| rejected | no speed gain (decode interval upper bound at or below 1.00), or a task or the pooled battery significantly worse (McNemar p < 0.05 with more losses than wins), or a pooled loss above 2.0 points |
+| rejected | no measurable speed gain (decode interval lower bound at or below 1.035, the layer's own noise), or a task or the pooled battery significantly worse (McNemar p < 0.05 with more losses than wins), or a pooled loss above 2.0 points |
 | `balanced` | not rejected, full stage run, pooled interval lower bound at or above -1.0 point and every task within -1.0 point |
 | `fast` | not rejected otherwise: the loss is not significant and at most 2.0 points |
 
 The screen escalates to the full sets unless it rejects the candidate or its
 pooled interval already excludes a loss of more than 1.0 point. Layer 1 grants
 nothing beyond `exact`: it says which domain a change hurts and is the cheap
-early warning. Relaxed acceptance does not move layer 1 (the distribution is
+early warning. Layer 2 resolves speed to about 3.5% (a warm baseline repeat reads x1.035, a
+second exact process x0.986); a smaller gain needs the served, interleaved h2h
+arms. Argmax agreement breaks exact logit ties by index order, so identical
+distributions read about 99.3%, not 100%; the floor carries the same effect.
+Relaxed acceptance does not move layer 1 (the distribution is
 unchanged); it shows in layers 2 and 3. Sampled requests are not scored.
 
 ## Add a setting

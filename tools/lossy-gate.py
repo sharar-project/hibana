@@ -34,9 +34,10 @@ Verdict rules (also in CONTRIBUTING.md, "Judge a lossy option"). Intervals are 9
   exact     layer 1 within its floor in every domain (excess KL interval reaches 0, argmax
             agreement not below the floor's) and layer-2 tokens per round within its floor
             (interval includes 1); a lossless change. Layer 3 is skipped (--through screen forces it).
-  rejected  any of: speed interval upper bound <= 1.00 (a lossy option must pay for itself; layer 3
-            is skipped); a task or the pooled battery significantly worse (McNemar p < 0.05, more
-            losses than wins); pooled accuracy delta below -2.0 points.
+  rejected  any of: no measurable speed gain, the speed interval's lower bound at or below 1.035 (a
+            lossy option must pay for itself, beyond the layer's 3.5% noise; layer 3 is skipped); a
+            task or the pooled battery significantly worse (McNemar p < 0.05, more losses than wins);
+            pooled accuracy delta below -2.0 points.
   balanced  not rejected, the full stage ran, pooled delta interval lower bound >= -1.0 point and
             every task's delta >= -1.0 point.
   fast      not rejected otherwise (the loss is not significant and at most 2.0 points).
@@ -108,6 +109,9 @@ SHARD = 100  # the screen's GSM8K-300 is the first three shards of the full set
 SECONDS_PER_ITEM = {"gsm8k": 3.0, "humaneval": 2.5, "mbpp": 1.5, "mgsm": 3.5}  # first-shard guesses (Flash-Next, 4 streams)
 NEEDLES = ["--lengths", "16384,65536", "--depths", "0.9,0.5,0.1", "--output-tokens", "64"]
 BALANCED_MARGIN, FAST_MARGIN = 1.0, 2.0  # accuracy points
+# Layer-2 speed resolution (Flash-Next, 2026-09-27): a warm baseline repeat reads x1.035 and a second exact
+# process x0.986, so a gain must clear 3.5% to be told from the instrument's own noise.
+SPEED_NOISE = 0.035
 
 
 def log(msg: str) -> None:
@@ -609,8 +613,9 @@ def verdict(l1: dict | None, l2: dict | None, l3: dict | None, stage: str | None
     if l1_within and l2_within and (l3 is None or l3["pooled"]["p"] >= 0.05):
         return "exact", ["layers 1 and 2 within their floors" + ("" if l3 is None else ", layer 3 not different")]
     speed = l2["decode_tps"] if l2 else None
-    if speed and speed.get("n") and speed["ci95"][1] <= 1.0:
-        return "rejected", [f"no speed gain: decode x{speed['ratio']:.3f} [{speed['ci95'][0]:.3f}, {speed['ci95'][1]:.3f}]"]
+    if speed and speed.get("n") and speed["ci95"][0] <= 1 + SPEED_NOISE:
+        return "rejected", [f"no measurable speed gain: decode x{speed['ratio']:.3f} [{speed['ci95'][0]:.3f}, {speed['ci95'][1]:.3f}], "
+                            f"lower bound not above {1 + SPEED_NOISE:.3f}"]
     if l3 is None:
         return "undecided", ["layer 3 has not run"]
     bad = [f"{t} {r['delta_pp']:+.1f} pp (p {r['p']:.3f})" for t, r in l3["tasks"].items() if r["p"] < 0.05 and r["losses"] > r["wins"]]
@@ -647,8 +652,8 @@ def one_line(name: str, target: str, v: str, l1, l2, l3, stage) -> str:
     if l1:
         worst = max((k for k in l1 if k != "all"), key=lambda k: l1[k]["kl_excess"][0])
         a = l1["all"]
-        parts.append(f"L1 KL +{a['kl_excess'][0]:.4f} [{a['kl_excess'][1]:+.4f}, {a['kl_excess'][2]:+.4f}] over floor {a['kl_floor']:.4f}, "
-                     f"argmax {100 * a['argmax']:.1f}% (floor {100 * a['argmax_floor']:.1f}%), worst {worst} +{l1[worst]['kl_excess'][0]:.4f}")
+        parts.append(f"L1 KL {a['kl']:.4f} vs floor {a['kl_floor']:.4f} (excess {a['kl_excess'][0]:+.4f} [{a['kl_excess'][1]:+.4f}, {a['kl_excess'][2]:+.4f}]), "
+                     f"argmax {100 * a['argmax']:.1f}% (floor {100 * a['argmax_floor']:.1f}%), worst {worst} {l1[worst]['kl_excess'][0]:+.4f}")
     if l2:
         t = l2["tok_per_round"]
         parts.append(f"L2 tok/round x{t['ratio']:.3f} [{t['ci95'][0]:.3f}, {t['ci95'][1]:.3f}]")

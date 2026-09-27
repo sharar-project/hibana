@@ -103,6 +103,7 @@ def test_verdict_rules():
     assert gate.verdict(same, _l2(1.0, 0.99, 1.01), None, None)[0] == "exact"
     lossy = _l1((0.05, 0.04, 0.06), (-0.02, -0.03, -0.01))
     assert gate.verdict(lossy, _l2(0.99, 0.97, 1.0), None, None)[0] == "rejected"  # no speed gain
+    assert gate.verdict(lossy, _l2(1.03, 1.01, 1.05), None, None)[0] == "rejected"  # within the speed noise
     assert gate.verdict(lossy, _l2(1.2, 1.1, 1.3), None, None)[0] == "undecided"
     assert gate.verdict(lossy, _l2(1.2, 1.1, 1.3), _l3(2, 14), "screen")[0] == "rejected"
     assert gate.verdict(lossy, _l2(1.2, 1.1, 1.3), _l3(6, 8), "screen")[0] == "fast"
