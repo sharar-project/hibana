@@ -238,11 +238,26 @@ def _replay_graphs(ex) -> list[tuple[str, torch.cuda.CUDAGraph]]:
     return out
 
 
-def gap_profile(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = None):
+def _evict_ple(model) -> None:
+    """Drop the PLE table from the page cache (a new request's rows are mostly not cached)."""
+    import os
+    for fd in model.ple.table.fds:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+
+
+def _ple_stats(model) -> tuple[int, int]:
+    """Rows read from the page cache and through the threads so far (PleTable counters)."""
+    table = model.ple.table
+    return getattr(table, "hits", 0), getattr(table, "misses", 0)
+
+
+def gap_profile(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = None, cold: bool = False):
     """GPU idle gaps inside a round, unsynchronized: CUDA events recorded before and after every graph
     replay (a before-event completes when the GPU reaches it, so after-draft -> before-verify is the time
     the GPU waited for the host between draft and verify, after-verify -> before-next-draft likewise).
-    Batch 1 runs each prompt alone; batch B runs B prompts together. Sums over the runs, per round."""
+    Batch 1 runs each prompt alone; batch B runs B prompts together. Sums over the runs, per round.
+    `cold`: the PLE table leaves the page cache before each measured generation (the warm-up run
+    otherwise leaves every row it reads cached)."""
     spec = ex.spec
     marks = []  # (kind, before, after)
 
@@ -265,9 +280,13 @@ def gap_profile(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = 
         items = [(ids, params) for ids in prompts]
         ex.generate_batch(items)  # warm (prefix cache, graphs)
         ex.flush_cache()
+        if cold:
+            _evict_ple(ex.model)
         marks.clear(); spec.reset_stats()
+        ple0 = _ple_stats(ex.model)
         reqs = ex.generate_batch(items)
         torch.cuda.synchronize()
+        ple = [a - b for a, b in zip(_ple_stats(ex.model), ple0)]
         n = max(1, spec.rounds)
         run_gaps = defaultdict(float)
         for (k1, a1, b1), (k2, a2, b2) in zip(marks, marks[1:]):
@@ -288,18 +307,19 @@ def gap_profile(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = 
                "decode_wall_ms_per_round": round(1000 * reqs[0].decode_seconds / n, 2),
                "replay_ms_per_round": {k: round(v / n, 2) for k, v in run_busy.items()},
                "idle_ms_per_round": round(sum(run_gaps.values()) / n, 2),
-               "gap_ms_per_round": {k: round(v / n, 2) for k, v in run_gaps.items()}}
+               "gap_ms_per_round": {k: round(v / n, 2) for k, v in run_gaps.items()},
+               "ple_rows_cached_missed": ple}
         per_prompt.append(row)
         print(json.dumps(row), flush=True)
     n = max(1, rounds_n)
-    row = {"batch": batch, "accept": accept or "exact", "spec": spec.k, "rounds": rounds_n,
+    row = {"batch": batch, "ple": "cold" if cold else "warm", "accept": accept or "exact", "spec": spec.k, "rounds": rounds_n,
            "tokens_per_round": round(emitted / n / batch, 3), "decode_wall_ms_per_round": round(wall / n, 2),
            "event_span_ms_per_round": round(span / n, 2),
            "replay_ms_per_round": {k: round(v / n, 2) for k, v in busy.items()},
            "idle_ms_per_round": round(sum(sum(v) for v in gaps.values()) / n, 2),
            "gap_ms": {k: {"count": len(v), "mean": round(sum(v) / len(v), 3), "per_round": round(sum(v) / n, 2)} for k, v in gaps.items()},
            "per_prompt": per_prompt}
-    out.setdefault("gap_profile", {})[f"batch{batch}"] = row
+    out.setdefault("gap_profile", {})[f"batch{batch}" + ("-cold" if cold else "")] = row
     print(json.dumps({k: v for k, v in row.items() if k != "per_prompt"}), flush=True)
     for g, orig in restore:
         g.replay = orig
@@ -413,6 +433,7 @@ def main():
     ap.add_argument("--spec", type=int, default=4, help="MTP draft depth (config/flashnext.env serves 4)")
     ap.add_argument("--batch", default="1", help="--gap-profile / --kernel-gaps: requests per generation, a comma list (1,4)")
     ap.add_argument("--accept", default=None, help="relaxed acceptance K:M for every request (the fast profile: 3:2.0)")
+    ap.add_argument("--ple-cold", action="store_true", help="--gap-profile also with the PLE table out of the page cache")
     args = ap.parse_args()
     model, ex, tok = _load(graphs=True, spec=args.spec)
     out = {"rounds": [], "m_curve": []}
@@ -420,6 +441,8 @@ def main():
         for batch in (int(b) for b in args.batch.split(",")):
             if args.gap_profile:
                 gap_profile(ex, tok, out, args.tokens, batch, args.accept)
+                if args.ple_cold:
+                    gap_profile(ex, tok, out, args.tokens, batch, args.accept, cold=True)
             if args.kernel_gaps:
                 kernel_gaps(ex, tok, out, min(args.tokens, 96), batch, args.accept)
         if args.only_breakdown:
