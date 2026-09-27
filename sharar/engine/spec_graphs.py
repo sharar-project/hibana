@@ -127,8 +127,6 @@ class VerifyGraphs:
         st = self._st[size]
         s = self.s_len
         n = b * s
-        if st["side"] is not None:
-            self.ex.extras.fill(st["side"], side[0], side[1], side[2], n)
         st["tokens"][:n].copy_(tokens)
         st["positions"][:n].copy_(positions)
         st["pages"][:n].copy_(pages)
@@ -139,7 +137,11 @@ class VerifyGraphs:
             st["pages"][n:].zero_()
             st["slots"][b:].zero_()
         pad_kv = [torch.zeros(s + 1, dtype=torch.int32, device=self.device) for _ in range(size - b)]
+        # Plan before the side inputs: they may wait for the drafted tokens, the plan needs only the pages,
+        # so the host plans while the draft graphs still run (#36).
         self._plan(st, list(kv_all) + pad_kv)
+        if st["side"] is not None:
+            self.ex.extras.fill(st["side"], side[0], side[1], side[2], n)
         self._graphs[size, variant].replay()
         layers = {lid: value[:n] for lid, value in st["features"].items()} if st["features"] else None
         return st["norm"][:n], st["logits" if sampled else "argmax"][:n], st["ctx"], layers, st["logits"][:n]

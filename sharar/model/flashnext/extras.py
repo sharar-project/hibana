@@ -109,9 +109,9 @@ class FlashNextExtras:
         return side
 
     def fill(self, side: FlashNextSideInputs, reqs, drafts: torch.Tensor | None, seqs, rows: int) -> None:
-        """Copy one step's values into a graph's static side inputs: `rows` real rows (padded rows keep page 0)."""
-        if side.ple_rows is not None:
-            side.ple_rows[:rows].copy_(self._decode_rows(reqs) if drafts is None else self._verify_rows(reqs, drafts.tolist()))
+        """Copy one step's values into a graph's static side inputs: `rows` real rows (padded rows keep page 0).
+        The indexer rows come first: they need only positions and pages, while a verification's PLE rows
+        wait for the drafted tokens, so the host launches them while the draft graphs still run (#36)."""
         if side.qsa_members is not None:
             from sharar.model.flashnext.indexer import FlashNextIndexer
             members, writes = FlashNextIndexer.static_rows(seqs, self.ratio, self.device)
@@ -119,6 +119,8 @@ class FlashNextExtras:
             side.qsa_writes[:rows].copy_(writes)
             side.qsa_members[rows:].zero_()
             side.qsa_writes[rows:].zero_()
+        if side.ple_rows is not None:
+            side.ple_rows[:rows].copy_(self._decode_rows(reqs) if drafts is None else self._verify_rows(reqs, drafts.tolist()))
 
     def selecting(self, side: FlashNextSideInputs, table: torch.Tensor, indptr: torch.Tensor, row_seq: torch.Tensor,
                   capacity: int) -> FlashNextSideInputs:
