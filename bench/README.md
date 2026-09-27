@@ -133,6 +133,8 @@ research baseline, so that continuation drift does not masquerade as a gain.
 | `sharar-evals` (separate repository) | HTTP evaluations: h2h, GSM8K/HumanEval accuracy, test-time scaling, long context, output identity |
 | `bench/w3_bench.py` | 3-bit decode GEMM: correctness against the dequantized reference and DRAM bandwidth per decode shape at 16, 32 and 64 rows (weights rotated past L2, CUDA-graph timing), split-K sweep |
 | `bench/w3_calibrate.py` | Fit checksummed W3 target copies from FP8 source weights and frozen activation inputs; [workflow](../docs/w3-calibration.md) |
+| `bench.flashnext_routes` | Flash-Next router traces (#32) over a frozen prompt mix (`workloads/flashnext_routes_v1.json`: the 22 h2h prompts, 6 tool-calling agent conversations), in-process with `SHARAR_TRACE_ROUTER=1 SHARAR_TRACE_ROUTER_SAMPLE=1`: `capture --arm A --profile fast\|exact --k K --modes greedy,t07 --out RUN`; `dataset --run RUN --out DATA` (CPU) builds `rows.npz`, `rounds.npz`, `requests.jsonl` per arm; `ab` measures outputs and round time on fixed prompts (also runs against main's tree) |
+| `bench.route_stats` | Statistics over that dataset (CPU): expert skew per layer and domain, mass by rank, distinct experts per verify block, expert bytes first used by rejected rows, acceptance by draft confidence; `--data DATA --out report.json [--ab-dir AB]` prints the tables |
 
 Use each driver's `--help` and its linked [performance evidence](../docs/performance.md)
 to freeze inputs, output budgets, warmups, precision and geometry before running.

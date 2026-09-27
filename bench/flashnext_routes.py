@@ -59,11 +59,13 @@ def params(workload, profile: str, mode: str, max_new: int, seed: int, trace: bo
     return SamplingParams(**kw)
 
 
-def serve_one(ex, sched, ids, sampling):
+def serve_one(ex, sched, ids, sampling, routes: bool = True):
     import torch
     ex.flush_cache()  # every prompt cold: prefix-cache hits change continuations (docs/flashnext.md)
     torch.cuda.synchronize()
     req = sched.submit(list(ids), sampling)
+    if not routes:  # traced without the router recorder: isolates the router traces' host cost
+        req.trace_routes = None
     sched.run_until_idle()
     torch.cuda.synchronize()
     decode = req.t_finish - req.t_first_token
@@ -136,11 +138,12 @@ def ab(args) -> None:
         from sharar.engine.traces import TraceSink
         sink = sched.sink = TraceSink(args.traces, max_bytes=1 << 40, rotate_bytes=1 << 30)
     runs, outputs = [], {}
-    arms = ("traced", "untraced") if sink is not None else ("plain",)
+    arms = (("traced", "traced-noroutes", "untraced") if router else ("traced", "untraced")) if sink is not None else ("plain",)
     for rep in range(args.repeats):
         for pid, cat, ids in prompts:
             for arm in arms:
-                req, row = serve_one(ex, sched, ids, params(workload, args.profile, "greedy", args.max_new, 0, trace=arm == "traced"))
+                req, row = serve_one(ex, sched, ids, params(workload, args.profile, "greedy", args.max_new, 0, trace=arm != "untraced"),
+                                     routes=arm != "traced-noroutes")
                 key = f"{pid}"
                 if key in outputs and outputs[key] != req.output_ids:
                     row["differs_from_first"] = True
@@ -148,7 +151,7 @@ def ab(args) -> None:
                 runs.append({"rep": rep, "prompt_id": pid, "arm": arm, **row})
                 print(json.dumps(runs[-1]), flush=True)
     if sink is not None:
-        drain(sink, args.repeats * len(prompts))
+        drain(sink, args.repeats * len(prompts) * (len(arms) - 1))
     summary = {}
     for arm in arms:
         sel = [r for r in runs if r["arm"] == arm]
