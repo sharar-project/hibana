@@ -560,7 +560,10 @@ def fold_system_messages(messages: list[dict]) -> list[dict]:
     several leading ones (OpenCode) and instructions later in the
     conversation (Claude Code). Merge the leading run; render a later one in
     place as a user turn in <system-reminder> tags, which keeps the prefix
-    before it (and its cache) unchanged."""
+    before it (and its cache) unchanged. Developer messages have the same
+    semantics as system messages."""
+    messages = [{**message, "role": "system"} if isinstance(message, dict) and message.get("role") == "developer" else message
+                for message in messages]
     lead = 0
     while lead < len(messages) and isinstance(messages[lead], dict) and messages[lead].get("role") == "system":
         lead += 1

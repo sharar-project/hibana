@@ -128,8 +128,16 @@ message and moving them would change the cached prefix. Several leading
 system messages (OpenAI clients such as OpenCode) are merged. It asks for
 32,000 output tokens; the server caps `max_tokens` at the remaining context
 and answers `prompt is too long` when a conversation fills it.
+The OpenAI chat endpoint handles role `developer` the same way as `system`.
 
 The API's supported controls are checked in `tests/unit/test_chat_controls.py`
 and `tests/unit/test_messages_api.py`;
 failure, disconnect and drain behavior has separate lifecycle tests. Current
 request-level cache modes/priorities are only a [proposal](request-cache-policy.md).
+
+### Pi
+
+Configure [Pi's `models.json`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md) with provider `sharar`, API `openai-completions`, base URL `http://127.0.0.1:30001/v1`, and any API key.
+For Qwen3.8, use `compat: {"thinkingFormat": "qwen-chat-template"}` and a model with `id: "qwen38-27b-nvfp4"`, `reasoning: true`, and `maxTokens: 8192`.
+Match `contextWindow` to the server's `context_length` from `GET /get_server_info`, then run `pi --provider sharar --model qwen38-27b-nvfp4`.
+For subagents, follow the [official example](https://github.com/earendil-works/pi/tree/main/packages/coding-agent/examples/extensions/subagent) and pin each child's `model` to `sharar/qwen38-27b-nvfp4`.

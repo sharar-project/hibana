@@ -504,6 +504,62 @@ def test_openai_string_tool_arguments_render_like_objects(snapshot):
     assert prompts[0] == prompts[1]
 
 
+@pytest.mark.parametrize('stream', [False, True])
+def test_openai_developer_message_renders_like_system(snapshot, stream):
+    from sharar.api.chat_template import ChatTemplate
+    from sharar.tokenizer import SnapshotTokenizer
+
+    tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
+
+    async def scenario():
+        prompts, statuses = [], []
+        for role in ('system', 'developer'):
+            request = {'max_tokens': 16, 'stream': stream,
+                       'tools': [{'type': 'function', 'function': {
+                           'name': 'get_weather', 'description': 'Weather for a city', 'parameters': TOOLS[0]['input_schema']}}],
+                       'messages': [{'role': role, 'content': 'Be brief.'},
+                                    {'role': 'user', 'content': 'Weather in Paris?'}]}
+            engine = fake_engine('ok')
+            app = create_app(engine, tok, tmpl, {})
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app, raise_app_exceptions=False), base_url='http://test') as client:
+                response = await client.post('/v1/chat/completions', json=request)
+            statuses.append(response.status_code)
+            prompts.append(engine.submit.await_args.args[0] if response.status_code == 200 else None)
+        return prompts, statuses
+
+    prompts, statuses = asyncio.run(scenario())
+    assert statuses == [200, 200]
+    assert prompts[0] == prompts[1]
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_openai_developer_message_inside_conversation_renders_like_system(snapshot, stream):
+    from sharar.api.chat_template import ChatTemplate
+    from sharar.tokenizer import SnapshotTokenizer
+
+    tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
+
+    async def scenario():
+        prompts, statuses = [], []
+        for role in ('system', 'developer'):
+            request = {'max_tokens': 16, 'stream': stream,
+                       'tools': [{'type': 'function', 'function': {
+                           'name': 'get_weather', 'description': 'Weather for a city', 'parameters': TOOLS[0]['input_schema']}}],
+                       'messages': [{'role': 'user', 'content': 'Weather in Paris?'},
+                                    {'role': role, 'content': 'Be brief.'}]}
+            engine = fake_engine('ok')
+            app = create_app(engine, tok, tmpl, {})
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app, raise_app_exceptions=False), base_url='http://test') as client:
+                response = await client.post('/v1/chat/completions', json=request)
+            statuses.append(response.status_code)
+            prompts.append(engine.submit.await_args.args[0] if response.status_code == 200 else None)
+        return prompts, statuses
+
+    prompts, statuses = asyncio.run(scenario())
+    assert statuses == [200, 200]
+    assert prompts[0] == prompts[1]
+
+
 def test_claude_code_request_shape_renders(snapshot):
     # Claude Code 2.1.280: system blocks, a system message inside `messages`
     # after the first user turn, adaptive thinking, context_management and output_config.
