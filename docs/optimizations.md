@@ -4,7 +4,7 @@ What makes Sharar fast on the GB10 today, in one place: each optimization,
 where it lives, whether it is on by default, and what it measured. Update
 this page when an optimization lands, changes default or is retired; the
 dated numbers behind every row are in the linked studies. Last updated
-2026-09-18.
+2026-09-27.
 
 The earlier native batch-one profile streamed roughly 22 GB of weights per
 round at about 239 GB/s. Weight traffic remains a major cost; W3's larger
@@ -13,6 +13,38 @@ row counts also expose register pressure and memory-load waits. See the
 between effective weight bandwidth and measured hardware counters. The
 optimizations below reduce traffic, increase tokens per round, or reduce
 time spent waiting.
+
+## Serving profiles
+
+`SHARAR_PROFILE` (or `sharar-ctl serve --exact | --balanced | --fast`) sets
+the default of every speed/fidelity knob the launcher resolves; a knob set
+explicitly in the environment or the config file wins. `/get_server_info`
+reports the profile under `config`. **The default is `fast`.**
+
+| Knob | exact | balanced | fast (default) |
+|---|---|---|---|
+| Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-2 within 1.0 logit | top-3 within 2.0 logits |
+| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`) | off | off | on (same threshold) |
+| 27B calibrated 3-bit decode copies, layers and draft (`SHARAR_W3_DECODE`, `SHARAR_W3_DRAFT`) | off | on | on |
+| Flash-Next calibrated 3-bit trunk copies (`SHARAR_FLASHNEXT_W3_CHECKPOINT`) | off | off | on (`$SHARAR_RESULTS/w3-checkpoints/flashnext-current`) |
+
+Lossless in every profile: speculative decoding itself, the 3-bit draft-only
+lm_head of the Flash-Next MTP head, FP8/NVFP4 served weights, graphs.
+
+Measured cost of each lossy option (paired, exact greedy unless noted):
+
+| Option | Speed | Quality |
+|---|---|---|
+| Relaxed top-2 / 1.0, greedy (27B) | +9.8% batch one, +5.7% batch four | GSM8K 94.7 vs 95.0, HumanEval 91.5 vs 90.9; judged 13 to 14 with 26 ties |
+| Relaxed top-3 / 2.0, greedy (27B) | +21.6% batch one vs exact; +3.7% h2h median over top-2 | judged 11 to 15 (not significant); 7% of emitted tokens not the argmax |
+| Relaxed, sampled requests (27B, t = 0.6) | +4% | GSM8K-300 96.0 to 94.0, HumanEval 94.5 to 91.5 (pooled 4 better / 15 worse, p about 0.02) |
+| Relaxed top-3 / 2.0, sampled (Flash-Next, t = 0.7, #22) | median 45.6 to 49.1 tok/s (+8%) | GSM8K-200 at t = 0.7 96.5 to 94.0 (SE about 1.5) |
+| 27B calibrated 3-bit copies | decode x1.49 over NVFP4/FP8 (nearest-rounded build), calibrated +8.6% over nearest | full GSM8K 94.5 vs 94.0 exact; HumanEval within noise (layers and draft; the lm_head copy stays off) |
+| Flash-Next calibrated 3-bit trunk (#6, 2026-09-27) | h2h greedy median 56.1 to 69.6 tok/s (+24%), t = 0.7 49.4 to 62.0 (+26%) | full GSM8K 94.5 to 94.2 (20 better / 23 worse, p 0.76); HumanEval 97.0 to 94.5 (0 / 4, p 0.12); decode-path KL to BF16 0.51 to 0.96 |
+
+Evidence: [relaxed acceptance](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/relaxed-acceptance.md),
+the sampled-path study in the roadmap history, #22, [W3 calibration](w3-calibration.md),
+`$SHARAR_RESULTS/reviews/2026-09-27-fn-trunk/` for the Flash-Next trunk.
 
 ## Weights and kernels
 

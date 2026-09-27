@@ -17,6 +17,7 @@ import flashinfer
 import torch
 import torch.nn.functional as F
 
+from sharar.engine.config import current
 from sharar.engine.context import ForwardContext
 from sharar.kernels import ops
 from sharar.cache.kv_pool import KvPool
@@ -39,7 +40,9 @@ class FlashNextMtpHead:
         self.draft_head = TargetHead(self.lm_head)  # replaced by set_draft_head (#35)
         self.hidden_size, self.hc = t.hidden_size, t.hc_count
         self.hidden_width = self.hc * self.hidden_size  # the "hidden" the proposer carries per row
-        precision = precision or model.precision
+        # SHARAR_FLASHNEXT_MTP_TRUNK: the draft head's own precision (default: the trunk's). A 3-bit
+        # target with an FP8 draft head separates target error from draft error (#6).
+        precision = precision or current().flashnext_mtp_trunk or model.precision
         eps = t.rms_norm_eps
         g = lambda name: w.get(f"{PREFIX}.{name}").to(device)  # noqa: E731
         self.fc_e = TrunkLinear.from_bf16(g("fc_embedding.weight"), precision)
@@ -47,7 +50,6 @@ class FlashNextMtpHead:
         self.norm_e = GemmaRMSNorm(g("pre_fc_norm_embedding.weight"), eps)
         self.norm_h = GemmaRMSNorm(g("pre_fc_norm_hidden.weight"), eps)  # over the whole hc*H vector
         p = f"{PREFIX}.layers.0"
-        from sharar.engine.config import current
         mixers = current().flashnext_mixers
         self.attn_hc = HyperConnection.load(w, f"{p}.attn_hyper_connection", self.hc, self.hidden_size, eps, device, precision=mixers)
         self.mlp_hc = HyperConnection.load(w, f"{p}.mlp_hyper_connection", self.hc, self.hidden_size, eps, device, precision=mixers)

@@ -94,6 +94,9 @@ class FlashNext:
         expert_bytes = (moe.w13.numel() + moe.w2.numel() + (moe.s13.numel() + moe.s2.numel()) * 4) // target.num_experts
         trunk = sum(layer.bytes - layer.moe.bytes for layer in self.layers) + sum(layer.moe.router.numel() * 2 + layer.moe.shared_gate_up.bytes + layer.moe.shared_down.bytes for layer in self.layers)
         self.stream_bytes = trunk + self.mixer.bytes + self.lm_head.bytes + len(self.layers) * target.experts_per_token * expert_bytes
+        self.w3_identity = None
+        if current().flashnext_w3_checkpoint:
+            self.w3_identity = self.attach_calibrated(current().flashnext_w3_checkpoint, log)
         if log:
             log(f"  weights loaded in {time.perf_counter() - started:.0f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated "
                 f"({self.precision} trunk, {self.stream_bytes / 1e9:.2f} GB per decode token)")
@@ -127,6 +130,23 @@ class FlashNext:
         yield "mixer.down", self.mixer.down
         yield "mixer.up", self.mixer.up
         yield "lm_head", self.lm_head
+
+    def attach_calibrated(self, directory: str, log=print) -> str:
+        """Calibrated 3-bit decode copies (bench/flashnext_w3_calibrate.py) over the FP8 trunk, by `linears()` name;
+        calls of at most 64 rows then read them (`TrunkLinear.__call__`), prefill keeps the FP8 weights."""
+        from sharar.weights.w3_checkpoint import CalibratedWeights
+        if self.precision != "fp8":
+            raise ValueError("calibrated 3-bit trunk copies go over the FP8 trunk (SHARAR_FLASHNEXT_TRUNK=fp8)")
+        calibrated = CalibratedWeights(directory, revision=self.target.model_revision)
+        linears = dict(self.linears())
+        missing = sorted(set(calibrated.weights) - set(linears))
+        if missing:
+            raise ValueError(f"calibrated names not in this model: {missing[:4]}")
+        for name in calibrated.weights:
+            linears[name].w3 = calibrated.load(name, linears[name])
+        if log:
+            log(f"  w3: {len(calibrated.weights)} calibrated trunk matrices from {directory}")
+        return calibrated.identity
 
     def forward_extras(self):
         """The side inputs this model's forwards need beyond the ForwardContext (model/flashnext/extras.py)."""

@@ -297,7 +297,7 @@ green. Numerics-changing work is not mixed into these.
 | 6 | Feature taps on both models (`stream_width`, layer taps through the hyper stream); DFlash2 width from the target | Flash-Next DFlash2 (#7) |
 | 7 | One `MtpLayer` body for both targets | 27B MTP at Flash-Next quality |
 | 8 | `Trainable` interface; MTP trainer second | #40, #7 training |
-| 9 | Profiles (`--exact`, default, `--fast`) | #27 |
+| 9 | Profiles (`--exact`, `--balanced`, `--fast` = default) (#52: launcher-resolved `SHARAR_PROFILE`, reported in `EngineConfig.profile`) | #27 |
 
 Then the capability gaps, in order of expected gain: adaptive depth (#43) on
 both targets, MTP training on Flash-Next (#40), Flash-Next DFlash2 (screen the

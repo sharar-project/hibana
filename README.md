@@ -30,6 +30,7 @@ and the memory guard.
 | Command | What it does |
 |---|---|
 | `./sharar-ctl serve` | Serve on `127.0.0.1:30001`; records request traces unless `--no-traces` |
+| `./sharar-ctl serve --exact` / `--balanced` / `--fast` | Serving profile; `--fast` (every measured speed option, lossy ones included) is the default. Costs: [serving profiles](docs/optimizations.md#serving-profiles) |
 | `./sharar-ctl chat` | Terminal chat against the running server (`--think`, `/max N`, `/reset`) |
 | `./sharar-ctl status` | Serving, training, the draft in use, traces on disk |
 | `./sharar-ctl stop` | Stop serving |

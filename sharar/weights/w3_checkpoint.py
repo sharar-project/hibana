@@ -47,10 +47,11 @@ def save_weight(path: Path, weight) -> dict:
 
 
 class CalibratedWeights:
-    def __init__(self, directory: str | Path):
+    def __init__(self, directory: str | Path, revision: str = MODEL_REVISION):
+        """Calibrated copies for the target at `revision` (the 27B's by default; Flash-Next passes its own)."""
         self.directory = Path(directory)
         self.manifest = json.loads((self.directory / "manifest.json").read_text())
-        if self.manifest.get("format") != FORMAT_VERSION or self.manifest.get("target_revision") != MODEL_REVISION:
+        if self.manifest.get("format") != FORMAT_VERSION or self.manifest.get("target_revision") != revision:
             raise ValueError("calibrated W3 checkpoint format or target revision does not match")
         self.weights = self.manifest["weights"]
         self.identity = sha256(self.directory / "manifest.json")
