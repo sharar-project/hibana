@@ -325,6 +325,66 @@ def gap_profile(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = 
         g.replay = orig
 
 
+def replay_split(events: list[dict]) -> dict:
+    """From a chrome trace: per replay kind, its device span against the union of its activities; between
+    consecutive replays, the eager GPU work (activities outside any graph) against the whole window."""
+    ranges = sorted((e["ts"], e["ts"] + e["dur"], e["name"].split(":", 1)[1]) for e in events
+                    if e.get("ph") == "X" and str(e.get("name", "")).startswith("replay:"))
+    launches = sorted((e["ts"], e["args"]["correlation"]) for e in events
+                      if e.get("ph") == "X" and e.get("cat") == "cuda_runtime" and "GraphLaunch" in e.get("name", ""))
+    device = defaultdict(list)
+    for e in events:
+        if e.get("ph") == "X" and e.get("cat") in ("kernel", "gpu_memcpy", "gpu_memset"):
+            device[e["args"].get("correlation")].append((e["ts"], e["ts"] + e["dur"]))
+
+    def union(intervals) -> float:
+        total, cur = 0.0, None
+        for s0, e0 in sorted(intervals):
+            if cur is None or s0 > cur[1]:
+                total += 0 if cur is None else cur[1] - cur[0]
+                cur = [s0, e0]
+            else:
+                cur[1] = max(cur[1], e0)
+        return total + (0 if cur is None else cur[1] - cur[0])
+    acc = defaultdict(lambda: defaultdict(float))
+    windows, graph_corr = [], set()  # (start, end, kind) of each replay on the device
+    li = 0
+    for start, end, kind in ranges:
+        while li < len(launches) and launches[li][0] < start:
+            li += 1
+        corr = [c for ts, c in launches[li:] if ts <= end][:1]
+        acts = device.get(corr[0], []) if corr else []
+        if not acts:
+            continue
+        graph_corr.add(corr[0])
+        first, last = min(a for a, _ in acts), max(b for _, b in acts)
+        windows.append((first, last, kind))
+        a = acc[kind]
+        a["replays"] += 1
+        a["activities"] += len(acts)
+        a["span_ms"] += (last - first) / 1000
+        a["busy_ms"] += union(acts) / 1000
+    # Between consecutive replays: eager GPU work (kernels outside any graph) against the whole window.
+    eager = sorted(iv for c, ivs in device.items() if c not in graph_corr for iv in ivs)
+    between = defaultdict(lambda: defaultdict(float))
+    windows.sort()
+    for (s1, e1, k1), (s2, e2, k2) in zip(windows, windows[1:]):
+        inside = [(max(a, e1), min(b, s2)) for a, b in eager if b > e1 and a < s2]
+        g = between[f"{k1} -> {k2}"]
+        g["count"] += 1
+        g["window_ms"] += max(0.0, s2 - e1) / 1000
+        g["eager_ms"] += union(inside) / 1000
+    return {"per_replay": {
+        kind: {"replays": int(a["replays"]), "activities": round(a["activities"] / a["replays"]),
+               "span_ms": round(a["span_ms"] / a["replays"], 3), "busy_ms": round(a["busy_ms"] / a["replays"], 3),
+               "bubbles_ms": round((a["span_ms"] - a["busy_ms"]) / a["replays"], 3),
+               "bubble_us_per_boundary": round(1000 * (a["span_ms"] - a["busy_ms"]) / max(1, a["activities"] - a["replays"]), 2)}
+        for kind, a in acc.items()},
+        "between_replays": {k: {"count": int(g["count"]), "window_ms": round(g["window_ms"] / g["count"], 3),
+                                "eager_gpu_ms": round(g["eager_ms"] / g["count"], 3),
+                                "idle_ms": round((g["window_ms"] - g["eager_ms"]) / g["count"], 3)} for k, g in between.items()}}
+
+
 def kernel_gaps(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = None):
     """Inside each graph replay: the span from its first to its last GPU activity against the time the
     GPU spends in kernels, memcpys and memsets (their union). The difference is the bubbles between
@@ -355,43 +415,7 @@ def kernel_gaps(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = 
     with tempfile.NamedTemporaryFile(suffix=".json") as f:
         prof.export_chrome_trace(f.name)
         events = json.load(open(f.name))["traceEvents"]
-    ranges = sorted((e["ts"], e["ts"] + e["dur"], e["name"].split(":", 1)[1]) for e in events
-                    if e.get("ph") == "X" and str(e.get("name", "")).startswith("replay:"))
-    launches = sorted((e["ts"], e["args"]["correlation"]) for e in events
-                      if e.get("ph") == "X" and e.get("cat") == "cuda_runtime" and "GraphLaunch" in e.get("name", ""))
-    device = defaultdict(list)
-    for e in events:
-        if e.get("ph") == "X" and e.get("cat") in ("kernel", "gpu_memcpy", "gpu_memset"):
-            device[e["args"].get("correlation")].append((e["ts"], e["ts"] + e["dur"]))
-    acc = defaultdict(lambda: defaultdict(float))
-    li = 0
-    for start, end, kind in ranges:
-        while li < len(launches) and launches[li][0] < start:
-            li += 1
-        corr = [c for ts, c in launches[li:] if ts <= end][:1]
-        acts = sorted(device.get(corr[0], [])) if corr else []
-        if not acts:
-            continue
-        busy, cur_s, cur_e = 0.0, *acts[0]
-        for s0, e0 in acts[1:]:
-            if s0 > cur_e:
-                busy += cur_e - cur_s
-                cur_s, cur_e = s0, e0
-            else:
-                cur_e = max(cur_e, e0)
-        busy += cur_e - cur_s
-        span = max(e0 for _, e0 in acts) - acts[0][0]
-        a = acc[kind]
-        a["replays"] += 1
-        a["activities"] += len(acts)
-        a["span_ms"] += span / 1000
-        a["busy_ms"] += busy / 1000
-    row = {"batch": batch, "prompt": name, "per_replay": {
-        kind: {"replays": int(a["replays"]), "activities": round(a["activities"] / a["replays"]),
-               "span_ms": round(a["span_ms"] / a["replays"], 3), "busy_ms": round(a["busy_ms"] / a["replays"], 3),
-               "bubbles_ms": round((a["span_ms"] - a["busy_ms"]) / a["replays"], 3),
-               "bubble_us_per_boundary": round(1000 * (a["span_ms"] - a["busy_ms"]) / max(1, a["activities"] - a["replays"]), 2)}
-        for kind, a in acc.items()}}
+    row = {"batch": batch, "prompt": name, **replay_split(events)}
     out.setdefault("kernel_gaps", {})[f"batch{batch}"] = row
     print(json.dumps(row), flush=True)
 
