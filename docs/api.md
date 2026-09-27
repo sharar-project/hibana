@@ -190,3 +190,4 @@ cp "$pi_sa_pkg/examples/extensions/subagent/agents/"{scout,planner,reviewer,work
 Using the `sharar` provider above, replace `model:` in each copied agent profile with `model: sharar/qwen38-27b-nvfp4`, merge `"defaultProvider": "sharar"` and `"defaultModel": "qwen38-27b-nvfp4"` into `~/.pi/agent/settings.json`, and keep the default `agentScope: "user"` so parent and children use Sharar.
 Verified single, parallel and chained subagents and a real bug-fix task, with 1–8 subagents per call.
 Within one parallel call, the extension runs up to four subagents at once; Sharar also serves up to four requests at once, and extra work waits for a free slot.
+With thinking enabled, a subagent can occasionally repeat the same tool call many times; run Pi with `--thinking off` or cancel the run.
