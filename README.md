@@ -1,6 +1,6 @@
 # Sharar
 
-Sharar is a local inference engine for one NVIDIA GB10 (a DGX Spark). It serves
+Sharar is a local inference engine for one NVIDIA GB10 (a DGX Spark). Currently, it serves
 **Qwen3.8-27B** and **Qwen3.8-Flash-Next** (125B MoE) through OpenAI- and
 Anthropic-compatible APIs, with speculative decoding, prefix caching, 262K
 context and an NVMe session store, and it trains its speculative drafter on your
@@ -8,7 +8,7 @@ own traffic so it gets faster at the work you do.
 
 ## Speed
 
-Single stream, median over 22 prompts, same GB10 and prompts for every engine
+Batch Size 1
 ([h2h benchmark](https://github.com/abdelfattah-lab/sharar/issues/26)):
 
 | tok/s | Sharar | SGLang (fastest public setup) |
@@ -17,9 +17,6 @@ Single stream, median over 22 prompts, same GB10 and prompts for every engine
 | Qwen3.8-27B, temperature 0.7 | **74.5** | 43.7 |
 | Qwen3.8-Flash-Next, greedy | **72.9** | 41.8 |
 | Qwen3.8-Flash-Next, temperature 0.7 | **67.9** | 40.5 |
-
-Time to first token is 0.08-0.2 s for short prompts and about 0.3 s when a
-128K-token session is resumed from the cache.
 
 ## Setup
 
