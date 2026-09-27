@@ -1,129 +1,95 @@
 # Sharar
 
-Sharar is a local inference engine for one NVIDIA GB10 (a DGX Spark). It
-serves Qwen3.8-27B in NVFP4 through an OpenAI-compatible API with prefix
-caching and DFlash2 speculative decoding, and it can train the speculative
-drafter on your own traffic so it gets faster at the work you actually do.
-Outputs are the target model's own: the drafter only changes speed. By default a
-greedy request also accepts a drafted token the target ranks second within one
-logit of its first choice (about +10% throughput, one token in 25); set
-`accept_top_k: 1` on a request, or `SHARAR_ACCEPT_DEFAULT=off`, for the exact
-greedy continuation.
+Sharar is a local inference engine for one NVIDIA GB10 (a DGX Spark). It serves
+**Qwen3.8-27B** and **Qwen3.8-Flash-Next** (125B MoE) through OpenAI- and
+Anthropic-compatible APIs, with speculative decoding, prefix caching, 262K
+context and an NVMe session store, and it trains its speculative drafter on your
+own traffic so it gets faster at the work you do.
+
+## Speed
+
+Single stream, median over 22 prompts, same GB10 and prompts for every engine
+([h2h benchmark](https://github.com/abdelfattah-lab/sharar/issues/26)):
+
+| tok/s | Sharar | SGLang (fastest public setup) |
+|---|---:|---:|
+| Qwen3.8-27B, greedy | **92.5** | 44.8 |
+| Qwen3.8-27B, temperature 0.7 | **74.5** | 43.7 |
+| Qwen3.8-Flash-Next, greedy | **72.9** | 41.8 |
+| Qwen3.8-Flash-Next, temperature 0.7 | **67.9** | 40.5 |
+
+Time to first token is 0.08-0.2 s for short prompts and about 0.3 s when a
+128K-token session is resumed from the cache.
 
 ## Setup
 
 Copy [config/gb10.env.example](config/gb10.env.example) to `config/gb10.env`,
-set the model cache and results paths, then build the runtime image:
+set the model cache and results paths, then:
 
 ```bash
 docker/build.sh
-./sharar-ctl serve
+./sharar-ctl serve                                        # Qwen3.8-27B on 127.0.0.1:30001
+SHARAR_CONFIG_FILE=config/flashnext.env ./sharar-ctl serve   # Flash-Next on 127.0.0.1:30004
 ./sharar-ctl chat
 ```
 
-`sharar-ctl` is a host-side command with no dependencies beyond Python 3. See
-[operations](docs/operations.md) for prerequisites, the launcher environment
-and the memory guard.
-
-## Everyday use
+`sharar-ctl` needs only Python 3 on the host. [Operations](docs/operations.md)
+covers prerequisites, the launcher settings and the memory guard.
 
 | Command | What it does |
 |---|---|
-| `./sharar-ctl serve` | Serve on `127.0.0.1:30001`; records request traces unless `--no-traces` |
-| `./sharar-ctl serve --exact` / `--balanced` / `--fast` | Serving profile; `--fast` (every measured speed option, lossy ones included) is the default. Costs: [serving profiles](docs/optimizations.md#serving-profiles) |
-| `./sharar-ctl chat` | Terminal chat against the running server (`--think`, `/max N`, `/reset`) |
-| `./sharar-ctl status` | Serving, training, the draft in use, traces on disk |
-| `./sharar-ctl stop` | Stop serving |
-| `./sharar-ctl logs [--train]` | Container logs |
+| `./sharar-ctl serve [--exact]` | Start serving (fastest settings by default; `--exact` for the model's own outputs, e.g. benchmarks) |
+| `./sharar-ctl chat` | Terminal chat against the running server |
+| `./sharar-ctl status` / `stop` / `logs` | Server state, stop, container logs |
 
-Any OpenAI-compatible client works against `http://127.0.0.1:30001/v1`
-(chat completions, completions, streaming, thinking, tool-call parsing), and
-Anthropic Messages clients against `http://127.0.0.1:30001`; see the
-[API guide](docs/api.md). Context is 262K tokens, at most four concurrent
-requests.
+Any OpenAI-compatible client works against `http://127.0.0.1:30001/v1`, and
+Anthropic Messages clients against `http://127.0.0.1:30001`
+([API guide](docs/api.md)).
 
-## Use it from coding agents
-
-Agent harnesses run on Sharar unchanged: tool calls, streaming, thinking and
-long sessions. **Claude Code**, from the directory you want it to work in:
+## Coding agents
 
 ```bash
-tools/claude-sharar.sh                      # interactive
+tools/claude-sharar.sh                      # Claude Code on Sharar (SHARAR_URL=http://127.0.0.1:30004 for Flash-Next)
 tools/claude-sharar.sh -p "fix the failing test and run the suite"
 ```
 
-The script points Claude Code at the server (`SHARAR_URL`, default
-`http://127.0.0.1:30001`) under a model name Claude Code accepts, declares the
-server's context length, turns off telemetry, and keeps its own config
-directory (`~/.claude-sharar`) so your Anthropic login and settings are
-untouched. Claude Code warns that the model is not in its catalog and
-compacts sessions at 200K tokens; that is expected. **OpenAI-compatible
-harnesses** (OpenCode, Cline, Aider, Continue, Zed): base URL
-`http://127.0.0.1:30001/v1`, any API key and model name. From another machine,
-forward the port first: `ssh -N -L 30001:127.0.0.1:30001 <user>@<spark>`.
-
-The first request of a session prefills the harness's system prompt and tools
-(about 16K tokens for Claude Code, 8 s); later turns reuse the cache and start
-in under a second. Forced tool choice and JSON-schema output return 400 for
-now. Agent traffic is recorded like any other (`"trace": false` opts out), so
-`./sharar-ctl train` makes the drafter faster at your own agent work.
+The script points Claude Code at the server with its own config directory
+(`~/.claude-sharar`), so your Anthropic login and settings are untouched.
+OpenAI-compatible harnesses (OpenCode, Cline, Aider, Continue, Zed) use base URL
+`http://127.0.0.1:30001/v1` with any API key and model name. After the first
+request of a session, later turns start in under a second.
 
 ## Train the drafter on your traffic
 
-While you use the server, each request is recorded locally: token IDs, every
-verification round, and the context features the drafter saw. Nothing leaves
-the machine, and a request can opt out with `"trace": false`.
+Requests are recorded locally while you use the server (nothing leaves the
+machine; `"trace": false` opts a request out).
 
 ```bash
-./sharar-ctl train          # stops serving, trains on the recorded traffic until told to stop
-./sharar-ctl train stop     # final held-out evaluation, promote if better, serving comes back
-./sharar-ctl draft list     # every run, its held-out gain, and the draft in use
+./sharar-ctl train          # stop serving, train on the recorded traffic
+./sharar-ctl train stop     # evaluate on your newest traffic, promote if better, serve again
+./sharar-ctl draft list     # runs, their held-out gains, the draft in use
 ```
 
-Serving follows the promoted checkpoint automatically; `./sharar-ctl serve
---pinned` returns to the publisher's draft, `draft use RUN` picks another;
-both swap the draft inside a running server without a restart.
-The held-out set is always your newest traffic. On a repository-coding
-workload, four serve-then-train rounds over 1,000 requests raised acceptance
-from 27.5% to 31.5% of proposals and serving throughput by 12.4%; a single
-300-step session gave +12.9% on held-out prompts. Details, limits and the
-design are in [draft adaptation](docs/draft-adaptation.md).
-
-## Benchmark
-
-With a server running and exclusive GPU use:
-
-```bash
-tools/benchmark.sh                  # code, 10K input / 1K output, batch one
-tools/benchmark.sh --workload all   # code, design and reasoning
-```
-
-The launcher's defaults are the measured serving profile: FP8 DFlash2 at k=15,
-relaxed acceptance, 3-bit decode copies of the layers and the draft. The
-[3-bit quantization guide](docs/3bit-quantization-explained.md) explains the
-format, calibration and prior work from the basics. The
-[optimization inventory](docs/optimizations.md) lists what is on,
-opt-in and parked. [Performance](docs/performance.md) links every measured claim to its
-evidence; [bench/README.md](bench/README.md) covers protocols and tools.
+Serving follows the promoted draft and swaps it in without a restart. On a
+repository-coding workload, four serve-then-train rounds raised serving
+throughput by 12.4% ([draft adaptation](docs/draft-adaptation.md)).
 
 ## Develop
 
 ```bash
-bash tools/check.sh setup-cpu               # CPU contracts, no GPU or model needed
-.venv-cpu/bin/python tools/check_distribution.py
-python3 tools/check_evidence.py
-bash tools/check.sh gpu                     # inside the runtime container, exclusive GPU
+bash tools/check.sh setup-cpu     # CPU tests, no GPU or model needed
+tools/gpu-tests.sh                # GPU suite in the runtime image (exclusive GPU)
+python3 tools/check_evidence.py   # documentation links
 ```
 
 | Path | Purpose |
 |---|---|
-| `sharar/` | Engine, API, kernels, model, trainer (`sharar/train/`), installed CLI; `sharar/target.py` names the served checkpoint and its geometry |
-| `sharar-ctl`, `run-sharar.sh`, `run-sharar-train.sh` | Host command and the container launchers it drives |
-| `bench/` | Measurement drivers, corpus and A/B tools, shared support |
-| `tests/` | CPU contracts and opt-in GPU validation |
-| `tools/`, `docker/` | Checks, image build, host memory guard |
-| `docs/` | Current guides, [roadmap](roadmap.md), indexed archive of dated studies |
+| `sharar/` | Engine (`engine/`), caches (`cache/`), models (`model/`, `model/flashnext/`), kernels, weights, proposers, trainer, API |
+| `sharar-ctl`, `run-sharar.sh` | Host command and the container launcher |
+| `bench/`, `tests/`, `tools/`, `docker/` | In-process benchmarks, tests, checks, image build |
+| `docs/` | [Architecture](docs/architecture.md), [optimizations](docs/optimizations.md), [performance](docs/performance.md), [Flash-Next](docs/flashnext.md), [roadmap](roadmap.md) |
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [interfaces](docs/interfaces.md)
-before changing the engine. Sharar is licensed under [Apache 2.0](LICENSE);
-vendored code keeps its headers, see [third-party notices](THIRD_PARTY_NOTICES.md).
+HTTP evaluations (head-to-head, GSM8K/HumanEval, long context) live in
+[sharar-evals](https://github.com/abdelfattah-lab/sharar-evals). Read
+[CONTRIBUTING.md](CONTRIBUTING.md) before changing the engine. Apache 2.0
+([license](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md)).
