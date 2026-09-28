@@ -39,3 +39,68 @@ def test_feedback_token_hidden_alignment_and_stopped_rows(counts):
     saved = requests[0].cache_auxiliary[requests[0].committed_len][proposer.cache_identity][1].clone()
     norm.zero_()
     assert torch.equal(requests[0].cache_auxiliary[requests[0].committed_len][proposer.cache_identity][1], saved)
+
+
+class _RowHead:
+    """write_kv with no cross-row arithmetic: each page keeps (token, hidden row, position)."""
+    hidden_width = 2
+
+    def __init__(self):
+        self.bytes, self.kv = 0, {}
+
+    def write_kv(self, tokens, hidden, positions, pages):
+        for t, h, p, page in zip(tokens.tolist(), hidden.tolist(), positions.tolist(), pages.tolist()):
+            self.kv[page] = (t, h, p)
+
+
+@pytest.mark.parametrize('counts', [(1,), (5,), (1, 5, 2, 3), (3, 1, 0)])
+def test_device_feedback_matches_host_feedback(counts):
+    """accepted_prepare + feedback_device + accepted_publish (device acceptance) commit the rows and the
+    pending input the host's accepted_batch commits; padded bucket rows (count 0) write only page 0."""
+    s = 5
+    real = [c for c in counts if c]
+    norm = torch.randn(len(counts), s, 2).to(torch.bfloat16)  # the verify rows
+    heads, results = {}, {}
+    for path in ('host', 'device'):
+        head = heads[path] = _RowHead()
+        proposer = MtpProposer(head, ProposerContext(torch.device('cpu'), 4, 512), k=s - 1)
+        requests, outputs, tokens, pages = [], [], [], []
+        for row, count in enumerate(counts):
+            start = 7 + row * 10 if count else 0
+            drafts = [200 + row * 10 + j for j in range(s - 1)]
+            req = SimpleNamespace(proposer_state=MtpState(draft_pos=start, pending_token=50 + row,
+                                  pending_hidden=torch.full((1, 2), -1. - row, dtype=torch.bfloat16)), committed_len=start,
+                                  finished=row == 1, pages=torch.arange(512).int() + 1 + row * 512,
+                                  checkpoints={start + 2: 1}, cache_auxiliary={})
+            tokens += [50 + row] + drafts
+            pages.append(req.pages[start:start + s] if count else torch.zeros(s, dtype=torch.int32))
+            if count:
+                requests.append(req)
+                outputs.append((drafts[:count - 1] + [900 + row])[:count])
+        if path == 'host':
+            for req, out in zip(requests, outputs):
+                req.committed_len += len(out)
+            proposer.accepted_batch(requests, outputs, VerifiedFeatures(norm[:len(real)]))
+        else:
+            starts, _ = proposer.accepted_prepare(requests)
+            b = len(counts)
+            proposer.feedback_device(None, torch.tensor(starts + [0] * (b - len(starts))), torch.zeros(b, dtype=torch.int64),
+                                     torch.tensor(counts), s, norm=norm.reshape(b * s, 2), tokens=torch.tensor(tokens),
+                                     pages=torch.cat(pages))
+            for req, out in zip(requests, outputs):
+                req.committed_len += len(out)
+            proposer.accepted_publish(requests, outputs)
+        results[path] = requests
+    assert {p: v for p, v in heads['device'].kv.items() if p} == heads['host'].kv
+    for h, d in zip(results['host'], results['device']):
+        sh, sd = h.proposer_state, d.proposer_state
+        assert (sh.draft_pos, sh.pending_token) == (sd.draft_pos, sd.pending_token)
+        assert torch.equal(sh.last_hidden, sd.last_hidden)
+        assert (sh.pending_hidden is None) == (sd.pending_hidden is None)
+        if sh.pending_hidden is not None:
+            assert torch.equal(sh.pending_hidden, sd.pending_hidden)
+        assert h.cache_auxiliary.keys() == d.cache_auxiliary.keys()
+        for position in h.cache_auxiliary:
+            (ph, rh), = h.cache_auxiliary[position].values()
+            (pd, rd), = d.cache_auxiliary[position].values()
+            assert ph == pd and torch.equal(rh, rd)

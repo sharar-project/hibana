@@ -62,9 +62,17 @@ def load(args):
     return served, snap, ex
 
 
-def run_cell(ex, prompts, batch: int, depth, max_tokens: int):
-    from sharar.engine.depth import BatchDepth
+def install_depth(spec, max_batch: int, depth, policy: str | None) -> None:
+    """`depth` for every bucket, or "p": the `--policy` map (SHARAR_SPEC_DEPTHS syntax)."""
+    from sharar.engine.depth import BatchDepth, FixedDepth, parse_depths
     from sharar.engine.graphs import capture_sizes
+    if depth == "p":
+        spec.depth_policy = parse_depths(policy, capture_sizes(max_batch), spec.k) or FixedDepth(spec.k)
+    else:
+        spec.depth_policy = BatchDepth(dict.fromkeys(capture_sizes(max_batch), depth), spec.k)
+
+
+def run_cell(ex, prompts, batch: int, depth, max_tokens: int, policy: str | None = None, device_accept: bool | None = None):
     from sharar.engine.sampler import SamplingParams
     from sharar.engine.scheduler import Scheduler, SchedulerConfig
     ex.flush_cache()  # every cell prefills its prompts cold
@@ -72,7 +80,9 @@ def run_cell(ex, prompts, batch: int, depth, max_tokens: int):
     if depth == "plain":
         ex.spec = None
     else:
-        spec.depth_policy = BatchDepth(dict.fromkeys(capture_sizes(ex.max_batch), depth), spec.k)
+        install_depth(spec, ex.max_batch, depth, policy)
+        if device_accept is not None:
+            spec.device_accept = device_accept
         spec.reset_stats()
     try:
         sched = Scheduler(ex, SchedulerConfig(max_running=batch, max_queued=len(prompts)))
@@ -90,7 +100,8 @@ def run_cell(ex, prompts, batch: int, depth, max_tokens: int):
         ex.spec = spec
     tokens = sum(len(r.output_ids) for r in reqs)
     stats = spec.stats() if depth != "plain" and spec is not None else {}
-    return reqs, {"batch": batch, "depth": depth, "prompts": len(prompts), "wall_s": round(wall, 3), "output_tokens": tokens,
+    return reqs, {"batch": batch, "depth": depth if depth != "p" else policy, "device_accept": getattr(spec, "device_accept", None),
+                  "prompts": len(prompts), "wall_s": round(wall, 3), "output_tokens": tokens,
                   "tok_s": round(tokens / wall, 2), "mean_running": round(sum(occupancy) / max(1, len(occupancy)), 2),
                   "steps": sched.metrics.steps, "retractions": sched.metrics.retractions,
                   "tokens_per_round": round(stats.get("tokens_per_round", 0.0), 3), "rounds": stats.get("rounds", 0)}
@@ -157,6 +168,7 @@ def main():
     ap.add_argument("--max-batch", type=int, default=16)
     ap.add_argument("--context", type=int, default=262144)
     ap.add_argument("--data", default=os.path.join(os.environ.get("SHARAR_RESULTS", "/results"), "datasets/accuracy/gsm8k_test.jsonl"))
+    ap.add_argument("--policy", default=None, help="SHARAR_SPEC_DEPTHS map for cells of depth p, e.g. 16:3")
     ap.add_argument("--profile", default="", help="BATCH:DEPTH cells to profile in steady state after the timed cells")
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
@@ -175,9 +187,10 @@ def main():
                   "cells": []}
         run_cell(ex, prompts[:args.max_batch], args.max_batch, "plain" if ex.spec is None else 0, 32)  # warm the scheduler path at every size
         for cell in filter(None, args.cells.split(",")):
-            b, d = cell.split(":")
-            depth = d if d == "plain" else int(d)
-            reqs, row = run_cell(ex, prompts, int(b), depth, args.max_tokens)
+            b, d, *mode = cell.split(":")  # BATCH:DEPTH[:da|:host]; DEPTH plain, p (--policy) or a number
+            depth = d if d in ("plain", "p") else int(d)
+            accept = {"da": True, "host": False}[mode[0]] if mode else None
+            reqs, row = run_cell(ex, prompts, int(b), depth, args.max_tokens, args.policy, accept)
             texts = [tok.decode(r.output_ids, skip_special_tokens=True) for r in reqs]
             row["correct"] = sum(gsm_correct(t, it["answer"]) for t, it in zip(texts, items))
             row["outputs_sha"] = hashlib.sha256(json.dumps([r.output_ids for r in reqs]).encode()).hexdigest()[:16]

@@ -7,26 +7,11 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SHARAR_CONFIG_FILE:-$SCRIPT_DIR/config/gb10.env}"
 [[ -r "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
-# Serving profile (#27, docs/optimizations.md#serving-profiles): the default for every speed/fidelity knob
-# below that the environment or the config file does not set explicitly.
-#   exact     the target's own distribution: exact acceptance, no lossy weight copies (benchmarks, traces)
-#   balanced  relaxed greedy acceptance top-2 within 1.0 logit; the 27B's calibrated 3-bit decode copies
-#   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy and
-#             sampled requests, the 27B's calibrated 3-bit copies, Flash-Next's calibrated 3-bit trunk
-#   throughput  fast, with up to 16 requests decoded together (#59: evals, many agents). Verification stays within
-#             the 64 rows the 3-bit copies serve, so every load runs fast's weights: Flash-Next verifies 3 drafts
-#             at 9-16 requests, the 27B 7 at 5-8 and 3 at 9-16 (SHARAR_SPEC_DEPTHS=16:15: 27B GSM8K x1.74 instead
-#             of x1.29 over batch four, verifying wide batches on the original NVFP4/FP8 weights)
+# Serving profile: the default for every speed/fidelity knob below that the environment or the config file
+# does not set explicitly (tools/serving-profile.sh).
+source "$SCRIPT_DIR/tools/serving-profile.sh"
 PROFILE="${SHARAR_PROFILE:-fast}"
-P_MAX_BATCH=4; P_SPEC_DEPTHS=""
-case "$PROFILE" in
-  exact)    P_ACCEPT=off;   P_ACCEPT_SAMPLED=0; P_W3=0; P_W3_DRAFT=0; P_FN_W3=off ;;
-  balanced) P_ACCEPT=2:1.0; P_ACCEPT_SAMPLED=0; P_W3=1; P_W3_DRAFT=1; P_FN_W3=off ;;
-  fast)     P_ACCEPT=3:2.0; P_ACCEPT_SAMPLED=1; P_W3=1; P_W3_DRAFT=1; P_FN_W3=auto ;;
-  throughput) P_ACCEPT=3:2.0; P_ACCEPT_SAMPLED=1; P_W3=1; P_W3_DRAFT=1; P_FN_W3=auto; P_MAX_BATCH=16
-            [[ "${SHARAR_TARGET:-}" == flashnext ]] && P_SPEC_DEPTHS=16:3 || P_SPEC_DEPTHS=8:7,16:3 ;;
-  *) echo "sharar launch failed: SHARAR_PROFILE must be exact, balanced, fast or throughput" >&2; exit 1 ;;
-esac
+serving_profile "$PROFILE" "${SHARAR_TARGET:-}" || { echo "sharar launch failed: SHARAR_PROFILE must be exact, balanced, fast or throughput" >&2; exit 1; }
 IMAGE="${SHARAR_IMAGE:-sharar:qwen38-27b}"
 CONTAINER="${SHARAR_CONTAINER:-sharar-qwen38}"
 PORT="${SHARAR_PORT:-30001}"
@@ -42,6 +27,7 @@ MAX_BATCH="${SHARAR_MAX_BATCH:-$P_MAX_BATCH}"       # most requests decoded toge
 SPEC_DEPTHS="${SHARAR_SPEC_DEPTHS:-$P_SPEC_DEPTHS}"  # verify depth per batch bucket, e.g. 8:7,16:3 (0: plain decode; empty: SHARAR_SPEC everywhere)
 ACCEPT_DEFAULT="${SHARAR_ACCEPT_DEFAULT:-$P_ACCEPT}"      # relaxed acceptance for greedy requests that do not choose (K:M; off = exact)
 ACCEPT_DEFAULT_SAMPLED="${SHARAR_ACCEPT_DEFAULT_SAMPLED:-$P_ACCEPT_SAMPLED}"  # the same default for sampled requests (1/0)
+DEVICE_ACCEPT="${SHARAR_DEVICE_ACCEPT:-$P_DEVICE_ACCEPT}"  # device-resident acceptance graphs (engine/accept_graphs.py; 1/0)
 W3_DECODE="${SHARAR_W3_DECODE:-$P_W3}"   # 3-bit decode copies of the MLPs and FP8 projections for calls of at most 64 rows (1/0)
 W3_HEAD="${SHARAR_W3_HEAD:-0}"       # also the lm_head (1/0)
 W3_DRAFT="${SHARAR_W3_DRAFT:-$P_W3_DRAFT}"     # also the parallel draft's FP8 matrices (1/0; needs W3_DECODE)
@@ -74,7 +60,7 @@ if [[ "${1:-}" == "--stop" ]]; then
 fi
 
 [[ "$DRAFT_PRECISION" == bf16 || "$DRAFT_PRECISION" == fp8 ]] || fail "SHARAR_DRAFT_PRECISION must be bf16 or fp8"
-for v in W3_DECODE W3_HEAD W3_DRAFT; do [[ "${!v}" == 0 || "${!v}" == 1 ]] || fail "SHARAR_$v must be 0 or 1"; done
+for v in W3_DECODE W3_HEAD W3_DRAFT DEVICE_ACCEPT; do [[ "${!v}" == 0 || "${!v}" == 1 ]] || fail "SHARAR_$v must be 0 or 1"; done
 [[ "$MAX_BATCH" =~ ^[0-9]+$ ]] && (( MAX_BATCH >= 1 && MAX_BATCH <= 16 )) || fail "SHARAR_MAX_BATCH must be in [1, 16]"
 [[ -z "$SPEC_DEPTHS" || "$SPEC_DEPTHS" =~ ^[0-9]+:[0-9]+(,[0-9]+:[0-9]+)*$ ]] || fail "SHARAR_SPEC_DEPTHS must be BUCKET:DEPTH pairs, e.g. 8:1,16:0"
 # Flash-Next's calibrated 3-bit trunk copies (#6, bench/flashnext_w3_calibrate.py): a directory, `off`, or the
@@ -134,7 +120,7 @@ Sharar preflight OK
   Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (proposer: $PROPOSER, drafts: $SPEC, draft precision: $DRAFT_PRECISION, verify state: $VERIFY_STATE)
   Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}
   Cold tier: ${SHARAR_COLD_TIER_GIB:-automatic (spare memory up to 24 GiB)}${SHARAR_COLD_TIER_GIB:+ GiB (SHARAR_COLD_TIER_GIB)}
-  Device-resident acceptance: ${SHARAR_DEVICE_ACCEPT:-image default} (SHARAR_DEVICE_ACCEPT)
+  Device-resident acceptance: $(onoff "$DEVICE_ACCEPT") (SHARAR_DEVICE_ACCEPT; the fast profile turns it on for Flash-Next)
   Serving profile: $PROFILE (SHARAR_PROFILE: exact / balanced / fast / throughput; measured costs in docs/optimizations.md#serving-profiles)
   Batch: up to $MAX_BATCH requests (SHARAR_MAX_BATCH), verify depth by batch ${SPEC_DEPTHS:-$SPEC everywhere} (SHARAR_SPEC_DEPTHS)
   Relaxed acceptance default: $ACCEPT_DEFAULT, sampled requests $(onoff "$ACCEPT_DEFAULT_SAMPLED") (requests may set accept_top_k/accept_margin; 1 = exact)
@@ -219,10 +205,7 @@ if [[ "${SHARAR_TARGET:-}" == flashnext ]]; then
     args+=(--volume "$FN_W3:/fn-w3:ro" --env SHARAR_FLASHNEXT_W3_CHECKPOINT=/fn-w3)
   fi
 fi
-if [[ -n "${SHARAR_DEVICE_ACCEPT:-}" ]]; then
-  [[ "$SHARAR_DEVICE_ACCEPT" == 0 || "$SHARAR_DEVICE_ACCEPT" == 1 ]] || fail "SHARAR_DEVICE_ACCEPT must be 0 or 1"
-  args+=(--env "SHARAR_DEVICE_ACCEPT=$SHARAR_DEVICE_ACCEPT")   # device-resident acceptance graphs (engine/accept_graphs.py)
-fi
+args+=(--env "SHARAR_DEVICE_ACCEPT=$DEVICE_ACCEPT")   # device-resident acceptance graphs (engine/accept_graphs.py)
 if [[ -n "${SHARAR_DRAFT_VOCAB:-}" ]]; then
   [[ "$SHARAR_DRAFT_VOCAB" =~ ^[0-9]+$ ]] || fail "SHARAR_DRAFT_VOCAB must be a row count (0 = the full lm_head)"
   args+=(--env "SHARAR_DRAFT_VOCAB=$SHARAR_DRAFT_VOCAB")   # MTP drafts over the N most likely ids (proposers/draft_vocab.py)

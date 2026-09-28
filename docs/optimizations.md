@@ -4,7 +4,7 @@ What makes Sharar fast on the GB10 today, in one place: each optimization,
 where it lives, whether it is on by default, and what it measured. Update
 this page when an optimization lands, changes default or is retired; the
 dated numbers behind every row are in the linked studies. Last updated
-2026-09-27.
+2026-09-28.
 
 The earlier native batch-one profile streamed roughly 22 GB of weights per
 round at about 239 GB/s. Weight traffic remains a major cost; W3's larger
@@ -27,6 +27,7 @@ reports the profile under `config`. **The default is `fast`.**
 | Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`) | off | off | on (same threshold) | as fast |
 | 27B calibrated 3-bit decode copies, layers and draft (`SHARAR_W3_DECODE`, `SHARAR_W3_DRAFT`) | off | on | on | on |
 | Flash-Next calibrated 3-bit trunk copies (`SHARAR_FLASHNEXT_W3_CHECKPOINT`) | off | off | on (`$SHARAR_RESULTS/w3-checkpoints/flashnext-current`) | as fast |
+| Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | off | on for Flash-Next; off for the 27B | as fast |
 | Requests decoded together (`SHARAR_MAX_BATCH`, `sharar serve --max-batch`) | 4 | 4 | 4 | 16 |
 
 The throughput profile (#59) is for evaluations and several agents at once:
@@ -37,6 +38,26 @@ the profile keeps every verification within 64 rows and serves fast's
 weights at every load: `SHARAR_SPEC_DEPTHS` (verify depth per batch bucket,
 0 = plain decode) is `16:3` on Flash-Next and `8:7,16:3` on the 27B. Any
 profile takes `SHARAR_MAX_BATCH` and `SHARAR_SPEC_DEPTHS`.
+
+Lossless in every profile: speculative decoding itself, the 3-bit draft-only
+lm_head of the Flash-Next MTP head, FP8/NVFP4 served weights, graphs.
+
+Measured cost of each lossy option (paired, exact greedy unless noted):
+
+| Option | Speed | Quality |
+|---|---|---|
+| Relaxed top-2 / 1.0, greedy (27B) | +9.8% batch one, +5.7% batch four | GSM8K 94.7 vs 95.0, HumanEval 91.5 vs 90.9; judged 13 to 14 with 26 ties |
+| Relaxed top-3 / 2.0, greedy (27B) | +21.6% batch one vs exact; +3.7% h2h median over top-2 | judged 11 to 15 (not significant); 7% of emitted tokens not the argmax |
+| Relaxed, sampled requests (27B, t = 0.6) | +4% | GSM8K-300 96.0 to 94.0, HumanEval 94.5 to 91.5 (pooled 4 better / 15 worse, p about 0.02) |
+| Relaxed top-3 / 2.0, sampled (Flash-Next, t = 0.7, #22) | median 45.6 to 49.1 tok/s (+8%) | GSM8K-200 at t = 0.7 96.5 to 94.0 (SE about 1.5) |
+| 27B calibrated 3-bit copies | decode x1.49 over NVFP4/FP8 (nearest-rounded build), calibrated +8.6% over nearest | full GSM8K 94.5 vs 94.0 exact; HumanEval within noise (layers and draft; the lm_head copy stays off) |
+| Flash-Next device-resident acceptance (#36, 2026-09-28; greedy rounds) | h2h over the default without it (fast): batch one x1.057 [1.035, 1.082], four streams x1.088 [1.078, 1.098]; over the previous engine x1.159 / x1.174 | acceptance unchanged (6.14 to 6.18 emitted per round); outputs not identical to the host path (exact greedy identity 2/44: the draft KV is projected over the whole bucket, so round boundaries move); no accuracy eval yet |
+| Flash-Next calibrated 3-bit trunk (#6, 2026-09-27) | h2h greedy median 56.1 to 69.6 tok/s (+24%), t = 0.7 49.4 to 62.0 (+26%) | full GSM8K 94.5 to 94.2 (20 better / 23 worse, p 0.76); HumanEval 97.0 to 94.5 (0 / 4, p 0.12); decode-path KL to BF16 0.51 to 0.96 |
+
+Evidence: [relaxed acceptance](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/relaxed-acceptance.md),
+the sampled-path study in the roadmap history, #22, [W3 calibration](w3-calibration.md),
+`$SHARAR_RESULTS/reviews/2026-09-27-fn-trunk/` for the Flash-Next trunk,
+`$SHARAR_RESULTS/reviews/2026-09-27-idle-gaps/` for Flash-Next device-resident acceptance.
 
 ### Throughput profile (#59, 2026-09-28)
 
@@ -105,10 +126,6 @@ admissions need, so a full batch degrades the prefix cache instead of
 stalling admission.
 
 Evidence: `$SHARAR_RESULTS/reviews/2026-09-27-throughput/` (`SUMMARY.md`).
-
-Evidence: [relaxed acceptance](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/relaxed-acceptance.md),
-the sampled-path study in the roadmap history, #22, [W3 calibration](w3-calibration.md),
-`$SHARAR_RESULTS/reviews/2026-09-27-fn-trunk/` for the Flash-Next trunk.
 
 ## Weights and kernels
 
@@ -187,6 +204,7 @@ The executable coverage and dispatch rules live in
 | Trained drafter on recorded serving traffic, hot reload of the promoted checkpoint | `sharar/train/`, `sharar-ctl train` | On when a checkpoint is promoted (`draft-runs/current`) | +12.9% batch-one throughput on a coding proxy, +12.4% at concurrency four after a 1,000-request loop | [draft training](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/gb10-draft-training.md), [draft adaptation](draft-adaptation.md) |
 | Drafter adapted to the calibrated W3 target | Existing training and reload paths; step-200 artifact | Active on the local GB10 since 2026-09-17 through the promoted checkpoint | Source-file-disjoint coding proxy: served throughput +3.60% at concurrency one and +4.43% at concurrency four; positive paired acceptance and latency intervals | [calibration and adaptation](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-calibration-adaptation.md) |
 | Flash-Next MTP draft head: 3-bit copy of the lm_head for the draft steps only, top 8 rescored with the target's FP8 rows | `sharar/proposers/draft_vocab.py`, `SHARAR_DRAFT_HEAD` | On in `config/flashnext.env` since 2026-09-25 | Draft step 2.74 to 1.09 ms; picks equal the FP8 head's on 99.05% of recorded rows; served h2h x1.087 greedy, x1.077 t=0.7 (22/22 prompts), tokens per round unchanged | [Flash-Next](flashnext.md#draft-only-lm_head-2026-09-25) |
+| Flash-Next round without host gaps before verification: verify plan and indexer rows before the PLE read, PLE rows from the page cache without the thread pool (`RWF_NOWAIT`), each drafted token's PLE rows read while the next draft step runs | `sharar/engine/spec_graphs.py`, `sharar/model/flashnext/ple.py`, `extras.py`, `sharar/proposers/mtp.py` | On since 2026-09-28 | GPU idle draft->verify 3.8 to 0.1 ms per round; round 55.7 to 51.3 ms (fast, batch one); served h2h fast x1.097 batch one, x1.079 at four streams (22/22 prompts); exact x1.067, identity 44/44 | [Flash-Next](flashnext.md#round-idle-gaps-2026-09-28) |
 | **Relaxed acceptance** (accept a drafted token within the target's top-k and a logit margin) | `sharar/engine/spec.py`, `sharar/api/validation.py` | On for greedy requests that do not choose: top-2 within 1.0 logit (`SHARAR_ACCEPT_DEFAULT`); sampled requests exact | +9.8% batch one, +5.7% batch four, +14.8% ShareGPT; 53 judged prompts 13 to 14 with 26 ties; GSM8K and HumanEval unchanged | [relaxed acceptance](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/relaxed-acceptance.md), [accuracy](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/accuracy-benchmarks.md) |
 
 ## Graphs, scheduling and memory
@@ -208,7 +226,7 @@ The executable coverage and dispatch rules live in
 | Candidate | Result | Status |
 |---|---|---|
 | FP8 GEMM at 16 rows through the GEMV path (`fp8_m16`) | Round cost x0.985 on the 101-family gate | Moot in the served profile: with `SHARAR_W3_DECODE=1` every FP8 projection at 64 rows or fewer takes the 3-bit copy before the FP8 dispatch; only the exact NVFP4/FP8 path (`SHARAR_W3_DECODE=0`) would use it ([family gate](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/family-gate.md)) |
-| Device-resident acceptance (`SHARAR_DEVICE_ACCEPT=1`: accept, reconstruct, conv commit and draft feedback in one graph per bucket, one host wait) | Engine-loop round cost x0.944 at batch four / 10K, x0.883 at 1K, x0.983 at batch one; HTTP +2% at concurrency one, unchanged at four (engine thread per-step 117 ms on both paths) | Opt-in, exact; serving gain needs lazy round completion ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/device-accept.md)) |
+| Device-resident acceptance (`SHARAR_DEVICE_ACCEPT=1`: accept, reconstruct, conv commit and draft feedback in one graph per bucket, one host wait) | Engine-loop round cost x0.944 at batch four / 10K, x0.883 at 1K, x0.983 at batch one; HTTP +2% at concurrency one, unchanged at four (engine thread per-step 117 ms on both paths) | Opt-in, exact on the 27B; serving gain needs lazy round completion ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/device-accept.md)). Flash-Next MTP (2026-09-28): GPU idle per round 3.5 to 0.45 ms, served h2h fast x1.057 batch one and x1.088 at four streams over the default, tokens per round unchanged; not bitwise (the draft KV is projected over the whole bucket: identity 2/44 on exact); on in the `fast` profile for Flash-Next since 2026-09-28 ([serving profiles](#serving-profiles), [Flash-Next](flashnext.md#round-idle-gaps-2026-09-28)) |
 | KV page size 16 | Decode attention unchanged; verify attention 2.52 to 2.08 ms (batch one) and 8.49 to 7.42 ms (batch four) per round at 10K context, under 1% of the round | Parked; `bench/kv_page_size.py` (2026-09-18) |
 | NVFP4 draft body | Round cost x0.971; acceptance not resolved | Needs the trained-draft comparison |
 | Prompt-lookup second verify branch | Offline oracle +14 to 50% tokens per round, served +1.4% | Parked on `feat/lookup-branch` ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/lookup-branch.md)) |

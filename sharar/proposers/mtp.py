@@ -8,6 +8,7 @@ import torch
 from sharar.target import DEFAULT_TARGET
 
 from sharar.engine.contracts import Capabilities, FeatureRequest, ProposerContext, ProposerRequirements
+from sharar.engine.rejection import DraftColumns, Proposal
 
 
 @dataclass
@@ -31,12 +32,18 @@ class MtpProposer:
         # exactly as point masses (engine/rejection.py), like the parallel drafts.
         self.requirements = ProposerRequirements("mtp", FeatureRequest(final_norm=True), persistent_bytes=head.bytes,
                                                  greedy_only=False, max_depth=8,
-                                                 capabilities=Capabilities(draft_head=getattr(head, "DRAFT_HEADS", False), short_drafts=True))
+                                                 capabilities=Capabilities(device_feedback=True, draft_head=getattr(head, "DRAFT_HEADS", False),
+                                                                           short_drafts=True))
         self.graphs = None
+        self._fb = None  # device acceptance buffers (`_feedback_buffers`)
         self._host_tokens = torch.empty(context.max_batch * (k + 1), dtype=torch.int64,
                                         pin_memory=context.device.type == "cuda")
         self._upload_done = torch.cuda.Event() if context.device.type == "cuda" else None
         self._upload_pending = False
+        # Each drafted column's host copy, behind its step (DraftColumns): Flash-Next reads a draft
+        # token's PLE rows while the next step runs.
+        self._host_drafts = torch.empty((k, context.max_batch), dtype=torch.int64, pin_memory=context.device.type == "cuda")
+        self._draft_events = [torch.cuda.Event() for _ in range(k)] if context.device.type == "cuda" else None
         target = getattr(head, 'target', DEFAULT_TARGET)
         self.target = target
         self.cache_identity = (target.model_id, target.model_revision, "native-mtp", "final_norm-v1", "bf16-kv-target-forced-v1")
@@ -108,11 +115,19 @@ class MtpProposer:
             kv.append(torch.cat([req.pages[1:pos], pages[i, :1]]))
         hidden, token = self._step(inputs.tokens, torch.cat(hids), inputs.positions, pages[:, 0].contiguous(), kv, graphs)
         drafts = [token]
+        self._column(0, token)
         for j in range(2, (self.k if depth is None else depth) + 1):
             kv = [torch.cat([r.pages[1:r.context_len - 1], pages[i, :j]]) for i, r in enumerate(requests)]
             hidden, token = self._step(drafts[-1], hidden, inputs.positions + j - 1, pages[:, j - 1].contiguous(), kv, graphs)
             drafts.append(token)
-        return torch.stack(drafts, dim=1)
+            self._column(j - 1, token)
+        columns = DraftColumns(self._host_drafts, self._draft_events, len(requests)) if self._draft_events is not None else None
+        return Proposal(torch.stack(drafts, dim=1), columns=columns)
+
+    def _column(self, j: int, token: torch.Tensor) -> None:
+        if self._draft_events is not None:
+            self._host_drafts[j, :token.shape[0]].copy_(token, non_blocking=True)
+            self._draft_events[j].record()
 
     def _step(self, tokens, hidden, positions, pages, kv, graphs):
         if graphs and self.graphs is not None:
@@ -167,6 +182,65 @@ class MtpProposer:
         state.pending_token = None if req.finished else int(emitted[-1])
         state.pending_hidden = None if req.finished else features.norm[row, len(emitted) - 1:len(emitted)]
         state.draft_pos = req.committed_len
+
+    # ---- device-resident acceptance (engine/accept_graphs.py, SHARAR_DEVICE_ACCEPT=1) ----
+    def _feedback_buffers(self) -> dict:
+        """Static rows a captured acceptance pass reads and writes: each request's pending hidden (staged
+        by accepted_prepare), its verify rows and the row its accepted block ends on."""
+        if self._fb is None:
+            b, w, d = self.context.max_batch, self.head.hidden_width, self.context.device
+            self._fb = {"pending": torch.zeros((b, w), dtype=torch.bfloat16, device=d),
+                        "rows": torch.zeros((b, self.k + 1, w), dtype=torch.bfloat16, device=d),
+                        "last": torch.zeros((b, w), dtype=torch.bfloat16, device=d)}
+        return self._fb
+
+    def accepted_prepare(self, requests):
+        """Validate the batch and stage its pending hidden rows before a captured feedback pass.
+        Returns (starts, ring slots): the committed prefix each block continues; MTP has no rings."""
+        if not 1 <= len(requests) <= self.context.max_batch:
+            raise ValueError("invalid MTP feedback batch")
+        states = [self._state(req) for req in requests]
+        if any(s.pending_token is None or s.pending_hidden is None or not s.valid_prefix or s.draft_pos != req.committed_len
+               for s, req in zip(states, requests)):
+            raise ValueError("MTP feedback does not follow the pending input")
+        self._feedback_buffers()["pending"][:len(requests)].copy_(torch.cat([s.pending_hidden for s in states]))
+        return [req.committed_len for req in requests], [0] * len(requests)
+
+    def feedback_device(self, features, starts, ring_slots, counts, steps, *, norm=None, tokens=None, pages=None):
+        """`_accepted` for every request of a bucket in one pass, on the device.
+
+        Static shapes for graph capture: norm [b*steps, W] the verify rows, tokens and pages [b*steps] the
+        verify block's inputs (the pending token, then the drafts) and pages, starts/counts [b] int64.
+        Every row's draft KV is projected and rows past a request's count land on the dummy page 0.
+        The projection sees all b*steps rows, the host path only a request's accepted rows, so with an
+        FP8 draft layer (one dynamic activation scale per call) the committed KV matches the host's to
+        FP8 rounding, not bitwise; drafts, and so round boundaries, can drift."""
+        fb = self._feedback_buffers()
+        b = starts.shape[0]
+        rows = norm[:b * steps].view(b, steps, -1)
+        hidden = torch.cat([fb["pending"][:b].unsqueeze(1), rows[:, :steps - 1]], dim=1).reshape(b * steps, -1)
+        offsets = torch.arange(steps, device=starts.device)
+        positions = (starts[:, None] + offsets[None, :]).reshape(-1)
+        valid = (offsets[None, :] < counts[:, None]).reshape(-1)
+        write = torch.where(valid, pages[:b * steps], torch.zeros_like(pages[:b * steps]))
+        self.head.write_kv(tokens[:b * steps], hidden, positions, write)
+        fb["rows"][:b, :steps].copy_(rows)
+        fb["last"][:b].copy_(rows[torch.arange(b, device=starts.device), (counts - 1).clamp(min=0)])
+
+    def accepted_publish(self, requests, emitted):
+        """The host half of `_accepted` after the device feedback pass landed: pending input, checkpoints."""
+        fb = self._feedback_buffers()
+        last = fb["last"][:len(requests)].clone()  # the buffers belong to the next round's pass
+        for i, (req, tokens) in enumerate(zip(requests, emitted)):
+            state = self._state(req)
+            count = len(tokens)
+            if not 1 <= count <= self.k + 1 or state.draft_pos != req.committed_len - count:
+                raise ValueError("MTP feedback does not follow the pending input")
+            state.last_hidden = last[i]
+            self._checkpoint(req, req.committed_len - count, req.committed_len, fb["rows"][i, :count])
+            state.pending_token = None if req.finished else int(tokens[-1])
+            state.pending_hidden = None if req.finished else last[i:i + 1]
+            state.draft_pos = req.committed_len
 
     def release(self, req):
         req.proposer_state = None
