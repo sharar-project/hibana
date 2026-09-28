@@ -173,7 +173,7 @@ def main():
                   "allocated_gib": round(torch.cuda.memory_allocated() / 2**30, 2),
                   "config": {k: v for k, v in __import__("sharar.engine.config", fromlist=["current"]).current().describe().items()},
                   "cells": []}
-        run_cell(ex, prompts[:16], 16, "plain" if ex.spec is None else 0, 32)  # warm the scheduler path at every size
+        run_cell(ex, prompts[:args.max_batch], args.max_batch, "plain" if ex.spec is None else 0, 32)  # warm the scheduler path at every size
         for cell in filter(None, args.cells.split(",")):
             b, d = cell.split(":")
             depth = d if d == "plain" else int(d)

@@ -16,17 +16,25 @@ time spent waiting.
 
 ## Serving profiles
 
-`SHARAR_PROFILE` (or `sharar-ctl serve --exact | --balanced | --fast`) sets
+`SHARAR_PROFILE` (or `sharar-ctl serve --exact | --balanced | --fast | --throughput`) sets
 the default of every speed/fidelity knob the launcher resolves; a knob set
 explicitly in the environment or the config file wins. `/get_server_info`
 reports the profile under `config`. **The default is `fast`.**
 
-| Knob | exact | balanced | fast (default) |
-|---|---|---|---|
-| Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-2 within 1.0 logit | top-3 within 2.0 logits |
-| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`) | off | off | on (same threshold) |
-| 27B calibrated 3-bit decode copies, layers and draft (`SHARAR_W3_DECODE`, `SHARAR_W3_DRAFT`) | off | on | on |
-| Flash-Next calibrated 3-bit trunk copies (`SHARAR_FLASHNEXT_W3_CHECKPOINT`) | off | off | on (`$SHARAR_RESULTS/w3-checkpoints/flashnext-current`) |
+| Knob | exact | balanced | fast (default) | throughput |
+|---|---|---|---|---|
+| Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-2 within 1.0 logit | top-3 within 2.0 logits | as fast |
+| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`) | off | off | on (same threshold) | as fast |
+| 27B calibrated 3-bit decode copies, layers and draft (`SHARAR_W3_DECODE`, `SHARAR_W3_DRAFT`) | off | on | on | on |
+| Flash-Next calibrated 3-bit trunk copies (`SHARAR_FLASHNEXT_W3_CHECKPOINT`) | off | off | on (`$SHARAR_RESULTS/w3-checkpoints/flashnext-current`) | as fast |
+| Requests decoded together (`SHARAR_MAX_BATCH`, `sharar serve --max-batch`) | 4 | 4 | 4 | 16 |
+
+The throughput profile (#59) is for evaluations and several agents at once:
+it batches up to 16 requests (CUDA graphs for 1, 2, 4, 8 and 16 rows) with
+the proposer's full depth, and a single request runs exactly as in fast. Any
+profile takes `SHARAR_MAX_BATCH`; `SHARAR_SPEC_DEPTHS` (`BUCKET:DEPTH`, 0 =
+plain decode) verifies shallower blocks per batch bucket, which measured
+slower on both targets (below), so no profile sets it.
 
 Lossless in every profile: speculative decoding itself, the 3-bit draft-only
 lm_head of the Flash-Next MTP head, FP8/NVFP4 served weights, graphs.
@@ -41,6 +49,48 @@ Measured cost of each lossy option (paired, exact greedy unless noted):
 | Relaxed top-3 / 2.0, sampled (Flash-Next, t = 0.7, #22) | median 45.6 to 49.1 tok/s (+8%) | GSM8K-200 at t = 0.7 96.5 to 94.0 (SE about 1.5) |
 | 27B calibrated 3-bit copies | decode x1.49 over NVFP4/FP8 (nearest-rounded build), calibrated +8.6% over nearest | full GSM8K 94.5 vs 94.0 exact; HumanEval within noise (layers and draft; the lm_head copy stays off) |
 | Flash-Next calibrated 3-bit trunk (#6, 2026-09-27) | h2h greedy median 56.1 to 69.6 tok/s (+24%), t = 0.7 49.4 to 62.0 (+26%) | full GSM8K 94.5 to 94.2 (20 better / 23 worse, p 0.76); HumanEval 97.0 to 94.5 (0 / 4, p 0.12); decode-path KL to BF16 0.51 to 0.96 |
+
+### Throughput profile (#59, 2026-09-28)
+
+In-process scheduler cells (`bench/throughput_batch.py`): 64 GSM8K problems
+(the accuracy eval's prompt, thinking off, greedy, exact acceptance, 640
+tokens) submitted at once, run until idle, cold prefix cache; aggregate
+output tok/s including prefill and the tail where fewer than BATCH requests
+remain. Image `sharar:main-20260927b` with the branch mounted, fast-profile
+weights, 262K context.
+
+| Batch : verify depth | Flash-Next (MTP k=4) | 27B (DFlash2 k=15) |
+|---|---:|---:|
+| 4 : k (the fast profile) | 123.8 | 276.3 |
+| 8 : k | | 359.7 |
+| 8 : 7 / 3 | | 357.3 / 256.7 |
+| 8 : 2 / 1 / 0 | 148.2 / 124.7 / 88.8 | |
+| **16 : k** | **220.3 (x1.78)** | **423.2 (x1.53)** |
+| 16 : 7 / 3 | | 429.4 / 345.1 |
+| 16 : 2 / 1 | 191.4 / 159.1 | / 226.8 |
+| 16 : 0 (plain decode) | 110.0 | 120.8 |
+
+Speculation stays worth its full depth at 16 rows on both targets: the
+verify rows cost less than the tokens they add. Plain decode at batch 16 is
+slower than batch four with speculation. Flash-Next plain decode spends 15%
+of its step on the proposer following every row (110.0 vs 128.6 tok/s with
+the proposer detached). In steady state (16 requests decoding, no prefill)
+the 27B's batch-16 step is 194 ms for 130 tokens (668 tok/s), 97% of it GPU
+kernels. GSM8K correct counts in every cell were 59 to 64 of 64.
+
+Served (HTTP, `sharar-evals` accuracy eval, exact acceptance): SERVED_TABLE
+
+Memory at batch 16 with the 262K context: the pool guarantees one request
+at 262K or the batch-four total (4 x 32K tokens) split between the running
+requests, and requests share the rest; admission waits when the pool is
+full. Flash-Next plans about 277K-279K KV tokens and 20-21 state slots (1
+dummy, 16 live, the rest prompt snapshots): 16 requests of about 17K tokens
+each at once. The 27B plans 517K KV tokens and 96 slots: 16 requests of
+32K. Above four requests, prefill snapshots never take the slots the next
+admissions need, so a full batch degrades the prefix cache instead of
+stalling admission.
+
+Evidence: `$SHARAR_RESULTS/reviews/2026-09-27-throughput/` (`SUMMARY.md`).
 
 Evidence: [relaxed acceptance](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/relaxed-acceptance.md),
 the sampled-path study in the roadmap history, #22, [W3 calibration](w3-calibration.md),

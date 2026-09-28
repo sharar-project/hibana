@@ -35,6 +35,8 @@ budget separately. Automatic KV capacity depends on available memory.
 | Draft precision | FP8 (the measured serving profile; the 3-bit draft copy applies to it) | `SHARAR_DRAFT_PRECISION=bf16` for the publisher's precision |
 | Accepted state | Reconstruction | `SHARAR_VERIFY_STATE` |
 | Context per request (prompt plus output) | 262,144 (the model's native length) | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length` (the engine's own default is 32,768). The pool guarantees one request at that length (8 GiB of FP8 KV at 262K) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
+| Requests decoded together | 4 (16 in the throughput profile) | `SHARAR_MAX_BATCH` / `sharar serve --max-batch`, 1-16. Above four, the pool guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full context: at 262K, Flash-Next holds 16 requests of about 17K tokens each, the 27B 16 of 32K; a request that does not fit waits. `SHARAR_PROFILE=throughput` (`sharar-ctl serve --throughput`) sets 16 for evaluations and several agents at once ([measurements](optimizations.md#throughput-profile-59-2026-09-28)) |
+| Verify depth per batch size | The proposer's depth at every batch | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` / `sharar serve --spec-depths` (buckets 1, 2, 4, 8, 16; 0 = plain decode). Measured slower than the full depth on both targets; kept for experiments and adaptive depth (#43) |
 | Image | `sharar:qwen38-27b` | `SHARAR_IMAGE` |
 | Container / port | `sharar-qwen38` / 30001 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
 | Request traces | Off | `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |

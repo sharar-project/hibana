@@ -13,15 +13,18 @@ CONFIG_FILE="${SHARAR_CONFIG_FILE:-$SCRIPT_DIR/config/gb10.env}"
 #   balanced  relaxed greedy acceptance top-2 within 1.0 logit; the 27B's calibrated 3-bit decode copies
 #   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy and
 #             sampled requests, the 27B's calibrated 3-bit copies, Flash-Next's calibrated 3-bit trunk
-#   throughput  fast, with up to 16 requests decoded together (#59: evals, many agents); the proposer's full
-#             depth stays best at 16 rows on both targets (shallower or no drafts measured slower)
+#   throughput  fast, with up to 16 requests decoded together (#59: evals, many agents). Verification stays within
+#             the 64 rows the 3-bit copies serve, so every load runs fast's weights: Flash-Next verifies 3 drafts
+#             at 9-16 requests, the 27B 7 at 5-8 and 3 at 9-16 (SHARAR_SPEC_DEPTHS=16:15 is faster on the 27B
+#             but verifies wide batches on the original NVFP4/FP8 weights)
 PROFILE="${SHARAR_PROFILE:-fast}"
-P_MAX_BATCH=4
+P_MAX_BATCH=4; P_SPEC_DEPTHS=""
 case "$PROFILE" in
   exact)    P_ACCEPT=off;   P_ACCEPT_SAMPLED=0; P_W3=0; P_W3_DRAFT=0; P_FN_W3=off ;;
   balanced) P_ACCEPT=2:1.0; P_ACCEPT_SAMPLED=0; P_W3=1; P_W3_DRAFT=1; P_FN_W3=off ;;
   fast)     P_ACCEPT=3:2.0; P_ACCEPT_SAMPLED=1; P_W3=1; P_W3_DRAFT=1; P_FN_W3=auto ;;
-  throughput) P_ACCEPT=3:2.0; P_ACCEPT_SAMPLED=1; P_W3=1; P_W3_DRAFT=1; P_FN_W3=auto; P_MAX_BATCH=16 ;;
+  throughput) P_ACCEPT=3:2.0; P_ACCEPT_SAMPLED=1; P_W3=1; P_W3_DRAFT=1; P_FN_W3=auto; P_MAX_BATCH=16
+            [[ "${SHARAR_TARGET:-}" == flashnext ]] && P_SPEC_DEPTHS=16:3 || P_SPEC_DEPTHS=8:7,16:3 ;;
   *) echo "sharar launch failed: SHARAR_PROFILE must be exact, balanced, fast or throughput" >&2; exit 1 ;;
 esac
 IMAGE="${SHARAR_IMAGE:-sharar:qwen38-27b}"
@@ -36,7 +39,7 @@ DRAFT_DIR="${SHARAR_DRAFT:-}"                      # trained draft checkpoint di
 TRACES_MAX_MIB="${SHARAR_TRACES_MAX_MIB:-32768}"
 MAX_CONTEXT="${SHARAR_MAX_CONTEXT:-262144}"   # prompt plus output per request, up to the model's native 262144
 MAX_BATCH="${SHARAR_MAX_BATCH:-$P_MAX_BATCH}"       # most requests decoded together, 1-16
-SPEC_DEPTHS="${SHARAR_SPEC_DEPTHS:-}"              # verify depth per batch bucket, e.g. 8:7,16:3 (0: plain decode; unset: SHARAR_SPEC everywhere)
+SPEC_DEPTHS="${SHARAR_SPEC_DEPTHS:-$P_SPEC_DEPTHS}"  # verify depth per batch bucket, e.g. 8:7,16:3 (0: plain decode; empty: SHARAR_SPEC everywhere)
 ACCEPT_DEFAULT="${SHARAR_ACCEPT_DEFAULT:-$P_ACCEPT}"      # relaxed acceptance for greedy requests that do not choose (K:M; off = exact)
 ACCEPT_DEFAULT_SAMPLED="${SHARAR_ACCEPT_DEFAULT_SAMPLED:-$P_ACCEPT_SAMPLED}"  # the same default for sampled requests (1/0)
 W3_DECODE="${SHARAR_W3_DECODE:-$P_W3}"   # 3-bit decode copies of the MLPs and FP8 projections for calls of at most 64 rows (1/0)
