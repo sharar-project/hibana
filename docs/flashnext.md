@@ -183,6 +183,29 @@ arms k = 3, 5, 4, 3, 5; paired per prompt against k = 3:
 Deeper drafts win where acceptance is high and lose where it is low; `config/flashnext.env` uses
 k = 4. Adaptive depth (stop drafting when the draft is unsure) is the follow-up.
 
+## Round idle gaps (2026-09-28)
+
+The GPU waited for the host for about 7.7 ms of each 55.7 ms MTP round (fast profile, batch one, #36;
+`bench/flashnext_round.py --gap-profile --kernel-gaps`). Inside the verify graph the node bubbles are only
+0.3 ms, so the "9 ms outside kernels" of #25 was this host time between replays. Draft->verify: the PLE rows
+waited for the whole draft block, then went through the 32-thread pool even when the page cache held them
+(1.1 ms for 80 cached rows), then the plan and indexer rows ran. Now the plan and indexer rows come first, cached
+rows are read without the threads (`RWF_NOWAIT`; only misses go to the pool), and the MTP proposer copies each
+drafted column to the host behind its step, so a token's rows are read while the next step runs
+(`DraftColumns`). Verify->draft: host acceptance and per-request draft KV launches; `SHARAR_DEVICE_ACCEPT=1`
+now covers MTP too (`feedback_device` projects the draft KV over the whole bucket inside the accept graph).
+Evidence `$SHARAR_RESULTS/reviews/2026-09-27-idle-gaps/`:
+
+| fast profile | round ms b1 | GPU idle b1 | served batch one | served four streams |
+|---|---:|---:|---|---|
+| before | 55.7 | 7.7 | 73.1 tok/s median | 119.2 tok/s aggregate |
+| pieces 1+2 (default) | 51.3 | 3.5 | x1.097 [1.090, 1.104], 22/22 | x1.079 [1.068, 1.090], 22/22 |
+| + device acceptance (opt-in) | 49.8 | 0.45 | x1.159 [1.137, 1.186], 22/22 | x1.174 [1.162, 1.187], 22/22 |
+
+Exact profile: pieces 1+2 x1.067 at batch one with greedy identity 44/44 against the previous engine; device
+acceptance adds x1.051 but is not bitwise (identity 2/44; the draft KV's FP8 activation scale spans the whole
+bucket, so proposals and round boundaries drift), hence opt-in.
+
 ## Not done
 
 Speculation for sampled requests (MTP is greedy-only, #22), layer feature
