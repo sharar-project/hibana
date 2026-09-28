@@ -121,6 +121,10 @@ early warning. Layer 2 resolves speed to about 3.5% (a warm baseline repeat read
 second exact process x0.986); a smaller gain needs the served, interleaved h2h
 arms. Argmax agreement breaks exact logit ties by index order, so identical
 distributions read about 99.3%, not 100%; the floor carries the same effect.
+Calibration on Flash-Next (2026-09-28): the nearest-rounded 3-bit trunk separates from
+exact on all three layers (layer-1 KL 0.184 against a 0.013 floor, tokens per round x0.65,
+screen -4.9 points, p < 0.001); exact against exact stays within every floor (screen
++0.7 points, p 0.44).
 Relaxed acceptance does not move layer 1 (the distribution is
 unchanged); it shows in layers 2 and 3. Sampled requests are not scored.
 

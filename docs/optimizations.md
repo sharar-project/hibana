@@ -42,6 +42,14 @@ Measured cost of each lossy option (paired, exact greedy unless noted):
 | 27B calibrated 3-bit copies | decode x1.49 over NVFP4/FP8 (nearest-rounded build), calibrated +8.6% over nearest | full GSM8K 94.5 vs 94.0 exact; HumanEval within noise (layers and draft; the lm_head copy stays off) |
 | Flash-Next calibrated 3-bit trunk (#6, 2026-09-27) | h2h greedy median 56.1 to 69.6 tok/s (+24%), t = 0.7 49.4 to 62.0 (+26%) | full GSM8K 94.5 to 94.2 (20 better / 23 worse, p 0.76); HumanEval 97.0 to 94.5 (0 / 4, p 0.12); decode-path KL to BF16 0.51 to 0.96 |
 
+New lossy options are judged by the lossy-change gate, `tools/lossy-gate.py`
+([rules](../CONTRIBUTING.md#judge-a-lossy-option)). Its first reading, the Flash-Next `fast`
+profile against `exact` (image `sharar:main-20260927b`, 2026-09-28): decode x1.347 [1.309, 1.389]
+at batch one; layer 1 KL 0.081 against a 0.013 floor (argmax 91.0% against 96.4%; prose and
+multilingual 85-88%, code and math 96%); tokens per round x1.165; screen pooled -0.8 points
+[-2.5, +0.9] (17 better / 23 worse, p 0.43; HumanEval 2/6); verdict `fast`, the full sets needed
+for `balanced`. Evidence `$SHARAR_RESULTS/reviews/2026-09-27-lossy-gate-fast/`.
+
 Evidence: [relaxed acceptance](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/relaxed-acceptance.md),
 the sampled-path study in the roadmap history, #22, [W3 calibration](w3-calibration.md),
 `$SHARAR_RESULTS/reviews/2026-09-27-fn-trunk/` for the Flash-Next trunk.
