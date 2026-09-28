@@ -15,8 +15,8 @@ CONFIG_FILE="${SHARAR_CONFIG_FILE:-$SCRIPT_DIR/config/gb10.env}"
 #             sampled requests, the 27B's calibrated 3-bit copies, Flash-Next's calibrated 3-bit trunk
 #   throughput  fast, with up to 16 requests decoded together (#59: evals, many agents). Verification stays within
 #             the 64 rows the 3-bit copies serve, so every load runs fast's weights: Flash-Next verifies 3 drafts
-#             at 9-16 requests, the 27B 7 at 5-8 and 3 at 9-16 (SHARAR_SPEC_DEPTHS=16:15 is faster on the 27B
-#             but verifies wide batches on the original NVFP4/FP8 weights)
+#             at 9-16 requests, the 27B 7 at 5-8 and 3 at 9-16 (SHARAR_SPEC_DEPTHS=16:15: 27B GSM8K x1.74 instead
+#             of x1.29 over batch four, verifying wide batches on the original NVFP4/FP8 weights)
 PROFILE="${SHARAR_PROFILE:-fast}"
 P_MAX_BATCH=4; P_SPEC_DEPTHS=""
 case "$PROFILE" in

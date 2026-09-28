@@ -72,8 +72,27 @@ batches on the original weights; set `SHARAR_SPEC_DEPTHS=16:15` where speed
 matters more than serving fast's weights. GSM8K correct counts in every
 cell were 59 to 64 of 64.
 
-Served (HTTP, `sharar-evals` accuracy eval, exact acceptance, image
-`sharar:throughput`): SERVED_TABLE
+Served (HTTP, `sharar-evals` accuracy eval, exact acceptance, greedy,
+image `sharar:throughput`, requests in flight = the profile's batch):
+
+| Target, arm | GSM8K-1319 wall | accuracy (paired vs batch four) | HumanEval wall, pass@1 |
+|---|---:|---|---|
+| Flash-Next fast, 4 in flight | 3338.9 s | 94.0% | 290 s, 94.5% (#6 run) |
+| **Flash-Next throughput, 16** | **1943.2 s (x1.72)** | 94.2% (20 / 17, McNemar p 0.74) | 192.0 s, 93.3% (1 / 3, p 0.62) |
+| Flash-Next 16:4 (80 rows, FP8 trunk) | 1962.0 s (x1.70) | 93.9% (22 / 23, p 1.00); 335 tokens per item against 318 | 177.4 s, 96.3% |
+| 27B fast, 4 in flight | 1442.1 s | 94.2% | 88.0 s, 93.3% |
+| **27B throughput (8:7, 16:3), 16** | **1120.2 s (x1.29)** | 94.4% (14 / 11, p 0.69) | 90.7 s, 93.3% |
+| 27B `SHARAR_SPEC_DEPTHS=16:15` (full depth, wide verifies on the original weights) | 827.7 s (x1.74) | 93.6% (20 / 28, p 0.31); 350 against 328 tokens per item | |
+Flash-Next reaches the #59 gate (x1.7 on the full GSM8K with accuracy within
+noise) with fast's weights at every load. The 27B reaches it only with full
+depth, which verifies batches of five or more on the original NVFP4/FP8
+weights (longer answers, as the exact weights write); with fast's weights its
+batch-four rounds already verify 64 rows, so a wide batch mainly trades depth
+for rows (x1.29). The profile keeps fast's weights so that paired evaluations
+of lossy weight candidates measure them; set `SHARAR_SPEC_DEPTHS=16:15` on the
+27B for speed. Batch-one latency in the
+fast profile is unchanged (h2h probes / greedy median): Flash-Next 70.8 / 72.8
+tok/s against 71.1 / 72.9 at #52, the 27B 128.3 / 93.9 against 126.6 / 92.5.
 
 Memory at batch 16 with the 262K context: the pool guarantees one request
 at 262K or the batch-four total (4 x 32K tokens) split between the running
