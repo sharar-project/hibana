@@ -96,6 +96,53 @@ def run_cell(ex, prompts, batch: int, depth, max_tokens: int):
                   "tokens_per_round": round(stats.get("tokens_per_round", 0.0), 3), "rounds": stats.get("rounds", 0)}
 
 
+def profile_cell(ex, prompts, batch: int, depth, steps: int = 24) -> dict:
+    """Steady-state steps with `batch` requests decoding (every prefill done): wall time against GPU kernel
+    time by category (the remainder is host work, launches and idle gaps), and the host functions that
+    took the longest."""
+    from torch.profiler import ProfilerActivity, profile
+    from bench.flashnext_round import kernel_time
+    from sharar.engine.depth import BatchDepth
+    from sharar.engine.graphs import capture_sizes
+    from sharar.engine.sampler import SamplingParams
+    from sharar.engine.scheduler import Scheduler, SchedulerConfig
+    ex.flush_cache()
+    spec = ex.spec
+    if depth == "plain":
+        ex.spec = None
+    else:
+        spec.depth_policy = BatchDepth(dict.fromkeys(capture_sizes(ex.max_batch), depth), spec.k)
+    try:
+        sched = Scheduler(ex, SchedulerConfig(max_running=batch, max_queued=batch))
+        for ids in prompts[:batch]:
+            sched.submit(ids, SamplingParams(max_new_tokens=640, ignore_eos=True))
+        while sched.queue or sched.prefilling:
+            sched.step()
+        for _ in range(4):
+            sched.step()
+        torch.cuda.synchronize()
+        before = sum(len(r.output_ids) for r in sched.running)
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+            t0 = time.perf_counter()
+            for _ in range(steps):
+                sched.step()
+            torch.cuda.synchronize()
+            wall = time.perf_counter() - t0
+        tokens = sum(len(r.output_ids) for r in sched.running) - before
+        for r in list(sched.running):
+            sched.cancel(r)
+        sched.step()
+    finally:
+        ex.spec = spec
+    cats, total, top = kernel_time(prof)
+    host = sorted(((e.key, e.self_cpu_time_total / 1000) for e in prof.key_averages()), key=lambda kv: -kv[1])[:12]
+    return {"batch": batch, "depth": depth, "steps": steps, "running": len(sched.running) or batch, "wall_ms_per_step": round(1000 * wall / steps, 2),
+            "kernel_ms_per_step": round(total / steps, 2), "tokens_per_step": round(tokens / steps, 2), "tok_s": round(tokens / wall, 1),
+            "kernel_by_category_ms_per_step": {k: round(v / steps, 2) for k, v in sorted(cats.items(), key=lambda kv: -kv[1])},
+            "top_kernels_ms_per_step": {k: round(v / steps, 3) for k, v in top.items()},
+            "host_self_ms_per_step": {k: round(v / steps, 3) for k, v in host}}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--proposer", default="mtp")
@@ -110,6 +157,7 @@ def main():
     ap.add_argument("--max-batch", type=int, default=16)
     ap.add_argument("--context", type=int, default=262144)
     ap.add_argument("--data", default=os.path.join(os.environ.get("SHARAR_RESULTS", "/results"), "datasets/accuracy/gsm8k_test.jsonl"))
+    ap.add_argument("--profile", default="", help="BATCH:DEPTH cells to profile in steady state after the timed cells")
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
     from sharar.api.chat_template import ChatTemplate
@@ -126,7 +174,7 @@ def main():
                   "config": {k: v for k, v in __import__("sharar.engine.config", fromlist=["current"]).current().describe().items()},
                   "cells": []}
         run_cell(ex, prompts[:16], 16, "plain" if ex.spec is None else 0, 32)  # warm the scheduler path at every size
-        for cell in args.cells.split(","):
+        for cell in filter(None, args.cells.split(",")):
             b, d = cell.split(":")
             depth = d if d == "plain" else int(d)
             reqs, row = run_cell(ex, prompts, int(b), depth, args.max_tokens)
@@ -137,6 +185,13 @@ def main():
             report["cells"].append(row)
             print(json.dumps({k: v for k, v in row.items() if k != "per_item"}), flush=True)
             args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(json.dumps(report, indent=1))
+        report["profiles"] = []
+        for cell in filter(None, args.profile.split(",")):
+            b, d = cell.split(":")
+            row = profile_cell(ex, prompts, int(b), d if d == "plain" else int(d))
+            report["profiles"].append(row)
+            print(json.dumps(row), flush=True)
             args.out.write_text(json.dumps(report, indent=1))
 
 
