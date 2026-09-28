@@ -50,16 +50,15 @@ def test_launcher_uses_the_shared_profile_table():
     assert 'args+=(--env "SHARAR_DEVICE_ACCEPT=$DEVICE_ACCEPT")' in text
 
 
-@pytest.mark.parametrize("target, depths", [("flashnext", "16:3"), ("", "8:7,16:3"), ("qwen38", "8:7,16:3")])
-def test_throughput_is_fast_with_sixteen_requests_and_verifies_within_64_rows(target, depths):
-    # #59: every verification stays within the 64 rows the 3-bit copies serve (Flash-Next 16 x 4, the 27B
-    # 8 x 8 and 16 x 4), so a full batch runs fast's weights.
+@pytest.mark.parametrize("target, depths", [("flashnext", "16:3"), ("", ""), ("qwen38", "")])
+def test_throughput_is_fast_with_sixteen_requests(target, depths):
+    # #59: Flash-Next verifies within the 64 rows its 3-bit trunk copies serve at 16 requests (16 x 4);
+    # the 27B keeps its full depth at every batch (operator decision, GSM8K x1.74).
     fast, wide = resolve("fast", target), resolve("throughput", target)
     assert {k: wide[k] for k in KNOBS[:6]} == {k: fast[k] for k in KNOBS[:6]}
     assert wide["P_MAX_BATCH"] == "16" and wide["P_SPEC_DEPTHS"] == depths
-    k = 4 if target == "flashnext" else 15
-    for bucket, depth in (item.split(":") for item in depths.split(",")):
-        assert int(bucket) * (int(depth) + 1) <= 64 and int(depth) <= k
+    for bucket, depth in (item.split(":") for item in filter(None, depths.split(","))):
+        assert int(bucket) * (int(depth) + 1) <= 64 and int(depth) <= 4
 
 
 @pytest.mark.parametrize("profile", ["exact", "balanced", "fast"])

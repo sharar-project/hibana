@@ -33,11 +33,14 @@ reports the profile under `config`. **The default is `fast`.**
 The throughput profile (#59) is for evaluations and several agents at once:
 it batches up to 16 requests (CUDA graphs for 1, 2, 4, 8 and 16 rows), and a
 single request runs exactly as in fast. The 3-bit copies serve calls of at
-most 64 rows; a wider verification runs the original NVFP4/FP8 weights, so
-the profile keeps every verification within 64 rows and serves fast's
-weights at every load: `SHARAR_SPEC_DEPTHS` (verify depth per batch bucket,
-0 = plain decode) is `16:3` on Flash-Next and `8:7,16:3` on the 27B. Any
-profile takes `SHARAR_MAX_BATCH` and `SHARAR_SPEC_DEPTHS`.
+most 64 rows; a wider verification runs the original NVFP4/FP8 weights.
+Flash-Next verifies three drafts at 9-16 requests (`SHARAR_SPEC_DEPTHS=16:3`,
+64 rows), so it serves fast's weights at every load for 1.4% of wall time.
+The 27B keeps its 15 drafts at every batch: its batches of five or more
+verify on the original weights, for GSM8K x1.74 instead of x1.29 with
+`8:7,16:3`, the depths that would keep fast's weights (below). Any profile
+takes `SHARAR_MAX_BATCH` and `SHARAR_SPEC_DEPTHS` (verify depth per batch
+bucket, 0 = plain decode).
 
 Lossless in every profile: speculative decoding itself, the 3-bit draft-only
 lm_head of the Flash-Next MTP head, FP8/NVFP4 served weights, graphs.
@@ -71,11 +74,11 @@ weights, 262K context.
 | Batch : verify depth (verify rows) | Flash-Next (MTP k=4) | 27B (DFlash2 k=15) |
 |---|---:|---:|
 | 4 : k, the fast profile (20 / 64) | 123.8, 125.0 | 276.3 |
-| 8 : k (40 / 128) | 168.0 | 359.7 |
-| 8 : 7 (64, the 27B's throughput bucket) | | 357.3 |
+| 8 : k (40 / 128) | 168.0 | **359.7** |
+| 8 : 7 (64) | | 357.3 |
 | 8 : 3 / 2 / 1 / 0 | 163.7 / 148.2 / 124.7 / 88.8 | 256.7 / - / - / - |
-| 16 : k (80 / 256, original weights) | 220.3, 221.8 | 423.2 |
-| **16 : 3 (64, the throughput profile)** | **212.9** | **345.1** |
+| 16 : k (80 / 256, original weights; the 27B's throughput profile) | 220.3, 221.8 | **423.2** |
+| 16 : 3 (64; Flash-Next's throughput profile) | **212.9** | 345.1 |
 | 16 : 7 / 2 / 1 | - / 191.4 / 159.1 | 429.4 / - / 226.8 |
 | 16 : 0 (plain decode) | 110.0 | 120.8 |
 
@@ -88,10 +91,9 @@ for 130 tokens (668 tok/s) and 16:3 129 ms for 57 tokens (440 tok/s), 97-98%
 of each GPU kernels. On Flash-Next 16:3 against 16:4 costs 4% tok/s but only
 1.4% wall time: the 3-bit trunk writes shorter answers than the FP8 trunk
 the 80-row verification falls back to (GSM8K 318 against 335 tokens per
-item, as in #6). The 27B's 16:15 is 23% faster than 16:3 but verifies wide
-batches on the original weights; set `SHARAR_SPEC_DEPTHS=16:15` where speed
-matters more than serving fast's weights. GSM8K correct counts in every
-cell were 59 to 64 of 64.
+item, as in #6). The 27B's 16:15 is 23% faster than 16:3, and 8:15 matches
+8:7 (359.7 against 357.3), so its throughput profile keeps the full depth.
+GSM8K correct counts in every cell were 59 to 64 of 64.
 
 Served (HTTP, `sharar-evals` accuracy eval, exact acceptance, greedy,
 image `sharar:throughput`, requests in flight = the profile's batch):
@@ -102,16 +104,16 @@ image `sharar:throughput`, requests in flight = the profile's batch):
 | **Flash-Next throughput, 16** | **1943.2 s (x1.72)** | 94.2% (20 / 17, McNemar p 0.74) | 192.0 s, 93.3% (1 / 3, p 0.62) |
 | Flash-Next 16:4 (80 rows, FP8 trunk) | 1962.0 s (x1.70) | 93.9% (22 / 23, p 1.00); 335 tokens per item against 318 | 177.4 s, 96.3% |
 | 27B fast, 4 in flight | 1442.1 s | 94.2% | 88.0 s, 93.3% |
-| **27B throughput (8:7, 16:3), 16** | **1120.2 s (x1.29)** | 94.4% (14 / 11, p 0.69) | 90.7 s, 93.3% |
-| 27B `SHARAR_SPEC_DEPTHS=16:15` (full depth, wide verifies on the original weights) | 827.7 s (x1.74) | 93.6% (20 / 28, p 0.31); 350 against 328 tokens per item | |
-Flash-Next reaches the #59 gate (x1.7 on the full GSM8K with accuracy within
-noise) with fast's weights at every load. The 27B reaches it only with full
-depth, which verifies batches of five or more on the original NVFP4/FP8
-weights (longer answers, as the exact weights write); with fast's weights its
-batch-four rounds already verify 64 rows, so a wide batch mainly trades depth
-for rows (x1.29). The profile keeps fast's weights so that paired evaluations
-of lossy weight candidates measure them; set `SHARAR_SPEC_DEPTHS=16:15` on the
-27B for speed. Batch-one latency in the
+| **27B throughput (full depth; wide verifies on the original weights), 16** | **827.7 s (x1.74)** | 93.6% (20 / 28, p 0.31); 350 against 328 tokens per item | |
+| 27B with fast's weights (`SHARAR_SPEC_DEPTHS=8:7,16:3`), 16 | 1120.2 s (x1.29) | 94.4% (14 / 11, p 0.69) | 90.7 s, 93.3% |
+Both targets reach the #59 gate (x1.7 on the full GSM8K with accuracy within
+noise). Flash-Next does it with fast's weights at every load; the 27B with
+its full depth, which verifies batches of five or more on the original
+NVFP4/FP8 weights (longer answers, as the exact weights write). With fast's
+weights the 27B's batch-four rounds already verify 64 rows, so a wide batch
+only trades depth for rows (x1.29): a paired evaluation of a lossy 27B weight
+candidate (such as #42) should set `SHARAR_SPEC_DEPTHS=8:7,16:3` so that its
+arms serve the candidate's weights at every load. Batch-one latency in the
 fast profile is unchanged (h2h probes / greedy median): Flash-Next 70.8 / 72.8
 tok/s against 71.1 / 72.9 at #52, the 27B 128.3 / 93.9 against 126.6 / 92.5.
 
