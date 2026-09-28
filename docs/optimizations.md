@@ -27,6 +27,7 @@ reports the profile under `config`. **The default is `fast`.**
 | Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`) | off | off | on (same threshold) |
 | 27B calibrated 3-bit decode copies, layers and draft (`SHARAR_W3_DECODE`, `SHARAR_W3_DRAFT`) | off | on | on |
 | Flash-Next calibrated 3-bit trunk copies (`SHARAR_FLASHNEXT_W3_CHECKPOINT`) | off | off | on (`$SHARAR_RESULTS/w3-checkpoints/flashnext-current`) |
+| Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | off | on for Flash-Next; off for the 27B |
 
 Lossless in every profile: speculative decoding itself, the 3-bit draft-only
 lm_head of the Flash-Next MTP head, FP8/NVFP4 served weights, graphs.
@@ -40,11 +41,13 @@ Measured cost of each lossy option (paired, exact greedy unless noted):
 | Relaxed, sampled requests (27B, t = 0.6) | +4% | GSM8K-300 96.0 to 94.0, HumanEval 94.5 to 91.5 (pooled 4 better / 15 worse, p about 0.02) |
 | Relaxed top-3 / 2.0, sampled (Flash-Next, t = 0.7, #22) | median 45.6 to 49.1 tok/s (+8%) | GSM8K-200 at t = 0.7 96.5 to 94.0 (SE about 1.5) |
 | 27B calibrated 3-bit copies | decode x1.49 over NVFP4/FP8 (nearest-rounded build), calibrated +8.6% over nearest | full GSM8K 94.5 vs 94.0 exact; HumanEval within noise (layers and draft; the lm_head copy stays off) |
+| Flash-Next device-resident acceptance (#36, 2026-09-28; greedy rounds) | h2h over the default without it (fast): batch one x1.057 [1.035, 1.082], four streams x1.088 [1.078, 1.098]; over the previous engine x1.159 / x1.174 | acceptance unchanged (6.14 to 6.18 emitted per round); outputs not identical to the host path (exact greedy identity 2/44: the draft KV is projected over the whole bucket, so round boundaries move); no accuracy eval yet |
 | Flash-Next calibrated 3-bit trunk (#6, 2026-09-27) | h2h greedy median 56.1 to 69.6 tok/s (+24%), t = 0.7 49.4 to 62.0 (+26%) | full GSM8K 94.5 to 94.2 (20 better / 23 worse, p 0.76); HumanEval 97.0 to 94.5 (0 / 4, p 0.12); decode-path KL to BF16 0.51 to 0.96 |
 
 Evidence: [relaxed acceptance](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/relaxed-acceptance.md),
 the sampled-path study in the roadmap history, #22, [W3 calibration](w3-calibration.md),
-`$SHARAR_RESULTS/reviews/2026-09-27-fn-trunk/` for the Flash-Next trunk.
+`$SHARAR_RESULTS/reviews/2026-09-27-fn-trunk/` for the Flash-Next trunk,
+`$SHARAR_RESULTS/reviews/2026-09-27-idle-gaps/` for Flash-Next device-resident acceptance.
 
 ## Weights and kernels
 
@@ -145,7 +148,7 @@ The executable coverage and dispatch rules live in
 | Candidate | Result | Status |
 |---|---|---|
 | FP8 GEMM at 16 rows through the GEMV path (`fp8_m16`) | Round cost x0.985 on the 101-family gate | Moot in the served profile: with `SHARAR_W3_DECODE=1` every FP8 projection at 64 rows or fewer takes the 3-bit copy before the FP8 dispatch; only the exact NVFP4/FP8 path (`SHARAR_W3_DECODE=0`) would use it ([family gate](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/family-gate.md)) |
-| Device-resident acceptance (`SHARAR_DEVICE_ACCEPT=1`: accept, reconstruct, conv commit and draft feedback in one graph per bucket, one host wait) | Engine-loop round cost x0.944 at batch four / 10K, x0.883 at 1K, x0.983 at batch one; HTTP +2% at concurrency one, unchanged at four (engine thread per-step 117 ms on both paths) | Opt-in, exact on the 27B; serving gain needs lazy round completion ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/device-accept.md)). Flash-Next MTP (2026-09-28): GPU idle per round 3.5 to 0.45 ms, served h2h fast x1.057 batch one and x1.088 at four streams over the default, tokens per round unchanged; not bitwise (the draft KV is projected over the whole bucket: identity 2/44 on exact), so opt-in until the family gate and accuracy eval ([Flash-Next](flashnext.md#round-idle-gaps-2026-09-28)) |
+| Device-resident acceptance (`SHARAR_DEVICE_ACCEPT=1`: accept, reconstruct, conv commit and draft feedback in one graph per bucket, one host wait) | Engine-loop round cost x0.944 at batch four / 10K, x0.883 at 1K, x0.983 at batch one; HTTP +2% at concurrency one, unchanged at four (engine thread per-step 117 ms on both paths) | Opt-in, exact on the 27B; serving gain needs lazy round completion ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/device-accept.md)). Flash-Next MTP (2026-09-28): GPU idle per round 3.5 to 0.45 ms, served h2h fast x1.057 batch one and x1.088 at four streams over the default, tokens per round unchanged; not bitwise (the draft KV is projected over the whole bucket: identity 2/44 on exact); on in the `fast` profile for Flash-Next since 2026-09-28 ([serving profiles](#serving-profiles), [Flash-Next](flashnext.md#round-idle-gaps-2026-09-28)) |
 | KV page size 16 | Decode attention unchanged; verify attention 2.52 to 2.08 ms (batch one) and 8.49 to 7.42 ms (batch four) per round at 10K context, under 1% of the round | Parked; `bench/kv_page_size.py` (2026-09-18) |
 | NVFP4 draft body | Round cost x0.971; acceptance not resolved | Needs the trained-draft comparison |
 | Prompt-lookup second verify branch | Offline oracle +14 to 50% tokens per round, served +1.4% | Parked on `feat/lookup-branch` ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/lookup-branch.md)) |

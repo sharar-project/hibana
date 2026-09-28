@@ -193,18 +193,19 @@ waited for the whole draft block, then went through the 32-thread pool even when
 rows are read without the threads (`RWF_NOWAIT`; only misses go to the pool), and the MTP proposer copies each
 drafted column to the host behind its step, so a token's rows are read while the next step runs
 (`DraftColumns`). Verify->draft: host acceptance and per-request draft KV launches; `SHARAR_DEVICE_ACCEPT=1`
-now covers MTP too (`feedback_device` projects the draft KV over the whole bucket inside the accept graph).
+(on in the `fast` profile) now covers MTP too (`feedback_device` projects the draft KV over the whole bucket inside the accept graph).
 Evidence `$SHARAR_RESULTS/reviews/2026-09-27-idle-gaps/`:
 
 | fast profile | round ms b1 | GPU idle b1 | served batch one | served four streams |
 |---|---:|---:|---|---|
 | before | 55.7 | 7.7 | 73.1 tok/s median | 119.2 tok/s aggregate |
 | pieces 1+2 (default) | 51.3 | 3.5 | x1.097 [1.090, 1.104], 22/22 | x1.079 [1.068, 1.090], 22/22 |
-| + device acceptance (opt-in) | 49.8 | 0.45 | x1.159 [1.137, 1.186], 22/22 | x1.174 [1.162, 1.187], 22/22 |
+| + device acceptance (on in `fast`) | 49.8 | 0.45 | x1.159 [1.137, 1.186], 22/22 | x1.174 [1.162, 1.187], 22/22 |
 
 Exact profile: pieces 1+2 x1.067 at batch one with greedy identity 44/44 against the previous engine; device
 acceptance adds x1.051 but is not bitwise (identity 2/44; the draft KV's FP8 activation scale spans the whole
-bucket, so proposals and round boundaries drift), hence opt-in.
+bucket, so proposals and round boundaries drift), with acceptance unchanged. The launcher turns it on only in the
+`fast` profile (`tools/serving-profile.sh`); `exact` and `balanced`, and the 27B, keep it off.
 
 ## Not done
 
