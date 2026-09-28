@@ -82,18 +82,22 @@ class _ColumnBlock:
 
 @torch.no_grad()
 def quantize(weight: torch.Tensor, covariance: torch.Tensor, *, damping: float = .01,
-             codebook="lloyd", capture: bool = True, rows_per_chunk: int = 1024, unbias: bool = False):
+             codebook="lloyd", capture: bool = True, rows_per_chunk: int = 1024, unbias: str | None = None):
     """Calibrate a matrix, returning kernel-ready weights and a small report.
 
-    `unbias` rescales each row (through its row scale, so the format and the bytes do not change) until the
-    quantized output's projection on the exact output has the exact output's energy under the covariance:
-    c = w H w^T / w_q H w^T. The quantizer is MSE-optimal per matrix, which shrinks every output by about the
-    relative error squared (3 to 10% here); across a deep residual trunk the shrinkage adds coherently (#61)."""
+    `unbias` rescales each row through its row scale (the format and the bytes do not change) so that the
+    quantized row's projection on the exact row keeps the exact row's energy: c = w w^T / w_q w^T ("weight"),
+    or the same under the covariance, c = w H w^T / w_q H w^T ("output"). The quantizer is MSE-optimal per
+    matrix, which shrinks each row by about its relative error squared (3 to 10% on the Flash-Next trunk);
+    through a deep residual trunk the shrinkage adds coherently (#61). On Flash-Next's decode path "weight"
+    removed more of the added KL than "output": the calibration covariance under-states the shrinkage."""
     n, k = weight.shape
     if n % 128 or k % 128 or covariance.shape != (k, k):
         raise ValueError("calibration needs aligned [N,K] weights and [K,K] covariance")
     if not 0 < damping < 1 or rows_per_chunk % 128 or rows_per_chunk < 128:
         raise ValueError("invalid damping or row chunk size")
+    if unbias not in (None, "weight", "output"):
+        raise ValueError("unbias is None, 'weight' or 'output'")
     if not torch.isfinite(weight).all() or not torch.isfinite(covariance).all():
         raise ValueError("calibration inputs must be finite")
     levels = w3._codebook(codebook)
@@ -124,7 +128,7 @@ def quantize(weight: torch.Tensor, covariance: torch.Tensor, *, damping: float =
                 work[:, end:].sub_(errors @ inverse[col:end, end:])
         if unbias:
             dequantized = torch.tensor(levels, device=weight.device)[codes.long()] * effective.repeat_interleave(w3.GROUP, dim=1)
-            projected = original @ covariance.float()
+            projected = original @ covariance.float() if unbias == "output" else original
             gain = ((original * projected).sum(1) / (dequantized * projected).sum(1).clamp_min(1e-30)).clamp(1.0, 1.5)
             row_scale = row_scale * gain
             gains.append(gain)
@@ -136,5 +140,5 @@ def quantize(weight: torch.Tensor, covariance: torch.Tensor, *, damping: float =
     report = {"method": "gptq", "damping": damping, "group_size": 32, "scale_grid": [.6, .7, .8, .9, 1.0], "bytes": result.bytes}
     if unbias:
         gain = torch.cat(gains)
-        report.update(unbias=True, gain_mean=round(gain.mean().item(), 5), gain_max=round(gain.max().item(), 5))
+        report.update(unbias=unbias, gain_mean=round(gain.mean().item(), 5), gain_max=round(gain.max().item(), 5))
     return result, report

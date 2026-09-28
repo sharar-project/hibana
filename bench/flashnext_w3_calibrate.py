@@ -64,7 +64,7 @@ def main():
     ap.add_argument("--damping", type=float, default=0.01)
     ap.add_argument("--limit", type=int, default=0, help="first N samples only (0: all)")
     ap.add_argument("--exclude", default="", help="regex of linears() names to leave out (e.g. lm_head)")
-    ap.add_argument("--unbias", action="store_true", help="per-row gain correction through the row scales (w3_calibration.quantize)")
+    ap.add_argument("--unbias", choices=("weight", "output"), help="per-row gain correction through the row scales (w3_calibration.quantize)")
     args = ap.parse_args()
     from sharar.engine.config import current, install
     from sharar.engine.executor import Executor
