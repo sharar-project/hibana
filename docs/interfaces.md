@@ -288,7 +288,8 @@ without them retain the base proposer contract.
 ## Device-resident acceptance
 
 For an all-greedy batch on the graph path, `engine/accept_graphs.py` replaces
-the host's `SpecDecoder._accept` with one captured graph per batch bucket
+the host's `SpecDecoder._accept` with one captured graph per batch bucket of
+each verify depth (a depth per bucket, `SHARAR_SPEC_DEPTHS`, captures only its buckets)
 (`SHARAR_DEVICE_ACCEPT=1`; the `fast` profile turns it on for Flash-Next, `0` keeps the host path for every round). The graph
 reads the verify graph's static outputs, decides acceptance with the same rule
 (`engine/accept.py`: exact or relaxed match, cumulative prefix, budget clamp,
