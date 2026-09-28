@@ -101,7 +101,8 @@ image `sharar:throughput`, requests in flight = the profile's batch):
 | Target, arm | GSM8K-1319 wall | accuracy (paired vs batch four) | HumanEval wall, pass@1 |
 |---|---:|---|---|
 | Flash-Next fast, 4 in flight | 3338.9 s | 94.0% | 290 s, 94.5% (#6 run) |
-| **Flash-Next throughput, 16** | **1943.2 s (x1.72)** | 94.2% (20 / 17, McNemar p 0.74) | 192.0 s, 93.3% (1 / 3, p 0.62) |
+| Flash-Next throughput before #36, 16 | 1943.2 s (x1.72) | 94.2% (20 / 17, McNemar p 0.74) | 192.0 s, 93.3% (1 / 3, p 0.62) |
+| **Flash-Next throughput with the round idle gaps and device acceptance (#36), 16** | **1814.9 s (x1.84)** | 93.9% (13 / 15, p 0.85) | 176.1 s, 93.9% (1 / 2 vs the #6 batch-four run, p 1.00) |
 | Flash-Next 16:4 (80 rows, FP8 trunk) | 1962.0 s (x1.70) | 93.9% (22 / 23, p 1.00); 335 tokens per item against 318 | 177.4 s, 96.3% |
 | 27B fast, 4 in flight | 1442.1 s | 94.2% | 88.0 s, 93.3% |
 | **27B throughput (full depth; wide verifies on the original weights), 16** | **827.7 s (x1.74)** | 93.6% (20 / 28, p 0.31); 350 against 328 tokens per item | |
