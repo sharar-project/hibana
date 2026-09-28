@@ -64,6 +64,7 @@ def main():
     ap.add_argument("--damping", type=float, default=0.01)
     ap.add_argument("--limit", type=int, default=0, help="first N samples only (0: all)")
     ap.add_argument("--exclude", default="", help="regex of linears() names to leave out (e.g. lm_head)")
+    ap.add_argument("--unbias", action="store_true", help="per-row gain correction through the row scales (w3_calibration.quantize)")
     args = ap.parse_args()
     from sharar.engine.config import current, install
     from sharar.engine.executor import Executor
@@ -97,13 +98,13 @@ def main():
                 print(f"  covariances: {i + 1}/{len(samples)} samples ({time.perf_counter() - started:.0f}s)", flush=True)
     manifest = {"format": FORMAT_VERSION, "target": FLASHNEXT.name, "target_revision": FLASHNEXT.model_revision,
                 "source": "checkpoint BF16 trunk", "inputs_sha256": sha256(args.inputs), "samples": len(samples),
-                "tokens": sum(map(len, samples)), "damping": args.damping, "exclude": args.exclude, "weights": {}, "reports": {}}
+                "tokens": sum(map(len, samples)), "damping": args.damping, "exclude": args.exclude, "unbias": args.unbias, "weights": {}, "reports": {}}
     for j, (name, lin) in enumerate(linears):
         if name not in cov.matrices:
             print(f"  {name}: never called on the calibration path, left out", flush=True)
             continue
         weight = lin.dequantize()  # the BF16 checkpoint weights (the model loaded with the BF16 trunk)
-        w3weight, report = quantize(weight, cov.matrices.pop(name), damping=args.damping)
+        w3weight, report = quantize(weight, cov.matrices.pop(name), damping=args.damping, unbias=args.unbias)
         report["rows"] = cov.rows[name]
         manifest["weights"][name] = save_weight(args.output / f"{name}.safetensors", w3weight)
         manifest["reports"][name] = report
