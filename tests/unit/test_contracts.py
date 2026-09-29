@@ -45,6 +45,40 @@ def test_feature_free_proposer_uses_real_verify_commit_and_scheduler(monkeypatch
     assert len(ex.kv_pool._free) == 1024 and len(ex.state_pool._free) == 15
 
 
+def test_depth_per_batch_bucket_decodes_wide_batches_plainly(monkeypatch):
+    # The throughput profile (#59): above four requests a round decodes plainly (depth 0) while
+    # the proposer keeps following every row, so speculation resumes once the batch shrinks;
+    # a shorter depth reaches a proposer that drafts short blocks (short_drafts).
+    from dataclasses import replace
+    from sharar.engine.contracts import Capabilities
+    from sharar.engine.depth import BatchDepth
+    from sharar.engine.scheduler import SchedulerConfig
+    ex = tiny_executor(monkeypatch)
+    ex.max_batch = 8
+    def logits(norm):
+        out = torch.zeros((len(norm), 128))
+        out[:, 7] = 5
+        return out
+    ex.model.logits = logits
+    rounds = []
+    class ShortNgram(NGramProposer):
+        requirements = replace(NGramProposer.requirements, capabilities=Capabilities(short_drafts=True))
+        def propose(self, requests, pages, inputs, *, graphs, depth):
+            rounds.append((len(requests), depth))
+            return super().propose(requests, pages, inputs, graphs=graphs)[:, :depth]
+    ex.set_proposer(ShortNgram(ProposerContext(ex.device, ex.max_batch, ex.max_context), k=3))
+    ex.spec.depth_policy = BatchDepth({1: 3, 2: 3, 4: 2, 8: 0}, 3)
+    ex.spec.verify_depths = (2, 3)
+    sched = Scheduler(ex, SchedulerConfig(max_running=8))
+    budgets = [3, 3, 3, 3, 3, 20, 20, 30]
+    requests = [sched.submit([7] * 8, SamplingParams(max_new_tokens=n)) for n in budgets]
+    sched.run_until_idle()
+    assert [r.output_ids for r in requests] == [[7] * n for n in budgets]
+    assert rounds and all(n <= 4 for n, _ in rounds)  # no round verified five or more requests
+    assert {(n, d) for n, d in rounds} >= {(3, 2), (1, 3)}  # three left: depth 2; one left: the proposer's k
+    assert sched.metrics.decode_tokens == sum(budgets) - len(budgets)
+
+
 def test_ngram_match_and_window_are_explicit():
     proposer = NGramProposer(ProposerContext(torch.device('cpu'), 4, 512), k=2, max_ngram=2, window=8)
     req = Request([1, 2, 3, 4, 1, 2], SamplingParams())

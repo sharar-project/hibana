@@ -4,8 +4,11 @@ from dataclasses import dataclass
 
 
 # Contexts up to the target's native 262,144 positions are served; batches of up to
-# four requests share the KV pool, and admission budgets each request's actual tokens.
+# four requests (sixteen in the throughput profile, #59) share the KV pool, and
+# admission budgets each request's actual tokens.
 MAX_CONTEXT = 262144
+MAX_BATCH = 16
+BUCKETS = (1, 2, 4, 8, 16)  # CUDA-graph batch sizes; a batch pads to the smallest that holds it
 
 
 @dataclass(frozen=True)
@@ -17,7 +20,7 @@ class ServingProfile:
     prefill_budget: int = 4096
 
     def __post_init__(self):
-        for name, upper in (("max_context", MAX_CONTEXT), ("max_batch", 4)):
+        for name, upper in (("max_context", MAX_CONTEXT), ("max_batch", MAX_BATCH)):
             value = getattr(self, name)
             lower = 2 if name == "max_context" else 1
             if type(value) is not int or not lower <= value <= upper:
@@ -28,6 +31,6 @@ class ServingProfile:
 
     @property
     def graph_sizes(self) -> tuple[int, ...]:
-        return tuple(sorted({n for n in (1, 2, 4) if n <= self.max_batch} | {self.max_batch}))
+        return tuple(sorted({n for n in BUCKETS if n <= self.max_batch} | {self.max_batch}))
 
 DEFAULT_PROFILE = ServingProfile()

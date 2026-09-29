@@ -42,6 +42,7 @@ class Capabilities:
     cold_payload: bool = False      # ColdPayload: auxiliary_codec() -> (identity, export, import) for parked sessions
     trace_features: bool = False    # TraceFeatures: projected_rows(req, start, count) and a context `window`
     draft_head: bool = False        # DraftHeadChoice: set_draft_head(ids, fmt, rescore) on the head
+    short_drafts: bool = False      # propose(..., depth=d) drafts only the d tokens a shallower round verifies (sequential drafts)
 
 
 @dataclass(frozen=True)
@@ -97,7 +98,7 @@ class Proposer(Protocol):
 @runtime_checkable
 class DeviceFeedback(Protocol):
     def accepted_prepare(self, requests: list[Request]): ...
-    def feedback_device(self, features, starts, ring_slots, counts, steps) -> None: ...
+    def feedback_device(self, features, starts, ring_slots, counts, steps, *, norm=None, tokens=None, pages=None) -> None: ...
     def accepted_publish(self, requests: list[Request], emitted: list[list[int]]) -> None: ...
 
 

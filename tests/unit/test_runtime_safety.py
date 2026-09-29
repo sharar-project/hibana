@@ -11,6 +11,7 @@ from sharar import config
 from sharar.engine.loop import EngineLoop, EngineUnavailable
 from sharar.api.validation import _sampling_from
 from sharar.api.server import create_app
+from sharar.engine.depth import FixedDepth
 from sharar.engine.executor import Executor
 from sharar.engine.graphs import capture_sizes, check_context_capacity
 from sharar.engine.request import Request
@@ -172,7 +173,7 @@ def test_mixed_spec_plain_memory_failure_does_not_advance_any_row(monkeypatch):
     b = ex.admit([2], SamplingParams(max_new_tokens=10, temperature=1))
     ex.prefill_batch([(a, 1), (b, 1)])
     called = []
-    ex.spec = SimpleNamespace(steps=4, ready=lambda r: True, round=lambda rs: called.append(rs),
+    ex.spec = SimpleNamespace(steps=4, ready=lambda r: True, round=lambda rs: called.append(rs), depth_policy=FixedDepth(3),
                               proposer=SimpleNamespace(requirements=SimpleNamespace(greedy_only=True)))
     ex.kv_pool._free = ex.kv_pool._free[:4]  # enough for spec alone, not both paths
     before = [a.output_ids[:], b.output_ids[:]]
@@ -366,3 +367,29 @@ def test_http_error_finishes_stream_or_returns_503(monkeypatch, stream, endpoint
             engine.stop = True
             await asyncio.to_thread(engine.thread.join, 2)
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("reserve", [0, 8])
+def test_wide_batch_snapshots_leave_admission_slots(monkeypatch, reserve):
+    # A short prompt keeps its own slot plus two prefill snapshots (the last 64-token boundary and
+    # the prompt end). At batch four the spare slots cover them; a wide batch (#59) reserves the
+    # slots its next admissions need, so snapshots degrade instead of exhausting the pool.
+    ex = tiny_executor(monkeypatch, cache=True)
+    ex.max_batch = 8
+    ex.state.admission_slots = reserve
+    live = []
+    def admit_all():
+        for i in range(8):
+            r = ex.admit([i + 1] * 70, SamplingParams(max_new_tokens=8))
+            ex.prefill(r)
+            live.append(r)
+    if not reserve:
+        with pytest.raises(MemoryError, match="state pool"):
+            admit_all()
+        assert len(live) == 5 and all(len(r.checkpoints) == 2 for r in live)
+        return
+    admit_all()
+    assert ex.state.live == 8 and len(live[0].checkpoints) == 2 and not live[-1].checkpoints
+    for r in live:
+        ex.release(r)
+    assert ex.state.live == 0
