@@ -99,9 +99,11 @@ guard() {
 }
 
 # tests/unit is included because some unit tests need the model or the GPU and only run here.
+# Test temp files go in ci-out/ on the host disk: the container's own /tmp lacks a file feature
+# (RWF_NOWAIT) that tests/unit/test_ple_rows.py relies on.
 stage_gpu() {
   local pid gpid rc=0
-  SHARAR_TEST_IMAGE="$IMAGE" bash tools/gpu-tests.sh tests/unit tests/gpu &
+  SHARAR_TEST_IMAGE="$IMAGE" bash tools/gpu-tests.sh tests/unit tests/gpu --basetemp=ci-out/pytest-tmp &
   pid=$!
   echo "sharar-gpu-tests-$pid" >"$OUT/gpu-container"   # gpu-tests.sh names its container after its process ID
   guard "sharar-gpu-tests-$pid" 9>&- &   # keep the lock away from the guard, so a leftover guard can't hold it
