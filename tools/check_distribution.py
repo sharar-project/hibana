@@ -54,15 +54,14 @@ def main():
         run([sys.executable, '-m', 'sharar', 'benchmark', '--help'], cwd=work, env=env)
         run([sys.executable, '-c', '''
 import torch
-from types import SimpleNamespace
-from sharar.kernels.w3 import _dequant_nvfp4, pack, dequantize
-from sharar.weights.modelopt import swizzle_block_scales
+from sharar.kernels.w3 import pack, dequantize
+from sharar.weights.modelopt import Nvfp4Linear, swizzle_block_scales
 from sharar.weights.w3_checkpoint import CalibratedWeights
 from sharar.weights.w3_calibration import quantize
-linear = SimpleNamespace(weight=torch.full((128, 64), 0x22, dtype=torch.uint8),
+linear = Nvfp4Linear(weight=torch.full((128, 64), 0x22, dtype=torch.uint8),
     weight_scale_swizzled=swizzle_block_scales(torch.ones(128, 8)),
-    out_features=128, in_features=128, alpha=torch.tensor(2.), input_scale_inv=torch.tensor(.5))
-weight = _dequant_nvfp4(linear)
+    alpha=torch.tensor(2.), input_scale_inv=torch.tensor(.5), out_features=128, in_features=128)
+weight = linear.dequantize()
 assert torch.equal(weight, torch.ones(128, 128))
 assert torch.isfinite(dequantize(pack(weight))).all()
 '''], cwd=work, env=env)

@@ -53,10 +53,10 @@ What holds up and should not change:
 | Draft-only head (3-bit + rescore, reduced vocabulary) | no | yes, MTP only (`proposers/draft_vocab.py`) |
 | Drafter training on traffic, promotion, hot reload | DFlash2 only | none |
 | CUDA graphs: decode, verify, draft | yes | yes, dense and selecting variants |
-| Device-resident acceptance | DFlash2, opt-in | no (MTP lacks the device feedback methods) |
+| Device-resident acceptance | DFlash2, opt-in | MTP, on in `fast` (#36, 2026-09-28) |
 | Exact / relaxed / sampled acceptance | shared | shared |
 | Adaptive draft depth (#43) | no | no |
-| 3-bit decode weights | GPTQ-calibrated layers and draft, default on | nearest only (failed its gate), separate path in `TrunkLinear` |
+| 3-bit decode weights | GPTQ-calibrated layers and draft, default on | GPTQ-calibrated trunk copies, on in `fast` (#6, 2026-09-27) |
 | Weight formats | NVFP4 MLPs, FP8 projections, W3 copies (`weights/modelopt.py`, `kernels/ops.py`) | FP8-at-load trunk, NVFP4 experts (`model/flashnext/linear.py`, `moe.py`) |
 | Prefix cache, cold tier, NVMe sessions, 262K context | yes | yes |
 | Shape-stable numerics, family gate inputs | yes | gate inputs missing (#11) |

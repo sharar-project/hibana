@@ -3,7 +3,7 @@
 The work order. Every item is a GitHub issue on `abdelfattah-lab/sharar` with its
 context, first step and gate; this page only orders them. History is in git and in
 the tag `archive/pre-cleanup-2026-09-26` (the old roadmap and every dated study).
-Updated 2026-09-27.
+Updated 2026-09-29.
 
 ## Where we are
 
@@ -11,9 +11,9 @@ One GB10, two targets, one per process, no default between them.
 
 | | Qwen3.8-27B | Qwen3.8-Flash-Next |
 |---|---|---|
-| Serving profile | calibrated 3-bit decode weights, FP8 DFlash2 k=15 (traffic-adapted drafter), relaxed acceptance | FP8 trunk, NVFP4 experts, MTP k=4 with the 3-bit draft head, sparse-attention graphs |
-| Single-stream decode (h2h, greedy / t=0.7 median) | 93.7 / 76.7 tok/s | about 56 / 52 tok/s |
-| Against SGLang's public setups on this box | 1.8-2.1x | 1.3x greedy, 1.3x sampled |
+| Serving profile (`fast`) | calibrated 3-bit decode weights, FP8 DFlash2 k=15 (traffic-adapted drafter), relaxed acceptance | FP8 trunk with calibrated 3-bit decode copies, NVFP4 experts, MTP k=4 with the 3-bit draft head, device-resident acceptance, sparse-attention graphs |
+| Single-stream decode (h2h, greedy / t=0.7 median) | 92.5 / 74.5 tok/s | 72.9 / 67.9 tok/s before #68; greedy x1.16 with it (about 84) |
+| Against SGLang's public setups on this box | 2.1x greedy, 1.7x sampled | 1.7x greedy, 1.7x sampled (before #68) |
 | Context | 262K | 262K (sparse attention past 2,048) |
 
 Measurements and their evidence: [optimizations](docs/optimizations.md),
@@ -30,20 +30,26 @@ benchmark (#26). Architecture and the capability matrix: [architecture](docs/arc
    Left, each paired with the optimization it unblocks: #49 feature taps (-> #7),
    #50 one MTP body (-> 27B MTP), #51 Trainable interface (-> #40).
 3. **Capability gaps and speed**, on the refactored seams:
-   - #43 adaptive draft depth, both targets.
-   - #36 Flash-Next round idle gaps (PLE reads, plans before the draft sync, device acceptance for MTP, #18).
-   - done 2026-09-27: #6 calibrated 3-bit Flash-Next trunk (+24-26% single-stream, in the fast profile); #61 recovers its HumanEval cost. #37 small-M MoE kernel is parked on `feat/moe-small-m` until verifies of 1-2 rows are common.
-   - #59 throughput profile (batch 8-16) for faster evals and many agents.
+   - done 2026-09-27/29: #6 calibrated 3-bit Flash-Next trunk (+24-26% single-stream, in `fast`); #61 its
+     HumanEval cost is within the FP8 trunk's own spread, the checkpoint stays; #36 Flash-Next round idle gaps
+     and device-resident acceptance for MTP (+16% single-stream in `fast`); #59 `throughput` profile (batch 16,
+     GSM8K x1.84 Flash-Next, x1.74 27B). #37 small-M MoE kernel is parked on `feat/moe-small-m` until verifies
+     of 1-2 rows are common.
+   - **Next: #7 DFlash2 for Flash-Next.** First a screen, before any building: the verify cost curve at 4/8/16 rows
+     on the current engine (3-bit trunk copies, idle gaps closed; the 2026-09-25 measurement that parked #7 predates
+     both) and the public PixelML drafter's acceptance by block length. Build (#49 feature taps, then #7, then the
+     DFlash2 trainer on Flash-Next) only if acceptance times round cost beats MTP k=4.
    - #40 MTP trained on traffic; #33 self-play traces; #12 27B drafter on real traffic.
-   - #7 DFlash2 for Flash-Next (after #49; screen the public PixelML drafter first).
    - #29 draft vocabulary ranked from traffic.
+   - Later: #43 adaptive draft depth (the draft confidence it needs is recorded with `SHARAR_TRACE_CONFIDENCE`).
 4. **Research** (measure before building): #38 fewer active experts, #39 expert pruning,
    #34 on-policy distillation (separate repository when it starts), #41 expert-budgeted
    verification, #42 sub-3-bit 27B MLPs, #25 megakernels.
-5. **Harness and quality**: #11 Flash-Next family gate, #28 harder evals, #31 lossy-change
-   gate, #16 constrained output with speculation, #19 `/v1/responses`, #15 test-time scaling,
+5. **Harness and quality**: #11 Flash-Next family gate, #28 harder evals (#31 lossy-change gate
+   done 2026-09-29: `tools/lossy-gate.py`), #16 constrained output with speculation, #19 `/v1/responses`, #15 test-time scaling,
    #13 session store snapshots, #14 long-context prefill.
-6. **Infrastructure**: #21 CI. Hardware-gated: #20 and #30 (a second Spark).
+6. **Infrastructure**: #21 CI (GitHub Actions jobs do not start: the organization's billing; a self-hosted
+   runner on the GB10 would also run the GPU suite). Hardware-gated: #20 and #30 (a second Spark).
 
 ## Rules
 

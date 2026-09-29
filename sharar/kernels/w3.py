@@ -296,11 +296,6 @@ def w3_linear(x: torch.Tensor, w3: W3Weight, x_scale: torch.Tensor | None = None
 
 # ------------------------------------------------------------------ attaching to the served model
 
-def _dequant_nvfp4(lin) -> torch.Tensor:
-    """Kept for tools/check_distribution.py: `Nvfp4Linear.dequantize()`."""
-    return lin.dequantize()
-
-
 def attach(linears, codebook=None) -> tuple[int, int]:
     """Nearest-level 3-bit copies for (name, linear) pairs that have none (`weights/linear.py` interface);
     returns (matrices packed, bytes)."""
