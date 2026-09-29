@@ -39,12 +39,13 @@ benchmark (#26). Architecture and the capability matrix: [architecture](docs/arc
      against ~42 ms for MTP's 5, with the 3-bit trunk); a drafter needs +18% tokens per round over MTP at block 7,
      +53% at block 15, and the public PixelML drafter accepts less than MTP ([numbers](https://github.com/abdelfattah-lab/sharar/issues/7)).
      Reopen when wide verification is cheaper or a drafter clears that bar on our traffic.
-   - **Next, screens before building:** the #55 oracle (re-capture routes from `park/router-traces`, then simulate
-     how much expert loading an ideal scheduler saves at depth 4 and 8 and how much a confidence rule keeps; rejected
-     rows first-use 16% of expert bytes at k=4, 44% at k=8); 3-bit experts (the experts are now the largest cost:
-     simulate them and run the lossy-change gate before any kernel); #33 self-play traces for the drafter work.
-   - Builds only where a screen passes: an online scheduler that defers unlikely rows' experts (#41, in a persistent
-     kernel, #25, extending the #37 small-M MoE kernel); a small-M 3-bit MoE kernel.
+   - Screened 2026-09-29, passed: 3-bit routed experts (simulated in the NVFP4 kernel, `SHARAR_FLASHNEXT_EXPERTS_SIM3`;
+     gate verdict `fast`, screen -0.3 pp). **Next build: #73, the 3-bit expert kernel** (-17.6 GiB resident experts,
+     ~+12% single-stream if it matches the NVFP4 path), starting from the #37 small-M MoE kernel on `feat/moe-small-m`.
+   - Next screens: #33 self-play traces for the drafter work; the #55 oracle (re-capture routes from
+     `park/router-traces`, then simulate how much expert loading an ideal scheduler saves at depth 4 and 8 and how
+     much a confidence rule keeps; rejected rows first-use 16% of expert bytes at k=4, 44% at k=8). If the oracle shows
+     a big gap: an online scheduler that defers unlikely rows' experts (#41, in a persistent kernel, #25).
    - Drafter learning: #40 MTP trained on traffic (after #51), #12 27B drafter on real traffic, #29 draft
      vocabulary ranked from traffic.
    - Later: #43 adaptive draft depth (the draft confidence it needs is recorded with `SHARAR_TRACE_CONFIDENCE`).

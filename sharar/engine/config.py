@@ -58,6 +58,7 @@ class EngineConfig:
     flashnext_w3_keep_fp8: str | None = None  # SHARAR_FLASHNEXT_W3_KEEP_FP8: regex of linears() names left without their calibrated copy
     flashnext_mtp_trunk: str | None = None    # SHARAR_FLASHNEXT_MTP_TRUNK: the MTP draft head's precision (unset: the trunk's)
     trunk_keep_bf16: str | None = None        # SHARAR_TRUNK_KEEP_BF16: regex of Flash-Next projections kept BF16
+    flashnext_experts_sim3: int = 0           # SHARAR_FLASHNEXT_EXPERTS_SIM3: routed experts rounded to a 3-bit format with this group (16/32), a quality screen (weights/expert_sim3.py)
     # --- speculation
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
     spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
@@ -109,6 +110,7 @@ class EngineConfig:
             flashnext_w3_keep_fp8=_str(e, "SHARAR_FLASHNEXT_W3_KEEP_FP8"),
             flashnext_mtp_trunk=_str(e, "SHARAR_FLASHNEXT_MTP_TRUNK"),
             trunk_keep_bf16=_str(e, "SHARAR_TRUNK_KEEP_BF16"),
+            flashnext_experts_sim3=_int(e, "SHARAR_FLASHNEXT_EXPERTS_SIM3", 0) or 0,
             spec=_str(e, "SHARAR_SPEC"),
             spec_depths=_str(e, "SHARAR_SPEC_DEPTHS"),
             draft_dir=_str(e, "SHARAR_DRAFT"),

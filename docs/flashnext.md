@@ -249,6 +249,19 @@ acceptance adds x1.051 but is not bitwise (identity 2/44; the draft KV's FP8 act
 bucket, so proposals and round boundaries drift), with acceptance unchanged. The launcher turns it on only in the
 `fast` profile (`tools/serving-profile.sh`); `exact` and `balanced`, and the 27B, keep it off.
 
+## 3-bit routed experts, simulated (2026-09-29, #73)
+
+`SHARAR_FLASHNEXT_EXPERTS_SIM3=32` (`sharar/weights/expert_sim3.py`, off by default) rewrites the NVFP4 experts at
+load into a 3-bit format, eight levels {±0.5, ±1.5, ±3, ±4} times one E4M3 scale per 32 weights (3.25 bits per weight
+against NVFP4's 4.5). The format is exactly representable in NVFP4, so the CUTLASS fused MoE computes what a 3-bit
+kernel would: a quality screen, with no speed or memory change. Relative weight error against the NVFP4 experts is
+0.18; the Lloyd codebook a real kernel would use measures 0.16 on the same experts, so the screen is pessimistic.
+Lossy-change gate, `fast` plus the simulated experts against `exact` (screen stage): verdict `fast`, pooled
+-0.3 pp [-2.2, +1.6] (p 0.89; GSM8K-300 96.0 vs 95.0, HumanEval 93.3 vs 95.1, MGSM-264 86.7 vs 87.5), decode-path
+KL 0.108 against 0.083 for `fast` alone (prose and multilingual move most), tokens per round x1.18. A kernel would
+save 17.6 GiB of resident experts (63.3 to 45.7) and about 6 ms per MTP round at batch one (~+12% single-stream) if
+it matches the NVFP4 path's efficiency; that kernel is #73. Evidence `$SHARAR_RESULTS/reviews/2026-09-29-lossy-gate-experts-sim3-g32/`.
+
 ## Router statistics (2026-09-27, #32)
 
 Every decode and verify row's top-10 experts and router probabilities, the MTP layer's routes per draft
