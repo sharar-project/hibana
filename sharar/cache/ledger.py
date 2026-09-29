@@ -23,7 +23,10 @@ KV_BYTES_PER_TOKEN = DEFAULT_TARGET.kv_bytes_per_token
 STATE_BYTES_PER_SLOT = DEFAULT_TARGET.state_bytes_per_slot
 # Per-request context every running request is guaranteed at once; longer
 # contexts are guaranteed for one request (the 32K profile's plan is unchanged).
+# Above four running requests (the throughput profile, #59) the same total is
+# guaranteed and split between them: 16 requests are guaranteed 8K each.
 SHARED_CONTEXT = 32768
+SHARED_REQUESTS = 4
 
 
 def mem_available_bytes() -> int:
@@ -83,7 +86,8 @@ class Ledger:
         """Size the pools from what is available now.
 
         Guarantees KV pages for one request at `context_len` or `max_running`
-        requests at `SHARED_CONTEXT`, whichever is more, and committed state
+        requests at `SHARED_CONTEXT` (above `SHARED_REQUESTS` requests, the
+        same total split between them), whichever is more, and committed state
         slots for `max_running` requests, plus the prefill activation reserve
         and the floor; the remainder, times `cache_fraction`, goes to
         prefix-cache capacity. Admission budgets each request's actual tokens,
@@ -98,7 +102,8 @@ class Ledger:
         available = mem_available_bytes()
         budget = available - self.floor_bytes - prefill_reserve_bytes - future_bytes
         page_bytes = kv_bytes_per_token + extra_page_bytes
-        must_tokens = max(context_len, max_running * min(context_len, SHARED_CONTEXT))
+        shared = SHARED_CONTEXT * min(max_running, SHARED_REQUESTS) // max_running
+        must_tokens = max(context_len, max_running * min(context_len, shared))
         must_kv = must_tokens * page_bytes
         must_state = (max_running + 1) * state_bytes_per_slot  # +1 dummy slot 0
         if budget < must_kv + must_state:

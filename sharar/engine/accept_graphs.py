@@ -49,8 +49,7 @@ class AcceptGraphs:
     @staticmethod
     def supported(spec) -> bool:
         p = spec.proposer
-        return (spec.replay is not None and spec.device.type == "cuda"
-                and p.requirements.capabilities.device_feedback and not p.requirements.features.final_norm)
+        return spec.replay is not None and spec.device.type == "cuda" and p.requirements.capabilities.device_feedback
 
     def eligible(self, requests) -> bool:
         return all(r.params.greedy and (r.params.ignore_eos or len(r.params.stop_token_ids) <= MAX_STOPS) for r in requests)
@@ -84,7 +83,9 @@ class AcceptGraphs:
         pool.conv_all[:, slots.long()] = self.spec.conv_windows_all[:, rows, (counts - 1).clamp(min=0)]
         for name, win in self.spec.aux_windows.items():
             pool.aux[name][slots.long()] = win[rows, (counts - 1).clamp(min=0)]
-        self.spec.proposer.feedback_device(vst["features"], meta[:, 1], meta[:, 2], counts, s)
+        n = b * s  # the verify rows and inputs, for a proposer fed the final-normalized rows (MTP)
+        self.spec.proposer.feedback_device(vst["features"], meta[:, 1], meta[:, 2], counts, s,
+                                           norm=vst["norm"][:n], tokens=vst["tokens"][:n], pages=vst["pages"][:n])
         st["packet"].copy_(torch.cat([st["y"], z, accepted.unsqueeze(1), counts.unsqueeze(1), flags.to(torch.int64)], dim=1))
 
     def capture(self, log=None) -> None:

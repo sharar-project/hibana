@@ -139,7 +139,10 @@ class FlashNext:
 
     def attach_calibrated(self, directory: str, log=print) -> str:
         """Calibrated 3-bit decode copies (bench/flashnext_w3_calibrate.py) over the FP8 trunk, by `linears()` name;
-        calls of at most 64 rows then read them (`TrunkLinear.__call__`), prefill keeps the FP8 weights."""
+        calls of at most 64 rows then read them (`TrunkLinear.__call__`), prefill keeps the FP8 weights.
+        SHARAR_FLASHNEXT_W3_KEEP_FP8=<regex> leaves the matching names in FP8 (a diagnostic: which module's
+        3-bit copy moves the logits, `bench/flashnext_quant.py`); the identity then names the regex."""
+        import re
         from sharar.weights.w3_checkpoint import CalibratedWeights
         if self.precision != "fp8":
             raise ValueError("calibrated 3-bit trunk copies go over the FP8 trunk (SHARAR_FLASHNEXT_TRUNK=fp8)")
@@ -148,11 +151,13 @@ class FlashNext:
         missing = sorted(set(calibrated.weights) - set(linears))
         if missing:
             raise ValueError(f"calibrated names not in this model: {missing[:4]}")
-        for name in calibrated.weights:
+        keep = current().flashnext_w3_keep_fp8
+        names = [name for name in calibrated.weights if not (keep and re.search(keep, name))]
+        for name in names:
             linears[name].w3 = calibrated.load(name, linears[name])
         if log:
-            log(f"  w3: {len(calibrated.weights)} calibrated trunk matrices from {directory}")
-        return calibrated.identity
+            log(f"  w3: {len(names)} calibrated trunk matrices from {directory}" + (f" ({len(calibrated.weights) - len(names)} kept FP8: {keep})" if keep else ""))
+        return calibrated.identity + (f"+keep_fp8:{keep}" if keep else "")
 
     def forward_extras(self):
         """The side inputs this model's forwards need beyond the ForwardContext (model/flashnext/extras.py)."""

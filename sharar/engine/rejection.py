@@ -11,12 +11,28 @@ import torch
 from sharar.engine.sampler import SamplingParams
 
 
+class DraftColumns:
+    """Host copies of a sequential draft's columns, each readable once the step that drafted it ends.
+
+    A consumer that needs the drafted tokens on the host (Flash-Next's PLE rows) reads column j while
+    step j + 1 still runs, instead of waiting for the whole block (#36). `host` is pinned int64
+    [k, max_batch], written by a non-blocking copy behind each step, then `events[j]` is recorded."""
+
+    def __init__(self, host: torch.Tensor, events: list, batch: int):
+        self.host, self.events, self.batch = host, events, batch
+
+    def column(self, j: int) -> list[int]:
+        self.events[j].synchronize()
+        return self.host[j, :self.batch].tolist()
+
+
 @dataclass
 class Proposal:
     tokens: torch.Tensor  # int64 [B, k]
     probabilities: torch.Tensor | None = None  # FP32 [B, k, V] or sparse support
     support: torch.Tensor | None = None  # int64 [B, k, C], unique per row
     confidence: torch.Tensor | None = None  # FP32 [B, k, 2]: the draft's top-1 probability and top-1 minus top-2 (router traces only)
+    columns: DraftColumns | None = None  # sequential drafts: host copies of tokens' columns as they complete
 
 
 NUCLEUS_CANDIDATES = 1024  # top-p without top-k: candidates ranked before falling back to a full sort

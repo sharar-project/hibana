@@ -162,9 +162,16 @@ An adapter receives `ProposerContext(device, max_batch, max_context)`, a fixed
 width `k` and immutable `ProposerRequirements`. Install once before capturing
 graphs. The executor rejects unsupported width/context/features before
 allocating shared verify buffers. MTP/n-gram support k=1–4, DSpark k=1–7,
-and DFlash2 k=1–15. Target verify graphs have B=1/2/4
-buckets. Normal startup captures the selected verification depth; benchmarks
-can explicitly capture additional supported depths.
+and DFlash2 k=1–15. Target verify graphs have B=1/2/4 buckets (B=8/16 too
+when `max_batch` is 16, the throughput profile). Normal startup captures the
+selected verification depth; benchmarks can explicitly capture additional
+supported depths. `SHARAR_SPEC_DEPTHS` sets a depth per batch bucket
+(`engine/depth.py` `BatchDepth`): each depth's verify graphs cover only its
+buckets, and a bucket at depth 0 decodes plainly while the proposer still
+ingests every committed row, so speculation resumes when the batch shrinks. A
+proposer that declares `Capabilities.short_drafts` (MTP) receives
+`propose(..., depth=d)` and drafts only the `d` tokens a shallower round
+verifies; others draft `k` and the round verifies the first `d`.
 
 `ingest_prefill(req, ids, start, result)` consumes each freshly computed chunk;
 `start(req, token)` publishes its first emitted token. `ready(req)` selects
@@ -281,8 +288,9 @@ without them retain the base proposer contract.
 ## Device-resident acceptance
 
 For an all-greedy batch on the graph path, `engine/accept_graphs.py` replaces
-the host's `SpecDecoder._accept` with one captured graph per batch bucket
-(`SHARAR_DEVICE_ACCEPT=0` restores the host path for every round). The graph
+the host's `SpecDecoder._accept` with one captured graph per batch bucket of
+each verify depth (a depth per bucket, `SHARAR_SPEC_DEPTHS`, captures only its buckets)
+(`SHARAR_DEVICE_ACCEPT=1`; the `fast` profile turns it on for Flash-Next, `0` keeps the host path for every round). The graph
 reads the verify graph's static outputs, decides acceptance with the same rule
 (`engine/accept.py`: exact or relaxed match, cumulative prefix, budget clamp,
 first stop token), runs the accepted-state reconstruction and the convolution
@@ -298,21 +306,25 @@ advances `committed_len` after the counts are known, and a failure between
 them poisons the batch exactly as the host commit does. A proposer opts in by
 providing three methods: `accepted_prepare(requests)` validates its private
 prefixes before the replay and returns each request's start position and ring
-slot; `feedback_device(features, starts, ring_slots, counts, steps)` is the
-captured feedback over the bucket's `[b*steps, H]` verify features, writing
-rows past a request's count (and rows of padded requests) to the dummy ring
-slot 0; `accepted_publish(requests, emitted)` advances its state afterwards.
+slot; `feedback_device(features, starts, ring_slots, counts, steps, *, norm,
+tokens, pages)` is the captured feedback over the bucket's `[b*steps, H]` verify
+features (or, for a proposer fed final-normalized rows such as MTP, the verify
+rows with the block's input tokens and pages), writing rows past a request's
+count (and rows of padded requests) to the dummy ring slot or page 0;
+`accepted_publish(requests, emitted)` advances its state afterwards.
 Padded rows of a bucket carry budget 0 and target slot 0, so they emit nothing
 and touch only the dummy recurrent slot. Requests with more than
-`accept.MAX_STOPS` stop token ids, sampled batches, proposers without the
-three methods, and proposers that need final-normalized features stay on the
-host path.
+`accept.MAX_STOPS` stop token ids, sampled batches and proposers without the
+three methods stay on the host path.
 
 The projection over the whole bucket rounds bf16 differently from the host
 path's projection of exactly the accepted rows, so the drafter's rings agree
 to bf16 precision and its proposals can drift after a few rounds; the
 target's outputs are the same, and the committed recurrent state is bitwise
-the host's for identical round boundaries (`tests/gpu/test_device_accept.py`).
+the host's for identical round boundaries (`tests/gpu/test_device_accept.py`,
+`test_mtp_device_accept.py`). With an FP8 draft layer (Flash-Next's MTP head) the
+whole-bucket projection also shares one dynamic activation scale, so the draft KV
+matches the host's to FP8 rounding and round boundaries, hence outputs, move sooner.
 Acceptance is judged by the family gate like any other arithmetic change.
 
 ## Recurrent retention

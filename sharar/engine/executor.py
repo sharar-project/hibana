@@ -77,6 +77,8 @@ class Executor:
         self.ledger.record_cuda_allocated("state_pool")
         cache = RadixCache(self.kv_pool, self.state_pool, self.device) if use_cache else None
         self.state = StateManager(self.kv_pool, self.state_pool, cache)
+        if max_batch > 4:  # a snapshot must not hold the slot a wide batch's next request needs
+            self.state.admission_slots = max_batch
         self.sampler = Sampler(self.device)
         self.max_batch = max_batch
         self._ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=self.device)
@@ -540,26 +542,29 @@ class Executor:
         self.prefill_batch([(b, 40), (c, 70)])
         for r in (a, b, c):
             self.release(r)
+        if self.max_batch > 4:
+            self.flush_cache()  # sixteen live warmup rows need every state slot the plan guarantees
         if self.spec is not None:
             # Two speculative rounds at batch 1 and 2 so the first real request
             # does not pay the lazy kernel loads of the verify/accept path. The
             # random prompts can emit EOS; ignore it so every step keeps four live rows.
-            spec_params = SamplingParams(max_new_tokens=12, ignore_eos=True)
+            spec_params = SamplingParams(max_new_tokens=12 if self.max_batch <= 4 else 64, ignore_eos=True)
             d = self.admit(random_ids(50, 14), spec_params)
             e = self.admit(random_ids(60, 15), spec_params)
             self.prefill(d)
             self.prefill(e)
             self.decode_step([d])
             self.decode_step([d, e])
-            if self.max_batch >= 4:  # every captured size, so no round pays a first-use compile
-                f = self.admit(random_ids(55, 16), spec_params)
-                g = self.admit(random_ids(65, 17), spec_params)
-                self.prefill(f)
-                self.prefill(g)
-                self.decode_step([d, e, f, g])
-                for r in (f, g):
-                    self.release(r)
-            for r in (d, e):
+            live = [d, e]
+            for size in (4, 8, 16):  # every captured size, so no round pays a first-use compile
+                if self.max_batch < size:
+                    break
+                while len(live) < size:
+                    r = self.admit(random_ids(55 + 10 * (len(live) - 2), 14 + len(live)), spec_params)
+                    self.prefill(r)
+                    live.append(r)
+                self.decode_step(live)
+            for r in live:
                 self.release(r)
             self.spec.reset_stats()
         self.flush_cache()
@@ -581,6 +586,8 @@ class Executor:
         assert 0 < len(reqs) <= self.max_batch
         spec_reqs = [r for r in reqs if self.spec is not None and self.spec.ready(r)
                      and (r.params.greedy or not self.spec.proposer.requirements.greedy_only)]
+        if spec_reqs and self.spec.depth_policy.choose(reqs) == 0:
+            spec_reqs = []  # a wide batch at depth 0 (the throughput profile, #59): plain decode; the proposer still follows
         plain = [r for r in reqs if r not in spec_reqs]
         need = len(plain) + (len(spec_reqs) * self.spec.steps if spec_reqs else 0)
         # Retraction retries the entire batch. Reserve both paths before either
