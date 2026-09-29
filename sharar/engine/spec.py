@@ -57,6 +57,13 @@ class SpecDecoder:
         self.steps = proposer.k + 1
         self.verify_depth = self.k
         self.verify_depths = (self.k,)  # benchmarks may explicitly capture narrower widths
+        from sharar.engine.config import current
+        from sharar.engine.depth import parse_depths
+        from sharar.engine.graphs import capture_sizes
+        policy = parse_depths(current().spec_depths, capture_sizes(executor.max_batch), self.k)
+        if policy is not None:  # depth per batch bucket (#59): verify graphs only where a bucket uses the depth
+            self.depth_policy = policy
+            self.verify_depths = policy.verify_depths
         self.width_graphs = {}
         self.device = executor.device
         n = executor.max_batch
@@ -102,13 +109,15 @@ class SpecDecoder:
         self.verify_seconds = 0.0
 
     def capture_graphs(self, log=None) -> None:
+        from sharar.engine.graphs import capture_sizes
         from sharar.engine.spec_graphs import VerifyGraphs
 
+        policy = self.depth_policy
         for depth in self.verify_depths:
-            graphs = VerifyGraphs(self, depth)
+            graphs = VerifyGraphs(self, depth, sizes=policy.sizes_for(depth, capture_sizes(self.ex.max_batch)))
             graphs.capture(log=log)
             self.width_graphs[depth] = graphs
-        self.verify_graphs = self.width_graphs[self.k]
+        self.verify_graphs = self.width_graphs.get(self.k) or self.width_graphs[max(self.width_graphs)]
         self.proposer.capture_graphs(log=log)
         if AcceptGraphs.supported(self):  # captured whenever possible so the path can be switched at run time
             for graphs in self.width_graphs.values():
@@ -202,16 +211,17 @@ class SpecDecoder:
         rows = host[:, :b_sz].to(d, non_blocking=True)
         toks_t, poss_t, slots_t = rows[0], rows[1], rows[2].to(torch.int32)
         inputs = StepInputs(toks_t, poss_t, slots_t)
-        proposed = self.proposer.propose(reqs, new_pages, inputs, graphs=ex.use_graphs)
+        short = self.proposer.requirements.capabilities.short_drafts
+        proposed = self.proposer.propose(reqs, new_pages, inputs, graphs=ex.use_graphs, **({"depth": k} if short else {}))
         proposal = proposed if isinstance(proposed, Proposal) else Proposal(proposed)
         y = proposal.tokens
         sampled = any(not r.params.greedy for r in reqs)
-        if (y.shape != (b_sz, self.k) or y.dtype != torch.int64 or y.device.type != self.device.type
+        if (y.shape != (b_sz, k if short else self.k) or y.dtype != torch.int64 or y.device.type != self.device.type
                 or (self.device.index is not None and y.device.index != self.device.index)):
             raise ValueError("proposer must return int64 [batch, k] on the target device")
         y = y[:, :k]
         proposal = Proposal(y, proposal.probabilities[:, :k] if proposal.probabilities is not None else None,
-                            proposal.support[:, :k] if proposal.support is not None else None)
+                            proposal.support[:, :k] if proposal.support is not None else None, proposal.columns)
         new_pages_flat = new_pages[:, :s_len].reshape(-1)
         if timing:
             torch.cuda.synchronize()
@@ -238,7 +248,7 @@ class SpecDecoder:
         if self.ex.use_graphs and graphs is not None and variant in graphs.variants:
             norm_rows, z_flat, ctx, layers, logits = graphs.run(batch.tokens, batch.positions, batch.pages,
                                                                batch.slots, batch.kv_pages, sampled=batch.sampled,
-                                                               side=(batch.requests, batch.proposal.tokens, seqs), variant=variant)
+                                                               side=(batch.requests, batch.proposal.tokens, seqs, batch.proposal.columns), variant=variant)
             accept = getattr(graphs, "accept", None)
             if accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests):
                 if self.timing:
@@ -425,14 +435,14 @@ class SpecDecoder:
                                 aux={name: win[i, count - 1] for name, win in self.aux_windows.items()})
             for tok in emitted:
                 r.push(int(tok))
-            self.proposed += self.k
+            self.proposed += k
             self.accepted += a
             self.emitted += len(emitted)
             relaxed_here = min(used[i], count)  # stop truncation can cut accepted tokens
             self.relaxed_accepts += relaxed_here
             r.spec_relaxed += relaxed_here
             r.spec_rounds += 1
-            r.spec_proposed += self.k
+            r.spec_proposed += k
             r.spec_accepted += a
             r.spec_emitted += count
         if self.timing:

@@ -70,3 +70,29 @@ def test_fixed_depth_and_the_verify_depth_setter():
     assert spec.verify_depth == 7  # no policy yet: the proposer's k
     spec.verify_depth = 3
     assert isinstance(spec.depth_policy, FixedDepth) and spec.verify_depth == 3
+
+
+def test_batch_depth_by_bucket():
+    from sharar.engine.depth import BatchDepth, parse_depths
+    sizes = (1, 2, 4, 8, 16)
+    policy = parse_depths("8:1, 16:0", sizes, 4)
+    assert [policy.choose([None] * n) for n in (1, 2, 3, 4, 5, 8, 9, 16)] == [4, 4, 4, 4, 1, 1, 0, 0]
+    assert policy.verify_depths == (1, 4) and policy.depth == 4
+    assert policy.sizes_for(4, sizes) == (1, 2, 4) and policy.sizes_for(1, sizes) == (8,)
+    assert parse_depths(None, sizes, 4) is None and parse_depths("", sizes, 4) is None
+    assert parse_depths("16:4", sizes, 4) is None  # every bucket keeps k: the fixed policy
+    for bad in ("16", "16:x", "3:1", "16:5", "16:-1"):
+        with pytest.raises(ValueError):
+            parse_depths(bad, sizes, 4)
+    with pytest.raises(ValueError):
+        BatchDepth({4: 0}, 4).choose([None] * 5)  # beyond every bucket
+    assert FixedDepth(3).sizes_for(3, sizes) == sizes
+
+
+def test_profile_buckets_up_to_sixteen():
+    from sharar.engine.profile import ServingProfile
+    assert ServingProfile().graph_sizes == (1, 2, 4)  # the default profile is unchanged
+    assert ServingProfile(max_batch=16).graph_sizes == (1, 2, 4, 8, 16)
+    assert ServingProfile(max_batch=12).graph_sizes == (1, 2, 4, 8, 12)
+    with pytest.raises(ValueError):
+        ServingProfile(max_batch=17)

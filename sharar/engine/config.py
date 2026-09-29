@@ -37,11 +37,12 @@ def _str(env: Mapping[str, str], name: str, default: str | None = None) -> str |
 @dataclass(frozen=True)
 class EngineConfig:
     # --- target and files
-    profile: str = "fast"                     # SHARAR_PROFILE: exact / balanced / fast (resolved by the launcher, reported here)
+    profile: str = "fast"                     # SHARAR_PROFILE: exact / balanced / fast / throughput (resolved by the launcher, reported here)
     target: str | None = None                 # SHARAR_TARGET: qwen38 (default) or flashnext
     hf_cache: str | None = None               # SHARAR_HF_CACHE, else HF_HOME: the 27B's model cache
     flashnext_cache: str | None = None        # SHARAR_FLASHNEXT_CACHE: Flash-Next's model cache
     max_context: int | None = None            # SHARAR_MAX_CONTEXT (0/unset: the target's)
+    max_batch: int = 4                        # SHARAR_MAX_BATCH: most requests decoded together, 1-16 (the throughput profile: 16)
     cuda_arch: str = "12.1a"                  # SHARAR_CUDA_ARCH for the JIT-built CUDA kernels
     # --- weights and numerics
     w3_decode: bool = False                   # SHARAR_W3_DECODE: 3-bit decode copies for calls of <= 64 rows
@@ -54,10 +55,12 @@ class EngineConfig:
     flashnext_trunk: str = "fp8"              # SHARAR_FLASHNEXT_TRUNK: bf16 | fp8 | w3
     flashnext_mixers: str = "fp8"             # SHARAR_FLASHNEXT_MIXERS
     flashnext_w3_checkpoint: str | None = None  # SHARAR_FLASHNEXT_W3_CHECKPOINT: calibrated 3-bit trunk copies over the FP8 trunk (#6)
+    flashnext_w3_keep_fp8: str | None = None  # SHARAR_FLASHNEXT_W3_KEEP_FP8: regex of linears() names left without their calibrated copy
     flashnext_mtp_trunk: str | None = None    # SHARAR_FLASHNEXT_MTP_TRUNK: the MTP draft head's precision (unset: the trunk's)
     trunk_keep_bf16: str | None = None        # SHARAR_TRUNK_KEEP_BF16: regex of Flash-Next projections kept BF16
     # --- speculation
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
+    spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
     draft_dir: str | None = None              # SHARAR_DRAFT
     draft_vocab: int = 0                      # SHARAR_DRAFT_VOCAB: reduced MTP draft vocabulary rows (0: full)
     draft_head: str = "fp8"                   # SHARAR_DRAFT_HEAD: fp8 (the target's head) or w3
@@ -90,6 +93,7 @@ class EngineConfig:
             hf_cache=_str(e, "SHARAR_HF_CACHE") or _str(e, "HF_HOME"),
             flashnext_cache=_str(e, "SHARAR_FLASHNEXT_CACHE"),
             max_context=_int(e, "SHARAR_MAX_CONTEXT", 0) or None,
+            max_batch=_int(e, "SHARAR_MAX_BATCH", 4),
             cuda_arch=_str(e, "SHARAR_CUDA_ARCH", "12.1a"),
             w3_decode=_flag(e, "SHARAR_W3_DECODE"),
             w3_head=_flag(e, "SHARAR_W3_HEAD"),
@@ -101,9 +105,11 @@ class EngineConfig:
             flashnext_trunk=_str(e, "SHARAR_FLASHNEXT_TRUNK", "fp8"),
             flashnext_mixers=_str(e, "SHARAR_FLASHNEXT_MIXERS", "fp8"),
             flashnext_w3_checkpoint=_str(e, "SHARAR_FLASHNEXT_W3_CHECKPOINT"),
+            flashnext_w3_keep_fp8=_str(e, "SHARAR_FLASHNEXT_W3_KEEP_FP8"),
             flashnext_mtp_trunk=_str(e, "SHARAR_FLASHNEXT_MTP_TRUNK"),
             trunk_keep_bf16=_str(e, "SHARAR_TRUNK_KEEP_BF16"),
             spec=_str(e, "SHARAR_SPEC"),
+            spec_depths=_str(e, "SHARAR_SPEC_DEPTHS"),
             draft_dir=_str(e, "SHARAR_DRAFT"),
             draft_vocab=_int(e, "SHARAR_DRAFT_VOCAB", 0),
             draft_head=_str(e, "SHARAR_DRAFT_HEAD", "fp8"),

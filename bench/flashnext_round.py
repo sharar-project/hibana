@@ -11,10 +11,14 @@
      longer draft block pays.
 
     SHARAR_TARGET=flashnext python3 -m bench.flashnext_round --out round.json
+
+`--gap-profile` (with `--batch`, `--accept`) and `--kernel-gaps` split a served round into GPU
+work, GPU idle time between replays (host work the GPU waits for) and bubbles inside the replays.
 """
 import argparse
 import json
 import re
+import tempfile
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -29,6 +33,9 @@ PROMPTS = {
     "code": "Write a Python module implementing an LRU cache class with get, put, delete and resize, plus a thread-safe wrapper. Include docstrings and pytest unit tests.",
     "prose": "Write an essay of about 700 words on how the printing press changed European society between 1450 and 1600, covering religion, science, politics and literacy.",
     "math": "A loan of $250,000 at 6.5% annual interest is repaid monthly over 30 years. Derive the payment formula, compute the monthly payment, the total interest, and the balance after 10 years, showing all steps.",
+}
+EXTRA_PROMPTS = {  # a fourth request for batch 4 (kept apart: `m_curve` and draft_head.py read PROMPTS)
+    "json": "Extract every person, company, date and amount from this text as JSON with a schema: On 3 March 2021 Maria Lopez of Acme Corp paid $12,400 to Jonas Berg (Nordic Tools AB) for 40 drills; the balance of $3,100 was settled on 9 April by Acme's CFO, Tom Reed.",
 }
 CATEGORIES = [  # first match wins
     ("moe", r"moe|expert|groupproblemshape|grouped|fused_moe|route|swizzle"),
@@ -172,8 +179,11 @@ def verify_breakdown(ex, tok, out, tokens: int):
             acc[name] += a.elapsed_time(b) / 1000
         graph.replay = replay
     patches = []
-    for obj, name in ((ex.extras, "_verify_rows"), (ex.extras, "fill"), (spec, "prepare"), (spec, "verify"), (spec, "_accept")):
-        orig = getattr(obj, name)
+    for obj, name in ((ex.extras, "_verify_rows"), (ex.extras, "_stream_verify_rows"), (ex.extras, "fill"), (spec, "prepare"),
+                      (spec, "verify"), (spec, "_accept")):
+        orig = getattr(obj, name, None)
+        if orig is None:
+            continue
         patches.append((obj, name, orig))
         setattr(obj, name, timed(name, orig))
     for depth, graphs in spec.width_graphs.items():
@@ -199,12 +209,57 @@ def verify_breakdown(ex, tok, out, tokens: int):
         setattr(obj, name, orig)
 
 
-def gap_profile(ex, tok, out, tokens: int):
+def _params(tokens: int, accept: str | None) -> SamplingParams:
+    """Greedy, fixed length; `accept` "K:M" is the served relaxed rule (the fast profile's 3:2.0)."""
+    top_k, margin = (1, 0.0) if not accept else (int(accept.split(":")[0]), float(accept.split(":")[1]))
+    return SamplingParams(max_new_tokens=tokens, ignore_eos=True, accept_top_k=top_k, accept_margin=margin)
+
+
+def _batches(tok, batch: int) -> list[tuple[str, list[list[int]]]]:
+    """Batch 1: each prompt alone. Batch B: one generation of B different prompts."""
+    names = list(PROMPTS) + list(EXTRA_PROMPTS)
+    text = {**PROMPTS, **EXTRA_PROMPTS}
+    if batch == 1:
+        return [(n, [chat_ids(tok, text[n])]) for n in PROMPTS]
+    return [("+".join(names[:batch]), [chat_ids(tok, text[n]) for n in names[:batch]])]
+
+
+def _replay_graphs(ex) -> list[tuple[str, torch.cuda.CUDAGraph]]:
+    """Every graph a round replays, by kind: draft steps, verification, device acceptance, plain decode."""
+    spec = ex.spec
+    out = [("draft", g) for g in spec.proposer.graphs._graphs.values()]
+    for graphs in spec.width_graphs.values():
+        out += [("verify", g) for g in graphs._graphs.values()]
+        accept = getattr(graphs, "accept", None)
+        if accept is not None:
+            out += [("accept", g) for g in accept._graphs.values()]
+    if ex.graphs is not None:
+        out += [("decode", g) for g in ex.graphs._graphs.values()]
+    return out
+
+
+def _evict_ple(model) -> None:
+    """Drop the PLE table from the page cache (a new request's rows are mostly not cached)."""
+    import os
+    for fd in model.ple.table.fds:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+
+
+def _ple_stats(model) -> tuple[int, int]:
+    """Rows read from the page cache and through the threads so far (PleTable counters)."""
+    table = model.ple.table
+    return getattr(table, "hits", 0), getattr(table, "misses", 0)
+
+
+def gap_profile(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = None, cold: bool = False):
     """GPU idle gaps inside a round, unsynchronized: CUDA events recorded before and after every graph
     replay (a before-event completes when the GPU reaches it, so after-draft -> before-verify is the time
-    the GPU waited for the host between draft and verify, after-verify -> before-next-draft likewise)."""
+    the GPU waited for the host between draft and verify, after-verify -> before-next-draft likewise).
+    Batch 1 runs each prompt alone; batch B runs B prompts together. Sums over the runs, per round.
+    `cold`: the PLE table leaves the page cache before each measured generation (the warm-up run
+    otherwise leaves every row it reads cached)."""
     spec = ex.spec
-    marks = []  # (kind, event)
+    marks = []  # (kind, before, after)
 
     def instrument(graph, kind):
         orig = graph.replay
@@ -215,37 +270,199 @@ def gap_profile(ex, tok, out, tokens: int):
             marks.append((kind, a, b))
         graph.replay = replay
         return orig
-    restore = []
-    for graphs in spec.width_graphs.values():
-        for g in graphs._graphs.values():
-            restore.append((g, instrument(g, "verify")))
-    for g in spec.proposer.graphs._graphs.values():
-        restore.append((g, instrument(g, "draft")))
-    ids = chat_ids(tok, PROMPTS["code"])
-    params = SamplingParams(max_new_tokens=tokens, ignore_eos=True)
-    ex.generate(ids, params)
-    ex.flush_cache()
-    marks.clear(); spec.reset_stats()
-    t0 = time.perf_counter()
-    r = ex.generate(ids, params)
-    torch.cuda.synchronize()
-    gaps = defaultdict(list)
-    busy = defaultdict(float)
-    for (k1, a1, b1), (k2, a2, b2) in zip(marks, marks[1:]):
-        gaps[f"{k1} -> {k2}"].append(b1.elapsed_time(a2))
-    for k, a, b in marks:
-        busy[k] += a.elapsed_time(b)
-    first, last = marks[0][1], marks[-1][2]
-    span = first.elapsed_time(last)
-    n = max(1, spec.rounds)
-    row = {"rounds": spec.rounds, "decode_wall_ms_per_round": round(1000 * r.decode_seconds / n, 2),
+    restore = [(g, instrument(g, kind)) for kind, g in _replay_graphs(ex)]
+    params = _params(tokens, accept)
+    gaps, busy = defaultdict(list), defaultdict(float)
+    rounds_n = emitted = 0
+    wall = span = 0.0
+    per_prompt = []
+    for name, prompts in _batches(tok, batch):
+        items = [(ids, params) for ids in prompts]
+        ex.generate_batch(items)  # warm (prefix cache, graphs)
+        ex.flush_cache()
+        if cold:
+            _evict_ple(ex.model)
+        marks.clear(); spec.reset_stats()
+        ple0 = _ple_stats(ex.model)
+        reqs = ex.generate_batch(items)
+        torch.cuda.synchronize()
+        ple = [a - b for a, b in zip(_ple_stats(ex.model), ple0)]
+        n = max(1, spec.rounds)
+        run_gaps = defaultdict(float)
+        for (k1, a1, b1), (k2, a2, b2) in zip(marks, marks[1:]):
+            g = b1.elapsed_time(a2)
+            gaps[f"{k1} -> {k2}"].append(g)
+            run_gaps[f"{k1} -> {k2}"] += g
+        run_busy = defaultdict(float)
+        for k, a, b in marks:
+            run_busy[k] += a.elapsed_time(b)
+        for k, v in run_busy.items():
+            busy[k] += v
+        run_span = marks[0][1].elapsed_time(marks[-1][2])
+        rounds_n += spec.rounds
+        emitted += spec.emitted
+        wall += 1000 * reqs[0].decode_seconds
+        span += run_span
+        row = {"prompt": name, "rounds": spec.rounds, "tokens_per_round": round(spec.emitted / n / len(prompts), 3),
+               "decode_wall_ms_per_round": round(1000 * reqs[0].decode_seconds / n, 2),
+               "replay_ms_per_round": {k: round(v / n, 2) for k, v in run_busy.items()},
+               "idle_ms_per_round": round(sum(run_gaps.values()) / n, 2),
+               "gap_ms_per_round": {k: round(v / n, 2) for k, v in run_gaps.items()},
+               "ple_rows_cached_missed": ple}
+        per_prompt.append(row)
+        print(json.dumps(row), flush=True)
+    n = max(1, rounds_n)
+    row = {"batch": batch, "ple": "cold" if cold else "warm", "accept": accept or "exact", "spec": spec.k, "rounds": rounds_n,
+           "tokens_per_round": round(emitted / n / batch, 3), "decode_wall_ms_per_round": round(wall / n, 2),
            "event_span_ms_per_round": round(span / n, 2),
            "replay_ms_per_round": {k: round(v / n, 2) for k, v in busy.items()},
-           "gap_ms": {k: {"count": len(v), "mean": round(sum(v) / len(v), 3), "per_round": round(sum(v) / n, 2)} for k, v in gaps.items()}}
-    out["gap_profile"] = row
-    print(json.dumps(row), flush=True)
+           "idle_ms_per_round": round(sum(sum(v) for v in gaps.values()) / n, 2),
+           "gap_ms": {k: {"count": len(v), "mean": round(sum(v) / len(v), 3), "per_round": round(sum(v) / n, 2)} for k, v in gaps.items()},
+           "per_prompt": per_prompt}
+    out.setdefault("gap_profile", {})[f"batch{batch}" + ("-cold" if cold else "")] = row
+    print(json.dumps({k: v for k, v in row.items() if k != "per_prompt"}), flush=True)
     for g, orig in restore:
         g.replay = orig
+
+
+def replay_split(events: list[dict]) -> dict:
+    """From a chrome trace: per replay kind, its device span against the union of its activities; between
+    consecutive replays, the eager GPU work (activities outside any graph) against the whole window."""
+    ranges = sorted((e["ts"], e["ts"] + e["dur"], e["name"].split(":", 1)[1]) for e in events
+                    if e.get("ph") == "X" and str(e.get("name", "")).startswith("replay:"))
+    launches = sorted((e["ts"], e["args"]["correlation"]) for e in events
+                      if e.get("ph") == "X" and e.get("cat") == "cuda_runtime" and "GraphLaunch" in e.get("name", ""))
+    device = defaultdict(list)
+    for e in events:
+        if e.get("ph") == "X" and e.get("cat") in ("kernel", "gpu_memcpy", "gpu_memset"):
+            device[e["args"].get("correlation")].append((e["ts"], e["ts"] + e["dur"]))
+
+    def union(intervals) -> float:
+        total, cur = 0.0, None
+        for s0, e0 in sorted(intervals):
+            if cur is None or s0 > cur[1]:
+                total += 0 if cur is None else cur[1] - cur[0]
+                cur = [s0, e0]
+            else:
+                cur[1] = max(cur[1], e0)
+        return total + (0 if cur is None else cur[1] - cur[0])
+    acc = defaultdict(lambda: defaultdict(float))
+    windows, graph_corr = [], set()  # (start, end, kind) of each replay on the device
+    li = 0
+    for start, end, kind in ranges:
+        while li < len(launches) and launches[li][0] < start:
+            li += 1
+        corr = [c for ts, c in launches[li:] if ts <= end][:1]
+        acts = device.get(corr[0], []) if corr else []
+        if not acts:
+            continue
+        graph_corr.add(corr[0])
+        first, last = min(a for a, _ in acts), max(b for _, b in acts)
+        windows.append((first, last, kind))
+        a = acc[kind]
+        a["replays"] += 1
+        a["activities"] += len(acts)
+        a["span_ms"] += (last - first) / 1000
+        a["busy_ms"] += union(acts) / 1000
+    # Between consecutive replays: eager GPU work (kernels outside any graph) against the whole window.
+    eager = sorted(iv for c, ivs in device.items() if c not in graph_corr for iv in ivs)
+    between = defaultdict(lambda: defaultdict(float))
+    windows.sort()
+    for (s1, e1, k1), (s2, e2, k2) in zip(windows, windows[1:]):
+        inside = [(max(a, e1), min(b, s2)) for a, b in eager if b > e1 and a < s2]
+        g = between[f"{k1} -> {k2}"]
+        g["count"] += 1
+        g["window_ms"] += max(0.0, s2 - e1) / 1000
+        g["eager_ms"] += union(inside) / 1000
+    return {"per_replay": {
+        kind: {"replays": int(a["replays"]), "activities": round(a["activities"] / a["replays"]),
+               "span_ms": round(a["span_ms"] / a["replays"], 3), "busy_ms": round(a["busy_ms"] / a["replays"], 3),
+               "bubbles_ms": round((a["span_ms"] - a["busy_ms"]) / a["replays"], 3),
+               "bubble_us_per_boundary": round(1000 * (a["span_ms"] - a["busy_ms"]) / max(1, a["activities"] - a["replays"]), 2)}
+        for kind, a in acc.items()},
+        "between_replays": {k: {"count": int(g["count"]), "window_ms": round(g["window_ms"] / g["count"], 3),
+                                "eager_gpu_ms": round(g["eager_ms"] / g["count"], 3),
+                                "idle_ms": round((g["window_ms"] - g["eager_ms"]) / g["count"], 3)} for k, g in between.items()}}
+
+
+def kernel_gaps(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = None):
+    """Inside each graph replay: the span from its first to its last GPU activity against the time the
+    GPU spends in kernels, memcpys and memsets (their union). The difference is the bubbles between
+    the graph's nodes (launch latency on the device), which no host change removes. Torch profiler
+    (CUPTI) trace; replays are tied to their activities by the graph launch's correlation id."""
+    from torch.profiler import record_function
+
+    def instrument(graph, kind):
+        orig = graph.replay
+
+        def replay():
+            with record_function(f"replay:{kind}"):
+                orig()
+        graph.replay = replay
+        return orig
+    restore = [(g, instrument(g, kind)) for kind, g in _replay_graphs(ex)]
+    params = _params(tokens, accept)
+    name, prompts = _batches(tok, batch)[0]
+    items = [(ids, params) for ids in prompts]
+    ex.generate_batch(items)
+    ex.flush_cache()
+    torch.cuda.synchronize()
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        ex.generate_batch(items)
+        torch.cuda.synchronize()
+    for g, orig in restore:
+        g.replay = orig
+    with tempfile.NamedTemporaryFile(suffix=".json") as f:
+        prof.export_chrome_trace(f.name)
+        events = json.load(open(f.name))["traceEvents"]
+    row = {"batch": batch, "prompt": name, **replay_split(events)}
+    out.setdefault("kernel_gaps", {})[f"batch{batch}"] = row
+    print(json.dumps(row), flush=True)
+
+
+def accept_check(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = None):
+    """Host against device-resident acceptance (SHARAR_DEVICE_ACCEPT) on the same prompts: outputs, the
+    tokens each round emitted per request, and the first round whose boundaries differ. The device pass
+    projects the draft KV over the whole bucket, so drafts may drift (MtpProposer.feedback_device)."""
+    spec = ex.spec
+    params = _params(tokens, accept)
+    rows = []
+    for name, prompts in _batches(tok, batch):
+        runs = {}
+        for device in (False, True, False, True):
+            spec.device_accept = device
+            ex.flush_cache()
+            reqs = [ex.admit(ids, params) for ids in prompts]
+            for r in reqs:
+                ex.prefill(r)
+            active, chunks = [r for r in reqs if not r.finished], []
+            spec.reset_stats()
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            while active:
+                before = [len(r.output_ids) for r in reqs]
+                ex.decode_step(active)
+                chunks.append([len(r.output_ids) - b for r, b in zip(reqs, before)])
+                active = [r for r in active if not r.finished]
+            torch.cuda.synchronize()
+            wall = time.perf_counter() - t0
+            runs.setdefault(device, []).append({"outputs": [r.output_ids[:] for r in reqs], "chunks": chunks,
+                                                "ms_per_round": 1000 * wall / max(1, spec.rounds), "tokens_per_round": spec.emitted / max(1, spec.rounds) / len(reqs)})
+            for r in reqs:
+                r.cacheable = False
+                ex.release(r)
+        h, d = runs[False][0], runs[True][0]
+        agree = next((j for j, (a, b) in enumerate(zip(h["chunks"], d["chunks"])) if a != b), min(len(h["chunks"]), len(d["chunks"])))
+        first = [next((j for j, (a, b) in enumerate(zip(oh, od)) if a != b), None) for oh, od in zip(h["outputs"], d["outputs"])]
+        row = {"prompt": name, "batch": batch, "accept": accept or "exact", "host_repeatable": runs[False][0]["outputs"] == runs[False][1]["outputs"],
+               "device_repeatable": runs[True][0]["outputs"] == runs[True][1]["outputs"], "identical_outputs": h["outputs"] == d["outputs"],
+               "first_differing_token": first, "rounds_agree": agree, "rounds": [len(h["chunks"]), len(d["chunks"])],
+               "tokens_per_round": [round(h["tokens_per_round"], 3), round(d["tokens_per_round"], 3)],
+               "ms_per_round_synchronous_loop": [round(x["ms_per_round"], 2) for x in (*runs[False], *runs[True])]}
+        rows.append(row)
+        print(json.dumps(row), flush=True)
+    spec.device_accept = False
+    out.setdefault("accept_check", []).extend(rows)
 
 
 def host_profile(ex, tok, out, tokens: int):
@@ -281,15 +498,29 @@ def main():
     ap.add_argument("--only-breakdown", action="store_true")
     ap.add_argument("--host-profile", action="store_true")
     ap.add_argument("--gap-profile", action="store_true")
+    ap.add_argument("--kernel-gaps", action="store_true", help="bubbles inside the graph replays (torch profiler)")
+    ap.add_argument("--spec", type=int, default=4, help="MTP draft depth (config/flashnext.env serves 4)")
+    ap.add_argument("--batch", default="1", help="--gap-profile / --kernel-gaps: requests per generation, a comma list (1,4)")
+    ap.add_argument("--accept", default=None, help="relaxed acceptance K:M for every request (the fast profile: 3:2.0)")
+    ap.add_argument("--ple-cold", action="store_true", help="--gap-profile also with the PLE table out of the page cache")
+    ap.add_argument("--accept-check", action="store_true", help="host against device-resident acceptance: outputs and round boundaries")
     args = ap.parse_args()
-    model, ex, tok = _load(graphs=True, spec=3)
+    model, ex, tok = _load(graphs=True, spec=args.spec)
     out = {"rounds": [], "m_curve": []}
-    if args.gap_profile:
-        gap_profile(ex, tok, out, args.tokens)
+    if args.gap_profile or args.kernel_gaps or args.only_breakdown or args.accept_check:  # these combine in one load
+        for batch in (int(b) for b in args.batch.split(",")):
+            if args.accept_check:
+                accept_check(ex, tok, out, args.tokens, batch, args.accept)
+            if args.gap_profile:
+                gap_profile(ex, tok, out, args.tokens, batch, args.accept)
+                if args.ple_cold:
+                    gap_profile(ex, tok, out, args.tokens, batch, args.accept, cold=True)
+            if args.kernel_gaps:
+                kernel_gaps(ex, tok, out, min(args.tokens, 96), batch, args.accept)
+        if args.only_breakdown:
+            verify_breakdown(ex, tok, out, args.tokens)
     elif args.host_profile:
         host_profile(ex, tok, out, args.tokens)
-    elif args.only_breakdown:
-        verify_breakdown(ex, tok, out, args.tokens)
     else:
         if not args.skip_rounds:
             rounds(ex, tok, out, args.tokens, profiled=not args.rounds_only)
