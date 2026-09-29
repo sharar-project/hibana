@@ -143,7 +143,6 @@ class AcceptGraphs:
         except BaseException as exc:
             ex.state.poison(reqs, exc)
         conf = spec._confidence_rows(reqs, batch.proposal.confidence)
-        spec._trace_routes(reqs, k)  # before the pushes: each block starts at the request's pending token
         outputs = []
         for i, r in enumerate(reqs):
             row = packet[i]

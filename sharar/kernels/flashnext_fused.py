@@ -118,8 +118,7 @@ def quant_fp8_small(x: torch.Tensor, wscale: torch.Tensor):
 
 # ---- softmax top-k routing ----
 @triton.jit
-def _route_kernel(L, Ids, W, RecIds, RecP, stride_l, stride_rec, E: tl.constexpr, K: tl.constexpr, BLOCK: tl.constexpr,
-                  RECORD: tl.constexpr):
+def _route_kernel(L, Ids, W, stride_l, E: tl.constexpr, K: tl.constexpr, BLOCK: tl.constexpr):
     t = tl.program_id(0)
     cols = tl.arange(0, BLOCK)
     mask = cols < E
@@ -140,26 +139,15 @@ def _route_kernel(L, Ids, W, RecIds, RecP, stride_l, stride_rec, E: tl.constexpr
         val = tl.max(work, 0)
         tl.store(Ids + t * K + k, idx.to(tl.int32))
         tl.store(W + t * K + k, val / total)
-        if RECORD:  # router traces (engine/routes.py): the same ids and the softmax probabilities before renormalization
-            tl.store(RecIds + t * stride_rec + k, idx.to(tl.int32))
-            tl.store(RecP + t * stride_rec + k, val)
         work = tl.where(cols == idx, -1.0, work)
 
 
-def route_topk(logits: torch.Tensor, k: int, record: tuple[torch.Tensor, torch.Tensor] | None = None):
-    """[M, E] -> (int32 ids [M, k], fp32 renormalized softmax weights [M, k]), largest first.
-
-    `record` (router traces): int32 and fp32 buffers with at least M rows of k (row stride may be
-    larger) that also receive the ids and the unnormalized softmax probabilities."""
+def route_topk(logits: torch.Tensor, k: int):
+    """[M, E] -> (int32 ids [M, k], fp32 renormalized softmax weights [M, k]), largest first."""
     m, e = logits.shape
     ids = torch.empty((m, k), dtype=torch.int32, device=logits.device)
     w = torch.empty((m, k), dtype=torch.float32, device=logits.device)
-    if record is None:
-        _route_kernel[(m,)](logits, ids, w, ids, w, logits.stride(0), 0, e, k, BLOCK=triton.next_power_of_2(e), RECORD=False)
-    else:
-        rec_ids, rec_p = record
-        assert rec_ids.shape[0] >= m and rec_ids.stride() == rec_p.stride() and rec_ids.stride(1) == 1
-        _route_kernel[(m,)](logits, ids, w, rec_ids, rec_p, logits.stride(0), rec_ids.stride(0), e, k, BLOCK=triton.next_power_of_2(e), RECORD=True)
+    _route_kernel[(m,)](logits, ids, w, logits.stride(0), e, k, BLOCK=triton.next_power_of_2(e))
     return ids, w
 
 

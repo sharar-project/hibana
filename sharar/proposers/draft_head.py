@@ -42,7 +42,7 @@ class TargetHead:
         return self.logits_fn(x).argmax(-1)
 
     def argmax_confidence(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """The argmax and the head's `confidence` in it (router traces)."""
+        """The argmax and the head's `confidence` in it (SHARAR_TRACE_CONFIDENCE)."""
         logits = self.logits_fn(x)
         return logits.argmax(-1), confidence(logits)
 

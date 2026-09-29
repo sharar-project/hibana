@@ -19,11 +19,9 @@ byte cap. Traces are the user's prompts; the directory is only written when
 the server was started with one, and any request can opt out with
 ``trace: false``.
 
-With router traces on (``SHARAR_TRACE_ROUTER=1``, ``engine/routes.py``) a
-request on a mixture-of-experts target also stores its routes in a
-``.routes.npz`` file next to its features (compact aggregates; every row for
-a sampled share of requests), and each round record carries the draft's
-confidence per drafted position (``p1``, ``m``).
+With ``SHARAR_TRACE_CONFIDENCE=1`` (sequential MTP drafts), each round record
+also carries the draft's top-1 probability ``p1`` and top-1 minus top-2
+margin ``m`` per drafted position (#32; the input for adaptive depth, #43).
 """
 
 from __future__ import annotations
@@ -37,7 +35,7 @@ from pathlib import Path
 
 import torch
 
-FORMAT_VERSION = 3  # 3: params carry the acceptance rule; optional router traces ("routes", round "p1"/"m")
+FORMAT_VERSION = 3  # 3: params carry the acceptance rule; rounds may carry the draft confidence ("p1", "m")
 FILE_PREFIX = "traces-"
 FILE_SUFFIX = ".jsonl"
 FEATURE_DIM = 5120
@@ -189,7 +187,6 @@ def _record(req) -> dict:
         "spec": None,
         "features": None,
         "topk": None,
-        "routes": None,
     }
     rounds = req.trace_rounds
     if rounds:
@@ -210,7 +207,6 @@ class TraceSink:
         self.pool = PinnedPool()
         self.topk_ids_pool = PinnedPool(rows=4096, dim=TOPK, dtype=torch.int32)
         self.topk_logits_pool = PinnedPool(rows=4096, dim=TOPK, dtype=torch.bfloat16)
-        self._route_credit = 0.0  # router traces: every row for this share of recorded requests (SHARAR_TRACE_ROUTER_SAMPLE)
         self._queue: queue.Queue = queue.Queue(maxsize=QUEUE_CAPACITY)
         self._current: Path | None = None
         self._current_size = 0
@@ -235,28 +231,15 @@ class TraceSink:
     def topk_recorder(self) -> TopkRecorder | None:
         return TopkRecorder(self.topk_ids_pool, self.topk_logits_pool) if self.features else None
 
-    def route_recorder(self, tap):
-        """A RouteRecorder for a new request when the model has a router tap (engine/routes.py), else None."""
-        if tap is None:
-            return None
-        from sharar.engine.config import current
-        from sharar.engine.routes import RouteRecorder
-        self._route_credit += current().trace_router_sample
-        full = self._route_credit >= 1.0 - 1e-9
-        if full:
-            self._route_credit -= 1.0
-        return RouteRecorder(tap.layers, tap.k, tap.experts, full)
-
     def record(self, req) -> bool:
         """Queue one finished request; returns False when the queue is full."""
-        routes = getattr(req, "trace_routes", None)
-        recorders = [r for r in (getattr(req, "trace_features", None), getattr(req, "trace_topk", None), routes) if r is not None]
+        recorders = [r for r in (getattr(req, "trace_features", None), getattr(req, "trace_topk", None)) if r is not None]
         if self.closed:
             for r in recorders:
                 r._release()
             return False
         try:
-            self._queue.put_nowait((_record(req), getattr(req, "trace_features", None), getattr(req, "trace_topk", None), routes))
+            self._queue.put_nowait((_record(req), getattr(req, "trace_features", None), getattr(req, "trace_topk", None)))
         except queue.Full:
             self.dropped += 1
             for r in recorders:
@@ -320,7 +303,7 @@ class TraceSink:
             self._stored_bytes -= self._sizes.pop(old)
         self._disk_usage = (len(self._sizes), self._stored_bytes)
 
-    def _write(self, doc: dict, recorder: FeatureRecorder | None, topk: TopkRecorder | None = None, routes=None) -> None:
+    def _write(self, doc: dict, recorder: FeatureRecorder | None, topk: TopkRecorder | None = None) -> None:
         if self._current is None or self._current_size >= self.rotate_bytes:
             self._open()
         blob_bytes = 0
@@ -340,13 +323,6 @@ class TraceSink:
                 info["logits_file"] = str(logits_path.relative_to(self.directory))
                 doc["topk"] = info
                 blob_bytes += info["rows"] * info["k"] * 6
-        if routes is not None:
-            path = self._feature_dir(self._current) / f"{doc['id']}.routes.npz"
-            info = routes.write(path)
-            if info is not None:
-                info["file"] = str(path.relative_to(self.directory))
-                doc["routes"] = info
-                blob_bytes += info["bytes"]
         line = json.dumps(doc, separators=(",", ":")) + "\n"
         data = line.encode()
         with open(self._current, "ab") as handle:
@@ -364,12 +340,12 @@ class TraceSink:
             item = self._queue.get()
             if item is None:
                 return
-            doc, recorder, topk, routes = item
+            doc, recorder, topk = item
             try:
-                self._write(doc, recorder, topk, routes)
+                self._write(doc, recorder, topk)
             except Exception:  # noqa: BLE001 - a full disk must not stop serving
                 self.dropped += 1
-                for r in (recorder, topk, routes):
+                for r in (recorder, topk):
                     if r is not None:
                         r._release()
                 logging.exception("trace write failed")
@@ -401,9 +377,6 @@ def iter_records(directory: str | Path):
                 if isinstance(doc, dict) and doc.get("v") in (1, 2, FORMAT_VERSION):
                     doc.setdefault("features", None)
                     doc.setdefault("topk", None)
-                    doc.setdefault("routes", None)
-                    if doc["routes"] is not None:
-                        doc["routes"]["path"] = str(directory / doc["routes"]["file"])
                     if doc["features"] is not None:
                         doc["features"]["path"] = str(directory / doc["features"]["file"])
                     if doc["topk"] is not None:
@@ -432,8 +405,6 @@ def load_topk(info: dict) -> tuple[torch.Tensor, torch.Tensor]:
 def summarize(directory: str | Path) -> dict:
     """Counts a trainer or operator wants before reading anything."""
     requests = prompt_tokens = output_tokens = rounds = emitted = accepted = with_features = feature_rows = with_topk = 0
-    with_routes = full_routes = 0
-    route_agg = None
     reasons: dict[str, int] = {}
     for doc in iter_records(directory):
         requests += 1
@@ -451,21 +422,9 @@ def summarize(directory: str | Path) -> dict:
             feature_rows += doc["features"]["rows"]
         if doc.get("topk"):
             with_topk += 1
-        if doc.get("routes"):
-            from sharar.engine.routes import load_routes
-            with_routes += 1
-            full_routes += bool(doc["routes"].get("full"))
-            arrays = load_routes(doc["routes"]["path"])
-            part = {name[4:]: value for name, value in arrays.items() if name.startswith("agg_")}
-            route_agg = part if route_agg is None else {name: route_agg[name] + value for name, value in part.items()}
-    routes = None
-    if route_agg is not None:
-        from sharar.engine.routes import summarize_aggregate
-        routes = {"requests": with_routes, "requests_with_every_row": full_routes, **summarize_aggregate(route_agg)}
     return {
         "requests": requests, "prompt_tokens": prompt_tokens, "output_tokens": output_tokens,
         "reasons": reasons, "spec_rounds": rounds, "accepted_tokens": accepted,
         "tokens_per_round": emitted / rounds if rounds else None,
         "requests_with_features": with_features, "feature_rows": feature_rows, "requests_with_topk": with_topk,
-        "routes": routes,
     }

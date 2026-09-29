@@ -50,7 +50,7 @@ def test_finished_requests_are_recorded_unless_opted_out(tmp_path):
     assert stats["records"] == 1 and stats["dropped"] == 0 and stats["files"] == 1 and stats["bytes"] == stats["bytes_written"]
     assert summarize(tmp_path / "traces") == {"requests": 1, "prompt_tokens": 3, "output_tokens": 2, "reasons": {"length": 1},
                                               "spec_rounds": 0, "accepted_tokens": 0, "tokens_per_round": None,
-                                              "requests_with_features": 0, "feature_rows": 0, "requests_with_topk": 0, "routes": None}
+                                              "requests_with_features": 0, "feature_rows": 0, "requests_with_topk": 0}
 
 
 def test_no_sink_means_no_recording_state():

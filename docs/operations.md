@@ -108,21 +108,12 @@ the directory holds the user's own traffic. `sharar traces --dir DIR` summarizes
 input for [draft adaptation](draft-adaptation.md); they are the user's prompts
 and stay on this machine unless the user copies them elsewhere.
 
-**Router traces (Flash-Next, #32).** With `SHARAR_TRACE_ROUTER=1` beside
-`SHARAR_TRACES` (the launcher forwards both), each recorded request also keeps
-its MoE routes in `features/<trace file>/<id>.routes.npz`: per layer the
-top-10 expert ids and softmax probabilities of every decode and verify row
-(rejected drafts included) and of the MTP draft's own layer per draft step.
-Every request stores compact aggregates (`agg_*`: expert counts and router
-mass per layer, mass by rank, distinct experts per verify block); the share
-`SHARAR_TRACE_ROUTER_SAMPLE` (default 0.1) also stores every row (`ids`,
-`probs` FP16, `kind`, `round`, `offset`, `position`, `draft_*`). Round records
-then carry the draft's top-1 probability `p1` and top-1/top-2 margin `m` per
-drafted position, and `params` the acceptance rule. The setting is read when
-the model is built (CUDA graphs capture the recording); it costs well under 1%
-of round time (measured in `$SHARAR_RESULTS/reviews/2026-09-27-router-stats/`).
-`sharar traces` prints the pooled route aggregates. `engine/routes.py` has the
-format; the 27B has no router and records nothing.
+**Draft confidence (MTP, #32).** With `SHARAR_TRACE_CONFIDENCE=1` beside
+`SHARAR_TRACES` (the launcher forwards both), each round record also carries the
+MTP draft's top-1 probability `p1` and top-1/top-2 margin `m` per drafted
+position; `params` records the request's acceptance rule. The setting is read
+when the proposer is built (the draft graphs capture the extra output); off,
+nothing changes. It is the calibration data for adaptive draft depth (#43).
 
 Inspect `docker logs sharar-qwen38`, `/health` and `/get_server_info` for status.
 The latter reports draft precision, scheduler settings, KV/state geometry and

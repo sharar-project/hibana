@@ -63,9 +63,6 @@ class FlashNextMtpHead:
         self.gate_up, self.gate_up_scale = self._fp8_experts(w, f"{p}.mlp.experts.gate_up_proj", device)
         self.down, self.down_scale = self._fp8_experts(w, f"{p}.mlp.experts.down_proj", device)
         self.experts, self.topk, self.inter = t.num_experts, t.experts_per_token, t.moe_intermediate_size
-        # Router traces: the draft layer writes the tap's draft slot each step; the proposer files it per step.
-        self.route_tap = model.route_tap()
-        self.record = self.route_tap.draft_slot if self.route_tap is not None else None
         self.shared_gate = w.get(f"{p}.mlp.shared_expert_gate.weight").to(device).float().reshape(1, -1)
         self.shared_gate_up = TrunkLinear.load(w, [f"{p}.mlp.shared_expert.gate_proj.weight", f"{p}.mlp.shared_expert.up_proj.weight"], device, precision)
         self.shared_down = TrunkLinear.load(w, [f"{p}.mlp.shared_expert.down_proj.weight"], device, precision)
@@ -112,8 +109,7 @@ class FlashNextMtpHead:
     def _moe(self, x: torch.Tensor) -> torch.Tensor:
         from sharar.kernels.flashnext_fused import expert_gemv, moe_combine, route_topk, silu_mul
         m = x.shape[0]
-        record = self.record if self.record is not None and m <= self.record[0].shape[0] else None
-        ids, weights = route_topk(x @ self.router.T, self.topk, record)
+        ids, weights = route_topk(x @ self.router.T, self.topk)
         flat = ids.reshape(-1)
         xr = x.repeat_interleave(self.topk, 0)  # [M*topk, H]
         h = silu_mul(expert_gemv(self.gate_up, self.gate_up_scale, xr, flat))  # [M*topk, I]

@@ -60,7 +60,6 @@ class MoeLayer:
         self.g2 = (w2_in * torch.stack(scale2_2)).to(device)
         self.quant_scales = [self.a13, self.s13, self.g1, self.a2, self.s2, self.g2]
         self.w13_long, self.w2_long = self.w13.view(torch.long), self.w2.view(torch.long)
-        self.record = None  # router traces: this layer's (ids, probs) buffers of the model's RouteTap (engine/routes.py)
 
     @property
     def bytes(self) -> int:
@@ -71,7 +70,7 @@ class MoeLayer:
         logits = x @ self.router.T
         if x.shape[0] <= 64:
             from sharar.kernels.flashnext_fused import route_topk
-            return route_topk(logits, self.topk, self.record)
+            return route_topk(logits, self.topk)
         probs = torch.softmax(logits.float(), dim=-1)
         weights, ids = torch.topk(probs, self.topk, dim=-1)
         weights = weights / weights.sum(-1, keepdim=True)

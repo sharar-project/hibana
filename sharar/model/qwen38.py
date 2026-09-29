@@ -120,10 +120,6 @@ class Qwen38:
         """No side inputs beyond the ForwardContext (the model contract, docs/architecture.md)."""
         return None
 
-    def route_tap(self):
-        """Dense MLPs: no router to trace (engine/routes.py)."""
-        return None
-
     def register_pages(self, kv_pool) -> None:
         """No per-page rows beyond K/V."""
 

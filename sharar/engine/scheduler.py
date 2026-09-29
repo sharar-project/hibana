@@ -108,7 +108,6 @@ class Scheduler:
             req.trace_rounds = []
             req.trace_features = self.sink.recorder()
             req.trace_topk = self.sink.topk_recorder()
-            req.trace_routes = self.sink.route_recorder(getattr(self.ex, "route_tap", None))
         self.queue.append(req)
         return req
 

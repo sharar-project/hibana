@@ -251,13 +251,14 @@ bucket, so proposals and round boundaries drift), with acceptance unchanged. The
 
 ## Router statistics (2026-09-27, #32)
 
-`SHARAR_TRACE_ROUTER=1` records every decode and verify row's top-10 experts and router probabilities,
-the MTP layer's routes per draft step and the draft's confidence per position into the traces
-([operations](operations.md#request-traces), `sharar/engine/routes.py`); off it changes nothing
-(greedy outputs bit-identical to main, round time -0.4%), on it costs +0.1% per round in steady state.
-`bench/flashnext_routes.py` captures a frozen mix (h2h prompts plus tool-calling agent turns) and
-`bench/route_stats.py` reports on it. Evidence and the dataset (77K tokens, 19K verify rounds, schema in
-`data/README.md`): `$SHARAR_RESULTS/reviews/2026-09-27-router-stats/`.
+Every decode and verify row's top-10 experts and router probabilities, the MTP layer's routes per draft
+step and the draft's confidence per position, recorded on a frozen mix (h2h prompts plus tool-calling agent
+turns). The recording (a router-kernel variant writing into a `RouteTap`, route files beside the traces) and
+its capture and report tools (`bench/flashnext_routes.py`, `bench/route_stats.py`) are parked on the branch
+`park/router-traces` until expert pruning (#39) or expert-budgeted verification (#41) needs routes from served
+traffic; main keeps only the draft confidence (`SHARAR_TRACE_CONFIDENCE`, [operations](operations.md#request-traces)).
+Evidence and the dataset (77K tokens, 19K verify rounds, schema in `data/README.md`):
+`$SHARAR_RESULTS/reviews/2026-09-27-router-stats/`.
 
 | Question | Answer (fast k=4 as served; exact k=8) |
 |---|---|

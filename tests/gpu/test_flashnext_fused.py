@@ -61,29 +61,6 @@ def test_route_topk(m):
     _close(w.sort(-1, descending=True).values, (rw / rw.sum(-1, keepdim=True)).sort(-1, descending=True).values, 1e-4)
 
 
-@pytest.mark.parametrize("m", [1, 5, 9, 64])
-def test_route_topk_records_the_same_route_into_a_tap(m):
-    """Router traces (engine/routes.py): the recording variant returns what the plain one returns and also
-    writes the ids and the unnormalized softmax probabilities into a strided tap layer, rows past m untouched."""
-    from sharar.engine.routes import RouteTap
-    logits = (torch.randn(m, 512, device="cuda") * 2).to(torch.bfloat16)
-    tap = RouteTap(48, 10, 512, "cuda")
-    tap.ids.fill_(-7)
-    ids, w = fk.route_topk(logits, 10)
-    ids2, w2 = fk.route_topk(logits, 10, tap.layer(3))
-    assert torch.equal(ids, ids2) and torch.equal(w, w2)
-    rec_ids, rec_p = tap.layer(3)
-    assert torch.equal(rec_ids[:m], ids)
-    probs = torch.softmax(logits.float(), -1)
-    _close(rec_p[:m], probs.gather(-1, ids.long()), 1e-5)
-    _close(rec_p[:m] / rec_p[:m].sum(-1, keepdim=True), w, 1e-5)
-    assert (tap.ids[:, 2] == -7).all() and (tap.ids[m:, 3] == -7).all()  # other layers and rows untouched
-    assert tap.stage(m, forward_rows=m)
-    torch.cuda.synchronize()
-    host_ids, host_p, _, _ = tap.take()
-    assert host_ids[:, 3].tolist() == ids.tolist()
-
-
 def test_moe_combine_silu_mul_sigmoid_gate():
     t = 4
     routed = torch.randn(t, H, device="cuda", dtype=torch.bfloat16)

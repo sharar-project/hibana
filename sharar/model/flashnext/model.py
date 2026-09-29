@@ -94,12 +94,6 @@ class FlashNext:
         expert_bytes = (moe.w13.numel() + moe.w2.numel() + (moe.s13.numel() + moe.s2.numel()) * 4) // target.num_experts
         trunk = sum(layer.bytes - layer.moe.bytes for layer in self.layers) + sum(layer.moe.router.numel() * 2 + layer.moe.shared_gate_up.bytes + layer.moe.shared_down.bytes for layer in self.layers)
         self.stream_bytes = trunk + self.mixer.bytes + self.lm_head.bytes + len(self.layers) * target.experts_per_token * expert_bytes
-        self._route_tap = None
-        if current().trace_router:  # router traces (#32): the router kernels record into one tap, graphs capture it
-            from sharar.engine.routes import RouteTap
-            self._route_tap = RouteTap(len(self.layers), target.experts_per_token, target.num_experts, self.device)
-            for i, layer in enumerate(self.layers):
-                layer.moe.record = self._route_tap.layer(i)
         self.w3_identity = None
         if current().flashnext_w3_checkpoint:
             self.w3_identity = self.attach_calibrated(current().flashnext_w3_checkpoint, log)
@@ -165,10 +159,6 @@ class FlashNext:
             from sharar.model.flashnext.extras import FlashNextExtras
             self._extras = FlashNextExtras(self)
         return self._extras
-
-    def route_tap(self):
-        """The router trace buffers (engine/routes.py) when SHARAR_TRACE_ROUTER is on, else None."""
-        return self._route_tap
 
     def register_state(self, pool) -> None:
         """Allocate this model's per-slot state beyond the GDN's in the executor's state pool."""
