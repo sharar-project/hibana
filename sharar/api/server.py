@@ -671,7 +671,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "state_slots": ex.state_pool.num_slots,
         "ledger_gib": {k: round(v / 2**30, 2) for k, v in ex.ledger.entries.items()},
         "speculative": {"algorithm": ex.spec.proposer.requirements.name, "num_draft_tokens": spec,
-                        "depths_by_batch": getattr(ex.spec.depth_policy, "depths", None),
+                        "depths_by_batch": ex.spec.depth_policy.depths,
                         "draft_precision": draft_precision, "draft": getattr(ex.spec.proposer.model, "source", None)
                         if hasattr(ex.spec.proposer, "model") else None,
                         "accept_default": {"accept_top_k": accept_default[0], "accept_margin": accept_default[1],

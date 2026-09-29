@@ -14,6 +14,8 @@ from sharar.engine import graph_set
 
 
 class FixedDepth:
+    depths = None  # one depth at every batch size (`BatchDepth.depths` maps bucket -> depth)
+
     def __init__(self, depth: int):
         if type(depth) is not int or depth < 1:
             raise ValueError("draft depth must be a positive integer")

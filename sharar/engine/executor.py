@@ -584,8 +584,7 @@ class Executor:
         assert 0 < len(reqs) <= self.max_batch
         spec_reqs = [r for r in reqs if self.spec is not None and self.spec.ready(r)
                      and (r.params.greedy or not self.spec.proposer.requirements.greedy_only)]
-        policy = getattr(self.spec, "depth_policy", None)  # test doubles have none
-        if spec_reqs and policy is not None and policy.choose(reqs) == 0:
+        if spec_reqs and self.spec.depth_policy.choose(reqs) == 0:
             spec_reqs = []  # a wide batch at depth 0 (the throughput profile, #59): plain decode; the proposer still follows
         plain = [r for r in reqs if r not in spec_reqs]
         need = len(plain) + (len(spec_reqs) * self.spec.steps if spec_reqs else 0)

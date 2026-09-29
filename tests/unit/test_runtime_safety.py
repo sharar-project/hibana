@@ -11,6 +11,7 @@ from sharar import config
 from sharar.engine.loop import EngineLoop, EngineUnavailable
 from sharar.api.validation import _sampling_from
 from sharar.api.server import create_app
+from sharar.engine.depth import FixedDepth
 from sharar.engine.executor import Executor
 from sharar.engine.graphs import capture_sizes, check_context_capacity
 from sharar.engine.request import Request
@@ -172,7 +173,7 @@ def test_mixed_spec_plain_memory_failure_does_not_advance_any_row(monkeypatch):
     b = ex.admit([2], SamplingParams(max_new_tokens=10, temperature=1))
     ex.prefill_batch([(a, 1), (b, 1)])
     called = []
-    ex.spec = SimpleNamespace(steps=4, ready=lambda r: True, round=lambda rs: called.append(rs),
+    ex.spec = SimpleNamespace(steps=4, ready=lambda r: True, round=lambda rs: called.append(rs), depth_policy=FixedDepth(3),
                               proposer=SimpleNamespace(requirements=SimpleNamespace(greedy_only=True)))
     ex.kv_pool._free = ex.kv_pool._free[:4]  # enough for spec alone, not both paths
     before = [a.output_ids[:], b.output_ids[:]]
