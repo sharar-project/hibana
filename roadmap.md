@@ -35,16 +35,22 @@ benchmark (#26). Architecture and the capability matrix: [architecture](docs/arc
      and device-resident acceptance for MTP (+16% single-stream in `fast`); #59 `throughput` profile (batch 16,
      GSM8K x1.84 Flash-Next, x1.74 27B). #37 small-M MoE kernel is parked on `feat/moe-small-m` until verifies
      of 1-2 rows are common.
-   - **Next: #7 DFlash2 for Flash-Next.** First a screen, before any building: the verify cost curve at 4/8/16 rows
-     on the current engine (3-bit trunk copies, idle gaps closed; the 2026-09-25 measurement that parked #7 predates
-     both) and the public PixelML drafter's acceptance by block length. Build (#49 feature taps, then #7, then the
-     DFlash2 trainer on Flash-Next) only if acceptance times round cost beats MTP k=4.
-   - #40 MTP trained on traffic; #33 self-play traces; #12 27B drafter on real traffic.
-   - #29 draft vocabulary ranked from traffic.
+   - Screened 2026-09-29, no-go: #7 DFlash2 for Flash-Next. The verify slope is the routed experts (16 rows 68 ms
+     against ~42 ms for MTP's 5, with the 3-bit trunk); a drafter needs +18% tokens per round over MTP at block 7,
+     +53% at block 15, and the public PixelML drafter accepts less than MTP ([numbers](https://github.com/abdelfattah-lab/sharar/issues/7)).
+     Reopen when wide verification is cheaper or a drafter clears that bar on our traffic.
+   - **Next, screens before building:** the #55 oracle (re-capture routes from `park/router-traces`, then simulate
+     how much expert loading an ideal scheduler saves at depth 4 and 8 and how much a confidence rule keeps; rejected
+     rows first-use 16% of expert bytes at k=4, 44% at k=8); 3-bit experts (the experts are now the largest cost:
+     simulate them and run the lossy-change gate before any kernel); #33 self-play traces for the drafter work.
+   - Builds only where a screen passes: an online scheduler that defers unlikely rows' experts (#41, in a persistent
+     kernel, #25, extending the #37 small-M MoE kernel); a small-M 3-bit MoE kernel.
+   - Drafter learning: #40 MTP trained on traffic (after #51), #12 27B drafter on real traffic, #29 draft
+     vocabulary ranked from traffic.
    - Later: #43 adaptive draft depth (the draft confidence it needs is recorded with `SHARAR_TRACE_CONFIDENCE`).
-4. **Research** (measure before building): #38 fewer active experts, #39 expert pruning,
-   #34 on-policy distillation (separate repository when it starts), #41 expert-budgeted
-   verification, #42 sub-3-bit 27B MLPs, #25 megakernels.
+4. **Research** (measure before building): #34 on-policy distillation (separate repository when it starts), #41 expert-budgeted
+   verification, #42 sub-3-bit 27B MLPs, #25 megakernels. Deprioritized by the #32 router data:
+   #38 fewer active experts (flat router mass), #39 expert pruning (domains share few experts).
 5. **Harness and quality**: #11 Flash-Next family gate, #28 harder evals (#31 lossy-change gate
    done 2026-09-29: `tools/lossy-gate.py`), #16 constrained output with speculation, #19 `/v1/responses`, #15 test-time scaling,
    #13 session store snapshots, #14 long-context prefill.
