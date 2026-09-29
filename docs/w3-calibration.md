@@ -10,7 +10,9 @@ eight-level E4M3 codebook, 32-weight groups and E4M3 group scales. There is no
 activation permutation or new serving kernel. The pinned NVFP4/FP8 prefill
 weights and vocabulary head retain their existing arithmetic.
 
-Freeze a JSON object containing `samples`, each with `input_ids`. Use
+Freeze a JSON object containing `samples`, each with `input_ids`
+(`bench/w3_calibration_inputs.py --tokenizer SNAPSHOT/tokenizer.json --commit C --output FILE`
+builds the coding-proxy set from this repository's source files at commit C, reproducibly). Use
 representative prompts, at most 2,048 tokens per sample, excluding task
 accuracy benchmarks and held-out drafter requests. Source-file separation is
 useful for a repository coding proxy. The calibration driver collects one
