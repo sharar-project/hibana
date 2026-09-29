@@ -59,6 +59,8 @@ class MoeLayer:
             w13, s13, e13 = requantize(w13, s13, group)
             w2, s2, e2 = requantize(w2, s2, group)
             self.sim3_error = (e13, e2)
+            del e13, e2
+            torch.cuda.empty_cache()  # the rounding's temporaries would otherwise shrink the pools sized after load
         self.w13, self.w2 = w13, w2
         self.s13 = swizzle_block_scales_batched(s13)
         self.s2 = swizzle_block_scales_batched(s2)
