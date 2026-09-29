@@ -49,10 +49,19 @@ class MoeLayer:
             scale2_2.append(w.get(f"{d}.weight_scale_2").float().reshape(()))
             in13.append(torch.maximum(w.get(f"{g}.input_scale").float().reshape(()), w.get(f"{u}.input_scale").float().reshape(())))
             in2.append(w.get(f"{d}.input_scale").float().reshape(()))
-        self.w13 = torch.stack(w13).to(device)  # [E, 2I, K/2] uint8
-        self.w2 = torch.stack(w2).to(device)  # [E, K, I/2] uint8
-        self.s13 = swizzle_block_scales_batched(torch.stack(s13).to(device))
-        self.s2 = swizzle_block_scales_batched(torch.stack(s2).to(device))
+        w13, w2 = torch.stack(w13).to(device), torch.stack(w2).to(device)  # [E, 2I, K/2], [E, K, I/2] uint8
+        s13, s2 = torch.stack(s13).to(device), torch.stack(s2).to(device)
+        self.sim3_error = None
+        from sharar.engine.config import current
+        group = current().flashnext_experts_sim3
+        if group:  # simulated 3-bit experts (weights/expert_sim3.py): the same kernel, the 3-bit format's values
+            from sharar.weights.expert_sim3 import requantize
+            w13, s13, e13 = requantize(w13, s13, group)
+            w2, s2, e2 = requantize(w2, s2, group)
+            self.sim3_error = (e13, e2)
+        self.w13, self.w2 = w13, w2
+        self.s13 = swizzle_block_scales_batched(s13)
+        self.s2 = swizzle_block_scales_batched(s2)
         w13_in, w2_in = torch.stack(in13).max(), torch.stack(in2).max()
         self.a13 = (1.0 / w13_in).to(device)
         self.a2 = (1.0 / w2_in).to(device)

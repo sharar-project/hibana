@@ -84,6 +84,10 @@ class FlashNext:
             w.close()  # the PLE keeps its own maps; expert shards are reopened per layer
             if log and (i + 1) % 8 == 0:
                 log(f"  loaded {i + 1}/{len(types)} layers ({time.perf_counter() - started:.0f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB)")
+        errors = [layer.moe.sim3_error for layer in self.layers if getattr(layer, "moe", None) is not None and layer.moe.sim3_error]
+        if log and errors:
+            log(f"  experts: simulated 3-bit, group {current().flashnext_experts_sim3}; relative weight error against NVFP4 "
+                f"w13 {sum(e[0] for e in errors) / len(errors):.4f}, w2 {sum(e[1] for e in errors) / len(errors):.4f} (mean over layers)")
         self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", target.hc_count, target.hidden_size, target.rms_norm_eps, self.device,
                                           combine=False, precision=current().flashnext_mixers)
         self.lm_head = TrunkLinear.load(w, ["lm_head.weight"], self.device, self.precision)
