@@ -781,7 +781,7 @@ def main(argv=None) -> int:
         raise SystemExit(f"image {image} not found")
     acc = args.evals / "evals" / "accuracy_eval.py"
     if not acc.is_file() or "mgsm" not in acc.read_text() or "--start" not in acc.read_text():
-        raise SystemExit(f"{args.evals} has no MGSM/MBPP/--start accuracy_eval (sharar-evals branch swarm/S_lossy_gate or later)")
+        raise SystemExit(f"{args.evals}: no sharar-evals with MGSM/MBPP/--start (its main from 327a396); set --evals or SHARAR_EVALS")
     evals_commit = git("rev-parse", "HEAD", cwd=args.evals)
     workload_sha = sha256(WORKLOAD.read_bytes())
     key_src = {"protocol": PROTOCOL, "target": args.target, "baseline": arms["baseline"],
