@@ -40,19 +40,30 @@ def test_batch_settings_stay_out_of_the_in_process_arm():
 
 
 def test_resolve_explicit_settings_win_over_the_profile(tmp_path):
-    config = {"SHARAR_TARGET": "flashnext", "SHARAR_W3_DECODE": "0", "SHARAR_RESULTS": str(tmp_path), "SHARAR_DRAFT": "pinned"}
+    config = {"SHARAR_TARGET": "flashnext", "SHARAR_RESULTS": str(tmp_path), "SHARAR_DRAFT": "pinned"}
     fast = gate.resolve(config, "fast", {})
-    assert fast["SHARAR_W3_DECODE"] == "0"  # the config file sets it, as config/flashnext.env does
     assert fast["SHARAR_ACCEPT_DEFAULT"] == "3:2.0"
-    assert fast["SHARAR_FLASHNEXT_W3_CHECKPOINT"] == "off"  # auto without flashnext-current
+    # auto without flashnext-current: Flash-Next's copies are calibrated only, so the trunk stays FP8
+    assert fast["SHARAR_W3_DECODE"] == "0" and fast["SHARAR_W3_CHECKPOINT"] == ""
     ck = tmp_path / "w3-checkpoints" / "flashnext-current"
     ck.mkdir(parents=True)
     (ck / "manifest.json").write_text("{}")
-    assert gate.resolve(config, "fast", {})["SHARAR_FLASHNEXT_W3_CHECKPOINT"] == str(ck.resolve())
-    near = gate.resolve(config, "exact", {"SHARAR_FLASHNEXT_TRUNK": "w3"})
-    plan = gate.arm_plan({**near, "SHARAR_FLASHNEXT_CACHE": "/fn"})
-    assert plan["env"]["SHARAR_FLASHNEXT_TRUNK"] == "w3" and plan["accept"] == "1:0.0"
-    assert "SHARAR_FLASHNEXT_W3_CHECKPOINT" not in plan["env"]
+    fast = gate.resolve(config, "fast", {})
+    assert fast["SHARAR_W3_DECODE"] == "1" and fast["SHARAR_W3_CHECKPOINT"] == str(ck.resolve())
+    plan = gate.arm_plan({**fast, "SHARAR_FLASHNEXT_CACHE": "/fn"})
+    assert plan["env"]["SHARAR_W3_CHECKPOINT"] == "/w3" and plan["mounts"]["/w3"] == str(ck.resolve())
+    assert gate.resolve({**config, "SHARAR_W3_DECODE": "0"}, "fast", {})["SHARAR_W3_CHECKPOINT"] == ""  # an explicit 0 wins
+    exact = gate.arm_plan({**gate.resolve(config, "exact", {}), "SHARAR_FLASHNEXT_CACHE": "/fn"})
+    assert exact["env"]["SHARAR_W3_DECODE"] == "0" and "SHARAR_W3_CHECKPOINT" not in exact["env"] and exact["accept"] == "1:0.0"
+
+
+def test_resolve_the_27b_rounds_to_nearest_without_a_checkpoint(tmp_path):
+    fast = gate.resolve({"SHARAR_RESULTS": str(tmp_path), "SHARAR_DRAFT": "pinned"}, "fast", {})
+    assert fast["SHARAR_W3_DECODE"] == "1" and fast["SHARAR_W3_CHECKPOINT"] == ""
+    ck = tmp_path / "w3-checkpoints" / "qwen38-current"
+    ck.mkdir(parents=True)
+    (ck / "manifest.json").write_text("{}")
+    assert gate.resolve({"SHARAR_RESULTS": str(tmp_path), "SHARAR_DRAFT": "pinned"}, "fast", {})["SHARAR_W3_CHECKPOINT"] == str(ck.resolve())
 
 
 def test_overrides_reach_the_in_process_arm():

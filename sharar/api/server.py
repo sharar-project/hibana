@@ -656,12 +656,16 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         sink = TraceSink(traces, max_bytes=traces_max_mib * 2**20)
         sched.sink = sink
         log(f"recording opt-in request traces under {sink.directory} (cap {traces_max_mib} MiB)")
+    from sharar.engine.config import current
+    if current().w3_warning:
+        log(f"WARNING: {current().w3_warning}")
     describe = {
         "engine": "sharar",
         "target": served.name,
         "model_path": served.model_id,
         "revision": served.model_revision,
         "w3_target_identity": getattr(model, "w3_identity", None),
+        "w3_warning": current().w3_warning,
         "context_length": ex.max_context,
         "max_running_requests": cfg.max_running,
         "max_queued_requests": cfg.max_queued,

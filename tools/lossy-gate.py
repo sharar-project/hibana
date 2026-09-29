@@ -2,7 +2,7 @@
 """The lossy-change gate (#31): one scorecard, paired against a baseline profile, for a lossy speed option.
 
     tools/lossy-gate.py --target flashnext --name fast --profile fast
-    tools/lossy-gate.py --target flashnext --name w3near --env SHARAR_FLASHNEXT_TRUNK=w3
+    tools/lossy-gate.py --target flashnext --name recal --profile fast --env SHARAR_W3_CHECKPOINT=/path/to/candidate
     tools/lossy-gate.py --target qwen38 --name fewer-experts --profile exact --env SHARAR_X=1 --through full
 
 A candidate is a serving profile (`--profile`, default exact) plus `--env KEY=VALUE` overrides on
@@ -84,7 +84,7 @@ BLOCK = 64  # layer-1 bootstrap unit: consecutive continuation positions
 SERVING_PROFILE = REPO / "tools" / "serving-profile.sh"
 PROFILE_NAMES = ("exact", "balanced", "fast", "throughput")
 PROFILE_SETTINGS = {"P_ACCEPT": "SHARAR_ACCEPT_DEFAULT", "P_ACCEPT_SAMPLED": "SHARAR_ACCEPT_DEFAULT_SAMPLED",
-                    "P_W3": "SHARAR_W3_DECODE", "P_W3_DRAFT": "SHARAR_W3_DRAFT", "P_FN_W3": "SHARAR_FLASHNEXT_W3_CHECKPOINT",
+                    "P_W3": "SHARAR_W3_DECODE",
                     "P_DEVICE_ACCEPT": "SHARAR_DEVICE_ACCEPT", "P_MAX_BATCH": "SHARAR_MAX_BATCH", "P_SPEC_DEPTHS": "SHARAR_SPEC_DEPTHS"}
 # Settings run-sharar.sh forwards into the container unchanged (when set).
 FORWARDED = ("SHARAR_DEVICE_ACCEPT", "SHARAR_DRAFT_VOCAB", "SHARAR_DRAFT_HEAD", "SHARAR_QSA_SPARSE_GRAPHS", "SHARAR_COLD_TIER_GIB")
@@ -97,8 +97,8 @@ LAUNCHER_ONLY = {"SHARAR_IMAGE", "SHARAR_CONTAINER", "SHARAR_PORT", "SHARAR_PROP
                  "SHARAR_REFERENCE_URL", "SHARAR_CONFIG_FILE",
                  "SHARAR_MAX_BATCH", "SHARAR_SPEC_DEPTHS"}  # batch 8-16 settings: the served arm only (layers 1-2 run batch one)
 # EngineConfig fields the served arm must report exactly as the in-process arm installed them.
-CHECKED = ("target", "profile", "w3_decode", "w3_head", "w3_draft", "w3_checkpoint", "stable_numerics", "flashnext_trunk",
-           "flashnext_mixers", "flashnext_w3_checkpoint", "flashnext_mtp_trunk", "trunk_keep_bf16", "draft_vocab", "draft_head",
+CHECKED = ("target", "profile", "w3_decode", "w3_checkpoint", "stable_numerics", "flashnext_trunk",
+           "flashnext_mixers", "flashnext_mtp_trunk", "trunk_keep_bf16", "draft_vocab", "draft_head",
            "draft_head_rescore", "device_accept", "accept_default", "accept_default_sampled", "qsa_sparse_graphs", "flashnext_experts_sim3")
 
 SCREEN = [("gsm8k", {"limit": 300}), ("humaneval", {}), ("mgsm", {"per_language": 24})]
@@ -159,11 +159,14 @@ def resolve(config: dict, profile: str, overrides: dict) -> dict:
         if not env.get(k):
             env[k] = v
     results = env.get("SHARAR_RESULTS")
-    if env["SHARAR_FLASHNEXT_W3_CHECKPOINT"] == "auto":
-        current = Path(results or "/nonexistent") / "w3-checkpoints" / "flashnext-current"
-        env["SHARAR_FLASHNEXT_W3_CHECKPOINT"] = str(current.resolve()) if (current / "manifest.json").is_file() else "off"
+    target = env.get("SHARAR_TARGET") or "qwen38"
     if env["SHARAR_W3_DECODE"] != "1":
         env["SHARAR_W3_CHECKPOINT"] = ""
+    elif env.get("SHARAR_W3_CHECKPOINT", "auto") in ("", "auto"):  # as run-sharar.sh resolves auto (the gate does not fetch)
+        current = Path(results or "/nonexistent") / "w3-checkpoints" / f"{target}-current"
+        env["SHARAR_W3_CHECKPOINT"] = str(current.resolve()) if (current / "manifest.json").is_file() else ""
+        if not env["SHARAR_W3_CHECKPOINT"] and target == "flashnext":
+            env["SHARAR_W3_DECODE"] = "0"  # Flash-Next's copies are calibrated only
     draft = env.get("SHARAR_DRAFT", "")
     if draft == "pinned":
         draft = ""
@@ -192,8 +195,7 @@ def arm_plan(env: dict) -> dict:
     accept = accept_rule(env["SHARAR_ACCEPT_DEFAULT"]) if spec else "1:0.0"
     cenv = {"SHARAR_PROFILE": env["SHARAR_PROFILE"], "SHARAR_SPEC": str(spec), "SHARAR_ACCEPT_DEFAULT": accept,
             "SHARAR_ACCEPT_DEFAULT_SAMPLED": "1" if env["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "1" and accept != "1:0.0" else "0",
-            "SHARAR_W3_DECODE": env["SHARAR_W3_DECODE"], "SHARAR_W3_HEAD": env.get("SHARAR_W3_HEAD") or "0",
-            "SHARAR_W3_DRAFT": env["SHARAR_W3_DRAFT"]}
+            "SHARAR_W3_DECODE": env["SHARAR_W3_DECODE"]}
     mounts = {}
     if env.get("SHARAR_W3_CHECKPOINT"):
         mounts["/w3"] = str(Path(env["SHARAR_W3_CHECKPOINT"]).resolve())
@@ -202,9 +204,6 @@ def arm_plan(env: dict) -> dict:
         cenv.update(SHARAR_TARGET="flashnext", SHARAR_FLASHNEXT_CACHE="/cache/flash-next",
                     SHARAR_FLASHNEXT_TRUNK=env.get("SHARAR_FLASHNEXT_TRUNK") or "fp8")
         mounts["/cache/flash-next"] = env["SHARAR_FLASHNEXT_CACHE"]
-        if env["SHARAR_FLASHNEXT_W3_CHECKPOINT"] != "off":
-            mounts["/fn-w3"] = env["SHARAR_FLASHNEXT_W3_CHECKPOINT"]
-            cenv["SHARAR_FLASHNEXT_W3_CHECKPOINT"] = "/fn-w3"
     elif env.get("SHARAR_TARGET"):
         cenv["SHARAR_TARGET"] = env["SHARAR_TARGET"]
     for k in FORWARDED:

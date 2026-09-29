@@ -40,8 +40,7 @@ class FlashNextMtpHead:
         self.draft_head = TargetHead(self.lm_head)  # replaced by set_draft_head (#35)
         self.hidden_size, self.hc = t.hidden_size, t.hc_count
         self.hidden_width = self.hc * self.hidden_size  # the "hidden" the proposer carries per row
-        # SHARAR_FLASHNEXT_MTP_TRUNK: the draft head's own precision (default: the trunk's). A 3-bit
-        # target with an FP8 draft head separates target error from draft error (#6).
+        # SHARAR_FLASHNEXT_MTP_TRUNK: the draft head's own precision, bf16 or fp8 (default: the trunk's).
         precision = precision or current().flashnext_mtp_trunk or model.precision
         eps = t.rms_norm_eps
         g = lambda name: w.get(f"{PREFIX}.{name}").to(device)  # noqa: E731

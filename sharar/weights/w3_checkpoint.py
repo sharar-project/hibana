@@ -1,7 +1,11 @@
 """Versioned, tensor-only calibrated decode copies for the pinned target.
 
 The NVFP4/FP8 prefill weights remain in the original checkpoint. These files
-only replace the optional W3 copies, before CUDA graph capture.
+only replace the optional W3 copies, before CUDA graph capture. The launcher
+serves `$SHARAR_RESULTS/w3-checkpoints/<target>-current`; when that is missing
+it runs `fetch` in the image for a target with a published checkpoint:
+
+    python3 -m sharar.weights.w3_checkpoint fetch --target flashnext --root /w3-checkpoints
 """
 from __future__ import annotations
 
@@ -81,3 +85,44 @@ class CalibratedWeights:
         # than staging it in ordinary CPU storage, as the draft loader does.
         # Only one projection is staged at a time.
         return W3Weight(*(tensors[key].clone().to(linear.weight.device) for key in expected), n, k, levels, lut_of(levels))
+
+
+def fetch(target, root: str | Path, log=print) -> Path:
+    """Download `target`'s published copies (`w3_repo` at the pinned `w3_revision`) into
+    root/<target>-<revision>, verify every file against the manifest, and point root/<target>-current
+    at them unless that link exists already. Returns the directory."""
+    if not target.w3_repo:
+        raise LookupError(f"{target.name} has no published 3-bit checkpoint; calibrate one (docs/w3-calibration.md)")
+    from huggingface_hub import snapshot_download
+    root = Path(root)
+    dest = root / f"{target.name}-{target.w3_revision[:12]}"
+    if not (dest / "manifest.json").is_file():
+        partial = dest.with_name(dest.name + ".partial")
+        log(f"fetching {target.w3_repo}@{target.w3_revision[:12]} into {dest}")
+        snapshot_download(target.w3_repo, revision=target.w3_revision, local_dir=partial,
+                          allow_patterns=["manifest.json", "*.safetensors"])
+        calibrated = CalibratedWeights(partial, revision=target.model_revision)
+        for name, entry in calibrated.weights.items():
+            if sha256(partial / entry["file"]) != entry["sha256"]:
+                raise ValueError(f"fetched W3 checksum mismatch for {name}")
+        partial.rename(dest)
+    link = root / f"{target.name}-current"
+    if not link.exists():
+        link.unlink(missing_ok=True)  # a dangling link
+        link.symlink_to(dest.name)
+    return dest
+
+
+if __name__ == "__main__":
+    import argparse
+    from sharar.target import TARGETS
+    ap = argparse.ArgumentParser(prog="python3 -m sharar.weights.w3_checkpoint")
+    sub = ap.add_subparsers(dest="command", required=True)
+    f = sub.add_parser("fetch", help="download the target's published calibrated copies")
+    f.add_argument("--target", choices=sorted(TARGETS), required=True)
+    f.add_argument("--root", type=Path, required=True)
+    args = ap.parse_args()
+    try:
+        print(fetch(TARGETS[args.target], args.root))
+    except LookupError as error:
+        raise SystemExit(str(error))

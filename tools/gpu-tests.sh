@@ -15,6 +15,7 @@ HF_CACHE="${SHARAR_HF_CACHE:-$(config_value SHARAR_HF_CACHE "$GB10_ENV")}"
 FN_CACHE="${SHARAR_FLASHNEXT_CACHE:-$(config_value SHARAR_FLASHNEXT_CACHE "$FN_ENV")}"
 RESULTS="${SHARAR_RESULTS:-$(config_value SHARAR_RESULTS "$GB10_ENV")}"
 W3="${SHARAR_W3_CHECKPOINT:-$(config_value SHARAR_W3_CHECKPOINT "$GB10_ENV")}"
+[[ -z "$W3" || "$W3" == auto ]] && W3="$RESULTS/w3-checkpoints/qwen38-current"   # as run-sharar.sh resolves auto
 IMAGE="${SHARAR_TEST_IMAGE:-$(config_value SHARAR_IMAGE "$FN_ENV")}"
 [[ -d "$HF_CACHE" ]] || fail "missing 27B model cache (SHARAR_HF_CACHE): $HF_CACHE"
 [[ -n "$IMAGE" ]] && docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "missing image $IMAGE (SHARAR_TEST_IMAGE)"

@@ -57,7 +57,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", type=Path, default=Path("/proof/w3-bench.json"))
     ap.add_argument("--rows", default="16,32,64")
-    ap.add_argument("--codebook", default=w3.default_codebook())
+    ap.add_argument("--codebook", default=w3.DEFAULT_CODEBOOK)
     args = ap.parse_args()
     dev = torch.device("cuda")
     torch.manual_seed(0)

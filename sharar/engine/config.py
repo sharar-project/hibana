@@ -45,17 +45,13 @@ class EngineConfig:
     max_batch: int = 4                        # SHARAR_MAX_BATCH: most requests decoded together, 1-16 (the throughput profile: 16)
     cuda_arch: str = "12.1a"                  # SHARAR_CUDA_ARCH for the JIT-built CUDA kernels
     # --- weights and numerics
-    w3_decode: bool = False                   # SHARAR_W3_DECODE: 3-bit decode copies for calls of <= 64 rows
-    w3_head: bool = False                     # SHARAR_W3_HEAD: also the lm_head
-    w3_draft: bool = False                    # SHARAR_W3_DRAFT: also the parallel draft's FP8 matrices
-    w3_codebook: str = "lloyd"                # SHARAR_W3_CODEBOOK
-    w3_checkpoint: str | None = None          # SHARAR_W3_CHECKPOINT: calibrated copies
+    w3_decode: bool = False                   # SHARAR_W3_DECODE: 3-bit decode copies for calls of <= 64 rows (the 27B's layers and FP8 draft, Flash-Next's trunk)
+    w3_checkpoint: str | None = None          # SHARAR_W3_CHECKPOINT: the target's calibrated copies (required on Flash-Next; the 27B rounds to nearest without)
+    w3_warning: str | None = None             # SHARAR_W3_WARNING: why the launcher serves without the profile's calibrated copies
     stable_numerics: bool = False             # SHARAR_STABLE_NUMERICS: M-invariant prefill kernels
     fused_norm_nvfp4: bool = False            # SHARAR_FUSED_NORM_NVFP4 (27B compatibility switch)
-    flashnext_trunk: str = "fp8"              # SHARAR_FLASHNEXT_TRUNK: bf16 | fp8 | w3
+    flashnext_trunk: str = "fp8"              # SHARAR_FLASHNEXT_TRUNK: bf16 | fp8
     flashnext_mixers: str = "fp8"             # SHARAR_FLASHNEXT_MIXERS
-    flashnext_w3_checkpoint: str | None = None  # SHARAR_FLASHNEXT_W3_CHECKPOINT: calibrated 3-bit trunk copies over the FP8 trunk (#6)
-    flashnext_w3_keep_fp8: str | None = None  # SHARAR_FLASHNEXT_W3_KEEP_FP8: regex of linears() names left without their calibrated copy
     flashnext_mtp_trunk: str | None = None    # SHARAR_FLASHNEXT_MTP_TRUNK: the MTP draft head's precision (unset: the trunk's)
     trunk_keep_bf16: str | None = None        # SHARAR_TRUNK_KEEP_BF16: regex of Flash-Next projections kept BF16
     flashnext_experts_sim3: int = 0           # SHARAR_FLASHNEXT_EXPERTS_SIM3: routed experts rounded to a 3-bit format with this group (16/32), a quality screen (weights/expert_sim3.py)
@@ -98,16 +94,12 @@ class EngineConfig:
             max_batch=_int(e, "SHARAR_MAX_BATCH", 4),
             cuda_arch=_str(e, "SHARAR_CUDA_ARCH", "12.1a"),
             w3_decode=_flag(e, "SHARAR_W3_DECODE"),
-            w3_head=_flag(e, "SHARAR_W3_HEAD"),
-            w3_draft=_flag(e, "SHARAR_W3_DRAFT"),
-            w3_codebook=_str(e, "SHARAR_W3_CODEBOOK", "lloyd"),
             w3_checkpoint=_str(e, "SHARAR_W3_CHECKPOINT"),
+            w3_warning=_str(e, "SHARAR_W3_WARNING"),
             stable_numerics=_flag(e, "SHARAR_STABLE_NUMERICS"),
             fused_norm_nvfp4=_flag(e, "SHARAR_FUSED_NORM_NVFP4"),
             flashnext_trunk=_str(e, "SHARAR_FLASHNEXT_TRUNK", "fp8"),
             flashnext_mixers=_str(e, "SHARAR_FLASHNEXT_MIXERS", "fp8"),
-            flashnext_w3_checkpoint=_str(e, "SHARAR_FLASHNEXT_W3_CHECKPOINT"),
-            flashnext_w3_keep_fp8=_str(e, "SHARAR_FLASHNEXT_W3_KEEP_FP8"),
             flashnext_mtp_trunk=_str(e, "SHARAR_FLASHNEXT_MTP_TRUNK"),
             trunk_keep_bf16=_str(e, "SHARAR_TRUNK_KEEP_BF16"),
             flashnext_experts_sim3=_int(e, "SHARAR_FLASHNEXT_EXPERTS_SIM3", 0) or 0,
