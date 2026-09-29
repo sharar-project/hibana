@@ -1,6 +1,5 @@
 """The lossy-change gate's host logic (tools/lossy-gate.py): profile resolution, statistics, verdict rules."""
 import importlib.util
-import re
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -20,14 +19,24 @@ def _gate():
 gate = _gate()
 
 
-def test_profile_table_matches_the_launcher():
-    text = (REPO / "run-sharar.sh").read_text()
-    names = {"P_ACCEPT": "SHARAR_ACCEPT_DEFAULT", "P_ACCEPT_SAMPLED": "SHARAR_ACCEPT_DEFAULT_SAMPLED", "P_W3": "SHARAR_W3_DECODE",
-             "P_W3_DRAFT": "SHARAR_W3_DRAFT", "P_FN_W3": "SHARAR_FLASHNEXT_W3_CHECKPOINT"}
-    found = {}
-    for profile, body in re.findall(r"^\s+(exact|balanced|fast)\)\s+(P_.*?);;", text, re.M):
-        found[profile] = {names[k]: v for k, v in re.findall(r"(P_\w+)=([^;\s]+)", body)}
-    assert found == gate.PROFILES
+def test_profiles_come_from_the_launcher_table():
+    """The gate reads tools/serving-profile.sh (as run-sharar.sh does), per target."""
+    assert gate.profile_defaults("exact", "flashnext")["SHARAR_ACCEPT_DEFAULT"] == "off"
+    assert gate.profile_defaults("fast", "flashnext")["SHARAR_DEVICE_ACCEPT"] == "1"
+    assert gate.profile_defaults("fast", "qwen38")["SHARAR_DEVICE_ACCEPT"] == "0"
+    wide = gate.profile_defaults("throughput", "flashnext")
+    assert wide["SHARAR_MAX_BATCH"] == "16" and wide["SHARAR_SPEC_DEPTHS"] == "16:3"
+    for name in gate.PROFILE_NAMES:
+        assert set(gate.profile_defaults(name, "qwen38")) == set(gate.PROFILE_SETTINGS.values())
+    with pytest.raises(ValueError, match="unknown serving profile"):
+        gate.profile_defaults("turbo", "qwen38")
+
+
+def test_batch_settings_stay_out_of_the_in_process_arm():
+    env = gate.resolve({"SHARAR_TARGET": "flashnext", "SHARAR_DRAFT": "pinned", "SHARAR_FLASHNEXT_CACHE": "/fn"}, "throughput", {})
+    plan = gate.arm_plan(env)
+    assert plan["env"]["SHARAR_DEVICE_ACCEPT"] == "1"
+    assert "SHARAR_MAX_BATCH" not in plan["env"] and "SHARAR_SPEC_DEPTHS" not in plan["env"]
 
 
 def test_resolve_explicit_settings_win_over_the_profile(tmp_path):

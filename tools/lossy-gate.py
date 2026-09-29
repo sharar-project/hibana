@@ -7,10 +7,10 @@
 
 A candidate is a serving profile (`--profile`, default exact) plus `--env KEY=VALUE` overrides on
 the target's launcher config (config/flashnext.env, or config/gb10.env for the 27B), resolved the
-way run-sharar.sh resolves them; the baseline is `--baseline-profile` (default exact) with
+way run-sharar.sh resolves them (the profile table is tools/serving-profile.sh, read per target); the baseline is `--baseline-profile` (default exact) with
 `--baseline-env`. Both run the same image (`--image`, default the config's SHARAR_IMAGE). The run is
 unattended and resumable: every step writes its own file and a rerun with the same name skips what
-exists. Do not wrap the tool in flock: it takes /home/yke/sharar-results/.gpu.lock itself for each
+exists. Do not wrap the tool in flock: it takes $SHARAR_RESULTS/.gpu.lock itself for each
 GPU phase (at most --hold-minutes), and waits while another model container runs.
 
 Layers, cheapest first:
@@ -71,7 +71,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 WORKLOAD = REPO / "bench" / "workloads" / "lossy_v1.json"
 WORKER = REPO / "bench" / "lossy_gate.py"
-LOCK = Path("/home/yke/sharar-results/.gpu.lock")
+LOCK: Path | None = None  # $SHARAR_RESULTS/.gpu.lock, set by main()
 CONTAINER = "sharar-lossy-gate"
 TOOL_CONTAINER = "sharar-lossy-gate-tool"
 PROTOCOL = 1  # bump when a step's meaning changes (it keys the baseline cache)
@@ -79,15 +79,13 @@ CHUNK, FLOOR_CHUNK = 64, 32
 FLOOR_GIB = 16.0  # tools/memory-guard.sh floor
 BLOCK = 64  # layer-1 bootstrap unit: consecutive continuation positions
 
-# run-sharar.sh's profile table (tests/unit/test_lossy_gate.py keeps them equal)
-PROFILES = {
-    "exact": {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "0",
-              "SHARAR_W3_DRAFT": "0", "SHARAR_FLASHNEXT_W3_CHECKPOINT": "off"},
-    "balanced": {"SHARAR_ACCEPT_DEFAULT": "2:1.0", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "1",
-                 "SHARAR_W3_DRAFT": "1", "SHARAR_FLASHNEXT_W3_CHECKPOINT": "off"},
-    "fast": {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "1", "SHARAR_W3_DECODE": "1",
-             "SHARAR_W3_DRAFT": "1", "SHARAR_FLASHNEXT_W3_CHECKPOINT": "auto"},
-}
+# The launcher's profile table is tools/serving-profile.sh (run-sharar.sh sources it); `profile_defaults` reads it
+# there, so the gate resolves a profile exactly as the served arm will. Its P_* outputs and the settings they default:
+SERVING_PROFILE = REPO / "tools" / "serving-profile.sh"
+PROFILE_NAMES = ("exact", "balanced", "fast", "throughput")
+PROFILE_SETTINGS = {"P_ACCEPT": "SHARAR_ACCEPT_DEFAULT", "P_ACCEPT_SAMPLED": "SHARAR_ACCEPT_DEFAULT_SAMPLED",
+                    "P_W3": "SHARAR_W3_DECODE", "P_W3_DRAFT": "SHARAR_W3_DRAFT", "P_FN_W3": "SHARAR_FLASHNEXT_W3_CHECKPOINT",
+                    "P_DEVICE_ACCEPT": "SHARAR_DEVICE_ACCEPT", "P_MAX_BATCH": "SHARAR_MAX_BATCH", "P_SPEC_DEPTHS": "SHARAR_SPEC_DEPTHS"}
 # Settings run-sharar.sh forwards into the container unchanged (when set).
 FORWARDED = ("SHARAR_DEVICE_ACCEPT", "SHARAR_DRAFT_VOCAB", "SHARAR_DRAFT_HEAD", "SHARAR_QSA_SPARSE_GRAPHS", "SHARAR_COLD_TIER_GIB")
 # Settings only the launcher reads (paths, container, serve flags); every other --env override also goes
@@ -96,7 +94,8 @@ LAUNCHER_ONLY = {"SHARAR_IMAGE", "SHARAR_CONTAINER", "SHARAR_PORT", "SHARAR_PROP
                  "SHARAR_DRAFT_PRECISION", "SHARAR_DRAFT", "SHARAR_DRAFT_RUNS", "SHARAR_TRACES", "SHARAR_TRACES_MAX_MIB",
                  "SHARAR_MAX_CONTEXT", "SHARAR_HF_CACHE", "SHARAR_RESULTS", "SHARAR_FLASHNEXT_CACHE", "SHARAR_SESSION_DIR",
                  "SHARAR_SESSION_GIB", "SHARAR_SESSION_MIN_TOKENS", "SHARAR_MIN_AVAILABLE_KIB", "SHARAR_REFERENCE_CONTAINER",
-                 "SHARAR_REFERENCE_URL", "SHARAR_CONFIG_FILE"}
+                 "SHARAR_REFERENCE_URL", "SHARAR_CONFIG_FILE",
+                 "SHARAR_MAX_BATCH", "SHARAR_SPEC_DEPTHS"}  # batch 8-16 settings: the served arm only (layers 1-2 run batch one)
 # EngineConfig fields the served arm must report exactly as the in-process arm installed them.
 CHECKED = ("target", "profile", "w3_decode", "w3_head", "w3_draft", "w3_checkpoint", "stable_numerics", "flashnext_trunk",
            "flashnext_mixers", "flashnext_w3_checkpoint", "flashnext_mtp_trunk", "trunk_keep_bf16", "draft_vocab", "draft_head",
@@ -134,27 +133,41 @@ def load_env(path: Path) -> dict:
 def target_config(target: str) -> Path:
     if target == "flashnext":
         return REPO / "config" / "flashnext.env"
-    own = REPO / "config" / "gb10.env"
-    return Path(os.environ.get("SHARAR_CONFIG_FILE") or (own if own.is_file() else "/home/yke/sharar/config/gb10.env"))
+    path = Path(os.environ.get("SHARAR_CONFIG_FILE") or REPO / "config" / "gb10.env")
+    if not path.is_file():
+        raise SystemExit(f"{path} not found: copy config/gb10.env.example to config/gb10.env or set SHARAR_CONFIG_FILE")
+    return path
+
+
+def profile_defaults(profile: str, target: str) -> dict:
+    """What tools/serving-profile.sh gives each speed/fidelity setting for `profile` on `target` (flashnext or
+    qwen38), as SHARAR_* names; the launcher applies the same values to every setting left unset."""
+    script = 'source "$0"; serving_profile "$1" "$2" || exit 3; ' + "; ".join(f'printf "%s=%s\\n" {p} "${p}"' for p in PROFILE_SETTINGS)
+    run = subprocess.run(["bash", "-c", script, str(SERVING_PROFILE), profile, "" if target == "qwen38" else target],
+                         capture_output=True, text=True)
+    if run.returncode:
+        raise ValueError(f"unknown serving profile {profile!r} ({SERVING_PROFILE.name}: {run.stderr.strip() or run.returncode})")
+    values = dict(line.split("=", 1) for line in run.stdout.splitlines())
+    return {PROFILE_SETTINGS[k]: v for k, v in values.items()}
 
 
 def resolve(config: dict, profile: str, overrides: dict) -> dict:
     """The launcher's view of one arm: config file, then overrides, then the profile's default for
     every knob still unset (run-sharar.sh: `${SHARAR_X:-$P_X}`)."""
     env = {**config, **overrides, "SHARAR_PROFILE": profile, "_OVERRIDES": sorted(overrides)}
-    for k, v in PROFILES[profile].items():
+    for k, v in profile_defaults(profile, env.get("SHARAR_TARGET") or "qwen38").items():
         if not env.get(k):
             env[k] = v
-    results = env.get("SHARAR_RESULTS", "/home/yke/sharar-results")
+    results = env.get("SHARAR_RESULTS")
     if env["SHARAR_FLASHNEXT_W3_CHECKPOINT"] == "auto":
-        current = Path(results) / "w3-checkpoints" / "flashnext-current"
+        current = Path(results or "/nonexistent") / "w3-checkpoints" / "flashnext-current"
         env["SHARAR_FLASHNEXT_W3_CHECKPOINT"] = str(current.resolve()) if (current / "manifest.json").is_file() else "off"
     if env["SHARAR_W3_DECODE"] != "1":
         env["SHARAR_W3_CHECKPOINT"] = ""
     draft = env.get("SHARAR_DRAFT", "")
     if draft == "pinned":
         draft = ""
-    elif not draft:
+    elif not draft and (env.get("SHARAR_DRAFT_RUNS") or results):
         current = Path(env.get("SHARAR_DRAFT_RUNS") or Path(results) / "draft-runs") / "current"
         if current.is_symlink() and (current.resolve() / "model.safetensors").is_file():
             draft = str(current.resolve())
@@ -242,8 +255,9 @@ def other_model_containers() -> list[str]:
 
 
 @contextlib.contextmanager
-def gpu_window(what: str, lock: Path = LOCK):
+def gpu_window(what: str, lock: Path | None = None):
     """Hold the shared GPU lock for one phase; start only when no other model container runs."""
+    lock = lock or LOCK
     while True:
         f = open(lock, "a")
         log(f"waiting for the GPU lock ({what})")
@@ -725,16 +739,18 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--target", choices=("flashnext", "qwen38"), required=True)
     ap.add_argument("--name", required=True, help="candidate name (the output directory: <date>-lossy-gate-<name>)")
-    ap.add_argument("--profile", choices=sorted(PROFILES), default="exact", help="the candidate's serving profile")
+    ap.add_argument("--profile", choices=PROFILE_NAMES, default="exact", help="the candidate's serving profile")
     ap.add_argument("--env", action="append", default=[], help="SHARAR_KEY=VALUE override of the candidate (repeatable)")
-    ap.add_argument("--baseline-profile", choices=sorted(PROFILES), default="exact")
+    ap.add_argument("--baseline-profile", choices=PROFILE_NAMES, default="exact")
     ap.add_argument("--baseline-env", action="append", default=[])
     ap.add_argument("--through", choices=("inprocess", "screen", "full", "auto"), default="auto",
                     help="inprocess: layers 1-2; screen: also the layer-3 screen (forced); full: also the full sets; auto: the cascade")
     ap.add_argument("--image", default=None, help="runtime image (default: the config's SHARAR_IMAGE)")
     ap.add_argument("--port", type=int, default=30100, help="served arms' port (30100-30199)")
-    ap.add_argument("--evals", type=Path, default=Path(os.environ.get("SHARAR_EVALS", "/home/yke/sharar-evals")))
-    ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON", "/home/yke/sharar/.venv-cpu/bin/python"),
+    ap.add_argument("--evals", type=Path, default=Path(os.environ.get("SHARAR_EVALS") or REPO.parent / "sharar-evals"),
+                    help="sharar-evals checkout (default: SHARAR_EVALS, else beside this one)")
+    venv = REPO / ".venv-cpu" / "bin" / "python"
+    ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON") or str(venv if venv.is_file() else sys.executable),
                     help="host Python for sharar-evals (the needles need `tokenizers`)")
     ap.add_argument("--hold-minutes", type=float, default=45, help="longest GPU hold per phase")
     ap.add_argument("--no-needles", action="store_true")
@@ -748,7 +764,12 @@ def main(argv=None) -> int:
 
     conf_path = target_config(args.target)
     config = load_env(conf_path)
-    results = Path(os.environ.get("SHARAR_RESULTS") or config.get("SHARAR_RESULTS") or "/home/yke/sharar-results")
+    results = os.environ.get("SHARAR_RESULTS") or config.get("SHARAR_RESULTS")
+    if not results:
+        raise SystemExit(f"set SHARAR_RESULTS (in {conf_path} or the environment)")
+    results = Path(results)
+    global LOCK
+    LOCK = results / ".gpu.lock"  # the shared GPU lock every Sharar tool takes
     image = args.image or config.get("SHARAR_IMAGE") or "sharar:qwen38-27b"
     config.pop("SHARAR_IMAGE", None)
     hf_cache = config.get("SHARAR_HF_CACHE") or os.environ.get("SHARAR_HF_CACHE")
