@@ -193,12 +193,11 @@ if [[ "$MAX_BATCH" != 4 || -n "$SPEC_DEPTHS" ]]; then
   [[ -n "$SPEC_DEPTHS" && "$SPEC" != 0 ]] && serve_args+=(--spec-depths "$SPEC_DEPTHS")
 fi
 if [[ "$W3_DECODE" == 1 ]]; then
-  docker run --rm --entrypoint python3 "$IMAGE" -c "import sharar.kernels.w3" 2>/dev/null \
-    || fail "image $IMAGE predates the 3-bit decode path; rebuild with docker/build.sh or set SHARAR_W3_DECODE=0"
+  # An older image reads the retired per-target settings and would silently drop copies (the draft's, Flash-Next's trunk).
+  docker run --rm --entrypoint python3 "$IMAGE" -c "from sharar.weights.w3_checkpoint import fetch" 2>/dev/null \
+    || fail "image $IMAGE predates one 3-bit switch for both targets (#72); rebuild with docker/build.sh or set SHARAR_W3_DECODE=0"
 fi
 if [[ -n "$W3_CHECKPOINT" ]]; then
-  docker run --rm --entrypoint python3 "$IMAGE" -c "from sharar.weights.w3_checkpoint import fetch" 2>/dev/null \
-    || fail "image $IMAGE predates one SHARAR_W3_CHECKPOINT for both targets (#72); rebuild with docker/build.sh"
   args+=(--volume "$W3_CHECKPOINT:/w3:ro" --env SHARAR_W3_CHECKPOINT=/w3)
 fi
 if [[ "$PROPOSER" == dflash2 || "$PROPOSER" == dspark ]] && [[ "$SPEC" != 0 ]]; then
