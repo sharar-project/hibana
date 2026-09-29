@@ -118,7 +118,7 @@ Sharar preflight OK
   Model: RadixArk/Qwen3.8-27B-NVFP4@$MODEL_REVISION
   Host memory: $((mem_total / 1048576)) GiB total, $((mem_avail / 1048576)) GiB available; runtime floor $((GUARD_MIN_AVAILABLE_KIB / 1048576)) GiB
   Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (proposer: $PROPOSER, drafts: $SPEC, draft precision: $DRAFT_PRECISION, verify state: $VERIFY_STATE)
-  Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}
+  Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}${TRACES_DIR:+, draft confidence $([[ "${SHARAR_TRACE_CONFIDENCE:-0}" == 1 ]] && echo on || echo off) (SHARAR_TRACE_CONFIDENCE)}
   Cold tier: ${SHARAR_COLD_TIER_GIB:-automatic (spare memory up to 24 GiB)}${SHARAR_COLD_TIER_GIB:+ GiB (SHARAR_COLD_TIER_GIB)}
   Device-resident acceptance: $(onoff "$DEVICE_ACCEPT") (SHARAR_DEVICE_ACCEPT; the fast profile turns it on for Flash-Next)
   Serving profile: $PROFILE (SHARAR_PROFILE: exact / balanced / fast / throughput; measured costs in docs/optimizations.md#serving-profiles)
@@ -234,6 +234,8 @@ if [[ -n "$TRACES_DIR" ]]; then
   mkdir -p "$TRACES_DIR"
   args+=(--volume "$TRACES_DIR:/traces")
   serve_args+=(--traces /traces --traces-max-mib "$TRACES_MAX_MIB")
+  # The MTP draft's confidence per drafted position in the round records (#32, #43)
+  [[ "${SHARAR_TRACE_CONFIDENCE:-0}" == 1 ]] && args+=(--env SHARAR_TRACE_CONFIDENCE=1)
 fi
 cid="$("${args[@]}" "$IMAGE" "${serve_args[@]}")"
 mkdir -p "$RESULTS_DIR"

@@ -77,6 +77,7 @@ class EngineConfig:
     # --- traces
     traces: str | None = None                 # SHARAR_TRACES
     traces_max_mib: int = 32768               # SHARAR_TRACES_MAX_MIB
+    trace_confidence: bool = False            # SHARAR_TRACE_CONFIDENCE: the MTP draft's confidence per drafted position in trace rounds (#32, #43; read when the proposer is built)
     # --- diagnostics and benchmark loader
     debug_sync: bool = False                  # SHARAR_DEBUG_SYNC
     commit_profile: bool = False              # SHARAR_COMMIT_PROFILE
@@ -124,6 +125,7 @@ class EngineConfig:
             session_min_tokens=int(e.get("SHARAR_SESSION_MIN_TOKENS", "4096")),
             traces=_str(e, "SHARAR_TRACES"),
             traces_max_mib=_int(e, "SHARAR_TRACES_MAX_MIB", 32768),
+            trace_confidence=_flag(e, "SHARAR_TRACE_CONFIDENCE"),
             debug_sync=_flag(e, "SHARAR_DEBUG_SYNC"),
             commit_profile=_flag(e, "SHARAR_COMMIT_PROFILE"),
             bench_verify_state=e.get("SHARAR_BENCH_VERIFY_STATE", "snapshots"),

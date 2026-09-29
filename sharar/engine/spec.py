@@ -221,7 +221,8 @@ class SpecDecoder:
             raise ValueError("proposer must return int64 [batch, k] on the target device")
         y = y[:, :k]
         proposal = Proposal(y, proposal.probabilities[:, :k] if proposal.probabilities is not None else None,
-                            proposal.support[:, :k] if proposal.support is not None else None, proposal.columns)
+                            proposal.support[:, :k] if proposal.support is not None else None,
+                            confidence=proposal.confidence[:, :k] if proposal.confidence is not None else None, columns=proposal.columns)
         new_pages_flat = new_pages[:, :s_len].reshape(-1)
         if timing:
             torch.cuda.synchronize()
@@ -264,6 +265,13 @@ class SpecDecoder:
             return
         ctx = self.context(batch, self._eager_wrapper())
         self.finish(batch, self.ex.model.forward(batch.tokens, ctx))
+
+    @staticmethod
+    def _confidence_rows(reqs, confidence):
+        """The draft's (top-1 probability, top-1 minus top-2) per position as host lists, when a request records rounds."""
+        if confidence is None or not any(r.trace_rounds is not None for r in reqs):
+            return None
+        return confidence.float().tolist()
 
     def _eager_wrapper(self):
         """The eager verification's own paged-prefill wrapper (Executor._verify_prefill). plan()
@@ -340,9 +348,9 @@ class SpecDecoder:
 
     def _accept_batch(self, batch, z, features, topk=None, relaxed=None):
         self._accept(batch.requests, batch.proposal.tokens, z, features, batch.started, batch.prepared,
-                     proposal=batch.proposal if batch.sampled else None, topk=topk, relaxed=relaxed)
+                     proposal=batch.proposal if batch.sampled else None, topk=topk, relaxed=relaxed, confidence=batch.proposal.confidence)
 
-    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, topk=None, relaxed=None) -> None:
+    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, topk=None, relaxed=None, confidence=None) -> None:
         if self.timing:
             torch.cuda.synchronize()
         t2 = time.perf_counter()
@@ -395,6 +403,7 @@ class SpecDecoder:
             z_l = [row[k + 2:k + 2 + s_len] for row in packed]
             flags = [row[k + 2 + s_len:] for row in packed]  # block offsets accepted only by the relaxed rule
             used = [sum(f) for f in flags]
+        conf = self._confidence_rows(reqs, confidence)
         outputs = []
         for i, r in enumerate(reqs):
             a = acc[i]
@@ -415,6 +424,9 @@ class SpecDecoder:
                 if used[i]:
                     # block offsets (0 = first drafted token) emitted under the relaxed rule; the trainer masks them
                     record["rx"] = [j for j, f in enumerate(flags[i][:count]) if f]
+                if conf is not None:  # the draft's confidence per drafted position (SHARAR_TRACE_CONFIDENCE)
+                    record["p1"] = [round(c[0], 5) for c in conf[i]]
+                    record["m"] = [round(c[1], 5) for c in conf[i]]
                 r.trace_rounds.append(record)
         if self.timing:
             torch.cuda.synchronize()

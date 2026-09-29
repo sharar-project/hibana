@@ -18,6 +18,10 @@ oldest trace file is pruned together with its feature directory above the
 byte cap. Traces are the user's prompts; the directory is only written when
 the server was started with one, and any request can opt out with
 ``trace: false``.
+
+With ``SHARAR_TRACE_CONFIDENCE=1`` (sequential MTP drafts), each round record
+also carries the draft's top-1 probability ``p1`` and top-1 minus top-2
+margin ``m`` per drafted position (#32; the input for adaptive depth, #43).
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ from pathlib import Path
 
 import torch
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3  # 3: params carry the acceptance rule; rounds may carry the draft confidence ("p1", "m")
 FILE_PREFIX = "traces-"
 FILE_SUFFIX = ".jsonl"
 FEATURE_DIM = 5120
@@ -178,6 +182,7 @@ def _record(req) -> dict:
         "params": {
             "max_new_tokens": params.max_new_tokens, "temperature": params.temperature,
             "top_p": params.top_p, "top_k": params.top_k, "seed": params.seed, "ignore_eos": params.ignore_eos,
+            "accept_top_k": params.accept_top_k, "accept_margin": params.accept_margin,
         },
         "spec": None,
         "features": None,
@@ -369,7 +374,7 @@ def iter_records(directory: str | Path):
                     doc = json.loads(raw)
                 except ValueError:
                     continue
-                if isinstance(doc, dict) and doc.get("v") in (1, FORMAT_VERSION):
+                if isinstance(doc, dict) and doc.get("v") in (1, 2, FORMAT_VERSION):
                     doc.setdefault("features", None)
                     doc.setdefault("topk", None)
                     if doc["features"] is not None:

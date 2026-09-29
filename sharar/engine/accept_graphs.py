@@ -142,6 +142,7 @@ class AcceptGraphs:
             ex.state.publish_reconstructed(reqs, counts)
         except BaseException as exc:
             ex.state.poison(reqs, exc)
+        conf = spec._confidence_rows(reqs, batch.proposal.confidence)
         outputs = []
         for i, r in enumerate(reqs):
             row = packet[i]
@@ -154,6 +155,9 @@ class AcceptGraphs:
                 used = sum(flags)
                 if used:
                     record["rx"] = [j for j, f in enumerate(flags[:count]) if f]
+                if conf is not None:
+                    record["p1"] = [round(c[0], 5) for c in conf[i]]
+                    record["m"] = [round(c[1], 5) for c in conf[i]]
                 r.trace_rounds.append(record)
             for tok in emitted:
                 r.push(int(tok))

@@ -43,7 +43,8 @@ def test_finished_requests_are_recorded_unless_opted_out(tmp_path):
     assert doc["prompt_ids"] == [1, 2, 3] and doc["output_ids"] == kept.output_ids and len(doc["output_ids"]) == 2
     assert doc["reason"] == "length" and doc["spec"] is None and doc["cached"] == 0 and doc["features"] is None
     assert kept.trace_features is not None and kept.trace_features.rows == 0  # no proposer wrote any rows
-    assert doc["params"] == {"max_new_tokens": 2, "temperature": 0.5, "top_p": 0.95, "top_k": 20, "seed": 7, "ignore_eos": False}
+    assert doc["params"] == {"max_new_tokens": 2, "temperature": 0.5, "top_p": 0.95, "top_k": 20, "seed": 7, "ignore_eos": False,
+                             "accept_top_k": 1, "accept_margin": 0.0}
     assert doc["arrival"] <= doc["finish"] <= time.time()
     stats = sched.stats()["traces"]
     assert stats["records"] == 1 and stats["dropped"] == 0 and stats["files"] == 1 and stats["bytes"] == stats["bytes_written"]
