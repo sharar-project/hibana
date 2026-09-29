@@ -140,8 +140,7 @@ def test_prospective_budget_accounts_for_each_recurrent_feature_window(monkeypat
     draft = tmp_path / ('models--' + name.replace('/', '--')) / 'snapshots' / revision
     draft.mkdir(parents=True)
     (draft / 'config.json').write_text(json.dumps({'sliding_window': 2048}))
-    # monkeypatch.setattr(config, 'snapshot_dir', lambda: snapshot)
-    monkeypatch.setattr(type(config.DEFAULT_TARGET), 'snapshot_dir', lambda self, cache_dir=None: snapshot)
+    monkeypatch.setattr(config, 'snapshot_dir', lambda: snapshot)
     monkeypatch.setattr(spec_budget, 'tensor_bytes', lambda *args: (128, 64))
     spec = spec_budget.SpecConfig('dflash2', 15, 'reconstruct', 'fp8')
     small, _ = spec_budget.budget(spec, 4, 32768, cache_slots=5)
