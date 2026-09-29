@@ -35,6 +35,12 @@ input hash, quantizer settings, projection diagnostics and per-file hashes.
 Projection diagnostics reuse calibration rows and are fitting diagnostics,
 not held-out quality evidence.
 
+The eight-level codebook is MSE-optimal, so each quantized row comes out shorter than the exact row by
+about its relative error squared. `quantize(..., unbias="weight")` (`bench/flashnext_w3_calibrate.py
+--unbias weight`) scales each row back through its row scale; codes, format and bytes do not change. On the
+Flash-Next trunk the shrinkage adds coherently through the residual layers and the correction removes most of
+the decode-path KL it causes ([Flash-Next](flashnext.md#3-bit-trunk-sensitivity-2026-09-28-61)).
+
 Set `SHARAR_W3_CHECKPOINT=/host/calibrated-w3` with `SHARAR_W3_DECODE=1` in the
 launcher to mount and load a completed artifact. The loader checks the target
 revision, full projection coverage, dimensions, dtypes and hashes before graph

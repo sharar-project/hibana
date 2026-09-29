@@ -55,6 +55,7 @@ class EngineConfig:
     flashnext_trunk: str = "fp8"              # SHARAR_FLASHNEXT_TRUNK: bf16 | fp8 | w3
     flashnext_mixers: str = "fp8"             # SHARAR_FLASHNEXT_MIXERS
     flashnext_w3_checkpoint: str | None = None  # SHARAR_FLASHNEXT_W3_CHECKPOINT: calibrated 3-bit trunk copies over the FP8 trunk (#6)
+    flashnext_w3_keep_fp8: str | None = None  # SHARAR_FLASHNEXT_W3_KEEP_FP8: regex of linears() names left without their calibrated copy
     flashnext_mtp_trunk: str | None = None    # SHARAR_FLASHNEXT_MTP_TRUNK: the MTP draft head's precision (unset: the trunk's)
     trunk_keep_bf16: str | None = None        # SHARAR_TRUNK_KEEP_BF16: regex of Flash-Next projections kept BF16
     # --- speculation
@@ -104,6 +105,7 @@ class EngineConfig:
             flashnext_trunk=_str(e, "SHARAR_FLASHNEXT_TRUNK", "fp8"),
             flashnext_mixers=_str(e, "SHARAR_FLASHNEXT_MIXERS", "fp8"),
             flashnext_w3_checkpoint=_str(e, "SHARAR_FLASHNEXT_W3_CHECKPOINT"),
+            flashnext_w3_keep_fp8=_str(e, "SHARAR_FLASHNEXT_W3_KEEP_FP8"),
             flashnext_mtp_trunk=_str(e, "SHARAR_FLASHNEXT_MTP_TRUNK"),
             trunk_keep_bf16=_str(e, "SHARAR_TRUNK_KEEP_BF16"),
             spec=_str(e, "SHARAR_SPEC"),

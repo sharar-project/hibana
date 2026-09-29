@@ -139,6 +139,48 @@ BF16 all land within the spread between variants. The trunk stays per-tensor
 FP8. `SHARAR_TRUNK_KEEP_BF16=<regex>` localizes quantization error for the
 calibrated FP4 trunk. Evidence `$SHARAR_RESULTS/reviews/2026-09-24-fp8-scales/`.
 
+## 3-bit trunk sensitivity (2026-09-28, #61)
+
+`bench/flashnext_quant.py score --chunk 64` (the decode path: 64-row calls read the 3-bit copies), 8 prompts of
+8,000 tokens, KL(BF16 || trunk) over BF16's top 32. `SHARAR_FLASHNEXT_W3_KEEP_FP8=<regex>` leaves the matching
+`linears()` names without their calibrated copy. One module kind at a time in 3-bit (the rest FP8) costs no KL:
+every kind lands at or below the FP8 trunk, so no kind is the sensitive one. All of them together double it.
+
+| 3-bit set | GB saved per token | KL dense / sparse | argmax dense / sparse |
+|---|---:|---|---|
+| none (FP8 trunk) | 0 | 0.507 / 0.437 | 80.7 / 85.1% |
+| any single kind (GDN in_qkv / in_z / out, attention qkv / o, shared gate_up / down, PLE, lm_head) | 0.02 to 0.56 | 0.48 to 0.57 / 0.35 to 0.42 | 80.2 to 83.1 / 86.3 to 87.9% |
+| all (the `fast` default) | 2.12 | 0.956 / 0.777 | 73.3 / 84.3% |
+| all, row gain corrected (`--unbias weight`) | 2.12 | 0.840 / 0.521 | 74.7 / 87.2% |
+| all, row gain corrected, layers 40-47 FP8 | 1.83 | 0.578 / 0.368 | 79.9 / 89.1% |
+
+The cause is a coherent bias, not one module: the MSE-optimal codebook and clipped scales shrink each 3-bit row
+by about its relative error squared (weight-space gain 0.90 to 0.97, FP8 0.999). Per matrix that is optimal; through
+48 residual layers every sublayer's update shrinks the same way while the noise adds incoherently.
+`bench/flashnext_w3_calibrate.py --unbias weight` scales each row back through its FP32 row scale (codes, format
+and bytes unchanged). The covariance-weighted variant (`--unbias output`) corrects less (1.5% against 4%) and
+removed less KL (0.70 overall against 0.60): the calibration covariance under-states what decode inputs see.
+Keeping depth bands in FP8 on the corrected set helps only for the last layers (0-11, 12-23, 24-35 FP8: no
+change; 36-47 or 40-47: below the FP8 trunk overall; 44-47: half the gain).
+
+Served, image `sharar:main-20260927b`, `fast` profile, batch one; only the checkpoint varies. Speed: 22 decode
+prompts paired, h2h geometric mean against FP8. Accuracy: full sets, exact greedy, paired against FP8 on the same image:
+
+| trunk | greedy | t = 0.7 | round (verify) ms | HumanEval | GSM8K |
+|---|---|---|---|---|---|
+| FP8 | 60.2 tok/s median | 59.5 | 60.6 (50.2) | 93.9%; again 94.5% (2 / 1) | 94.4% (#6's FP8 run 94.5%: 18 / 17) |
+| 3-bit, current | x1.193 [1.173, 1.216] | x1.156 [1.135, 1.180] | 52.1 (41.3) | 94.5% (#6) | 94.2% (#6; 19 / 21) |
+| 3-bit, gain corrected | x1.174 [1.156, 1.191] | x1.144 [1.131, 1.158] | 53.3 (41.8) | 94.5% (2 / 1) | 93.3% (20 / 34, p 0.08) |
+| 3-bit, gain corrected, layers 40-47 FP8 | x1.139 [1.123, 1.156] | x1.136 [1.113, 1.161] | 53.7 (42.7) | 95.7% (3 / 0) | 93.5% (21 / 33, p 0.13) |
+
+The FP8 trunk itself moves by up to 5 HumanEval items between configurations (97.0% in #6, 93.9 and 94.5%
+here), and the items the 3-bit trunk lost in #6 are items this FP8 run also fails: with exact acceptance the
+draft changes the verify row counts and so the target's arithmetic. The #6 HumanEval cost is within that spread.
+Lower decode-path KL did not move GSM8K: every 3-bit variant lands 93.3 to 94.2% against FP8's 94.4 to 94.5%,
+none significantly. Neither new variant keeps +15% at t = 0.7, so the `fast` default keeps the current copies;
+the gain correction and `SHARAR_FLASHNEXT_W3_KEEP_FP8` stay available as options.
+Evidence `$SHARAR_RESULTS/reviews/2026-09-27-trunk-sensitivity/`.
+
 ## Draft-only lm_head (2026-09-25)
 
 The three MTP draft steps each read the target's FP8 lm_head (0.63 GB), about 8 of the draft's
