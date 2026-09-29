@@ -1,0 +1,147 @@
+{
+ "version": "lossy-v1",
+ "note": "Lossy-change gate prompts (sharar#31), layers 1 and 2: the 22 decode prompts of sharar-evals evals/workloads/h2h_v1.json (commit 97a263d) plus four multilingual and two short chat prompts. Chat template with thinking off; greedy; the baseline's own continuation is the layer-1 text.",
+ "output_tokens": 512,
+ "prompts": [
+  {
+   "id": "code-lru",
+   "domain": "code",
+   "prompt": "Write a Python module implementing an LRU cache class with get, put, delete and resize, plus a thread-safe wrapper. Include docstrings and pytest unit tests."
+  },
+  {
+   "id": "code-btree",
+   "domain": "code",
+   "prompt": "Write a Rust implementation of a B-tree map with insert, get and remove, including node splitting and merging, with unit tests."
+  },
+  {
+   "id": "code-http",
+   "domain": "code",
+   "prompt": "Write a small asynchronous HTTP rate limiter in TypeScript for an Express app using a token bucket per client IP, with configuration options and Jest tests."
+  },
+  {
+   "id": "code-sql",
+   "domain": "code",
+   "prompt": "Design a PostgreSQL schema for a library system (books, authors, members, loans, reservations) and write the SQL DDL plus five useful queries with explanations."
+  },
+  {
+   "id": "code-refactor",
+   "domain": "code",
+   "prompt": "Here is a function:\n\ndef process(data):\n    out = []\n    for i in range(len(data)):\n        if data[i] != None:\n            if data[i] > 0:\n                out.append(data[i] * 2)\n            else:\n                out.append(0)\n    return out\n\nRefactor it into idiomatic, typed Python, explain each change, and add tests covering edge cases."
+  },
+  {
+   "id": "code-go",
+   "domain": "code",
+   "prompt": "Write a Go program that walks a directory tree concurrently with a bounded worker pool, computes SHA-256 hashes of all files, and reports duplicates. Include error handling and comments."
+  },
+  {
+   "id": "math-trains",
+   "domain": "math",
+   "prompt": "Two trains leave stations 420 km apart at the same time, heading toward each other. One travels at 80 km/h and the other at 60 km/h. A bird flies back and forth between them at 120 km/h until they meet. Solve step by step: when do they meet, where, and how far does the bird fly?"
+  },
+  {
+   "id": "math-prob",
+   "domain": "math",
+   "prompt": "A bag has 5 red, 4 blue and 3 green marbles. Three are drawn without replacement. Compute step by step the probability that all three are different colors, that at least two are red, and the expected number of blue marbles."
+  },
+  {
+   "id": "math-proof",
+   "domain": "math",
+   "prompt": "Prove that the square root of 2 is irrational, then prove that there are infinitely many primes, and finally show that the sum of the first n odd numbers is n squared. Explain each step clearly."
+  },
+  {
+   "id": "math-finance",
+   "domain": "math",
+   "prompt": "A loan of $250,000 at 6.5% annual interest is repaid monthly over 30 years. Derive the payment formula, compute the monthly payment, the total interest, and the balance after 10 years, showing all steps."
+  },
+  {
+   "id": "prose-history",
+   "domain": "prose",
+   "prompt": "Write an essay of about 700 words on how the printing press changed European society between 1450 and 1600, covering religion, science, politics and literacy."
+  },
+  {
+   "id": "prose-story",
+   "domain": "prose",
+   "prompt": "Write a short story of about 600 words about a lighthouse keeper who discovers that the light is being used to send messages to someone across the sea."
+  },
+  {
+   "id": "prose-explain",
+   "domain": "prose",
+   "prompt": "Explain to a curious teenager how vaccines train the immune system, what mRNA vaccines do differently, and why booster shots are sometimes needed. Use analogies."
+  },
+  {
+   "id": "prose-email",
+   "domain": "prose",
+   "prompt": "Draft a thoughtful email to a team announcing a reorganization that merges two departments, explaining the reasons, what changes for people, the timeline, and how to raise concerns."
+  },
+  {
+   "id": "de-essay",
+   "domain": "multilingual",
+   "prompt": "Schreibe einen ausführlichen Aufsatz auf Deutsch über die Vor- und Nachteile von Homeoffice für Unternehmen und Beschäftigte, mit Beispielen und einem Fazit."
+  },
+  {
+   "id": "fr-explain",
+   "domain": "multilingual",
+   "prompt": "Explique en français, de manière détaillée, le fonctionnement de la photosynthèse et son importance pour le climat, en utilisant des exemples concrets."
+  },
+  {
+   "id": "zh-guide",
+   "domain": "multilingual",
+   "prompt": "请用中文详细介绍如何规划一次为期七天的日本旅行，包括交通、住宿、美食和文化体验的建议。"
+  },
+  {
+   "id": "es-story",
+   "domain": "multilingual",
+   "prompt": "Escribe en español un relato de unas 500 palabras sobre una familia que abre una panadería en un pequeño pueblo de montaña."
+  },
+  {
+   "id": "json-extract",
+   "domain": "structured",
+   "prompt": "Generate a JSON array of 12 fictional employees, each with id, name, email, department, title, start_date, salary and a list of skills. Output only valid JSON."
+  },
+  {
+   "id": "yaml-config",
+   "domain": "structured",
+   "prompt": "Write a complete Kubernetes deployment for a web app with a Deployment, Service, Ingress, HorizontalPodAutoscaler and ConfigMap in YAML, with comments explaining each field."
+  },
+  {
+   "id": "chat-short",
+   "domain": "chat",
+   "prompt": "What are the main differences between TCP and UDP? Give a concise answer with a small comparison table."
+  },
+  {
+   "id": "chat-advice",
+   "domain": "chat",
+   "prompt": "I have two job offers: one pays more but has a long commute, the other is remote with slightly lower pay. How should I think about the decision?"
+  },
+  {
+   "id": "ja-explain",
+   "domain": "multilingual",
+   "prompt": "日本語で、地震に備えて家庭で準備しておくべきことと、地震が起きたときの行動について、具体的に詳しく説明してください。"
+  },
+  {
+   "id": "ru-explain",
+   "domain": "multilingual",
+   "prompt": "Объясни на русском языке, подробно и с примерами из повседневной жизни, как работает электрический двигатель и где он используется."
+  },
+  {
+   "id": "ar-essay",
+   "domain": "multilingual",
+   "prompt": "اكتب باللغة العربية مقالاً مفصلاً عن أهمية القراءة للأطفال، مع نصائح عملية للآباء والمعلمين."
+  },
+  {
+   "id": "hi-explain",
+   "domain": "multilingual",
+   "prompt": "हिंदी में विस्तार से समझाइए कि वर्षा जल संचयन क्या है, यह क्यों ज़रूरी है और इसे घर पर कैसे किया जा सकता है।"
+  },
+  {
+   "id": "chat-seasons",
+   "domain": "chat",
+   "prompt": "In two sentences, what causes the seasons on Earth?"
+  },
+  {
+   "id": "chat-define",
+   "domain": "chat",
+   "prompt": "Define entropy in thermodynamics in one short paragraph."
+  }
+ ]
+}

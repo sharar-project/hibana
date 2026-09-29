@@ -116,6 +116,31 @@ on the 18-family `v2` set, [study](https://github.com/abdelfattah-lab/sharar/blo
 should also be compared under `SHARAR_STABLE_NUMERICS=1`, the shape-stable
 research baseline, so that continuation drift does not masquerade as a gain.
 
+## The lossy-change gate
+
+A lossy speed option is judged by `tools/lossy-gate.py` (rules and layers in
+[CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option) and the tool's docstring):
+
+```bash
+tools/lossy-gate.py --target flashnext --name fast --profile fast                  # a profile against exact
+tools/lossy-gate.py --target flashnext --name w3near --env SHARAR_FLASHNEXT_TRUNK=w3  # an override against exact
+tools/lossy-gate.py --target qwen38 --name x --profile exact --env SHARAR_X=1 --through inprocess   # layers 1-2 only
+tools/lossy-gate.py --target flashnext --name fast --profile fast --report           # rebuild the scorecard
+```
+
+Do not wrap it in `flock`: it takes `$SHARAR_RESULTS/.gpu.lock` for each phase (at
+most `--hold-minutes`, default 45) and waits while another model container runs.
+Layers 1 and 2 run `bench/lossy_gate.py` in a container of the image with only
+`bench/` mounted over it (the image's own engine), built as `sharar serve` builds
+the executor; layer 3 serves each arm with `run-sharar.sh` as container
+`sharar-lossy-gate` on `--port` (30100 by default), checks that
+`/get_server_info` reports the in-process arm's configuration, and runs
+`sharar-evals` (`--evals`, needs MGSM/MBPP and `--start`) in shards of 100 items.
+The baseline arm is cached in `$SHARAR_RESULTS/reviews/lossy-gate-baselines/`
+(keyed by image, baseline settings, prompts, worker and eval code) and reused by
+every candidate. A rerun with the same `--name` resumes; `--through` stops after
+`inprocess` or `screen`, or forces `full`.
+
 ## Current measurement drivers
 
 | Driver | Purpose |
@@ -123,6 +148,7 @@ research baseline, so that continuation drift does not masquerade as a gain.
 | `sharar benchmark` / `tools/benchmark.sh` | Installed AIPerf cold BS1 iteration command |
 | `bench.gb10_family_eval` | Frozen family native comparisons and paired statistics |
 | `tools/family-gate.py`, `bench/gate_hooks.py`, `bench/family_inputs.py` | The family gate: windows, candidate hooks, reproducible frozen inputs |
+| `tools/lossy-gate.py`, `bench/lossy_gate.py`, `bench/workloads/lossy_v1.json` | The lossy-change gate: distribution distance, speculation health and the paired task battery, one verdict |
 | `bench.gb10_bs4_engine` | Controlled verifier-width/native BS4 comparison |
 | `bench.gb10_bs4_http` | Finite and replenished BS4 HTTP workloads |
 | `bench.gb10_agent_retention` | Cold controls and interleaved native cache resumes |

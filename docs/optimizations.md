@@ -57,6 +57,14 @@ Measured cost of each lossy option (paired, exact greedy unless noted):
 | Flash-Next device-resident acceptance (#36, 2026-09-28; greedy rounds) | h2h over the default without it (fast): batch one x1.057 [1.035, 1.082], four streams x1.088 [1.078, 1.098]; over the previous engine x1.159 / x1.174 | acceptance unchanged (6.14 to 6.18 emitted per round); outputs not identical to the host path (exact greedy identity 2/44: the draft KV is projected over the whole bucket, so round boundaries move); no accuracy eval yet |
 | Flash-Next calibrated 3-bit trunk (#6, 2026-09-27) | h2h greedy median 56.1 to 69.6 tok/s (+24%), t = 0.7 49.4 to 62.0 (+26%) | full GSM8K 94.5 to 94.2 (20 better / 23 worse, p 0.76); HumanEval 97.0 to 94.5 (0 / 4, p 0.12), within the FP8 trunk's own spread between configurations (93.9 to 97.0%, #61); decode-path KL to BF16 0.51 to 0.96 |
 
+New lossy options are judged by the lossy-change gate, `tools/lossy-gate.py`
+([rules](../CONTRIBUTING.md#judge-a-lossy-option)). Its first reading, the Flash-Next `fast`
+profile against `exact` (image `sharar:main-20260927b`, 2026-09-28): decode x1.347 [1.309, 1.389]
+at batch one; layer 1 KL 0.081 against a 0.013 floor (argmax 91.0% against 96.4%; prose and
+multilingual 85-88%, code and math 96%); tokens per round x1.165; screen pooled -0.8 points
+[-2.5, +0.9] (17 better / 23 worse, p 0.43; HumanEval 2/6); verdict `fast`, the full sets needed
+for `balanced`. Evidence `$SHARAR_RESULTS/reviews/2026-09-27-lossy-gate-fast/`.
+
 Evidence: [relaxed acceptance](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/relaxed-acceptance.md),
 the sampled-path study in the roadmap history, #22, [W3 calibration](w3-calibration.md),
 `$SHARAR_RESULTS/reviews/2026-09-27-fn-trunk/` and `2026-09-27-trunk-sensitivity/` (#61) for the Flash-Next trunk,
