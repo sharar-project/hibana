@@ -4,7 +4,7 @@
 Host-side and dependency-free (Python 3 standard library only); it drives the
 container launchers `run-sharar.sh` and `run-sharar-train.sh`.
 
-  sharar-ctl serve [--no-traces] [--pinned | --draft DIR] [--fp8] [--exact | --balanced | --fast]
+  sharar-ctl serve [--no-traces] [--pinned | --draft DIR] [--fp8] [--exact | --balanced | --fast | --throughput]
   sharar-ctl stop
   sharar-ctl status
   sharar-ctl train            # stop serving, train until `train stop`
@@ -342,7 +342,8 @@ def main(argv=None) -> int:
     g = p.add_mutually_exclusive_group()
     for name, text in (("exact", "the target's own distribution: exact acceptance, no lossy weight copies"),
                        ("balanced", "relaxed greedy acceptance top-2/1.0, the 27B's calibrated 3-bit copies"),
-                       ("fast", "the default: every measured speed option, lossy ones included (docs/optimizations.md#serving-profiles)")):
+                       ("fast", "the default: every measured speed option, lossy ones included (docs/optimizations.md#serving-profiles)"),
+                       ("throughput", "fast with up to 16 requests at once and shallower verification above four (evals, many agents)")):
         g.add_argument(f"--{name}", dest="profile", action="store_const", const=name, help=text)
     sub.add_parser("stop", help="stop serving")
     sub.add_parser("status", help="serving, training, current draft and trace directory")

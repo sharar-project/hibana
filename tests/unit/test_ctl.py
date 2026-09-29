@@ -37,6 +37,7 @@ def test_serve_records_traces_by_default_and_honors_overrides(ctl):
     _, env = calls[-1]
     assert "SHARAR_TRACES" not in env and env["SHARAR_DRAFT"] == "pinned" and env["SHARAR_DRAFT_PRECISION"] == "fp8"
     assert module.main(["serve", "--draft", "/ckpt"]) == 0 and calls[-1][1]["SHARAR_DRAFT"] == "/ckpt"
+    assert module.main(["serve", "--throughput"]) == 0 and calls[-1][1]["SHARAR_PROFILE"] == "throughput"
     assert module.main(["stop"]) == 0 and calls[-1][0] == [str(ROOT / "run-sharar.sh"), "--stop"]
 
 

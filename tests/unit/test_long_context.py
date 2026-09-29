@@ -45,3 +45,13 @@ def test_intermediate_contexts_guarantee_the_larger_of_the_two(monkeypatch):
     assert plan(monkeypatch, 65536).kv_tokens >= max(65536, 4 * SHARED_CONTEXT)
     with pytest.raises(MemoryError):
         plan(monkeypatch, MAX_CONTEXT, available_gib=16 + 8 + (MAX_CONTEXT * kv) // GIB - 1)
+
+
+def test_wide_batches_split_the_shared_guarantee(monkeypatch):
+    # Sixteen running requests (the throughput profile) are guaranteed the same
+    # total as four: 8K each at a 32K context, the full context for one request.
+    monkeypatch.setattr(ledger_mod, "mem_available_bytes", lambda: 90 * GIB)
+    four = Ledger(start_available=90 * GIB).plan(max_running=4, context_len=32768)
+    wide = Ledger(start_available=90 * GIB).plan(max_running=16, context_len=32768)
+    assert 4 * SHARED_CONTEXT <= wide.kv_tokens <= four.kv_tokens and wide.state_slots >= 17
+    assert Ledger(start_available=90 * GIB).plan(max_running=16, context_len=MAX_CONTEXT).kv_tokens >= MAX_CONTEXT

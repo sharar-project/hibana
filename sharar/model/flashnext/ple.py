@@ -13,6 +13,7 @@ state next to the GDN states.
 from __future__ import annotations
 
 import json
+import os
 import struct
 from pathlib import Path
 
@@ -28,18 +29,19 @@ class PleTable:
     """The FP8 shards on the host: memory maps for bulk gathers plus parallel `pread`s for the rows a
     decode step needs. A token's sixteen rows are scattered over the 51 GB table, so a serial gather
     pays sixteen NVMe latencies when they are not in the page cache (several milliseconds per step);
-    reading them from threads overlaps the misses."""
+    reading them from threads overlaps the misses. Rows the page cache holds skip the threads."""
 
     THREADS = 32
 
     def __init__(self, snap: Path, weight_map: dict[str, str], name: str, shards: int):
-        import os
         from concurrent.futures import ThreadPoolExecutor
         self.maps: list[np.memmap] = []
         self.fds: list[int] = []
         self.offsets: list[int] = []  # byte offset of each shard's first row within its file
         self._pool = ThreadPoolExecutor(max_workers=self.THREADS)
         self._pread = os.pread
+        self._nowait = hasattr(os, "preadv") and hasattr(os, "RWF_NOWAIT")  # page-cache reads that never block
+        self.hits = self.misses = 0  # rows read from the page cache / through the threads
         starts = []
         rows = 0
         opened: dict[str, tuple[int, dict]] = {}
@@ -67,23 +69,48 @@ class PleTable:
         self.starts = np.asarray(starts, dtype=np.int64)
         self.rows = rows
 
-    def gather(self, rows: np.ndarray) -> np.ndarray:
-        """rows: int64 array of any shape -> uint8 [..., ROW_BYTES]; parallel preads, page-cache or NVMe."""
+    def gather(self, rows: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
+        """rows: int64 array of any shape -> uint8 [..., ROW_BYTES] (into `out` when given, contiguous).
+
+        Rows in the page cache are read serially without blocking (`RWF_NOWAIT`: a few microseconds
+        each); only the misses go to the threads, where their NVMe latencies overlap. Handing every
+        row to the threads cost about 1.1 ms for a verification's 80 rows with all of them cached (#36)."""
         flat = rows.reshape(-1)
         n = flat.shape[0]
-        out = np.empty((n, ROW_BYTES), dtype=np.uint8)
+        out = np.empty((n, ROW_BYTES), dtype=np.uint8) if out is None else out.reshape(n, ROW_BYTES)
         shard = np.searchsorted(self.starts, flat, side="right") - 1
         local = flat - self.starts[shard]
         fds, offsets = self.fds, self.offsets
         pread = self._pread
+        misses = []
+        if self._nowait:
+            preadv, flag = os.preadv, os.RWF_NOWAIT
+            for i in range(n):
+                s = int(shard[i])
+                try:
+                    if preadv(fds[s], [out[i]], offsets[s] + int(local[i]) * ROW_BYTES, flag) != ROW_BYTES:
+                        misses.append(i)  # a row across a page boundary, half cached
+                except BlockingIOError:
+                    misses.append(i)
+                except OSError:  # the filesystem does not take RWF_NOWAIT: every row through the threads
+                    self._nowait = False
+                    misses.extend(range(i, n))
+                    break
+        else:
+            misses = range(n)
+        self.hits += n - len(misses)
+        self.misses += len(misses)
 
-        def read(lo: int, hi: int) -> None:
-            for i in range(lo, hi):
+        def read(part) -> None:
+            for i in part:
                 s = int(shard[i])
                 out[i] = np.frombuffer(pread(fds[s], ROW_BYTES, offsets[s] + int(local[i]) * ROW_BYTES), dtype=np.uint8)
 
-        chunk = max(1, (n + self.THREADS - 1) // self.THREADS)
-        list(self._pool.map(lambda lo: read(lo, min(n, lo + chunk)), range(0, n, chunk)))
+        if len(misses) == 1:
+            read(misses)
+        elif misses:
+            chunk = max(1, (len(misses) + self.THREADS - 1) // self.THREADS)
+            list(self._pool.map(read, [misses[lo:lo + chunk] for lo in range(0, len(misses), chunk)]))
         return out.reshape(*rows.shape, ROW_BYTES)
 
     def gather_mapped(self, rows: np.ndarray) -> np.ndarray:
@@ -131,13 +158,20 @@ class PleLayer:
         between it and the current token, else EOS; back-1 is always t-1, back-2 is t-2 unless t-1
         or t-2 is EOS.
         """
-        if self.ngram != 3:
-            raise NotImplementedError("the PLE hash is spelled out for 3-grams")
         h = torch.full((2,), eos, dtype=torch.int64) if history is None else history.to(torch.int64)
         ext = torch.cat([h, ids.to(torch.int64)])
-        back1, back2 = ext[1:-1], ext[:-2]
+        return self._hash(ids.to(torch.int64), ext[1:-1], ext[:-2], eos)
+
+    def token_ids(self, ids: torch.Tensor, histories: torch.Tensor, eos: int) -> torch.Tensor:
+        """One token per row, each after its own two tokens: ids int64 [N], histories int64 [N, 2] (host) ->
+        int64 [N, heads]; the rows `ngram_ids` gives each token inside its sequence (a verification column)."""
+        return self._hash(ids.to(torch.int64), histories[:, 1].to(torch.int64), histories[:, 0].to(torch.int64), eos)
+
+    def _hash(self, cur: torch.Tensor, back1: torch.Tensor, back2: torch.Tensor, eos: int) -> torch.Tensor:
+        if self.ngram != 3:
+            raise NotImplementedError("the PLE hash is spelled out for 3-grams")
         back2 = torch.where((back1 == eos) | (back2 == eos), torch.full_like(back2, eos), back2)
-        shifted = [ids.to(torch.int64), back1, back2]
+        shifted = [cur, back1, back2]
         blocks = []
         for n in range(2, self.ngram + 1):
             mix = shifted[0] * self.multipliers[0]

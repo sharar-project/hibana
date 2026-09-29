@@ -72,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--traces", default=None, help="directory for opt-in request traces (default: SHARAR_TRACES; unset disables recording)")
     p_serve.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: SHARAR_TRACES_MAX_MIB or 32768)")
     p_serve.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request, up to 262144 (default: SHARAR_MAX_CONTEXT, else the target profile's 32768)")
+    p_serve.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-16 (default: SHARAR_MAX_BATCH, else 4; the throughput profile sets 16)")
+    p_serve.add_argument("--spec-depths", default=None, help="verify depth per batch bucket as BUCKET:DEPTH pairs, e.g. 8:1,16:0 (0: plain decode; default: SHARAR_SPEC_DEPTHS, else --spec everywhere)")
     p_serve.add_argument("--accept-default-sampled", action="store_true", default=None, help="also apply the relaxed acceptance default to sampled requests (default: SHARAR_ACCEPT_DEFAULT_SAMPLED=1, else greedy only)")
     p_serve.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests that do not set accept_top_k/accept_margin, as K:M (default: SHARAR_ACCEPT_DEFAULT, else 2:1.0); 'off' keeps every request exact")
     p_traces = sub.add_parser("traces", help="summarize a request trace directory")
@@ -178,17 +180,23 @@ def main(argv: list[str] | None = None) -> int:
         from sharar.engine.profile import MAX_CONTEXT
         if max_context is not None and not 2 <= max_context <= MAX_CONTEXT:
             parser.error(f"--context-length must be in [2, {MAX_CONTEXT}]")
+        max_batch = args.max_batch if args.max_batch is not None else cfg.max_batch
+        from sharar.engine.profile import MAX_BATCH
+        if not 1 <= max_batch <= MAX_BATCH:
+            parser.error(f"--max-batch must be in [1, {MAX_BATCH}]")
+        spec_depths = args.spec_depths if args.spec_depths is not None else cfg.spec_depths
         target = args.target or cfg.target
         accept_default_sampled = bool(args.accept_default_sampled if args.accept_default_sampled is not None else cfg.accept_default_sampled)
         # One configuration for the process: the environment with the command line applied (#44).
         engine_config.install(cfg.replace(spec=str(args.spec), traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
                                           target=target, max_context=max_context, accept_default=f"{accept_default[0]}:{accept_default[1]}",
-                                          accept_default_sampled=accept_default_sampled))
+                                          accept_default_sampled=accept_default_sampled, max_batch=max_batch,
+                                          spec_depths=spec_depths if args.spec else None))
         from sharar.api.server import serve
         serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state,
               draft_precision=args.draft_precision, traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
               accept_default=accept_default, target=target,
-              max_context=max_context,
+              max_context=max_context, max_batch=max_batch,
               accept_default_sampled=accept_default_sampled)
         return 0
     if args.command == "train":
