@@ -2,14 +2,14 @@
 """3-bit routed experts (#73) against FlashInfer's cutlass_fused_moe on real Flash-Next expert weights: the go/no-go
 microbenchmark (go only if the 3-bit path is faster at M = 5, the MTP k = 4 verify).
 
-Loads `--layers` MoE layers of the checkpoint with SHARAR_FLASHNEXT_EXPERTS_SIM3=32, i.e. the screened 3-bit values
-held as NVFP4 (what CUTLASS serves under that flag, same bytes and speed as the plain checkpoint), and converts
-each layer to the 3-bit format (kernels/w3_moe.py) without rounding again: both arms compute on the same weights.
+Loads `--layers` MoE layers of the checkpoint (NVFP4, the CUTLASS arm) and fits each layer's experts into the 3-bit
+format from them (kernels/w3_moe.calibrate, as bench/flashnext_w3_experts.py writes the checkpoint).
 
 Routing is synthetic, matched to the distinct experts per layer that recorded traffic touched in the small-M study
 (#37: 10.0, 16.4, 25.1, 28.3, 40.1 at M = 1, 2, 4, 5, 8; M = 16 extrapolated at 3.9 new experts a row): row 0 takes
 ten random experts, every further row a share of new ones and the rest from experts earlier rows already chose.
-`--routing uniform` draws every row's ten experts independently instead (the most distinct experts, no overlap).
+`--routing uniform` draws every row's ten experts independently instead (the most distinct experts, no overlap);
+calls of more than 16 rows (prefill chunks, wide verification) always do.
 Inputs are Gaussian rows scaled to the layer's calibrated fc1 input range.
 
 For each M, `--windows` routings per layer run through all loaded layers inside one CUDA graph per window (each
@@ -25,18 +25,14 @@ against the same reference with NVFP4 activations checks that both arms hold the
 
     SHARAR_TARGET=flashnext python3 -m bench.flashnext_moe_w3 --out moe_w3.json
 """
-import os
+import argparse
+import json
+import time
+from pathlib import Path
 
-os.environ.setdefault("SHARAR_FLASHNEXT_EXPERTS_SIM3", "32")
+import torch
 
-import argparse  # noqa: E402
-import json  # noqa: E402
-import time  # noqa: E402
-from pathlib import Path  # noqa: E402
-
-import torch  # noqa: E402
-
-from sharar.kernels import w3_moe  # noqa: E402
+from sharar.kernels import w3_moe
 
 NVFP4_BYTES = 2 * 640 * 1280 + 2560 * 320 + 2 * 640 * 160 + 2560 * 40  # w13 + w2 and their E4M3 block scales
 DISTINCT = {1: 10.0, 2: 16.4, 4: 25.1, 5: 28.3, 8: 40.1}  # recorded traffic, #37 (docs/flashnext.md on feat/moe-small-m)
@@ -55,7 +51,7 @@ def target_distinct(m: int) -> float:
 
 def routing(m: int, kind: str, gen: torch.Generator, experts: int = 512, topk: int = 10) -> torch.Tensor:
     """ids [m, topk] int32: distinct per row; `matched` hits target_distinct(m) on average."""
-    if kind == "uniform":
+    if kind == "uniform" or m > 16:  # prefill-sized calls touch most experts either way
         return torch.stack([torch.randperm(experts, generator=gen)[:topk] for _ in range(m)]).to(torch.int32)
     goal = target_distinct(m)
     d = int(goal) + int(torch.rand((), generator=gen).item() < goal - int(goal))
@@ -146,22 +142,28 @@ def main():
     snap = FLASHNEXT.snapshot_dir()
     w = SnapshotWeights(snap)
     t0 = time.perf_counter()
-    moes, experts = [], []
+    moes, experts, errors = [], [], []
     for i in range(args.first, args.first + args.layers):
         moe = MoeLayer(w, f"model.language_model.layers.{i}.mlp", dev, FLASHNEXT, TrunkLinear, "fp8")
         w.close()
         moes.append(moe)
-        experts.append(w3_moe.from_moe_layer(moe))
+        s13 = w3_moe.unswizzle_batched(moe.s13, 2 * moe.inter, moe.hidden // 16)
+        s2 = w3_moe.unswizzle_batched(moe.s2, moe.hidden, moe.inter // 16)
+        # g = input scale * global scale and a = 1 / input scale (moe.py): the weights' own global scales
+        ex, report = w3_moe.calibrate(moe.w13, s13, moe.g1 * moe.a13, moe.w2, s2, moe.g2 * moe.a2)
+        experts.append(ex)
+        errors.append(report)
+        del s13, s2
         torch.cuda.empty_cache()
     torch.cuda.synchronize()
     w3_bytes = experts[0].bytes / w3_moe.EXPERTS
-    print(f"loaded {args.layers} layers (sim3 group {moes[0].sim3_error and 32}) in {time.perf_counter() - t0:.0f}s, "
+    print(f"loaded and calibrated {args.layers} layers in {time.perf_counter() - t0:.0f}s, "
           f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB; bytes per expert NVFP4 {NVFP4_BYTES}, 3-bit {w3_bytes:.0f}", flush=True)
     w3_moe.w3._module()
 
     gen = torch.Generator().manual_seed(0)
     out = {"layers": args.layers, "first": args.first, "routing": args.routing, "windows": args.windows, "iters": args.iters,
-           "nvfp4_bytes_per_expert": NVFP4_BYTES, "w3_bytes_per_expert": w3_bytes, "sim3_error": [m.sim3_error for m in moes],
+           "nvfp4_bytes_per_expert": NVFP4_BYTES, "w3_bytes_per_expert": w3_bytes, "weight_error": errors,
            "gpu": torch.cuda.get_device_name(), "timing": [], "numerics": []}
     for m in [int(v) for v in args.ms.split(",")]:
         xs, routes = [], []
@@ -193,7 +195,7 @@ def main():
         row["speedup"] = round(row["cutlass_us"] / row["w3_us"], 3)
         out["timing"].append(row)
         print(json.dumps(row), flush=True)
-        if args.skip_numerics:
+        if args.skip_numerics or m > 64:
             continue
         for li in sorted({0, len(moes) - 1}):
             x, (ids, wt) = xs[0][li], routes[0][li]

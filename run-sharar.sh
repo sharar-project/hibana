@@ -224,10 +224,6 @@ if [[ -n "${SHARAR_DRAFT_VOCAB:-}" ]]; then
   [[ "$SHARAR_DRAFT_VOCAB" =~ ^[0-9]+$ ]] || fail "SHARAR_DRAFT_VOCAB must be a row count (0 = the full lm_head)"
   args+=(--env "SHARAR_DRAFT_VOCAB=$SHARAR_DRAFT_VOCAB")   # MTP drafts over the N most likely ids (proposers/draft_vocab.py)
 fi
-if [[ -n "${SHARAR_FLASHNEXT_EXPERTS_SIM3:-}" && "${SHARAR_FLASHNEXT_EXPERTS_SIM3}" != 0 ]]; then
-  [[ "$SHARAR_FLASHNEXT_EXPERTS_SIM3" == 16 || "$SHARAR_FLASHNEXT_EXPERTS_SIM3" == 32 ]] || fail "SHARAR_FLASHNEXT_EXPERTS_SIM3 must be 16 or 32"
-  args+=(--env "SHARAR_FLASHNEXT_EXPERTS_SIM3=$SHARAR_FLASHNEXT_EXPERTS_SIM3")   # routed experts rounded to a 3-bit format (a quality screen, weights/expert_sim3.py)
-fi
 if [[ -n "${SHARAR_DRAFT_HEAD:-}" ]]; then
   [[ "$SHARAR_DRAFT_HEAD" == fp8 || "$SHARAR_DRAFT_HEAD" == w3 ]] || fail "SHARAR_DRAFT_HEAD must be fp8 or w3"
   args+=(--env "SHARAR_DRAFT_HEAD=$SHARAR_DRAFT_HEAD")   # MTP draft steps read a 3-bit copy of the lm_head (w3) or the target's own (fp8)

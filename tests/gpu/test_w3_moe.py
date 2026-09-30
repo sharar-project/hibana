@@ -1,11 +1,10 @@
 """The three-bit routed-expert kernel (kernels/w3_moe.py) against its torch reference on the same 3-bit weights,
-eager and graph-captured, from one row to sixteen (experts shared by up to sixteen rows)."""
+eager and graph-captured: one row to prefill-sized calls, experts shared by up to 200 rows (several passes)."""
 
 import pytest
 import torch
 
 from sharar.kernels import w3_moe
-from sharar.weights.expert_sim3 import requantize
 
 E = 16  # the kernel reads only the experts the ids name
 
@@ -14,18 +13,20 @@ E = 16  # the kernel reads only the experts the ids name
 def experts():
     g = torch.Generator(device="cuda").manual_seed(5)
 
-    def sim3(rows, k):
+    def nvfp4(rows, k):
         packed = torch.randint(0, 256, (E, rows, k // 2), generator=g, device="cuda", dtype=torch.uint8)
         scales = (torch.rand(E, rows, k // 16, generator=g, device="cuda") * 0.02 + 0.001).to(torch.float8_e4m3fn)
-        return requantize(packed, scales, 32)[:2]
+        return packed, scales
 
-    w13, s13 = sim3(2 * w3_moe.INTER, w3_moe.HIDDEN)
-    w2, s2 = sim3(w3_moe.HIDDEN, w3_moe.INTER)
+    w13, s13 = nvfp4(2 * w3_moe.INTER, w3_moe.HIDDEN)
+    w2, s2 = nvfp4(w3_moe.HIDDEN, w3_moe.INTER)
     scale2 = torch.rand(E, generator=g, device="cuda") * 0.5 + 0.25
-    return w3_moe.from_sim3(w13, s13, scale2, w2, s2, scale2.flip(0))
+    ex, report = w3_moe.calibrate(w13, s13, scale2, w2, s2, scale2.flip(0))
+    assert 0.05 < report["w13"] < 0.3 and 0.05 < report["w2"] < 0.3
+    return ex
 
 
-@pytest.mark.parametrize("m", [1, 2, 5, 16])
+@pytest.mark.parametrize("m", [1, 2, 5, 16, 64, 200])
 def test_kernel_matches_reference(experts, m):
     torch.manual_seed(m)
     x = torch.randn(m, w3_moe.HIDDEN, device="cuda", dtype=torch.bfloat16)

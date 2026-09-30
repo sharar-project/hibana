@@ -61,10 +61,24 @@ class CalibratedWeights:
         self.identity = sha256(self.directory / "manifest.json")
 
     def load(self, name: str, linear):
-        from sharar.kernels.w3 import W3Weight, _codebook, lut_of
-        entry = self.weights[name]
         n = linear.out_features
         k = getattr(linear, "in_features", linear.weight.shape[1])
+        return self._load(name, n, k, linear.weight.device)
+
+    def expert_layers(self) -> set[int]:
+        """The layers whose routed experts the checkpoint carries (`layers.N.experts.w13` / `.w2`, kernels/w3_moe.py)."""
+        return {int(name.split(".")[1]) for name in self.weights if name.startswith("layers.") and ".experts." in name}
+
+    def load_experts(self, layer: int, experts: int, inter: int, hidden: int, device):
+        """Layer `layer`'s routed experts: fc1 (rows in w3_moe.fc1_order) and fc2 stacked over the experts."""
+        from sharar.kernels.w3_moe import W3Experts
+        fc1 = self._load(f"layers.{layer}.experts.w13", experts * 2 * inter, hidden, device)
+        fc2 = self._load(f"layers.{layer}.experts.w2", experts * hidden, inter, device)
+        return W3Experts.from_stacked(fc1, fc2, experts)
+
+    def _load(self, name: str, n: int, k: int, device):
+        from sharar.kernels.w3 import W3Weight, _codebook, lut_of
+        entry = self.weights[name]
         if (entry["out_features"], entry["in_features"]) != (n, k):
             raise ValueError(f"calibrated W3 shape mismatch for {name}")
         filename = entry["file"]
@@ -83,8 +97,8 @@ class CalibratedWeights:
         levels = _codebook(entry["codebook"])
         # On GB10, copying a file-backed mmap directly to CUDA is much slower
         # than staging it in ordinary CPU storage, as the draft loader does.
-        # Only one projection is staged at a time.
-        return W3Weight(*(tensors[key].clone().to(linear.weight.device) for key in expected), n, k, levels, lut_of(levels))
+        # Only one projection (or one layer's experts) is staged at a time.
+        return W3Weight(*(tensors[key].clone().to(device) for key in expected), n, k, levels, lut_of(levels))
 
 
 def fetch(target, root: str | Path, log=print) -> Path:

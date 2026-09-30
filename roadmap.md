@@ -39,9 +39,9 @@ benchmark (#26). Architecture and the capability matrix: [architecture](docs/arc
      against ~42 ms for MTP's 5, with the 3-bit trunk); a drafter needs +18% tokens per round over MTP at block 7,
      +53% at block 15, and the public PixelML drafter accepts less than MTP ([numbers](https://github.com/abdelfattah-lab/sharar/issues/7)).
      Reopen when wide verification is cheaper or a drafter clears that bar on our traffic.
-   - Screened 2026-09-29, passed: 3-bit routed experts (simulated in the NVFP4 kernel, `SHARAR_FLASHNEXT_EXPERTS_SIM3`;
-     gate verdict `fast`, screen -0.3 pp). **Next build: #73, the 3-bit expert kernel** (-17.6 GiB resident experts,
-     ~+12% single-stream if it matches the NVFP4 path), starting from the #37 small-M MoE kernel on `feat/moe-small-m`.
+   - #73 3-bit routed experts, built on `feat/experts-3bit-kernel` (2026-09-30): the only resident expert copy when the
+     W3 checkpoint carries them; single-stream x1.19 / x1.18 (greedy / t=0.7), -17.2 GiB, but the full-stage gate
+     rejected the weight-error calibration (pooled -0.8 pp, p 0.044); not promoted, GPTQ on routed activations untried.
    - Next screens: #33 self-play traces for the drafter work; the #55 oracle (re-capture routes from
      `park/router-traces`, then simulate how much expert loading an ideal scheduler saves at depth 4 and 8 and how
      much a confidence rule keeps; rejected rows first-use 16% of expert bytes at k=4, 44% at k=8). If the oracle shows

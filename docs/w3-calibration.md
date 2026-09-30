@@ -73,3 +73,24 @@ GSM8K/HumanEval evaluation against the intended serving profile. Collect fresh
 drafter traces after selecting the target profile. Keep validation and final
 test files out of training, and check any trained draft through the actual
 FP8/W3 serving path: the trainer's BF16 replay is a checkpoint selection proxy.
+
+## Routed experts (Flash-Next, #73)
+
+`bench/flashnext_w3_experts.py` writes a new Flash-Next checkpoint directory: the source checkpoint's trunk entries
+(copied and verified) plus every layer's routed experts as `layers.N.experts.w13` (fc1, rows in
+`w3_moe.fc1_order`) and `layers.N.experts.w2`, each one W3 matrix stacked over the 512 experts, with the same
+manifest format and per-file SHA256; `manifest.json` gains an `experts` block (method, codebook, scale grid,
+relative weight error per layer). There is no BF16 expert source: it fits the checkpoint's NVFP4 experts,
+dequantized, with the trunk's Lloyd codebook, group scales on a 0.5-1.0 clipping grid minimizing the weight error
+(`w3_calibration.fit_scales` with unit importance) and the nearest level. No activations are needed (GPTQ on
+routed activations is the next step if the gate asks for it). About 30 s a layer on the GB10:
+
+```bash
+SHARAR_TARGET=flashnext python3 -m bench.flashnext_w3_experts \
+  --source $SHARAR_RESULTS/w3-checkpoints/flashnext-current --output $SHARAR_RESULTS/w3-checkpoints/<date>-flashnext-experts3
+```
+
+Mean relative weight error against the NVFP4 experts: 0.164 (fc1) and 0.163 (fc2); nearest rounding without the
+scale search 0.187-0.195, the screened simulation's E2M1 level set 0.180-0.190. Serving the result replaces the
+NVFP4 experts (they are not loaded at all), so the checkpoint is also 17.2 GiB less resident memory.
+

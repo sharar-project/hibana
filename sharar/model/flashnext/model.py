@@ -3,8 +3,8 @@
 then routed experts), the PLE before layer 1, the global mixer and a BF16-or-FP8 lm_head.
 
 `forward()` follows the 27B model's contract (`ForwardContext` prefill / decode; `norm` is the
-mixer output the head reads). The routed experts keep the checkpoint's NVFP4; every other matrix
-is FP8 at load (`SHARAR_FLASHNEXT_TRUNK=bf16` keeps the checkpoint's BF16 for parity runs).
+mixer output the head reads). The routed experts keep the checkpoint's NVFP4, or come 3-bit from the W3
+checkpoint when it carries them (moe.py); every other matrix is FP8 at load (`SHARAR_FLASHNEXT_TRUNK=bf16` keeps the checkpoint's BF16 for parity runs).
 """
 
 from __future__ import annotations
@@ -33,7 +33,8 @@ PREFIX = "model.language_model"
 
 
 class DecoderLayer:
-    def __init__(self, w, snap: Path, index: int, kind: str, device: torch.device, rope, ragged, target: Target, precision: str):
+    def __init__(self, w, snap: Path, index: int, kind: str, device: torch.device, rope, ragged, target: Target, precision: str,
+                 experts3=None):
         p = f"{PREFIX}.layers.{index}"
         self.index, self.kind = index, kind
         hc, hidden, eps = target.hc_count, target.hidden_size, target.rms_norm_eps
@@ -45,7 +46,7 @@ class DecoderLayer:
             self.mixer = FlashNextAttention(w, f"{p}.self_attn", index, device, rope, ragged, target, precision)
         else:
             self.mixer = FlashNextGdn(w, f"{p}.linear_attn", index, device, target, precision)
-        self.moe = MoeLayer(w, f"{p}.mlp", device, target, TrunkLinear, precision)
+        self.moe = MoeLayer(w, f"{p}.mlp", device, target, TrunkLinear, precision, w3=experts3)
 
     @property
     def bytes(self) -> int:
@@ -62,13 +63,34 @@ class DecoderLayer:
         return self.mlp_hc.combine(h, res)
 
 
+def _w3_expert_saving(target: Target) -> int:
+    """Resident bytes the 3-bit routed experts save against NVFP4 (codes + group scales + row scales against
+    E2M1 + block scales): 17.2 GiB over the 48 layers."""
+    i, h = target.moe_intermediate_size, target.hidden_size
+    weights = 3 * i * h
+    nvfp4 = weights // 2 + weights // 16
+    w3 = weights * 3 // 8 + weights // 32 + (2 * i + h) * 4
+    return target.num_layers * target.num_experts * (nvfp4 - w3)
+
+
 class FlashNext:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", log=print, target: Target = FLASHNEXT, precision: str | None = None, **_ignored):
         from sharar.cache.ledger import check_load_headroom
         self.target = target
         self._extras = None
         self.precision = precision or current().flashnext_trunk  # bf16 | fp8
-        check_load_headroom(target.weight_load_peak_bytes)
+        # The calibrated 3-bit copies (SHARAR_W3_DECODE with SHARAR_W3_CHECKPOINT). When the checkpoint carries the
+        # routed experts (#73), those are the only expert copy: the NVFP4 experts are never read.
+        calibrated = None
+        if current().w3_decode:
+            if not current().w3_checkpoint:
+                raise ValueError("Flash-Next's 3-bit copies are calibrated only: SHARAR_W3_DECODE=1 needs SHARAR_W3_CHECKPOINT")
+            from sharar.weights.w3_checkpoint import CalibratedWeights
+            calibrated = CalibratedWeights(current().w3_checkpoint, revision=target.model_revision)
+        expert_layers = calibrated.expert_layers() if calibrated else set()
+        if expert_layers and expert_layers != set(range(target.num_layers)):
+            raise ValueError(f"the W3 checkpoint carries routed experts for {len(expert_layers)} of {target.num_layers} layers")
+        check_load_headroom(target.weight_load_peak_bytes - (_w3_expert_saving(target) if expert_layers else 0))
         self.device = torch.device(device)
         cfg = target.load_model_config(snap)
         types = target.layer_types_of(cfg)
@@ -80,29 +102,24 @@ class FlashNext:
         self.ragged = ops.RaggedAttention(self.device, target.num_attention_heads, target.num_kv_heads, target.head_dim)
         self.layers: list[DecoderLayer] = []
         for i, kind in enumerate(types):
-            self.layers.append(DecoderLayer(w, snap, i, kind, self.device, self.rope, self.ragged, target, self.precision))
+            experts3 = (calibrated.load_experts(i, target.num_experts, target.moe_intermediate_size, target.hidden_size, self.device)
+                        if expert_layers else None)
+            self.layers.append(DecoderLayer(w, snap, i, kind, self.device, self.rope, self.ragged, target, self.precision, experts3))
             w.close()  # the PLE keeps its own maps; expert shards are reopened per layer
             if log and (i + 1) % 8 == 0:
                 log(f"  loaded {i + 1}/{len(types)} layers ({time.perf_counter() - started:.0f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB)")
-        errors = [layer.moe.sim3_error for layer in self.layers if getattr(layer, "moe", None) is not None and layer.moe.sim3_error]
-        if log and errors:
-            log(f"  experts: simulated 3-bit, group {current().flashnext_experts_sim3}; relative weight error against NVFP4 "
-                f"w13 {sum(e[0] for e in errors) / len(errors):.4f}, w2 {sum(e[1] for e in errors) / len(errors):.4f} (mean over layers)")
+        if log and expert_layers:
+            log(f"  experts: 3-bit from {current().w3_checkpoint} ({sum(layer.moe.expert_bytes for layer in self.layers) / 2**30:.1f} GiB)")
         self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", target.hc_count, target.hidden_size, target.rms_norm_eps, self.device,
                                           combine=False, precision=current().flashnext_mixers)
         self.lm_head = TrunkLinear.load(w, ["lm_head.weight"], self.device, self.precision)
         w.close()
         torch.cuda.synchronize()
         # Bytes one decode token streams: the trunk, the head, one embedding row and its routed experts.
-        moe = self.layers[0].moe
-        expert_bytes = (moe.w13.numel() + moe.w2.numel() + (moe.s13.numel() + moe.s2.numel()) * 4) // target.num_experts
+        expert_bytes = self.layers[0].moe.expert_bytes // target.num_experts
         trunk = sum(layer.bytes - layer.moe.bytes for layer in self.layers) + sum(layer.moe.router.numel() * 2 + layer.moe.shared_gate_up.bytes + layer.moe.shared_down.bytes for layer in self.layers)
         self.stream_bytes = trunk + self.mixer.bytes + self.lm_head.bytes + len(self.layers) * target.experts_per_token * expert_bytes
-        self.w3_identity = None
-        if current().w3_decode:
-            if not current().w3_checkpoint:
-                raise ValueError("Flash-Next's 3-bit copies are calibrated only: SHARAR_W3_DECODE=1 needs SHARAR_W3_CHECKPOINT")
-            self.w3_identity = self.attach_calibrated(current().w3_checkpoint, log)
+        self.w3_identity = self.attach_calibrated(calibrated, log) if calibrated else None
         if log:
             log(f"  weights loaded in {time.perf_counter() - started:.0f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated "
                 f"({self.precision} trunk, {self.stream_bytes / 1e9:.2f} GB per decode token)")
@@ -137,21 +154,21 @@ class FlashNext:
         yield "mixer.up", self.mixer.up
         yield "lm_head", self.lm_head
 
-    def attach_calibrated(self, directory: str, log=print) -> str:
+    def attach_calibrated(self, calibrated, log=print) -> str:
         """Calibrated 3-bit decode copies (bench/flashnext_w3_calibrate.py) over the FP8 trunk, by `linears()` name;
-        calls of at most 64 rows then read them (`TrunkLinear.__call__`), prefill keeps the FP8 weights."""
-        from sharar.weights.w3_checkpoint import CalibratedWeights
+        calls of at most 64 rows then read them (`TrunkLinear.__call__`), prefill keeps the FP8 weights. The routed
+        experts' entries (`layers.N.experts.*`) were loaded with the layers."""
         if self.precision != "fp8":
             raise ValueError("calibrated 3-bit trunk copies go over the FP8 trunk (SHARAR_FLASHNEXT_TRUNK=fp8)")
-        calibrated = CalibratedWeights(directory, revision=self.target.model_revision)
         linears = dict(self.linears())
-        missing = sorted(set(calibrated.weights) - set(linears))
+        names = [name for name in calibrated.weights if ".experts." not in name]
+        missing = sorted(set(names) - set(linears))
         if missing:
             raise ValueError(f"calibrated names not in this model: {missing[:4]}")
-        for name in calibrated.weights:
+        for name in names:
             linears[name].w3 = calibrated.load(name, linears[name])
         if log:
-            log(f"  w3: {len(calibrated.weights)} calibrated trunk matrices from {directory}")
+            log(f"  w3: {len(names)} calibrated trunk matrices from {calibrated.directory}")
         return calibrated.identity
 
     def forward_extras(self):
