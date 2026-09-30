@@ -11,13 +11,16 @@
 // FP32. Weights stream once per launch with evict-first loads, two chunks
 // in flight per warp, so the kernel is bound by the weight stream at 16
 // through 64 activation rows. Small N splits K across blocks; the last block
-// of a column reduces the FP32 partials.
+// of a column reduces the FP32 partials. Namespace `moe` runs the same streaming loop over Flash-Next's routed
+// experts held in this format (grouped by expert, rows gathered; sharar/kernels/w3_moe.py).
 
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 #include <torch/extension.h>
+#include <c10/cuda/CUDAException.h>
 #include <c10/cuda/CUDAStream.h>
 
+#include <algorithm>
 #include <cstdint>
 
 namespace {
@@ -275,10 +278,10 @@ __global__ void __launch_bounds__(256) quant_rows_kernel(const __nv_bfloat16* __
   }
 }
 
-// Per-(row, 32-group) E4M3 quantization of a BF16 [M, K] matrix: one thread per group, one block per row.
-__global__ void __launch_bounds__(256) quant_groups_kernel(const __nv_bfloat16* __restrict__ x, uint8_t* __restrict__ out,
-                                                           float* __restrict__ scale, const int K) {
-  const int row = blockIdx.x, G = K / 32;
+// Per-(row, 32-group) E4M3 quantization of one row of a BF16 [M, K] matrix: one thread per group (256 threads).
+__device__ __forceinline__ void quant_groups_row(const __nv_bfloat16* __restrict__ x, uint8_t* __restrict__ out,
+                                                 float* __restrict__ scale, const int K, const int row) {
+  const int G = K / 32;
   for (int grp = threadIdx.x; grp < G; grp += 256) {
     const __nv_bfloat16* xg = x + static_cast<size_t>(row) * K + grp * 32;
     uint4 v[4];
@@ -314,6 +317,12 @@ __global__ void __launch_bounds__(256) quant_groups_kernel(const __nv_bfloat16* 
   }
 }
 
+// Per-(row, 32-group) E4M3 quantization of a BF16 [M, K] matrix: one block per row.
+__global__ void __launch_bounds__(256) quant_groups_kernel(const __nv_bfloat16* __restrict__ x, uint8_t* __restrict__ out,
+                                                           float* __restrict__ scale, const int K) {
+  quant_groups_row(x, out, scale, K, blockIdx.x);
+}
+
 template <int MT, bool XG, bool ROW_TILES = false>
 void launch(torch::Tensor y, torch::Tensor ws, torch::Tensor counters, torch::Tensor x, torch::Tensor x_scale, int x_scale_stride,
             torch::Tensor planes, torch::Tensor scales, torch::Tensor row_scale, uint32_t lut_lo, uint32_t lut_hi,
@@ -325,6 +334,250 @@ void launch(torch::Tensor y, torch::Tensor ws, torch::Tensor counters, torch::Te
       static_cast<const uint4*>(planes.data_ptr()), static_cast<const uint4*>(scales.data_ptr()),
       static_cast<const float*>(row_scale.data_ptr()), lut_lo, lut_hi, M, N, K, (K / kChunk) / splits);
 }
+
+// ------------------------------------------------------------------ three-bit routed experts (Flash-Next, #73)
+//
+// The experts in this format (sharar/kernels/w3_moe.py): per expert one W3 matrix for fc1 (1280 x 2560, rows
+// reordered so each 32-row block is sixteen up rows then the sixteen matching gate rows) and one for fc2
+// (2560 x 640). Four launches per call, all shapes static (graph-capturable, no host sync):
+//   prep     block 0: the distinct experts of the M x top-k selection (ascending id) and, per expert, its rows
+//            and (row, k) pairs; blocks 1..M: x -> E4M3 per (row, 32-group), as `quant_groups`.
+//   fc1      grid (1280 / 128, M * top-k): one block per 128 rows of one selected expert (blocks past the
+//            distinct count exit); the W3 GEMM's streaming loop with the expert's rows (at most 16) gathered
+//            as the A operand. Epilogue: h = bf16(silu(bf16 gate) * bf16 up) for the block's 64 intermediate
+//            columns, then E4M3 per (pair, 32-group) into hq / hs.
+//   fc2      grid (2560 / 128, M * top-k): the same loop over each pair's quantized h; FP32 y per pair.
+//   combine  out[r] = bf16(sum_k w[r, k] * y[r, k]) in selection order.
+namespace moe {
+
+constexpr int kE = 512, kTopk = 10, kH = 2560, kI = 640, kMaxM = 16, kMaxP = kMaxM * kTopk;
+// plan words: D, then per distinct slot the expert id, its row count, its rows and its pairs (row * top-k + k)
+constexpr int kPlanExp = 1, kPlanN = kPlanExp + kMaxP, kPlanRows = kPlanN + kMaxP, kPlanPairs = kPlanRows + kMaxP * kMaxM;
+constexpr int kPlanWords = kPlanPairs + kMaxP * kMaxM;
+
+__device__ __forceinline__ float bf16r(float x) { return __bfloat162float(__float2bfloat16_rn(x)); }
+
+struct Params {
+  const __nv_bfloat16* x;
+  const int* ids;
+  const float* weights;
+  const uint4 *planes13, *scales13, *planes2, *scales2;
+  const float *row13, *row2;
+  int* plan;
+  uint8_t* xq;  // [kMaxM, kH] e4m3
+  float* xs;    // [kMaxM, kH / 32]
+  uint8_t* hq;  // [kMaxP, kI] e4m3, per pair
+  float* hs;    // [kMaxP, kI / 32]
+  float* y;     // [kMaxP, kH]
+  __nv_bfloat16* out;
+  uint32_t lut_lo, lut_hi;
+  int M;
+};
+
+__global__ void __launch_bounds__(256) prep_kernel(const Params p) {
+  if (blockIdx.x > 0) {
+    quant_groups_row(p.x, p.xq, p.xs, kH, blockIdx.x - 1);
+    return;
+  }
+  __shared__ int slot[kE];
+  __shared__ int pair[kMaxP * kMaxM];  // [d][row] pair or -1
+  __shared__ int D;
+  const int tid = threadIdx.x, lane = tid & 31, M = p.M;
+  for (int i = tid; i < kE; i += 256) slot[i] = 0;
+  for (int i = tid; i < kMaxP * kMaxM; i += 256) pair[i] = -1;
+  __syncthreads();
+  for (int i = tid; i < M * kTopk; i += 256) slot[p.ids[i]] = 1;
+  __syncthreads();
+  if (tid < 32) {  // distinct experts in ascending id order
+    int base = 0;
+    for (int c = 0; c < kE / 32; ++c) {
+      const int e = c * 32 + lane, used = slot[e];
+      const unsigned ballot = __ballot_sync(0xffffffffu, used);
+      const int d = base + __popc(ballot & ((1u << lane) - 1u));
+      slot[e] = used ? d : -1;
+      if (used) p.plan[kPlanExp + d] = e;
+      base += __popc(ballot);
+    }
+    if (lane == 0) D = p.plan[0] = base;
+  }
+  __syncthreads();
+  for (int i = tid; i < M * kTopk; i += 256) pair[slot[p.ids[i]] * kMaxM + i / kTopk] = i;
+  __syncthreads();
+  for (int d = tid; d < D; d += 256) {
+    int n = 0;
+    for (int r = 0; r < M; ++r) {
+      const int q = pair[d * kMaxM + r];
+      if (q >= 0) {
+        p.plan[kPlanRows + d * kMaxM + n] = r;
+        p.plan[kPlanPairs + d * kMaxM + n] = q;
+        ++n;
+      }
+    }
+    p.plan[kPlanN + d] = n;
+  }
+}
+
+// One 32-k group of a chunk against the (at most sixteen) gathered rows: rows g and g + 8 of the A tile are
+// xr0 / xr1 (null past the expert's row count) with their per-32 activation scales xs0 / xs1.
+template <int C>
+__device__ __forceinline__ void group_rows(float (&acc)[4][4], const uint32_t* __restrict__ wd, const uint8_t* __restrict__ sb,
+                                           const uint8_t* __restrict__ xr0, const uint8_t* __restrict__ xr1,
+                                           const float* __restrict__ xs0, const float* __restrict__ xs1, int k0, int t,
+                                           uint32_t lut_lo, uint32_t lut_hi) {
+  const int off = k0 + C * 32 + t * 4;
+  uint32_t a[4];
+  a[0] = xr0 ? __ldg(reinterpret_cast<const uint32_t*>(xr0 + off)) : 0u;
+  a[1] = xr1 ? __ldg(reinterpret_cast<const uint32_t*>(xr1 + off)) : 0u;
+  a[2] = xr0 ? __ldg(reinterpret_cast<const uint32_t*>(xr0 + off + 16)) : 0u;
+  a[3] = xr1 ? __ldg(reinterpret_cast<const uint32_t*>(xr1 + off + 16)) : 0u;
+  const float xa = xr0 ? __ldg(xs0 + (k0 >> 5) + C) : 0.f, xb = xr1 ? __ldg(xs1 + (k0 >> 5) + C) : 0.f;
+#pragma unroll
+  for (int nt = 0; nt < 4; ++nt) {
+    const uint32_t p0 = wd[3 * nt], p1 = wd[3 * nt + 1], p2 = wd[3 * nt + 2];
+    const uint32_t b0 = expand<2 * C>(p0, p1, p2, lut_lo, lut_hi);
+    const uint32_t b1 = expand<2 * C + 1>(p0, p1, p2, lut_lo, lut_hi);
+    const float s0 = e4m3_to_float(sb[(nt * 4 + C) * 2]), s1 = e4m3_to_float(sb[(nt * 4 + C) * 2 + 1]);
+    float d[4];
+    mma_e4m3(d, a, b0, b1);
+    acc[nt][0] = fmaf(d[0], s0 * xa, acc[nt][0]);
+    acc[nt][1] = fmaf(d[1], s1 * xa, acc[nt][1]);
+    acc[nt][2] = fmaf(d[2], s0 * xb, acc[nt][2]);
+    acc[nt][3] = fmaf(d[3], s1 * xb, acc[nt][3]);
+  }
+}
+
+// fc1 (FC1) or fc2 for 128 weight rows of one selected expert: blockIdx.y the distinct slot, blockIdx.x the row block.
+template <bool FC1>
+__global__ void __launch_bounds__(kWarps * 32) gemm_kernel(const Params p) {
+  constexpr int N = FC1 ? 2 * kI : kH, K = FC1 ? kH : kI, KC = K / kChunk;
+  const int d = blockIdx.y;
+  if (d >= __ldg(p.plan)) return;
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
+  const int e = __ldg(p.plan + kPlanExp + d), rows = __ldg(p.plan + kPlanN + d);
+  const int* list = p.plan + (FC1 ? kPlanRows : kPlanPairs) + d * kMaxM;
+  const int* pairs = p.plan + kPlanPairs + d * kMaxM;
+  const uint8_t* xbase = FC1 ? p.xq : p.hq;
+  const float* sbase = FC1 ? p.xs : p.hs;
+  const uint8_t *xr0 = nullptr, *xr1 = nullptr;
+  const float *xs0 = nullptr, *xs1 = nullptr;
+  if (g < rows) {
+    const int r = __ldg(list + g);
+    xr0 = xbase + static_cast<size_t>(r) * K;
+    xs0 = sbase + static_cast<size_t>(r) * (K / 32);
+  }
+  if (g + 8 < rows) {
+    const int r = __ldg(list + g + 8);
+    xr1 = xbase + static_cast<size_t>(r) * K;
+    xs1 = sbase + static_cast<size_t>(r) * (K / 32);
+  }
+  const int nb = blockIdx.x * kWarps + warp;  // 32-row block within the expert
+  const size_t block = static_cast<size_t>(e) * (N / 32) + nb;
+  const uint4* wp = (FC1 ? p.planes13 : p.planes2) + block * KC * kPlaneWords + lane;
+  const uint4* sp = (FC1 ? p.scales13 : p.scales2) + block * KC * kScaleWords + 2 * t;
+
+  float acc[4][4];
+#pragma unroll
+  for (int nt = 0; nt < 4; ++nt)
+#pragma unroll
+    for (int i = 0; i < 4; ++i) acc[nt][i] = 0.f;
+  uint4 w[2][3];
+  uint4 s[2][2];
+  auto load = [&](int c, uint4 (&wd)[3], uint4 (&sd)[2]) {
+    const uint4* q = wp + static_cast<size_t>(c) * kPlaneWords;
+    wd[0] = __ldcs(q);
+    wd[1] = __ldcs(q + 32);
+    wd[2] = __ldcs(q + 64);
+    sd[0] = __ldcs(sp + static_cast<size_t>(c) * kScaleWords);
+    sd[1] = __ldcs(sp + static_cast<size_t>(c) * kScaleWords + 1);
+  };
+  load(0, w[0], s[0]);
+  load(1, w[1], s[1]);
+  for (int c = 0; c < KC; c += 2) {
+#pragma unroll
+    for (int slot = 0; slot < 2; ++slot) {
+      const int cc = c + slot;
+      if (cc < KC) {
+        uint4 wl[3] = {w[slot][0], w[slot][1], w[slot][2]};
+        const uint4 sl[2] = {s[slot][0], s[slot][1]};
+        if (cc + 2 < KC) load(cc + 2, w[slot], s[slot]);
+        const uint32_t* wd = reinterpret_cast<const uint32_t*>(wl);
+        const uint8_t* sb = reinterpret_cast<const uint8_t*>(sl);
+        const int k0 = cc * kChunk;
+        group_rows<0>(acc, wd, sb, xr0, xr1, xs0, xs1, k0, t, p.lut_lo, p.lut_hi);
+        group_rows<1>(acc, wd, sb, xr0, xr1, xs0, xs1, k0, t, p.lut_lo, p.lut_hi);
+        group_rows<2>(acc, wd, sb, xr0, xr1, xs0, xs1, k0, t, p.lut_lo, p.lut_hi);
+        group_rows<3>(acc, wd, sb, xr0, xr1, xs0, xs1, k0, t, p.lut_lo, p.lut_hi);
+      }
+    }
+  }
+
+  const float* rs = (FC1 ? p.row13 : p.row2) + static_cast<size_t>(e) * N + nb * 32;
+  if (!FC1) {  // y[pair, n] in FP32
+#pragma unroll
+    for (int half = 0; half < 2; ++half) {
+      const int m = g + 8 * half;
+      if (m < rows) {
+        float* yr = p.y + static_cast<size_t>(__ldg(pairs + m)) * kH + nb * 32;
+#pragma unroll
+        for (int nt = 0; nt < 4; ++nt) {
+          const int n = nt * 8 + 2 * t;
+          *reinterpret_cast<float2*>(yr + n) = make_float2(acc[nt][2 * half] * rs[n], acc[nt][2 * half + 1] * rs[n + 1]);
+        }
+      }
+    }
+    return;
+  }
+  // fc1: columns 0..15 of a warp's block are up rows, 16..31 the matching gate rows; the block holds 64
+  // intermediate columns (two 32-groups) of every row, quantized per (pair, group) once all warps wrote them.
+  __shared__ float hsm[kMaxM][65];
+#pragma unroll
+  for (int half = 0; half < 2; ++half) {
+    const int m = g + 8 * half;
+    if (m < rows) {
+#pragma unroll
+      for (int nt = 0; nt < 2; ++nt)
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+          const int j = nt * 8 + 2 * t + i;
+          const float u = bf16r(acc[nt][2 * half + i] * rs[j]), gv = bf16r(acc[nt + 2][2 * half + i] * rs[16 + j]);
+          hsm[m][warp * 16 + j] = bf16r(gv / (1.f + __expf(-gv)) * u);
+        }
+    }
+  }
+  __syncthreads();
+  const int tid = threadIdx.x;
+  if (tid < 2 * rows) {
+    const int m = tid >> 1, grp = tid & 1, q = __ldg(pairs + m);
+    float amax = 0.f;
+#pragma unroll
+    for (int i = 0; i < 32; ++i) amax = fmaxf(amax, fabsf(hsm[m][grp * 32 + i]));
+    const float sc = fmaxf(amax * (1.f / 448.f), 1e-12f), inv = 1.f / sc;
+    const int col = blockIdx.x * 64 + grp * 32;
+    p.hs[q * (kI / 32) + col / 32] = sc;
+    uint32_t packed[8];
+#pragma unroll
+    for (int i = 0; i < 16; ++i) {
+      const __nv_fp8x2_storage_t two = __nv_cvt_float2_to_fp8x2(
+          make_float2(hsm[m][grp * 32 + 2 * i] * inv, hsm[m][grp * 32 + 2 * i + 1] * inv), __NV_SATFINITE, __NV_E4M3);
+      reinterpret_cast<uint16_t*>(packed)[i] = two;
+    }
+    uint4* dst = reinterpret_cast<uint4*>(p.hq + static_cast<size_t>(q) * kI + col);
+    dst[0] = make_uint4(packed[0], packed[1], packed[2], packed[3]);
+    dst[1] = make_uint4(packed[4], packed[5], packed[6], packed[7]);
+  }
+}
+
+__global__ void __launch_bounds__(256) combine_kernel(const Params p) {
+  const int idx = blockIdx.x * 256 + threadIdx.x;
+  if (idx >= p.M * kH) return;
+  const int r = idx / kH, col = idx - r * kH;
+  float v = 0.f;
+#pragma unroll
+  for (int k = 0; k < kTopk; ++k) v += __ldg(p.weights + r * kTopk + k) * p.y[static_cast<size_t>(r * kTopk + k) * kH + col];
+  p.out[idx] = __float2bfloat16_rn(v);
+}
+
+}  // namespace moe
 
 }  // namespace
 
@@ -380,7 +633,45 @@ std::vector<torch::Tensor> quant_groups(torch::Tensor x) {
   return {out, scale};
 }
 
+// Routed experts in the three-bit format for x [M <= 16, 2560] bf16, ids [M, 10] int32, weights [M, 10] fp32 ->
+// bf16 [M, 2560] (the routed sum; no shared expert). Workspace from sharar/kernels/w3_moe.py.
+torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights,
+                     torch::Tensor planes13, torch::Tensor scales13, torch::Tensor row13,
+                     torch::Tensor planes2, torch::Tensor scales2, torch::Tensor row2, int64_t lut,
+                     torch::Tensor plan, torch::Tensor xq, torch::Tensor xs, torch::Tensor hq, torch::Tensor hs, torch::Tensor y) {
+  using namespace moe;
+  const int M = x.size(0);
+  TORCH_CHECK(M >= 1 && M <= kMaxM, "w3_moe: 1..16 rows");
+  TORCH_CHECK(x.is_cuda() && x.dtype() == at::kBFloat16 && x.is_contiguous() && x.size(1) == kH, "x must be contiguous bf16 [M, 2560]");
+  TORCH_CHECK(ids.dtype() == at::kInt && ids.is_contiguous() && ids.numel() == M * kTopk, "ids must be int32 [M, 10]");
+  TORCH_CHECK(weights.dtype() == at::kFloat && weights.is_contiguous() && weights.numel() == M * kTopk, "weights must be fp32 [M, 10]");
+  TORCH_CHECK(planes13.dtype() == at::kUInt32 && planes2.dtype() == at::kUInt32 && scales13.dtype() == at::kByte && scales2.dtype() == at::kByte);
+  const int64_t E = planes13.size(0);  // the ids must be below it (not checked on the device)
+  TORCH_CHECK(E >= 1 && E <= kE, "at most 512 experts");
+  TORCH_CHECK(planes13.numel() == E * 2 * kI * kH * 3 / 32 && planes2.numel() == E * kH * kI * 3 / 32, "expert planes");
+  TORCH_CHECK(scales13.numel() == E * 2 * kI * kH / 32 && scales2.numel() == E * kH * kI / 32, "expert scales");
+  TORCH_CHECK(row13.numel() == E * 2 * kI && row2.numel() == E * kH, "row scales");
+  TORCH_CHECK(plan.dtype() == at::kInt && plan.numel() >= kPlanWords && xq.numel() >= kMaxM * kH && xs.numel() >= kMaxM * kH / 32 &&
+              hq.numel() >= kMaxP * kI && hs.numel() >= kMaxP * kI / 32 && y.numel() >= kMaxP * kH, "workspace");
+  auto out = torch::empty({M, kH}, x.options());
+  Params p{(const __nv_bfloat16*)x.data_ptr(), (const int*)ids.data_ptr(), (const float*)weights.data_ptr(),
+           (const uint4*)planes13.data_ptr(), (const uint4*)scales13.data_ptr(), (const uint4*)planes2.data_ptr(), (const uint4*)scales2.data_ptr(),
+           (const float*)row13.data_ptr(), (const float*)row2.data_ptr(), (int*)plan.data_ptr(),
+           (uint8_t*)xq.data_ptr(), (float*)xs.data_ptr(), (uint8_t*)hq.data_ptr(), (float*)hs.data_ptr(), (float*)y.data_ptr(),
+           (__nv_bfloat16*)out.data_ptr(),
+           static_cast<uint32_t>(lut & 0xFFFFFFFFu), static_cast<uint32_t>(static_cast<uint64_t>(lut) >> 32), M};
+  const int slots = std::min(M * kTopk, kE);
+  cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
+  prep_kernel<<<M + 1, 256, 0, stream>>>(p);
+  gemm_kernel<true><<<dim3(2 * kI / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
+  gemm_kernel<false><<<dim3(kH / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
+  combine_kernel<<<(M * kH + 255) / 256, 256, 0, stream>>>(p);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return out;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("w3_moe", &w3_moe, "routed experts in the 3-bit format for <= 16 rows (SM120/121)");
   m.def("quant_groups", &quant_groups, "per-(row, 32-group) e4m3 quantization of a bf16 matrix");
   m.def("w3_gemm", &w3_gemm, "3-bit weight, e4m3 activation tensor-core GEMM for M <= 64 (SM120/121)");
   m.def("quant_rows", &quant_rows, "per-row e4m3 quantization of a bf16 matrix");
