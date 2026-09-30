@@ -43,24 +43,6 @@ def enabled() -> bool:
     """SHARAR_W3_DECODE: serve calls of at most MAX_ROWS rows from the 3-bit copies."""
     from sharar.engine.config import current
     return current().w3_decode
-
-
-def head_enabled() -> bool:
-    """SHARAR_W3_HEAD: also pack the lm_head."""
-    from sharar.engine.config import current
-    return current().w3_head
-
-
-def draft_enabled() -> bool:
-    """SHARAR_W3_DRAFT: also pack the parallel draft's FP8 matrices."""
-    from sharar.engine.config import current
-    return current().w3_draft
-
-
-def default_codebook() -> str:
-    """SHARAR_W3_CODEBOOK (lloyd)."""
-    from sharar.engine.config import current
-    return current().w3_codebook
 MAX_ROWS = 64
 GROUP = 32
 CHUNK = 128
@@ -71,6 +53,7 @@ CODEBOOKS = {
     "uniform": (-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5),
     "lloyd": (-3.5, -2.25, -1.25, -0.40625, 0.40625, 1.25, 2.25, 3.5),
 }
+DEFAULT_CODEBOOK = "lloyd"  # every served copy; "uniform" remains for the packing tests and studies
 _SRC = Path(__file__).resolve().parent / "csrc" / "w3_gemm.cu"
 
 
@@ -95,7 +78,7 @@ def lut_of(codebook: tuple[float, ...]) -> int:
 
 
 def _codebook(codebook) -> tuple[float, ...]:
-    codebook = default_codebook() if codebook is None else codebook
+    codebook = DEFAULT_CODEBOOK if codebook is None else codebook
     levels = CODEBOOKS[codebook] if isinstance(codebook, str) else tuple(float(v) for v in codebook)
     if len(levels) != 8 or list(levels) != sorted(levels):
         raise ValueError("a codebook is eight ascending levels")
@@ -296,10 +279,9 @@ def w3_linear(x: torch.Tensor, w3: W3Weight, x_scale: torch.Tensor | None = None
 
 # ------------------------------------------------------------------ attaching to the served model
 
-def attach(linears, codebook=None) -> tuple[int, int]:
+def attach(linears, codebook=DEFAULT_CODEBOOK) -> tuple[int, int]:
     """Nearest-level 3-bit copies for (name, linear) pairs that have none (`weights/linear.py` interface);
     returns (matrices packed, bytes)."""
-    codebook = default_codebook() if codebook is None else codebook
     count = total = 0
     for _, lin in linears:
         if getattr(lin, "w3", None) is None:
@@ -308,10 +290,10 @@ def attach(linears, codebook=None) -> tuple[int, int]:
     return count, total
 
 
-def attach_model(model, log=print, head: bool | None = None, codebook=None) -> dict:
+def attach_model(model, log=print, codebook=DEFAULT_CODEBOOK) -> dict:
     """Pack 3-bit decode copies for every projection `model.linears()` lists (calibrated ones from
-    SHARAR_W3_CHECKPOINT when set), and the lm_head when `head`."""
-    codebook = default_codebook() if codebook is None else codebook
+    SHARAR_W3_CHECKPOINT when set). The lm_head keeps its NVFP4 weights (a 3-bit copy cost about two
+    GSM8K points, 2026-09-17)."""
     total = 0
     count = 0
     from sharar.weights.w3_checkpoint import CalibratedWeights
@@ -327,19 +309,13 @@ def attach_model(model, log=print, head: bool | None = None, codebook=None) -> d
             total += lin.w3.bytes; count += 1
     torch.cuda.synchronize()
     model.w3_identity = calibrated.identity if calibrated else "nearest:" + str(codebook)
-    if (head_enabled() if head is None else head) and getattr(model.lm_head, "w3", None) is None:
-        model.lm_head.w3 = pack(model.lm_head.dequantize(), codebook)
-        total += model.lm_head.w3.bytes; count += 1
     _module()  # build the kernel before serving starts
     log(f"  w3: packed {count} matrices, {total / 2**30:.2f} GiB of 3-bit decode weights (codebook {codebook})")
     return {"matrices": count, "bytes": total}
 
 
-def attach_draft(draft, log=print, codebook=None) -> dict:
+def attach_draft(draft, log=print, codebook=DEFAULT_CODEBOOK) -> dict:
     """Pack 3-bit copies of the parallel draft's FP8 matrices (q, o, gate_up, down of every layer)."""
-    codebook = default_codebook() if codebook is None else codebook
-    total = 0
-    count = 0
     count, total = attach(draft.fp8_weights.items(), codebook)
     torch.cuda.synchronize()
     log(f"  w3: packed {count} draft matrices, {total / 2**30:.2f} GiB")

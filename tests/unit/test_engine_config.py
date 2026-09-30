@@ -7,7 +7,7 @@ from sharar.engine.config import EngineConfig
 
 def test_defaults_match_the_old_module_defaults():
     c = EngineConfig.from_env({})
-    assert (c.w3_decode, c.w3_head, c.w3_draft, c.w3_codebook, c.stable_numerics, c.device_accept) == (False, False, False, "lloyd", False, False)
+    assert (c.w3_decode, c.w3_checkpoint, c.w3_warning, c.stable_numerics, c.device_accept) == (False, None, None, False, False)
     assert (c.flashnext_trunk, c.flashnext_mixers, c.draft_head, c.draft_head_rescore, c.draft_vocab) == ("fp8", "fp8", "fp8", 8, 0)
     assert (c.accept_default, c.qsa_sparse_graphs, c.session_gib, c.session_min_tokens, c.traces_max_mib) == ("2:1.0", True, 200.0, 4096, 32768)
     assert c.cold_tier_gib is None and c.max_context is None and c.spec is None and c.cuda_arch == "12.1a"

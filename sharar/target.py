@@ -47,6 +47,9 @@ class Target:
     nvfp4_group_size: int
     weight_load_peak_bytes: int
     profile: ServingProfile = field(default=DEFAULT_PROFILE)
+    # Published calibrated 3-bit decode copies (`weights/w3_checkpoint.fetch`); None: calibrate locally.
+    w3_repo: str | None = None
+    w3_revision: str | None = None
     kv_bytes_per_element: int = 1  # FP8 KV cache
     # Model family: selects the loader in `load_model` and the modules a family adds.
     family: str = "qwen38"
@@ -252,6 +255,7 @@ def _flashnext() -> Target:
         ple_embed_dim=c.PLE_EMBED_DIM, ple_conv_kernel=c.PLE_CONV_KERNEL,
         indexer_budget=c.INDEXER_BUDGET, indexer_compress_ratio=c.INDEXER_COMPRESS_RATIO,
         indexer_n_heads=c.INDEXER_N_HEADS, indexer_head_dim=c.INDEXER_HEAD_DIM, mtp_layers=c.MTP_LAYERS,
+        w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION,
     )
 
 

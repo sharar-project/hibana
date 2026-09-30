@@ -81,7 +81,7 @@ def score(args):
         r["top_lp"], r["top_ix"], r["nll"] = r["top_lp"].cuda().float(), r["top_ix"].cuda(), r["nll"].cuda()
     torch.cuda.synchronize()
     model = executor_model(args.precision, args.chunk)
-    knobs = {k: v for k, v in os.environ.items() if k.startswith(("SHARAR_TRUNK", "SHARAR_FLASHNEXT_W3"))}
+    knobs = {k: v for k, v in os.environ.items() if k.startswith(("SHARAR_TRUNK", "SHARAR_W3"))}
     per_prompt, agg = [], {}
     for row in rows:
         b_lp, b_ix = row["top_lp"], row["top_ix"]
