@@ -30,6 +30,9 @@ SHARAR_CONFIG_FILE=config/flashnext.env ./sharar-ctl serve   # Flash-Next on 127
 ./sharar-ctl chat
 ```
 
+The default `fast` profile downloads its calibrated 3-bit checkpoint on first serve
+([calibration](docs/w3-calibration.md)); the preflight warns when it serves without one.
+
 `sharar-ctl` needs only Python 3 on the host. [Operations](docs/operations.md)
 covers prerequisites, the launcher settings and the memory guard.
 
