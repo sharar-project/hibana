@@ -3,7 +3,7 @@
 The work order. Every item is a GitHub issue on `abdelfattah-lab/sharar` with its
 context, first step and gate; this page only orders them. History is in git and in
 the tag `archive/pre-cleanup-2026-09-26` (the old roadmap and every dated study).
-Updated 2026-09-29.
+Updated 2026-10-01.
 
 ## Where we are
 
@@ -39,9 +39,14 @@ benchmark (#26). Architecture and the capability matrix: [architecture](docs/arc
      against ~42 ms for MTP's 5, with the 3-bit trunk); a drafter needs +18% tokens per round over MTP at block 7,
      +53% at block 15, and the public PixelML drafter accepts less than MTP ([numbers](https://github.com/abdelfattah-lab/sharar/issues/7)).
      Reopen when wide verification is cheaper or a drafter clears that bar on our traffic.
-   - Screened 2026-09-29, passed: 3-bit routed experts (simulated in the NVFP4 kernel, `SHARAR_FLASHNEXT_EXPERTS_SIM3`;
-     gate verdict `fast`, screen -0.3 pp). **Next build: #73, the 3-bit expert kernel** (-17.6 GiB resident experts,
-     ~+12% single-stream if it matches the NVFP4 path), starting from the #37 small-M MoE kernel on `feat/moe-small-m`.
+   - Built and parked 2026-10-01: #73, 3-bit routed experts as the only resident expert copy (`park/experts-3bit`).
+     x1.19 single-stream over `fast` and -17.2 GiB, but with the cheap calibration it loses knowledge: lossy gate
+     rejected (-0.8 pp, p 0.044), MMLU-Pro -2.1 pp against `fast` (law, business, engineering), more over-long
+     deliberation on GPQA ([numbers](https://github.com/abdelfattah-lab/sharar/issues/73)). Reopen with GPTQ on routed
+     activations, judged on MMLU-Pro and GPQA (sharar-evals `evals.hard_eval`) before the full gate.
+   - #72: the `fast` profile fetches the calibrated 3-bit checkpoint on first serve (#75). Flash-Next's is public
+     (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`, Qwen Community License); the 27B needs recalibrating and gating
+     before it has one.
    - Next screens: #33 self-play traces for the drafter work; the #55 oracle (re-capture routes from
      `park/router-traces`, then simulate how much expert loading an ideal scheduler saves at depth 4 and 8 and how
      much a confidence rule keeps; rejected rows first-use 16% of expert bytes at k=4, 44% at k=8). If the oracle shows
@@ -52,7 +57,7 @@ benchmark (#26). Architecture and the capability matrix: [architecture](docs/arc
 4. **Research** (measure before building): #34 on-policy distillation (separate repository when it starts), #41 expert-budgeted
    verification, #42 sub-3-bit 27B MLPs, #25 megakernels. Deprioritized by the #32 router data:
    #38 fewer active experts (flat router mass), #39 expert pruning (domains share few experts).
-5. **Harness and quality**: #11 Flash-Next family gate, #28 harder evals (#31 lossy-change gate
+5. **Harness and quality**: #11 Flash-Next family gate, #28 harder evals (sharar-evals `evals.hard_eval`: MMLU-Pro, GPQA, IFEval, WMT24++, 2026-10-01; Terminal-Bench 2.1 next) (#31 lossy-change gate
    done 2026-09-29: `tools/lossy-gate.py`), #16 constrained output with speculation, #19 `/v1/responses`, #15 test-time scaling,
    #13 session store snapshots, #14 long-context prefill.
 6. **Infrastructure**: #21 CI (GitHub Actions jobs do not start: the organization's billing; a self-hosted
