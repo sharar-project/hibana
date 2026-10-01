@@ -28,10 +28,9 @@ SPEC_DEPTHS="${SHARAR_SPEC_DEPTHS:-$P_SPEC_DEPTHS}"  # verify depth per batch bu
 ACCEPT_DEFAULT="${SHARAR_ACCEPT_DEFAULT:-$P_ACCEPT}"      # relaxed acceptance for greedy requests that do not choose (K:M; off = exact)
 ACCEPT_DEFAULT_SAMPLED="${SHARAR_ACCEPT_DEFAULT_SAMPLED:-$P_ACCEPT_SAMPLED}"  # the same default for sampled requests (1/0)
 DEVICE_ACCEPT="${SHARAR_DEVICE_ACCEPT:-$P_DEVICE_ACCEPT}"  # device-resident acceptance graphs (engine/accept_graphs.py; 1/0)
-W3_DECODE="${SHARAR_W3_DECODE:-$P_W3}"   # 3-bit decode copies of the MLPs and FP8 projections for calls of at most 64 rows (1/0)
-W3_HEAD="${SHARAR_W3_HEAD:-0}"       # also the lm_head (1/0)
-W3_DRAFT="${SHARAR_W3_DRAFT:-$P_W3_DRAFT}"     # also the parallel draft's FP8 matrices (1/0; needs W3_DECODE)
-W3_CHECKPOINT="${SHARAR_W3_CHECKPOINT:-}" # calibrated target decode copies (an artifact location: used when W3_DECODE=1)
+W3_DECODE="${SHARAR_W3_DECODE:-$P_W3}"   # calibrated 3-bit decode copies for calls of at most 64 rows (1/0; the profile decides)
+W3_CHECKPOINT="${SHARAR_W3_CHECKPOINT:-auto}" # where they live: auto ($SHARAR_RESULTS/w3-checkpoints/<target>-current, fetched on first serve) or a directory
+TARGET_NAME="${SHARAR_TARGET:-qwen38}"
 DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"   # incoai/Qwen3.8-27B-DFlash2
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
@@ -60,16 +59,11 @@ if [[ "${1:-}" == "--stop" ]]; then
 fi
 
 [[ "$DRAFT_PRECISION" == bf16 || "$DRAFT_PRECISION" == fp8 ]] || fail "SHARAR_DRAFT_PRECISION must be bf16 or fp8"
-for v in W3_DECODE W3_HEAD W3_DRAFT DEVICE_ACCEPT; do [[ "${!v}" == 0 || "${!v}" == 1 ]] || fail "SHARAR_$v must be 0 or 1"; done
+for v in W3_DECODE DEVICE_ACCEPT; do [[ "${!v}" == 0 || "${!v}" == 1 ]] || fail "SHARAR_$v must be 0 or 1"; done
 [[ "$MAX_BATCH" =~ ^[0-9]+$ ]] && (( MAX_BATCH >= 1 && MAX_BATCH <= 16 )) || fail "SHARAR_MAX_BATCH must be in [1, 16]"
 [[ -z "$SPEC_DEPTHS" || "$SPEC_DEPTHS" =~ ^[0-9]+:[0-9]+(,[0-9]+:[0-9]+)*$ ]] || fail "SHARAR_SPEC_DEPTHS must be BUCKET:DEPTH pairs, e.g. 8:1,16:0"
-# Flash-Next's calibrated 3-bit trunk copies (#6, bench/flashnext_w3_calibrate.py): a directory, `off`, or the
-# profile's choice (fast: $SHARAR_RESULTS/w3-checkpoints/flashnext-current when that exists).
-FN_W3="${SHARAR_FLASHNEXT_W3_CHECKPOINT:-$P_FN_W3}"
-[[ "$FN_W3" == auto ]] && FN_W3="$([[ -f "$RESULTS_DIR/w3-checkpoints/flashnext-current/manifest.json" ]] && realpath "$RESULTS_DIR/w3-checkpoints/flashnext-current" || echo off)"
-[[ "$FN_W3" == off || -f "$FN_W3/manifest.json" ]] || fail "no manifest.json in SHARAR_FLASHNEXT_W3_CHECKPOINT ($FN_W3)"
 [[ "$W3_DECODE" == 1 ]] || W3_CHECKPOINT=""   # the checkpoint is where calibrated copies live; without decode copies it is unused
-if [[ -n "$W3_CHECKPOINT" ]]; then
+if [[ -n "$W3_CHECKPOINT" && "$W3_CHECKPOINT" != auto ]]; then
   [[ -f "$W3_CHECKPOINT/manifest.json" ]] || fail "SHARAR_W3_CHECKPOINT needs a completed manifest.json"
   W3_CHECKPOINT="$(realpath "$W3_CHECKPOINT")"
 fi
@@ -110,6 +104,30 @@ if [[ -n "$TRACES_DIR" || -n "$DRAFT_DIR" ]]; then
     || fail "image $IMAGE predates trace recording and trained drafts; rebuild it with docker/build.sh"
 fi
 [[ "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "io.sharar.engine"}}')" == "sharar" ]] || fail "image is not a Sharar image"
+# Calibrated 3-bit copies (#72): auto serves $SHARAR_RESULTS/w3-checkpoints/<target>-current and, when that is
+# missing, fetches the target's published checkpoint into it (weights/w3_checkpoint.py; not during --check).
+# Without one Flash-Next serves its FP8 trunk and the 27B nearest-rounded copies, with a warning.
+W3_WARNING=""
+if [[ "$W3_CHECKPOINT" == auto ]]; then
+  W3_ROOT="$RESULTS_DIR/w3-checkpoints"
+  if [[ ! -f "$W3_ROOT/$TARGET_NAME-current/manifest.json" && "${1:-}" != "--check" ]]; then
+    mkdir -p "$W3_ROOT"
+    docker run --rm --user "$(id -u):$(id -g)" --volume "$W3_ROOT:/w3-checkpoints" --env HF_HOME=/tmp/hf --env HF_HUB_OFFLINE=0 \
+      ${HF_TOKEN:+--env HF_TOKEN} --entrypoint python3 "$IMAGE" -m sharar.weights.w3_checkpoint fetch \
+      --target "$TARGET_NAME" --root /w3-checkpoints >&2 || echo "sharar: no calibrated 3-bit checkpoint could be fetched for $TARGET_NAME" >&2
+  fi
+  W3_CHECKPOINT=""
+  [[ -f "$W3_ROOT/$TARGET_NAME-current/manifest.json" ]] && W3_CHECKPOINT="$(realpath "$W3_ROOT/$TARGET_NAME-current")"
+fi
+if [[ "$W3_DECODE" == 1 && -z "$W3_CHECKPOINT" ]]; then
+  if [[ "$TARGET_NAME" == flashnext ]]; then
+    W3_DECODE=0
+    W3_WARNING="no calibrated 3-bit checkpoint: serving the FP8 trunk, about 24% slower single-stream than $PROFILE with it"
+  else
+    W3_WARNING="no calibrated 3-bit checkpoint: nearest-rounded copies (about 2 GSM8K points and 8% tokens per round below calibrated)"
+  fi
+  W3_WARNING="$W3_WARNING; calibrate with docs/w3-calibration.md or set SHARAR_W3_CHECKPOINT"
+fi
 
 onoff() { [[ "$1" == 1 ]] && echo on || echo off; }
 cat <<EOT
@@ -124,11 +142,10 @@ Sharar preflight OK
   Serving profile: $PROFILE (SHARAR_PROFILE: exact / balanced / fast / throughput; measured costs in docs/optimizations.md#serving-profiles)
   Batch: up to $MAX_BATCH requests (SHARAR_MAX_BATCH), verify depth by batch ${SPEC_DEPTHS:-$SPEC everywhere} (SHARAR_SPEC_DEPTHS)
   Relaxed acceptance default: $ACCEPT_DEFAULT, sampled requests $(onoff "$ACCEPT_DEFAULT_SAMPLED") (requests may set accept_top_k/accept_margin; 1 = exact)
-  Three-bit decode copies: layers $(onoff "$W3_DECODE"), lm_head $(onoff "$W3_HEAD"), draft $(onoff "$W3_DRAFT")$([[ "$W3_DRAFT" == 1 && "$DRAFT_PRECISION" != fp8 ]] && echo ' (no effect: the draft copy needs the FP8 draft)') (SHARAR_W3_DECODE / SHARAR_W3_HEAD / SHARAR_W3_DRAFT)
+  Three-bit decode copies: $(onoff "$W3_DECODE")$([[ "$W3_DECODE" == 1 ]] && echo ", ${W3_CHECKPOINT:-nearest rounding from the pinned serving weights}") (SHARAR_W3_DECODE, SHARAR_W3_CHECKPOINT)
   Draft: ${DRAFT_DIR:-pinned $DRAFT_REVISION}
-  W3 target checkpoint: ${W3_CHECKPOINT:-nearest rounding from the pinned serving weights}
-  Flash-Next 3-bit trunk copies: $FN_W3 (SHARAR_FLASHNEXT_W3_CHECKPOINT; Flash-Next only)
 EOT
+[[ -n "$W3_WARNING" ]] && echo "  WARNING: $W3_WARNING"
 [[ "${1:-}" == "--check" ]] && exit 0
 
 docker container inspect "$CONTAINER" >/dev/null 2>&1 && fail "container '$CONTAINER' already exists (use --stop first)"
@@ -144,8 +161,9 @@ args=(docker run --detach --name "$CONTAINER"
   --volume "$STATE_DIR:/state"
   --env TRITON_LIBCUDA_PATH=$DRIVER_LIB_DIR
   --env SHARAR_SPEC=$SPEC
-  --env SHARAR_W3_DECODE=$W3_DECODE --env SHARAR_W3_HEAD=$W3_HEAD --env SHARAR_W3_DRAFT=$W3_DRAFT --env SHARAR_PROFILE=$PROFILE
+  --env SHARAR_W3_DECODE=$W3_DECODE --env SHARAR_PROFILE=$PROFILE
 )
+[[ -n "$W3_WARNING" ]] && args+=(--env "SHARAR_W3_WARNING=$W3_WARNING")   # reported in /get_server_info
 source "$SCRIPT_DIR/tools/gb10-container.sh"
 gb10_container_args
 
@@ -175,12 +193,11 @@ if [[ "$MAX_BATCH" != 4 || -n "$SPEC_DEPTHS" ]]; then
   [[ -n "$SPEC_DEPTHS" && "$SPEC" != 0 ]] && serve_args+=(--spec-depths "$SPEC_DEPTHS")
 fi
 if [[ "$W3_DECODE" == 1 ]]; then
-  docker run --rm --entrypoint python3 "$IMAGE" -c "import sharar.kernels.w3" 2>/dev/null \
-    || fail "image $IMAGE predates the 3-bit decode path; rebuild with docker/build.sh or set SHARAR_W3_DECODE=0"
+  # An older image reads the retired per-target settings and would silently drop copies (the draft's, Flash-Next's trunk).
+  docker run --rm --entrypoint python3 "$IMAGE" -c "from sharar.weights.w3_checkpoint import fetch" 2>/dev/null \
+    || fail "image $IMAGE predates one 3-bit switch for both targets (#72); rebuild with docker/build.sh or set SHARAR_W3_DECODE=0"
 fi
 if [[ -n "$W3_CHECKPOINT" ]]; then
-  docker run --rm --entrypoint python3 "$IMAGE" -c "import sharar.weights.w3_checkpoint" 2>/dev/null \
-    || fail "image $IMAGE predates calibrated W3 checkpoints; rebuild with docker/build.sh"
   args+=(--volume "$W3_CHECKPOINT:/w3:ro" --env SHARAR_W3_CHECKPOINT=/w3)
 fi
 if [[ "$PROPOSER" == dflash2 || "$PROPOSER" == dspark ]] && [[ "$SPEC" != 0 ]]; then
@@ -201,9 +218,6 @@ if [[ "${SHARAR_TARGET:-}" == flashnext ]]; then
   [[ -d "$FN_CACHE/models--RadixArk--Qwen3.8-Flash-Next-NVFP4/snapshots" ]] || fail "no Flash-Next snapshot under $FN_CACHE"
   args+=(--volume "$FN_CACHE:/cache/flash-next:ro" --env SHARAR_FLASHNEXT_CACHE=/cache/flash-next
          --env "SHARAR_FLASHNEXT_TRUNK=${SHARAR_FLASHNEXT_TRUNK:-fp8}")   # trunk precision at load: fp8 (default) or bf16
-  if [[ "$FN_W3" != off ]]; then
-    args+=(--volume "$FN_W3:/fn-w3:ro" --env SHARAR_FLASHNEXT_W3_CHECKPOINT=/fn-w3)
-  fi
 fi
 args+=(--env "SHARAR_DEVICE_ACCEPT=$DEVICE_ACCEPT")   # device-resident acceptance graphs (engine/accept_graphs.py)
 if [[ -n "${SHARAR_DRAFT_VOCAB:-}" ]]; then

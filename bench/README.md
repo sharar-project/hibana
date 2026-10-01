@@ -123,7 +123,7 @@ A lossy speed option is judged by `tools/lossy-gate.py` (rules and layers in
 
 ```bash
 tools/lossy-gate.py --target flashnext --name fast --profile fast                  # a profile against exact
-tools/lossy-gate.py --target flashnext --name w3near --env SHARAR_FLASHNEXT_TRUNK=w3  # an override against exact
+tools/lossy-gate.py --target flashnext --name recal --profile fast --env SHARAR_W3_CHECKPOINT=/path/to/candidate  # a new calibration against exact
 tools/lossy-gate.py --target qwen38 --name x --profile exact --env SHARAR_X=1 --through inprocess   # layers 1-2 only
 tools/lossy-gate.py --target flashnext --name fast --profile fast --report           # rebuild the scorecard
 ```

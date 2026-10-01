@@ -9,7 +9,8 @@ both targets share the tokenizer), and every TrunkLinear call adds x^T x to its
 projection's covariance. Every projection `FlashNext.linears()` lists whose shape
 the 3-bit kernel tiles (N and K multiples of 128) is fitted; the rank-320
 hyper-connection mixers stay FP8. The output loads with
-SHARAR_FLASHNEXT_W3_CHECKPOINT=DIR over the FP8 trunk.
+SHARAR_W3_DECODE=1 SHARAR_W3_CHECKPOINT=DIR over the FP8 trunk (the launcher serves
+$SHARAR_RESULTS/w3-checkpoints/flashnext-current in the fast profile).
 
     SHARAR_TARGET=flashnext python3 -m bench.flashnext_w3_calibrate --inputs calibration-inputs.json --output DIR
 """
@@ -73,7 +74,7 @@ def main():
     from sharar.target import FLASHNEXT
     from sharar.weights.w3_calibration import quantize
     from sharar.weights.w3_checkpoint import FORMAT_VERSION, save_weight
-    install(current().replace(flashnext_trunk="bf16", flashnext_w3_checkpoint=None))
+    install(current().replace(flashnext_trunk="bf16", w3_decode=False, w3_checkpoint=None))
     if (args.output / "manifest.json").exists():
         raise SystemExit("refusing to overwrite a finished calibration")
     args.output.mkdir(parents=True, exist_ok=True)

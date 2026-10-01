@@ -67,7 +67,7 @@ class FlashNext:
         from sharar.cache.ledger import check_load_headroom
         self.target = target
         self._extras = None
-        self.precision = precision or current().flashnext_trunk  # bf16 | fp8 | w3 (3.25-bit decode copies over FP8)
+        self.precision = precision or current().flashnext_trunk  # bf16 | fp8
         check_load_headroom(target.weight_load_peak_bytes)
         self.device = torch.device(device)
         cfg = target.load_model_config(snap)
@@ -99,8 +99,10 @@ class FlashNext:
         trunk = sum(layer.bytes - layer.moe.bytes for layer in self.layers) + sum(layer.moe.router.numel() * 2 + layer.moe.shared_gate_up.bytes + layer.moe.shared_down.bytes for layer in self.layers)
         self.stream_bytes = trunk + self.mixer.bytes + self.lm_head.bytes + len(self.layers) * target.experts_per_token * expert_bytes
         self.w3_identity = None
-        if current().flashnext_w3_checkpoint:
-            self.w3_identity = self.attach_calibrated(current().flashnext_w3_checkpoint, log)
+        if current().w3_decode:
+            if not current().w3_checkpoint:
+                raise ValueError("Flash-Next's 3-bit copies are calibrated only: SHARAR_W3_DECODE=1 needs SHARAR_W3_CHECKPOINT")
+            self.w3_identity = self.attach_calibrated(current().w3_checkpoint, log)
         if log:
             log(f"  weights loaded in {time.perf_counter() - started:.0f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated "
                 f"({self.precision} trunk, {self.stream_bytes / 1e9:.2f} GB per decode token)")
@@ -137,10 +139,7 @@ class FlashNext:
 
     def attach_calibrated(self, directory: str, log=print) -> str:
         """Calibrated 3-bit decode copies (bench/flashnext_w3_calibrate.py) over the FP8 trunk, by `linears()` name;
-        calls of at most 64 rows then read them (`TrunkLinear.__call__`), prefill keeps the FP8 weights.
-        SHARAR_FLASHNEXT_W3_KEEP_FP8=<regex> leaves the matching names in FP8 (a diagnostic: which module's
-        3-bit copy moves the logits, `bench/flashnext_quant.py`); the identity then names the regex."""
-        import re
+        calls of at most 64 rows then read them (`TrunkLinear.__call__`), prefill keeps the FP8 weights."""
         from sharar.weights.w3_checkpoint import CalibratedWeights
         if self.precision != "fp8":
             raise ValueError("calibrated 3-bit trunk copies go over the FP8 trunk (SHARAR_FLASHNEXT_TRUNK=fp8)")
@@ -149,13 +148,11 @@ class FlashNext:
         missing = sorted(set(calibrated.weights) - set(linears))
         if missing:
             raise ValueError(f"calibrated names not in this model: {missing[:4]}")
-        keep = current().flashnext_w3_keep_fp8
-        names = [name for name in calibrated.weights if not (keep and re.search(keep, name))]
-        for name in names:
+        for name in calibrated.weights:
             linears[name].w3 = calibrated.load(name, linears[name])
         if log:
-            log(f"  w3: {len(names)} calibrated trunk matrices from {directory}" + (f" ({len(calibrated.weights) - len(names)} kept FP8: {keep})" if keep else ""))
-        return calibrated.identity + (f"+keep_fp8:{keep}" if keep else "")
+            log(f"  w3: {len(calibrated.weights)} calibrated trunk matrices from {directory}")
+        return calibrated.identity
 
     def forward_extras(self):
         """The side inputs this model's forwards need beyond the ForwardContext (model/flashnext/extras.py)."""

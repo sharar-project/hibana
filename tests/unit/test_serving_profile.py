@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-KNOBS = ("P_ACCEPT", "P_ACCEPT_SAMPLED", "P_W3", "P_W3_DRAFT", "P_FN_W3", "P_DEVICE_ACCEPT", "P_MAX_BATCH", "P_SPEC_DEPTHS")
+KNOBS = ("P_ACCEPT", "P_ACCEPT_SAMPLED", "P_W3", "P_DEVICE_ACCEPT", "P_MAX_BATCH", "P_SPEC_DEPTHS")
 
 
 def resolve(profile: str, target: str = "", explicit: str | None = None) -> dict:
@@ -34,9 +34,17 @@ def test_an_explicit_device_acceptance_setting_wins(explicit):
 
 
 def test_profile_knobs_are_unchanged():
-    assert {k: resolve("exact")[k] for k in KNOBS[:5]} == dict(zip(KNOBS, ("off", "0", "0", "0", "off")))
-    assert {k: resolve("balanced")[k] for k in KNOBS[:5]} == dict(zip(KNOBS, ("2:1.0", "0", "1", "1", "off")))
-    assert {k: resolve("fast")[k] for k in KNOBS[:5]} == dict(zip(KNOBS, ("3:2.0", "1", "1", "1", "auto")))
+    assert {k: resolve("exact")[k] for k in KNOBS[:3]} == dict(zip(KNOBS, ("off", "0", "0")))
+    assert {k: resolve("balanced")[k] for k in KNOBS[:3]} == dict(zip(KNOBS, ("2:1.0", "0", "1")))
+    assert {k: resolve("fast")[k] for k in KNOBS[:3]} == dict(zip(KNOBS, ("3:2.0", "1", "1")))
+
+
+@pytest.mark.parametrize("profile, target, w3", [
+    ("exact", "", "0"), ("exact", "flashnext", "0"), ("balanced", "", "1"), ("balanced", "flashnext", "0"),
+    ("fast", "", "1"), ("fast", "flashnext", "1"), ("throughput", "", "1"), ("throughput", "flashnext", "1")])
+def test_the_profile_alone_turns_the_3bit_copies_on(profile, target, w3):
+    # #72: one switch for both targets; Flash-Next's 3-bit trunk is fast's (and throughput's), not balanced's
+    assert resolve(profile, target)["P_W3"] == w3
 
 
 def test_unknown_profile_is_rejected():
@@ -55,7 +63,7 @@ def test_throughput_is_fast_with_sixteen_requests(target, depths):
     # #59: Flash-Next verifies within the 64 rows its 3-bit trunk copies serve at 16 requests (16 x 4);
     # the 27B keeps its full depth at every batch (operator decision, GSM8K x1.74).
     fast, wide = resolve("fast", target), resolve("throughput", target)
-    assert {k: wide[k] for k in KNOBS[:6]} == {k: fast[k] for k in KNOBS[:6]}
+    assert {k: wide[k] for k in KNOBS[:4]} == {k: fast[k] for k in KNOBS[:4]}
     assert wide["P_MAX_BATCH"] == "16" and wide["P_SPEC_DEPTHS"] == depths
     for bucket, depth in (item.split(":") for item in filter(None, depths.split(","))):
         assert int(bucket) * (int(depth) + 1) <= 64 and int(depth) <= 4

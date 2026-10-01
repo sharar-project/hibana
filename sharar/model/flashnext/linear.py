@@ -30,18 +30,11 @@ class TrunkLinear:
             raise ValueError("trunk projections are BF16 matrices in the checkpoint")
         if precision == "bf16":
             return cls(weight.contiguous())
-        if precision not in ("fp8", "w3"):
+        if precision != "fp8":
             raise ValueError(f"unknown trunk precision {precision!r}")
         scale = (weight.float().abs().amax() / FP8_MAX).clamp_min(1e-12).reshape(1, 1)
         packed = (weight.float() / scale).clamp(-FP8_MAX, FP8_MAX).to(torch.float8_e4m3fn)
-        lin = cls(packed.contiguous(), scale)
-        n, k = weight.shape
-        if precision == "w3" and n % 128 == 0 and k % 128 == 0:
-            # Nearest-rounded 3.25-bit decode copy (the FP8 copy serves prefill and wide calls);
-            # matrices the packer cannot tile (the rank-320 mixers) stay FP8.
-            from sharar.kernels import w3
-            lin.w3 = w3.pack(weight.float())
-        return lin
+        return cls(packed.contiguous(), scale)
 
     @classmethod
     def load(cls, w, names: list[str], device, precision: str) -> "TrunkLinear":

@@ -43,12 +43,24 @@ about its relative error squared. `quantize(..., unbias="weight")` (`bench/flash
 Flash-Next trunk the shrinkage adds coherently through the residual layers and the correction removes most of
 the decode-path KL it causes ([Flash-Next](flashnext.md#3-bit-trunk-sensitivity-2026-09-28-61)).
 
-Set `SHARAR_W3_CHECKPOINT=/host/calibrated-w3` with `SHARAR_W3_DECODE=1` in the
-launcher to mount and load a completed artifact. The loader checks the target
-revision, full projection coverage, dimensions, dtypes and hashes before graph
-capture. `/get_server_info` exposes `w3_target_identity`, the manifest's SHA256;
-ordinary nearest rounding is identified separately. Unsetting the checkpoint
-restores ordinary W3 packing.
+## Where the served copies come from
+
+The profiles that use 3-bit copies (`balanced` for the 27B, `fast`, `throughput`)
+serve `$SHARAR_RESULTS/w3-checkpoints/<target>-current` (`qwen38-current`,
+`flashnext-current`). When that link is missing, `run-sharar.sh` fetches the
+target's published checkpoint, pinned by revision in the target's config
+(`W3_REPO`, `W3_REVISION`), into `w3-checkpoints/<target>-<revision>` and links it
+(`python3 -m sharar.weights.w3_checkpoint fetch`, run in the image; `HF_TOKEN` is
+passed through for a private repository). Flash-Next has one; the 27B has none
+at the moment and needs a local calibration. To serve a new calibration, point
+the link at its directory or set `SHARAR_W3_CHECKPOINT=/host/calibrated-w3`.
+
+The loader checks the target revision, projection coverage, dimensions, dtypes
+and hashes before graph capture. `/get_server_info` exposes `w3_target_identity`,
+the manifest's SHA256 (nearest rounding reads `nearest:lloyd`). Without a
+checkpoint the 27B packs nearest-rounded copies and Flash-Next serves its FP8
+trunk (its copies are calibrated only); the preflight prints a warning and
+`/get_server_info` reports it as `w3_warning`.
 
 The loader stages each mapped tensor in ordinary CPU storage before copying
 it to CUDA. On GB10 this reduced warm-cache target construction from 63.2 to

@@ -8,7 +8,7 @@ import torch
 class DraftFp8Linear:
     weight: torch.Tensor
     scale: torch.Tensor
-    w3: object = None  # 3-bit decode copy (sharar.kernels.w3.W3Weight) when SHARAR_W3_DRAFT=1
+    w3: object = None  # 3-bit decode copy (sharar.kernels.w3.W3Weight) when SHARAR_W3_DECODE=1
 
     @classmethod
     def from_bf16(cls, weight):
