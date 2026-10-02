@@ -44,9 +44,10 @@ benchmark (#26). Architecture and the capability matrix: [architecture](docs/arc
      rejected (-0.8 pp, p 0.044), MMLU-Pro -2.1 pp against `fast` (law, business, engineering), more over-long
      deliberation on GPQA ([numbers](https://github.com/abdelfattah-lab/sharar/issues/73)). Reopen with GPTQ on routed
      activations, judged on MMLU-Pro and GPQA (sharar-evals `evals.hard_eval`) before the full gate.
-   - #72: the `fast` profile fetches the calibrated 3-bit checkpoint on first serve (#75). Flash-Next's is public
-     (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`, Qwen Community License); the 27B needs recalibrating and gating
-     before it has one.
+   - #72 done 2026-10-02: the `fast` profile fetches its calibrated 3-bit checkpoint on first serve (#75), both public
+     (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`, Qwen Community License; `yemara/Qwen3.8-27B-NVFP4-sharar-w3`,
+     Apache-2.0). The 27B `fast` profile's first lossy gate rejects it on code (MBPP -3.2 pp, pooled -0.3); adopted over
+     the nearest-rounded copies it replaced, with the cause tracked in #81 (copies or relaxed acceptance).
    - Next screens: #33 self-play traces for the drafter work; the #55 oracle (re-capture routes from
      `park/router-traces`, then simulate how much expert loading an ideal scheduler saves at depth 4 and 8 and how
      much a confidence rule keeps; rejected rows first-use 16% of expert bytes at k=4, 44% at k=8). If the oracle shows

@@ -230,7 +230,7 @@ def _qwen38() -> Target:
         linear_key_head_dim=c.LINEAR_KEY_HEAD_DIM, linear_value_head_dim=c.LINEAR_VALUE_HEAD_DIM,
         linear_conv_kernel=c.LINEAR_CONV_KERNEL, vocab_size=c.VOCAB_SIZE, rms_norm_eps=c.RMS_NORM_EPS,
         max_position_embeddings=c.MAX_POSITION_EMBEDDINGS, nvfp4_group_size=c.NVFP4_GROUP_SIZE,
-        weight_load_peak_bytes=c.WEIGHT_LOAD_PEAK_BYTES,
+        weight_load_peak_bytes=c.WEIGHT_LOAD_PEAK_BYTES, w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION,
     )
 
 

@@ -71,10 +71,10 @@ def test_fetch_rejects_a_checkpoint_for_another_revision(tmp_path, hub):
 
 
 def test_a_target_without_a_published_checkpoint_says_so(tmp_path):
-    assert QWEN38.w3_repo is None
     with pytest.raises(LookupError, match="calibrate"):
-        w3_checkpoint.fetch(QWEN38, tmp_path)
+        w3_checkpoint.fetch(replace(QWEN38, w3_repo=None, w3_revision=None), tmp_path)
 
 
-def test_flashnext_pins_its_checkpoint_by_revision():
-    assert FLASHNEXT.w3_repo and len(FLASHNEXT.w3_revision) == 40
+@pytest.mark.parametrize("target", [QWEN38, FLASHNEXT])
+def test_both_targets_pin_their_checkpoint_by_revision(target):
+    assert target.w3_repo and len(target.w3_revision) == 40
