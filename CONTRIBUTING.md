@@ -63,7 +63,7 @@ outputs drift whenever shapes move. Compare row-count changes under
 interval decides cost (it resolves 0.05%); the tokens-per-round interval
 decides acceptance only when it excludes 1, and it is about ±3% wide on the
 101-family default set (±7% on the old 18-family set) for any change that
-moves continuations, so do not select among variants on its point estimate. The three-prompt `tools/benchmark.sh`
+moves continuations, so do not select among variants on its point estimate. The three-prompt AIPerf benchmark (sharar-eval's `python -m evals.speed`)
 remains the reporting cell for end-to-end numbers, never the decision.
 A change to the target's arithmetic or to acceptance also runs
 the `quick` suite of the `sharar-eval` repository (`evals.suite`; GSM8K, HumanEval and MGSM, paired
