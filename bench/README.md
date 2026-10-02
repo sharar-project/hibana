@@ -1,5 +1,27 @@
 # Benchmarking Sharar
 
+## Evaluate a build: `tools/evaluate.py`
+
+One command serves a build and measures it with
+[sharar-eval](https://github.com/abdelfattah-lab/sharar-eval): quality suites and/or AIPerf speed,
+both versions recorded, the server stopped afterwards.
+
+```bash
+tools/evaluate.py --target flashnext --profile fast --suite quick --speed          # the config's image
+tools/evaluate.py --target flashnext --profile fast --build --suite hard           # an image built from this commit
+tools/evaluate.py --target flashnext --profile exact --suite quick --speed \
+    --baseline $SHARAR_RESULTS/reviews/<date>-evaluate-flashnext-fast            # paired with an earlier run
+```
+
+- **Quality:** `--suite quick|full|hard|long|agentic|all`, or `--tasks gpqa,mmlupro --limit 50`.
+- **Speed:** `--speed` runs `evals.speed` on `--workload code|design|reasoning|all`.
+- **Acceptance:** neither pins it, so both measure the profile as served.
+- **Output:** `$SHARAR_RESULTS/reviews/<date>-evaluate-<name>/` holds `SUMMARY.md`, the sharar-eval run
+  directory, the AIPerf run, `/get_server_info` and the logs. A rerun with the same `--name` resumes.
+
+The lossy gate below is the decision tool for a lossy option. It compares two configurations and adds
+in-process layers; `evaluate.py` measures one build, optionally against a baseline run.
+
 ## End-to-end speed (sharar-eval)
 
 The HTTP speed and serving benchmarks live in
