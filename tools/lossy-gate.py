@@ -5,6 +5,7 @@
     tools/lossy-gate.py --target flashnext --name recal --profile fast --env SHARAR_W3_CHECKPOINT=/path/to/candidate
     tools/lossy-gate.py --target qwen38 --name fewer-experts --profile exact --env SHARAR_X=1 --through full
     tools/lossy-gate.py --target flashnext --name experts3 --profile fast --env SHARAR_W3_CHECKPOINT=/path --battery hard
+    tools/lossy-gate.py --target flashnext --name kv-fp4 --profile fast --env SHARAR_X=1 --battery long
 
 A candidate is a serving profile (`--profile`, default exact) plus `--env KEY=VALUE` overrides on
 the target's launcher config (config/flashnext.env, or config/gb10.env for the 27B), resolved the
@@ -27,8 +28,9 @@ Layers, cheapest first:
      sharar-eval's `evals.suite` runs with the server's own acceptance default): paired per item,
      McNemar. Screen: the `quick` suite (GSM8K first 300, HumanEval 164, MGSM 24 per language, plus
      long-context needles at 16K and 64K as a smoke test). Full, when the screen is close: the `full`
-     suite (GSM8K 1319, HumanEval 164, MBPP 500, MGSM 2750). `--battery hard` adds the `hard` suite
-     (MMLU-Pro, GPQA Diamond, IFEval, WMT24++; 4-6 hours per arm) after the screen or full stage.
+     suite (GSM8K 1319, HumanEval 164, MBPP 500, MGSM 2750). `--battery` adds suites after the screen or
+     full stage: `hard` (MMLU-Pro, GPQA Diamond, IFEval, WMT24++; 4-6 hours per arm), `long` (RULER v2 at
+     32K and 128K, 120 items each; about 3 hours per arm) or `all` (both).
 
 Verdict rules (also in CONTRIBUTING.md, "Judge a lossy option"). Intervals are 95%: bootstrap over
 64-position blocks (layer 1) or prompts (layer 2), normal approximation of the paired difference
@@ -39,8 +41,8 @@ Verdict rules (also in CONTRIBUTING.md, "Judge a lossy option"). Intervals are 9
   rejected  any of: no measurable speed gain, the speed interval's lower bound at or below 1.035 (a
             lossy option must pay for itself, beyond the layer's 3.5% noise; layer 3 is skipped); a
             task or the pooled battery significantly worse (McNemar p < 0.05, more losses than wins;
-            with --battery hard this includes MMLU-Pro, GPQA and IFEval, while WMT24++ chrF++ is
-            reported and decides nothing); pooled accuracy delta below -2.0 points. Pooled is the
+            with --battery this includes MMLU-Pro, GPQA, IFEval and each RULER v2 length (paired sign
+            test), while WMT24++ chrF++ is reported and decides nothing); pooled accuracy delta below -2.0 points. Pooled is the
             stage's tasks only.
   balanced  not rejected, the full stage ran, pooled delta interval lower bound >= -1.0 point and
             every task's delta >= -1.0 point.
@@ -108,7 +110,8 @@ CHECKED = ("target", "profile", "w3_decode", "w3_checkpoint", "stable_numerics",
 # Layer-3 stages: the sharar-eval suite each runs and the tasks its verdict reads (the suite's GSM8K-300 is the first
 # three shards of the full set, so the full stage reuses them).
 STAGES = {"screen": ("quick", ["gsm8k", "humaneval", "mgsm-pl24", "needles"]), "full": ("full", ["gsm8k", "humaneval", "mbpp", "mgsm", "needles"]),
-          "hard": ("hard", ["mmlupro", "gpqa", "ifeval", "wmt"])}
+          "hard": ("hard", ["mmlupro", "gpqa", "ifeval", "wmt"]), "long": ("long", ["ruler2-32k", "ruler2-128k"])}
+BATTERIES = {"quick": [], "hard": ["hard"], "long": ["long"], "all": ["hard", "long"]}
 BALANCED_MARGIN, FAST_MARGIN = 1.0, 2.0  # accuracy points
 # Layer-2 speed resolution (Flash-Next, 2026-09-27): a warm baseline repeat reads x1.035 and a second exact
 # process x0.986, so a gain must clear 3.5% to be told from the instrument's own noise.
@@ -524,11 +527,16 @@ def layer2(base_spec: dict, cand_spec: dict) -> dict:
 # ---------------------------------------------------------------- verdict
 
 def binary(card: dict | None) -> dict:
-    """The pass/fail tasks of a sharar-eval scorecard (WMT24++ chrF++ and the needles decide nothing)."""
+    """The pass/fail tasks of a sharar-eval scorecard."""
     return {t: r for t, r in (card or {}).get("tasks", {}).items() if r["kind"] == "binary"}
 
 
-def verdict(l1: dict | None, l2: dict | None, l3: dict | None, stage: str | None, hard: dict | None = None) -> tuple[str, list[str]]:
+def deciding(card: dict | None) -> dict:
+    """The tasks of an added battery that can reject: pass/fail tasks and RULER v2 (WMT24++ chrF++ and the needles are reported only)."""
+    return {t: r for t, r in (card or {}).get("tasks", {}).items() if r["kind"] == "binary" or t.startswith("ruler2")}
+
+
+def verdict(l1: dict | None, l2: dict | None, l3: dict | None, stage: str | None, extra: dict | None = None) -> tuple[str, list[str]]:
     """The profile the candidate can enter, and why (the rules in the module docstring)."""
     why = []
     l1_within = l1 is not None and all(d["within_floor"] for k, d in l1.items() if k != "all")
@@ -541,7 +549,9 @@ def verdict(l1: dict | None, l2: dict | None, l3: dict | None, stage: str | None
                             f"lower bound not above {1 + SPEED_NOISE:.3f}"]
     if l3 is None:
         return "undecided", ["layer 3 has not run"]
-    bad = [f"{t} {r['delta']:+.1f} pp (p {r['p']:.3f})" for t, r in {**binary(l3), **binary(hard)}.items() if r["p"] < 0.05 and r["losses"] > r["wins"]]
+    tasks = {**binary(l3), **{t: r for card in (extra or {}).values() for t, r in deciding(card).items()}}
+    bad = [f"{t} {r['delta']:+.1f} {'pp' if r['kind'] == 'binary' else 'points'} (p {r['p']:.3f})" for t, r in tasks.items()
+           if r["p"] < 0.05 and r["losses"] > r["wins"]]
     pooled = l3["pooled"]
     if pooled["p"] < 0.05 and pooled["losses"] > pooled["wins"]:
         bad.append(f"pooled {pooled['delta']:+.1f} pp (p {pooled['p']:.3f})")
@@ -567,7 +577,7 @@ def fmt_ci(ci) -> str:
     return f"[{ci[0]:+.1f}, {ci[1]:+.1f}]"
 
 
-def one_line(name: str, target: str, v: str, l1, l2, l3, stage, hard=None) -> str:
+def one_line(name: str, target: str, v: str, l1, l2, l3, stage, extra=None) -> str:
     parts = [f"VERDICT {name} ({target}): {v}"]
     if l2:
         s = l2["decode_tps"]
@@ -583,8 +593,9 @@ def one_line(name: str, target: str, v: str, l1, l2, l3, stage, hard=None) -> st
     if l3:
         p = l3["pooled"]
         parts.append(f"L3 {stage} {p['delta']:+.1f} pp {fmt_ci(p['ci95'])} ({p['wins']}/{p['losses']}, p {p['p']:.2f})")
-    if hard:
-        parts.append("hard " + ", ".join(f"{t} {r['delta']:+.{2 if r['kind'] == 'score' else 1}f} (p {r['p']:.2f})" for t, r in hard["tasks"].items() if r["kind"] != "needles"))
+    for name, card in (extra or {}).items():
+        parts.append(f"{name} " + ", ".join(f"{t} {r['delta']:+.{2 if r['kind'] == 'score' else 1}f} (p {r['p']:.2f})"
+                                            for t, r in card["tasks"].items() if r["kind"] != "needles"))
     return " | ".join(parts)
 
 
@@ -615,8 +626,10 @@ def summary_md(card: dict) -> str:
         lines += ["", f"Tokens per round {l2['base_tok_per_round']:.3f} -> {l2['cand_tok_per_round']:.3f}; relaxed acceptances "
                       f"{100 * l2['relaxed_share']:.1f}% of emitted tokens. By domain: "
                   + ", ".join(f"{k} x{v['ratio']:.3f}" for k, v in l2["domains"].items() if v.get("n")), ""]
-    for title, sc in ((f"Layer 3: task battery ({card['stage']}, served, 4 streams, paired, McNemar)", l3),
-                      ("Hard battery (served, 4 streams, paired; WMT24++ chrF++ with a bootstrap interval decides nothing)", card.get("hard"))):
+    titles = {"hard": "Hard battery (served, 4 streams, paired; WMT24++ chrF++ decides nothing)",
+              "long": "Long battery: RULER v2 (served, 4 streams, paired bootstrap of the 0-100 item score)"}
+    for title, sc in [(f"Layer 3: task battery ({card['stage']}, served, 4 streams, paired, McNemar)", l3)] + \
+                     [(titles[k], v) for k, v in (card.get("extra") or {}).items()]:
         if not sc:
             continue
         lines += [f"## {title}", "", "| task | n | baseline | candidate | delta [95%] | better/worse | p | tokens/item | capped |",
@@ -669,8 +682,9 @@ def main(argv=None) -> int:
                     help="inprocess: layers 1-2; screen: also the layer-3 screen (forced); full: also the full sets; auto: the cascade")
     ap.add_argument("--image", default=None, help="runtime image (default: the config's SHARAR_IMAGE)")
     ap.add_argument("--port", type=int, default=30100, help="served arms' port (30100-30199)")
-    ap.add_argument("--battery", choices=("quick", "hard"), default="quick",
-                    help="quick: the screen, then the full sets when close; hard: also sharar-eval's hard suite (4-6 h per arm)")
+    ap.add_argument("--battery", choices=sorted(BATTERIES), default="quick",
+                    help="quick: the screen, then the full sets when close; hard / long / all: also sharar-eval's hard suite "
+                         "(4-6 h per arm), long suite (RULER v2, ~3 h per arm) or both")
     ap.add_argument("--evals", type=Path, default=Path(os.environ.get("SHARAR_EVALS") or REPO.parent / "sharar-eval"),
                     help="sharar-eval checkout (default: SHARAR_EVALS, else beside this one)")
     ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
@@ -786,12 +800,11 @@ def main(argv=None) -> int:
         stage, l3 = "screen", battery("screen")
         if l3 and (args.through == "full" or (args.through == "auto" and screen_is_close(l3))):
             stage, l3 = "full", battery("full")
-        if args.battery == "hard":
-            card["hard"] = battery("hard")
+        card["extra"] = {name: c for name in BATTERIES[args.battery] if (c := battery(name))}
     card["layer3"], card["stage"] = l3, stage
-    v, why = verdict(l1, l2, l3, stage, card.get("hard"))
+    v, why = verdict(l1, l2, l3, stage, card.get("extra"))
     card["verdict"], card["why"] = v, why
-    card["verdict_line"] = one_line(args.name, args.target, v, l1, l2, l3, stage, card.get("hard"))
+    card["verdict_line"] = one_line(args.name, args.target, v, l1, l2, l3, stage, card.get("extra"))
     card["finished"] = dt.datetime.now().isoformat(timespec="seconds")
     (run_dir / "scorecard.json").write_text(json.dumps(card, indent=1) + "\n")
     (run_dir / "SUMMARY.md").write_text(summary_md(card))

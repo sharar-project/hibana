@@ -136,7 +136,8 @@ the executor; layer 3 serves each arm with `run-sharar.sh` as container
 `sharar-lossy-gate` on `--port` (30100 by default), checks that
 `/get_server_info` reports the in-process arm's configuration, and runs
 `sharar-eval`'s `evals.suite` (`--evals`, beside this checkout by default, with its `.venv`):
-`quick` as the screen, `full` when the screen is close, and `hard` with `--battery hard`.
+`quick` as the screen, `full` when the screen is close, and `hard` / `long` (RULER v2) / both with
+`--battery hard|long|all`.
 The baseline arm is cached in `$SHARAR_RESULTS/reviews/lossy-gate-baselines/`
 (keyed by image, baseline settings, prompts, worker and eval code) and reused by
 every candidate. A rerun with the same `--name` resumes; `--through` stops after

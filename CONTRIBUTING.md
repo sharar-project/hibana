@@ -106,13 +106,15 @@ cheapest first:
    - **Full sets, when the screen is close:** the `full` suite (GSM8K 1,319, HumanEval, MBPP 500, MGSM 2,750).
    - **`--battery hard` (opt-in, 4-6 hours per arm):** the `hard` suite (MMLU-Pro, GPQA Diamond, IFEval, WMT24++).
      It is the one that separates close variants on knowledge.
+   - **`--battery long` (opt-in, about 3 hours per arm):** the `long` suite (RULER v2 at 32K and 128K, 120 items
+     each). Use it for anything that touches attention, the KV cache or prefill. `--battery all` runs both.
 
 The verdict (intervals are 95%; pooled = all tasks of the stage):
 
 | Profile | Rule |
 |---|---|
 | `exact` | layers 1 and 2 within their floors in every domain (the change is lossless; layer 3 is skipped) |
-| rejected | no measurable speed gain (decode interval lower bound at or below 1.035, the layer's own noise), or a task or the pooled battery significantly worse (McNemar p < 0.05 with more losses than wins; with `--battery hard` also MMLU-Pro, GPQA or IFEval, while WMT24++ chrF++ is reported only), or a pooled loss above 2.0 points |
+| rejected | no measurable speed gain (decode interval lower bound at or below 1.035, the layer's own noise), or a task or the pooled battery significantly worse (McNemar p < 0.05 with more losses than wins; with `--battery` also MMLU-Pro, GPQA, IFEval or a RULER v2 length (paired sign test), while WMT24++ chrF++ is reported only), or a pooled loss above 2.0 points |
 | `balanced` | not rejected, full stage run, pooled interval lower bound at or above -1.0 point and every task within -1.0 point |
 | `fast` | not rejected otherwise: the loss is not significant and at most 2.0 points |
 

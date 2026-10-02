@@ -126,13 +126,17 @@ def test_verdict_rules():
     assert not gate.screen_is_close(_l3(2, 14))
 
 
-def test_hard_battery_rejects_on_binary_tasks_only():
+def test_added_batteries_reject_on_pass_fail_tasks_and_ruler_only():
     lossy, fast = _l1((0.05, 0.04, 0.06), (-0.02, -0.03, -0.01)), _l2(1.2, 1.1, 1.3)
     wmt = {**_paired(300, 700, 1000, "score"), "delta": -1.0}  # a significant chrF++ loss decides nothing
-    assert gate.verdict(lossy, fast, _l3(6, 8), "screen", {"tasks": {"wmt": wmt}})[0] == "fast"
+    assert gate.verdict(lossy, fast, _l3(6, 8), "screen", {"hard": {"tasks": {"wmt": wmt}}})[0] == "fast"
     hard = {"tasks": {"mmlupro": _paired(43, 72, 1400), "wmt": wmt}}
-    v, why = gate.verdict(lossy, fast, _l3(6, 8), "screen", hard)
+    v, why = gate.verdict(lossy, fast, _l3(6, 8), "screen", {"hard": hard})
     assert v == "rejected" and "mmlupro" in why[0] and "wmt" not in why[0]
+    ruler = {"tasks": {"ruler2-32k": _paired(10, 12, 120, "score"), "ruler2-128k": _paired(8, 30, 120, "score")}}
+    v, why = gate.verdict(lossy, fast, _l3(6, 8), "screen", {"long": ruler})
+    assert v == "rejected" and "ruler2-128k" in why[0] and "ruler2-32k" not in why[0]
+    assert gate.BATTERIES["all"] == ["hard", "long"] and gate.STAGES["long"][0] == "long"
 
 
 def test_stages_reuse_the_screen_shards():
