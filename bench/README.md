@@ -135,7 +135,10 @@ Layers 1 and 2 run `bench/lossy_gate.py` in a container of the image with only
 the executor; layer 3 serves each arm with `run-sharar.sh` as container
 `sharar-lossy-gate` on `--port` (30100 by default), checks that
 `/get_server_info` reports the in-process arm's configuration, and runs
-`sharar-evals` (`--evals`, needs MGSM/MBPP and `--start`) in shards of 100 items.
+`sharar-eval`'s `evals.suite` (`--evals`, beside this checkout by default, with its `.venv`):
+`quick` as the screen, `full` when the screen is close, and `hard` / `long` (RULER v2) / both /
+`agentic` (Terminal-Bench 2.1) with `--battery hard|long|all|agentic`. Served arms run with the cold tier
+off (`SHARAR_COLD_TIER_GIB=0`) so Terminal-Bench's task containers have host memory.
 The baseline arm is cached in `$SHARAR_RESULTS/reviews/lossy-gate-baselines/`
 (keyed by image, baseline settings, prompts, worker and eval code) and reused by
 every candidate. A rerun with the same `--name` resumes; `--through` stops after
@@ -156,7 +159,7 @@ every candidate. A rerun with the same `--name` resumes; `--through` stops after
 | `bench.gb10_runtime_ab` | Current calibrated target and selected drafter over cold, warm and mixed HTTP workloads at concurrency 1, 2 and 4; optional candidate hook |
 | `bench.gb10_round_profile` | Separate unprofiled, Nsight and CUDA-event phase windows on frozen prompts; `--draft` selects the served drafter |
 | `bench.gb10_matrix` | Real-operand matrix diagnostics |
-| `sharar-evals` (separate repository) | HTTP evaluations: h2h, GSM8K/HumanEval accuracy, test-time scaling, long context, output identity |
+| `sharar-eval` (separate repository) | HTTP evaluations in one command (`evals.suite`: quick, full, hard), plus h2h, test-time scaling, long context and output identity |
 | `bench/w3_bench.py` | 3-bit decode GEMM: correctness against the dequantized reference and DRAM bandwidth per decode shape at 16, 32 and 64 rows (weights rotated past L2, CUDA-graph timing), split-K sweep |
 | `bench/w3_calibrate.py` | Fit checksummed W3 target copies from FP8 source weights and frozen activation inputs; [workflow](../docs/w3-calibration.md) |
 

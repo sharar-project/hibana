@@ -66,8 +66,8 @@ decides acceptance only when it excludes 1, and it is about ±3% wide on the
 moves continuations, so do not select among variants on its point estimate. The three-prompt `tools/benchmark.sh`
 remains the reporting cell for end-to-end numbers, never the decision.
 A change to the target's arithmetic or to acceptance also runs
-`evals.accuracy_eval` in the `sharar-evals` repository (GSM8K and HumanEval, paired against the exact
-configuration) before it becomes a default; the gate measures speed and
+the `quick` suite of the `sharar-eval` repository (`evals.suite`; GSM8K, HumanEval and MGSM, paired
+against the exact configuration) before it becomes a default; the gate measures speed and
 acceptance, not correctness. A lossy option (one that changes what the model
 emits on purpose) is judged by the lossy-change gate below instead.
 When an optimization lands, changes its default or is retired, update its
@@ -100,17 +100,23 @@ cheapest first:
 2. **Speculation health** (same process): tokens per round, round cost and
    decode tok/s per prompt with the profile's acceptance rule; the floor is a
    repeated baseline pass. The verdict's speed delta comes from here.
-3. **Task battery** (served over HTTP, paired per item, McNemar): a screen
-   (GSM8K 300, HumanEval 164, MGSM 24 per language, needles at 16K and 64K),
-   then the full sets (GSM8K 1,319, HumanEval, MBPP 500, MGSM 2,750) when the
-   screen is close.
+3. **Task battery** (served over HTTP, paired per item, McNemar; the suites of
+   `sharar-eval`'s `evals.suite`):
+   - **Screen:** the `quick` suite (GSM8K 300, HumanEval 164, MGSM 24 per language, needles at 16K and 64K).
+   - **Full sets, when the screen is close:** the `full` suite (GSM8K 1,319, HumanEval, MBPP 500, MGSM 2,750).
+   - **`--battery hard` (opt-in, 4-6 hours per arm):** the `hard` suite (MMLU-Pro, GPQA Diamond, IFEval, WMT24++).
+     It is the one that separates close variants on knowledge.
+   - **`--battery long` (opt-in, about 3 hours per arm):** the `long` suite (RULER v2 at 32K and 128K, 120 items
+     each). Use it for anything that touches attention, the KV cache or prefill. `--battery all` runs both.
+   - **`--battery agentic` (opt-in, about 18 hours per arm):** Terminal-Bench 2.1 through Harbor (the 78 tasks
+     valid on the GB10, twice). It detects only differences of about 10 points, so it is an agentic check, not a fine gate.
 
 The verdict (intervals are 95%; pooled = all tasks of the stage):
 
 | Profile | Rule |
 |---|---|
 | `exact` | layers 1 and 2 within their floors in every domain (the change is lossless; layer 3 is skipped) |
-| rejected | no measurable speed gain (decode interval lower bound at or below 1.035, the layer's own noise), or a task or the pooled battery significantly worse (McNemar p < 0.05 with more losses than wins), or a pooled loss above 2.0 points |
+| rejected | no measurable speed gain (decode interval lower bound at or below 1.035, the layer's own noise), or a task or the pooled battery significantly worse (McNemar p < 0.05 with more losses than wins; with `--battery` also MMLU-Pro, GPQA, IFEval or a RULER v2 length (paired sign test), while WMT24++ chrF++ is reported only), or a pooled loss above 2.0 points |
 | `balanced` | not rejected, full stage run, pooled interval lower bound at or above -1.0 point and every task within -1.0 point |
 | `fast` | not rejected otherwise: the loss is not significant and at most 2.0 points |
 

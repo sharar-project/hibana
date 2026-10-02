@@ -1,5 +1,6 @@
 """The lossy-change gate's host logic (tools/lossy-gate.py): profile resolution, statistics, verdict rules."""
 import importlib.util
+import math
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -79,17 +80,6 @@ def test_accept_rule_matches_serve():
     assert gate.accept_rule("3:2") == "3:2.0"
 
 
-def test_paired_accuracy_and_mcnemar():
-    base = [True] * 90 + [False] * 10
-    cand = [True] * 80 + [False] * 10 + [True] * 2 + [False] * 8
-    r = gate.paired_acc(base, cand)
-    assert (r["wins"], r["losses"]) == (2, 10)
-    assert r["delta_pp"] == pytest.approx(-8.0)
-    assert r["ci95_pp"][1] < 0
-    assert r["p"] == pytest.approx(0.0386, abs=1e-3)
-    assert gate.mcnemar_p(0, 0) == 1.0
-
-
 def test_ci_mean_resamples_groups():
     values = [0.0] * 50 + [1.0] * 50
     m, lo, hi = gate.ci_mean(values, [i // 50 for i in range(100)])
@@ -107,14 +97,18 @@ def _l2(ratio, lo, hi, tpr=(0.99, 1.01)):
             "within_floor": tpr[0] <= 1 <= tpr[1]}
 
 
+def _paired(wins, losses, n, kind="binary"):
+    """A task row as sharar-eval's `evals.suite compare --json` writes it (McNemar, normal interval of the paired difference)."""
+    d = (wins - losses) / n
+    se = math.sqrt(max(0.0, (wins + losses) / n - d * d) / n)
+    k = wins + losses
+    p = min(1.0, sum(math.comb(k, i) for i in range(k + 1) if abs(i - k / 2) >= abs(wins - k / 2)) / 2 ** k) if k else 1.0
+    return {"kind": kind, "n": n, "delta": 100 * d, "ci95": [100 * (d - 1.96 * se), 100 * (d + 1.96 * se)],
+            "wins": wins, "losses": losses, "p": p}
+
+
 def _l3(wins, losses, n=700):
-    base = [True] * (n - 50) + [False] * 50
-    cand = list(base)
-    for i in range(losses):
-        cand[i] = False
-    for i in range(wins):
-        cand[n - 50 + i] = True
-    r = gate.paired_acc(base, cand)
+    r = _paired(wins, losses, n)
     return {"tasks": {"gsm8k": r}, "pooled": r}
 
 
@@ -132,8 +126,23 @@ def test_verdict_rules():
     assert not gate.screen_is_close(_l3(2, 14))
 
 
-def test_shards_cover_the_sets_and_reuse_the_screen():
-    screen = {gate.shard_path(Path("x"), s) for s in gate.shards(gate.SCREEN)}
-    full = {gate.shard_path(Path("x"), s) for s in gate.shards(gate.FULL)}
-    assert sum(gate.shard_items(s) for s in gate.shards(gate.FULL)) == 1319 + 164 + 500 + 2750
-    assert {p for p in screen if "gsm8k" in p.name or "humaneval" in p.name} <= full
+def test_added_batteries_reject_on_pass_fail_tasks_and_ruler_only():
+    lossy, fast = _l1((0.05, 0.04, 0.06), (-0.02, -0.03, -0.01)), _l2(1.2, 1.1, 1.3)
+    wmt = {**_paired(300, 700, 1000, "score"), "delta": -1.0}  # a significant chrF++ loss decides nothing
+    assert gate.verdict(lossy, fast, _l3(6, 8), "screen", {"hard": {"tasks": {"wmt": wmt}}})[0] == "fast"
+    hard = {"tasks": {"mmlupro": _paired(43, 72, 1400), "wmt": wmt}}
+    v, why = gate.verdict(lossy, fast, _l3(6, 8), "screen", {"hard": hard})
+    assert v == "rejected" and "mmlupro" in why[0] and "wmt" not in why[0]
+    ruler = {"tasks": {"ruler2-32k": _paired(10, 12, 120, "score"), "ruler2-128k": _paired(8, 30, 120, "score")}}
+    v, why = gate.verdict(lossy, fast, _l3(6, 8), "screen", {"long": ruler})
+    assert v == "rejected" and "ruler2-128k" in why[0] and "ruler2-32k" not in why[0]
+    assert gate.BATTERIES["all"] == ["hard", "long"] and gate.STAGES["long"][0] == "long"
+    assert gate.STAGES["agentic"] == ("agentic", ["tbench"])
+    assert "SHARAR_COLD_TIER_GIB=0" in gate.served_config({}, "fast", {}, "img", 30100)
+    assert "SHARAR_COLD_TIER_GIB=0" not in gate.served_config({}, "fast", {"SHARAR_COLD_TIER_GIB": "8"}, "img", 30100)
+
+
+def test_stages_reuse_the_screen_shards():
+    """The screen and full stages are sharar-eval suites; full's GSM8K starts with the screen's 300 items."""
+    assert gate.STAGES["screen"][0] == "quick" and gate.STAGES["full"][0] == "full"
+    assert {"gsm8k", "humaneval"} <= set(gate.STAGES["screen"][1]) & set(gate.STAGES["full"][1])
