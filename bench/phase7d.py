@@ -12,7 +12,9 @@ from sharar.model.qwen38 import Qwen38
 from sharar.tokenizer import SnapshotTokenizer
 
 import gb10_profile
-import local_workloads
+from support.evals import evals_module
+
+local_workloads = evals_module('evals.speed.local')  # the frozen local-use HTTP client (sharar-eval)
 from memory_trace import measure_stage
 from phase7c import http_server
 
