@@ -1,91 +1,23 @@
 # Benchmarking Sharar
 
-## Quick TPS command
+## End-to-end speed (sharar-eval)
 
-Use an already running server built from the current source, with exclusive
-GPU use and the host memory guard. The benchmark client runs on the host;
-it flushes the server's prefix cache but does not start or stop services.
-
-For experiments that mount changed CUDA sources into a container, set a
-separate `TORCH_EXTENSIONS_DIR` from the serving container. A shared Ninja
-build directory can retain an experimental binary when an older image's
-source timestamps precede the compiled object. Verify the loaded extension
-when restoring a service; its image identity alone is insufficient.
+The HTTP speed and serving benchmarks live in
+[sharar-eval](https://github.com/abdelfattah-lab/sharar-eval) (`evals/speed/`, moved 2026-10-02). They
+only talk to a running server, so the same commands measure Sharar, SGLang or Atlas:
 
 ```bash
-tools/benchmark.sh
-# Equivalent installed entry point:
-sharar benchmark
+cd ../sharar-eval
+.venv/bin/python -m evals.speed --url http://127.0.0.1:30004            # AIPerf: frozen 10K/1K, cold prefix, BS1 (formerly `sharar benchmark`)
+.venv/bin/python -m evals.speed.sharegpt ...                            # ShareGPT buckets at several concurrencies
+.venv/bin/python -m evals.speed.competitive ...                         # engine-neutral native /generate cells
+.venv/bin/python -m evals.speed.engine_matrix ...                       # Sharar / SGLang / Atlas token-input matrix
+.venv/bin/python -m evals.speed.local ... / evals.speed.agent ...       # local-use and agent-shaped workloads
 ```
 
-Defaults: the frozen `code` task, 10,000 input tokens, exactly 1,000 output
-tokens, temperature zero, seed 42, concurrency one, one excluded full warmup
-and three timed requests. `--workload all` adds `design` and `reasoning`.
-The three built-in prompts reproduce the first input row of each task in the
-recorded [AIPerf TPS comparison](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/gb10-tps.md). The packaged historical
-source fixture is independent of edits to current engine code. Prompt
-tokenization occurs outside timing; each run saves the exact IDs it uses.
-
-The `code` workload changed on 2026-09-15 (`gb10-coding-v2`): the earlier
-prompt made the model answer with a tool call and stop at output token 98, so
-902 of its 1,000 tokens were a forced post-EOS continuation. The new prompt
-tells the model it has no tools and runs the full budget; `--workload code_v1`
-keeps the old prompt for comparisons with reports dated before the change.
-
-`--input-tokens`, `--output-tokens`, `--repeats` and `--warmups` can shorten a
-development run. Changed token budgets define a different benchmark cell.
-Run `tools/benchmark.sh --help` for all options.
-
-One-time setup, if AIPerf is not already available:
-
-```bash
-python3 -m venv .venv-aiperf
-.venv-aiperf/bin/pip install aiperf==0.12.0
-```
-
-Discovery checks `--aiperf`, `SHARAR_AIPERF`, `PATH`, the active Python's bin
-directory, `.venv-aiperf/bin/aiperf`, and `$SHARAR_RESULTS/aiperf-venv/bin/aiperf`.
-Explicit paths take precedence. The client reads `SHARAR_HF_CACHE`,
-`SHARAR_RESULTS` and `SHARAR_AIPERF` from `config/gb10.env` when unset; environment
-variables override that file. `SHARAR_CONFIG_FILE` selects another config.
-AIPerf needs the pinned tokenizer available locally even with server token
-counting enabled. Installing Sharar with `.[benchmark]` is another way to
-install the pinned AIPerf dependency.
-
-To compare engines, execute these in **separate server/GPU windows**, using
-new output directories. Match target weights, context/batch limits and prefill
-settings, and record the draft precision selected for each server:
-
-```bash
-# While the prepared SGLang server owns the GPU:
-tools/benchmark.sh --url http://127.0.0.1:30000 --output /tmp/sglang-code
-
-# After switching to the prepared Sharar server:
-tools/benchmark.sh --inputs /tmp/sglang-code/frozen-inputs.json \
-  --baseline /tmp/sglang-code --output /tmp/sharar-code
-```
-
-`--baseline` rejects differing input IDs, token budgets or benchmark protocols.
-It prints percentage changes in both TPS measures and reports whether the
-timed output IDs match. Output differences are retained for investigation;
-they do not establish a same-output speedup or equal answer quality. The client
-benchmarks the server configuration it connects to; use Sharar's explicit
-`--draft-precision fp8` serving option for the optimized draft profile.
-
-The table uses only timed requests. End-to-end TPS is total output tokens
-divided by total request latency, including prefill. Decode TPS is
-`sum(output_tokens - 1) / sum(latency - TTFT)`. This is the same decode-rate
-convention as the earlier audit; SSE bursts do not provide individual token
-timestamps. TTFT and latency columns are arithmetic means. Model loading,
-client startup, tokenization, cache flushing and warmups are outside these
-request metrics. Short runs do not establish tail percentiles.
-
-Every result directory contains `summary.json`, `results.json`,
-`frozen-inputs.json` and each request's raw AIPerf artifacts, server info and
-token audit. Existing directories are never overwritten. The default root is
-`$SHARAR_RESULTS/aiperf`, falling back to `$XDG_STATE_HOME/sharar/gb10/aiperf`
-(or `~/.local/state/sharar/gb10/aiperf`). The legacy `bench.gb10_aiperf` entry
-point remains available for historical commands and uses the shared auditor.
+The frozen prompts are byte-identical to the ones here: `sharar/benchmark_workloads.py` stays because the
+in-process benchmarks (family inputs, `tools/check_distribution.py`) use it, and both repositories pin
+the same digests in their tests.
 
 ## The family gate
 
@@ -148,20 +80,17 @@ every candidate. A rerun with the same `--name` resumes; `--through` stops after
 
 | Driver | Purpose |
 |---|---|
-| `sharar benchmark` / `tools/benchmark.sh` | Installed AIPerf cold BS1 iteration command |
 | `bench.gb10_family_eval` | Frozen family native comparisons and paired statistics |
 | `tools/family-gate.py`, `bench/gate_hooks.py`, `bench/family_inputs.py` | The family gate: windows, candidate hooks, reproducible frozen inputs |
 | `tools/lossy-gate.py`, `bench/lossy_gate.py`, `bench/workloads/lossy_v1.json` | The lossy-change gate: distribution distance, speculation health and the paired task battery, one verdict |
-| `bench.gb10_bs4_engine` | Controlled verifier-width/native BS4 comparison |
-| `bench.gb10_bs4_http` | Finite and replenished BS4 HTTP workloads |
-| `bench.gb10_agent_retention` | Cold controls and interleaved native cache resumes |
-| `bench.gb10_agent_http` | Growing simulated conversations and mixed HTTP arrivals |
-| `bench.gb10_runtime_ab` | Current calibrated target and selected drafter over cold, warm and mixed HTTP workloads at concurrency 1, 2 and 4; optional candidate hook |
-| `bench.gb10_round_profile` | Separate unprofiled, Nsight and CUDA-event phase windows on frozen prompts; `--draft` selects the served drafter |
-| `bench.gb10_matrix` | Real-operand matrix diagnostics |
-| `sharar-eval` (separate repository) | HTTP evaluations in one command (`evals.suite`: quick, full, hard), plus h2h, test-time scaling, long context and output identity |
+| `sharar-eval` (separate repository) | Everything over HTTP: quality suites (`evals.suite`: quick, full, hard, long, agentic), speed and serving benchmarks (`evals.speed`), h2h, test-time scaling, output identity |
 | `bench/w3_bench.py` | 3-bit decode GEMM: correctness against the dequantized reference and DRAM bandwidth per decode shape at 16, 32 and 64 rows (weights rotated past L2, CUDA-graph timing), split-K sweep |
 | `bench/w3_calibrate.py` | Fit checksummed W3 target copies from FP8 source weights and frozen activation inputs; [workflow](../docs/w3-calibration.md) |
+| `bench/flashnext_round.py`, `flashnext_profile.py`, `flashnext_parity.py`, `flashnext_quant.py` | Flash-Next round cost and phase profile, parity against the reference, trunk quantization |
+
+The 27B serving-study drivers (batch-4 and agent HTTP experiments, acceptance replay, matrix and round
+profiles, Phase 7 checks) were removed on 2026-10-02; they and their results are on the
+[archive branch](https://github.com/abdelfattah-lab/sharar/tree/archive/pre-cleanup-2026-09-26) and in git history.
 
 Use each driver's `--help` and its linked [performance evidence](../docs/performance.md)
 to freeze inputs, output budgets, warmups, precision and geometry before running.
@@ -192,6 +121,5 @@ at their original revisions. Raw tensors, outputs and traces stay outside Git.
   and the publisher's reference model, and the objective against SpecForge,
   then runs a short training smoke. `bench/support/target_features.py`
   recomputes raw target features for it.
-- `bench/draft_validate.py` is the earlier publisher-oracle gate for external drafts.
 
 See [draft adaptation](../docs/draft-adaptation.md).
