@@ -107,7 +107,7 @@ CHECKED = ("target", "profile", "w3_decode", "w3_checkpoint", "stable_numerics",
 
 # Layer-3 stages: the sharar-eval suite each runs and the tasks its verdict reads (the suite's GSM8K-300 is the first
 # three shards of the full set, so the full stage reuses them).
-STAGES = {"screen": ("quick", ["gsm8k", "humaneval", "mgsm-pl24"]), "full": ("full", ["gsm8k", "humaneval", "mbpp", "mgsm"]),
+STAGES = {"screen": ("quick", ["gsm8k", "humaneval", "mgsm-pl24", "needles"]), "full": ("full", ["gsm8k", "humaneval", "mbpp", "mgsm", "needles"]),
           "hard": ("hard", ["mmlupro", "gpqa", "ifeval", "wmt"])}
 BALANCED_MARGIN, FAST_MARGIN = 1.0, 2.0  # accuracy points
 # Layer-2 speed resolution (Flash-Next, 2026-09-27): a warm baseline repeat reads x1.035 and a second exact
@@ -438,9 +438,9 @@ def run_suite(label: str, served: Served, suite: str, l3: Path, skip: list[str],
 
 
 def suite_compare(python: str, evals: Path, base: Path, cand: Path, tasks: list[str]) -> dict:
-    """sharar-eval's paired scorecard over `tasks` (and the needles, when both arms have them)."""
+    """sharar-eval's paired scorecard over `tasks` (the needles count only when both arms ran them)."""
     out = cand / f"compare-{'-'.join(tasks)}.json"
-    r = subprocess.run([python, "-m", "evals.suite", "compare", str(base), str(cand), "--tasks", ",".join(tasks + ["needles"]),
+    r = subprocess.run([python, "-m", "evals.suite", "compare", str(base), str(cand), "--tasks", ",".join(tasks),
                         "--json", str(out)], cwd=evals, capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError(f"evals.suite compare failed: {r.stderr.strip()[-500:]}")
@@ -584,7 +584,7 @@ def one_line(name: str, target: str, v: str, l1, l2, l3, stage, hard=None) -> st
         p = l3["pooled"]
         parts.append(f"L3 {stage} {p['delta']:+.1f} pp {fmt_ci(p['ci95'])} ({p['wins']}/{p['losses']}, p {p['p']:.2f})")
     if hard:
-        parts.append("hard " + ", ".join(f"{t} {r['delta']:+.{2 if r['kind'] == 'score' else 1}f} (p {r['p']:.2f})" for t, r in hard["tasks"].items()))
+        parts.append("hard " + ", ".join(f"{t} {r['delta']:+.{2 if r['kind'] == 'score' else 1}f} (p {r['p']:.2f})" for t, r in hard["tasks"].items() if r["kind"] != "needles"))
     return " | ".join(parts)
 
 
