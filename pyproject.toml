@@ -23,7 +23,6 @@ dependencies = [
 [project.optional-dependencies]
 gpu = ["flashinfer-python==0.6.17", "triton==3.7.1", "einops==0.8.2", "numpy==2.3.5", "packaging==26.3"]
 test = ["pytest==9.1.1", "httpx==0.28.1"]
-benchmark = ["aiperf==0.12.0"]
 
 [project.scripts]
 sharar = "sharar.cli:main"
