@@ -1,4 +1,4 @@
-"""Command line entry point for serving, benchmarking and diagnostics."""
+"""Command line entry point for serving and diagnostics (HTTP benchmarks: sharar-eval's `python -m evals.speed`)."""
 
 from __future__ import annotations
 
@@ -11,9 +11,6 @@ import sys
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sharar")
     sub = parser.add_subparsers(dest="command", required=True)
-    from sharar.benchmark import add_arguments
-
-    add_arguments(sub.add_parser("benchmark", help="AIPerf workload benchmark with output and decode TPS"))
     p_check = sub.add_parser("check", help="validate host, GPU and pinned snapshot")
     p_check.add_argument("--no-gpu", action="store_true")
     sub.add_parser("describe", help="print the pinned target facts")
@@ -113,11 +110,6 @@ def main(argv: list[str] | None = None) -> int:
     p_prof.add_argument("--mode", choices=["prefill", "decode", "both"], default="both")
     p_prof.add_argument("--top", type=int, default=30)
     args = parser.parse_args(argv)
-
-    if args.command == "benchmark":
-        from sharar.benchmark import benchmark_cli
-
-        return benchmark_cli(args)
 
     from sharar import config
 

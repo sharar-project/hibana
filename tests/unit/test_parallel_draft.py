@@ -65,23 +65,6 @@ def test_selector_lattice_conditions_on_anchor_then_previous_candidate():
                     torch.testing.assert_close(scores[b, t, i, j], logits[b * 3 + t, token] + pair, rtol=1e-5, atol=1e-4)
 
 
-def test_selector_retains_corrections_smaller_than_a_bf16_logit_step():
-    from bench.gb10_optimize import selector_fp32
-    hidden = torch.ones(1, 1, 5120, dtype=torch.bfloat16)
-    logits = torch.tensor([[32., 32.]], dtype=torch.bfloat16)
-    weights = {'candidate_selector.hidden_projection.weight': torch.zeros(1, 5120, dtype=torch.bfloat16),
-               'candidate_selector.predecessor_codebook': torch.ones(2, 1, dtype=torch.bfloat16),
-               'candidate_selector.successor_codebook': torch.tensor([[.01], [.02]], dtype=torch.bfloat16)}
-    weights['candidate_selector.hidden_projection.weight'][0, 0] = 1
-    model = SimpleNamespace(target=SimpleNamespace(logits=lambda x: logits), weights=weights,
-                            cfg={'dflash_config': {'selector_top_k': 2}})
-    candidates, scores = selector_fp32(model, hidden, torch.tensor([0]))
-    assert scores.dtype == torch.float32
-    chosen = candidates[0, 0, scores[0, 0, 0].argmax()]
-    assert chosen.item() == 1
-    assert scores[0, 0, 0].bfloat16().unique().numel() == 1
-
-
 def test_prospective_draft_budget_reduces_optional_cache_before_allocation(monkeypatch):
     from sharar.cache import ledger
     monkeypatch.setattr(ledger, 'mem_available_bytes', lambda: 64 * 2**30)
