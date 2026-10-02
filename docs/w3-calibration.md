@@ -51,9 +51,11 @@ serve `$SHARAR_RESULTS/w3-checkpoints/<target>-current` (`qwen38-current`,
 target's published checkpoint, pinned by revision in the target's config
 (`W3_REPO`, `W3_REVISION`), into `w3-checkpoints/<target>-<revision>` and links it
 (`python3 -m sharar.weights.w3_checkpoint fetch`, run in the image; `HF_TOKEN` is
-passed through for a private repository). Flash-Next has one; the 27B has none
-at the moment and needs a local calibration. To serve a new calibration, point
-the link at its directory or set `SHARAR_W3_CHECKPOINT=/host/calibrated-w3`.
+passed through for a private repository). Both targets have one: Flash-Next's
+(`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`) and the 27B's
+(`yemara/Qwen3.8-27B-NVFP4-sharar-w3`, GPTQ from the FP8 release on the
+`bc7984f` inputs, 2026-10-01). To serve a new calibration, point the link at its
+directory or set `SHARAR_W3_CHECKPOINT=/host/calibrated-w3`.
 
 The loader checks the target revision, projection coverage, dimensions, dtypes
 and hashes before graph capture. `/get_server_info` exposes `w3_target_identity`,
