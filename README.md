@@ -90,7 +90,8 @@ python3 tools/check_evidence.py   # documentation links
 | `bench/`, `tests/`, `tools/`, `docker/` | In-process benchmarks, tests, checks, image build |
 | `docs/` | [Architecture](docs/architecture.md), [optimizations](docs/optimizations.md), [performance](docs/performance.md), [Flash-Next](docs/flashnext.md), [roadmap](roadmap.md) |
 
-HTTP evaluations live in [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval): one
-command (`python -m evals.suite run --suite quick|full|hard`) evaluates a running server. Read
+Quality and speed benchmarks live in [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval) and
+measure any running server over HTTP. `tools/evaluate.py --target flashnext --profile fast --suite quick --speed`
+serves this build and runs them ([bench/README.md](bench/README.md)). Read
 [CONTRIBUTING.md](CONTRIBUTING.md) before changing the engine. Apache 2.0
 ([license](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md)).
