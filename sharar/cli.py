@@ -14,23 +14,13 @@ def main(argv: list[str] | None = None) -> int:
     p_check = sub.add_parser("check", help="validate host, GPU and pinned snapshot")
     p_check.add_argument("--no-gpu", action="store_true")
     sub.add_parser("describe", help="print the pinned target facts")
-    p_par = sub.add_parser("parity", help="compare the Sharar forward with reference dumps")
-    p_par.add_argument("--reference", required=True, help="directory written by tools/reference")
-    p_par.add_argument("--prompts", default="all")
-    p_par.add_argument("--layers", default="all", help="'all' or comma-separated layer ids to dump-compare")
-    p_pp = sub.add_parser("parity-prompts", help="write the fixed parity prompt set as token IDs")
+    p_pp = sub.add_parser("prompts", help="write the fixed prompt set as token IDs (for generate, profile, bench-decode)")
     p_pp.add_argument("--out", required=True)
-    p_gen = sub.add_parser("generate", help="greedy/sampled generation for one parity prompt (eager decode)")
-    p_gen.add_argument("--prompts", required=True, help="prompts.json from parity-prompts")
+    p_gen = sub.add_parser("generate", help="greedy/sampled generation for one fixed prompt (eager decode)")
+    p_gen.add_argument("--prompts", required=True, help="prompts.json from `sharar prompts`")
     p_gen.add_argument("--name", required=True)
     p_gen.add_argument("--max-new-tokens", type=int, default=32)
     p_gen.add_argument("--temperature", type=float, default=0.0)
-    p_can = sub.add_parser("canaries", help="decode every parity prompt and compare with the reference continuations")
-    p_can.add_argument("--reference", required=True)
-    p_can.add_argument("--max-new-tokens", type=int, default=32)
-    p_can.add_argument("--batch", type=int, default=1, help="also decode the four canaries as one batch of this size")
-    p_can.add_argument("--eager", action="store_true", help="skip CUDA graph capture")
-    p_can.add_argument("--spec", type=int, default=0, help="MTP speculative decoding with this many draft tokens")
     p_bd = sub.add_parser("bench-decode", help="decode throughput and determinism with CUDA graphs")
     p_bd.add_argument("--prompts", required=True)
     p_bd.add_argument("--name", default="rand128")
@@ -127,10 +117,10 @@ def main(argv: list[str] | None = None) -> int:
         facts = {k: v for k, v in vars(config).items() if k.isupper()}
         print(json.dumps(facts, indent=2, default=str))
         return 0
-    if args.command == "parity-prompts":
+    if args.command == "prompts":
         from pathlib import Path
 
-        from sharar.parity.prompts import write_prompts
+        from sharar.engine.prompts import write_prompts
 
         prompts = write_prompts(Path(args.out))
         for name, ids in prompts.items():
@@ -140,10 +130,6 @@ def main(argv: list[str] | None = None) -> int:
         from sharar.engine.run import generate_cli
 
         return generate_cli(args.prompts, args.name, args.max_new_tokens, args.temperature)
-    if args.command == "canaries":
-        from sharar.engine.run import canaries_cli
-
-        return canaries_cli(args.reference, args.max_new_tokens, args.batch, graphs=not args.eager, spec=args.spec)
     if args.command == "serve":
         from sharar.engine import config as engine_config
         from sharar.proposers.factory import MAX_DEPTHS
@@ -263,8 +249,4 @@ def main(argv: list[str] | None = None) -> int:
         from sharar.engine.run import bench_decode_cli
 
         return bench_decode_cli(args.prompts, args.name, args.max_new_tokens, args.batches, spec=args.spec)
-    if args.command == "parity":
-        from sharar.parity.run import run_parity
-
-        return run_parity(args.reference, args.prompts, args.layers)
     return 2

@@ -161,12 +161,10 @@ experiment, off by default. Its reference kernel/tests are retained; it is not
 part of the measured default configuration or a launcher optimization option.
 
 `tools/dev-shell.sh` mounts current source and local caches into a development
-container. Its historical default is the frozen SGLang reference image. Set
-`SHARAR_DEV_IMAGE=sharar:qwen38-27b` explicitly for the current Sharar stack.
+container of the Sharar runtime image (`SHARAR_DEV_IMAGE`, else the config's `SHARAR_IMAGE`).
 Reserve an exclusive GPU window and arrange an active memory guard before
 loading a model or running `bash tools/check.sh gpu`. The development helper
-does not stop production or start the guard automatically. Use
-`--with-reference` only for the isolated reference tools.
+does not stop production or start the guard automatically.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for numerical/lifecycle checks and
 [historical environment details](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/env.md) for old reference runs.

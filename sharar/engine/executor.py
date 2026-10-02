@@ -529,7 +529,7 @@ class Executor:
     def warmup(self, log=None) -> None:
         """Run every prefill path once so first requests do not pay backend
         initialization (b12x module load, cuDNN handles, Triton compiles)."""
-        from sharar.parity.prompts import random_ids
+        from sharar.engine.prompts import random_ids
 
         params = SamplingParams(max_new_tokens=1)
         a = self.admit(random_ids(300, 11), params)

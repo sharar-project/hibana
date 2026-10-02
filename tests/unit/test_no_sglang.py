@@ -5,7 +5,7 @@ import sys
 def test_sharar_never_imports_sglang():
     code = (
         "import sys, importlib; "
-        "mods = ['sharar', 'sharar.config', 'sharar.cli', 'sharar.parity.prompts', "
+        "mods = ['sharar', 'sharar.config', 'sharar.cli', 'sharar.engine.prompts', "
         "'sharar.weights.modelopt']; "
         "[importlib.import_module(m) for m in mods]; "
         "print(any(m.split('.')[0] == 'sglang' for m in sys.modules))"

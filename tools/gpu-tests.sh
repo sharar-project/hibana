@@ -9,7 +9,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 fail() { echo "gpu-tests: $*" >&2; exit 1; }
-config_value() { grep -E "^$1=" "$2" 2>/dev/null | tail -1 | cut -d= -f2-; }
+config_value() { { grep -E "^$1=" "$2" 2>/dev/null || true; } | tail -1 | cut -d= -f2-; }   # unset keys are empty, not fatal
 GB10_ENV="$REPO_DIR/config/gb10.env"; FN_ENV="$REPO_DIR/config/flashnext.env"
 HF_CACHE="${SHARAR_HF_CACHE:-$(config_value SHARAR_HF_CACHE "$GB10_ENV")}"
 FN_CACHE="${SHARAR_FLASHNEXT_CACHE:-$(config_value SHARAR_FLASHNEXT_CACHE "$FN_ENV")}"
