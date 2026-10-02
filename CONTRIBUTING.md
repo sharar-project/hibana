@@ -108,6 +108,8 @@ cheapest first:
      It is the one that separates close variants on knowledge.
    - **`--battery long` (opt-in, about 3 hours per arm):** the `long` suite (RULER v2 at 32K and 128K, 120 items
      each). Use it for anything that touches attention, the KV cache or prefill. `--battery all` runs both.
+   - **`--battery agentic` (opt-in, about 18 hours per arm):** Terminal-Bench 2.1 through Harbor (the 78 tasks
+     valid on the GB10, twice). It detects only differences of about 10 points, so it is an agentic check, not a fine gate.
 
 The verdict (intervals are 95%; pooled = all tasks of the stage):
 

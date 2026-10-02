@@ -137,6 +137,9 @@ def test_added_batteries_reject_on_pass_fail_tasks_and_ruler_only():
     v, why = gate.verdict(lossy, fast, _l3(6, 8), "screen", {"long": ruler})
     assert v == "rejected" and "ruler2-128k" in why[0] and "ruler2-32k" not in why[0]
     assert gate.BATTERIES["all"] == ["hard", "long"] and gate.STAGES["long"][0] == "long"
+    assert gate.STAGES["agentic"] == ("agentic", ["tbench"])
+    assert "SHARAR_COLD_TIER_GIB=0" in gate.served_config({}, "fast", {}, "img", 30100)
+    assert "SHARAR_COLD_TIER_GIB=0" not in gate.served_config({}, "fast", {"SHARAR_COLD_TIER_GIB": "8"}, "img", 30100)
 
 
 def test_stages_reuse_the_screen_shards():

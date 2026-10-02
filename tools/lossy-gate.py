@@ -30,7 +30,8 @@ Layers, cheapest first:
      long-context needles at 16K and 64K as a smoke test). Full, when the screen is close: the `full`
      suite (GSM8K 1319, HumanEval 164, MBPP 500, MGSM 2750). `--battery` adds suites after the screen or
      full stage: `hard` (MMLU-Pro, GPQA Diamond, IFEval, WMT24++; 4-6 hours per arm), `long` (RULER v2 at
-     32K and 128K, 120 items each; about 3 hours per arm) or `all` (both).
+     32K and 128K, 120 items each; about 3 hours per arm), `all` (both) or `agentic` (Terminal-Bench 2.1 through
+     Harbor, the 78 tasks valid on the GB10 twice; about 18 hours per arm, in one GPU window).
 
 Verdict rules (also in CONTRIBUTING.md, "Judge a lossy option"). Intervals are 95%: bootstrap over
 64-position blocks (layer 1) or prompts (layer 2), normal approximation of the paired difference
@@ -110,8 +111,10 @@ CHECKED = ("target", "profile", "w3_decode", "w3_checkpoint", "stable_numerics",
 # Layer-3 stages: the sharar-eval suite each runs and the tasks its verdict reads (the suite's GSM8K-300 is the first
 # three shards of the full set, so the full stage reuses them).
 STAGES = {"screen": ("quick", ["gsm8k", "humaneval", "mgsm-pl24", "needles"]), "full": ("full", ["gsm8k", "humaneval", "mbpp", "mgsm", "needles"]),
-          "hard": ("hard", ["mmlupro", "gpqa", "ifeval", "wmt"]), "long": ("long", ["ruler2-32k", "ruler2-128k"])}
-BATTERIES = {"quick": [], "hard": ["hard"], "long": ["long"], "all": ["hard", "long"]}
+          "hard": ("hard", ["mmlupro", "gpqa", "ifeval", "wmt"]), "long": ("long", ["ruler2-32k", "ruler2-128k"]),
+          "agentic": ("agentic", ["tbench"])}
+BATTERIES = {"quick": [], "hard": ["hard"], "long": ["long"], "agentic": ["agentic"], "all": ["hard", "long"]}
+AGENTIC_HOLD_MINUTES = 36 * 60  # one window: a Terminal-Bench task cut off by a window restarts from scratch
 BALANCED_MARGIN, FAST_MARGIN = 1.0, 2.0  # accuracy points
 # Layer-2 speed resolution (Flash-Next, 2026-09-27): a warm baseline repeat reads x1.035 and a second exact
 # process x0.986, so a gain must clear 3.5% to be told from the instrument's own noise.
@@ -232,6 +235,8 @@ def served_config(base: dict, profile: str, overrides: dict, image: str, port: i
     lines = [f"{k}={v}" for k, v in base.items()]
     lines += [f"SHARAR_PROFILE={profile}"] + [f"{k}={v}" for k, v in overrides.items()]
     lines += [f"SHARAR_IMAGE={image}", f"SHARAR_CONTAINER={CONTAINER}", f"SHARAR_PORT={port}", "SHARAR_SESSION_DIR=off", "SHARAR_TRACES="]
+    if "SHARAR_COLD_TIER_GIB" not in overrides:  # host memory for Terminal-Bench's task containers; caching only, same in every stage
+        lines.append("SHARAR_COLD_TIER_GIB=0")
     return "# written by tools/lossy-gate.py\n" + "\n".join(lines) + "\n"
 
 
@@ -627,6 +632,7 @@ def summary_md(card: dict) -> str:
                       f"{100 * l2['relaxed_share']:.1f}% of emitted tokens. By domain: "
                   + ", ".join(f"{k} x{v['ratio']:.3f}" for k, v in l2["domains"].items() if v.get("n")), ""]
     titles = {"hard": "Hard battery (served, 4 streams, paired; WMT24++ chrF++ decides nothing)",
+              "agentic": "Agentic battery: Terminal-Bench 2.1 (Terminus-2, 2 tasks at a time, two attempts, paired McNemar)",
               "long": "Long battery: RULER v2 (served, 4 streams, paired bootstrap of the 0-100 item score)"}
     for title, sc in [(f"Layer 3: task battery ({card['stage']}, served, 4 streams, paired, McNemar)", l3)] + \
                      [(titles[k], v) for k, v in (card.get("extra") or {}).items()]:
@@ -684,7 +690,7 @@ def main(argv=None) -> int:
     ap.add_argument("--port", type=int, default=30100, help="served arms' port (30100-30199)")
     ap.add_argument("--battery", choices=sorted(BATTERIES), default="quick",
                     help="quick: the screen, then the full sets when close; hard / long / all: also sharar-eval's hard suite "
-                         "(4-6 h per arm), long suite (RULER v2, ~3 h per arm) or both")
+                         "(4-6 h per arm), long suite (RULER v2, ~3 h per arm) or both; agentic: Terminal-Bench 2.1 (~18 h per arm)")
     ap.add_argument("--evals", type=Path, default=Path(os.environ.get("SHARAR_EVALS") or REPO.parent / "sharar-eval"),
                     help="sharar-eval checkout (default: SHARAR_EVALS, else beside this one)")
     ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
@@ -793,7 +799,8 @@ def main(argv=None) -> int:
             suite, tasks = STAGES[stage_name]
             for side in plans:
                 if not args.report:
-                    run_suite(side, servers[side], suite, dirs[side], ["needles"] if args.no_needles else [], args.hold_minutes, engine)
+                    run_suite(side, servers[side], suite, dirs[side], ["needles"] if args.no_needles else [],
+                              AGENTIC_HOLD_MINUTES if stage_name == "agentic" else args.hold_minutes, engine)
             card = suite_compare(args.python, args.evals, dirs["baseline"], dirs["candidate"], tasks)
             return card if card["tasks"] else None  # --report before the arms ran
 
