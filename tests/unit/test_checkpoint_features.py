@@ -132,15 +132,15 @@ def test_interior_snapshot_eviction_drops_its_features_only(monkeypatch):
 
 def test_prospective_budget_accounts_for_each_recurrent_feature_window(monkeypatch, tmp_path):
     import json
-    from sharar import config
     from sharar.cache import spec_budget
     from sharar.proposers.parallel import PINS
+    from sharar.target import Target
     snapshot = tmp_path / 'models--target' / 'snapshots' / 'revision'
     name, revision = PINS['dflash2']
     draft = tmp_path / ('models--' + name.replace('/', '--')) / 'snapshots' / revision
     draft.mkdir(parents=True)
     (draft / 'config.json').write_text(json.dumps({'sliding_window': 2048}))
-    monkeypatch.setattr(config, 'snapshot_dir', lambda: snapshot)
+    monkeypatch.setattr(Target, 'snapshot_dir', lambda self, cache_dir=None: snapshot)  # no model cache needed
     monkeypatch.setattr(spec_budget, 'tensor_bytes', lambda *args: (128, 64))
     spec = spec_budget.SpecConfig('dflash2', 15, 'reconstruct', 'fp8')
     small, _ = spec_budget.budget(spec, 4, 32768, cache_slots=5)
