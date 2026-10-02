@@ -1,4 +1,4 @@
-"""The fixed parity prompt set: token-ID sequences shared by every oracle and test.
+"""The fixed prompt set: token-ID sequences shared by the engine's CLI checks and tests.
 
 Random-ID prompts exercise the kernels at each length independent of tokenizer
 behavior; text prompts have realistic activation statistics; the canaries are

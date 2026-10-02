@@ -11,7 +11,7 @@ def draft_runtime(request):
     from sharar import config
     from sharar.engine.executor import Executor
     from sharar.model.qwen38 import Qwen38
-    from sharar.parity.prompts import PARAGRAPH
+    from sharar.engine.prompts import PARAGRAPH
     from sharar.tokenizer import SnapshotTokenizer
     gc.collect()
     torch.cuda.empty_cache()

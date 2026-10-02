@@ -1,4 +1,4 @@
-from sharar.parity.prompts import random_ids
+from sharar.engine.prompts import random_ids
 
 
 def test_random_ids_are_deterministic_and_in_range():

@@ -12,11 +12,8 @@ from sharar import config
 from sharar.engine.executor import Executor
 from sharar.engine.sampler import SamplingParams
 from sharar.model.qwen38 import Qwen38
-from sharar.parity.prompts import CANARIES, NEEDLE, read_prompts
+from sharar.engine.prompts import NEEDLE, read_prompts
 from sharar.tokenizer import SnapshotTokenizer
-
-SURE_GAP = 5.0
-
 
 def _canary_checks():
     return {
@@ -66,72 +63,6 @@ def generate_cli(prompts_path: str, name: str, max_new_tokens: int, temperature:
     print(f"  ids: {req.output_ids}")
     print(f"  text: {text!r}")
     return 0
-
-
-def _compare_continuation(name: str, mine: list[int], ref: dict) -> tuple[int, bool]:
-    """Compare token by token until the first divergence. Returns (matched
-    tokens, ok) where ok is False only if a divergence happened where the
-    reference's margin was at least SURE_GAP nats."""
-    ref_ids = ref["output_ids"]
-    ref_top = ref["output_top_logprobs"]
-    matched = 0
-    for i, (a, b) in enumerate(zip(mine, ref_ids)):
-        if a != b:
-            top = ref_top[i]
-            gap = (top[0][0] - top[1][0]) if len(top) > 1 else 9.0
-            print(f"      diverges at token {i}: mine {a} ref {b} (ref margin {gap:.2f} nats{'' if gap >= SURE_GAP else ', within noise'})")
-            return matched, gap < SURE_GAP
-        matched += 1
-    return matched, True
-
-
-def canaries_cli(reference: str, max_new_tokens: int, batch: int, graphs: bool = True, spec: int = 0) -> int:
-    ref_dir = Path(reference)
-    prompts = read_prompts(ref_dir.parent / "prompts.json")
-    model, ex, tok = _load(graphs, spec)
-    if ex.spec is not None:
-        ex.spec.timing = True
-    checks = _canary_checks()
-    all_ok = True
-    rows = []
-    for name, ids in prompts.items():
-        http = ref_dir / "http" / f"{name}.json"
-        if not http.is_file():
-            continue
-        ref = json.loads(http.read_text())
-        req = ex.generate(ids, SamplingParams(max_new_tokens=max_new_tokens, temperature=0.0))
-        text = tok.decode(req.output_ids, skip_special_tokens=True)
-        tps = (len(req.output_ids) - 1) / max(1e-9, req.decode_seconds)
-        matched, ok = _compare_continuation(name, req.output_ids, ref)
-        sem = None
-        if name in checks:
-            try:
-                sem = bool(checks[name](text))
-            except Exception:  # noqa: BLE001 - a failed parse is a failed canary
-                sem = False
-            ok = ok and sem
-        all_ok &= ok
-        rows.append((name, len(ids), req.prefill_seconds, tps, matched, len(req.output_ids), sem))
-        print(f"  [{name}] T={len(ids)} prefill {req.prefill_seconds:.2f}s  decode {tps:.2f} tok/s  "
-              f"matched {matched}/{min(len(req.output_ids), len(ref['output_ids']))} reference tokens"
-              f"{'' if sem is None else '  semantic ' + ('PASS' if sem else 'FAIL')}")
-        print(f"      text: {text[:100]!r}")
-    if batch > 1:
-        names = [n for n in CANARIES if n != "canary_needle"][: batch]
-        items = [(prompts[n], SamplingParams(max_new_tokens=max_new_tokens)) for n in names]
-        reqs = ex.generate_batch(items)
-        for n, r in zip(names, reqs):
-            text = tok.decode(r.output_ids, skip_special_tokens=True)
-            try:
-                sem = bool(checks[n](text)) if n in checks else None
-            except Exception:  # noqa: BLE001
-                sem = False
-            print(f"  [batch {len(reqs)}] {n}: {text[:60]!r} semantic {'PASS' if sem else 'FAIL'} ({r.decode_steps} steps in {r.decode_seconds:.2f}s, {r.decode_steps * len(reqs) / r.decode_seconds:.1f} aggregate tok/s)")
-            all_ok &= bool(sem)
-    if ex.spec is not None:
-        print("  spec:", ex.spec.stats())
-    print("CANARIES", "PASS" if all_ok else "FAIL")
-    return 0 if all_ok else 1
 
 
 def bench_decode_cli(prompts_path: str, name: str, max_new_tokens: int, batches: str, spec: int = 0) -> int:
@@ -342,7 +273,7 @@ def sched_bench_cli(cells: str, output_len: int, chunk_size: int, prefill_budget
     percentiles and aggregate output throughput (the reference's table is in
     the roadmap). Prompts are distinct random IDs so the cache cannot help."""
     from sharar.engine.scheduler import Scheduler, SchedulerConfig
-    from sharar.parity.prompts import random_ids
+    from sharar.engine.prompts import random_ids
 
     model, ex, tok = _load(graphs=True)
     sched = Scheduler(ex, SchedulerConfig(chunk_size=chunk_size, prefill_budget=prefill_budget))
