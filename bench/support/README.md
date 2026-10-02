@@ -5,12 +5,8 @@ select serving policies or execute benchmarks at import time.
 
 | Module | Responsibility |
 |---|---|
-| `evidence.py` | Source hashes, result writing and cache/pool cleanup |
-| `recording.py` | Forward recording, physical/emitted work and cold native batches |
-| `retention.py` | Native retained-batch measurement |
-| `http.py` | Temporary real-engine HTTP server and audited request streams |
-| `cuda.py` | Matrix operand hashes and CUDA graph timing |
+| `evidence.py` | Source hashes, result writing and cache/pool cleanup (`gb10_family_eval`) |
+| `target_features.py` | Target hidden features for drafter references (`dflash2_reference`) |
 
-CPU tests import recording/HTTP helpers directly. Source identity records all
-benchmark Python modules so moved helpers remain covered by run provenance.
-Keep numerical experiments in their drivers or [archive](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/bench/archive/README.md).
+Keep numerical experiments in their drivers. Finished experiments and their helpers are on the
+[archive branch](https://github.com/abdelfattah-lab/sharar/tree/archive/pre-cleanup-2026-09-26).

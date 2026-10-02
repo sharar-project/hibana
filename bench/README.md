@@ -17,9 +17,7 @@ cd ../sharar-eval
 
 The frozen prompts are byte-identical to the ones here: `sharar/benchmark_workloads.py` stays because the
 in-process benchmarks (family inputs, `tools/check_distribution.py`) use it, and both repositories pin
-the same digests in their tests. The engine-side tools that start their own server and drive it over
-HTTP (`bench/phase7c.py`, `phase7d.py`, `draft_validate.py`) load the local-use client from the
-sharar-eval checkout (`bench/support/evals.py`; `SHARAR_EVALS`, else `../sharar-eval`).
+the same digests in their tests.
 
 ## The family gate
 
@@ -85,16 +83,14 @@ every candidate. A rerun with the same `--name` resumes; `--through` stops after
 | `bench.gb10_family_eval` | Frozen family native comparisons and paired statistics |
 | `tools/family-gate.py`, `bench/gate_hooks.py`, `bench/family_inputs.py` | The family gate: windows, candidate hooks, reproducible frozen inputs |
 | `tools/lossy-gate.py`, `bench/lossy_gate.py`, `bench/workloads/lossy_v1.json` | The lossy-change gate: distribution distance, speculation health and the paired task battery, one verdict |
-| `bench.gb10_bs4_engine` | Controlled verifier-width/native BS4 comparison |
-| `bench.gb10_bs4_http` | Finite and replenished BS4 HTTP workloads |
-| `bench.gb10_agent_retention` | Cold controls and interleaved native cache resumes |
-| `bench.gb10_agent_http` | Growing simulated conversations and mixed HTTP arrivals |
-| `bench.gb10_runtime_ab` | Current calibrated target and selected drafter over cold, warm and mixed HTTP workloads at concurrency 1, 2 and 4; optional candidate hook |
-| `bench.gb10_round_profile` | Separate unprofiled, Nsight and CUDA-event phase windows on frozen prompts; `--draft` selects the served drafter |
-| `bench.gb10_matrix` | Real-operand matrix diagnostics |
 | `sharar-eval` (separate repository) | Everything over HTTP: quality suites (`evals.suite`: quick, full, hard, long, agentic), speed and serving benchmarks (`evals.speed`), h2h, test-time scaling, output identity |
 | `bench/w3_bench.py` | 3-bit decode GEMM: correctness against the dequantized reference and DRAM bandwidth per decode shape at 16, 32 and 64 rows (weights rotated past L2, CUDA-graph timing), split-K sweep |
 | `bench/w3_calibrate.py` | Fit checksummed W3 target copies from FP8 source weights and frozen activation inputs; [workflow](../docs/w3-calibration.md) |
+| `bench/flashnext_round.py`, `flashnext_profile.py`, `flashnext_parity.py`, `flashnext_quant.py` | Flash-Next round cost and phase profile, parity against the reference, trunk quantization |
+
+The 27B serving-study drivers (batch-4 and agent HTTP experiments, acceptance replay, matrix and round
+profiles, Phase 7 checks) were removed on 2026-10-02; they and their results are on the
+[archive branch](https://github.com/abdelfattah-lab/sharar/tree/archive/pre-cleanup-2026-09-26) and in git history.
 
 Use each driver's `--help` and its linked [performance evidence](../docs/performance.md)
 to freeze inputs, output budgets, warmups, precision and geometry before running.
@@ -125,6 +121,5 @@ at their original revisions. Raw tensors, outputs and traces stay outside Git.
   and the publisher's reference model, and the objective against SpecForge,
   then runs a short training smoke. `bench/support/target_features.py`
   recomputes raw target features for it.
-- `bench/draft_validate.py` is the earlier publisher-oracle gate for external drafts.
 
 See [draft adaptation](../docs/draft-adaptation.md).

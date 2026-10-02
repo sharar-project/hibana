@@ -37,7 +37,7 @@ def _fp8_gemv_kernel(
 
 
 def _config(n: int, k: int) -> tuple[int, int, int]:
-    # From tools/bench_fp8_gemv.py on GB10 (M=1): wide-N projections stream
+    # Measured on GB10 with tools/bench_fp8_gemv.py (removed 2026-10-02; on the archive branch) (M=1): wide-N projections stream
     # best with small row blocks; the 5120x6144 output projections with wider.
     if n >= 8192:
         return 32, 256, 4
