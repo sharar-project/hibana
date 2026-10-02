@@ -102,7 +102,7 @@ item, as in #6). The 27B's 16:15 is 23% faster than 16:3, and 8:15 matches
 8:7 (359.7 against 357.3), so its throughput profile keeps the full depth.
 GSM8K correct counts in every cell were 59 to 64 of 64.
 
-Served (HTTP, `sharar-evals` accuracy eval, exact acceptance, greedy,
+Served (HTTP, `sharar-eval` accuracy eval, exact acceptance, greedy,
 image `sharar:throughput`, requests in flight = the profile's batch):
 
 | Target, arm | GSM8K-1319 wall | accuracy (paired vs batch four) | HumanEval wall, pass@1 |

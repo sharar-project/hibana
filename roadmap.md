@@ -22,7 +22,7 @@ benchmark (#26). Architecture and the capability matrix: [architecture](docs/arc
 
 ## Order
 
-1. **Cleanup** (#23): lighter tree (done), the HTTP evals in `sharar-evals` (#53, done); test suite audit (#54).
+1. **Cleanup** (#23): lighter tree (done), the HTTP evals in `sharar-eval` (#53, done; one-command `evals.suite`, 2026-10-02, and the lossy gate runs it); test suite audit (#54).
 2. **Architecture refactors**, one at a time, each bit-identical on both targets
    with round cost and host idle not higher (#24):
    done 2026-09-26/27: #44 EngineConfig, #45 speculator parts, #46 attention planner and
@@ -43,7 +43,7 @@ benchmark (#26). Architecture and the capability matrix: [architecture](docs/arc
      x1.19 single-stream over `fast` and -17.2 GiB, but with the cheap calibration it loses knowledge: lossy gate
      rejected (-0.8 pp, p 0.044), MMLU-Pro -2.1 pp against `fast` (law, business, engineering), more over-long
      deliberation on GPQA ([numbers](https://github.com/abdelfattah-lab/sharar/issues/73)). Reopen with GPTQ on routed
-     activations, judged on MMLU-Pro and GPQA (sharar-evals `evals.hard_eval`) before the full gate.
+     activations, judged on MMLU-Pro and GPQA (sharar-eval `evals.hard_eval`) before the full gate.
    - #72 done 2026-10-02: the `fast` profile fetches its calibrated 3-bit checkpoint on first serve (#75), both public
      (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`, Qwen Community License; `yemara/Qwen3.8-27B-NVFP4-sharar-w3`,
      Apache-2.0). The 27B `fast` profile's first lossy gate rejects it on code (MBPP -3.2 pp, pooled -0.3); adopted over
@@ -58,7 +58,7 @@ benchmark (#26). Architecture and the capability matrix: [architecture](docs/arc
 4. **Research** (measure before building): #34 on-policy distillation (separate repository when it starts), #41 expert-budgeted
    verification, #42 sub-3-bit 27B MLPs, #25 megakernels. Deprioritized by the #32 router data:
    #38 fewer active experts (flat router mass), #39 expert pruning (domains share few experts).
-5. **Harness and quality**: #11 Flash-Next family gate, #28 harder evals (sharar-evals `evals.hard_eval`: MMLU-Pro, GPQA, IFEval, WMT24++, 2026-10-01; Terminal-Bench 2.1 next) (#31 lossy-change gate
+5. **Harness and quality**: #11 Flash-Next family gate, #28 harder evals (sharar-eval `hard` suite: MMLU-Pro, GPQA, IFEval, WMT24++, 2026-10-01; `tools/lossy-gate.py --battery hard`; Terminal-Bench 2.1 next) (#31 lossy-change gate
    done 2026-09-29: `tools/lossy-gate.py`), #16 constrained output with speculation, #19 `/v1/responses`, #15 test-time scaling,
    #13 session store snapshots, #14 long-context prefill.
 6. **Infrastructure**: #21 CI (GitHub Actions jobs do not start: the organization's billing; a self-hosted
