@@ -31,7 +31,11 @@ DEVICE_ACCEPT="${SHARAR_DEVICE_ACCEPT:-$P_DEVICE_ACCEPT}"  # device-resident acc
 W3_DECODE="${SHARAR_W3_DECODE:-$P_W3}"   # calibrated 3-bit decode copies for calls of at most 64 rows (1/0; the profile decides)
 W3_CHECKPOINT="${SHARAR_W3_CHECKPOINT:-auto}" # where they live: auto ($SHARAR_RESULTS/w3-checkpoints/<target>-current, fetched on first serve) or a directory
 TARGET_NAME="${SHARAR_TARGET:-qwen38}"
-DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"   # incoai/Qwen3.8-27B-DFlash2
+if [[ "$PROPOSER" == dspark ]]; then   # the pinned parallel draft (sharar/proposers/parallel.py PINS)
+  DRAFT_REPO="RadixArk/Qwen3.8-27B-DSpark"; DRAFT_REVISION="b9a5dbdf03bc999c6c73c426b19c2d9041cea393"
+else
+  DRAFT_REPO="incoai/Qwen3.8-27B-DFlash2"; DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"
+fi
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
 STATE_DIR="$RESULTS_DIR/runtime-state"   # JIT caches; persists across restarts
@@ -43,7 +47,9 @@ if [[ "$DRAFT_DIR" == pinned ]]; then
   DRAFT_DIR=""
 elif [[ -z "$DRAFT_DIR" && -L "$RUNS_DIR/current" ]]; then
   current="$(readlink -f "$RUNS_DIR/current")"
-  [[ -f "$current/config.json" && -f "$current/model.safetensors" ]] && DRAFT_DIR="$current"
+  # Follow the promoted checkpoint only when it is this proposer's architecture (trained drafts are DFlash2 today).
+  want=$([[ "$PROPOSER" == dspark ]] && echo DSparkDraftModel || echo DFlash2DraftModel)
+  [[ -f "$current/config.json" && -f "$current/model.safetensors" ]] && grep -q "\"$want\"" "$current/config.json" && DRAFT_DIR="$current"
 fi
 DRIVER_LIB_DIR="/usr/lib/aarch64-linux-gnu"
 
@@ -90,13 +96,17 @@ for root in "$CACHE_DIR" "$CACHE_DIR/hub"; do
   [[ -f "$s/config.json" && -f "$s/model.safetensors.index.json" ]] && snapshot_ok=true
 done
 $snapshot_ok || fail "pinned model revision $MODEL_REVISION is incomplete in $CACHE_DIR"
-if [[ "$PROPOSER" == dflash2 && "$SPEC" != 0 ]]; then
+if [[ ( "$PROPOSER" == dflash2 || "$PROPOSER" == dspark ) && "$SPEC" != 0 && -z "$DRAFT_DIR" ]]; then
   draft_ok=false
   for root in "$CACHE_DIR/hub" "$CACHE_DIR"; do
-    d="$root/models--incoai--Qwen3.8-27B-DFlash2/snapshots/$DRAFT_REVISION"
-    [[ -f "$d/config.json" ]] && draft_ok=true
+    d="$root/models--${DRAFT_REPO//\//--}/snapshots/$DRAFT_REVISION"
+    [[ -f "$d/config.json" && -f "$d/model.safetensors" ]] && draft_ok=true
   done
-  $draft_ok || fail "pinned DFlash2 draft revision $DRAFT_REVISION is missing in $CACHE_DIR (set SHARAR_PROPOSER=mtp to serve without it)"
+  $draft_ok || fail "pinned $PROPOSER draft $DRAFT_REPO@${DRAFT_REVISION:0:7} is missing in $CACHE_DIR (download it, or set SHARAR_PROPOSER=mtp to serve without it)"
+fi
+if [[ "$PROPOSER" == dspark && "$SPEC" != 0 && "$MAX_CONTEXT" -gt 32768 ]]; then
+  # DSpark keeps draft features for the whole context (DFlash2 keeps a 2,048-token window): at 262K they do not fit.
+  fail "DSpark needs SHARAR_MAX_CONTEXT of at most 32768 (it keeps draft features for the whole context; got $MAX_CONTEXT)"
 fi
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image is missing: $IMAGE (build with docker/build.sh)"
 if [[ -n "$TRACES_DIR" || -n "$DRAFT_DIR" ]]; then
@@ -143,7 +153,7 @@ Sharar preflight OK
   Batch: up to $MAX_BATCH requests (SHARAR_MAX_BATCH), verify depth by batch ${SPEC_DEPTHS:-$SPEC everywhere} (SHARAR_SPEC_DEPTHS)
   Relaxed acceptance default: $ACCEPT_DEFAULT, sampled requests $(onoff "$ACCEPT_DEFAULT_SAMPLED") (requests may set accept_top_k/accept_margin; 1 = exact)
   Three-bit decode copies: $(onoff "$W3_DECODE")$([[ "$W3_DECODE" == 1 ]] && echo ", ${W3_CHECKPOINT:-nearest rounding from the pinned serving weights}") (SHARAR_W3_DECODE, SHARAR_W3_CHECKPOINT)
-  Draft: ${DRAFT_DIR:-pinned $DRAFT_REVISION}
+  Draft: ${DRAFT_DIR:-pinned $DRAFT_REPO@${DRAFT_REVISION:0:7}}
 EOT
 [[ -n "$W3_WARNING" ]] && echo "  WARNING: $W3_WARNING"
 [[ "${1:-}" == "--check" ]] && exit 0

@@ -55,7 +55,10 @@ SHARAR_DRAFT_PRECISION=bf16 ./run-sharar.sh
 
 For MTP without the external draft, use
 `SHARAR_PROPOSER=mtp SHARAR_SPEC=3 ./run-sharar.sh`. Set `SHARAR_SPEC=0` for
-ordinary decode. `sharar serve --help` lists CLI choices; the launcher also
+ordinary decode. DSpark (`SHARAR_PROPOSER=dspark SHARAR_SPEC=7 SHARAR_MAX_CONTEXT=32768`, pinned
+`RadixArk/Qwen3.8-27B-DSpark@b9a5dbd`) keeps draft features for the whole context rather than DFlash2's
+2,048-token window, so it serves at up to 32K. On 2026-10-03, exact profile, 10K code workload: 30.7 decode
+TPS against DFlash2's 37.0. `sharar serve --help` lists CLI choices; the launcher also
 owns container and guard setup.
 
 Before replacing an existing container, use `./run-sharar.sh --stop` and
