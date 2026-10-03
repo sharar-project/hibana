@@ -17,7 +17,7 @@ from sharar.tokenizer import SnapshotTokenizer
 
 def _canary_checks():
     return {
-        "canary_exact": lambda text: text.strip() == "SPARKLANG_OK",
+        "canary_exact": lambda text: text.strip() == "SHARAR_OK",
         "canary_arith": lambda text: text.strip() == "42",
         "canary_json": lambda text: json.loads(text.strip()) == {"device": "GB10", "model": "Qwen3.8-27B"},
         "canary_needle": lambda text: text.strip() == NEEDLE,

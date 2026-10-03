@@ -71,7 +71,6 @@ args=(
   --env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
   --env SHARAR_RESULTS=/results
   --env SHARAR_HF_CACHE=/cache/huggingface
-  --env SHARAR_REFERENCE_URL="${SHARAR_REFERENCE_URL:-http://127.0.0.1:30000}"
 )
 for device in "${devices[@]}"; do
   [[ -e "$device" ]] || fail "missing device $device"

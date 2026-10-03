@@ -15,8 +15,8 @@ a new file, and add a row here in the same commit.
 | causal-conv1d, <https://github.com/Dao-AILab/causal-conv1d> (Tri Dao) and vLLM, <https://github.com/vllm-project/vllm> | Triton causal Conv1D prefill and state-update kernels | BSD 3-Clause (causal-conv1d), Apache License 2.0 (vLLM) |
 | FlashInfer, <https://github.com/flashinfer-ai/flashinfer> | Used as a dependency, not vendored: paged attention, NVFP4/FP8 GEMM, activation quantization, sampling | Apache License 2.0 |
 
-Sharar's early numerical parity was checked against a reference SGLang runtime (the separate
-`sparklang` repository, not distributed with Sharar). The oracle tooling was removed on 2026-10-02.
+Sharar's early numerical parity was checked against a reference SGLang runtime, which was never
+distributed with Sharar; that tooling was removed on 2026-10-02.
 
 ## Z Lab DFlash MIT notice
 
