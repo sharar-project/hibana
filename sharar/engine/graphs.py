@@ -141,7 +141,7 @@ class DecodeGraphs:
         st["slots"].copy_(torch.tensor(slots + [0] * pad, dtype=torch.int32))
         st["out_pages"][:b].copy_(out_pages)
         if pad:
-            st["out_pages"][b:].zero_()
+            st["out_pages"][b:].copy_(self.ex.kv_pool.pad_pages(pad))
         counts = [p.shape[0] for p in pages] + [1] * pad
         all_pages = list(pages) + [torch.zeros(1, dtype=torch.int32, device=self.device) for _ in range(pad)]
         self._plan(size, counts, all_pages)

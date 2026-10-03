@@ -67,7 +67,12 @@ class Executor:
             raise ValueError("pools need at least one usable entry plus the reserved dummy entry")
         from sharar.cache.ledger import check_load_headroom
         check_load_headroom(num_pages * (self.target.kv_bytes_per_token + extra_page) + num_slots * self.target.state_bytes_per_slot + future + 8 * 2**30)
-        self.kv_pool = KvPool(num_pages, self.device, target=self.target)
+        # One write-only page per padded graph row: the widest bucket's padding times the widest verify block any
+        # proposer may use (speculation can be enabled after construction).
+        from sharar.engine.graphs import capture_sizes
+        from sharar.proposers.factory import MAX_DEPTHS
+        width = max(MAX_DEPTHS.values()) + 1
+        self.kv_pool = KvPool(num_pages, self.device, target=self.target, padding_rows=(max(capture_sizes(max_batch)) - 1) * width)
         model.register_pages(self.kv_pool)  # per-page rows beyond K/V, e.g. Flash-Next's sparse-attention index keys (KvPool.page_aux)
         self.ledger.record_cuda_allocated("kv_pool")
         self.state_pool = StatePool(num_slots, self.device, target=self.target)
