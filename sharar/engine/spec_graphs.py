@@ -118,7 +118,7 @@ class VerifyGraphs:
     def run(self, tokens: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, slots: torch.Tensor, kv_all: list[torch.Tensor], *, sampled=False,
             side=None, variant: str = "dense"):
         """Returns (norm rows [b*s, H], argmax or logits [b*s(, V)], ctx, features,
-        logits [b*s, V]) for the real rows; padded rows use slot 0 and page 0.
+        logits [b*s, V]) for the real rows; padded rows use slot 0, attend to page 0 and write the pool's padding pages.
         The logits view is overwritten by the next replay. `side` is (requests,
         drafts, seqs, draft columns or None) for the model's side inputs; `variant` the graph to replay
         ("selecting": some row past Flash-Next's indexer budget)."""
@@ -134,7 +134,7 @@ class VerifyGraphs:
         if size > b:
             st["tokens"][n:].zero_()
             st["positions"][n:].zero_()
-            st["pages"][n:].zero_()
+            st["pages"][n:].copy_(self.ex.kv_pool.pad_pages(size * s - n))
             st["slots"][b:].zero_()
         pad_kv = [torch.zeros(s + 1, dtype=torch.int32, device=self.device) for _ in range(size - b)]
         # Plan before the side inputs: they may wait for the drafted tokens, the plan needs only the pages,

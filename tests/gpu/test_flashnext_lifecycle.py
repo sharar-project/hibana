@@ -67,10 +67,11 @@ def test_speculative_batches_finish_and_return_every_page_and_slot(runtime, batc
     ex.ledger.check_floor()
 
 
-@pytest.mark.parametrize("graphs, batch", [(True, 1), (False, 4)])
+@pytest.mark.parametrize("graphs, batch", [(True, 1), (False, 4), (True, 4)])
 def test_repeat_runs_in_one_process_are_identical(runtime, graphs, batch):
-    """Batch 1 (graphs) and eager batch 4 are bit-identical run to run. With CUDA graphs at batch 4 the first run can
-    differ from later ones on a near-tie (#94), so that combination is not asserted here."""
+    """Bit-identical run to run, eager or with CUDA graphs. Batch 4 with graphs covers padded rounds (requests finish
+    at different rounds, so three rows replay the batch-4 graph): padded rows once wrote page 0 together and the
+    race reached the real rows through the per-tensor activation scale (#94)."""
     ex, tok = runtime
     spec = ex.spec
     vg, dg = spec.verify_graphs, spec.proposer.graphs
@@ -83,7 +84,7 @@ def test_repeat_runs_in_one_process_are_identical(runtime, graphs, batch):
             if batch == 1:
                 return [ex.generate(chat(tok, p), SamplingParams(max_new_tokens=32)).output_ids for p in PROMPTS]
             return [r.output_ids for r in ex.generate_batch([(chat(tok, p), SamplingParams(max_new_tokens=32)) for p in PROMPTS])]
-        assert run() == run()
+        assert run() == run() == run()
     finally:
         spec.verify_graphs, spec.proposer.graphs = vg, dg
         ex.use_graphs = True
