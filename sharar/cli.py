@@ -14,19 +14,13 @@ def main(argv: list[str] | None = None) -> int:
     p_check = sub.add_parser("check", help="validate host, GPU and pinned snapshot")
     p_check.add_argument("--no-gpu", action="store_true")
     sub.add_parser("describe", help="print the pinned target facts")
-    p_pp = sub.add_parser("prompts", help="write the fixed prompt set as token IDs (for generate, profile, bench-decode)")
+    p_pp = sub.add_parser("prompts", help="write the fixed prompt set as token IDs (for generate and profile)")
     p_pp.add_argument("--out", required=True)
     p_gen = sub.add_parser("generate", help="greedy/sampled generation for one fixed prompt (eager decode)")
     p_gen.add_argument("--prompts", required=True, help="prompts.json from `sharar prompts`")
     p_gen.add_argument("--name", required=True)
     p_gen.add_argument("--max-new-tokens", type=int, default=32)
     p_gen.add_argument("--temperature", type=float, default=0.0)
-    p_bd = sub.add_parser("bench-decode", help="decode throughput and determinism with CUDA graphs")
-    p_bd.add_argument("--prompts", required=True)
-    p_bd.add_argument("--name", default="rand128")
-    p_bd.add_argument("--max-new-tokens", type=int, default=64)
-    p_bd.add_argument("--batches", default="1,2,4")
-    p_bd.add_argument("--spec", type=int, default=0, help="benchmark MTP speculative decoding with k drafts")
     p_chat = sub.add_parser("chat", help="interactive chat with streaming output and speed stats")
     p_chat.add_argument("--max-new-tokens", type=int, default=512)
     p_chat.add_argument("--temperature", type=float, default=0.0, help="0 = greedy")
@@ -35,18 +29,6 @@ def main(argv: list[str] | None = None) -> int:
     p_chat.add_argument("--prompt", default=None, help="one-shot: answer this and exit")
     p_chat.add_argument("--no-graphs", action="store_true")
     p_chat.add_argument("--spec", type=int, default=0, help="MTP speculative decoding with k draft tokens")
-    p_cc = sub.add_parser("cache-check", help="prefix cache: checkpoint, prefix-hit, multi-turn and accounting checks")
-    p_cc.add_argument("--prompts", required=True)
-    p_cc.add_argument("--max-new-tokens", type=int, default=16)
-    p_soak = sub.add_parser("soak", help="cycle long prompts with partial reuse and watch memory")
-    p_soak.add_argument("--prompts", required=True)
-    p_soak.add_argument("--rounds", type=int, default=40)
-    p_soak.add_argument("--prompt-len", type=int, default=8192)
-    p_sb = sub.add_parser("sched-bench", help="controlled matrix cells through the scheduler (TTFT and aggregate tok/s)")
-    p_sb.add_argument("--cells", default="128,1;128,4;2048,1;2048,4;8192,1;8192,4")
-    p_sb.add_argument("--output-len", type=int, default=256)
-    p_sb.add_argument("--chunk-size", type=int, default=2048)
-    p_sb.add_argument("--prefill-budget", type=int, default=4096)
     p_serve = sub.add_parser("serve", help="OpenAI-compatible HTTP server")
     p_serve.add_argument("--target", default=None, help="pinned serving target (default: SHARAR_TARGET, else qwen38)")
     p_serve.add_argument("--host", default="127.0.0.1")
@@ -225,18 +207,6 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("give --dir or set SHARAR_TRACES")
         print(json.dumps(summarize(directory), indent=2))
         return 0
-    if args.command == "sched-bench":
-        from sharar.engine.run import sched_bench_cli
-
-        return sched_bench_cli(args.cells, args.output_len, args.chunk_size, args.prefill_budget)
-    if args.command == "cache-check":
-        from sharar.engine.run import cache_check_cli
-
-        return cache_check_cli(args.prompts, args.max_new_tokens)
-    if args.command == "soak":
-        from sharar.engine.run import soak_cli
-
-        return soak_cli(args.prompts, args.rounds, args.prompt_len)
     if args.command == "chat":
         from sharar.engine.chat import chat_cli
 
@@ -245,8 +215,4 @@ def main(argv: list[str] | None = None) -> int:
         from sharar.engine.run import profile_cli
 
         return profile_cli(args.prompts, args.name, args.mode, top=args.top)
-    if args.command == "bench-decode":
-        from sharar.engine.run import bench_decode_cli
-
-        return bench_decode_cli(args.prompts, args.name, args.max_new_tokens, args.batches, spec=args.spec)
     return 2

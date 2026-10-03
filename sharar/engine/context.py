@@ -78,10 +78,6 @@ class ForwardContext:
     def query_start_loc(self) -> torch.Tensor:
         return torch.tensor([0, self.seq_len], dtype=torch.int32, device=self.positions.device)
 
-    @property
-    def slot_tensor(self) -> torch.Tensor:
-        return torch.tensor([self.slot], dtype=torch.int32, device=self.positions.device)
-
 
 def scratch_prefill_context(t: int, device: torch.device) -> ForwardContext:
     """Context for a stand-alone prefill without pools (parity tools)."""

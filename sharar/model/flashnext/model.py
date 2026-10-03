@@ -203,14 +203,3 @@ class FlashNext:
     def logits(self, hidden: torch.Tensor) -> torch.Tensor:
         """hidden: the hyper stream [T, hc*H] from `forward()["norm"]` -> logits [T, V]."""
         return self.lm_head(self.mixer.mix(hidden)[0])
-
-    @torch.inference_mode()
-    def argmax_and_topk(self, hidden: torch.Tensor, k: int = 8, chunk: int = 1024) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        arg, top_ids, top_vals = [], [], []
-        for start in range(0, hidden.shape[0], chunk):
-            lg = self.logits(hidden[start : start + chunk]).float()
-            vals, ids = lg.topk(k, dim=-1)
-            arg.append(lg.argmax(dim=-1))
-            top_ids.append(ids)
-            top_vals.append(vals)
-        return torch.cat(arg), torch.cat(top_ids), torch.cat(top_vals)

@@ -161,15 +161,3 @@ class Qwen38:
     @torch.inference_mode()
     def logits(self, hidden: torch.Tensor) -> torch.Tensor:
         return ops.nvfp4_linear(hidden, self.lm_head)
-
-    @torch.inference_mode()
-    def argmax_and_topk(self, hidden: torch.Tensor, k: int = 8, chunk: int = 1024) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Per-position argmax, top-k ids and top-k logits without holding all logits."""
-        arg, top_ids, top_vals = [], [], []
-        for start in range(0, hidden.shape[0], chunk):
-            lg = self.logits(hidden[start : start + chunk]).float()
-            vals, ids = lg.topk(k, dim=-1)
-            arg.append(lg.argmax(dim=-1))
-            top_ids.append(ids)
-            top_vals.append(vals)
-        return torch.cat(arg), torch.cat(top_ids), torch.cat(top_vals)

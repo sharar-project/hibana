@@ -78,23 +78,6 @@ def nvfp4_linear(x: torch.Tensor, lin: Nvfp4Linear, prequantized: tuple[torch.Te
     return out.view(m, lin.out_features)
 
 
-def silu_mul_fp4_quantize(gate_up: torch.Tensor, input_scale_inv_1d: torch.Tensor, masked_m: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Fused SiLU(gate)*up + NVFP4 quantization, the reference's dense-MLP path.
-
-    Reshapes copied from SGLang's Qwen2MoeMLP._silu_fp4_quant_fused, which
-    verified the resulting layout bit-exact against fp4_quantize.
-    """
-    from flashinfer import silu_and_mul_scaled_nvfp4_experts_quantize
-
-    y_fp4, y_sf = silu_and_mul_scaled_nvfp4_experts_quantize(
-        gate_up.unsqueeze(0), masked_m, input_scale_inv_1d
-    )
-    y_fp4 = y_fp4.squeeze(-1).view(torch.uint8)
-    m_padded = y_sf.shape[2] * y_sf.shape[0] * y_sf.shape[3]
-    y_sf = y_sf.view(torch.uint8).permute(2, 4, 0, 1, 3, 5).reshape(m_padded, -1)
-    return y_fp4, y_sf
-
-
 def silu_and_mul(gate_up: torch.Tensor) -> torch.Tensor:
     half = gate_up.shape[-1] // 2
     return torch.nn.functional.silu(gate_up[..., :half]) * gate_up[..., half:]
