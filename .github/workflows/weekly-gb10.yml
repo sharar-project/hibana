@@ -12,10 +12,10 @@ concurrency:
 jobs:
   weekly:
     runs-on: [self-hosted, gb10]
-    timeout-minutes: 240
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
-      - name: Image, quality and speed of both targets against their baselines
+      - name: Image, speed and GSM8K/HumanEval of both targets against their baselines
         run: bash tools/ci/gb10.sh image evaluate
       - name: Stop CI containers
         if: always()

@@ -9,9 +9,10 @@
 #   image     build this checkout into sharar:ci (the previous sharar:ci is removed)
 #   gpu       tests/unit and tests/gpu in that image (tools/gpu-tests.sh)
 #   serve     serve each target from that image (run-sharar.sh, 32K context) and check it (tools/verify-sharar.sh)
-#   evaluate  each target, fast profile: sharar-eval's quick suite and AIPerf speed (tools/evaluate.py), paired with
-#             that target's baseline; fails on a quality loss of at least 1 point (p < 0.05, more items worse than
-#             better) or more than 5% lower TPS. The first complete run of a target becomes its baseline:
+#   evaluate  each target, fast profile (tools/evaluate.py): AIPerf speed (code, design, reasoning) and, so that a
+#             speed gain from wrongly accepted drafts cannot pass, GSM8K (first 300) and HumanEval (164); paired with
+#             that target's baseline. Fails on more than 5% lower TPS or a quality loss of at least 1 point (p < 0.05,
+#             more items worse than better). The first complete run of a target becomes its baseline:
 #             $SHARAR_RESULTS/ci/baseline-<target> (re-point the link to adopt a newer run).
 #
 # The machine is shared, so the checks never hold anyone up. They are skipped when, at the start, the shared GPU
@@ -201,7 +202,7 @@ stage_evaluate() {
     base="$SHARAR_RESULTS/ci/baseline-$target"
     paired=(); [[ -e "$base" ]] && paired=(--baseline "$(realpath "$base")")
     evict_models
-    python3 tools/evaluate.py --target "$target" --profile fast --image "$IMAGE" --suite quick --speed --workload all \
+    python3 tools/evaluate.py --target "$target" --profile fast --image "$IMAGE" --tasks gsm8k,humaneval --limit 300 --speed --workload all \
       --name "$name" --evals "$EVALS" "${paired[@]}" || { echo "$target: evaluate did not complete"; rc=1; continue; }
     dir="$(ls -d "$SHARAR_RESULTS"/reviews/*-evaluate-"$name" | tail -1)"
     echo "$dir" >>"$OUT/evaluate-dirs"
