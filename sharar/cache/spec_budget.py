@@ -31,7 +31,10 @@ class SpecConfig:
 def tensor_bytes(snapshot, prefix=''):
     """Safetensors headers only: no tensor materialization or backend import."""
     total, largest = 0, 0
-    for shard in snapshot.glob('*.safetensors'):
+    shards = sorted(snapshot.glob('*.safetensors'))
+    if not shards:
+        raise FileNotFoundError(f'no *.safetensors under {snapshot}: download the pinned checkpoint into the model cache')
+    for shard in shards:
         with shard.open('rb') as stream:
             header = json.loads(stream.read(struct.unpack('<Q', stream.read(8))[0]))
         for name, value in header.items():
