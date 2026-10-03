@@ -87,7 +87,7 @@ class DraftGraphs:
         if size > b:
             st["tokens"][b:].zero_()
             st["positions"][b:].zero_()
-            st["pages"][b:].zero_()
+            st["pages"][b:].copy_(self.mtp.kv.pad_pages(size - b))  # distinct pages: rows writing one page race (#94)
         pad = [torch.zeros(2, dtype=torch.int32, device=self.device) for _ in range(size - b)]
         self._plan(st, list(kv_all) + pad)
         self._graphs[size].replay()

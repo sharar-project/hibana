@@ -32,7 +32,7 @@ PREFIX = "mtp"
 class FlashNextMtpHead:
     DRAFT_HEADS = True  # set_draft_head: reduced vocabulary and/or 3-bit shortlist (#35)
 
-    def __init__(self, w, device: torch.device, model, num_pages: int, precision: str | None = None):
+    def __init__(self, w, device: torch.device, model, num_pages: int, precision: str | None = None, padding_rows: int = 0):
         t = self.target = model.target
         self.device = device
         self.embed, self.lm_head, self.rope, self.mixer_target = model.embed, model.lm_head, model.rope, model.mixer
@@ -65,7 +65,7 @@ class FlashNextMtpHead:
         self.shared_gate = w.get(f"{p}.mlp.shared_expert_gate.weight").to(device).float().reshape(1, -1)
         self.shared_gate_up = TrunkLinear.load(w, [f"{p}.mlp.shared_expert.gate_proj.weight", f"{p}.mlp.shared_expert.up_proj.weight"], device, precision)
         self.shared_down = TrunkLinear.load(w, [f"{p}.mlp.shared_expert.down_proj.weight"], device, precision)
-        self.kv = KvPool(num_pages, device, layer_ids=[0], dtype=torch.bfloat16, target=t)
+        self.kv = KvPool(num_pages, device, layer_ids=[0], dtype=torch.bfloat16, target=t, padding_rows=padding_rows)  # padded draft-graph rows write these
         self._ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
         self._attn = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self._ws, "NHD")
         from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner

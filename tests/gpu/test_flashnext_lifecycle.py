@@ -13,6 +13,8 @@ PROMPTS = [
     "Write a Python function that returns the n-th Fibonacci number iteratively.",
     "Explain in three sentences how a hash map resolves collisions.",
     "List the first five prime numbers separated by commas.",
+    "Name three rivers in Africa.",
+    "Translate 'good morning' into Spanish, French and German, one per line.",
 ]
 
 
@@ -37,7 +39,8 @@ def runtime():
     with config.using(config.current().replace(target="flashnext", w3_decode=False, w3_checkpoint=None)):
         model = targets.load_model(target, snap)
         torch.cuda.empty_cache()
-        ex = Executor(model, log=print, max_context=32768, spec_config=SpecConfig("mtp", 4, "reconstruct", "bf16", None))
+        # Batch 8 so batches of five to seven pad the batch-8 graphs with several rows (#94); batch 4 keeps its bucket.
+        ex = Executor(model, log=print, max_batch=8, max_context=32768, spec_config=SpecConfig("mtp", 4, "reconstruct", "bf16", None))
         ex.capture_graphs(log=print)
         ex.warmup(log=print)
         ex.enable_cold_tier(budget_gib=2, log=print)
@@ -67,11 +70,12 @@ def test_speculative_batches_finish_and_return_every_page_and_slot(runtime, batc
     ex.ledger.check_floor()
 
 
-@pytest.mark.parametrize("graphs, batch", [(True, 1), (False, 4), (True, 4)])
+@pytest.mark.parametrize("graphs, batch", [(True, 1), (False, 4), (True, 4), (True, 6)])
 def test_repeat_runs_in_one_process_are_identical(runtime, graphs, batch):
-    """Bit-identical run to run, eager or with CUDA graphs. Batch 4 with graphs covers padded rounds (requests finish
-    at different rounds, so three rows replay the batch-4 graph): padded rows once wrote page 0 together and the
-    race reached the real rows through the per-tensor activation scale (#94)."""
+    """Bit-identical run to run, eager or with CUDA graphs. Batches 4 and 6 with graphs cover padded rounds (requests
+    finish at different rounds; six rows replay the batch-8 graphs with two padded rows): padded rows once wrote page 0
+    together, in the target's verify graph and in the MTP draft graph, and the race reached the real rows through
+    the per-tensor activation scale (#94)."""
     ex, tok = runtime
     spec = ex.spec
     vg, dg = spec.verify_graphs, spec.proposer.graphs
@@ -82,8 +86,8 @@ def test_repeat_runs_in_one_process_are_identical(runtime, graphs, batch):
         def run():
             ex.flush_cache()
             if batch == 1:
-                return [ex.generate(chat(tok, p), SamplingParams(max_new_tokens=32)).output_ids for p in PROMPTS]
-            return [r.output_ids for r in ex.generate_batch([(chat(tok, p), SamplingParams(max_new_tokens=32)) for p in PROMPTS])]
+                return [ex.generate(chat(tok, p), SamplingParams(max_new_tokens=32)).output_ids for p in PROMPTS[:4]]
+            return [r.output_ids for r in ex.generate_batch([(chat(tok, p), SamplingParams(max_new_tokens=48)) for p in PROMPTS[:batch]])]
         assert run() == run() == run()
     finally:
         spec.verify_graphs, spec.proposer.graphs = vg, dg

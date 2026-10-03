@@ -31,7 +31,8 @@ PREFIX = "mtp"
 class MtpHead:
     DRAFT_HEADS = False  # only the target's NVFP4 head (a shortlist head needs FP8 rows)
 
-    def __init__(self, w: SnapshotWeights, device: torch.device, embed: torch.Tensor, lm_head: Nvfp4Linear, rope: PartialRotary, num_pages: int):
+    def __init__(self, w: SnapshotWeights, device: torch.device, embed: torch.Tensor, lm_head: Nvfp4Linear, rope: PartialRotary, num_pages: int,
+                 padding_rows: int = 0):
         self.device = device
         self.embed = embed
         self.lm_head = lm_head
@@ -58,7 +59,7 @@ class MtpHead:
         self.head_dim = config.HEAD_DIM
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
-        self.kv = KvPool(num_pages, device, layer_ids=[0], dtype=torch.bfloat16)
+        self.kv = KvPool(num_pages, device, layer_ids=[0], dtype=torch.bfloat16, padding_rows=padding_rows)  # padded draft-graph rows write these
         self._ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
         self._attn = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self._ws, "NHD")
         from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner

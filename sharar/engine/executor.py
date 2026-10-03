@@ -142,7 +142,8 @@ class Executor:
         check_load_headroom(fixed + per_page * self.kv_pool.num_pages + 8 * 2**30)
         context = ProposerContext(self.device, self.max_batch, self.max_context)
         from sharar.proposers.factory import create
-        adapter = create(proposer, k, self.model, context, self.kv_pool.num_pages, draft_precision=draft_precision, draft_dir=draft_dir)
+        adapter = create(proposer, k, self.model, context, self.kv_pool.num_pages, draft_precision=draft_precision, draft_dir=draft_dir,
+                         padding_rows=self.kv_pool.padding_rows)
         self.set_proposer(adapter, state_strategy=state_strategy)
         self.ledger.record_cuda_allocated("proposer_and_verify")
         if log:
