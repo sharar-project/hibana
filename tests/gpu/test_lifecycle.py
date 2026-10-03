@@ -372,3 +372,14 @@ def test_selected_features_are_post_block_residual_streams(runtime):
     fresh = ex.model.forward(ids, scratch_prefill_context(len(ids), ex.device))
     assert 'features' not in fresh
     assert all(torch.equal(value, expected[i]) for i, value in out['features'].items())
+
+
+def test_dense_path_is_repeatable_and_graphs_match_eager(setup):
+    """In-suite identity (#54): two eager runs of a fixed batch are bit-identical, and CUDA graphs reproduce them."""
+    configure, _ = setup
+    ex, prompts = configure(False)
+    items = [(prompts[name], SamplingParams(max_new_tokens=32)) for name in ('canary_json', 'canary_arith', 'canary_needle', 'canary_exact')]
+    eager = [r.output_ids for r in ex.generate_batch(items)]
+    assert [r.output_ids for r in ex.generate_batch(items)] == eager
+    ex, _ = configure(True)
+    assert [r.output_ids for r in ex.generate_batch(items)] == eager

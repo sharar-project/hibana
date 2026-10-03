@@ -42,8 +42,10 @@ def table(tmp_path):
 def test_gather_matches_the_memory_maps(table):
     rows = np.random.default_rng(1).integers(0, table.rows, size=(9, 16))
     reference = table.gather_mapped(rows)
-    assert (table.gather(rows) == reference).all()  # page cache first (the files were just written)
-    assert table.hits > 0
+    assert (table.gather(rows) == reference).all()
+    # Each row is read once, from the page cache or through the threads. How many hit the cache depends on the
+    # filesystem (one without RWF_NOWAIT, like some container mounts, sends every row through the threads).
+    assert table.hits + table.misses == rows.size
     out = np.zeros((9, 16, ROW_BYTES), dtype=np.uint8)
     assert table.gather(rows, out=out) is not None and (out == reference).all()
     table._nowait = False  # every row through the threads
