@@ -1,0 +1,23 @@
+name: Nightly GB10
+on:
+  schedule:
+    - cron: '0 1 * * *'   # daily at 01:00 New York time
+      timezone: America/New_York
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: gb10
+  cancel-in-progress: false
+jobs:
+  nightly:
+    runs-on: [self-hosted, gb10]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - name: Image, GPU suite, serve both targets
+        # a scheduled run skips a commit it has already tested; a manual run always tests
+        run: bash tools/ci/gb10.sh ${{ github.event_name == 'schedule' && '--skip-if-tested' || '' }} image gpu serve
+      - name: Stop CI containers
+        if: always()
+        run: bash tools/ci/gb10.sh --cleanup || true

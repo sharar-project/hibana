@@ -19,3 +19,6 @@ results/
 *.safetensors
 *.npy
 *.pt
+
+# GB10 CI scratch (tools/ci/gb10.sh)
+ci-out/
