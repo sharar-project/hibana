@@ -29,7 +29,7 @@ PARAGRAPH = (
 NEEDLE = "SPARK-NEEDLE-7291"
 FILLER = "A quiet workshop contains ordinary numbered boxes. " * 600
 CANARIES = {
-    "canary_exact": "Reply with exactly SPARKLANG_OK and nothing else.",
+    "canary_exact": "Reply with exactly SHARAR_OK and nothing else.",
     "canary_arith": "What is 17 + 25? Reply with only the integer.",
     "canary_json": (
         'Return only valid JSON with keys "device" and "model". '
