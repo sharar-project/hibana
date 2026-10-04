@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  packages: write   # publish: push the tested image to ghcr.io
 concurrency:
   group: gb10
   cancel-in-progress: false
@@ -15,9 +16,14 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
-      - name: Image, GPU suite, serve both targets
-        # a scheduled run skips a commit it has already tested; a manual run always tests
-        run: bash tools/ci/gb10.sh ${{ github.event_name == 'schedule' && '--skip-if-tested' || '' }} image gpu serve
+      - name: Image, GPU suite, serve both targets, publish from main
+        # a scheduled run skips a commit it has already tested; a manual run always tests; only main is published
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: >-
+          bash tools/ci/gb10.sh ${{ github.event_name == 'schedule' && '--skip-if-tested' || '' }} image gpu serve
+          ${{ github.ref == 'refs/heads/main' && 'publish' || '' }}
       - name: Stop CI containers
         if: always()
         run: bash tools/ci/gb10.sh --cleanup || true

@@ -70,6 +70,19 @@ def test_draft_list_use_and_pinned(ctl, capsys):
     assert "current draft: pinned publisher draft" in capsys.readouterr().out
 
 
+def test_pull_fetches_the_published_image_and_refuses_a_local_build(ctl, monkeypatch):
+    module, calls, _ = ctl
+    monkeypatch.delenv("SHARAR_IMAGE", raising=False)
+    default = module.default_image()
+    assert default.startswith("ghcr.io/abdelfattah-lab/sharar:")
+    for launcher in ("run-sharar.sh", "run-sharar-train.sh"):  # the launchers share tools/image.sh's default
+        assert 'IMAGE="${SHARAR_IMAGE:-$SHARAR_DEFAULT_IMAGE}"' in (ROOT / launcher).read_text()
+    assert module.main(["pull"]) == 0 and calls[-1][0] == ["docker", "pull", default]
+    monkeypatch.setenv("SHARAR_IMAGE", "sharar:local")
+    with pytest.raises(SystemExit, match="local build"):
+        module.main(["pull"])
+
+
 def test_dry_run_prints_instead_of_running(ctl, capsys, monkeypatch):
     module, calls, _ = ctl
     monkeypatch.setattr(module, "run", lambda command, env, dry: (print("+ " + " ".join(command)) or 0) if dry else 1)

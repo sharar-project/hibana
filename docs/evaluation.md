@@ -85,7 +85,8 @@ code) and reused by every candidate. A rerun with the same `--name` resumes; `--
 America/New_York):
 
 - **Nightly, 01:00** (skipped when main is unchanged): builds `sharar:ci`, runs `tests/unit` and `tests/gpu`
-  in it, then serves and verifies both targets.
+  in it, then serves and verifies both targets. When all of that passes on main, it publishes the image to
+  `ghcr.io/abdelfattah-lab/sharar` as `main-<commit>` and `latest`, the launchers' default image.
 - **Weekly, Sunday 02:00:** `tools/evaluate.py` per target on the fast profile, AIPerf speed plus GSM8K (300)
   and HumanEval, paired with `$SHARAR_RESULTS/ci/baseline-<target>` (re-point the link to adopt a newer run).
   It fails on more than 5% lower TPS or a quality loss of at least 1 point at p < 0.05.

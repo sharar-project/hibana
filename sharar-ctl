@@ -4,6 +4,7 @@
 Host-side and dependency-free (Python 3 standard library only); it drives the
 container launchers `run-sharar.sh` and `run-sharar-train.sh`.
 
+  sharar-ctl pull             # fetch the newest published image (the launcher pulls a missing one itself)
   sharar-ctl serve [--no-traces] [--pinned | --draft DIR] [--fp8] [--exact | --balanced | --fast | --throughput]
   sharar-ctl stop
   sharar-ctl status
@@ -48,6 +49,18 @@ def load_env() -> dict:
     env.setdefault("SHARAR_TRACES", str(Path(env["SHARAR_RESULTS"]) / "traces"))
     env.setdefault("SHARAR_DRAFT_RUNS", str(Path(env["SHARAR_RESULTS"]) / "draft-runs"))
     return env
+
+
+def default_image() -> str:
+    """SHARAR_DEFAULT_IMAGE from tools/image.sh, the launchers' default."""
+    for line in (ROOT / "tools" / "image.sh").read_text().splitlines():
+        if line.startswith("SHARAR_DEFAULT_IMAGE="):
+            return line.partition("=")[2].strip()
+    raise SystemExit("tools/image.sh does not set SHARAR_DEFAULT_IMAGE")
+
+
+def image(env: dict) -> str:
+    return env.get("SHARAR_IMAGE") or default_image()
 
 
 def run(command: list[str], env: dict, dry: bool) -> int:
@@ -121,6 +134,13 @@ def cmd_serve(args, env, dry) -> int:
     if args.profile:
         env["SHARAR_PROFILE"] = args.profile
     return run([str(ROOT / "run-sharar.sh")], env, dry)
+
+
+def cmd_pull(args, env, dry) -> int:
+    name = image(env)
+    if "/" not in name:
+        sys.exit(f"SHARAR_IMAGE={name} is a local build (docker/build.sh {name}); unset it to use {default_image()}")
+    return run(["docker", "pull", name], env, dry)
 
 
 def cmd_stop(args, env, dry) -> int:
@@ -224,10 +244,9 @@ def cmd_draft(args, env, dry) -> int:
 
 
 def cmd_traces(args, env, dry) -> int:
-    image = env.get("SHARAR_IMAGE", "sharar:qwen38-27b")
     traces = env["SHARAR_TRACES"]
     return run(["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "--volume", f"{traces}:/traces:ro",
-                "--entrypoint", "python3", image, "-m", "sharar", "traces", "--dir", "/traces"], env, dry)
+                "--entrypoint", "python3", image(env), "-m", "sharar", "traces", "--dir", "/traces"], env, dry)
 
 
 def cmd_chat(args, env, dry) -> int:
@@ -345,6 +364,7 @@ def main(argv=None) -> int:
                        ("fast", "the default: every measured speed option, lossy ones included (docs/optimizations.md#serving-profiles)"),
                        ("throughput", "fast with up to 16 requests at once and shallower verification above four (evals, many agents)")):
         g.add_argument(f"--{name}", dest="profile", action="store_const", const=name, help=text)
+    sub.add_parser("pull", help="fetch the newest published image (SHARAR_IMAGE, default from tools/image.sh)")
     sub.add_parser("stop", help="stop serving")
     sub.add_parser("status", help="serving, training, current draft and trace directory")
     p = sub.add_parser("train", help="stop serving and train the drafter on the recorded traces")
@@ -368,7 +388,7 @@ def main(argv=None) -> int:
     p.add_argument("-f", "--follow", action="store_true")
     args = parser.parse_args(argv)
     env = load_env()
-    handler = {"serve": cmd_serve, "stop": cmd_stop, "status": cmd_status, "train": cmd_train,
+    handler = {"serve": cmd_serve, "pull": cmd_pull, "stop": cmd_stop, "status": cmd_status, "train": cmd_train,
                "draft": cmd_draft, "traces": cmd_traces, "logs": cmd_logs, "chat": cmd_chat}[args.command]
     return handler(args, env, args.dry_run)
 

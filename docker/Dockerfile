@@ -40,9 +40,14 @@ ENV PYTHONPATH=/workspace/sharar \
     HOME=/state
 RUN mkdir -p /state && chmod 777 /state && python3 -c "import sharar, flashinfer, torch; print(torch.__version__, flashinfer.__version__)"
 
+# The source commit (docker/build.sh passes it; "+dirty" for uncommitted changes). The source label links the
+# published package to the repository on ghcr.io.
+ARG REVISION=unknown
 LABEL io.sharar.target="gb10-sm121" \
       io.sharar.engine="sharar" \
-      io.sharar.reference-model="RadixArk/Qwen3.8-27B-NVFP4"
+      io.sharar.reference-model="RadixArk/Qwen3.8-27B-NVFP4" \
+      org.opencontainers.image.source="https://github.com/abdelfattah-lab/sharar" \
+      org.opencontainers.image.revision="${REVISION}"
 EXPOSE 30001
 ENTRYPOINT ["python3", "-u", "-m", "sharar"]
 CMD ["serve", "--host", "0.0.0.0", "--port", "30001"]

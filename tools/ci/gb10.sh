@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Nightly and weekly checks on the GB10 (.github/workflows/{nightly,weekly}-gb10.yml, self-hosted runner `gb10`).
 #
-#   Nightly:  tools/ci/gb10.sh [--skip-if-tested] image gpu serve
+#   Nightly:  tools/ci/gb10.sh [--skip-if-tested] image gpu serve [publish]
 #   Weekly:   tools/ci/gb10.sh image evaluate
 #   Cleanup:  tools/ci/gb10.sh --cleanup
 #
@@ -9,6 +9,10 @@
 #   image     build this checkout into sharar:ci (the previous sharar:ci is removed)
 #   gpu       tests/unit and tests/gpu in that image (tools/gpu-tests.sh)
 #   serve     serve each target from that image (run-sharar.sh, 32K context) and check it (tools/verify-sharar.sh)
+#   publish   push that image to ghcr.io/abdelfattah-lab/sharar as main-<commit> and latest (the launchers' default,
+#             tools/image.sh); only after gpu and serve passed in the same run, and the workflow asks for it only on
+#             main. Credentials: GHCR_TOKEN (and GHCR_USER) from the workflow, used through a private docker config so
+#             the runner's own `docker login` is untouched
 #   evaluate  each target, fast profile (tools/evaluate.py): AIPerf speed (code, design, reasoning) and, so that a
 #             speed gain from wrongly accepted drafts cannot pass, GSM8K (first 300) and HumanEval (164); paired with
 #             that target's baseline. Fails on more than 5% lower TPS or a quality loss of at least 1 point (p < 0.05,
@@ -27,8 +31,9 @@ set -Euo pipefail
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 cd "$(dirname "$SELF")/../.."
 
-ALL="image gpu serve evaluate"
+ALL="image gpu serve publish evaluate"
 IMAGE=sharar:ci
+REGISTRY=ghcr.io/abdelfattah-lab/sharar
 SERVE_CONTAINER=sharar-ci
 SERVE_PORT=30011
 OUT="$PWD/ci-out"
@@ -193,6 +198,24 @@ stage_serve() {
   return "$rc"
 }
 
+# The image must be this checkout's build (docker/build.sh labels it with the commit); the GPU is not used.
+stage_publish() {
+  local commit rev tag
+  commit="$(git rev-parse HEAD)"
+  rev="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE")"
+  [[ "$rev" == "$commit" ]] || { echo "$IMAGE is from ${rev:-an unlabeled build}, not $commit"; return 1; }
+  [[ -n "${GHCR_TOKEN:-}" ]] || { echo "GHCR_TOKEN is not set"; return 1; }
+  export DOCKER_CONFIG="$OUT/docker-config"
+  mkdir -p "$DOCKER_CONFIG"
+  printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-${GITHUB_ACTOR:-sharar-ci}}" --password-stdin >/dev/null || return 1
+  for tag in "main-${commit:0:7}" latest; do
+    docker tag "$IMAGE" "$REGISTRY:$tag" && docker push -q "$REGISTRY:$tag" >/dev/null || { echo "push of $tag failed"; return 1; }
+  done
+  docker rmi "$REGISTRY:main-${commit:0:7}" >/dev/null 2>&1   # keep only :latest tagged locally
+  echo "pushed $REGISTRY:main-${commit:0:7} and :latest" >>"$OUT/notes-publish"
+  docker logout ghcr.io >/dev/null 2>&1; rm -rf "$DOCKER_CONFIG"
+}
+
 # tools/evaluate.py takes the GPU lock itself for its serving window.
 stage_evaluate() {
   local target name dir base rc=0 verdict paired
@@ -302,7 +325,7 @@ run_stage() {
   rows+=("| $1 | **failed** | $took${note:+; $note} |"); failed=1; return 1
 }
 
-depends() { case $1 in gpu|serve|evaluate) echo image;; esac; }
+depends() { case $1 in gpu|serve|evaluate) echo image;; publish) echo image gpu serve;; esac; }
 [[ -n "$busy" ]] || { watchdog & watchdog_pid=$!; }
 missing=" "
 for s in $ALL; do
@@ -310,7 +333,9 @@ for s in $ALL; do
   dep="$(depends "$s")"
   if [[ -n "$busy" ]]; then rows+=("| $s | skipped | machine in use |")
   elif [[ -f "$OUT/gave-way" ]]; then rows+=("| $s | skipped | gave way to other work |")
-  elif [[ -n "$dep" && "$missing" == *" $dep "* ]] && wants "$dep"; then rows+=("| $s | skipped | $dep did not pass |")
+  elif [[ "$s" == publish ]] && ! { wants gpu && wants serve; }; then rows+=("| $s | skipped | needs gpu and serve in the same run |")
+  elif d="$(for x in $dep; do wants "$x" && [[ "$missing" == *" $x "* ]] && echo "$x"; done | head -1)"; [[ -n "$d" ]]; then
+    rows+=("| $s | skipped | $d did not pass |")
   elif run_stage "$s"; then continue
   fi
   missing+="$s "
