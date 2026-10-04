@@ -14,7 +14,8 @@ next-step statements apply to the source recorded in each report.
 | [Ownership invariants](ownership.md) | Termination, cancellation, flush, retraction and failure |
 | [Performance](performance.md) | Current BS1/BS4 and resumed-session evidence |
 | [Optimization inventory](optimizations.md) | Every optimization in the engine: location, default, measured effect, evidence |
-| [Benchmark guide](../bench/README.md) | Commands, reproducibility and shared helper layout |
+| [Evaluation](evaluation.md) | Evaluating a build, judging a change, the lossy gate, nightly and weekly GB10 checks |
+| [Profiling](../profiling/README.md) | In-process profilers, their frozen inputs, draft adaptation tools |
 | [Contributing](../CONTRIBUTING.md) | Checks and implementation boundaries |
 | [Roadmap](../roadmap.md) | Current priorities and remaining engineering work |
 | [Draft adaptation](draft-adaptation.md) | Training the DFlash2 drafter on recorded traffic: `sharar-ctl train`, traces, promotion, design and limits |

@@ -9,13 +9,13 @@ indexer budget; sparse: past it), argmax agreement with BF16, confident agreemen
 (BF16 top-1 above 0.8), the truncated KL(BF16 || quantized) over BF16's top-k, and
 the negative log-likelihood of the text itself.
 
-    python3 bench/flashnext_quant.py base --out base.pt
-    python3 bench/flashnext_quant.py score --base base.pt --label fp8 --out fp8.json
-    python3 bench/flashnext_quant.py score --base base.pt --precision bf16 --chunk 1024 --label noise --out noise.json
+    python3 -m profiling.flashnext_quant base --out base.pt
+    python3 -m profiling.flashnext_quant score --base base.pt --label fp8 --out fp8.json
+    python3 -m profiling.flashnext_quant score --base base.pt --precision bf16 --chunk 1024 --label noise --out noise.json
 
 The last line is the control: BF16 with another prefill chunk differs from the
 baseline only by rounding, which is the floor any quantized trunk is judged
-against (on the frozen profile prompts, argmax 86%/91% and KL 0.36/0.27 dense/sparse;
+against (on the frozen profile prompts (`profiling/inputs.py`), argmax 86%/91% and KL 0.36/0.27 dense/sparse;
 the FP8 trunk 83%/87% and 0.49/0.36, #5).
 """
 import argparse
@@ -27,15 +27,53 @@ from pathlib import Path
 
 import torch
 
-from bench.flashnext_parity import INPUTS, executor_model
 
 TOPK = 32
 LIMIT = 2051  # rows at or past this index select sparsely (budget + ratio - 1)
 
 
+def snapshot() -> Path:
+    """The pinned Flash-Next snapshot through the target (SHARAR_FLASHNEXT_CACHE), so host and container runs agree."""
+    from sharar.target import FLASHNEXT
+    return FLASHNEXT.snapshot_dir()
+
+
 def prompts(n_prompts: int, length: int) -> list[dict]:
-    tasks = json.loads(INPUTS.read_text())["tasks"][:n_prompts]
-    return [{"id": f"{t['id']}[:{length}]", "ids": t["input_ids"][:length]} for t in tasks]
+    from profiling.inputs import tasks
+    from sharar.tokenizer import SnapshotTokenizer
+    rows = tasks(SnapshotTokenizer(snapshot()).encode)[:n_prompts]
+    return [{"id": f"{t['id']}[:{length}]", "ids": t["input_ids"][:length]} for t in rows]
+
+
+def executor_model(precision, chunk: int = 2048):
+    """The serving path: a real Executor with pools prefills in `chunk`-token chunks (the sparse
+    indexer needs pages); every chunk's hidden rows give that chunk's logits."""
+    from sharar.engine.executor import Executor
+    from sharar.engine.sampler import SamplingParams
+    from sharar.model.flashnext.model import FlashNext
+    engine = FlashNext(snapshot(), precision=precision)
+    ex = Executor(engine, num_pages=40000, num_slots=8, max_context=32768, log=print)
+
+    class _Wrap:
+        ablate = frozenset()
+
+        def chunks(self, ids):
+            """Each prefill chunk's logits in turn ([rows, V] fp32); full-vocab logits of long prompts are
+            gigabytes, so callers that only need statistics reduce one chunk at a time."""
+            req = ex.admit(list(ids), SamplingParams(max_new_tokens=1))
+            try:
+                while req.prefill_pos < req.prefill_len:
+                    batch = ex._prepare_single_prefill(req, chunk)
+                    out = engine.forward(batch.ids, batch.context)
+                    yield engine.logits(out["norm"]).float()
+                    ex._finish_single_prefill(batch, out)
+            finally:
+                ex.release(req)
+
+        def forward(self, ids):
+            return {"logits": torch.cat(list(self.chunks(ids)))}
+
+    return _Wrap()
 
 
 def reduce(model, ids, base_ix=None):

@@ -28,7 +28,7 @@ RUN python3 /opt/repair_wheel_tag.py && pip check
 COPY sharar /workspace/sharar/sharar
 COPY pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES.md /workspace/sharar/
 COPY tests /workspace/sharar/tests
-COPY bench /workspace/sharar/bench
+COPY profiling /workspace/sharar/profiling
 COPY tools/check.sh /workspace/sharar/tools/check.sh
 COPY constraints /workspace/sharar/constraints
 WORKDIR /workspace/sharar

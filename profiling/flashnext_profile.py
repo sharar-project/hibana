@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Kernel-level breakdown of eager Flash-Next decode steps (torch profiler) plus graph-replay step time."""
+"""Kernel-level breakdown of eager Flash-Next decode steps (torch profiler) plus graph-replay step time.
 
-import json
-import os
-import sys
+    SHARAR_TARGET=flashnext python3 -m profiling.flashnext_profile --prompt benchmark_code --length 512
+
+The prompt is a frozen task of `profiling/inputs.py` (its first `--length` tokens); `--steps` decode steps are
+profiled and the `--top` CUDA kernels by time listed.
+"""
+
+import argparse
 from collections import defaultdict
-from pathlib import Path
 
 import torch
 from torch.profiler import ProfilerActivity, profile
@@ -15,17 +18,25 @@ from sharar.engine.sampler import SamplingParams
 
 
 def main():
-    prompts = json.loads(Path(sys.argv[1]).read_text())
-    ids = prompts[sys.argv[2] if len(sys.argv) > 2 else "code512"]
-    steps = int(os.environ.get("STEPS", "12"))
-    top = int(os.environ.get("TOP", "40"))
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--prompt", default="benchmark_code", help="a task id of profiling/inputs.py")
+    ap.add_argument("--length", type=int, default=512, help="prompt tokens (its first N)")
+    ap.add_argument("--steps", type=int, default=12, help="decode steps to profile")
+    ap.add_argument("--top", type=int, default=40, help="CUDA kernels to list")
+    args = ap.parse_args()
+    steps, top = args.steps, args.top
     model, ex, tok = _load(graphs=True)
+    from profiling.inputs import tasks
+    rows = {t["id"]: t["input_ids"] for t in tasks(tok.encode)}
+    if args.prompt not in rows:
+        raise SystemExit(f"--prompt: one of {', '.join(rows)}")
+    ids = rows[args.prompt][:args.length]
     params = SamplingParams(max_new_tokens=steps, ignore_eos=True)
     ex.use_graphs = True
     r = ex.generate(ids, params)
     print(f"  graphs: {1000 * r.decode_seconds / r.decode_steps:.1f} ms/step over {r.decode_steps} steps", flush=True)
     # GPU-only step time: replay the batch-1 graph with its static inputs unchanged
-    g = ex.graphs._graphs[1, False]
+    g = ex.graphs._graphs[1, "dense"]
     for _ in range(3):
         g.replay()
     torch.cuda.synchronize()

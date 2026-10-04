@@ -16,7 +16,7 @@ def check(root: Path) -> tuple[int, int]:
         assert artifact['bytes'] > 0 and not location.is_absolute() and '..' not in location.parts, path
         assert (path.parent / data['summary_document']).is_file(), path
 
-    documents = [*root.glob('*.md'), *(root / 'docs').rglob('*.md'), *(root / 'bench').rglob('*.md')]
+    documents = [*root.glob('*.md'), *(root / 'docs').rglob('*.md'), *(root / 'profiling').rglob('*.md')]
     for path in documents:
         text = re.sub(r'```.*?```', '', path.read_text(), flags=re.S)
         for match in re.finditer(r'!?\[[^\]]*\]\((<[^>]+>|[^\s)]+)(?:\s+[^)]*)?\)', text):

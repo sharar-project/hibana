@@ -213,7 +213,7 @@ def _module():
 
 
 _WORKSPACE: dict[torch.device, tuple[torch.Tensor, torch.Tensor]] = {}
-# Split-K factor per (N, K, rows): bench/w3_bench.py on GB10 (2026-09-17). More blocks help the weight stream
+# Split-K factor per (N, K, rows): profiling/w3_bench.py on GB10 (2026-09-17). More blocks help the weight stream
 # at 16 rows; at 64 rows the partial-sum traffic and the tensor-core work per block argue for fewer splits.
 SPLITS: dict[tuple[int, int, int], int] = {  # (N, K, rows) -> splits
     (5120, 17408, 16): 8, (5120, 17408, 32): 2, (5120, 17408, 64): 2,

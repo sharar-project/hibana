@@ -61,7 +61,7 @@ def main() -> int:
     from sharar.model.qwen38 import Qwen38
     from sharar.train.data import load_samples
     from sharar.train.draft import Head, TrainableDraft
-    from bench.support.target_features import FeatureExtractor
+    from profiling.draft.target_features import FeatureExtractor
     from sharar.train.loss import block_targets, block_terms, sample_anchors
     from sharar.train.trainer import TrainConfig, Trainer, pinned_draft_dir
     from sharar.weights.safetensors import SnapshotWeights

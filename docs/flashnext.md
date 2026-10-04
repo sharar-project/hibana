@@ -129,7 +129,7 @@ kernel (3.6x faster than the torch scoring at 262K for one row).
 
 ## FP8 trunk scales (2026-09-24, #5)
 
-`bench/flashnext_quant.py` scores a trunk precision against the BF16 trunk on
+`profiling/flashnext_quant.py` scores a trunk precision against the BF16 trunk on
 the serving path (8 prompts of 8,000 tokens), with BF16 at another prefill
 chunk size as the noise floor: argmax 85.7 / 90.6% and KL 0.36 / 0.27 nats
 (dense / sparse rows) from rounding alone. The per-tensor FP8 trunk sits at
@@ -141,7 +141,7 @@ calibrated FP4 trunk. Evidence `$SHARAR_RESULTS/reviews/2026-09-24-fp8-scales/`.
 
 ## 3-bit trunk sensitivity (2026-09-28, #61)
 
-`bench/flashnext_quant.py score --chunk 64` (the decode path: 64-row calls read the 3-bit copies), 8 prompts of
+`profiling/flashnext_quant.py score --chunk 64` (the decode path: 64-row calls read the 3-bit copies), 8 prompts of
 8,000 tokens, KL(BF16 || trunk) over BF16's top 32. A regex option (retired 2026-09-30, #72) left the matching
 `linears()` names without their calibrated copy. One module kind at a time in 3-bit (the rest FP8) costs no KL:
 every kind lands at or below the FP8 trunk, so no kind is the sensitive one. All of them together double it.
@@ -157,7 +157,7 @@ every kind lands at or below the FP8 trunk, so no kind is the sensitive one. All
 The cause is a coherent bias, not one module: the MSE-optimal codebook and clipped scales shrink each 3-bit row
 by about its relative error squared (weight-space gain 0.90 to 0.97, FP8 0.999). Per matrix that is optimal; through
 48 residual layers every sublayer's update shrinks the same way while the noise adds incoherently.
-`bench/flashnext_w3_calibrate.py --unbias weight` scales each row back through its FP32 row scale (codes, format
+`sharar/weights/flashnext_w3_calibrate.py --unbias weight` scales each row back through its FP32 row scale (codes, format
 and bytes unchanged). The covariance-weighted variant (`--unbias output`) corrects less (1.5% against 4%) and
 removed less KL (0.70 overall against 0.60): the calibration covariance under-states what decode inputs see.
 Keeping depth bands in FP8 on the corrected set helps only for the last layers (0-11, 12-23, 24-35 FP8: no
@@ -191,7 +191,7 @@ draft picks what the full head would pick unless the two disagree on a near-tie
 (`SHARAR_DRAFT_HEAD_RESCORE`, default 8; 0 takes the 3-bit argmax). It combines with the reduced
 vocabulary (`SHARAR_DRAFT_VOCAB`). Evidence `$SHARAR_RESULTS/reviews/2026-09-25-draft-head/`:
 
-| Check (`bench/draft_head.py`: hidden rows recorded during generation, 1,257 draft steps over 5 prompts) | FP8 head | 3-bit | 3-bit, top 8 rescored | FP8, 65K rows |
+| Check (`bench/draft_head.py` at [the archive tag](https://github.com/abdelfattah-lab/sharar/tree/archive/bench-pre-split-2026-10-04/bench): hidden rows recorded during generation, 1,257 draft steps over 5 prompts) | FP8 head | 3-bit | 3-bit, top 8 rescored | FP8, 65K rows |
 |---|---:|---:|---:|---:|
 | ms per draft step, 1 / 4 rows (graph replay) | 2.74 / 2.72 | 1.03 / 1.07 | 1.09 / 1.13 | 0.67 / 0.67 |
 | Picks equal to the FP8 head's (all / multilingual) | 1 / 1 | 0.939 / 0.886 | **0.991 / 0.980** | 0.966 / 0.886 |
@@ -228,7 +228,7 @@ k = 4. Adaptive depth (stop drafting when the draft is unsure) is the follow-up.
 ## Round idle gaps (2026-09-28)
 
 The GPU waited for the host for about 7.7 ms of each 55.7 ms MTP round (fast profile, batch one, #36;
-`bench/flashnext_round.py --gap-profile --kernel-gaps`). Inside the verify graph the node bubbles are only
+`profiling/flashnext_round.py --gap-profile --kernel-gaps`). Inside the verify graph the node bubbles are only
 0.3 ms, so the "9 ms outside kernels" of #25 was this host time between replays. Draft->verify: the PLE rows
 waited for the whole draft block, then went through the 32-thread pool even when the page cache held them
 (1.1 ms for 80 cached rows), then the plan and indexer rows ran. Now the plan and indexer rows come first, cached
@@ -286,7 +286,7 @@ Evidence and the dataset (77K tokens, 19K verify rounds, schema in `data/README.
 
 Speculation for sampled requests (MTP is greedy-only, #22), layer feature
 capture (DFlash2-style drafters), W3 trunk and experts, fused hyper-connection
-and small-GEMV kernels, family-gate inputs,
+and small-GEMV kernels,
 accuracy gate, production image. Determinism: cold prefills and eager decode
 are bit-identical to each other; a prefix-cache-hit continuation diverges from
 the cold one (token 9 on the 512-token code prompt), consistent with the FP8

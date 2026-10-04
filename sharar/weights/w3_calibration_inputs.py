@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Frozen calibration samples for the 3-bit decode copies (bench/w3_calibrate.py, bench/flashnext_w3_calibrate.py).
+"""Frozen calibration samples for the 3-bit decode copies (`sharar.weights.w3_calibrate`, `sharar.weights.flashnext_w3_calibrate`).
 
 A synthetic coding proxy, as the 2026-09-17 set was: source files of this repository (`sharar/`, without
 `sharar/parity/`), chosen by a seeded shuffle of the files at a commit, each file's text tokenized with the
@@ -7,7 +7,7 @@ target's tokenizer and cut to --max-tokens. Task-accuracy datasets never enter. 
 tokenizer, so one file serves both calibrations. The output records the commit, the tokenizer's hash and each
 source file's hash, so the same command at the same commit rebuilds the same samples.
 
-    python3 bench/w3_calibration_inputs.py --tokenizer SNAPSHOT/tokenizer.json --output calibration-inputs.json
+    python3 -m sharar.weights.w3_calibration_inputs --tokenizer SNAPSHOT/tokenizer.json --output calibration-inputs.json
 """
 import argparse
 import hashlib
@@ -16,7 +16,7 @@ import random
 import subprocess
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 
 
 def main():
