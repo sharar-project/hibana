@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Production launcher for Sharar on one DGX Spark GB10.
-# Usage: ./run-sharar.sh [--check | --stop]
-# Reads config/gb10.env for SHARAR_HF_CACHE and SHARAR_RESULTS.
+# Usage: ./run-sharar.sh [--check | --stop]   (sharar-ctl serve 27b|flashnext drives it)
+# Settings: the environment and config/gb10.env (optional), then the target's config/targets/<target>.env, then
+# defaults (tools/launcher-config.sh). A model or draft missing from the cache is downloaded first.
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SHARAR_CONFIG_FILE:-$SCRIPT_DIR/config/gb10.env}"
+REQUESTED_TARGET="${SHARAR_TARGET:-}"   # a target named by the caller (sharar-ctl serve flashnext) wins over the config file
 [[ -r "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+[[ -n "$REQUESTED_TARGET" ]] && SHARAR_TARGET="$REQUESTED_TARGET"
+source "$SCRIPT_DIR/tools/launcher-config.sh"
+launcher_defaults || exit 1
 # Serving profile: the default for every speed/fidelity knob below that the environment or the config file
 # does not set explicitly (tools/serving-profile.sh).
 source "$SCRIPT_DIR/tools/serving-profile.sh"
@@ -37,12 +42,19 @@ if [[ "$PROPOSER" == dspark ]]; then   # the pinned parallel draft (sharar/propo
 else
   DRAFT_REPO="incoai/Qwen3.8-27B-DFlash2"; DRAFT_REVISION="dedf8df68adfb1afeaf7b7480c0a0243108177b4"
 fi
-CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
-RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
+CACHE_DIR="$SHARAR_HF_CACHE"
+RESULTS_DIR="$SHARAR_RESULTS"
 STATE_DIR="$RESULTS_DIR/runtime-state"   # JIT caches; persists across restarts
 GUARD_UNIT="sharar-memory-guard.service"
 GUARD_MIN_AVAILABLE_KIB="${SHARAR_MIN_AVAILABLE_KIB:-16777216}"
-MODEL_REVISION="319f741cce68d7914884900c138a1fbb70a42f30"
+# Pinned checkpoints (sharar/target.py and sharar/model/flashnext/config.py; tests/unit/test_launcher_config.py)
+if [[ "$TARGET_NAME" == flashnext ]]; then
+  MODEL_REPO="RadixArk/Qwen3.8-Flash-Next-NVFP4"; MODEL_REVISION="7b719225242aacd3dbd3f9407468c2ee9a9d2594"
+  MODEL_CACHE="$SHARAR_FLASHNEXT_CACHE"
+else
+  MODEL_REPO="RadixArk/Qwen3.8-27B-NVFP4"; MODEL_REVISION="319f741cce68d7914884900c138a1fbb70a42f30"
+  MODEL_CACHE="$CACHE_DIR"
+fi
 RUNS_DIR="${SHARAR_DRAFT_RUNS:-$RESULTS_DIR/draft-runs}"
 if [[ "$DRAFT_DIR" == pinned ]]; then
   DRAFT_DIR=""
@@ -91,25 +103,44 @@ gpu_name="$(trim "$gpu_name")"; gpu_cc="$(trim "$gpu_cc")"; gpu_driver="$(trim "
 mem_total=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo); mem_avail=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
 (( mem_total >= 120000000 )) || fail "at least 120 GB host memory is required"
 (( mem_avail >= 41943040 )) || fail "at least 40 GiB must be available before the measured streaming load (have $((mem_avail / 1048576)) GiB); runtime checks the prospective pool/draft budget separately"
-snapshot_ok=false
-for root in "$CACHE_DIR" "$CACHE_DIR/hub"; do
-  s="$root/models--RadixArk--Qwen3.8-27B-NVFP4/snapshots/$MODEL_REVISION"
-  [[ -f "$s/config.json" && -f "$s/model.safetensors.index.json" ]] && snapshot_ok=true
-done
-$snapshot_ok || fail "pinned model revision $MODEL_REVISION is incomplete in $CACHE_DIR"
-if [[ ( "$PROPOSER" == dflash2 || "$PROPOSER" == dspark ) && "$SPEC" != 0 && -z "$DRAFT_DIR" ]]; then
-  draft_ok=false
-  for root in "$CACHE_DIR/hub" "$CACHE_DIR"; do
-    d="$root/models--${DRAFT_REPO//\//--}/snapshots/$DRAFT_REVISION"
-    [[ -f "$d/config.json" && -f "$d/model.safetensors" ]] && draft_ok=true
+# snapshot_complete CACHE REPO REVISION: the snapshot has config.json and every weight file its index names.
+snapshot_complete() {
+  local root
+  for root in "$1" "$1/hub"; do
+    python3 - "$root/models--${2//\//--}/snapshots/$3" <<'PY' && return 0
+import json, sys
+from pathlib import Path
+d = Path(sys.argv[1])
+index = d / "model.safetensors.index.json"
+files = set(json.loads(index.read_text())["weight_map"].values()) if index.is_file() else {"model.safetensors"}
+sys.exit(0 if (d / "config.json").is_file() and all((d / f).is_file() for f in files) else 1)
+PY
   done
-  $draft_ok || fail "pinned $PROPOSER draft $DRAFT_REPO@${DRAFT_REVISION:0:7} is missing in $CACHE_DIR (download it, or set SHARAR_PROPOSER=mtp to serve without it)"
+  return 1
+}
+downloads=()   # "REPO REVISION CACHE" for each pinned snapshot the cache lacks
+snapshot_complete "$MODEL_CACHE" "$MODEL_REPO" "$MODEL_REVISION" || downloads+=("$MODEL_REPO $MODEL_REVISION $MODEL_CACHE")
+if [[ ( "$PROPOSER" == dflash2 || "$PROPOSER" == dspark ) && "$SPEC" != 0 && -z "$DRAFT_DIR" ]]; then
+  snapshot_complete "$CACHE_DIR" "$DRAFT_REPO" "$DRAFT_REVISION" || downloads+=("$DRAFT_REPO $DRAFT_REVISION $CACHE_DIR")
 fi
 if [[ "$PROPOSER" == dspark && "$SPEC" != 0 && "$MAX_CONTEXT" -gt 32768 ]]; then
   # DSpark keeps draft features for the whole context (DFlash2 keeps a 2,048-token window): at 262K they do not fit.
   fail "DSpark needs SHARAR_MAX_CONTEXT of at most 32768 (it keeps draft features for the whole context; got $MAX_CONTEXT)"
 fi
 ensure_image "$IMAGE" $([[ "${1:-}" == --check ]] && echo --no-pull) || fail "no runtime image ($IMAGE)"
+for d in "${downloads[@]}"; do
+  read -r repo revision cache <<<"$d"
+  if [[ "${1:-}" == --check ]]; then
+    echo "sharar: $repo@${revision:0:7} is not in $cache; serving downloads it first" >&2
+    continue
+  fi
+  mkdir -p "$cache/hub"
+  docker run --rm $([[ -t 1 ]] && echo --tty) --user "$(id -u):$(id -g)" --volume "$cache:/models" \
+    --volume "$SCRIPT_DIR/tools/fetch-model.py:/opt/fetch-model.py:ro" --env HOME=/tmp --env HF_HOME=/tmp/hf --env HF_HUB_OFFLINE=0 \
+    ${HF_TOKEN:+--env HF_TOKEN} --entrypoint python3 "$IMAGE" /opt/fetch-model.py "$repo" "$revision" /models/hub "$cache" \
+    || fail "could not download $repo@${revision:0:7} into $cache"
+  snapshot_complete "$cache" "$repo" "$revision" || fail "$repo@${revision:0:7} is still incomplete in $cache after the download"
+done
 if [[ -n "$TRACES_DIR" || -n "$DRAFT_DIR" ]]; then
   docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--traces" \
     || fail "image $IMAGE predates trace recording and trained drafts; rebuild it with docker/build.sh"
@@ -144,7 +175,7 @@ onoff() { [[ "$1" == 1 ]] && echo on || echo off; }
 cat <<EOT
 Sharar preflight OK
   GPU: $gpu_name (SM $gpu_cc), driver $gpu_driver
-  Model: RadixArk/Qwen3.8-27B-NVFP4@$MODEL_REVISION
+  Model: $MODEL_REPO@$MODEL_REVISION (${MODEL_CACHE})
   Host memory: $((mem_total / 1048576)) GiB total, $((mem_avail / 1048576)) GiB available; runtime floor $((GUARD_MIN_AVAILABLE_KIB / 1048576)) GiB
   Image: $IMAGE -> container $CONTAINER on http://127.0.0.1:$PORT (proposer: $PROPOSER, drafts: $SPEC, draft precision: $DRAFT_PRECISION, verify state: $VERIFY_STATE)
   Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}${TRACES_DIR:+, draft confidence $([[ "${SHARAR_TRACE_CONFIDENCE:-0}" == 1 ]] && echo on || echo off) (SHARAR_TRACE_CONFIDENCE)}
@@ -154,13 +185,13 @@ Sharar preflight OK
   Batch: up to $MAX_BATCH requests (SHARAR_MAX_BATCH), verify depth by batch ${SPEC_DEPTHS:-$SPEC everywhere} (SHARAR_SPEC_DEPTHS)
   Relaxed acceptance default: $ACCEPT_DEFAULT, sampled requests $(onoff "$ACCEPT_DEFAULT_SAMPLED") (requests may set accept_top_k/accept_margin; 1 = exact)
   Three-bit decode copies: $(onoff "$W3_DECODE")$([[ "$W3_DECODE" == 1 ]] && echo ", ${W3_CHECKPOINT:-nearest rounding from the pinned serving weights}") (SHARAR_W3_DECODE, SHARAR_W3_CHECKPOINT)
-  Draft: ${DRAFT_DIR:-pinned $DRAFT_REPO@${DRAFT_REVISION:0:7}}
+  Draft: $([[ "$PROPOSER" == mtp ]] && echo "the model's own MTP head" || echo "${DRAFT_DIR:-pinned $DRAFT_REPO@${DRAFT_REVISION:0:7}}")
 EOT
 [[ -n "$W3_WARNING" ]] && echo "  WARNING: $W3_WARNING"
 [[ "${1:-}" == "--check" ]] && exit 0
 
 docker container inspect "$CONTAINER" >/dev/null 2>&1 && fail "container '$CONTAINER' already exists (use --stop first)"
-mkdir -p "$STATE_DIR"
+mkdir -p "$STATE_DIR" "$CACHE_DIR"   # existing directories, so docker does not create a mount point as root
 
 args=(docker run --detach --name "$CONTAINER"
   --publish "127.0.0.1:$PORT:$PORT"
@@ -221,13 +252,9 @@ if [[ -n "$DRAFT_DIR" ]]; then
   args+=(--volume "$DRAFT_DIR:/draft:ro")
   serve_args+=(--draft /draft)
 fi
-if [[ -n "${SHARAR_TARGET:-}" ]]; then
-  args+=(--env "SHARAR_TARGET=$SHARAR_TARGET")   # pinned serving target (sharar/target.py): qwen38 (default) or flashnext
-fi
-if [[ "${SHARAR_TARGET:-}" == flashnext ]]; then
-  FN_CACHE="${SHARAR_FLASHNEXT_CACHE:?SHARAR_TARGET=flashnext needs SHARAR_FLASHNEXT_CACHE (the RadixArk/Qwen3.8-Flash-Next-NVFP4 model cache)}"
-  [[ -d "$FN_CACHE/models--RadixArk--Qwen3.8-Flash-Next-NVFP4/snapshots" ]] || fail "no Flash-Next snapshot under $FN_CACHE"
-  args+=(--volume "$FN_CACHE:/cache/flash-next:ro" --env SHARAR_FLASHNEXT_CACHE=/cache/flash-next
+args+=(--env "SHARAR_TARGET=$TARGET_NAME")   # pinned serving target (sharar/target.py): qwen38 or flashnext
+if [[ "$TARGET_NAME" == flashnext ]]; then
+  args+=(--volume "$MODEL_CACHE:/cache/flash-next:ro" --env SHARAR_FLASHNEXT_CACHE=/cache/flash-next
          --env "SHARAR_FLASHNEXT_TRUNK=${SHARAR_FLASHNEXT_TRUNK:-fp8}")   # trunk precision at load: fp8 (default) or bf16
 fi
 args+=(--env "SHARAR_DEVICE_ACCEPT=$DEVICE_ACCEPT")   # device-resident acceptance graphs (engine/accept_graphs.py)

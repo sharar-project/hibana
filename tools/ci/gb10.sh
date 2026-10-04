@@ -159,13 +159,12 @@ guard() {  # tools/memory-guard.sh on a container once it exists (run-sharar.sh 
   done
 }
 
-# One target's launcher config with the CI image, container, port and context; no draft-runs, no saved sessions.
+# One target's launcher config: the CI config's paths, the target (its settings come from config/targets/), and the CI
+# image, container, port and context; no draft-runs, no saved sessions.
 serve_config() {
-  local base=$SHARAR_CONFIG_FILE conf="$OUT/serve-$1.env"
-  [[ "$1" == flashnext ]] && base=config/flashnext.env
-  { grep -vE '^(SHARAR_IMAGE|SHARAR_CONTAINER|SHARAR_PORT|SHARAR_MAX_CONTEXT|SHARAR_DRAFT|SHARAR_SESSION_DIR|SHARAR_HF_CACHE|SHARAR_RESULTS|SHARAR_FLASHNEXT_CACHE)=' "$base"
-    echo "SHARAR_HF_CACHE=$SHARAR_HF_CACHE"; echo "SHARAR_RESULTS=$SHARAR_RESULTS"
-    [[ -n "${SHARAR_FLASHNEXT_CACHE:-}" ]] && echo "SHARAR_FLASHNEXT_CACHE=$SHARAR_FLASHNEXT_CACHE"
+  local conf="$OUT/serve-$1.env"
+  { grep -vE '^(SHARAR_TARGET|SHARAR_IMAGE|SHARAR_CONTAINER|SHARAR_PORT|SHARAR_MAX_CONTEXT|SHARAR_DRAFT|SHARAR_SESSION_DIR)=' "$SHARAR_CONFIG_FILE"
+    echo "SHARAR_TARGET=$1"
     echo "SHARAR_IMAGE=$IMAGE"; echo "SHARAR_CONTAINER=$SERVE_CONTAINER"; echo "SHARAR_PORT=$SERVE_PORT"
     echo "SHARAR_MAX_CONTEXT=32768"; echo "SHARAR_DRAFT=pinned"; echo "SHARAR_SESSION_DIR=off"; } >"$conf"
   echo "$conf"

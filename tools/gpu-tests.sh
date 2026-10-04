@@ -4,21 +4,23 @@
 # six environment variables the suite needs inside a container (#54).
 #
 # Usage: tools/gpu-tests.sh [pytest arguments]      e.g. tools/gpu-tests.sh tests/gpu/test_qsa.py -x
-# Image: SHARAR_TEST_IMAGE, else the one config/flashnext.env serves. Nothing else may use the GPU meanwhile.
+# Image: SHARAR_TEST_IMAGE, else the one the launcher serves (tools/image.sh). Nothing else may use the GPU meanwhile.
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 fail() { echo "gpu-tests: $*" >&2; exit 1; }
-config_value() { { grep -E "^$1=" "$2" 2>/dev/null || true; } | tail -1 | cut -d= -f2-; }   # unset keys are empty, not fatal
-GB10_ENV="$REPO_DIR/config/gb10.env"; FN_ENV="$REPO_DIR/config/flashnext.env"
-HF_CACHE="${SHARAR_HF_CACHE:-$(config_value SHARAR_HF_CACHE "$GB10_ENV")}"
-FN_CACHE="${SHARAR_FLASHNEXT_CACHE:-$(config_value SHARAR_FLASHNEXT_CACHE "$FN_ENV")}"
-RESULTS="${SHARAR_RESULTS:-$(config_value SHARAR_RESULTS "$GB10_ENV")}"
-W3="${SHARAR_W3_CHECKPOINT:-$(config_value SHARAR_W3_CHECKPOINT "$GB10_ENV")}"
+# The launcher's paths and image (config/gb10.env if present, else defaults; tools/launcher-config.sh); the environment wins.
+declare -A conf
+while IFS='=' read -r k v; do conf[$k]=$v; done < <(bash "$SCRIPT_DIR/launcher-config.sh" print qwen38)
+source "$SCRIPT_DIR/image.sh"
+HF_CACHE="${SHARAR_HF_CACHE:-${conf[SHARAR_HF_CACHE]}}"
+FN_CACHE="${SHARAR_FLASHNEXT_CACHE:-${conf[SHARAR_FLASHNEXT_CACHE]}}"
+RESULTS="${SHARAR_RESULTS:-${conf[SHARAR_RESULTS]}}"
+W3="${SHARAR_W3_CHECKPOINT:-${conf[SHARAR_W3_CHECKPOINT]:-}}"
 [[ -z "$W3" || "$W3" == auto ]] && W3="$RESULTS/w3-checkpoints/qwen38-current"   # as run-sharar.sh resolves auto
-IMAGE="${SHARAR_TEST_IMAGE:-$(config_value SHARAR_IMAGE "$FN_ENV")}"
+IMAGE="${SHARAR_TEST_IMAGE:-${conf[SHARAR_IMAGE]:-$SHARAR_DEFAULT_IMAGE}}"
 [[ -d "$HF_CACHE" ]] || fail "missing 27B model cache (SHARAR_HF_CACHE): $HF_CACHE"
-[[ -n "$IMAGE" ]] && docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "missing image $IMAGE (SHARAR_TEST_IMAGE)"
+ensure_image "$IMAGE" || fail "missing image $IMAGE (SHARAR_TEST_IMAGE)"
 DRIVER_LIB_DIR=/usr/lib/aarch64-linux-gnu
 source "$SCRIPT_DIR/gb10-container.sh"
 args=(docker run --rm --name "sharar-gpu-tests-$$" --security-opt no-new-privileges=true --cap-drop ALL --shm-size 16g
