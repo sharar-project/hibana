@@ -24,11 +24,16 @@ Copy [config/gb10.env.example](config/gb10.env.example) to `config/gb10.env`,
 set the model cache and results paths, then:
 
 ```bash
-docker/build.sh
 ./sharar-ctl serve                                        # Qwen3.8-27B on 127.0.0.1:30001
 SHARAR_CONFIG_FILE=config/flashnext.env ./sharar-ctl serve   # Flash-Next on 127.0.0.1:30004
 ./sharar-ctl chat
 ```
+
+The first serve pulls the runtime image `ghcr.io/abdelfattah-lab/sharar:latest`, which the nightly GB10 check
+publishes from main after its GPU suite and serve checks pass; `./sharar-ctl pull` updates it. While the
+repository is private the image is too: log in once with a GitHub token that can read packages
+(`gh auth refresh -s read:packages`, then `gh auth token | docker login ghcr.io -u <github user> --password-stdin`).
+To serve your own build, run `docker/build.sh` and set `SHARAR_IMAGE=sharar:qwen38-27b`.
 
 The default `fast` profile downloads its calibrated 3-bit checkpoint on first serve
 ([calibration](docs/w3-calibration.md)); the preflight warns when it serves without one.
@@ -38,6 +43,7 @@ covers prerequisites, the launcher settings and the memory guard.
 
 | Command | What it does |
 |---|---|
+| `./sharar-ctl pull` | Fetch the newest published image |
 | `./sharar-ctl serve [--exact]` | Start serving (fastest settings by default; `--exact` for the model's own outputs, e.g. benchmarks) |
 | `./sharar-ctl chat` | Terminal chat against the running server |
 | `./sharar-ctl status` / `stop` / `logs` | Server state, stop, container logs |

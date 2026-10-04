@@ -10,9 +10,10 @@ CONFIG_FILE="${SHARAR_CONFIG_FILE:-$SCRIPT_DIR/config/gb10.env}"
 # Serving profile: the default for every speed/fidelity knob below that the environment or the config file
 # does not set explicitly (tools/serving-profile.sh).
 source "$SCRIPT_DIR/tools/serving-profile.sh"
+source "$SCRIPT_DIR/tools/image.sh"
 PROFILE="${SHARAR_PROFILE:-fast}"
 serving_profile "$PROFILE" "${SHARAR_TARGET:-}" || { echo "sharar launch failed: SHARAR_PROFILE must be exact, balanced, fast or throughput" >&2; exit 1; }
-IMAGE="${SHARAR_IMAGE:-sharar:qwen38-27b}"
+IMAGE="${SHARAR_IMAGE:-$SHARAR_DEFAULT_IMAGE}"   # tools/image.sh: the published nightly image unless set
 CONTAINER="${SHARAR_CONTAINER:-sharar-qwen38}"
 PORT="${SHARAR_PORT:-30001}"
 SPEC="${SHARAR_SPEC:-15}"   # draft tokens per round (0 = off); 15 is DFlash2's validated depth (16 verify rows)
@@ -108,7 +109,7 @@ if [[ "$PROPOSER" == dspark && "$SPEC" != 0 && "$MAX_CONTEXT" -gt 32768 ]]; then
   # DSpark keeps draft features for the whole context (DFlash2 keeps a 2,048-token window): at 262K they do not fit.
   fail "DSpark needs SHARAR_MAX_CONTEXT of at most 32768 (it keeps draft features for the whole context; got $MAX_CONTEXT)"
 fi
-docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image is missing: $IMAGE (build with docker/build.sh)"
+ensure_image "$IMAGE" $([[ "${1:-}" == --check ]] && echo --no-pull) || fail "no runtime image ($IMAGE)"
 if [[ -n "$TRACES_DIR" || -n "$DRAFT_DIR" ]]; then
   docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--traces" \
     || fail "image $IMAGE predates trace recording and trained drafts; rebuild it with docker/build.sh"

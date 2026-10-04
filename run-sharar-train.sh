@@ -14,7 +14,8 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SHARAR_CONFIG_FILE:-$SCRIPT_DIR/config/gb10.env}"
 [[ -r "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
-IMAGE="${SHARAR_IMAGE:-sharar:qwen38-27b}"
+source "$SCRIPT_DIR/tools/image.sh"
+IMAGE="${SHARAR_IMAGE:-$SHARAR_DEFAULT_IMAGE}"
 CONTAINER="${SHARAR_TRAIN_CONTAINER:-sharar-train}"
 SERVING_CONTAINER="${SHARAR_CONTAINER:-sharar-qwen38}"
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
@@ -43,7 +44,7 @@ case "${1:-}" in
     [[ "${1:-}" == "--keep-serving" ]] && keep_serving=true
     running "$CONTAINER" && fail "training container $CONTAINER is already running (use: $0 status)"
     [[ -d "$TRACES_DIR" ]] || fail "trace directory $TRACES_DIR does not exist; serve with SHARAR_TRACES first"
-    docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image is missing: $IMAGE (build with docker/build.sh)"
+    ensure_image "$IMAGE" || fail "no runtime image ($IMAGE)"
     # The image must carry this checkout's trainer: an older image fails at argument parsing after serving was stopped.
     docker run --rm --entrypoint python3 "$IMAGE" -m sharar train --help 2>/dev/null | grep -q -- "--holdout-tokens" \
       || fail "image $IMAGE predates the current trainer; rebuild it with docker/build.sh"
