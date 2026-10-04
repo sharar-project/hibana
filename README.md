@@ -87,11 +87,11 @@ python3 tools/check_evidence.py   # documentation links
 |---|---|
 | `sharar/` | Engine (`engine/`), caches (`cache/`), models (`model/`, `model/flashnext/`), kernels, weights, proposers, trainer, API |
 | `sharar-ctl`, `run-sharar.sh` | Host command and the container launcher |
-| `bench/`, `tests/`, `tools/`, `docker/` | In-process benchmarks, tests, checks, image build |
+| `profiling/`, `tests/`, `tools/`, `docker/` | In-process profilers, tests, checks and gates, image build |
 | `docs/` | [Architecture](docs/architecture.md), [optimizations](docs/optimizations.md), [performance](docs/performance.md), [Flash-Next](docs/flashnext.md), [roadmap](roadmap.md) |
 
 Quality and speed benchmarks live in [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval) and
 measure any running server over HTTP. `tools/evaluate.py --target flashnext --profile fast --suite quick --speed`
-serves this build and runs them ([bench/README.md](bench/README.md)). Read
+serves this build and runs them ([evaluation](docs/evaluation.md); [profiling](profiling/README.md) for in-process tools). Read
 [CONTRIBUTING.md](CONTRIBUTING.md) before changing the engine. Apache 2.0
 ([license](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md)).

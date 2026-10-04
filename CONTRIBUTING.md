@@ -40,9 +40,9 @@ It mounts the model caches, the calibrated W3 artifact and `$SHARAR_RESULTS`
 at their container paths (read from `config/gb10.env` and
 `config/flashnext.env`; `SHARAR_TEST_IMAGE` picks another image) and sets
 `SHARAR_RUN_GPU=1`; without it the GPU modules are not collected. Inside an
-already prepared GB10 container use `bash tools/check.sh gpu`. Shared benchmark
-infrastructure lives in `bench/support/`; preserve frozen workload content and
-checksums when moving readers.
+already prepared GB10 container use `bash tools/check.sh gpu`. Preserve frozen
+workload content and checksums (`tools/gate/workloads/`, `profiling/workloads/`,
+`sharar/benchmark_workloads.py`) when moving readers.
 
 The real-checkpoint fixture uses bounded pools: 35,000 KV pages and 12 recurrent
 slots. Keep the external memory guard active for that container. The loader
@@ -53,22 +53,16 @@ Performance measurements need exclusive GPU use. The check command does not
 stop or replace a running service.
 
 Anything that changes arithmetic (kernels, dispatch thresholds, draft
-precision, verify shapes, proposers) is judged by the family gate,
-`tools/family-gate.py` ([bench/README.md](bench/README.md#the-family-gate)):
-paired 21-task intervals against a native pass, with the noise floor from a
-repeated native pass. Bit-identical outputs are not required and not a
-substitute: the target's arithmetic already changes with the row count, so
-outputs drift whenever shapes move. Compare row-count changes under
-`SHARAR_STABLE_NUMERICS=1` as well. Read the gate this way: the round-cost
-interval decides cost (it resolves 0.05%); the tokens-per-round interval
-decides acceptance only when it excludes 1, and it is about ±3% wide on the
-101-family default set (±7% on the old 18-family set) for any change that
-moves continuations, so do not select among variants on its point estimate. The three-prompt AIPerf benchmark (sharar-eval's `python -m evals.speed`)
-remains the reporting cell for end-to-end numbers, never the decision.
-A change to the target's arithmetic or to acceptance also runs
-the `quick` suite of the `sharar-eval` repository (`evals.suite`; GSM8K, HumanEval and MGSM, paired
-against the exact configuration) before it becomes a default; the gate measures speed and
-acceptance, not correctness. A lossy option (one that changes what the model
+precision, verify shapes, proposers) passes the GPU suite, then is measured
+against main with `tools/evaluate.py` ([evaluation](docs/evaluation.md#judge-a-change-to-arithmetic)):
+`--build --speed --suite quick` on the candidate, paired with the same run on
+main's image (`--baseline`). AIPerf speed moves by under 1% between identical
+builds; the `quick` suite (GSM8K, HumanEval, MGSM, needles) is compared item
+by item, and a paired quality loss is a regression. Bit-identical outputs are
+not required and not a substitute: the target's arithmetic already changes with
+the row count, so outputs drift whenever shapes move.
+`profiling/flashnext_round.py` isolates round cost and tokens per round when a
+speed change needs explaining. A lossy option (one that changes what the model
 emits on purpose) is judged by the lossy-change gate below instead.
 When an optimization lands, changes its default or is retired, update its
 row in the [optimization inventory](docs/optimizations.md) in the same change.
@@ -159,8 +153,8 @@ through `forward_extras()` on `ForwardContext.extras` (never new
 engine, pools and graphs read `executor.target`; do not add module-level
 constants for a new model, and keep `config.py` describing the 27B for the
 tools that import it. Validate a new target with layer-by-layer parity
-against a reference server, the CPU contracts, the GPU lifecycle suites and
-regenerated family-gate inputs before it is served.
+against a reference server, the CPU contracts, the GPU lifecycle suites and a
+`tools/evaluate.py` run (quality and speed) before it is served.
 
 ## Add a proposer
 
@@ -204,10 +198,10 @@ Training lives in `sharar/train/`: the differentiable forward must stay a
 function of the serving weight dictionary (`draft.py`), the objective must
 match the reference formulas the CPU tests carry (`tests/unit/test_train.py`),
 and any change to the forward, objective, selector or mask must pass
-`bench/dflash2_reference.py` on the GPU (serving proposer, the publisher's
+`profiling/draft/dflash2_reference.py` on the GPU (serving proposer, the publisher's
 model and SpecForge as references) and `tests/gpu/test_train_forward.py`.
 Judge a drafter on held-out tokens per round and served throughput on the
-user's own newest traffic (`bench/draft_ab.py`), never on a public corpus.
+user's own newest traffic (`profiling/draft/draft_ab.py`), never on a public corpus.
 Keep the feature and K/V projections frozen unless the cache identity, the
 cold-tier payloads and the trace format are versioned with it. Trace format
 changes bump `FORMAT_VERSION` in `engine/traces.py` and keep the reader

@@ -6,7 +6,7 @@ the image's own engine, so the arm measures the image's code in the served confi
 executor is built as `sharar serve` builds it (proposer, depth, verify state, draft precision,
 draft), and greedy requests carry the profile's acceptance rule.
 
-    python3 -m bench.lossy_gate --prompts bench/workloads/lossy_v1.json --out OUT \\
+    python3 -m gate.lossy_gate --prompts tools/gate/workloads/lossy_v1.json --out OUT \\
         --proposer mtp --spec 4 --draft-precision bf16 --accept 1:0 [--base BASE] [--floor-chunk 32]
 
 Layer 2, speculation health (spec.json): every prompt generated greedily (chat template, thinking

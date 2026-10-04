@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-container="${1:-sharar-qwen38}"   # run-sharar.sh and family-gate.py pass theirs
+container="${1:-sharar-qwen38}"   # run-sharar.sh and tools/ci/gb10.sh pass theirs
 threshold_kib="${SHARAR_MIN_AVAILABLE_KIB:-16777216}"
 state_home="${XDG_STATE_HOME:-${HOME}/.local/state}"
 results_dir="${SHARAR_RESULTS:-$state_home/sharar/gb10}"

@@ -10,7 +10,7 @@
      verification of s rows reads what an M = s forward reads; this is the cost a
      longer draft block pays.
 
-    SHARAR_TARGET=flashnext python3 -m bench.flashnext_round --out round.json
+    SHARAR_TARGET=flashnext python3 -m profiling.flashnext_round --out round.json
 
 `--gap-profile` (with `--batch`, `--accept`) and `--kernel-gaps` split a served round into GPU
 work, GPU idle time between replays (host work the GPU waits for) and bubbles inside the replays.
@@ -34,7 +34,7 @@ PROMPTS = {
     "prose": "Write an essay of about 700 words on how the printing press changed European society between 1450 and 1600, covering religion, science, politics and literacy.",
     "math": "A loan of $250,000 at 6.5% annual interest is repaid monthly over 30 years. Derive the payment formula, compute the monthly payment, the total interest, and the balance after 10 years, showing all steps.",
 }
-EXTRA_PROMPTS = {  # a fourth request for batch 4 (kept apart: `m_curve` and draft_head.py read PROMPTS)
+EXTRA_PROMPTS = {  # a fourth request for batch 4 (kept apart: `m_curve` reads PROMPTS)
     "json": "Extract every person, company, date and amount from this text as JSON with a schema: On 3 March 2021 Maria Lopez of Acme Corp paid $12,400 to Jonas Berg (Nordic Tools AB) for 40 drills; the balance of $3,100 was settled on 9 April by Acme's CFO, Tom Reed.",
 }
 CATEGORIES = [  # first match wins

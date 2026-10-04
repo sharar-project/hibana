@@ -138,7 +138,7 @@ class FlashNext:
         yield "lm_head", self.lm_head
 
     def attach_calibrated(self, directory: str, log=print) -> str:
-        """Calibrated 3-bit decode copies (bench/flashnext_w3_calibrate.py) over the FP8 trunk, by `linears()` name;
+        """Calibrated 3-bit decode copies (sharar/weights/flashnext_w3_calibrate.py) over the FP8 trunk, by `linears()` name;
         calls of at most 64 rows then read them (`TrunkLinear.__call__`), prefill keeps the FP8 weights."""
         from sharar.weights.w3_checkpoint import CalibratedWeights
         if self.precision != "fp8":

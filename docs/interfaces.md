@@ -325,7 +325,7 @@ the host's for identical round boundaries (`tests/gpu/test_device_accept.py`,
 `test_mtp_device_accept.py`). With an FP8 draft layer (Flash-Next's MTP head) the
 whole-bucket projection also shares one dynamic activation scale, so the draft KV
 matches the host's to FP8 rounding and round boundaries, hence outputs, move sooner.
-Acceptance is judged by the family gate like any other arithmetic change.
+Acceptance is judged like any other arithmetic change ([evaluation](evaluation.md#judge-a-change-to-arithmetic)).
 
 ## Recurrent retention
 

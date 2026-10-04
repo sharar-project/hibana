@@ -12,7 +12,7 @@ hyper-connection mixers stay FP8. The output loads with
 SHARAR_W3_DECODE=1 SHARAR_W3_CHECKPOINT=DIR over the FP8 trunk (the launcher serves
 $SHARAR_RESULTS/w3-checkpoints/flashnext-current in the fast profile).
 
-    SHARAR_TARGET=flashnext python3 -m bench.flashnext_w3_calibrate --inputs calibration-inputs.json --output DIR
+    SHARAR_TARGET=flashnext python3 -m sharar.weights.flashnext_w3_calibrate --inputs calibration-inputs.json --output DIR
 """
 import argparse
 import hashlib

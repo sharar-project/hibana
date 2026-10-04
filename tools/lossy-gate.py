@@ -16,8 +16,8 @@ exists. Do not wrap the tool in flock: it takes $SHARAR_RESULTS/.gpu.lock itself
 GPU phase (at most --hold-minutes), and waits while another model container runs.
 
 Layers, cheapest first:
-  1  Distribution distance (in-process, bench/lossy_gate.py): the baseline's own greedy
-     continuations of the 28 frozen prompts of bench/workloads/lossy_v1.json (code, math, prose,
+  1  Distribution distance (in-process, tools/gate/lossy_gate.py): the baseline's own greedy
+     continuations of the 28 frozen prompts of tools/gate/workloads/lossy_v1.json (code, math, prose,
      multilingual, structured, short chat), scored 64 rows per forward (the decode path) as
      argmax agreement and truncated KL(baseline || candidate); the floor is the baseline scored at
      32 rows per forward against itself. Per domain.
@@ -76,8 +76,8 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-WORKLOAD = REPO / "bench" / "workloads" / "lossy_v1.json"
-WORKER = REPO / "bench" / "lossy_gate.py"
+WORKLOAD = REPO / "tools" / "gate" / "workloads" / "lossy_v1.json"
+WORKER = REPO / "tools" / "gate" / "lossy_gate.py"
 LOCK: Path | None = None  # $SHARAR_RESULTS/.gpu.lock, set by main()
 CONTAINER = "sharar-lossy-gate"
 TOOL_CONTAINER = "sharar-lossy-gate-tool"
@@ -320,8 +320,8 @@ def tool_container(image: str, plan: dict, results: Path, hf_cache: str, out: Pa
     cmd += ["--mount", "type=bind,src=/usr/bin/nvidia-smi,dst=/usr/bin/nvidia-smi,readonly",
             "--mount", f"type=bind,src={hf_cache},dst=/cache/huggingface,readonly",
             "--mount", f"type=bind,src={results}/runtime-state,dst=/state",
-            # only the gate's bench package over the image: the engine is the image's own code
-            "--mount", f"type=bind,src={REPO / 'bench'},dst=/gate/bench,readonly",
+            # only the gate package over the image: the engine is the image's own code
+            "--mount", f"type=bind,src={REPO / 'tools' / 'gate'},dst=/gate/gate,readonly",
             "--mount", f"type=bind,src={out},dst=/out"]
     if base is not None:
         cmd += ["--mount", f"type=bind,src={base},dst=/base,readonly"]
@@ -332,7 +332,7 @@ def tool_container(image: str, plan: dict, results: Path, hf_cache: str, out: Pa
            "TRITON_LIBCUDA_PATH": lib, "SHARAR_RESULTS": "/state", **plan["env"]}
     for k, v in env.items():
         cmd += ["--env", f"{k}={v}"]
-    cmd += ["--entrypoint", "python3", image, "-m", "bench.lossy_gate", "--prompts", "/gate/bench/workloads/lossy_v1.json",
+    cmd += ["--entrypoint", "python3", image, "-m", "gate.lossy_gate", "--prompts", "/gate/gate/workloads/lossy_v1.json",
             "--out", "/out", "--accept", plan["accept"], "--proposer", plan["proposer"], "--spec", str(plan["spec"]),
             "--verify-state", plan["verify_state"], "--draft-precision", plan["draft_precision"], "--chunk", str(CHUNK)]
     if plan["draft"]:
@@ -747,7 +747,7 @@ def main(argv=None) -> int:
             raise SystemExit(f"{existing[-1]} holds another candidate spec; choose another --name")
         run_dir = results / "reviews" / f"{dt.date.today().isoformat()}-lossy-gate-{args.name}"
     manifest = {**spec, "name": args.name, "image_id": image_id, "config_file": str(conf_path), "through": args.through, "battery": args.battery,
-                "source": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--", "bench", "tools")),
+                "source": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--", "tools")),
                 "evals": str(args.evals), "evals_commit": evals_commit, "workload": json.loads(WORKLOAD.read_text())["version"],
                 "workload_sha256": workload_sha, "baseline_dir": str(base_dir), "port": args.port,
                 "arms": {k: {"launcher_env": {kk: vv for kk, vv in v.items() if kk.startswith("SHARAR_") or kk == "_DRAFT_DIR"}, "plan": plans[k]} for k, v in arms.items()}}

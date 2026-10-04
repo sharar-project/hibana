@@ -3,7 +3,7 @@
 For an introduction to bits, codebooks, scales and what is specific to this
 implementation, start with [3-bit quantization explained](3bit-quantization-explained.md).
 
-`bench.w3_calibrate` fits the target's optional W3 copies using activation
+`sharar.weights.w3_calibrate` fits the target's optional W3 copies using activation
 covariances and the block-128 FP8 release. It uses the
 [GPTQ column-error update](https://arxiv.org/abs/2210.17323) with the existing
 eight-level E4M3 codebook, 32-weight groups and E4M3 group scales. There is no
@@ -11,7 +11,7 @@ activation permutation or new serving kernel. The pinned NVFP4/FP8 prefill
 weights and vocabulary head retain their existing arithmetic.
 
 Freeze a JSON object containing `samples`, each with `input_ids`
-(`bench/w3_calibration_inputs.py --tokenizer SNAPSHOT/tokenizer.json --commit C --output FILE`
+(`python3 -m sharar.weights.w3_calibration_inputs --tokenizer SNAPSHOT/tokenizer.json --commit C --output FILE`
 builds the coding-proxy set from this repository's source files at commit C, reproducibly). Use
 representative prompts, at most 2,048 tokens per sample, excluding task
 accuracy benchmarks and held-out drafter requests. Source-file separation is
@@ -23,7 +23,7 @@ In an exclusive, memory-guarded GB10 container, with the source checkpoint and
 output directory mounted:
 
 ```bash
-SHARAR_W3_DECODE=0 python3 -m bench.w3_calibrate \
+SHARAR_W3_DECODE=0 python3 -m sharar.weights.w3_calibrate \
   --inputs /proof/calibration-inputs.json \
   --source /source-cache/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a \
   --output /proof/calibrated-w3
@@ -38,7 +38,7 @@ Projection diagnostics reuse calibration rows and are fitting diagnostics,
 not held-out quality evidence.
 
 The eight-level codebook is MSE-optimal, so each quantized row comes out shorter than the exact row by
-about its relative error squared. `quantize(..., unbias="weight")` (`bench/flashnext_w3_calibrate.py
+about its relative error squared. `quantize(..., unbias="weight")` (`sharar/weights/flashnext_w3_calibrate.py
 --unbias weight`) scales each row back through its row scale; codes, format and bytes do not change. On the
 Flash-Next trunk the shrinkage adds coherently through the residual layers and the correction removes most of
 the decode-path KL it causes ([Flash-Next](flashnext.md#3-bit-trunk-sensitivity-2026-09-28-61)).
@@ -70,8 +70,8 @@ it to CUDA. On GB10 this reduced warm-cache target construction from 63.2 to
 loading, not decode arithmetic or throughput; see the
 [runtime profile](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-runtime-profile.md).
 
-A fitted artifact is a candidate until it passes the family gate and paired
-GSM8K/HumanEval evaluation against the intended serving profile. Collect fresh
+A fitted artifact is a candidate until it passes the lossy-change gate
+(`tools/lossy-gate.py`) against the intended serving profile. Collect fresh
 drafter traces after selecting the target profile. Keep validation and final
 test files out of training, and check any trained draft through the actual
 FP8/W3 serving path: the trainer's BF16 replay is a checkpoint selection proxy.
