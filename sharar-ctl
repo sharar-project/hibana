@@ -5,16 +5,21 @@ Host-side and dependency-free (Python 3 standard library only); it drives the
 container launchers `run-sharar.sh` and `run-sharar-train.sh`.
 
   sharar-ctl pull             # fetch the newest published image (the launcher pulls a missing one itself)
-  sharar-ctl serve [--no-traces] [--pinned | --draft DIR] [--fp8] [--exact | --balanced | --fast | --throughput]
-  sharar-ctl stop
-  sharar-ctl status
+  sharar-ctl serve [27b | flashnext] [--no-traces] [--pinned | --draft DIR] [--fp8] [--exact | --balanced | --fast | --throughput]
+  sharar-ctl stop [27b | flashnext]
+  sharar-ctl status [27b | flashnext]
   sharar-ctl train            # stop serving, train until `train stop`
   sharar-ctl train stop       # final held-out evaluation, promote, serve again
   sharar-ctl train status
   sharar-ctl draft list | use RUN | pinned
   sharar-ctl traces
-  sharar-ctl logs [--train] [-n LINES]
-  sharar-ctl chat [--think] [--max-tokens N] [--temperature T] [--no-trace]
+  sharar-ctl logs [27b | flashnext] [--train] [-n LINES]
+  sharar-ctl chat [27b | flashnext] [--think] [--max-tokens N] [--temperature T] [--no-trace]
+
+The target defaults to SHARAR_TARGET, else the 27B; stop, status, logs and chat pick the target that is
+serving when none is named. Settings come from the environment, config/gb10.env (optional), the target's
+config/targets/<target>.env and defaults, resolved by tools/launcher-config.sh as the launcher resolves them.
+A missing model or draft is downloaded on the first serve.
 
 Tracing is on by default under this command (traces land in
 $SHARAR_RESULTS/traces): the loop exists to train on your own traffic.
@@ -35,17 +40,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 
-def load_env() -> dict:
+TARGETS = ("27b", "flashnext", "qwen38", "flash-next")  # user-facing names; tools/launcher-config.sh maps them
+
+
+def load_env(target: str | None = None) -> dict:
+    """The environment, then what tools/launcher-config.sh resolves for `target` (default: SHARAR_TARGET, else
+    the 27B): the user's config file, the target's settings, defaults. The environment outranks the rest."""
     env = dict(os.environ)
-    config = Path(env.get("SHARAR_CONFIG_FILE") or ROOT / "config" / "gb10.env")
-    if config.is_file():
-        for line in config.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                env.setdefault(key.strip(), value.strip().strip('"'))
-    if "SHARAR_RESULTS" not in env:
-        sys.exit("set SHARAR_RESULTS in config/gb10.env")
+    out = subprocess.run(["bash", str(ROOT / "tools" / "launcher-config.sh"), "print", *([target] if target else [])],
+                         env=env, capture_output=True, text=True)
+    if out.returncode:
+        sys.exit(out.stderr.strip() or "tools/launcher-config.sh failed")
+    resolved = dict(line.partition("=")[::2] for line in out.stdout.splitlines() if "=" in line)
+    for key, value in resolved.items():
+        env.setdefault(key, value)
+    env["SHARAR_TARGET"] = resolved["SHARAR_TARGET"]
     env.setdefault("SHARAR_TRACES", str(Path(env["SHARAR_RESULTS"]) / "traces"))
     env.setdefault("SHARAR_DRAFT_RUNS", str(Path(env["SHARAR_RESULTS"]) / "draft-runs"))
     return env
@@ -101,7 +110,7 @@ def post_json(port: str, route: str, payload: dict, timeout: float = 120) -> dic
 def reload_served_draft(env: dict, run: str | None, dry: bool) -> bool:
     """Swap the draft in the running server: a run name, or None for the pinned draft.
     Returns False when nothing is serving. Runs are mounted read-only at /runs."""
-    port = env.get("SHARAR_PORT", "30001")
+    port = env["SHARAR_PORT"]
     target = f"/runs/{run}/best" if run else "pinned"
     if dry:
         print(f"+ POST http://127.0.0.1:{port}/reload_draft {{\"draft\": \"{target}\"}}")
@@ -148,8 +157,8 @@ def cmd_stop(args, env, dry) -> int:
 
 
 def cmd_status(args, env, dry) -> int:
-    port = env.get("SHARAR_PORT", "30001")
-    serving = container_running(env.get("SHARAR_CONTAINER", "sharar-qwen38"))
+    port = env["SHARAR_PORT"]
+    serving = container_running(env["SHARAR_CONTAINER"])
     info = server_info(port) if serving else None
     if info:
         spec = info.get("speculative") or {}
@@ -252,8 +261,8 @@ def cmd_traces(args, env, dry) -> int:
 def cmd_chat(args, env, dry) -> int:
     """Streaming multi-turn chat against the running server; /reset, /think, /quit."""
     import time
-    url = f"http://127.0.0.1:{env.get('SHARAR_PORT', '30001')}/v1/chat/completions"
-    if server_info(env.get("SHARAR_PORT", "30001")) is None:
+    url = f"http://127.0.0.1:{env['SHARAR_PORT']}/v1/chat/completions"
+    if server_info(env["SHARAR_PORT"]) is None:
         sys.exit("serving is not up (sharar-ctl serve)")
     messages = []
     if args.system:
@@ -345,7 +354,7 @@ def cmd_chat(args, env, dry) -> int:
 
 
 def cmd_logs(args, env, dry) -> int:
-    name = env.get("SHARAR_TRAIN_CONTAINER", "sharar-train") if args.train else env.get("SHARAR_CONTAINER", "sharar-qwen38")
+    name = env.get("SHARAR_TRAIN_CONTAINER", "sharar-train") if args.train else env["SHARAR_CONTAINER"]
     return run(["docker", "logs", "--tail", str(args.lines)] + (["--follow"] if args.follow else []) + [name], env, dry)
 
 
@@ -353,7 +362,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="sharar-ctl", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dry-run", action="store_true", help="print the commands instead of running them")
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("serve", help="start serving (records traces unless --no-traces; follows the promoted draft)")
+    p = sub.add_parser("serve", help="start serving a target (downloads what is missing; records traces unless --no-traces)")
+    p.add_argument("target", nargs="?", choices=TARGETS, help="27b (Qwen3.8-27B) or flashnext (Qwen3.8-Flash-Next)")
     p.add_argument("--no-traces", action="store_true")
     p.add_argument("--pinned", action="store_true", help="serve the publisher draft even if one was promoted")
     p.add_argument("--draft", default=None, help="serve this checkpoint directory")
@@ -365,8 +375,8 @@ def main(argv=None) -> int:
                        ("throughput", "fast with up to 16 requests at once and shallower verification above four (evals, many agents)")):
         g.add_argument(f"--{name}", dest="profile", action="store_const", const=name, help=text)
     sub.add_parser("pull", help="fetch the newest published image (SHARAR_IMAGE, default from tools/image.sh)")
-    sub.add_parser("stop", help="stop serving")
-    sub.add_parser("status", help="serving, training, current draft and trace directory")
+    sub.add_parser("stop", help="stop serving").add_argument("target", nargs="?", choices=TARGETS)
+    sub.add_parser("status", help="serving, training, current draft and trace directory").add_argument("target", nargs="?", choices=TARGETS)
     p = sub.add_parser("train", help="stop serving and train the drafter on the recorded traces")
     p.add_argument("action", nargs="?", choices=("start", "stop", "status"), default="start")
     p.add_argument("--no-serve", action="store_true", help="with stop: do not relaunch serving")
@@ -375,6 +385,7 @@ def main(argv=None) -> int:
     p.add_argument("run", nargs="?", help="with use: a run directory name from `draft list`")
     sub.add_parser("traces", help="summarize the recorded traces")
     p = sub.add_parser("chat", help="chat with the running server in the terminal")
+    p.add_argument("target", nargs="?", choices=TARGETS)
     p.add_argument("--think", action="store_true", help="enable the model's thinking mode")
     p.add_argument("--show-thinking", action="store_true", help="print thinking content as it streams")
     p.add_argument("--system", default=None)
@@ -383,11 +394,18 @@ def main(argv=None) -> int:
     p.add_argument("--no-trace", action="store_true", help="do not record this conversation")
     p.add_argument("--timeout", type=float, default=600)
     p = sub.add_parser("logs", help="container logs")
+    p.add_argument("target", nargs="?", choices=TARGETS)
     p.add_argument("--train", action="store_true")
     p.add_argument("-n", "--lines", type=int, default=50)
     p.add_argument("-f", "--follow", action="store_true")
     args = parser.parse_args(argv)
-    env = load_env()
+    target = getattr(args, "target", None)
+    env = load_env(target)
+    if target is None and args.command in ("stop", "status", "logs", "chat") and not container_running(env["SHARAR_CONTAINER"]):
+        # nothing named and the default target is not serving: follow the one that is
+        other = load_env("qwen38" if env["SHARAR_TARGET"] == "flashnext" else "flashnext")
+        if container_running(other["SHARAR_CONTAINER"]):
+            env = other
     handler = {"serve": cmd_serve, "pull": cmd_pull, "stop": cmd_stop, "status": cmd_status, "train": cmd_train,
                "draft": cmd_draft, "traces": cmd_traces, "logs": cmd_logs, "chat": cmd_chat}[args.command]
     return handler(args, env, args.dry_run)

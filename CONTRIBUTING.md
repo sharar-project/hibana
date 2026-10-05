@@ -37,8 +37,8 @@ tools/gpu-tests.sh tests/gpu/test_qsa.py -x
 ```
 
 It mounts the model caches, the calibrated W3 artifact and `$SHARAR_RESULTS`
-at their container paths (read from `config/gb10.env` and
-`config/flashnext.env`; `SHARAR_TEST_IMAGE` picks another image) and sets
+at their container paths (resolved as the launcher resolves them: `config/gb10.env` if
+present, else the defaults; `SHARAR_TEST_IMAGE` picks another image) and sets
 `SHARAR_RUN_GPU=1`; without it the GPU modules are not collected. Inside an
 already prepared GB10 container use `bash tools/check.sh gpu`. Preserve frozen
 workload content and checksums (`tools/gate/workloads/`, `profiling/workloads/`,

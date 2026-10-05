@@ -6,9 +6,9 @@
     tools/evaluate.py --target qwen38 --profile exact --tasks gpqa,mmlupro --limit 50 --name gpqa50
     tools/evaluate.py --target flashnext --profile fast --suite quick --baseline $SHARAR_RESULTS/reviews/<date>-evaluate-<name>
 
-- **What is served.** The target's launcher config (config/flashnext.env, or config/gb10.env for the
-  27B) with `--profile` and `--env SHARAR_KEY=VALUE` overrides, resolved by run-sharar.sh, on `--image`
-  (default: the config's SHARAR_IMAGE). `--build` first builds an image from this checkout
+- **What is served.** The target's launcher config (config/gb10.env if present, then config/targets/<target>.env
+  and defaults: tools/launcher-config.sh) with `--profile` and `--env SHARAR_KEY=VALUE` overrides, resolved by
+  run-sharar.sh, on `--image` (default: the config's SHARAR_IMAGE, else the published image). `--build` first builds an image from this checkout
   (docker/build.sh, tag sharar:eval-<commit>; a dirty tree is refused unless --allow-dirty).
 - **What runs.** sharar-eval (`--evals`, default ../sharar-eval, with its .venv) against the server:
   - `--suite quick|full|hard|long|agentic|all`, or `--tasks a,b` with `--limit N` (`evals.suite`);
@@ -136,13 +136,13 @@ def main(argv=None) -> int:
         raise SystemExit(f"{args.baseline}: not an evaluate output directory")
 
     conf_path = gate.target_config(args.target)
-    config = gate.load_env(conf_path)
+    config = gate.launcher_config(args.target)
     results = Path(os.environ.get("SHARAR_RESULTS") or config.get("SHARAR_RESULTS") or "")
     if not str(results):
         raise SystemExit(f"set SHARAR_RESULTS (in {conf_path} or the environment)")
     gate.LOCK = results / ".gpu.lock"
     overrides = gate.parse_env(args.env)
-    image = build_image(args.allow_dirty) if args.build and not args.dry_run else (args.image or config.get("SHARAR_IMAGE"))
+    image = build_image(args.allow_dirty) if args.build and not args.dry_run else (args.image or config.get("SHARAR_IMAGE") or gate.default_image())
     config.pop("SHARAR_IMAGE", None)
     image_id = subprocess.run(["docker", "image", "inspect", image, "--format", "{{.Id}}"], capture_output=True, text=True).stdout.strip()
     if not image_id and not (args.build and args.dry_run):

@@ -8,9 +8,10 @@
     tools/lossy-gate.py --target flashnext --name kv-fp4 --profile fast --env SHARAR_X=1 --battery long
 
 A candidate is a serving profile (`--profile`, default exact) plus `--env KEY=VALUE` overrides on
-the target's launcher config (config/flashnext.env, or config/gb10.env for the 27B), resolved the
+the target's launcher config (config/gb10.env if present, the target's config/targets/<target>.env, defaults;
+tools/launcher-config.sh), resolved the
 way run-sharar.sh resolves them (the profile table is tools/serving-profile.sh, read per target); the baseline is `--baseline-profile` (default exact) with
-`--baseline-env`. Both run the same image (`--image`, default the config's SHARAR_IMAGE). The run is
+`--baseline-env`. Both run the same image (`--image`, default the config's SHARAR_IMAGE, else the published one). The run is
 unattended and resumable: every step writes its own file and a rerun with the same name skips what
 exists. Do not wrap the tool in flock: it takes $SHARAR_RESULTS/.gpu.lock itself for each
 GPU phase (at most --hold-minutes), and waits while another model container runs.
@@ -126,6 +127,13 @@ def log(msg: str) -> None:
 
 # ---------------------------------------------------------------- configuration
 
+def default_image() -> str:
+    """The launchers' default image (tools/image.sh)."""
+    out = subprocess.run(["bash", "-c", 'source "$0"; echo "$SHARAR_DEFAULT_IMAGE"', str(REPO / "tools" / "image.sh")],
+                         capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
 def load_env(path: Path) -> dict:
     """KEY=VALUE lines of a launcher config file, in order (later lines win, as `source` does)."""
     env = {}
@@ -138,12 +146,23 @@ def load_env(path: Path) -> dict:
 
 
 def target_config(target: str) -> Path:
-    if target == "flashnext":
-        return REPO / "config" / "flashnext.env"
-    path = Path(os.environ.get("SHARAR_CONFIG_FILE") or REPO / "config" / "gb10.env")
-    if not path.is_file():
-        raise SystemExit(f"{path} not found: copy config/gb10.env.example to config/gb10.env or set SHARAR_CONFIG_FILE")
-    return path
+    """The user's launcher config file (optional: without one the launcher's defaults apply)."""
+    return Path(os.environ.get("SHARAR_CONFIG_FILE") or REPO / "config" / "gb10.env")
+
+
+def launcher_config(target: str) -> dict:
+    """What run-sharar.sh starts from for `target` before the profile: the user's config file, the target's settings
+    (config/targets/<target>.env) and the default paths, resolved by tools/launcher-config.sh from the file alone
+    (SHARAR_* in this process's environment are not mixed in)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SHARAR_")}
+    env["SHARAR_CONFIG_FILE"] = str(target_config(target))
+    out = subprocess.run(["bash", str(REPO / "tools" / "launcher-config.sh"), "print", target], env=env,
+                         capture_output=True, text=True)
+    if out.returncode:
+        raise SystemExit(out.stderr.strip() or "tools/launcher-config.sh failed")
+    config = dict(line.split("=", 1) for line in out.stdout.splitlines() if "=" in line)
+    config.pop("SHARAR_CONFIG_FILE", None)
+    return config
 
 
 def profile_defaults(profile: str, target: str) -> dict:
@@ -685,7 +704,7 @@ def main(argv=None) -> int:
     ap.add_argument("--baseline-env", action="append", default=[])
     ap.add_argument("--through", choices=("inprocess", "screen", "full", "auto"), default="auto",
                     help="inprocess: layers 1-2; screen: also the layer-3 screen (forced); full: also the full sets; auto: the cascade")
-    ap.add_argument("--image", default=None, help="runtime image (default: the config's SHARAR_IMAGE)")
+    ap.add_argument("--image", default=None, help="runtime image (default: the config's SHARAR_IMAGE, else tools/image.sh's)")
     ap.add_argument("--port", type=int, default=30100, help="served arms' port (30100-30199)")
     ap.add_argument("--battery", choices=sorted(BATTERIES), default="quick",
                     help="quick: the screen, then the full sets when close; hard / long / all: also sharar-eval's hard suite "
@@ -705,14 +724,14 @@ def main(argv=None) -> int:
         ap.error("--name: letters, digits, . _ -")
 
     conf_path = target_config(args.target)
-    config = load_env(conf_path)
+    config = launcher_config(args.target)
     results = os.environ.get("SHARAR_RESULTS") or config.get("SHARAR_RESULTS")
     if not results:
         raise SystemExit(f"set SHARAR_RESULTS (in {conf_path} or the environment)")
     results = Path(results)
     global LOCK
     LOCK = results / ".gpu.lock"  # the shared GPU lock every Sharar tool takes
-    image = args.image or config.get("SHARAR_IMAGE") or "sharar:qwen38-27b"
+    image = args.image or config.get("SHARAR_IMAGE") or default_image()
     config.pop("SHARAR_IMAGE", None)
     hf_cache = config.get("SHARAR_HF_CACHE") or os.environ.get("SHARAR_HF_CACHE")
     cand_over, base_over = parse_env(args.env), parse_env(args.baseline_env)

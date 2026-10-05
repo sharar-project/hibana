@@ -20,16 +20,18 @@ Batch Size 1
 
 ## Setup
 
-Copy [config/gb10.env.example](config/gb10.env.example) to `config/gb10.env`,
-set the model cache and results paths, then:
-
 ```bash
-./sharar-ctl serve                                        # Qwen3.8-27B on 127.0.0.1:30001
-SHARAR_CONFIG_FILE=config/flashnext.env ./sharar-ctl serve   # Flash-Next on 127.0.0.1:30004
+./sharar-ctl serve 27b         # Qwen3.8-27B on 127.0.0.1:30001
+./sharar-ctl serve flashnext   # or Qwen3.8-Flash-Next on 127.0.0.1:30004 (one at a time)
 ./sharar-ctl chat
 ```
 
-The first serve pulls the runtime image `ghcr.io/abdelfattah-lab/sharar:latest`, which the nightly GB10 check
+No configuration is needed. The first serve downloads the model and drafter (about 26 GB for the 27B,
+135 GB for Flash-Next) into the Hugging Face cache (`$HF_HOME`, else `~/.cache/huggingface`) after checking
+free disk, and keeps results, traces and sessions under `~/.local/share/sharar`. To use other locations, copy
+[config/gb10.env.example](config/gb10.env.example) to `config/gb10.env` and set them there.
+
+The first serve also pulls the runtime image `ghcr.io/abdelfattah-lab/sharar:latest`, which the nightly GB10 check
 publishes from main after its GPU suite and serve checks pass; `./sharar-ctl pull` updates it. While the
 repository is private the image is too: log in once with a GitHub token that can read packages
 (`gh auth refresh -s read:packages`, then `gh auth token | docker login ghcr.io -u <github user> --password-stdin`).
@@ -44,7 +46,7 @@ covers prerequisites, the launcher settings and the memory guard.
 | Command | What it does |
 |---|---|
 | `./sharar-ctl pull` | Fetch the newest published image |
-| `./sharar-ctl serve [--exact]` | Start serving (fastest settings by default; `--exact` for the model's own outputs, e.g. benchmarks) |
+| `./sharar-ctl serve 27b\|flashnext [--exact]` | Start serving a target (fastest settings by default; `--exact` for the model's own outputs, e.g. benchmarks) |
 | `./sharar-ctl chat` | Terminal chat against the running server |
 | `./sharar-ctl status` / `stop` / `logs` | Server state, stop, container logs |
 

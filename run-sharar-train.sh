@@ -13,13 +13,17 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SHARAR_CONFIG_FILE:-$SCRIPT_DIR/config/gb10.env}"
+REQUESTED_TARGET="${SHARAR_TARGET:-}"   # a target named by the caller (sharar-ctl serve flashnext) wins over the config file
 [[ -r "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+[[ -n "$REQUESTED_TARGET" ]] && SHARAR_TARGET="$REQUESTED_TARGET"
+source "$SCRIPT_DIR/tools/launcher-config.sh"
+launcher_defaults || exit 1
 source "$SCRIPT_DIR/tools/image.sh"
 IMAGE="${SHARAR_IMAGE:-$SHARAR_DEFAULT_IMAGE}"
 CONTAINER="${SHARAR_TRAIN_CONTAINER:-sharar-train}"
 SERVING_CONTAINER="${SHARAR_CONTAINER:-sharar-qwen38}"
-CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
-RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
+CACHE_DIR="$SHARAR_HF_CACHE"
+RESULTS_DIR="$SHARAR_RESULTS"
 TRACES_DIR="${SHARAR_TRACES:?set SHARAR_TRACES in config/gb10.env to the trace directory serving writes}"
 RUNS_DIR="${SHARAR_DRAFT_RUNS:-$RESULTS_DIR/draft-runs}"
 STATE_DIR="$RESULTS_DIR/runtime-state"
@@ -43,6 +47,7 @@ case "${1:-}" in
     keep_serving=false
     [[ "${1:-}" == "--keep-serving" ]] && keep_serving=true
     running "$CONTAINER" && fail "training container $CONTAINER is already running (use: $0 status)"
+    [[ "$SHARAR_TARGET" == qwen38 ]] || fail "training adapts the 27B's DFlash2 drafter; Flash-Next's MTP head is not trainable here yet (#40)"
     [[ -d "$TRACES_DIR" ]] || fail "trace directory $TRACES_DIR does not exist; serve with SHARAR_TRACES first"
     ensure_image "$IMAGE" || fail "no runtime image ($IMAGE)"
     # The image must carry this checkout's trainer: an older image fails at argument parsing after serving was stopped.

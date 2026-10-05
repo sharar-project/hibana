@@ -83,6 +83,26 @@ def test_pull_fetches_the_published_image_and_refuses_a_local_build(ctl, monkeyp
         module.main(["pull"])
 
 
+def test_serve_names_a_target_and_gets_its_settings(ctl):
+    module, calls, _ = ctl
+    assert module.main(["serve", "flashnext"]) == 0
+    _, env = calls[-1]
+    assert (env["SHARAR_TARGET"], env["SHARAR_PORT"], env["SHARAR_CONTAINER"], env["SHARAR_PROPOSER"]) == ("flashnext", "30004", "sharar-flashnext", "mtp")
+    assert module.main(["serve", "27b"]) == 0
+    _, env = calls[-1]
+    assert (env["SHARAR_TARGET"], env["SHARAR_PORT"], env["SHARAR_PROPOSER"]) == ("qwen38", "30001", "dflash2")
+    assert module.main(["serve"]) == 0 and calls[-1][1]["SHARAR_TARGET"] == "qwen38"  # no target named: the 27B
+    with pytest.raises(SystemExit):
+        module.main(["serve", "llama"])
+
+
+def test_commands_without_a_target_follow_the_one_serving(ctl, monkeypatch):
+    module, calls, _ = ctl
+    monkeypatch.setattr(module, "container_running", lambda name: name == "sharar-flashnext")
+    assert module.main(["stop"]) == 0 and calls[-1][1]["SHARAR_TARGET"] == "flashnext"
+    assert module.main(["stop", "27b"]) == 0 and calls[-1][1]["SHARAR_TARGET"] == "qwen38"
+
+
 def test_dry_run_prints_instead_of_running(ctl, capsys, monkeypatch):
     module, calls, _ = ctl
     monkeypatch.setattr(module, "run", lambda command, env, dry: (print("+ " + " ".join(command)) or 0) if dry else 1)
