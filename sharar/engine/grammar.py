@@ -143,7 +143,10 @@ class Grammars:
     """Builds constraints for one tokenizer: xgrammar's tokenizer table and compiler, made on first use, and
     compiled grammars cached by their source."""
 
-    WS = "root ::= [ \\t\\n]*"
+    # Whitespace is bounded: before the output (the newlines after </think>) and in each run inside JSON. Unbounded
+    # whitespace let a sampled request drift into it until max_tokens (Flash-Next, t=0.7, 2026-10-05).
+    WS = "root ::= [ \\t\\n]{0,4}"
+    MAX_WS = 24  # one JSON whitespace run: a newline and deep indentation
 
     def __init__(self, vocab: list[str], vocab_size: int, stop_ids, think_end: int | None, byte_level: bool = True):
         """vocab: token strings by id, byte-level BPE encoded (Qwen) or, for tests, plain text (byte_level=False)."""
@@ -179,14 +182,17 @@ class Grammars:
     def json_schema(self, schema: dict, armed: bool) -> Constraint:
         import xgrammar as xgr
         try:
-            grammar = xgr.Grammar.from_json_schema(json.dumps(schema), any_whitespace=True)
+            grammar = xgr.Grammar.from_json_schema(json.dumps(schema), any_whitespace=True, max_whitespace_cnt=self.MAX_WS)
         except Exception as exc:  # noqa: BLE001 - xgrammar raises RuntimeError for schemas it cannot compile
             raise ValueError(f"unsupported JSON schema: {exc}") from exc
         return Constraint(self._compile(grammar), "json_schema", armed, self.think_end)
 
     def json_object(self, armed: bool) -> Constraint:
         import xgrammar as xgr
-        return Constraint(self._compile(xgr.Grammar.builtin_json_grammar()), "json_object", armed, self.think_end)
+        # any JSON object (OpenAI's json_object), with the same whitespace bound
+        grammar = xgr.Grammar.from_json_schema(json.dumps({"type": "object"}), any_whitespace=True, strict_mode=False,
+                                               max_whitespace_cnt=self.MAX_WS)
+        return Constraint(self._compile(grammar), "json_object", armed, self.think_end)
 
     def tool_call(self, tools: list[dict], name: str | None, armed: bool) -> Constraint:
         """Qwen3.8's XML tool calls (api/parsers/tools.py): one call to `name`, or one or more calls to any tool.

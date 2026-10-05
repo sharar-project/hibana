@@ -145,3 +145,23 @@ def test_a_drafted_stop_token_ends_the_walk(grammars):
     finished = host_bitmask(1, V)
     state.fill(finished, 0)  # a finished grammar does not raise
     assert allowed(finished) == set(range(V))
+
+
+def test_whitespace_is_bounded_before_and_inside_the_json(grammars):
+    """Unbounded whitespace let a sampled request drift into it until max_tokens (2026-10-05)."""
+    state = GrammarState(grammars.json_schema(SCHEMA, armed=True))
+    assert all(state.accept(ID['\n']) for _ in range(4))
+    mask = host_bitmask(1, V)
+    state.fill(mask, 0)
+    assert ID['\n'] not in allowed(mask) and ID[' '] not in allowed(mask) and ID['{"'] in allowed(mask)
+    assert state.accept(ID['{"']) and state.accept(ID['city']) and state.accept(ID['":'])
+    taken = 0
+    while state.accept(ID[' ']):
+        taken += 1
+        assert taken <= Grammars.MAX_WS
+    assert taken == Grammars.MAX_WS
+
+
+def test_json_object_takes_any_object(grammars):
+    state = GrammarState(grammars.json_object(armed=True))
+    assert all(state.accept(t) for t in ids('{"', 'a', '":', ' ', '1', ',', ' ', '"', 'b', '":', ' ', '2', '}', '<|im_end|>'))
