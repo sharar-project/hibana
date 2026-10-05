@@ -14,6 +14,7 @@ from sharar.engine.debug import debug_sync
 from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import DecodeGraphs
 from sharar.engine.request import Request, State
+from sharar.engine.grammar import sample_masks
 from sharar.engine.sampler import InvalidRequest, Sampler, SamplingParams
 from sharar.cache.kv_pool import KV_DTYPE, KvPool
 from sharar.cache.ledger import Ledger
@@ -483,7 +484,9 @@ class Executor:
         tokens = None
         if finishing:
             logits = self.model.logits(out["norm"][[last_rows[i] for i in finishing]])
-            tokens = self.sampler.sample(logits, [chunks[i][0].params for i in finishing], [chunks[i][0].generator for i in finishing]).tolist()
+            done = [chunks[i][0] for i in finishing]
+            tokens = self.sampler.sample(logits, [r.params for r in done], [r.generator for r in done],
+                                         sample_masks(done, logits.shape[-1])).tolist()
         for req, n_new in chunks:
             self._chunk_checkpoint(req, req.prefill_pos, req.prefill_pos + n_new)
         if self.spec is not None:
@@ -519,7 +522,7 @@ class Executor:
         token = None
         if end == n:
             logits = self.model.logits(out["norm"][-1:])
-            token = int(self.sampler.sample(logits, [req.params], [req.generator]).item())
+            token = int(self.sampler.sample(logits, [req.params], [req.generator], sample_masks([req], logits.shape[-1])).item())
             # Allocate the immutable endpoint before the proposer attaches its
             # features; the active committed slot continues advancing in decode.
             self.state.checkpoint(req, n, copy=True)
@@ -637,7 +640,8 @@ class Executor:
             out = self.model.forward(tokens, ctx)
             debug_sync("after plain decode forward", reqs)
             logits = self.model.logits(out["norm"])
-        next_tokens = self.sampler.sample(logits, [r.params for r in reqs], [r.generator for r in reqs]).tolist()
+        next_tokens = self.sampler.sample(logits, [r.params for r in reqs], [r.generator for r in reqs],
+                                          sample_masks(reqs, logits.shape[-1])).tolist()
         for i, (r, tok) in enumerate(zip(reqs, next_tokens)):
             pending = r.output_ids[-1]
             self.state.commit(r, 1)

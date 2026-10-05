@@ -250,8 +250,11 @@ class SpecDecoder:
             norm_rows, z_flat, ctx, layers, logits = graphs.run(batch.tokens, batch.positions, batch.pages,
                                                                batch.slots, batch.kv_pages, sampled=batch.sampled,
                                                                side=(batch.requests, batch.proposal.tokens, seqs, batch.proposal.columns), variant=variant)
+            if self._constrain(batch, logits) and not batch.sampled:
+                z_flat = logits.argmax(-1)  # the masked argmax; sampled batches read the masked logits themselves
             accept = getattr(graphs, "accept", None)
-            if accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests):
+            if (accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests)
+                    and not any(r.grammar is not None for r in batch.requests)):
                 if self.timing:
                     torch.cuda.synchronize()
                 accept.round(batch, batch.proposal.tokens, self._target_topk(batch.requests, logits, b_sz, s_len),
@@ -300,6 +303,23 @@ class SpecDecoder:
         rank = (rows > ly.unsqueeze(-1)).sum(-1).float()
         return (rank < thresholds[0].unsqueeze(1)) & ((lmax - ly) <= thresholds[1].unsqueeze(1))
 
+    def _constrain(self, batch: Verification, logits: torch.Tensor) -> bool:
+        """Mask the verified rows of constrained requests by their grammar (engine/grammar.py), in place.
+
+        logits [b * (k + 1), V]. Row j of a request is masked by the grammar state after its drafted y[:j], so
+        acceptance and the correction run on what the grammar allows. Returns False (and downloads nothing) when
+        no request in the batch is constrained."""
+        if not any(r.grammar is not None for r in batch.requests):
+            return False
+        from sharar.engine.grammar import apply_bitmask, verify_masks
+        masks = verify_masks(batch.requests, batch.proposal.tokens.tolist(), logits.shape[-1])
+        s = batch.proposal.tokens.shape[1] + 1
+        for i, r in enumerate(batch.requests):
+            if r.grammar is not None:  # unconstrained requests' rows stay as they are
+                apply_bitmask(logits[i * s:(i + 1) * s], masks[i * s:(i + 1) * s])
+        self.constrained_rounds = getattr(self, "constrained_rounds", 0) + 1
+        return True
+
     TOPK = 16
 
     def _target_topk(self, reqs, logits, b_sz: int, s_len: int):
@@ -342,6 +362,7 @@ class SpecDecoder:
         norm = out["norm"].view(b_sz, s_len, -1) if self.proposer.requirements.features.final_norm else None
         layers = {lid: value.view(b_sz, s_len, -1) for lid, value in out["features"].items()} if "features" in out else None
         logits = self.ex.model.logits(out["norm"])
+        self._constrain(batch, logits)
         z = logits.view(b_sz, s_len, -1) if batch.sampled else logits.argmax(-1).view(b_sz, s_len)
         relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens, b_sz, s_len)
         self._accept_batch(batch, z, VerifiedFeatures(norm, layers), topk=self._target_topk(batch.requests, logits, b_sz, s_len), relaxed=relaxed)

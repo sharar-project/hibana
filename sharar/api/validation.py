@@ -88,11 +88,34 @@ def _template_kwargs(body: dict) -> tuple[dict, bool]:
     return kwargs, bool(kwargs.pop("enable_thinking", True))
 
 
-def _validate_chat_controls(body: dict) -> None:
-    """Accept only unconstrained output; fail before rendering or admission."""
+def _output_spec(body: dict) -> tuple[str, object] | None:
+    """The output constraint a chat request asks for, validated before rendering or admission (engine/grammar.py):
+    ("tool_call", function name or None for any tool), ("json_object", None), ("json_schema", schema) or None."""
+    spec = None
     choice = body.get("tool_choice")
     if choice is not None and choice not in ("auto", "none"):
-        raise InvalidRequest("tool_choice supports only null, 'auto' or 'none'; forced tool calls are not supported")
+        name = (choice.get("function") or {}).get("name") if isinstance(choice, dict) and choice.get("type") == "function" else None
+        if choice == "required":
+            spec = ("tool_call", None)
+        elif isinstance(name, str) and name:
+            spec = ("tool_call", name)
+        else:
+            raise InvalidRequest("tool_choice must be null, 'auto', 'none', 'required' or "
+                                 "{'type': 'function', 'function': {'name': ...}}")
+        if not body.get("tools"):
+            raise InvalidRequest("a tool_choice that requires a call needs tools")
     response_format = body.get("response_format")
     if response_format is not None and response_format != {"type": "text"}:
-        raise InvalidRequest('response_format supports only null or {"type":"text"}; constrained output is not supported')
+        kind = response_format.get("type") if isinstance(response_format, dict) else None
+        schema = (response_format.get("json_schema") or {}).get("schema") if kind == "json_schema" and isinstance(response_format.get("json_schema"), dict) else None
+        if kind == "json_object":
+            fmt = ("json_object", None)
+        elif isinstance(schema, dict):
+            fmt = ("json_schema", schema)
+        else:
+            raise InvalidRequest('response_format must be {"type": "text"}, {"type": "json_object"} or '
+                                 '{"type": "json_schema", "json_schema": {"name": ..., "schema": {...}}}')
+        if spec is not None:
+            raise InvalidRequest("a tool_choice that requires a call cannot be combined with a JSON response_format")
+        spec = fmt
+    return spec

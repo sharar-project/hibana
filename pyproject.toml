@@ -18,6 +18,7 @@ dependencies = [
   "jinja2>=3.1",
   "fastapi>=0.141,<0.142",
   "uvicorn>=0.52,<0.53",
+  "xgrammar==0.2.8",  # constrained output (sharar/engine/grammar.py)
 ]
 
 [project.optional-dependencies]
