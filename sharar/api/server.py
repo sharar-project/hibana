@@ -23,6 +23,7 @@ from jinja2 import TemplateError
 
 from sharar import target as targets
 from sharar.api import messages as messages_api
+from sharar.api import refusal_guard
 from sharar.api.chat_template import ChatTemplate
 from sharar.api.detok import Detokenizer
 from sharar.api.parsers.reasoning import ReasoningParser
@@ -56,6 +57,20 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     messages_stats = {"forced_tool_choice_rejected": 0, "server_tools_ignored": 0}
     # Requests with constrained output (#16), by kind.
     constrained_stats = {"json_schema": 0, "json_object": 0, "tool_call": 0}
+    # Turns the refusal guard changed (#108): a reminder added after repeated refusals, or the turn ended by the server.
+    guard_stats = {"refusal_reminders": 0, "refusal_stops": 0}
+
+    def _guard(messages: list[dict], body: dict) -> tuple[list[dict], refusal_guard.Refusals | None]:
+        """The messages to render (with a reminder after repeated refusals) and, when the server ends the turn
+        itself, the refusals that made it (api/refusal_guard.py)."""
+        action, found = refusal_guard.decide(messages, body)
+        if action == "nudge":
+            guard_stats["refusal_reminders"] += 1
+            return [*messages, refusal_guard.reminder(found)], None
+        if action == "stop":
+            guard_stats["refusal_stops"] += 1
+            return messages, found
+        return messages, None
     grammar_builder = [grammars]  # made from the tokenizer on the first constrained request
 
     def _constraint(spec: tuple[str, object], tools: list | None, in_reasoning: bool):
@@ -185,6 +200,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             info["spec_stats"] = engine.sched.ex.spec.stats()
         info["messages_api"] = dict(messages_stats)
         info["constrained"] = dict(constrained_stats)
+        info["refusal_guard"] = dict(guard_stats)
         return info
 
     @app.get("/metrics")
@@ -365,6 +381,9 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             raise HTTPException(400, "messages required")
         kwargs, thinking = _template_kwargs(body)
         tools = None if body.get("tool_choice") == "none" else body.get("tools")  # "none": generate without tool schemas
+        messages, stopped = _guard(messages, body)
+        if stopped is not None:
+            return _chat_stopped(body, refusal_guard.stop_message(stopped))
         ids, in_reasoning = _chat_prompt(messages, tools, thinking, kwargs)
         # Without max_tokens (or max_completion_tokens) a reply may run to the end of the context window, as in the
         # OpenAI API, vLLM and SGLang: a fixed default cut off clients that leave it unset (Aider) mid-thought.
@@ -432,6 +451,20 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                 "choices": [{"index": 0, "message": message, "finish_reason": reason}],
                 "usage": usage(len(out), reasoning_tokens)}
 
+    def _chat_stopped(body: dict, text: str):
+        """A chat turn the server ends itself (the refusal guard): the text as the reply, no generation."""
+        cid, created = f"chatcmpl-{uuid.uuid4().hex[:24]}", int(time.time())
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        if body.get("stream"):
+            def chunk(delta, finish):
+                return f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_ID, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]})}\n\n"
+            events = [chunk({"role": "assistant", "content": text}, None), chunk({}, "stop")]
+            if (body.get("stream_options") or {}).get("include_usage"):
+                events.append(f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_ID, 'choices': [], 'usage': usage})}\n\n")
+            return StreamingResponse(iter(events + ["data: [DONE]\n\n"]), media_type="text/event-stream")
+        return {"id": cid, "object": "chat.completion", "created": created, "model": MODEL_ID,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}], "usage": usage}
+
     async def _chat_choices(ids, params, stop, in_reasoning, tools, n, http):
         """n choices from one prefill. A one-token primer prefills the prompt
         and, when the engine reaps it at the start of its next step, publishes
@@ -482,6 +515,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
     def _messages_prompt(body: dict, choice: str) -> tuple[messages_api.MessagesRequest, list[dict] | None, list[int], bool]:
         req = messages_api.parse_request(body)
+        req.messages, req.stopped = _guard(req.messages, body)
         kwargs, thinking = _template_kwargs(body)
         if req.thinking is not None:
             thinking = req.thinking
@@ -512,6 +546,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             raise InvalidRequest("max_tokens is required")
         req, tools, ids, in_reasoning = _messages_prompt(body, choice)
         messages_stats["server_tools_ignored"] += req.ignored_tools
+        if req.stopped is not None:
+            return _messages_stopped(body, model, refusal_guard.stop_message(req.stopped))
         limit = describe.get("context_length", targets.DEFAULT_TARGET.context_length)
         if len(ids) >= limit:
             raise InvalidRequest(f"prompt is too long: {len(ids)} tokens > {limit - 1} maximum")
@@ -567,6 +603,23 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         return {"id": mid, "type": "message", "role": "assistant", "model": model,
                 "content": messages_api.content_blocks(reasoning, content, calls),
                 "stop_reason": stop_reason, "stop_sequence": stop_sequence, "usage": usage(len(out))}
+
+    def _messages_stopped(body: dict, model: str, text: str):
+        """A Messages turn the server ends itself (the refusal guard): one text block, end_turn, no generation."""
+        mid = messages_api.new_id("msg")
+        usage = {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+        if body.get("stream"):
+            sse = messages_api.sse
+            writer = messages_api.EventWriter()
+            events = [sse("message_start", {"type": "message_start", "message": {
+                "id": mid, "type": "message", "role": "assistant", "model": model, "content": [],
+                "stop_reason": None, "stop_sequence": None, "usage": usage}})]
+            events += writer.delta("text", text) + writer.finish([])
+            events += [sse("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": usage}),
+                       sse("message_stop", {"type": "message_stop"})]
+            return StreamingResponse(iter(events), media_type="text/event-stream")
+        return {"id": mid, "type": "message", "role": "assistant", "model": model, "content": [{"type": "text", "text": text}],
+                "stop_reason": "end_turn", "stop_sequence": None, "usage": usage}
 
     @app.post("/v1/messages/count_tokens")
     async def count_tokens(http: HttpRequest):

@@ -38,6 +38,7 @@ class MessagesRequest:
     # boundaries.
     cache_breakpoints: list[tuple] = field(default_factory=list)
     ignored_tools: int = 0  # typed (server) tools dropped from the schema list
+    stopped: object = None  # refusal_guard.Refusals when the server ends this turn itself (#108)
 
 
 def parse_request(body: dict) -> MessagesRequest:
@@ -149,7 +150,9 @@ def _user_turn(blocks: list, m: int, breakpoints: list[tuple]) -> list[dict]:
             elif not isinstance(content, str):
                 raise InvalidRequest(f"{where}.content must be a string or a list of text blocks")
             # is_error has no rendering in the template; clients put the error in the text.
-            out.append({"role": "tool", "tool_call_id": block.get("tool_use_id"), "content": content})
+            # is_error is kept for the refusal guard (api/refusal_guard.py); the template does not read it.
+            out.append({"role": "tool", "tool_call_id": block.get("tool_use_id"), "content": content,
+                        "is_error": bool(block.get("is_error"))})
         else:
             raise InvalidRequest(f"{where}: unsupported content block type '{kind}' in a user turn")
         if block.get("cache_control") is not None:
