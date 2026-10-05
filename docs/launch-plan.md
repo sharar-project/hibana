@@ -19,7 +19,7 @@ Status: `todo`, `doing`, `done`, `parked`, `decide` (needs a decision before wor
 | `sharar serve 27b` / `sharar serve flashnext` | none | done | Merged in #103 (2026-10-05): `sharar-ctl serve 27b|flashnext` (stop/status/logs/chat follow the serving target); settings in `config/targets/<target>.env`; `config/gb10.env` optional; `config/flashnext.env` removed. |
 | Automatic weight download | none | done | Merged in #103: missing pinned snapshots (model and drafter) are downloaded after a free-disk check; tested from an empty cache with no config (27B: 26 GB plus the 3-bit checkpoint, 19 min to launch). Flash-Next is 135 GB. |
 | Preflight for any GB10 machine | none | done | The launcher's preflight covers the blocking checks (GPU, driver, memory, disk before downloads, image login hint) and, with #107, Docker access and user systemd with their fixes. A full one-report `sharar-ctl doctor` (machine vendor, every check at once) is parked on `feat/doctor` (#106, closed) for the public launch. |
-| `sharar launch claude\|codex\|opencode\|aider\|...` | none | todo | Optional convenience: any harness that takes a custom OpenAI or Anthropic base URL works today. This writes the harness config (base URL, model name, context, tool settings) and starts it. Generalizes `tools/claude-sharar.sh` and the Pi notes in [api.md](api.md#pi). |
+| `sharar launch claude\|codex\|opencode\|aider\|...` | none | doing | PR #109: `sharar-ctl launch claude|opencode|aider|show`, each agent with its own config for the serving target; all three fixed a bug end to end on the 27B (8-14 s). Codex waits for #19. Found #108: the model retries a denied tool call instead of stopping. |
 
 ## 2. Agent harnesses that work every time
 
@@ -28,7 +28,7 @@ Status: `todo`, `doing`, `done`, `parked`, `decide` (needs a decision before wor
 | Forced tool choice and structured output with speculation | #16 | todo | |
 | OpenAI Responses API (Codex) | #19 | todo | Codex cannot use Sharar without it. |
 | Claude Code session on Flash-Next end to end | #11 | todo | |
-| Tool-call parsing hardened on real agent runs | relates to #28 | todo | Use sharar-eval `agentic` (Terminal-Bench) transcripts as the regression set. |
+| Tool-call parsing hardened on real agent runs | relates to #28 | todo | Use sharar-eval `agentic` (Terminal-Bench) transcripts as the regression set. Also #108: retries of a denied tool call (753 in one Claude Code run). |
 | Tested harness matrix in the README | none | todo | Claude Code, Codex, OpenCode, Aider, Cline, Continue, Zed, Pi: works / known issues. |
 
 ## 3. Agent-shaped speed: long prompts, short answers
