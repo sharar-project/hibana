@@ -554,6 +554,9 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         if isinstance(max_tokens, (int, float)) and not isinstance(max_tokens, bool):
             max_tokens = min(max_tokens, limit - len(ids))  # clients size max_tokens for a larger window
         sampling = {k: body[k] for k in ("temperature", "top_p", "top_k", "trace", "accept_top_k", "accept_margin") if k in body}
+        # Anthropic's default temperature, and both targets' generation_config (top_p 0.95 and top_k 20 are the
+        # chat defaults). Claude Code sends no sampling fields; greedy thinking looped to max_tokens in its sessions (#11).
+        sampling.setdefault("temperature", 1.0)
         params = _sampling_from({**sampling, "max_tokens": max_tokens})
         if forced is not None:
             if not tools:

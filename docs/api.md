@@ -126,7 +126,7 @@ prompt length as `{"input_tokens": N}`.
 | `tool_choice` | `auto` or omitted, and `none`, as in chat |
 | `thinking` | `enabled` or `adaptive` turn thinking on (`budget_tokens` is not enforced), `disabled` turns it off; omitted, `chat_template_kwargs.enable_thinking` decides, default on |
 | `output_config.effort` | As chat `reasoning_effort`: Claude Code's default `high` is the template's `xhigh`, `/effort low` its `low` (the template's instruction only; on three short prompts on 2026-09-23 `low` did not shorten the answers) |
-| `temperature`, `top_p`, `top_k`, `stop_sequences`, `stream` | As the chat fields; omitted sampling fields keep the chat defaults (greedy), not Anthropic's temperature 1 |
+| `temperature`, `top_p`, `top_k`, `stop_sequences`, `stream` | As the chat fields, except that an omitted `temperature` is Anthropic's 1.0 (with the chat defaults top_p 0.95 and top_k 20, the models' own generation config), not greedy. Claude Code sends no sampling fields, and greedy thinking looped until `max_tokens` in its sessions (#11) |
 | `trace`, `accept_top_k`, `accept_margin`, `chat_template_kwargs` | Sharar's extensions, as in chat |
 
 `cache_control` markers are accepted and not acted on; the prefix cache

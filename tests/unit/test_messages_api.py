@@ -191,6 +191,13 @@ def test_sampling_fields_and_extensions_reach_the_engine():
     assert (params.accept_top_k, params.accept_margin, params.trace) == (3, 0.5, True)
 
 
+def test_omitted_sampling_fields_sample_like_anthropic():
+    """No sampling fields (Claude Code sends none) is Anthropic's temperature 1 with the models' top_p and top_k, not greedy."""
+    _, engine, _ = post(body())
+    params = engine.submit.await_args.args[1]
+    assert (params.temperature, params.top_p, params.top_k, params.greedy) == (1.0, 0.95, 20, False)
+
+
 def test_max_tokens_is_capped_by_the_context():
     _, engine, _ = post(body(max_tokens=32000), describe={'context_length': 100})
     assert engine.submit.await_args.args[1].max_new_tokens == 100 - len(encode(render([], enable_thinking=True)))
