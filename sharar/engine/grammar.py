@@ -18,12 +18,14 @@ Reasoning is free: when the output starts inside a thinking block, the grammar a
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from dataclasses import dataclass
 
 import torch
 
 ROLLBACK = 64  # drafted tokens a walk may take back (a verify block is at most 16)
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -50,13 +52,17 @@ class GrammarState:
             if token == self.think_end:
                 self.armed = True
             return True
-        return self.matcher.accept_token(token)
+        try:
+            return self.matcher.accept_token(token)
+        except Exception:  # noqa: BLE001 - a grammar failure ends this request, never the engine
+            log.exception("grammar matcher failed to accept token %d", token)
+            return False
 
     def fill(self, bitmask: torch.Tensor, row: int) -> None:
         """The allowed next tokens into bitmask[row] (int32 words, bit i of word w is token 32w + i)."""
-        if self.armed:
+        if self.armed and not self.matcher.is_terminated():
             self.matcher.fill_next_token_bitmask(bitmask, row)
-        else:
+        else:  # thinking, or the grammar already took its stop token (the request ends with it)
             bitmask[row].fill_(-1)
 
     def fill_draft(self, drafted: list[int], bitmask: torch.Tensor, row: int) -> None:
@@ -77,6 +83,9 @@ class GrammarState:
                 bitmask[row + j + 1:row + len(drafted) + 1].fill_(-1)
                 break
             taken += 1
+            if self.matcher.is_terminated():  # a drafted stop token: the output would end here
+                bitmask[row + j + 1:row + len(drafted) + 1].fill_(-1)
+                break
         if taken:
             self.matcher.rollback(taken)
         self.armed = armed
@@ -104,7 +113,7 @@ def sample_masks(reqs, vocab: int) -> torch.Tensor | None:
     bitmask = host_bitmask(len(reqs), vocab)
     for i, r in enumerate(reqs):
         if r.grammar is not None:
-            r.grammar.fill(bitmask, i)
+            _guarded(r, lambda: r.grammar.fill(bitmask, i), bitmask[i:i + 1])
     return bitmask
 
 
@@ -116,8 +125,18 @@ def verify_masks(reqs, drafted: list[list[int]], vocab: int) -> torch.Tensor | N
     bitmask = host_bitmask(len(reqs) * s, vocab)
     for i, r in enumerate(reqs):
         if r.grammar is not None:
-            r.grammar.fill_draft(drafted[i], bitmask, i * s)
+            _guarded(r, lambda: r.grammar.fill_draft(drafted[i], bitmask, i * s), bitmask[i * s:(i + 1) * s])
     return bitmask
+
+
+def _guarded(req, fill, rows: torch.Tensor) -> None:
+    """Run a mask fill; on a grammar failure leave the request's rows unmasked (its next token then fails the
+    grammar and finishes it with reason "grammar") instead of failing the engine step for every request."""
+    try:
+        fill()
+    except Exception:  # noqa: BLE001
+        log.exception("grammar mask failed for request %s", getattr(req, "request_id", "?"))
+        rows.fill_(-1)
 
 
 class Grammars:

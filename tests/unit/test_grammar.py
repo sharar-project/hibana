@@ -129,3 +129,19 @@ def test_apply_bitmask_matches_the_bit_layout():
     logits = torch.zeros(1, 40)
     apply_bitmask(logits, mask)
     assert torch.isfinite(logits[0]).nonzero().flatten().tolist() == [0, 7, 8, 31, 33]
+
+
+def test_a_drafted_stop_token_ends_the_walk(grammars):
+    """A draft that completes the JSON and then proposes the stop token: rows after it are never reached, and the
+    walk must not ask the finished grammar for another mask (it raised in the engine, 2026-10-05)."""
+    state = GrammarState(grammars.json_schema(SCHEMA, armed=True))
+    assert all(state.accept(t) for t in JSON[:-1])
+    drafted = [ID['}'], STOP, ID['a'], ID['b']]
+    mask = host_bitmask(5, V)
+    state.fill_draft(drafted, mask, 0)
+    assert ID['}'] in allowed(mask, 0) and allowed(mask, 1) == {STOP}
+    assert allowed(mask, 2) == allowed(mask, 3) == allowed(mask, 4) == set(range(V))
+    assert state.accept(ID['}']) and state.accept(STOP)  # the walk left the state where it was
+    finished = host_bitmask(1, V)
+    state.fill(finished, 0)  # a finished grammar does not raise
+    assert allowed(finished) == set(range(V))
