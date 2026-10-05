@@ -4,6 +4,8 @@
 Host-side and dependency-free (Python 3 standard library only); it drives the
 container launchers `run-sharar.sh` and `run-sharar-train.sh`.
 
+  sharar-ctl launch claude|opencode|aider [ARGS...]   # a coding agent set up for the serving target
+  sharar-ctl launch show      # base URLs, model name and context for any other tool
   sharar-ctl pull             # fetch the newest published image (the launcher pulls a missing one itself)
   sharar-ctl serve [27b | flashnext] [--no-traces] [--pinned | --draft DIR] [--fp8] [--exact | --balanced | --fast | --throughput]
   sharar-ctl stop [27b | flashnext]
@@ -30,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -143,6 +146,80 @@ def cmd_serve(args, env, dry) -> int:
     if args.profile:
         env["SHARAR_PROFILE"] = args.profile
     return run([str(ROOT / "run-sharar.sh")], env, dry)
+
+
+HARNESSES = ("claude", "opencode", "aider", "codex", "show")
+ALIASES = {"qwen38": ("qwen3.8-27b", "Qwen3.8-27B"), "flashnext": ("qwen3.8-flash-next", "Qwen3.8-Flash-Next")}
+OUTPUT_TOKENS = 32768  # reply budget the harness configs declare (thinking included); the context is the server's
+
+
+def write_config(path: Path, data: dict, dry: bool) -> None:
+    if dry:
+        print(f"+ write {path}: {json.dumps(data)}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def cmd_launch(args, env, dry) -> int:
+    """Start a coding agent against the serving target with its own config (the user's own settings are not touched)."""
+    if args.harness == "codex":
+        sys.exit("Codex needs the OpenAI Responses API (/v1/responses), which Sharar does not serve yet (#19)")
+    url = (os.environ.get("SHARAR_URL") or f"http://127.0.0.1:{env['SHARAR_PORT']}").rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{url}/get_server_info", timeout=3) as r:
+            info = json.loads(r.read())
+    except Exception:  # noqa: BLE001 - not serving
+        if not dry:
+            sys.exit(f"nothing is serving at {url}: ./sharar-ctl serve 27b (or flashnext) first")
+        info = {}
+    context = int(info.get("context_length", 262144))
+    alias, display = ALIASES[env["SHARAR_TARGET"]]
+    conf = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "sharar"
+    henv = dict(os.environ)
+    if args.harness == "show":
+        print(f"Sharar is serving {display} at {url} (context {context} tokens)")
+        print(f"  OpenAI-compatible tools:  base URL {url}/v1, model {alias}, any API key")
+        print(f"  Anthropic Messages tools: base URL {url}, any model name and API key (Claude Code: sharar-ctl launch claude)")
+        print("  Cline, Continue, Zed, Pi and others: an OpenAI-compatible provider with those values, context window "
+              f"{context}, max output {OUTPUT_TOKENS}")
+        return 0
+    if args.harness == "claude":
+        # Claude Code only accepts model ids containing "claude"; its own config directory keeps the user's
+        # Anthropic login, settings and history untouched (the first launch asks the onboarding questions).
+        model = os.environ.get("SHARAR_CLAUDE_MODEL", "claude-sharar-qwen3.8")
+        for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE"):
+            henv.pop(k, None)
+        henv.update(ANTHROPIC_BASE_URL=url, ANTHROPIC_AUTH_TOKEN="sharar", ANTHROPIC_MODEL=model,
+                    ANTHROPIC_DEFAULT_SONNET_MODEL=model, ANTHROPIC_DEFAULT_OPUS_MODEL=model, ANTHROPIC_DEFAULT_HAIKU_MODEL=model,
+                    CLAUDE_CODE_MAX_CONTEXT_TOKENS=str(context), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1",
+                    # the model name is not in Claude Code's catalog: without this it assumes a 200K window
+                    CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT="1",
+                    CLAUDE_CONFIG_DIR=os.environ.get("SHARAR_CLAUDE_CONFIG", str(Path.home() / ".claude-sharar")))
+        command = ["claude", *args.args]
+    elif args.harness == "opencode":
+        # OPENCODE_CONFIG is merged over the user's global config: a `sharar` provider and the default model.
+        path = conf / "opencode.json"
+        write_config(path, {"$schema": "https://opencode.ai/config.json", "model": f"sharar/{alias}",
+                            "provider": {"sharar": {"npm": "@ai-sdk/openai-compatible", "name": "Sharar",
+                                                    "options": {"baseURL": f"{url}/v1", "apiKey": "sharar"},
+                                                    "models": {alias: {"name": f"{display} (Sharar)",
+                                                                       "limit": {"context": context, "output": OUTPUT_TOKENS}}}}}}, dry)
+        henv["OPENCODE_CONFIG"] = str(path)
+        command = ["opencode", *args.args]
+    else:  # aider: an OpenAI-compatible endpoint plus the model's context in a metadata file
+        path = conf / "aider.model.metadata.json"
+        write_config(path, {f"openai/{alias}": {"max_tokens": OUTPUT_TOKENS, "max_input_tokens": context,
+                                                 "max_output_tokens": OUTPUT_TOKENS, "input_cost_per_token": 0,
+                                                 "output_cost_per_token": 0, "litellm_provider": "openai", "mode": "chat"}}, dry)
+        henv.update(OPENAI_API_BASE=f"{url}/v1", OPENAI_API_KEY="sharar")
+        command = ["aider", "--model", f"openai/{alias}", "--model-metadata-file", str(path), *args.args]
+    if dry:
+        print("+ " + " ".join(command))
+        return 0
+    if shutil.which(command[0]) is None:
+        sys.exit(f"{command[0]} is not installed or not on PATH")
+    os.execvpe(command[0], command, henv)  # in the caller's directory, replacing this process
 
 
 def cmd_pull(args, env, dry) -> int:
@@ -374,6 +451,10 @@ def main(argv=None) -> int:
                        ("fast", "the default: every measured speed option, lossy ones included (docs/optimizations.md#serving-profiles)"),
                        ("throughput", "fast with up to 16 requests at once and shallower verification above four (evals, many agents)")):
         g.add_argument(f"--{name}", dest="profile", action="store_const", const=name, help=text)
+    p = sub.add_parser("launch", help="start a coding agent (claude, opencode, aider) set up for the serving target; `show` prints the settings for any other tool")
+    p.add_argument("harness", choices=HARNESSES)
+    p.add_argument("--target", choices=TARGETS, default=None, help="before the agent name; default: the target that is serving")
+    p.add_argument("args", nargs=argparse.REMAINDER, help="passed to the agent unchanged")
     sub.add_parser("pull", help="fetch the newest published image (SHARAR_IMAGE, default from tools/image.sh)")
     sub.add_parser("stop", help="stop serving").add_argument("target", nargs="?", choices=TARGETS)
     sub.add_parser("status", help="serving, training, current draft and trace directory").add_argument("target", nargs="?", choices=TARGETS)
@@ -401,12 +482,12 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     target = getattr(args, "target", None)
     env = load_env(target)
-    if target is None and args.command in ("stop", "status", "logs", "chat") and not container_running(env["SHARAR_CONTAINER"]):
+    if target is None and args.command in ("stop", "status", "logs", "chat", "launch") and not container_running(env["SHARAR_CONTAINER"]):
         # nothing named and the default target is not serving: follow the one that is
         other = load_env("qwen38" if env["SHARAR_TARGET"] == "flashnext" else "flashnext")
         if container_running(other["SHARAR_CONTAINER"]):
             env = other
-    handler = {"serve": cmd_serve, "pull": cmd_pull, "stop": cmd_stop, "status": cmd_status, "train": cmd_train,
+    handler = {"serve": cmd_serve, "launch": cmd_launch, "pull": cmd_pull, "stop": cmd_stop, "status": cmd_status, "train": cmd_train,
                "draft": cmd_draft, "traces": cmd_traces, "logs": cmd_logs, "chat": cmd_chat}[args.command]
     return handler(args, env, args.dry_run)
 

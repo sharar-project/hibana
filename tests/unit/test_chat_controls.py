@@ -64,3 +64,21 @@ def test_unconstrained_chat_still_submits_and_returns_output(stream, controls, t
         else:
             assert response.json()['choices'][0]['message']['content'] == 'ok'
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('body,expected', [({}, 4096 - 3), ({'max_tokens': 100}, 100), ({'max_completion_tokens': 200}, 200)])
+def test_chat_without_max_tokens_may_use_the_rest_of_the_context(body, expected):
+    """As in the OpenAI API: an unset reply budget is the context left after the prompt, not a fixed small default."""
+    async def scenario():
+        queue = asyncio.Queue()
+        queue.put_nowait(([2], True, 'stop'))
+        engine = SimpleNamespace(submit=AsyncMock(return_value=SimpleNamespace(queue=queue, req=SimpleNamespace(prefix_len=0))), cancel=Mock())
+        tok = SimpleNamespace(encode=Mock(return_value=[1, 1, 1]), decode=lambda ids, **kwargs: 'ok')
+        template = SimpleNamespace(render=Mock(return_value='prompt'))
+        app = create_app(engine, tok, template, {'context_length': 4096})
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+            response = await client.post('/v1/chat/completions', json={'messages': [{'role': 'user', 'content': 'hi'}], **body})
+        assert response.status_code == 200
+        params = engine.submit.await_args.args[1]
+        assert params.max_new_tokens == expected
+    asyncio.run(scenario())

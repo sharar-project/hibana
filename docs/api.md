@@ -105,8 +105,9 @@ block ends with its `signature_delta`; a tool call arrives whole as one
 `message_stop`. `message_start` counts the whole prompt as `input_tokens`
 because the prefix match happens at admission.
 
-To use Sharar from Claude Code, run `tools/claude-sharar.sh` (interactive, or
-with `claude` arguments such as `-p "..."`; `SHARAR_URL` picks the server). It
+To use Sharar from Claude Code, run `./sharar-ctl launch claude` (interactive, or
+with `claude` arguments such as `-p "..."`; it finds the serving target, `SHARAR_URL` picks another server;
+`tools/claude-sharar.sh` is the same command). It
 sets the variables below from Claude Code's gateway and model-configuration
 docs and keeps its own config directory (`~/.claude-sharar`). Claude Code only accepts model IDs that contain
 `claude` or `anthropic`; the server serves any name, so pick one that does:

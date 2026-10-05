@@ -61,15 +61,17 @@ Anthropic Messages clients against `http://127.0.0.1:30001`
 ## Coding agents
 
 ```bash
-tools/claude-sharar.sh                      # Claude Code on Sharar (SHARAR_URL=http://127.0.0.1:30004 for Flash-Next)
-tools/claude-sharar.sh -p "fix the failing test and run the suite"
+./sharar-ctl launch claude                  # Claude Code on whichever target is serving
+./sharar-ctl launch claude -p "fix the failing test and run the suite"
+./sharar-ctl launch opencode                # OpenCode
+./sharar-ctl launch aider                   # Aider
+./sharar-ctl launch show                    # the settings for any other tool (Cline, Continue, Zed, Pi, ...)
 ```
 
-The script points Claude Code at the server with its own config directory
-(`~/.claude-sharar`), so your Anthropic login and settings are untouched.
-OpenAI-compatible harnesses (OpenCode, Cline, Aider, Continue, Zed) use base URL
-`http://127.0.0.1:30001/v1` with any API key and model name. After the first
-request of a session, later turns start in under a second.
+Each agent gets its own configuration for the serving target (address, model, context window), so your own
+settings are untouched: Claude Code uses `~/.claude-sharar` instead of your Anthropic login, OpenCode and Aider
+read files under `~/.config/sharar`. Arguments after the agent's name go to the agent. Codex needs the Responses
+API, which is next (#19). After the first request of a session, later turns start in under a second.
 For **Pi**, see the [Pi configuration](docs/api.md#pi).
 
 ## Train the drafter on your traffic

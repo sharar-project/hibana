@@ -58,7 +58,7 @@ benchmark (#26). Architecture and the capability matrix: [architecture](docs/arc
 4. **Research** (measure before building): #34 on-policy distillation (separate repository when it starts), #41 expert-budgeted
    verification, #42 sub-3-bit 27B MLPs, #25 megakernels. Deprioritized by the #32 router data:
    #38 fewer active experts (flat router mass), #39 expert pruning (domains share few experts).
-5. **Harness and quality**: #11 Flash-Next end to end (a Claude Code session through `tools/claude-sharar.sh`, the written comparison with the 27B), #28 harder evals (sharar-eval `hard` suite: MMLU-Pro, GPQA, IFEval, WMT24++, 2026-10-01; `tools/lossy-gate.py --battery hard`; Terminal-Bench 2.1 next) (#31 lossy-change gate
+5. **Harness and quality**: #11 Flash-Next end to end (a Claude Code session through `sharar-ctl launch claude`, the written comparison with the 27B), #28 harder evals (sharar-eval `hard` suite: MMLU-Pro, GPQA, IFEval, WMT24++, 2026-10-01; `tools/lossy-gate.py --battery hard`; Terminal-Bench 2.1 next) (#31 lossy-change gate
    done 2026-09-29: `tools/lossy-gate.py`), #16 constrained output with speculation, #19 `/v1/responses`, #15 test-time scaling,
    #13 session store snapshots, #14 long-context prefill.
 6. **Infrastructure**: GB10 CI done 2026-10-03 (#98: nightly GPU suite and serve checks, weekly speed and
