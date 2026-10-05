@@ -4,8 +4,8 @@
 # (#27, docs/optimizations.md#serving-profiles).
 #   exact     the target's own distribution: exact acceptance, no lossy weight copies (benchmarks, traces)
 #   balanced  relaxed greedy acceptance top-2 within 1.0 logit; the 27B's calibrated 3-bit decode copies
-#   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy and
-#             sampled requests, the calibrated 3-bit decode copies (the 27B's layers and FP8 draft, Flash-Next's
+#   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy requests
+#             (and sampled ones on Flash-Next; on the 27B they looped in Claude Code sessions, #11), the calibrated 3-bit decode copies (the 27B's layers and FP8 draft, Flash-Next's
 #             trunk) and device-resident acceptance for Flash-Next's MTP rounds (#36)
 #   throughput  fast, with up to 16 requests decoded together (#59: evals, many agents). Flash-Next verifies 3
 #             drafts at 9-16 requests, within the 64 rows its 3-bit trunk copies serve (fast's weights at every
@@ -20,8 +20,10 @@ serving_profile() {
     exact)    P_ACCEPT=off;   P_ACCEPT_SAMPLED=0; P_W3=0; P_DEVICE_ACCEPT=0 ;;
     balanced) P_ACCEPT=2:1.0; P_ACCEPT_SAMPLED=0; P_DEVICE_ACCEPT=0
               if [[ "$2" == flashnext ]]; then P_W3=0; else P_W3=1; fi ;;  # Flash-Next's 3-bit trunk is fast's
-    fast)     P_ACCEPT=3:2.0; P_ACCEPT_SAMPLED=1; P_W3=1
-              if [[ "$2" == flashnext ]]; then P_DEVICE_ACCEPT=1; else P_DEVICE_ACCEPT=0; fi ;;  # the 27B's gain needs lazy round completion (#18)
+    fast)     P_ACCEPT=3:2.0; P_W3=1
+              # the 27B's device-acceptance gain needs lazy round completion (#18); its sampled thinking looped to
+              # max_tokens under relaxed acceptance in Claude Code sessions (#11), Flash-Next's did not
+              if [[ "$2" == flashnext ]]; then P_DEVICE_ACCEPT=1; P_ACCEPT_SAMPLED=1; else P_DEVICE_ACCEPT=0; P_ACCEPT_SAMPLED=0; fi ;;
     throughput) serving_profile fast "$2"; P_MAX_BATCH=16
               if [[ "$2" == flashnext ]]; then P_SPEC_DEPTHS=16:3; fi ;;  # the 27B: SHARAR_SPEC everywhere
     *) return 1 ;;
