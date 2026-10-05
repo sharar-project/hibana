@@ -18,7 +18,7 @@ Status: `todo`, `doing`, `done`, `parked`, `decide` (needs a decision before wor
 | Smaller image | none | todo | The runtime uses the CUDA devel base because FlashInfer SM121 modules and the GEMV extension JIT-compile; building them ahead of time allows a runtime base. |
 | `sharar serve 27b` / `sharar serve flashnext` | none | done | Merged in #103 (2026-10-05): `sharar-ctl serve 27b|flashnext` (stop/status/logs/chat follow the serving target); settings in `config/targets/<target>.env`; `config/gb10.env` optional; `config/flashnext.env` removed. |
 | Automatic weight download | none | done | Merged in #103: missing pinned snapshots (model and drafter) are downloaded after a free-disk check; tested from an empty cache with no config (27B: 26 GB plus the 3-bit checkpoint, 19 min to launch). Flash-Next is 135 GB. |
-| Preflight for any GB10 machine | none | doing | PR #106: `sharar-ctl doctor [27b|flashnext]` checks GPU, driver, memory, devices and driver libraries (no NVIDIA container toolkit needed), Docker access, user systemd, the image, models against free disk, ports and network, and names the machine; tested on the DGX Spark only. |
+| Preflight for any GB10 machine | none | done | The launcher's preflight covers the blocking checks (GPU, driver, memory, disk before downloads, image login hint) and, with #107, Docker access and user systemd with their fixes. A full one-report `sharar-ctl doctor` (machine vendor, every check at once) is parked on `feat/doctor` (#106, closed) for the public launch. |
 | `sharar launch claude\|codex\|opencode\|aider\|...` | none | todo | Optional convenience: any harness that takes a custom OpenAI or Anthropic base URL works today. This writes the harness config (base URL, model name, context, tool settings) and starts it. Generalizes `tools/claude-sharar.sh` and the Pi notes in [api.md](api.md#pi). |
 
 ## 2. Agent harnesses that work every time
@@ -52,7 +52,7 @@ Status: `todo`, `doing`, `done`, `parked`, `decide` (needs a decision before wor
 
 | Item | Issue | Status | Notes |
 |---|---|---|---|
-| Re-run h2h on current main and update the README | #26 | doing | PR #105 (2026-10-05, published image, fast profile): 27B 92.3 / 71.5, Flash-Next 85.4 / 74.4 tok/s greedy / t=0.7. The 27B sampled number is 3 tok/s under the old README; repeat before reading into it. |
+| Re-run h2h on current main and update the README | #26 | done | Merged in #105 (2026-10-05, published image, fast profile): 27B 92.3 / 71.5, Flash-Next 85.4 / 74.4 tok/s greedy / t=0.7. The 27B sampled number is 3 tok/s under the old README; repeat before reading into it. |
 | Add llama.cpp and Strata to the h2h | #26 | todo | Strata (github.com/Niko1221/Strata) serves Flash-Next on consumer GPUs and claims 94 tok/s at Q2_0 on an RTX 5070; users will compare headline numbers, so publish quality next to speed. |
 | Benchmark page and demo | none | todo | Reproducible commands, image tags, precisions; a short screen recording of a coding agent on Sharar. |
 | GB10 machines from other vendors | none | todo | ASUS Ascent GX10, Dell Pro Max with GB10, HP ZGX Nano G1n, Lenovo ThinkStation PGX, MSI EdgeXpert, Gigabyte AI TOP Atom and Acer Veriton GN100 all use the same GB10 and 128 GB LPDDR5X at 273 GB/s, so Sharar should run unchanged. Untested: OS image, NVMe size (1 TB models are tight with both targets, about 200 GB of weights and the PLE table) and power or thermal limits that could move the numbers. Ask early users for `sharar-ctl` preflight reports. |
