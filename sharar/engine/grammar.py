@@ -92,8 +92,10 @@ class GrammarState:
 
 
 def host_bitmask(rows: int, vocab: int) -> torch.Tensor:
-    """An all-allowed host bitmask for `rows` rows."""
-    return torch.full((rows, (vocab + 31) // 32), -1, dtype=torch.int32)
+    """An all-allowed host bitmask for `rows` rows, in pinned memory when there is a GPU: a copy from pageable memory
+    waits for all queued GPU work (the verify graph) before the host can queue the masking and acceptance."""
+    mask = torch.empty((rows, (vocab + 31) // 32), dtype=torch.int32, pin_memory=torch.cuda.is_available())
+    return mask.fill_(-1)
 
 
 def apply_bitmask(logits: torch.Tensor, bitmask: torch.Tensor) -> None:
