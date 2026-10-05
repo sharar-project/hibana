@@ -347,7 +347,10 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         kwargs, thinking = _template_kwargs(body)
         tools = None if body.get("tool_choice") == "none" else body.get("tools")  # "none": generate without tool schemas
         ids, in_reasoning = _chat_prompt(messages, tools, thinking, kwargs)
-        params = _sampling_from(body, max_default=512)
+        # Without max_tokens (or max_completion_tokens) a reply may run to the end of the context window, as in the
+        # OpenAI API, vLLM and SGLang: a fixed default cut off clients that leave it unset (Aider) mid-thought.
+        limit = describe.get("context_length", targets.DEFAULT_TARGET.context_length)
+        params = _sampling_from(body, max_default=max(1, limit - len(ids)))
         stop = _stops(body)
         n = body.get("n", 1)
         if type(n) is not int or not 1 <= n <= MAX_CHOICES:
