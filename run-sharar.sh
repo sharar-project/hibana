@@ -92,7 +92,11 @@ fi
 
 # ---- preflight (same facts sharar check enforces inside) ----
 [[ "$(uname -m)" == "aarch64" ]] || fail "host architecture must be aarch64"
-command -v docker >/dev/null || fail "docker is not installed"
+command -v docker >/dev/null || fail "docker is not installed (Docker Engine; the NVIDIA container toolkit is not needed)"
+docker info >/dev/null 2>&1 || fail "$(id -un) cannot reach the Docker daemon: sudo usermod -aG docker $(id -un), then log in again"
+# The memory guard runs as a user systemd unit beside the server (tools/memory-guard.sh).
+{ command -v systemd-run >/dev/null && systemctl --user show-environment >/dev/null 2>&1; } \
+  || fail "no user systemd session for the memory guard: log in with a full session, or sudo loginctl enable-linger $(id -un)"
 command -v nvidia-smi >/dev/null || fail "nvidia-smi is not installed"
 mapfile -t gpu_rows < <(nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv,noheader,nounits)
 [[ ${#gpu_rows[@]} -eq 1 ]] || fail "exactly one NVIDIA GPU is required"
