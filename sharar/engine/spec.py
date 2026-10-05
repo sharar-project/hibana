@@ -32,6 +32,9 @@ class Verification:
     kv_pages: list[torch.Tensor]
     started: float
     prepared: float
+    # Constrained requests (engine/grammar.py): the drafted tokens on their way to the host, (pinned tensor, event),
+    # copied right after drafting so the grammar walk runs while the GPU verifies.
+    drafted_host: tuple | None = None
 
 
 class SpecDecoder:
@@ -224,6 +227,13 @@ class SpecDecoder:
                             proposal.support[:, :k] if proposal.support is not None else None,
                             confidence=proposal.confidence[:, :k] if proposal.confidence is not None else None, columns=proposal.columns)
         new_pages_flat = new_pages[:, :s_len].reshape(-1)
+        drafted_host = None
+        if any(r.grammar is not None for r in reqs) and y.device.type == "cuda":
+            host = torch.empty(y.shape, dtype=torch.int64, pin_memory=True)
+            host.copy_(y, non_blocking=True)
+            ready = torch.cuda.Event()
+            ready.record()
+            drafted_host = (host, ready)
         if timing:
             torch.cuda.synchronize()
         t1 = time.perf_counter()
@@ -238,7 +248,7 @@ class SpecDecoder:
             kv_all.append(ex.state.step_pages(r)[:r.committed_len + s_len])
             kv_indptr.append(kv_indptr[-1] + kv_all[-1].shape[0])
         return Verification(list(reqs), proposal, sampled, tokens_v, positions, new_pages_flat,
-                            slots_t, kv_all, t0, t1)
+                            slots_t, kv_all, t0, t1, drafted_host)
 
     def verify(self, batch: Verification) -> None:
         b_sz, k = batch.proposal.tokens.shape
@@ -251,10 +261,11 @@ class SpecDecoder:
                                                                batch.slots, batch.kv_pages, sampled=batch.sampled,
                                                                side=(batch.requests, batch.proposal.tokens, seqs, batch.proposal.columns), variant=variant)
             if self._constrain(batch, logits) and not batch.sampled:
-                z_flat = logits.argmax(-1)  # the masked argmax; sampled batches read the masked logits themselves
+                # The masked argmax, written into the graph's own buffer: the device acceptance graph reads it there
+                # (and the masked logits for the relaxed rule). Sampled batches read the masked logits themselves.
+                z_flat.copy_(logits.argmax(-1))
             accept = getattr(graphs, "accept", None)
-            if (accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests)
-                    and not any(r.grammar is not None for r in batch.requests)):
+            if accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests):
                 if self.timing:
                     torch.cuda.synchronize()
                 accept.round(batch, batch.proposal.tokens, self._target_topk(batch.requests, logits, b_sz, s_len),
@@ -312,7 +323,13 @@ class SpecDecoder:
         if not any(r.grammar is not None for r in batch.requests):
             return False
         from sharar.engine.grammar import apply_bitmask, verify_masks
-        masks = verify_masks(batch.requests, batch.proposal.tokens.tolist(), logits.shape[-1])
+        early = getattr(batch, "drafted_host", None)
+        if early is not None:
+            early[1].synchronize()  # waits for the draft only; the verify graph keeps the GPU busy during the walk
+            drafted = early[0].tolist()
+        else:
+            drafted = batch.proposal.tokens.tolist()
+        masks = verify_masks(batch.requests, drafted, logits.shape[-1])
         s = batch.proposal.tokens.shape[1] + 1
         for i, r in enumerate(batch.requests):
             if r.grammar is not None:  # unconstrained requests' rows stay as they are
