@@ -27,9 +27,10 @@ from sharar.api.chat_template import ChatTemplate
 from sharar.api.detok import Detokenizer
 from sharar.api.parsers.reasoning import ReasoningParser
 from sharar.api.parsers.tools import TOOL_CALL_START, has_tool_call, parse_tool_calls
-from sharar.api.validation import _sampling_from, _stops, _template_kwargs, _validate_chat_controls
+from sharar.api.validation import _output_spec, _sampling_from, _stops, _template_kwargs
 from sharar.engine.loop import EngineUnavailable, Ticket, EngineLoop
-from sharar.engine.sampler import InvalidRequest
+from sharar.engine.grammar import Grammars
+from sharar.engine.sampler import InvalidRequest, SamplingParams
 from sharar.engine.scheduler import QueueFull, Scheduler
 from sharar.tokenizer import SnapshotTokenizer
 
@@ -38,7 +39,7 @@ from sharar.tokenizer import SnapshotTokenizer
 MAX_CHOICES = 16  # n per chat request: the scheduler queues what exceeds four running
 
 
-def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, describe: dict) -> FastAPI:
+def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, describe: dict, grammars: Grammars | None = None) -> FastAPI:
     MODEL_ID = describe.get("model_path", targets.DEFAULT_TARGET.model_id)  # the served checkpoint id, reported as the model name
     @asynccontextmanager
     async def lifespan(app):
@@ -53,6 +54,23 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     started = time.time()
     # Messages API requests this server declines or reduces, to see what harnesses send.
     messages_stats = {"forced_tool_choice_rejected": 0, "server_tools_ignored": 0}
+    # Requests with constrained output (#16), by kind.
+    constrained_stats = {"json_schema": 0, "json_object": 0, "tool_call": 0}
+    grammar_builder = [grammars]  # made from the tokenizer on the first constrained request
+
+    def _constraint(spec: tuple[str, object], tools: list | None, in_reasoning: bool):
+        """The request's Constraint (engine/grammar.py); compiling runs off the event loop."""
+        if grammar_builder[0] is None:
+            grammar_builder[0] = Grammars.from_tokenizer(tok._tok, describe.get("vocab_size", targets.DEFAULT_TARGET.vocab_size),
+                                                         SamplingParams().stop_token_ids)
+        g, (kind, arg), armed = grammar_builder[0], spec, not in_reasoning
+        try:
+            constraint = (g.tool_call(tools or [], arg, armed) if kind == "tool_call" else
+                          g.json_object(armed) if kind == "json_object" else g.json_schema(arg, armed))
+        except ValueError as exc:
+            raise InvalidRequest(str(exc))
+        constrained_stats[kind] += 1
+        return constraint
 
     @app.exception_handler(InvalidRequest)
     async def invalid_request(http, exc):
@@ -166,6 +184,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         if engine.sched.ex.spec is not None:
             info["spec_stats"] = engine.sched.ex.spec.stats()
         info["messages_api"] = dict(messages_stats)
+        info["constrained"] = dict(constrained_stats)
         return info
 
     @app.get("/metrics")
@@ -340,7 +359,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     # ---- OpenAI chat ----
     @app.post("/v1/chat/completions")
     async def chat(body: dict, http: HttpRequest):
-        _validate_chat_controls(body)
+        spec = _output_spec(body)
         messages = body.get("messages") or []
         if not messages:
             raise HTTPException(400, "messages required")
@@ -351,6 +370,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         # OpenAI API, vLLM and SGLang: a fixed default cut off clients that leave it unset (Aider) mid-thought.
         limit = describe.get("context_length", targets.DEFAULT_TARGET.context_length)
         params = _sampling_from(body, max_default=max(1, limit - len(ids)))
+        if spec is not None:
+            params.constraint = await asyncio.to_thread(_constraint, spec, tools, in_reasoning)
         stop = _stops(body)
         n = body.get("n", 1)
         if type(n) is not int or not 1 <= n <= MAX_CHOICES:
@@ -477,10 +498,12 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
     async def _messages(body: dict, http: HttpRequest):
         choice = messages_api.tool_choice(body)
+        forced = None
         if choice in ("any", "tool"):
-            messages_stats["forced_tool_choice_rejected"] += 1
-            raise InvalidRequest(f"tool_choice type '{choice}' is not supported yet: forced tool calls need constrained "
-                                 "decoding; use 'auto' or 'none'")
+            name = body["tool_choice"].get("name") if choice == "tool" else None
+            if choice == "tool" and (not isinstance(name, str) or not name):
+                raise InvalidRequest("tool_choice of type 'tool' needs a name")
+            forced = ("tool_call", name)
         model = body.get("model", MODEL_ID)
         if not isinstance(model, str):
             raise InvalidRequest("model must be a string")
@@ -496,6 +519,10 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             max_tokens = min(max_tokens, limit - len(ids))  # clients size max_tokens for a larger window
         sampling = {k: body[k] for k in ("temperature", "top_p", "top_k", "trace", "accept_top_k", "accept_margin") if k in body}
         params = _sampling_from({**sampling, "max_tokens": max_tokens})
+        if forced is not None:
+            if not tools:
+                raise InvalidRequest("a tool_choice that requires a call needs tools")
+            params.constraint = await asyncio.to_thread(_constraint, forced, tools, in_reasoning)
         stop = _stops({"stop": body.get("stop_sequences")})
         ticket = await _submit(ids, params)
         mid = messages_api.new_id("msg")

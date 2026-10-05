@@ -52,6 +52,13 @@ class Request(RequestState):
     trace_rounds: list[dict] | None = None
     trace_features: object = None  # FeatureRecorder while recording projected draft context, else None
     trace_topk: object = None  # TopkRecorder for the target's top-k logits per verified row, else None
+    # constrained output (engine/grammar.py): the request's position in its grammar, None when unconstrained
+    grammar: object = None
+
+    def __post_init__(self):
+        if self.params.constraint is not None and self.grammar is None:
+            from sharar.engine.grammar import GrammarState
+            self.grammar = GrammarState(self.params.constraint)
 
     @property
     def prefill_len(self) -> int:
@@ -80,7 +87,9 @@ class Request(RequestState):
             self.t_first_token = time.perf_counter()
             self.state = State.RUNNING
         self.output_ids.append(token)
-        if not self.params.ignore_eos and token in self.params.stop_token_ids:
+        if self.grammar is not None and not self.grammar.accept(token):
+            self._finish("grammar")  # every path masks by the grammar, so this means a bug, not model output
+        elif not self.params.ignore_eos and token in self.params.stop_token_ids:
             self._finish("stop")
         elif len(self.output_ids) >= self.params.max_new_tokens:
             self._finish("length")

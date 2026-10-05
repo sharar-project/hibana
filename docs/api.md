@@ -34,7 +34,9 @@ Admission also checks the output budget and speculative scratch capacity.
 | `tools` | Tool schemas passed to the template; generated calls are parsed |
 | `tool_choice` omitted/null/`auto` | Unconstrained model choice |
 | `tool_choice: "none"` | Omit tool schemas from the prompt and tool-call parsing |
+| `tool_choice: "required"` / `{"type":"function","function":{"name":...}}` | Constrained: one or more calls to any tool / exactly one call to that tool ([constrained output](#constrained-output)) |
 | `response_format` omitted/null/`{"type":"text"}` | Ordinary text output |
+| `response_format: {"type":"json_object"}` / `{"type":"json_schema","json_schema":{"schema":{...}}}` | Constrained: a JSON object / JSON valid against the schema ([constrained output](#constrained-output)) |
 | `trace` | `false` excludes this request from the opt-in [trace sink](operations.md#request-traces); accepted on every generation route |
 | `accept_top_k`, `accept_margin` | Relaxed speculative acceptance, off unless both are set (sampled requests may set them too; measured on 2026-09-23 at temperature 0.6 they cost about two GSM8K and three HumanEval points for +4% throughput, so the server default applies to greedy requests only unless `SHARAR_ACCEPT_DEFAULT_SAMPLED=1`): a drafted token is also accepted when the target ranks it within its top `accept_top_k` and within `accept_margin` logits of the argmax (a log-probability ratio; 1.0 means at least 37% of the top probability). Faster, and no longer the target's exact greedy continuation; the per-request `spec_relaxed_tokens` counts such tokens. **Default: the server applies top-2 within 1.0 logit to greedy requests that set neither field** (`--accept-default`, `SHARAR_ACCEPT_DEFAULT`; `off` keeps everything exact); send `accept_top_k: 1` to get the exact greedy continuation for one request. Accepted on every generation route |
 
@@ -42,8 +44,7 @@ Admission also checks the output budget and speculative scratch capacity.
 directory), `speculative.accept_default`, `spec_stats` (rounds, proposed, accepted, emitted, `relaxed_accepts`) and, when
 tracing is on, `scheduler.traces` (records, bytes, `dropped`).
 
-Forced/named/required tool choices and constrained JSON formats return HTTP
-400 before rendering or admission. `none` does not install a token constraint;
+`none` does not install a token constraint;
 it suppresses supplied tool schemas and returns ordinary generated content.
 Sharar does not execute tools. Clients perform calls and submit subsequent turns.
 
@@ -60,6 +61,35 @@ Queue saturation returns 429. An unavailable engine returns 503; a stream
 already in progress reports an SSE error. Client disconnects cancel their
 requests. Cache flush acknowledges invalidation; locked storage may remain
 until its readers finish, reported by `flush_pending`.
+
+## Constrained output
+
+A JSON `response_format` or a `tool_choice` that requires a call (chat; `any`/`tool` on Anthropic Messages) is
+enforced token by token with an [xgrammar](https://github.com/mlc-ai/xgrammar) grammar
+([sharar/engine/grammar.py](../sharar/engine/grammar.py)), and speculative decoding stays on: after each
+verification the drafted tokens are walked through the grammar on the host while the GPU verifies, the target's
+verified rows are masked by the grammar state after each drafted prefix, and acceptance (exact, relaxed or rejection
+sampling) runs on the masked rows, so a drafted token the grammar forbids is rejected and the correction is always
+allowed. The drafted tokens reach the host right after drafting and the masks go up from pinned memory, so the walk
+overlaps verification and device-resident acceptance stays on. The first token after prefill and plain decode
+steps sample from the masked logits too. A grammar failure finishes that request (reason `grammar`), never the
+engine.
+
+- Thinking is free: the grammar applies from the first token after `</think>`. Leading whitespace (at most four
+  characters) is allowed; whitespace runs inside JSON are capped at 24 characters.
+- JSON schemas compile with xgrammar's `from_json_schema` (properties in the schema's order); a schema it cannot
+  compile returns 400. `json_object` is any JSON object.
+- Forced tool calls follow Qwen3.8's XML call format with the tools' function and parameter names; parameter values
+  are free text (without `</`) and are cast by the usual tool-call parser. The parsed calls come back as `tool_calls`
+  (`tool_use` blocks on Messages).
+- A forced `tool_choice` cannot be combined with a JSON `response_format`; either needs `tools` / a schema.
+- `/get_server_info` counts constrained requests by kind (`constrained`).
+
+Measured 2026-10-05 on the GB10, fast profile: six schemas (weather, contact, order with line items, sentiment,
+code review, entities) with thinking off and on, greedy and t=0.7 (four samples each), `json_object`, forced tool
+calls on both APIs and a mixed batch of four constrained and four unconstrained requests: 49/49 valid on each target.
+Speed at batch one against the same request without the constraint: tokens per round identical, decode tok/s
+-1.6% to +1.0% on the 27B and -0.8% to 0% on Flash-Next (within run-to-run noise).
 
 ## Anthropic Messages
 

@@ -49,10 +49,10 @@ def fake_engine(output='', reason='stop', chunk=3, prefix_len=0):
                            sched=SimpleNamespace(ex=SimpleNamespace(spec=None)))
 
 
-def fake_app(engine, describe=None):
+def fake_app(engine, describe=None, grammars=None):
     tok = SimpleNamespace(encode=Mock(side_effect=encode), decode=decode)
     tmpl = SimpleNamespace(render=Mock(side_effect=render))
-    return create_app(engine, tok, tmpl, describe or {}), tmpl
+    return create_app(engine, tok, tmpl, describe or {}, grammars=grammars), tmpl
 
 
 def body(**fields):
@@ -60,10 +60,10 @@ def body(**fields):
             'messages': [{'role': 'user', 'content': 'hello'}], **fields}
 
 
-def post(payload, output='', reason='stop', path='/v1/messages', describe=None, **kwargs):
+def post(payload, output='', reason='stop', path='/v1/messages', describe=None, grammars=None, **kwargs):
     async def scenario():
         engine = fake_engine(output, reason, **kwargs)
-        app, tmpl = fake_app(engine, describe)
+        app, tmpl = fake_app(engine, describe, grammars)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
             response = await client.post(path, json=payload)
         return response, engine, tmpl
@@ -248,26 +248,31 @@ def test_non_object_body_is_rejected():
     asyncio.run(scenario())
 
 
-def test_forced_tool_choice_is_rejected_and_counted():
-    async def scenario():
+def test_forced_tool_choice_is_constrained_and_counted():
+    from tests.unit.test_grammar import PIECES, STOP, ID, V
+    from sharar.engine.grammar import Grammars
+    grammars = Grammars(PIECES, V, [STOP], ID['</think>'], byte_level=False)
+    for choice in ({'type': 'any'}, {'type': 'tool', 'name': 'get_weather'}):
+        response, engine, _ = post(body(tools=TOOLS, tool_choice=choice), 'ok', grammars=grammars)
+        assert response.status_code == 200
+        assert engine.submit.await_args.args[1].constraint.kind == 'tool_call'
+    for bad, match in (({'type': 'tool'}, 'needs a name'), ({'type': 'tool', 'name': 'other'}, 'not among the tools')):
+        response, engine, _ = post(body(tools=TOOLS, tool_choice=bad), 'ok', grammars=grammars)
+        assert response.status_code == 400 and match in response.json()['error']['message']
+        engine.submit.assert_not_awaited()
+    response, _, _ = post(body(tool_choice={'type': 'any'}), 'ok', grammars=grammars)
+    assert response.status_code == 400 and 'needs tools' in response.json()['error']['message']
+
+    async def scenario():  # counted per kind; server tools are still dropped
         engine = fake_engine('ok')
-        app, tmpl = fake_app(engine)
+        app, tmpl = fake_app(engine, grammars=grammars)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
-            for choice in ({'type': 'any'}, {'type': 'tool', 'name': 'get_weather'}):
-                response = await client.post('/v1/messages', json=body(tools=TOOLS, tool_choice=choice))
-                assert response.status_code == 400
-                error = response.json()['error']
-                assert error['type'] == 'invalid_request_error' and 'not supported' in error['message']
-            tmpl.render.assert_not_called()
-            engine.submit.assert_not_awaited()
-            info = (await client.get('/get_server_info')).json()
-            assert info['messages_api']['forced_tool_choice_rejected'] == 2
-            assert 'sharar_messages_forced_tool_choice_rejected 2' in (await client.get('/metrics')).text
-            response = await client.post('/v1/messages', json=body(tools=[*TOOLS, {'type': 'web_search_20250305', 'name': 'web_search'}]))
+            response = await client.post('/v1/messages', json=body(tools=[*TOOLS, {'type': 'web_search_20250305', 'name': 'web_search'}],
+                                                                   tool_choice={'type': 'any'}))
             assert response.status_code == 200
-            assert tmpl.render.call_args.kwargs['tools'][0]['function']['name'] == 'get_weather'
-            assert len(tmpl.render.call_args.kwargs['tools']) == 1
-            assert (await client.get('/get_server_info')).json()['messages_api']['server_tools_ignored'] == 1
+            assert [t['function']['name'] for t in tmpl.render.call_args.kwargs['tools']] == ['get_weather']
+            info = (await client.get('/get_server_info')).json()
+            assert info['constrained']['tool_call'] == 1 and info['messages_api']['server_tools_ignored'] == 1
     asyncio.run(scenario())
 
 
