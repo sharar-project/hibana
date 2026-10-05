@@ -8,15 +8,19 @@ own traffic so it gets faster at the work you do.
 
 ## Speed
 
-Batch Size 1
-([h2h benchmark](https://github.com/abdelfattah-lab/sharar/issues/26)):
+One request at a time, median decode rate over 22 prompts (chat, code, math, multilingual, prose,
+structured), thinking off ([h2h benchmark](https://github.com/abdelfattah-lab/sharar/issues/26)):
 
 | tok/s | Sharar | SGLang (fastest public setup) |
 |---|---:|---:|
-| Qwen3.8-27B, greedy | **92.5** | 44.8 |
-| Qwen3.8-27B, temperature 0.7 | **74.5** | 43.7 |
-| Qwen3.8-Flash-Next, greedy | **72.9** | 41.8 |
-| Qwen3.8-Flash-Next, temperature 0.7 | **67.9** | 40.5 |
+| Qwen3.8-27B, greedy | **92.3** | 44.8 |
+| Qwen3.8-27B, temperature 0.7 | **71.5** | 43.7 |
+| Qwen3.8-Flash-Next, greedy | **85.4** | 41.8 |
+| Qwen3.8-Flash-Next, temperature 0.7 | **74.4** | 40.5 |
+
+Sharar: 2026-10-05, the published image (main e4a2045), default `fast` profile, `sharar-ctl serve 27b|flashnext`.
+SGLang: 2026-09-24 on the same GB10. Code and math run fastest (27B greedy 106 and 133 tok/s), prose and
+multilingual slowest (57 and 44), because the drafter guesses predictable text better.
 
 ## Setup
 
