@@ -12,8 +12,8 @@ One GB10, two targets, one per process, no default between them.
 | | Qwen3.8-27B | Qwen3.8-Flash-Next |
 |---|---|---|
 | Serving profile (`fast`) | calibrated 3-bit decode weights, FP8 DFlash2 k=15 (traffic-adapted drafter), relaxed acceptance | FP8 trunk with calibrated 3-bit decode copies, NVFP4 experts, MTP k=4 with the 3-bit draft head, device-resident acceptance, sparse-attention graphs |
-| Single-stream decode (h2h, greedy / t=0.7 median) | 92.5 / 74.5 tok/s | 72.9 / 67.9 tok/s before #68; greedy x1.16 with it (about 84) |
-| Against SGLang's public setups on this box | 2.1x greedy, 1.7x sampled | 1.7x greedy, 1.7x sampled (before #68) |
+| Single-stream decode (h2h, greedy / t=0.7 median, 2026-10-05) | 92.3 / 71.5 tok/s | 85.4 / 74.4 tok/s |
+| Against SGLang's public setups on this box | 2.1x greedy, 1.6x sampled | 2.0x greedy, 1.8x sampled |
 | Context | 262K | 262K (sparse attention past 2,048) |
 
 Measurements and their evidence: [optimizations](docs/optimizations.md),
