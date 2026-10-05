@@ -18,6 +18,7 @@ next-step statements apply to the source recorded in each report.
 | [Profiling](../profiling/README.md) | In-process profilers, their frozen inputs, draft adaptation tools |
 | [Contributing](../CONTRIBUTING.md) | Checks and implementation boundaries |
 | [Roadmap](../roadmap.md) | Current priorities and remaining engineering work |
+| [Launch plan](launch-plan.md) | Install, harness, drafter-pack and launch work that stands between the engine and its users |
 | [Draft adaptation](draft-adaptation.md) | Training the DFlash2 drafter on recorded traffic: `sharar-ctl train`, traces, promotion, design and limits |
 | [W3 calibration](w3-calibration.md) | Fit, validate and load activation-aware three-bit target decode copies |
 | [Qwen3.8-Flash-Next](flashnext.md) | The second target: package layout, checkpoint conventions, parity and decode numbers, what is not ported |
