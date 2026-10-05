@@ -62,6 +62,23 @@ already in progress reports an SSE error. Client disconnects cancel their
 requests. Cache flush acknowledges invalidation; locked storage may remain
 until its readers finish, reported by `flush_pending`.
 
+## Refused tool calls
+
+When a harness keeps refusing a tool call (Claude Code without permission answers "This command requires approval"),
+the model sometimes retries it with small variations instead of reporting it: on 2026-10-05 the 27B did so on 4 of 4
+phrasings of a fix-and-test task in the `fast` profile and 1 of 4 in `exact`, each time for minutes (229-352 calls)
+until the client gave up. The server guards against it without keeping state, since the conversation comes back on
+every turn ([sharar/api/refusal_guard.py](../sharar/api/refusal_guard.py)):
+
+- A refusal is a tool result marked as an error (Anthropic `is_error`), or reading like a permission refusal, that
+  repeats word for word for the same tool since the user's last message.
+- From 3 such refusals a reminder follows them in the prompt: the call was refused N times, retrying will be refused
+  again, finish without it and tell the user what is needed. With it every looping case above stopped after 3
+  refusals with a correct report.
+- From 8 the server ends the turn itself with a short message (`end_turn` / `finish_reason: stop`) instead of
+  generating.
+- `/get_server_info` counts both (`refusal_guard`); a request can send `refusal_guard: false` to turn it off.
+
 ## Constrained output
 
 A JSON `response_format` or a `tool_choice` that requires a call (chat; `any`/`tool` on Anthropic Messages) is

@@ -120,11 +120,11 @@ def test_tool_history_translates_in_order():
         {'role': 'assistant', 'content': [{'type': 'text', 'text': 'Checking.'}], 'reasoning_content': 'Call the tool.',
          'tool_calls': [{'id': 'toolu_1', 'type': 'function', 'function': {'name': 'get_weather', 'arguments': {'city': 'Paris'}}},
                         {'id': 'toolu_2', 'type': 'function', 'function': {'name': 'get_weather', 'arguments': {'city': 'Rome'}}}]},
-        {'role': 'tool', 'tool_call_id': 'toolu_1', 'content': 'sunny'},
-        {'role': 'tool', 'tool_call_id': 'toolu_2', 'content': [{'type': 'text', 'text': 'no '}, {'type': 'text', 'text': 'data'}]},
+        {'role': 'tool', 'tool_call_id': 'toolu_1', 'content': 'sunny', 'is_error': False},
+        {'role': 'tool', 'tool_call_id': 'toolu_2', 'content': [{'type': 'text', 'text': 'no '}, {'type': 'text', 'text': 'data'}], 'is_error': True},
         {'role': 'user', 'content': [{'type': 'text', 'text': 'and tomorrow?'}]},
         {'role': 'user', 'content': [{'type': 'text', 'text': 'first'}]},
-        {'role': 'tool', 'tool_call_id': 'x', 'content': ''},
+        {'role': 'tool', 'tool_call_id': 'x', 'content': '', 'is_error': False},
     ]
     assert tmpl.render.call_args.kwargs['tools'] == [{'type': 'function', 'function': {
         'name': 'get_weather', 'description': 'Weather for a city', 'parameters': TOOLS[0]['input_schema']}}]
