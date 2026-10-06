@@ -27,7 +27,7 @@ Status: `todo`, `doing`, `done`, `parked`, `decide` (needs a decision before wor
 |---|---|---|---|
 | Forced tool choice and structured output with speculation | #16 | done | Merged in #113: JSON schema / JSON object / forced tool calls (chat and Messages) as xgrammar masks on sampling and on the verified rows, speculation on; 49/49 valid on each target, decode speed within noise of unconstrained. |
 | OpenAI Responses API (Codex) | #19 | parked | Built and tested on `feat/responses-api` (#111, closed 2026-10-05): `/v1/responses` on the chat path and `sharar-ctl launch codex`, Codex 0.153 passing both tasks on both targets. Parked: Codex is not a target for now. |
-| Claude Code session on Flash-Next end to end | #11 | todo | |
+| Claude Code session on Flash-Next end to end | #11 | done | 2026-10-06, [targets.md](targets.md): a 5-turn Claude Code session on click passes 30/30 upstream tests on both targets (Flash-Next 19 min, 27B 31 min). Found and fixed: an omitted Messages temperature was greedy (#115), and the 27B's sampled thinking looped under relaxed acceptance at 3:2.0, now 2:1.0 (#115, #116). |
 | Tool-call parsing hardened on real agent runs | relates to #28 | todo | Use sharar-eval `agentic` (Terminal-Bench) transcripts as the regression set. #108 (retrying a refused tool call; 4/4 on the 27B `fast` profile) fixed in PR #114 with a refusal guard. |
 | Tested harness matrix in the README | none | todo | Claude Code, Codex, OpenCode, Aider, Cline, Continue, Zed, Pi: works / known issues. |
 
