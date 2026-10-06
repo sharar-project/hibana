@@ -44,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-16 (default: SHARAR_MAX_BATCH, else 4; the throughput profile sets 16)")
     p_serve.add_argument("--spec-depths", default=None, help="verify depth per batch bucket as BUCKET:DEPTH pairs, e.g. 8:1,16:0 (0: plain decode; default: SHARAR_SPEC_DEPTHS, else --spec everywhere)")
     p_serve.add_argument("--accept-default-sampled", action="store_true", default=None, help="also apply the relaxed acceptance default to sampled requests (default: SHARAR_ACCEPT_DEFAULT_SAMPLED=1, else greedy only)")
+    p_serve.add_argument("--accept-default-sampled-threshold", default=None, help="with --accept-default-sampled, the K:M sampled requests get instead of --accept-default's (default: SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD)")
     p_serve.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests that do not set accept_top_k/accept_margin, as K:M (default: SHARAR_ACCEPT_DEFAULT, else 2:1.0); 'off' keeps every request exact")
     p_traces = sub.add_parser("traces", help="summarize a request trace directory")
     p_traces.add_argument("--dir", default=None, help="trace directory (default: SHARAR_TRACES)")
@@ -134,8 +135,17 @@ def main(argv: list[str] | None = None) -> int:
             accept_default = parse_accept_default(args.accept_default if args.accept_default is not None else cfg.accept_default)
         except ValueError as exc:
             parser.error(str(exc))
+        accept_default_sampled = bool(args.accept_default_sampled if args.accept_default_sampled is not None else cfg.accept_default_sampled)
+        sampled_threshold = args.accept_default_sampled_threshold or cfg.accept_default_sampled_threshold
+        if accept_default_sampled and sampled_threshold:
+            try:
+                accept_default_sampled = parse_accept_default(sampled_threshold)
+            except ValueError as exc:
+                parser.error(str(exc))
+            if accept_default_sampled == (1, 0.0):
+                accept_default_sampled = False
         if not args.spec:
-            accept_default = (1, 0.0)  # no speculation, nothing to relax
+            accept_default, accept_default_sampled = (1, 0.0), False  # no speculation, nothing to relax
         max_context = args.context_length if args.context_length is not None else cfg.max_context
         from sharar.engine.profile import MAX_CONTEXT
         if max_context is not None and not 2 <= max_context <= MAX_CONTEXT:
@@ -146,11 +156,12 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--max-batch must be in [1, {MAX_BATCH}]")
         spec_depths = args.spec_depths if args.spec_depths is not None else cfg.spec_depths
         target = args.target or cfg.target
-        accept_default_sampled = bool(args.accept_default_sampled if args.accept_default_sampled is not None else cfg.accept_default_sampled)
         # One configuration for the process: the environment with the command line applied (#44).
         engine_config.install(cfg.replace(spec=str(args.spec), traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
                                           target=target, max_context=max_context, accept_default=f"{accept_default[0]}:{accept_default[1]}",
-                                          accept_default_sampled=accept_default_sampled, max_batch=max_batch,
+                                          accept_default_sampled=bool(accept_default_sampled), max_batch=max_batch,
+                                          accept_default_sampled_threshold=(f"{accept_default_sampled[0]}:{accept_default_sampled[1]}"
+                                                                            if isinstance(accept_default_sampled, tuple) else None),
                                           spec_depths=spec_depths if args.spec else None))
         from sharar.api.server import serve
         serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state,

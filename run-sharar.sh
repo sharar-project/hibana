@@ -32,7 +32,8 @@ MAX_CONTEXT="${SHARAR_MAX_CONTEXT:-262144}"   # prompt plus output per request, 
 MAX_BATCH="${SHARAR_MAX_BATCH:-$P_MAX_BATCH}"       # most requests decoded together, 1-16
 SPEC_DEPTHS="${SHARAR_SPEC_DEPTHS:-$P_SPEC_DEPTHS}"  # verify depth per batch bucket, e.g. 8:7,16:3 (0: plain decode; empty: SHARAR_SPEC everywhere)
 ACCEPT_DEFAULT="${SHARAR_ACCEPT_DEFAULT:-$P_ACCEPT}"      # relaxed acceptance for greedy requests that do not choose (K:M; off = exact)
-ACCEPT_DEFAULT_SAMPLED="${SHARAR_ACCEPT_DEFAULT_SAMPLED:-$P_ACCEPT_SAMPLED}"  # the same default for sampled requests (1/0)
+ACCEPT_DEFAULT_SAMPLED="${SHARAR_ACCEPT_DEFAULT_SAMPLED:-$P_ACCEPT_SAMPLED}"  # relaxed acceptance for sampled requests too (1/0)
+ACCEPT_DEFAULT_SAMPLED_THRESHOLD="${SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD:-$P_ACCEPT_SAMPLED_THRESHOLD}"  # their K:M (empty: ACCEPT_DEFAULT's)
 DEVICE_ACCEPT="${SHARAR_DEVICE_ACCEPT:-$P_DEVICE_ACCEPT}"  # device-resident acceptance graphs (engine/accept_graphs.py; 1/0)
 W3_DECODE="${SHARAR_W3_DECODE:-$P_W3}"   # calibrated 3-bit decode copies for calls of at most 64 rows (1/0; the profile decides)
 W3_CHECKPOINT="${SHARAR_W3_CHECKPOINT:-auto}" # where they live: auto ($SHARAR_RESULTS/w3-checkpoints/<target>-current, fetched on first serve) or a directory
@@ -187,7 +188,7 @@ Sharar preflight OK
   Device-resident acceptance: $(onoff "$DEVICE_ACCEPT") (SHARAR_DEVICE_ACCEPT; the fast profile turns it on for Flash-Next)
   Serving profile: $PROFILE (SHARAR_PROFILE: exact / balanced / fast / throughput; measured costs in docs/optimizations.md#serving-profiles)
   Batch: up to $MAX_BATCH requests (SHARAR_MAX_BATCH), verify depth by batch ${SPEC_DEPTHS:-$SPEC everywhere} (SHARAR_SPEC_DEPTHS)
-  Relaxed acceptance default: $ACCEPT_DEFAULT, sampled requests $(onoff "$ACCEPT_DEFAULT_SAMPLED") (requests may set accept_top_k/accept_margin; 1 = exact)
+  Relaxed acceptance default: $ACCEPT_DEFAULT, sampled requests $(onoff "$ACCEPT_DEFAULT_SAMPLED")${ACCEPT_DEFAULT_SAMPLED_THRESHOLD:+ at $ACCEPT_DEFAULT_SAMPLED_THRESHOLD} (requests may set accept_top_k/accept_margin; 1 = exact)
   Three-bit decode copies: $(onoff "$W3_DECODE")$([[ "$W3_DECODE" == 1 ]] && echo ", ${W3_CHECKPOINT:-nearest rounding from the pinned serving weights}") (SHARAR_W3_DECODE, SHARAR_W3_CHECKPOINT)
   Draft: $([[ "$PROPOSER" == mtp ]] && echo "the model's own MTP head" || echo "${DRAFT_DIR:-pinned $DRAFT_REPO@${DRAFT_REVISION:0:7}}")
 EOT
@@ -223,9 +224,16 @@ if [[ "$ACCEPT_DEFAULT" != "2:1.0" ]]; then
   serve_args+=(--accept-default "$ACCEPT_DEFAULT")
 fi
 if [[ "$ACCEPT_DEFAULT_SAMPLED" == 1 && "$ACCEPT_DEFAULT" != off ]]; then
-  docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--accept-default-sampled" \
+  serve_help="$(docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null)"
+  grep -q -- "--accept-default-sampled" <<<"$serve_help" \
     || fail "image $IMAGE predates --accept-default-sampled; rebuild with docker/build.sh or unset SHARAR_ACCEPT_DEFAULT_SAMPLED"
-  serve_args+=(--accept-default-sampled)
+  if [[ -z "$ACCEPT_DEFAULT_SAMPLED_THRESHOLD" ]]; then
+    serve_args+=(--accept-default-sampled)
+  elif grep -q -- "--accept-default-sampled-threshold" <<<"$serve_help"; then
+    serve_args+=(--accept-default-sampled --accept-default-sampled-threshold "$ACCEPT_DEFAULT_SAMPLED_THRESHOLD")
+  else  # an image older than the threshold: sampled requests stay exact rather than get the greedy threshold
+    echo "  WARNING: image $IMAGE predates --accept-default-sampled-threshold; sampled requests stay exact (pull or rebuild the image)"
+  fi
 fi
 if [[ "$MAX_CONTEXT" != 32768 ]]; then
   docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help 2>/dev/null | grep -q -- "--context-length" \
