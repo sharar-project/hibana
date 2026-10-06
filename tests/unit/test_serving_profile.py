@@ -36,7 +36,8 @@ def test_an_explicit_device_acceptance_setting_wins(explicit):
 def test_profile_knobs_are_unchanged():
     assert {k: resolve("exact")[k] for k in KNOBS[:3]} == dict(zip(KNOBS, ("off", "0", "0")))
     assert {k: resolve("balanced")[k] for k in KNOBS[:3]} == dict(zip(KNOBS, ("2:1.0", "0", "1")))
-    assert {k: resolve("fast")[k] for k in KNOBS[:3]} == dict(zip(KNOBS, ("3:2.0", "1", "1")))
+    assert {k: resolve("fast")[k] for k in KNOBS[:3]} == dict(zip(KNOBS, ("3:2.0", "0", "1")))
+    assert {k: resolve("fast", "flashnext")[k] for k in KNOBS[:3]} == dict(zip(KNOBS, ("3:2.0", "1", "1")))
 
 
 @pytest.mark.parametrize("profile, target, w3", [

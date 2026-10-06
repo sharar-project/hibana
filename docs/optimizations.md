@@ -24,7 +24,7 @@ reports the profile under `config`. **The default is `fast`.**
 | Knob | exact | balanced | fast (default) | throughput |
 |---|---|---|---|---|
 | Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-2 within 1.0 logit | top-3 within 2.0 logits | as fast |
-| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`) | off | off | on (same threshold) | as fast |
+| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`) | off | off | on for Flash-Next (same threshold); off for the 27B, whose sampled thinking looped to `max_tokens` with it in Claude Code sessions (#11) | as fast |
 | Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; from `SHARAR_W3_CHECKPOINT`, default `$SHARAR_RESULTS/w3-checkpoints/<target>-current`) | off | on for the 27B (layers and draft); off for Flash-Next | on (27B layers and draft, Flash-Next trunk) | as fast |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | off | on for Flash-Next; off for the 27B | as fast |
 | Requests decoded together (`SHARAR_MAX_BATCH`, `sharar serve --max-batch`) | 4 | 4 | 4 | 16 |
