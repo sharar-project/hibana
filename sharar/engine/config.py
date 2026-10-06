@@ -65,6 +65,7 @@ class EngineConfig:
     device_accept: bool = False               # SHARAR_DEVICE_ACCEPT
     accept_default: str = "2:1.0"             # SHARAR_ACCEPT_DEFAULT (greedy requests that set neither field)
     accept_default_sampled: bool = False      # SHARAR_ACCEPT_DEFAULT_SAMPLED
+    accept_default_sampled_threshold: str | None = None  # SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD: K:M for sampled requests (unset: accept_default's)
     qsa_sparse_graphs: bool = True            # SHARAR_QSA_SPARSE_GRAPHS=0: rows past the indexer budget run eagerly
     # --- cache tiers
     cold_tier_gib: float | None = None        # SHARAR_COLD_TIER_GIB (unset: from free memory, capped at 24)
@@ -112,6 +113,7 @@ class EngineConfig:
             device_accept=_flag(e, "SHARAR_DEVICE_ACCEPT"),
             accept_default=e.get("SHARAR_ACCEPT_DEFAULT", "2:1.0"),
             accept_default_sampled=_flag(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED"),
+            accept_default_sampled_threshold=_str(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"),
             qsa_sparse_graphs=e.get("SHARAR_QSA_SPARSE_GRAPHS", "1") != "0",
             cold_tier_gib=float(cold) if cold is not None else None,
             session_dir=_str(e, "SHARAR_SESSION_DIR"),

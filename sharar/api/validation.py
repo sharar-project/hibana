@@ -3,16 +3,20 @@ import math
 from sharar.engine.sampler import InvalidRequest, SamplingParams
 
 # Relaxed acceptance applied to requests that set neither accept_top_k nor
-# accept_margin: greedy ones, and sampled ones when ACCEPT_DEFAULT_SAMPLED;
-# (1, 0.0) means exact. Set once by serve() from --accept-default(-sampled).
+# accept_margin: ACCEPT_DEFAULT to greedy ones, ACCEPT_DEFAULT_SAMPLED to sampled
+# ones; (1, 0.0) means exact. Set once by serve() from --accept-default(-sampled)
+# and --accept-default-sampled-threshold.
 ACCEPT_DEFAULT = (1, 0.0)
-ACCEPT_DEFAULT_SAMPLED = False
+ACCEPT_DEFAULT_SAMPLED = (1, 0.0)
 
 
-def set_accept_default(top_k: int, margin: float, sampled: bool = False) -> None:
+def set_accept_default(top_k: int, margin: float, sampled: bool | tuple[int, float] = False) -> None:
+    """sampled: False keeps sampled requests exact, True gives them the greedy threshold, (K, M) their own."""
     global ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED
-    SamplingParams(accept_top_k=top_k, accept_margin=margin).validate()
-    ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED = (top_k, margin), bool(sampled)
+    threshold = sampled if isinstance(sampled, tuple) else (top_k, margin) if sampled else (1, 0.0)
+    for k, m in ((top_k, margin), threshold):
+        SamplingParams(accept_top_k=k, accept_margin=m).validate()
+    ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED = (top_k, margin), threshold
 
 
 def parse_accept_default(text: str | None) -> tuple[int, float]:
@@ -53,9 +57,10 @@ def _sampling_from(body: dict, max_default: int = 512) -> SamplingParams:
         accept_top_k=integer(body.get("accept_top_k", sp.get("accept_top_k", 1))),
         accept_margin=body.get("accept_margin", sp.get("accept_margin", 0.0)),
     )
+    default = ACCEPT_DEFAULT if params.greedy else ACCEPT_DEFAULT_SAMPLED
     if ("accept_top_k" not in body and "accept_top_k" not in sp and "accept_margin" not in body and "accept_margin" not in sp
-            and (params.greedy or ACCEPT_DEFAULT_SAMPLED) and ACCEPT_DEFAULT != (1, 0.0)):
-        params.accept_top_k, params.accept_margin = ACCEPT_DEFAULT
+            and default != (1, 0.0)):
+        params.accept_top_k, params.accept_margin = default
     params.validate()
     return params
 

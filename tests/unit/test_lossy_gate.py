@@ -75,6 +75,15 @@ def test_overrides_reach_the_in_process_arm():
     assert plan["proposer"] == "dflash2" and plan["spec"] == 15 and plan["draft_precision"] == "fp8"
 
 
+def test_sampled_threshold_reaches_the_in_process_arm_as_serve_records_it():
+    fast = gate.arm_plan(gate.resolve({"SHARAR_DRAFT": "pinned"}, "fast", {}))
+    assert fast["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "1" and fast["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] == "2:1.0"
+    off = gate.arm_plan(gate.resolve({"SHARAR_DRAFT": "pinned"}, "fast", {"SHARAR_ACCEPT_DEFAULT_SAMPLED": "0"}))
+    assert off["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] == ""
+    exact = gate.arm_plan(gate.resolve({"SHARAR_DRAFT": "pinned"}, "fast", {"SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD": "off"}))
+    assert exact["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "0" and exact["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] == ""
+
+
 def test_accept_rule_matches_serve():
     assert gate.accept_rule("off") == "1:0.0"
     assert gate.accept_rule("3:2") == "3:2.0"

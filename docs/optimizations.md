@@ -24,7 +24,7 @@ reports the profile under `config`. **The default is `fast`.**
 | Knob | exact | balanced | fast (default) | throughput |
 |---|---|---|---|---|
 | Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-2 within 1.0 logit | top-3 within 2.0 logits | as fast |
-| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`) | off | off | on for Flash-Next (same threshold); off for the 27B, whose sampled thinking looped to `max_tokens` with it in Claude Code sessions (#11) | as fast |
+| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`; threshold `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`, unset: the greedy one) | off | off | on: Flash-Next at the greedy threshold; the 27B at top-2 within 1.0 logit, because at 3:2.0 its sampled thinking looped to `max_tokens` in Claude Code sessions (#11) | as fast |
 | Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; from `SHARAR_W3_CHECKPOINT`, default `$SHARAR_RESULTS/w3-checkpoints/<target>-current`) | off | on for the 27B (layers and draft); off for Flash-Next | on (27B layers and draft, Flash-Next trunk) | as fast |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | off | on for Flash-Next; off for the 27B | as fast |
 | Requests decoded together (`SHARAR_MAX_BATCH`, `sharar serve --max-batch`) | 4 | 4 | 4 | 16 |
@@ -50,7 +50,8 @@ Measured cost of each lossy option (paired, exact greedy unless noted):
 |---|---|---|
 | Relaxed top-2 / 1.0, greedy (27B) | +9.8% batch one, +5.7% batch four | GSM8K 94.7 vs 95.0, HumanEval 91.5 vs 90.9; judged 13 to 14 with 26 ties |
 | Relaxed top-3 / 2.0, greedy (27B) | +21.6% batch one vs exact; +3.7% h2h median over top-2 | judged 11 to 15 (not significant); 7% of emitted tokens not the argmax |
-| Relaxed, sampled requests (27B, t = 0.6) | +4% | GSM8K-300 96.0 to 94.0, HumanEval 94.5 to 91.5 (pooled 4 better / 15 worse, p about 0.02) |
+| Relaxed, sampled requests (27B, t = 0.6, 2026-09-23, when top-2 / 1.0 was the default) | +4% | GSM8K-300 96.0 to 94.0, HumanEval 94.5 to 91.5 (pooled 4 better / 15 worse, p about 0.02) |
+| Relaxed top-2 / 1.0, sampled (27B, t = 0.7, #11, 2026-10-06) | h2h per prompt x1.10 over exact (18 of 22 faster); top-3 / 2.0 x1.13 | the t = 0.6 row above; in Claude Code at temperature 1 its thinking did not loop (a looped request replayed 0/6 vs 4/6 at top-3 / 2.0; a 5-turn session 30/30 tests, no request at `max_tokens`) |
 | Relaxed top-3 / 2.0, sampled (Flash-Next, t = 0.7, #22) | median 45.6 to 49.1 tok/s (+8%) | GSM8K-200 at t = 0.7 96.5 to 94.0 (SE about 1.5) |
 | 27B calibrated 3-bit copies | decode x1.49 over NVFP4/FP8 (nearest-rounded build), calibrated +8.6% over nearest | full GSM8K 94.5 vs 94.0 exact; HumanEval within noise (layers and draft; the lm_head copy stays off) |
 | Flash-Next device-resident acceptance (#36, 2026-09-28; greedy rounds) | h2h over the default without it (fast): batch one x1.057 [1.035, 1.082], four streams x1.088 [1.078, 1.098]; over the previous engine x1.159 / x1.174 | acceptance unchanged (6.14 to 6.18 emitted per round); outputs not identical to the host path (exact greedy identity 2/44: the draft KV is projected over the whole bucket, so round boundaries move); no accuracy eval yet |

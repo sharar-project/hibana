@@ -92,6 +92,7 @@ BLOCK = 64  # layer-1 bootstrap unit: consecutive continuation positions
 SERVING_PROFILE = REPO / "tools" / "serving-profile.sh"
 PROFILE_NAMES = ("exact", "balanced", "fast", "throughput")
 PROFILE_SETTINGS = {"P_ACCEPT": "SHARAR_ACCEPT_DEFAULT", "P_ACCEPT_SAMPLED": "SHARAR_ACCEPT_DEFAULT_SAMPLED",
+                    "P_ACCEPT_SAMPLED_THRESHOLD": "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD",
                     "P_W3": "SHARAR_W3_DECODE",
                     "P_DEVICE_ACCEPT": "SHARAR_DEVICE_ACCEPT", "P_MAX_BATCH": "SHARAR_MAX_BATCH", "P_SPEC_DEPTHS": "SHARAR_SPEC_DEPTHS"}
 # Settings run-sharar.sh forwards into the container unchanged (when set).
@@ -106,7 +107,8 @@ LAUNCHER_ONLY = {"SHARAR_IMAGE", "SHARAR_CONTAINER", "SHARAR_PORT", "SHARAR_PROP
 # EngineConfig fields the served arm must report exactly as the in-process arm installed them.
 CHECKED = ("target", "profile", "w3_decode", "w3_checkpoint", "stable_numerics", "flashnext_trunk",
            "flashnext_mixers", "flashnext_mtp_trunk", "trunk_keep_bf16", "draft_vocab", "draft_head",
-           "draft_head_rescore", "device_accept", "accept_default", "accept_default_sampled", "qsa_sparse_graphs", "flashnext_experts_sim3")
+           "draft_head_rescore", "device_accept", "accept_default", "accept_default_sampled",
+           "accept_default_sampled_threshold", "qsa_sparse_graphs", "flashnext_experts_sim3")
 
 # Layer-3 stages: the sharar-eval suite each runs and the tasks its verdict reads (the suite's GSM8K-300 is the first
 # three shards of the full set, so the full stage reuses them).
@@ -222,6 +224,12 @@ def arm_plan(env: dict) -> dict:
     cenv = {"SHARAR_PROFILE": env["SHARAR_PROFILE"], "SHARAR_SPEC": str(spec), "SHARAR_ACCEPT_DEFAULT": accept,
             "SHARAR_ACCEPT_DEFAULT_SAMPLED": "1" if env["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "1" and accept != "1:0.0" else "0",
             "SHARAR_W3_DECODE": env["SHARAR_W3_DECODE"]}
+    # sampled requests' own K:M, as `sharar serve` records it: only while they are relaxed (an exact one turns them off)
+    sampled = env.get("SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD") or ""
+    sampled = accept_rule(sampled) if sampled and cenv["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "1" else ""
+    if sampled == "1:0.0":
+        cenv["SHARAR_ACCEPT_DEFAULT_SAMPLED"], sampled = "0", ""
+    cenv["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] = sampled
     mounts = {}
     if env.get("SHARAR_W3_CHECKPOINT"):
         mounts["/w3"] = str(Path(env["SHARAR_W3_CHECKPOINT"]).resolve())

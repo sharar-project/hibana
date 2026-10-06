@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-KNOBS = ("P_ACCEPT", "P_ACCEPT_SAMPLED", "P_W3", "P_DEVICE_ACCEPT", "P_MAX_BATCH", "P_SPEC_DEPTHS")
+KNOBS = ("P_ACCEPT", "P_ACCEPT_SAMPLED", "P_W3", "P_DEVICE_ACCEPT", "P_MAX_BATCH", "P_SPEC_DEPTHS", "P_ACCEPT_SAMPLED_THRESHOLD")
 
 
 def resolve(profile: str, target: str = "", explicit: str | None = None) -> dict:
@@ -36,8 +36,16 @@ def test_an_explicit_device_acceptance_setting_wins(explicit):
 def test_profile_knobs_are_unchanged():
     assert {k: resolve("exact")[k] for k in KNOBS[:3]} == dict(zip(KNOBS, ("off", "0", "0")))
     assert {k: resolve("balanced")[k] for k in KNOBS[:3]} == dict(zip(KNOBS, ("2:1.0", "0", "1")))
-    assert {k: resolve("fast")[k] for k in KNOBS[:3]} == dict(zip(KNOBS, ("3:2.0", "0", "1")))
+    assert {k: resolve("fast")[k] for k in KNOBS[:3]} == dict(zip(KNOBS, ("3:2.0", "1", "1")))
     assert {k: resolve("fast", "flashnext")[k] for k in KNOBS[:3]} == dict(zip(KNOBS, ("3:2.0", "1", "1")))
+
+
+@pytest.mark.parametrize("profile, target, threshold", [
+    ("fast", "", "2:1.0"), ("fast", "qwen38", "2:1.0"), ("throughput", "", "2:1.0"), ("fast", "flashnext", ""),
+    ("throughput", "flashnext", ""), ("balanced", "", ""), ("exact", "", "")])
+def test_the_27b_samples_at_a_tighter_threshold_under_fast(profile, target, threshold):
+    # #11: at 3:2.0 the 27B's sampled thinking looped to max_tokens in Claude Code sessions, at 2:1.0 it did not
+    assert resolve(profile, target)["P_ACCEPT_SAMPLED_THRESHOLD"] == threshold
 
 
 @pytest.mark.parametrize("profile, target, w3", [
@@ -57,6 +65,8 @@ def test_launcher_uses_the_shared_profile_table():
     assert 'source "$SCRIPT_DIR/tools/serving-profile.sh"' in text
     assert 'DEVICE_ACCEPT="${SHARAR_DEVICE_ACCEPT:-$P_DEVICE_ACCEPT}"' in text
     assert 'args+=(--env "SHARAR_DEVICE_ACCEPT=$DEVICE_ACCEPT")' in text
+    assert 'ACCEPT_DEFAULT_SAMPLED_THRESHOLD="${SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD:-$P_ACCEPT_SAMPLED_THRESHOLD}"' in text
+    assert '--accept-default-sampled-threshold "$ACCEPT_DEFAULT_SAMPLED_THRESHOLD"' in text
 
 
 @pytest.mark.parametrize("target, depths", [("flashnext", "16:3"), ("", ""), ("qwen38", "")])
