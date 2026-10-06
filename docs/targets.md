@@ -15,9 +15,9 @@ output faster on short prompts, downloads and loads faster (26 GB against 135 GB
 One conversation of five turns on [click](https://github.com/pallets/click) at d036881: explain the help
 system, then three upstream changes (f67c2bb, f25f697 + 05f6fd0, 9f0bcdf), then run the whole suite, add
 changelog entries and commit. Graded by the upstream commits' tests over the agent's code: 30 tests fail
-before. Claude Code `-p` with edits and test commands allowed, through `sharar-ctl launch claude`; the
-serving image of main at d3aee34 plus #115/#116 (an omitted temperature is 1.0; the 27B samples at the
-2:1.0 threshold).
+before. Claude Code `-p` with edits and test commands allowed, through `sharar-ctl launch claude`; image 92b2444
+(#115's first commit: an omitted temperature is 1.0), `fast` profile, with the 27B's relaxed acceptance at
+2:1.0 (Claude Code's requests are all sampled, so this is #116's default).
 
 | | 27B | Flash-Next |
 |---|---:|---:|
