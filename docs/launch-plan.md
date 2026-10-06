@@ -19,16 +19,16 @@ Status: `todo`, `doing`, `done`, `parked`, `decide` (needs a decision before wor
 | `sharar serve 27b` / `sharar serve flashnext` | none | done | Merged in #103 (2026-10-05): `sharar-ctl serve 27b|flashnext` (stop/status/logs/chat follow the serving target); settings in `config/targets/<target>.env`; `config/gb10.env` optional; `config/flashnext.env` removed. |
 | Automatic weight download | none | done | Merged in #103: missing pinned snapshots (model and drafter) are downloaded after a free-disk check; tested from an empty cache with no config (27B: 26 GB plus the 3-bit checkpoint, 19 min to launch). Flash-Next is 135 GB. |
 | Preflight for any GB10 machine | none | done | The launcher's preflight covers the blocking checks (GPU, driver, memory, disk before downloads, image login hint) and, with #107, Docker access and user systemd with their fixes. A full one-report `sharar-ctl doctor` (machine vendor, every check at once) is parked on `feat/doctor` (#106, closed) for the public launch. |
-| `sharar launch claude\|codex\|opencode\|aider\|...` | none | doing | PR #109: `sharar-ctl launch claude|opencode|aider|show`, each agent with its own config for the serving target; all three fixed a bug end to end on the 27B (8-14 s). Codex waits for #19. Found #108: the model retries a denied tool call instead of stopping. |
+| `sharar launch claude\|codex\|opencode\|aider\|...` | none | done | Merged in #109: `sharar-ctl launch claude|opencode|aider|show`, each agent with its own config. Matrix (both targets, fast profile, 3-bit weights): Claude Code, OpenCode and Aider pass a bug fix and a multi-file change. #109 also fixed chat requests without `max_tokens` being cut at 512 tokens (Aider). |
 
 ## 2. Agent harnesses that work every time
 
 | Item | Issue | Status | Notes |
 |---|---|---|---|
-| Forced tool choice and structured output with speculation | #16 | todo | |
-| OpenAI Responses API (Codex) | #19 | todo | Codex cannot use Sharar without it. |
+| Forced tool choice and structured output with speculation | #16 | done | Merged in #113: JSON schema / JSON object / forced tool calls (chat and Messages) as xgrammar masks on sampling and on the verified rows, speculation on; 49/49 valid on each target, decode speed within noise of unconstrained. |
+| OpenAI Responses API (Codex) | #19 | parked | Built and tested on `feat/responses-api` (#111, closed 2026-10-05): `/v1/responses` on the chat path and `sharar-ctl launch codex`, Codex 0.153 passing both tasks on both targets. Parked: Codex is not a target for now. |
 | Claude Code session on Flash-Next end to end | #11 | todo | |
-| Tool-call parsing hardened on real agent runs | relates to #28 | todo | Use sharar-eval `agentic` (Terminal-Bench) transcripts as the regression set. Also #108: retries of a denied tool call (753 in one Claude Code run). |
+| Tool-call parsing hardened on real agent runs | relates to #28 | todo | Use sharar-eval `agentic` (Terminal-Bench) transcripts as the regression set. #108 (retrying a refused tool call; 4/4 on the 27B `fast` profile) fixed in PR #114 with a refusal guard. |
 | Tested harness matrix in the README | none | todo | Claude Code, Codex, OpenCode, Aider, Cline, Continue, Zed, Pi: works / known issues. |
 
 ## 3. Agent-shaped speed: long prompts, short answers
