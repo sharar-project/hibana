@@ -26,7 +26,7 @@ Admission also checks the output budget and speculative scratch capacity.
 | `messages` | Nonempty conversation rendered with the pinned snapshot template |
 | `stream` | Server-sent events ending with `[DONE]` |
 | `max_tokens` / `max_completion_tokens` | Requested output budget |
-| `temperature`, `top_p`, `top_k`, `seed` | Validated sampling parameters |
+| `temperature`, `top_p`, `top_k`, `seed` | Validated sampling parameters. An omitted `temperature` is OpenAI's 1.0 (with top_p 0.95 and top_k 20, the models' own generation config); send `temperature: 0` for greedy. OpenCode sends no sampling fields, and greedy thinking looped until `max_tokens` in its runs. `/v1/completions` and `/generate` keep greedy as their default |
 | `stop` | A nonempty string or list of nonempty stop strings |
 | `n` | 1 to 16 choices (non-streaming). The prompt is prefilled once by a one-token primer and published to the prefix cache; the n samples resume from it (at most 64 tokens re-prefilled each) and decode side by side, four at a time. With a `seed`, choice i uses seed + i; use a temperature above 0 for distinct choices |
 | `chat_template_kwargs.enable_thinking` | Thinking defaults to true; false disables it |

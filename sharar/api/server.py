@@ -388,6 +388,10 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         # Without max_tokens (or max_completion_tokens) a reply may run to the end of the context window, as in the
         # OpenAI API, vLLM and SGLang: a fixed default cut off clients that leave it unset (Aider) mid-thought.
         limit = describe.get("context_length", targets.DEFAULT_TARGET.context_length)
+        if "temperature" not in body and "temperature" not in (body.get("sampling_params") or {}):
+            # OpenAI's default temperature, and both targets' generation_config (top_p 0.95 and top_k 20 are the
+            # defaults). OpenCode sends no sampling fields; greedy thinking looped to max_tokens in its runs (#28).
+            body = {**body, "temperature": 1.0}
         params = _sampling_from(body, max_default=max(1, limit - len(ids)))
         if spec is not None:
             params.constraint = await asyncio.to_thread(_constraint, spec, tools, in_reasoning)

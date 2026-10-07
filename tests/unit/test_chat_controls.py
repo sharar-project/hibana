@@ -121,3 +121,25 @@ def test_forced_tool_choice_and_json_format_cannot_combine_and_bad_schemas_are_r
         path='/v1/chat/completions', grammars=grammars)
     assert response.status_code == 400 and 'schema' in response.json()['error']['message']
     engine.submit.assert_not_awaited()
+
+
+@pytest.mark.parametrize('body, expected', [
+    ({}, (1.0, False)),                                    # no sampling fields (OpenCode): OpenAI's temperature 1
+    ({'temperature': 0}, (0.0, True)),                     # an explicit 0 stays greedy
+    ({'temperature': 0.6}, (0.6, False)),
+    ({'sampling_params': {'temperature': 0}}, (0.0, True)),
+])
+def test_chat_default_temperature_is_openais(body, expected):
+    async def scenario():
+        queue = asyncio.Queue()
+        queue.put_nowait(([2], True, 'stop'))
+        engine = SimpleNamespace(submit=AsyncMock(return_value=SimpleNamespace(queue=queue, req=SimpleNamespace(prefix_len=0))), cancel=Mock())
+        tok = SimpleNamespace(encode=Mock(return_value=[1]), decode=lambda ids, **kwargs: 'ok')
+        app = create_app(engine, tok, SimpleNamespace(render=Mock(return_value='prompt')), {})
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+            response = await client.post('/v1/chat/completions', json={'messages': [{'role': 'user', 'content': 'hello'}], **body})
+        assert response.status_code == 200
+        params = engine.submit.await_args.args[1]
+        assert (params.temperature, params.greedy) == expected
+        assert (params.top_p, params.top_k) == (0.95, 20)
+    asyncio.run(scenario())
