@@ -144,7 +144,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         Content is held back once a tool call starts; the final step carries
         the parsed calls, with reason "tool_calls" when there are any. Returns
         early when the client disconnects; raises EngineUnavailable on engine failure."""
-        rp = ReasoningParser(in_reasoning)
+        rp = ReasoningParser(in_reasoning, tools=bool(tools))
         out: list[int] = []
         buffered_tool = ""
         while True:
@@ -695,7 +695,7 @@ def _tool_arguments_as_objects(messages: list[dict]) -> list[dict]:
 
 def _split_chat(text: str, in_reasoning: bool, tools: list | None) -> tuple[str, str, list[dict]]:
     """Complete chat output as (reasoning, content, tool_calls)."""
-    rp = ReasoningParser(in_reasoning)
+    rp = ReasoningParser(in_reasoning, tools=bool(tools))
     rp.feed(text)
     rp.finish()
     content, calls = (parse_tool_calls(rp.content, tools) if tools else (rp.content, []))

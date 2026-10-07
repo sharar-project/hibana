@@ -669,3 +669,41 @@ def test_effort_reaches_the_rendered_prompt(snapshot):
 
     assert 'Reasoning effort is set to low.' in asyncio.run(scenario({'output_config': {'effort': 'low'}}))
     assert 'Reasoning effort is set to xhigh.' in asyncio.run(scenario({'output_config': {'effort': 'high'}}))
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_tool_call_in_unclosed_thinking_is_a_tool_use(stream):
+    """#120: the model ends its turn inside thinking with a complete call in it; the client still gets the call."""
+    output = '\nLet me check.\n\n' + CALL
+    response, _, _ = post(body(stream=stream, tools=TOOLS, thinking={'type': 'enabled', 'budget_tokens': 1024}), output, chunk=2)
+    if stream:
+        events = sse_events(response.text)
+        deltas = [e['delta'] for e in events if e['type'] == 'content_block_delta']
+        assert ''.join(d.get('thinking', '') for d in deltas).strip() == 'Let me check.'
+        assert json.loads(''.join(d.get('partial_json', '') for d in deltas)) == {'city': 'Paris', 'days': 2}
+        assert events[-2]['delta']['stop_reason'] == 'tool_use'
+    else:
+        result = response.json()
+        assert [b['type'] for b in result['content']] == ['thinking', 'tool_use'] and result['stop_reason'] == 'tool_use'
+        assert result['content'][1]['input'] == {'city': 'Paris', 'days': 2}
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_chat_tool_call_in_unclosed_reasoning_is_a_tool_call(stream):
+    openai_tools = [{'type': 'function', 'function': {'name': t['name'], 'parameters': t['input_schema']}} for t in TOOLS]
+    payload = {'model': 'sharar', 'stream': stream, 'tools': openai_tools, 'chat_template_kwargs': {'enable_thinking': True},
+               'messages': [{'role': 'user', 'content': 'weather?'}]}
+    response, _, _ = post(payload, '\nLet me check.\n\n' + CALL, path='/v1/chat/completions', chunk=2)
+    if stream:
+        chunks = [json.loads(line[len('data: '):]) for line in response.text.splitlines()
+                  if line.startswith('data: ') and line != 'data: [DONE]']
+        deltas = [c['choices'][0]['delta'] for c in chunks if c.get('choices')]
+        args = ''.join(tc['function'].get('arguments') or '' for d in deltas for tc in d.get('tool_calls') or [])
+        finish = [c['choices'][0]['finish_reason'] for c in chunks if c.get('choices') and c['choices'][0]['finish_reason']]
+        assert json.loads(args) == {'city': 'Paris', 'days': 2} and finish == ['tool_calls']
+        assert not ''.join(d.get('content') or '' for d in deltas).strip()
+    else:
+        choice = response.json()['choices'][0]
+        assert choice['finish_reason'] == 'tool_calls' and not (choice['message']['content'] or '').strip()
+        assert json.loads(choice['message']['tool_calls'][0]['function']['arguments']) == {'city': 'Paris', 'days': 2}
+        assert choice['message']['reasoning_content'].strip() == 'Let me check.'
