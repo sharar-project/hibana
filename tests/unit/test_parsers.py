@@ -1,3 +1,5 @@
+import pytest
+
 from sharar.api.parsers.reasoning import ReasoningParser
 from sharar.api.parsers.tools import parse_tool_calls
 
@@ -34,3 +36,35 @@ def test_tool_call_parse_with_schema_casts():
 def test_no_tool_call_passthrough():
     content, calls = parse_tool_calls("plain answer", None)
     assert content == "plain answer" and calls == []
+
+
+CALL = "<tool_call>\n<function=Bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>"
+
+
+def feed_all(p, text, size):
+    out = [p.feed(text[i:i + size]) for i in range(0, len(text), size)] + [p.finish()]
+    return "".join(r for r, _ in out), "".join(c for _, c in out)
+
+
+@pytest.mark.parametrize("size", [1, 3, 1000])
+def test_tool_call_in_unclosed_reasoning_is_content(size):
+    """#120: the turn ends inside reasoning with a complete call; the call is content, the rest stays reasoning."""
+    p = ReasoningParser(in_reasoning=True, tools=True)
+    assert feed_all(p, "Check the files.\n\n" + CALL, size) == ("Check the files.\n\n", CALL)
+    assert (p.reasoning, p.content) == ("Check the files.\n\n", CALL)
+
+
+@pytest.mark.parametrize("size", [1, 3, 1000])
+def test_tool_call_drafted_in_closed_reasoning_stays_reasoning(size):
+    p = ReasoningParser(in_reasoning=True, tools=True)
+    text = "Maybe " + CALL + " no.</think>\n\nDone."
+    assert feed_all(p, text, size) == ("Maybe " + CALL + " no.", "\n\nDone.")
+
+
+@pytest.mark.parametrize("tools,text", [
+    (False, "Thinking " + CALL),                        # no tools offered: the old behaviour
+    (True, "Thinking <tool_call>\n<function=Bash>"),    # cut off mid-call (max_tokens): still reasoning
+])
+def test_unclosed_reasoning_otherwise_stays_reasoning(tools, text):
+    p = ReasoningParser(in_reasoning=True, tools=tools)
+    assert feed_all(p, text, 2) == (text, "")
