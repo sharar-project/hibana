@@ -130,6 +130,23 @@ def test_tool_history_translates_in_order():
         'name': 'get_weather', 'description': 'Weather for a city', 'parameters': TOOLS[0]['input_schema']}}]
 
 
+@pytest.mark.parametrize('stream', [False, True])
+def test_media_in_a_tool_result_becomes_a_note(stream):
+    """#121: an image a tool returned (Claude Code reading a PNG) is a text note, not a 400 that ends the session.
+    Media the user sends is still rejected (test_invalid_requests_return_anthropic_errors)."""
+    turns = [{'role': 'user', 'content': 'what is on the board?'},
+             {'role': 'assistant', 'content': [{'type': 'tool_use', 'id': 'toolu_1', 'name': 'Read', 'input': {'path': 'board.png'}}]},
+             {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'toolu_1', 'content': [
+                 {'type': 'text', 'text': 'board.png:'}, {'type': 'image', 'source': {'type': 'base64', 'data': 'iVBOR'}},
+                 {'type': 'document', 'source': {}}]}]}]
+    response, _, tmpl = post(body(messages=turns, stream=stream), 'I cannot see images.')
+    assert response.status_code == 200
+    assert rendered_messages(tmpl)[-1] == {'role': 'tool', 'tool_call_id': 'toolu_1', 'is_error': False, 'content': [
+        {'type': 'text', 'text': 'board.png:'},
+        {'type': 'text', 'text': '[image omitted: this model reads text only and cannot see it]'},
+        {'type': 'text', 'text': '[document omitted: this model reads text only and cannot see it]'}]}
+
+
 def test_cache_breakpoints_and_server_tools_are_recorded():
     request = messages_api.parse_request({
         'system': [{'type': 'text', 'text': 'a'}, {'type': 'text', 'text': 'b', 'cache_control': {'type': 'ephemeral'}}],
@@ -223,8 +240,6 @@ def test_model_is_echoed():
     (body(messages=[{'role': 'tool', 'content': 'x'}]), 'role'),
     (body(messages=[{'role': 'user', 'content': [{'type': 'image', 'source': {}}]}]), 'text-only'),
     (body(messages=[{'role': 'user', 'content': [{'type': 'document', 'source': {}}]}]), 'text-only'),
-    (body(messages=[{'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'a',
-                                                  'content': [{'type': 'image', 'source': {}}]}]}]), 'text-only'),
     (body(system=[{'type': 'image', 'source': {}}]), 'text-only'),
     (body(messages=[{'role': 'user', 'content': [{'type': 'search_result'}]}]), "'search_result'"),
     (body(messages=[{'role': 'user', 'content': [{'type': 'tool_use', 'name': 'x', 'input': {}}]}]), "'tool_use'"),
