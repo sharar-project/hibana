@@ -7,13 +7,16 @@ import torch
 from sharar.kernels import ops
 from sharar.kernels.nvfp4_quant import silu_mul_nvfp4_quantize
 from sharar.weights.modelopt import Nvfp4Linear, load_nvfp4_linear
+from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 from sharar.weights.safetensors import SnapshotWeights
 
 
 class Mlp:
-    def __init__(self, w: SnapshotWeights, prefix: str, device: torch.device, fused_silu_quant: bool = True):
-        self.gate_up: Nvfp4Linear = load_nvfp4_linear(w, [f"{prefix}.gate_proj", f"{prefix}.up_proj"], device)
-        self.down: Nvfp4Linear = load_nvfp4_linear(w, [f"{prefix}.down_proj"], device)
+    def __init__(self, w: SnapshotWeights, prefix: str, device: torch.device, intermediate_size: int, fused_silu_quant: bool = True):
+        """`intermediate_size`: this rank's MLP columns (gate|up column-parallel, down row-parallel)."""
+        self.gate_up: Nvfp4Linear = load_nvfp4_linear(w, [f"{prefix}.gate_proj", f"{prefix}.up_proj"], device,
+                                                       ColumnParallel((intermediate_size, intermediate_size)))
+        self.down: Nvfp4Linear = load_nvfp4_linear(w, [f"{prefix}.down_proj"], device, ROW_PARALLEL)
         self.fused_silu_quant = fused_silu_quant
         self._down_scale_inv_1d = self.down.input_scale_inv.reshape(1)
         self._masked_m: dict[int, torch.Tensor] = {}

@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from sharar.distributed import div_even
 from sharar.engine.profile import DEFAULT_PROFILE, ServingProfile
 from sharar.hardware.gb10 import COMPUTE_CAPABILITY, GPU_NAME, MIN_DRIVER_MAJOR, MIN_TOTAL_MEMORY_KIB
 
@@ -82,6 +83,17 @@ class Target:
     def __post_init__(self):
         if len(self.layer_types) != self.num_layers or any(t not in ("full_attention", "linear_attention") for t in self.layer_types):
             raise ValueError("layer_types must name every layer as full_attention or linear_attention")
+
+    def shard(self, size: int) -> Target:
+        """One tensor-parallel rank's share of `size`: attention and linear-attention heads and the MLP width are
+        per rank (what its pools, kernels and graphs size from); the hidden size and vocabulary stay whole."""
+        if size == 1:
+            return self
+        return replace(self, num_attention_heads=div_even(self.num_attention_heads, size),
+                       num_kv_heads=div_even(self.num_kv_heads, size),
+                       linear_num_key_heads=div_even(self.linear_num_key_heads, size),
+                       linear_num_value_heads=div_even(self.linear_num_value_heads, size),
+                       intermediate_size=div_even(self.intermediate_size, size))
 
     # ---- derived geometry ----
     @property
