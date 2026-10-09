@@ -74,7 +74,7 @@ class FlashNext:
         self.full_target = target
         self._extras = None
         self.precision = precision or current().flashnext_trunk  # bf16 | fp8
-        check_load_headroom(target.weight_load_peak_bytes)
+        check_load_headroom(target.weight_load_peak_bytes // tp.size)  # the experts dominate, and each rank loads its half
         self.device = torch.device(device)
         cfg = target.load_model_config(snap)
         types = target.layer_types_of(cfg)

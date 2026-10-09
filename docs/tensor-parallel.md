@@ -160,6 +160,23 @@ the ranks exchange their best eight, and the rank holding each candidate's FP8 r
 whole-vocabulary shortlist head's (`./sharar-tp draft-head`: identical picks at 1 to 20 rows, graphed too) at
 0.72 ms per draft step instead of 1.17.
 
+### Flash-Next results (2026-10-09, `fast` profile, same checkout and venv on one Spark and on two)
+
+| | One Spark | Two Sparks |
+|---|---:|---:|
+| Weights per rank / bytes per decode token | 70.3 GiB / 5.74 GB | 36.3 GiB / 3.29 GB |
+| Single stream, median of seven prompts (`profiling/tp_serve_bench.py`) | 73.5 tok/s | 99.0 tok/s (x1.35) |
+| Four / sixteen concurrent requests, aggregate | 147.6 / 136.1 tok/s | 198.7 / 199.3 tok/s |
+| Long prompts, time to first token | 4.7-5.9 s | 3.8-4.8 s |
+| Round: draft / verify / accept (ms, synchronized timers) | 8.3 / 46.5 / 1.7 | 7.0 / 34.5 / 1.2 |
+
+Verification scales less than the bytes do. On one Spark a round's kernel time is about 25 ms of routed experts
+(the fused MoE has a fixed cost per call: half the columns take 0.6 of the time at five rows), 22 ms of GEMV/GEMM
+(the hyper-connection mixers and the BF16 router replicated; small GEMVs at half width keep part of their cost)
+and 7.5 ms of norms and elementwise kernels, which are launch-bound and replicated; that predicts the measured 34.5
+ms. Communication is about 1 ms a round (every all-reduce on NCCL, three times slower each, adds 1.9 ms). The next
+gains are kernel fusion of the elementwise work and the MoE kernel's fixed cost, which help one Spark as well.
+
 ## Limits
 
 - The 27B with the parallel drafts (DFlash2, DSpark) or n-gram speculation, not MTP; Flash-Next with MTP. A reduced

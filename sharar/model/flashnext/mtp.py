@@ -58,7 +58,7 @@ class FlashNextMtpHead:
         self.mlp_hc = HyperConnection.load(w, f"{p}.mlp_hyper_connection", self.hc, self.hidden_size, eps, device, precision=mixers)
         self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", self.hc, self.hidden_size, eps, device, combine=False, precision=mixers)
         self.ragged = ops.RaggedAttention(device, t.num_attention_heads, t.num_kv_heads, t.head_dim)
-        self.attn = FlashNextAttention(w, f"{p}.self_attn", 0, device, self.rope, self.ragged, t, precision)
+        self.attn = FlashNextAttention(w, f"{p}.self_attn", 0, device, self.rope, self.ragged, t, precision, sharded=False)
         # Routed experts, fused [E, 2I, H] (gate rows then up rows) and [E, H, I]: stored FP8 with one
         # scale per expert matrix, upcast per token for the ten gathered experts (5.2 GB BF16 would not
         # fit beside the target on the GB10); loaded expert by expert to avoid a 3.4 GB host temporary.
