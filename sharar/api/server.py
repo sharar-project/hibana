@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from jinja2 import TemplateError
 
 from sharar import target as targets
+from sharar.distributed import get_tp_info
 from sharar.api import messages as messages_api
 from sharar.api import refusal_guard
 from sharar.api.chat_template import ChatTemplate
@@ -736,10 +737,17 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     ex = Executor(model, log=log, spec_config=spec_config, max_context=max_context, max_batch=max_batch)
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
-    ex.enable_cold_tier(log=log)
+    if get_tp_info().size == 1:  # tensor-parallel ranks would park and restore sessions apart
+        ex.enable_cold_tier(log=log)
     cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=ex.profile.max_queued,
                           chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget)
     sched = Scheduler(ex, cfg)
+    if not get_tp_info().is_primary():
+        log(f"tensor-parallel rank {get_tp_info().rank}: serving the primary rank's requests")
+        engine = EngineLoop(sched, Grammars.from_tokenizer(tok._tok, served.vocab_size, SamplingParams().stop_token_ids))
+        engine.start()
+        engine.thread.join()
+        return
     sink = None
     if traces:
         from sharar.engine.traces import TraceSink
@@ -758,6 +766,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "w3_target_identity": getattr(model, "w3_identity", None),
         "w3_warning": current().w3_warning,
         "context_length": ex.max_context,
+        "tp_size": get_tp_info().size,
         "max_running_requests": cfg.max_running,
         "max_queued_requests": cfg.max_queued,
         "chunked_prefill_size": cfg.chunk_size,

@@ -7,6 +7,9 @@ import json
 import os
 import sys
 
+from sharar import target as targets
+from sharar.distributed import broadcast_pyobj, close_distributed, init_distributed
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sharar")
@@ -46,6 +49,9 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--accept-default-sampled", action="store_true", default=None, help="also apply the relaxed acceptance default to sampled requests (default: SHARAR_ACCEPT_DEFAULT_SAMPLED=1, else greedy only)")
     p_serve.add_argument("--accept-default-sampled-threshold", default=None, help="with --accept-default-sampled, the K:M sampled requests get instead of --accept-default's (default: SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD)")
     p_serve.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests that do not set accept_top_k/accept_margin, as K:M (default: SHARAR_ACCEPT_DEFAULT, else 2:1.0); 'off' keeps every request exact")
+    p_serve.add_argument("--tp", type=int, default=1, help="tensor-parallel ranks, one GPU (Spark) each; rank 0 serves HTTP")
+    p_serve.add_argument("--tp-rank", type=int, default=0, help="this process's tensor-parallel rank")
+    p_serve.add_argument("--tp-address", default=None, help="HOST:PORT on rank 0's host where the ranks meet (required with --tp > 1)")
     p_traces = sub.add_parser("traces", help="summarize a request trace directory")
     p_traces.add_argument("--dir", default=None, help="trace directory (default: SHARAR_TRACES)")
     p_train = sub.add_parser("train", help="fine-tune the DFlash2 drafter on request traces (GPU, nothing else served)")
@@ -118,6 +124,13 @@ def main(argv: list[str] | None = None) -> int:
         from sharar.proposers.factory import MAX_DEPTHS
 
         cfg = engine_config.EngineConfig.from_env()
+        if args.tp > 1:
+            if args.tp_address is None or not 0 <= args.tp_rank < args.tp:
+                parser.error("--tp > 1 needs --tp-address and a --tp-rank below --tp")
+            if cfg.tp_allreduce not in ("rdma", "nccl"):
+                parser.error("SHARAR_TP_ALLREDUCE must be rdma or nccl")
+            init_distributed(args.tp_rank, args.tp, args.tp_address, cfg.tp_allreduce)
+            cfg = broadcast_pyobj(cfg)  # every rank serves with the primary's environment, not its own
         if args.spec is None:
             env = cfg.spec
             args.spec = int(env) if env not in (None, "", "auto") else {"mtp": 3}.get(args.proposer, MAX_DEPTHS[args.proposer])
@@ -156,6 +169,11 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--max-batch must be in [1, {MAX_BATCH}]")
         spec_depths = args.spec_depths if args.spec_depths is not None else cfg.spec_depths
         target = args.target or cfg.target
+        if args.tp > 1:
+            if targets.get(target).family != "qwen38":
+                parser.error("tensor parallel serves the 27B")
+            if args.spec and args.proposer == "mtp":
+                parser.error("tensor parallel serves the parallel drafts or n-gram speculation, not MTP")
         # One configuration for the process: the environment with the command line applied (#44).
         engine_config.install(cfg.replace(spec=str(args.spec), traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
                                           target=target, max_context=max_context, accept_default=f"{accept_default[0]}:{accept_default[1]}",
@@ -169,6 +187,8 @@ def main(argv: list[str] | None = None) -> int:
               accept_default=accept_default, target=target,
               max_context=max_context, max_batch=max_batch,
               accept_default_sampled=accept_default_sampled)
+        if args.tp > 1:
+            close_distributed()
         return 0
     if args.command == "train":
         import os

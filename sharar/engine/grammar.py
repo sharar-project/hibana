@@ -20,9 +20,10 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
+import xgrammar as xgr
 
 ROLLBACK = 64  # drafted tokens a walk may take back (a verify block is at most 16)
 log = logging.getLogger(__name__)
@@ -30,18 +31,23 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Constraint:
-    """What a request's output must match. `compiled` is shareable; each request builds its own matcher from it."""
+    """What a request's output must match. `compiled` is shareable; each request builds its own matcher from it.
+    `ebnf` is what it was compiled from: a compiled grammar does not pickle, so a constraint reaches the other
+    tensor-parallel ranks as its source and compiles there again (`Grammars.recompile`), as SGLang's ranks do."""
     compiled: object  # xgrammar.CompiledGrammar
     kind: str  # "json_schema", "json_object" or "tool_call" (reported, and for tests)
     armed: bool = True  # False: the output starts inside a thinking block; the grammar starts after `think_end`
     think_end: int | None = None
+    ebnf: str = ""
+
+    def __reduce__(self):
+        return Constraint, (None, self.kind, self.armed, self.think_end, self.ebnf)
 
 
 class GrammarState:
     """One request's position in its grammar."""
 
     def __init__(self, constraint: Constraint):
-        import xgrammar as xgr
         self.matcher = xgr.GrammarMatcher(constraint.compiled, max_rollback_tokens=ROLLBACK)
         self.armed = constraint.armed
         self.think_end = constraint.think_end
@@ -170,36 +176,36 @@ class Grammars:
     def compiler(self):
         with self._lock:
             if self._compiler is None:
-                import xgrammar as xgr
                 kind = xgr.VocabType.BYTE_LEVEL if self.byte_level else xgr.VocabType.RAW
                 info = xgr.TokenizerInfo(self._vocab, vocab_type=kind, vocab_size=self.vocab_size,
                                          stop_token_ids=self.stop_ids, add_prefix_space=False)
                 self._compiler = xgr.GrammarCompiler(info, cache_enabled=True)
             return self._compiler
 
-    def _compile(self, grammar):
-        import xgrammar as xgr
-        return self.compiler.compile_grammar(xgr.Grammar.concat(xgr.Grammar.from_ebnf(self.WS), grammar))
+    def _compile(self, grammar, kind: str, armed: bool) -> Constraint:
+        ebnf = str(xgr.Grammar.concat(xgr.Grammar.from_ebnf(self.WS), grammar))
+        return Constraint(self.compiler.compile_grammar(ebnf), kind, armed, self.think_end, ebnf)
+
+    def recompile(self, constraint: Constraint) -> Constraint:
+        """A constraint received from the primary tensor-parallel rank, compiled here from its source."""
+        return replace(constraint, compiled=self.compiler.compile_grammar(constraint.ebnf))
 
     def json_schema(self, schema: dict, armed: bool) -> Constraint:
-        import xgrammar as xgr
         try:
             grammar = xgr.Grammar.from_json_schema(json.dumps(schema), any_whitespace=True, max_whitespace_cnt=self.MAX_WS)
         except Exception as exc:  # noqa: BLE001 - xgrammar raises RuntimeError for schemas it cannot compile
             raise ValueError(f"unsupported JSON schema: {exc}") from exc
-        return Constraint(self._compile(grammar), "json_schema", armed, self.think_end)
+        return self._compile(grammar, "json_schema", armed)
 
     def json_object(self, armed: bool) -> Constraint:
-        import xgrammar as xgr
         # any JSON object (OpenAI's json_object), with the same whitespace bound
         grammar = xgr.Grammar.from_json_schema(json.dumps({"type": "object"}), any_whitespace=True, strict_mode=False,
                                                max_whitespace_cnt=self.MAX_WS)
-        return Constraint(self._compile(grammar), "json_object", armed, self.think_end)
+        return self._compile(grammar, "json_object", armed)
 
     def tool_call(self, tools: list[dict], name: str | None, armed: bool) -> Constraint:
         """Qwen3.8's XML tool calls (api/parsers/tools.py): one call to `name`, or one or more calls to any tool.
         Function and parameter names come from the schemas; values are free text without `</`."""
-        import xgrammar as xgr
         calls = []
         for tool in tools:
             fn = tool.get("function", tool)
@@ -214,7 +220,7 @@ class Grammars:
         call = " | ".join(f"({c})" for c in calls)
         root = "root ::= call" if name is not None else 'root ::= call ([ \\n]* call)*'
         ebnf = f'{root}\ncall ::= {call}\nvalue ::= ([^<] | "<" [^/])*'
-        return Constraint(self._compile(xgr.Grammar.from_ebnf(ebnf)), "tool_call", armed, self.think_end)
+        return self._compile(xgr.Grammar.from_ebnf(ebnf), "tool_call", armed)
 
 
 def _ebnf_body(text: str) -> str:

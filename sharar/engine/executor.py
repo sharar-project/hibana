@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from sharar.target import Target
+from sharar.distributed import all_reduce_min
 from sharar.engine.debug import debug_sync
 from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import DecodeGraphs
@@ -64,6 +65,7 @@ class Executor:
             plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future, extra_page_bytes=extra_page)
             num_pages = num_pages or plan.kv_tokens
             num_slots = num_slots or plan.state_slots
+        num_pages, num_slots = all_reduce_min(num_pages, num_slots)  # tensor-parallel ranks admit and evict alike
         if type(num_pages) is not int or num_pages < 2 or type(num_slots) is not int or num_slots < 2:
             raise ValueError("pools need at least one usable entry plus the reserved dummy entry")
         from sharar.cache.ledger import check_load_headroom
@@ -214,10 +216,11 @@ class Executor:
 
     def can_admit(self, prompt_ids: list[int], reserve_tokens: int = 0) -> bool:
         ledger = getattr(self, "ledger", None)
-        if ledger is not None and not ledger.above_floor():
+        if ledger is not None and not all_reduce_min(ledger.above_floor())[0]:
             # Unified memory: pool IDs being free does not mean DRAM is. Hold
             # admission (running requests keep decoding and release memory as
             # they finish) instead of letting the host guard stop the server.
+            # A collective with more than one rank: the scheduler calls it in lockstep.
             self.floor_holds = getattr(self, "floor_holds", 0) + 1
             return False
         return self.state.can_admit(prompt_ids, reserve_tokens)
