@@ -29,7 +29,7 @@ from sharar.model.gdn_plan import prepare_gdn_prefill
 from sharar.model.rope import PartialRotary
 from sharar.target import FLASHNEXT, Target
 from sharar.weights.safetensors import SnapshotWeights
-from sharar.weights.sharding import ColumnParallel
+from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 
 PREFIX = "model.language_model"
 
@@ -160,7 +160,7 @@ class FlashNext:
         skipped = []
         for name in calibrated.weights:
             lin = linears[name]
-            if lin.in_features % 128:  # a row-parallel part the 3-bit format cannot hold (the shared down's 320 columns)
+            if lin.shard is ROW_PARALLEL and lin.in_features % 128:  # a part the 3-bit format cannot hold (the shared down's 320 columns)
                 skipped.append(name)
                 continue
             lin.w3 = calibrated.load(name, lin, lin.shard)

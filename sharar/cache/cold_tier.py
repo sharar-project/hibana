@@ -90,7 +90,6 @@ class ManagedArena:
         if self.slab_bytes + self.SLAB > max(self.nbytes, self.SLAB):
             return None
         from sharar.cache.ledger import mem_available_bytes
-
         from sharar.distributed import all_reduce_min
 
         # Tensor-parallel ranks grow their tiers together (each holds its own share of the same sessions): one rank's

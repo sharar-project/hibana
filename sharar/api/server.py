@@ -703,23 +703,22 @@ def _split_chat(text: str, in_reasoning: bool, tools: list | None) -> tuple[str,
     return rp.reasoning, content, calls
 
 
-def _handled_signals_server():
+def _serve_http(app, host: str, port: int) -> None:
+    """uvicorn.run, except that a handled SIGTERM ends here instead of being raised again once the server stops: in
+    a container the server is PID 1 and ignores it, but run directly (two Sparks, from the venv) it would end the
+    process before the engine drains and its sessions persist."""
     import contextlib
 
     import uvicorn
 
-    class HandledSignals(uvicorn.Server):
-        """uvicorn re-raises the SIGTERM it handled once it has stopped. In a container the server is PID 1, which
-        ignores it; run directly (two Sparks, from the venv) it ends the process before the engine drains and its
-        sessions persist. The signal stays handled and serve() returns."""
-
+    class Server(uvicorn.Server):
         @contextlib.contextmanager
         def capture_signals(self):
             with super().capture_signals():
                 yield
                 self._captured_signals.clear()
 
-    return HandledSignals
+    Server(uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=30)).run()
 
 
 def _persist_sessions(ex, engine, log) -> None:
@@ -752,7 +751,6 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         from sharar.proposers.factory import draft_snapshot
         if proposer in ('dspark', 'dflash2'):
             draft_snapshot(proposer, draft_dir, served)  # fail before loading the target
-    import uvicorn
 
     from sharar.engine.executor import Executor
     from sharar.engine.scheduler import SchedulerConfig
@@ -819,7 +817,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     app = create_app(engine, tok, tmpl, describe)
     log(f"serving on http://{host}:{port}")
     try:
-        _handled_signals_server()(uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=30)).run()
+        _serve_http(app, host, port)
     finally:
         engine.drain(timeout=5)
         engine.thread.join(timeout=6)

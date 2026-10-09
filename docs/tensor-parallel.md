@@ -23,7 +23,9 @@ The target's settings are the single-Spark launcher's (`config/targets/<target>.
 
 Both Sparks need the same user and paths (the checkout, `~/.cache/huggingface`, `$SHARAR_RESULTS`) and the
 interpreter's C headers (`sudo apt install python3.12-dev`): the RDMA all-reduce is a torch extension each rank
-builds on first use, with the venv's ninja. `./sharar-tp setup` checks both.
+builds on first use, with the venv's ninja. `./sharar-tp setup` checks both. A rank killed while it builds a torch
+extension leaves `~/.cache/torch_extensions/<python>_<cuda>/<extension>/lock` behind; the next start of that rank
+waits on it forever while the other rank's collectives time out, so remove a stale `lock` (no build running).
 
 **A failed rank.** Every rank above 0 holds a TCP connection to the primary (keepalive about 5 s for a host that
 vanishes). When a rank ends, however it ends, the others end within a second instead of waiting in their next
