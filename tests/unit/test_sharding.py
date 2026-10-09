@@ -33,3 +33,38 @@ def test_target_shard_is_one_ranks_share():
     assert (t.hidden_size, t.vocab_size) == (QWEN38.hidden_size, QWEN38.vocab_size)
     assert t.conv_dim == QWEN38.conv_dim // 2 and t.kv_bytes_per_token == QWEN38.kv_bytes_per_token // 2
     assert QWEN38.shard(1) is QWEN38
+
+
+def test_flashnext_shard_splits_heads_and_every_expert_width():
+    from sharar.target import FLASHNEXT
+    t = FLASHNEXT.shard(2)
+    assert (t.num_attention_heads, t.num_kv_heads, t.linear_num_key_heads, t.linear_num_value_heads) == (12, 1, 8, 24)
+    assert (t.moe_intermediate_size, t.shared_expert_intermediate_size) == (320, 320)
+    assert (t.num_experts, t.experts_per_token, t.hidden_size, t.hc_count) == (FLASHNEXT.num_experts, FLASHNEXT.experts_per_token, FLASHNEXT.hidden_size, FLASHNEXT.hc_count)
+    assert t.intermediate_size == FLASHNEXT.intermediate_size  # no dense MLP: left unset
+
+
+def test_trunk_linear_parts_are_the_whole_matrix_in_fp8():
+    """Every rank quantizes with the whole matrix's scale, so the ranks' parts are exactly the single-GPU copy's
+    rows (column-parallel) or columns (row-parallel)."""
+    from sharar.model.flashnext.linear import TrunkLinear
+    w = torch.randn(64, 32, dtype=torch.bfloat16)
+    whole = TrunkLinear.from_bf16(w, "fp8")
+    rows, cols = [], []
+    for rank in range(2):
+        set_tp_info(rank, 2)
+        try:
+            rows.append(TrunkLinear.from_bf16(w, "fp8", ColumnParallel((32,))))
+            cols.append(TrunkLinear.from_bf16(w, "fp8", ROW_PARALLEL))
+        finally:
+            set_tp_info(0, 1)
+    assert all(torch.equal(p.scale, whole.scale) for p in rows + cols)
+    assert torch.equal(torch.cat([p.weight for p in rows]).view(torch.uint8), whole.weight.view(torch.uint8))
+    assert torch.equal(torch.cat([p.weight for p in cols], dim=1).view(torch.uint8), whole.weight.view(torch.uint8))
+    assert rows[1].shard == ColumnParallel((32,)) and cols[0].shard is ROW_PARALLEL
+
+
+def test_single_rank_collectives_are_identities():
+    from sharar.distributed import all_reduce_min, common_values
+    assert all_reduce_min(3, 1) == [3, 1]
+    assert common_values([5, 2, 9]) == [5, 2, 9]

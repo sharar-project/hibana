@@ -85,15 +85,14 @@ class Target:
             raise ValueError("layer_types must name every layer as full_attention or linear_attention")
 
     def shard(self, size: int) -> Target:
-        """One tensor-parallel rank's share of `size`: attention and linear-attention heads and the MLP width are
-        per rank (what its pools, kernels and graphs size from); the hidden size and vocabulary stay whole."""
+        """One tensor-parallel rank's share of `size`: attention and linear-attention heads and the MLP widths
+        (dense, routed experts', shared expert's) are per rank (what its pools, kernels and graphs size from); the
+        hidden size, the vocabulary, the expert count and the indexer stay whole."""
         if size == 1:
             return self
-        return replace(self, num_attention_heads=div_even(self.num_attention_heads, size),
-                       num_kv_heads=div_even(self.num_kv_heads, size),
-                       linear_num_key_heads=div_even(self.linear_num_key_heads, size),
-                       linear_num_value_heads=div_even(self.linear_num_value_heads, size),
-                       intermediate_size=div_even(self.intermediate_size, size))
+        split = ("num_attention_heads", "num_kv_heads", "linear_num_key_heads", "linear_num_value_heads",
+                 "intermediate_size", "moe_intermediate_size", "shared_expert_intermediate_size")
+        return replace(self, **{name: div_even(getattr(self, name), size) for name in split if getattr(self, name)})
 
     # ---- derived geometry ----
     @property

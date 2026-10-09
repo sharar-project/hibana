@@ -170,10 +170,11 @@ def main(argv: list[str] | None = None) -> int:
         spec_depths = args.spec_depths if args.spec_depths is not None else cfg.spec_depths
         target = args.target or cfg.target
         if args.tp > 1:
-            if targets.get(target).family != "qwen38":
-                parser.error("tensor parallel serves the 27B")
-            if args.spec and args.proposer == "mtp":
-                parser.error("tensor parallel serves the parallel drafts or n-gram speculation, not MTP")
+            family = targets.get(target).family
+            if family not in ("qwen38", "flashnext"):
+                parser.error("tensor parallel serves the 27B and Flash-Next")
+            if family == "qwen38" and args.spec and args.proposer == "mtp":
+                parser.error("the 27B serves tensor-parallel with the parallel drafts or n-gram speculation, not MTP")
         # One configuration for the process: the environment with the command line applied (#44).
         engine_config.install(cfg.replace(spec=str(args.spec), traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
                                           target=target, max_context=max_context, accept_default=f"{accept_default[0]}:{accept_default[1]}",

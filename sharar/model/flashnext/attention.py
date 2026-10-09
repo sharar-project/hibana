@@ -13,6 +13,7 @@ from sharar.model.attention import Attention
 from sharar.model.flashnext.indexer import FlashNextIndexer
 from sharar.model.flashnext.linear import TrunkLinear
 from sharar.model.norm import GemmaRMSNorm
+from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 
 
 class FlashNextAttention(Attention):
@@ -24,9 +25,12 @@ class FlashNextAttention(Attention):
         self.head_dim = target.head_dim
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
-        # q_proj rows are [head0: q(256) | gate(256), head1: ...], k/v follow.
-        self.qkv = TrunkLinear.load(w, [f"{prefix}.q_proj.weight", f"{prefix}.k_proj.weight", f"{prefix}.v_proj.weight"], device, precision)
-        self.o = TrunkLinear.load(w, [f"{prefix}.o_proj.weight"], device, precision)
+        # q_proj rows are [head0: q(256) | gate(256), head1: ...], k/v follow. Head counts are this rank's
+        # (`Target.shard`): q|k|v column-parallel by head, o_proj row-parallel; the indexer reads the whole
+        # (replicated) input and stays whole on every rank.
+        self.qkv = TrunkLinear.load(w, [f"{prefix}.q_proj.weight", f"{prefix}.k_proj.weight", f"{prefix}.v_proj.weight"], device, precision,
+                                    ColumnParallel((2 * self.q_size, self.kv_size, self.kv_size)))
+        self.o = TrunkLinear.load(w, [f"{prefix}.o_proj.weight"], device, precision, ROW_PARALLEL)
         self.q_norm = GemmaRMSNorm(w.get(f"{prefix}.q_norm.weight").to(device), self.eps)
         self.k_norm = GemmaRMSNorm(w.get(f"{prefix}.k_norm.weight").to(device), self.eps)
         self.rope = rope

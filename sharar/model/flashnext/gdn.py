@@ -7,9 +7,9 @@ from __future__ import annotations
 import torch
 
 from sharar.kernels.fla.layernorm_gated import rms_norm_gated
-from sharar.cache.state_pool import CONV_DIM
 from sharar.model.flashnext.linear import TrunkLinear
 from sharar.model.gdn import GatedDeltaNet
+from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 
 
 class FlashNextGdn(GatedDeltaNet):
@@ -24,16 +24,19 @@ class FlashNextGdn(GatedDeltaNet):
         self.key_dim = self.num_k_heads * self.head_k_dim
         self.value_dim = self.num_v_heads * self.head_v_dim
         self.conv_dim = 2 * self.key_dim + self.value_dim
-        assert self.conv_dim == CONV_DIM
         self.gate_activation = target.output_gate
-        self.in_qkv = TrunkLinear.load(w, [f"{prefix}.in_proj_qkv.weight"], device, precision)  # [q | k | v] head-first
-        self.in_z = TrunkLinear.load(w, [f"{prefix}.in_proj_z.weight"], device, precision)
-        self.in_ba = torch.cat([w.get(f"{prefix}.in_proj_b.weight"), w.get(f"{prefix}.in_proj_a.weight")], dim=0).to(device)
-        self.conv_weight = w.get(f"{prefix}.conv1d.weight").to(device).view(self.conv_dim, target.linear_conv_kernel)
-        self.A_log = w.get(f"{prefix}.A_log").to(device).float().contiguous()
-        self.dt_bias = w.get(f"{prefix}.dt_bias").to(device).contiguous()
+        # Head counts are this rank's (`Target.shard`): every per-head tensor keeps its rows of q, k, v (and z, b,
+        # a), whole heads of each, so a value head stays with its key head; out_proj is row-parallel.
+        qkv_heads = ColumnParallel((self.key_dim, self.key_dim, self.value_dim))
+        v_heads = ColumnParallel((self.num_v_heads,))
+        self.in_qkv = TrunkLinear.load(w, [f"{prefix}.in_proj_qkv.weight"], device, precision, qkv_heads)  # [q | k | v] head-first
+        self.in_z = TrunkLinear.load(w, [f"{prefix}.in_proj_z.weight"], device, precision, ColumnParallel((self.value_dim,)))
+        self.in_ba = torch.cat([v_heads(w.get(f"{prefix}.in_proj_b.weight")), v_heads(w.get(f"{prefix}.in_proj_a.weight"))], dim=0).to(device)
+        self.conv_weight = qkv_heads(w.get(f"{prefix}.conv1d.weight").view(-1, target.linear_conv_kernel)).contiguous().to(device)
+        self.A_log = v_heads(w.get(f"{prefix}.A_log")).to(device).float().contiguous()
+        self.dt_bias = v_heads(w.get(f"{prefix}.dt_bias")).to(device).contiguous()
         self.norm_weight = w.get(f"{prefix}.norm.weight").to(device).repeat(self.num_v_heads).contiguous()
-        self.out = TrunkLinear.load(w, [f"{prefix}.out_proj.weight"], device, precision)
+        self.out = TrunkLinear.load(w, [f"{prefix}.out_proj.weight"], device, precision, ROW_PARALLEL)
         self._scratch_conv = None
         self._scratch_ssm = None
 
