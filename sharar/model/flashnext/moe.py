@@ -11,6 +11,8 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
+
 
 def swizzle_block_scales_batched(scales: torch.Tensor) -> torch.Tensor:
     """[E, M, K] float8_e4m3fn block scales -> CUTLASS SM120 interleave, viewed as int32 [E, M_pad, K_pad/4]."""
@@ -30,18 +32,25 @@ class MoeLayer:
         self.router = w.get(f"{prefix}.gate.weight").to(device).contiguous()  # [E, H] bf16
         self.shared_gate = w.get(f"{prefix}.shared_expert_gate.weight").to(device).float().reshape(1, -1)  # [1, H]
         self.shared_gate_vec = self.shared_gate.reshape(-1).contiguous()
-        self.shared_gate_up = linear_cls.load(w, [f"{prefix}.shared_expert.gate_proj.weight", f"{prefix}.shared_expert.up_proj.weight"], device, precision)
-        self.shared_down = linear_cls.load(w, [f"{prefix}.shared_expert.down_proj.weight"], device, precision)
+        # Tensor parallel (`Target.shard`): every expert's intermediate is split, gate|up column-parallel and down
+        # row-parallel, routed and shared alike, so each rank streams half of every selected expert and returns a
+        # partial sum the decoder layer all-reduces. Router and gates stay whole.
+        shared_inter = target.shared_expert_intermediate_size
+        self.shared_gate_up = linear_cls.load(w, [f"{prefix}.shared_expert.gate_proj.weight", f"{prefix}.shared_expert.up_proj.weight"], device, precision,
+                                              ColumnParallel((shared_inter, shared_inter)))
+        self.shared_down = linear_cls.load(w, [f"{prefix}.shared_expert.down_proj.weight"], device, precision, ROW_PARALLEL)
+        rows = ColumnParallel((self.inter,)).rows
+        cols = ROW_PARALLEL.cols
         p = f"{prefix}.experts"
         w13, w2, s13, s2, scale2_13, scale2_2, in13, in2 = [], [], [], [], [], [], [], []
         for e in range(self.experts):
             g, u, d = (f"{p}.{e}.gate_proj", f"{p}.{e}.up_proj", f"{p}.{e}.down_proj")
             # FlashInfer's CUTLASS fused MoE reads fc1 as [up rows; gate rows] (measured: the other order
             # gives cosine 0.79 against the dequantized reference, this one 0.999).
-            w13.append(torch.cat([w.get(f"{u}.weight"), w.get(f"{g}.weight")], dim=0))
-            w2.append(w.get(f"{d}.weight"))
-            s13.append(torch.cat([w.get(f"{u}.weight_scale"), w.get(f"{g}.weight_scale")], dim=0))
-            s2.append(w.get(f"{d}.weight_scale"))
+            w13.append(torch.cat([rows(w.get(f"{u}.weight")), rows(w.get(f"{g}.weight"))], dim=0))
+            w2.append(cols(w.get(f"{d}.weight")))  # packed [K, I/2] and block scales [K, I/16]: this rank's columns
+            s13.append(torch.cat([rows(w.get(f"{u}.weight_scale")), rows(w.get(f"{g}.weight_scale"))], dim=0))
+            s2.append(cols(w.get(f"{d}.weight_scale")))
             g2, u2 = w.get(f"{g}.weight_scale_2").float().reshape(()), w.get(f"{u}.weight_scale_2").float().reshape(())
             if not torch.equal(g2, u2):
                 raise ValueError(f"expert {e}: gate and up global scales differ; the fused kernel needs one")

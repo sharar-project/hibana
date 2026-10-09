@@ -3,10 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import queue
+import secrets
 import threading
 import time
 from dataclasses import dataclass, field
+
+import torch
+
+from sharar.distributed import broadcast_pyobj, expect_peer_exit, get_tp_info
+from sharar.engine.grammar import Grammars
 from sharar.engine.request import Request
 from sharar.engine.sampler import InvalidRequest, SamplingParams
 from sharar.engine.scheduler import Metrics, QueueFull, Scheduler
@@ -41,11 +48,23 @@ class EngineLoop:
     """Owns the scheduler on one thread. The HTTP side never touches the
     scheduler directly: it posts commands to a thread-safe inbox and receives
     results through per-request asyncio queues, so the event loop is never
-    blocked and the engine thread never waits on HTTP."""
+    blocked and the engine thread never waits on HTTP.
 
-    def __init__(self, sched: Scheduler):
+    Every tensor-parallel rank runs one (mini-sglang's scheduler IO): the
+    primary rank takes commands from the HTTP inbox and broadcasts the ones it
+    applied; the other ranks receive and apply them at the same points (every
+    `_publish`: before and after a step, and each `on_progress` inside it), so
+    their schedulers take the same steps and their forwards meet the
+    primary's collectives. An engine failure ends the process, since the other
+    ranks' collectives cannot complete without it."""
+
+    def __init__(self, sched: Scheduler, grammars: Grammars | None = None):
         self.sched = sched
+        self.grammars = grammars  # ranks above 0 compile request constraints again from their source
         sched.on_progress = self._publish
+        self.tp = get_tp_info()
+        self._recv_commands = self._recv_commands_rank0 if self.tp.is_primary() else self._recv_commands_rank1
+        self._applied: list[tuple] = []  # commands applied since the last broadcast
         self.inbox: queue.Queue = queue.Queue()
         self.tickets: dict[int, Ticket] = {}
         self.stop = False
@@ -120,12 +139,56 @@ class EngineLoop:
         return {**self.last_stats, **Metrics.latency_summary(self._latencies)}
 
     # ---- engine thread ----
+    def _apply(self, cmd: tuple):
+        """Apply one scheduler command, alike on every rank: ("submit", ids, params), ("cancel", request_id),
+        ("flush",), ("reload_draft", draft_dir) or ("stop",). The primary records it for the other ranks."""
+        kind, result = cmd[0], None
+        if kind == "submit":
+            result = self.sched.submit(cmd[1], cmd[2])
+        elif kind == "cancel":
+            req = next((r for r in (*self.sched.queue, *self.sched.prefilling, *self.sched.running) if r.request_id == cmd[1]), None)
+            if req is not None:
+                self.sched.cancel(req)
+        elif kind == "flush":
+            self.sched.ex.flush_cache()
+        elif kind == "reload_draft":
+            result = self.sched.ex.reload_draft(cmd[1])
+        elif kind == "stop":
+            self.stop = True
+            expect_peer_exit()
+        if self.tp.is_primary():
+            self._applied.append(cmd)
+        return result
+
+    def _recv_commands_rank0(self) -> None:
+        """Apply what arrived over HTTP, then hand it to the other ranks."""
+        try:
+            while True:
+                self._handle(self.inbox.get_nowait())
+        except queue.Empty:
+            pass
+        self._broadcast_applied()
+
+    def _recv_commands_rank1(self) -> None:
+        """Apply what the primary applied since the last call."""
+        for cmd in broadcast_pyobj(None):
+            if cmd[0] == "submit" and cmd[2].constraint is not None:
+                cmd[2].constraint = self.grammars.recompile(cmd[2].constraint)
+            self._apply(cmd)
+
+    def _broadcast_applied(self) -> None:
+        if self.tp.size > 1:
+            broadcast_pyobj(self._applied)
+        self._applied = []
+
     def _handle(self, cmd) -> None:
         kind = cmd[0]
         if kind == "submit":
             _, ids, params, ticket = cmd
+            if self.tp.size > 1 and not params.greedy and params.seed is None:
+                params.seed = secrets.randbits(64)  # every rank samples with the same generator
             try:
-                req = self.sched.submit(ids, params)
+                req = self._apply(("submit", ids, params))
             except (QueueFull, InvalidRequest) as exc:
                 _notify(ticket.loop, _resolve, ticket.ready, None, exc)
                 return
@@ -138,11 +201,11 @@ class EngineLoop:
         elif kind == "cancel":
             ticket = cmd[1]
             if ticket.req is not None:
-                self.sched.cancel(ticket.req)
+                self._apply(("cancel", ticket.req.request_id))
         elif kind == "flush":
             _, fut, loop = cmd
             try:
-                self.sched.ex.flush_cache()
+                self._apply(("flush",))
             except Exception:
                 _notify(loop, _resolve, fut, None, EngineUnavailable("engine unavailable"))
                 raise
@@ -150,7 +213,7 @@ class EngineLoop:
         elif kind == "reload_draft":
             _, draft_dir, fut, loop = cmd
             try:
-                source = self.sched.ex.reload_draft(draft_dir)
+                source = self._apply(("reload_draft", draft_dir))
             except (ValueError, FileNotFoundError) as exc:
                 _notify(loop, _resolve, fut, None, InvalidRequest(str(exc)))
                 return
@@ -160,7 +223,6 @@ class EngineLoop:
             _notify(loop, _resolve, fut, source)
 
     def _run(self) -> None:
-        import torch
         # InferenceMode is thread-local. Pools/graphs may have been created
         # under it during startup; all mutations belong to this owner thread.
         with torch.inference_mode():
@@ -170,11 +232,14 @@ class EngineLoop:
         try:
             while not self.stop:
                 try:
-                    cmd = self.inbox.get(timeout=0.05) if not self.sched.active else self.inbox.get_nowait()
-                    self._handle(cmd)
+                    # Idle, the primary waits for HTTP; the other ranks wait in `_publish` for its broadcast.
+                    if self.tp.is_primary() and not self.sched.active:
+                        self._handle(self.inbox.get(timeout=0.05))
                 except queue.Empty:
                     pass
                 self._publish()  # also delivers cancellation when admission is idle
+                if self.stop:
+                    break  # a rank above 0 received the primary's ("stop",)
                 if self.sched.active:
                     self.sched.step()
                 self._publish()
@@ -187,6 +252,9 @@ class EngineLoop:
                         self.stop = True
                     elif time.monotonic() >= self.drain_deadline:
                         raise EngineUnavailable("engine drain deadline exceeded")
+            if self.tp.is_primary():
+                self._apply(("stop",))
+                self._broadcast_applied()
         except Exception as exc:
             logging.exception("sharar engine failed")
             self._fail(exc)
@@ -226,14 +294,12 @@ class EngineLoop:
                     logging.exception("resource cleanup failed for request %s", req.request_id)
             requests.clear()
         self.last_stats = self.sched.stats()
+        if self.tp.size > 1:
+            os._exit(1)
 
     def _publish(self) -> None:
         # Hand over requests that arrived during the step, then deliver tokens.
-        try:
-            while True:
-                self._handle(self.inbox.get_nowait())
-        except queue.Empty:
-            pass
+        self._recv_commands()
         done = []
         for rid, t in self.tickets.items():
             new = t.req.new_tokens()

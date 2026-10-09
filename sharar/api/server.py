@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from jinja2 import TemplateError
 
 from sharar import target as targets
+from sharar.distributed import get_tp_info
 from sharar.api import messages as messages_api
 from sharar.api import refusal_guard
 from sharar.api.chat_template import ChatTemplate
@@ -702,6 +703,32 @@ def _split_chat(text: str, in_reasoning: bool, tools: list | None) -> tuple[str,
     return rp.reasoning, content, calls
 
 
+def _serve_http(app, host: str, port: int) -> None:
+    """uvicorn.run, except that a handled SIGTERM ends here instead of being raised again once the server stops: in
+    a container the server is PID 1 and ignores it, but run directly (two Sparks, from the venv) it would end the
+    process before the engine drains and its sessions persist."""
+    import contextlib
+
+    import uvicorn
+
+    class Server(uvicorn.Server):
+        @contextlib.contextmanager
+        def capture_signals(self):
+            with super().capture_signals():
+                yield
+                self._captured_signals.clear()
+
+    Server(uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=30)).run()
+
+
+def _persist_sessions(ex, engine, log) -> None:
+    """Cached sessions survive the restart in the session store, once the engine has stopped: on every
+    tensor-parallel rank or on none (parking grows the tiers through collectives)."""
+    from sharar.distributed import all_reduce_min
+    if all_reduce_min(int(not engine.thread.is_alive()))[0]:
+        ex.persist_sessions(log)
+
+
 def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
           traces: str | None = None, traces_max_mib: int = 32768, draft_dir: str | None = None,
           accept_default: tuple[int, float] = (1, 0.0), target: str | None = None, max_context: int | None = None,
@@ -724,7 +751,6 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         from sharar.proposers.factory import draft_snapshot
         if proposer in ('dspark', 'dflash2'):
             draft_snapshot(proposer, draft_dir, served)  # fail before loading the target
-    import uvicorn
 
     from sharar.engine.executor import Executor
     from sharar.engine.scheduler import SchedulerConfig
@@ -736,10 +762,17 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     ex = Executor(model, log=log, spec_config=spec_config, max_context=max_context, max_batch=max_batch)
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
-    ex.enable_cold_tier(log=log)
+    ex.enable_cold_tier(log=log)  # tensor-parallel ranks agree on every tier decision (cache/cold_tier.py)
     cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=ex.profile.max_queued,
                           chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget)
     sched = Scheduler(ex, cfg)
+    if not get_tp_info().is_primary():
+        log(f"tensor-parallel rank {get_tp_info().rank}: serving the primary rank's requests")
+        engine = EngineLoop(sched, Grammars.from_tokenizer(tok._tok, served.vocab_size, SamplingParams().stop_token_ids))
+        engine.start()
+        engine.thread.join()
+        _persist_sessions(ex, engine, log)
+        return
     sink = None
     if traces:
         from sharar.engine.traces import TraceSink
@@ -758,6 +791,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "w3_target_identity": getattr(model, "w3_identity", None),
         "w3_warning": current().w3_warning,
         "context_length": ex.max_context,
+        "tp_size": get_tp_info().size,
         "max_running_requests": cfg.max_running,
         "max_queued_requests": cfg.max_queued,
         "chunked_prefill_size": cfg.chunk_size,
@@ -783,11 +817,10 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     app = create_app(engine, tok, tmpl, describe)
     log(f"serving on http://{host}:{port}")
     try:
-        uvicorn.run(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=30)
+        _serve_http(app, host, port)
     finally:
         engine.drain(timeout=5)
         engine.thread.join(timeout=6)
-        if not engine.thread.is_alive():
-            ex.persist_sessions(log)  # cached sessions survive the restart in the session store
+        _persist_sessions(ex, engine, log)
         if sink is not None:
             sink.close()

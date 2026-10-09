@@ -33,11 +33,15 @@ class FlashNextMtpHead:
     DRAFT_HEADS = True  # set_draft_head: reduced vocabulary and/or 3-bit shortlist (#35)
 
     def __init__(self, w, device: torch.device, model, num_pages: int, precision: str | None = None, padding_rows: int = 0):
-        t = self.target = model.target
+        # Tensor parallel: the draft layer is replicated, whole on every rank (built from the whole geometry), and
+        # drafts through the target's vocabulary-parallel lm_head (`VocabParallelHead`: each rank reads its rows).
+        t = self.target = getattr(model, "full_target", model.target)
+        self.tensor_parallel = t is not model.target
         self.device = device
         self.embed, self.lm_head, self.rope, self.mixer_target = model.embed, model.lm_head, model.rope, model.mixer
-        from sharar.proposers.draft_head import TargetHead
-        self.draft_head = TargetHead(self.lm_head)  # replaced by set_draft_head (#35)
+        from sharar.proposers.draft_head import TargetHead, VocabParallelHead
+        # replaced by set_draft_head (#35)
+        self.draft_head = VocabParallelHead(self.lm_head) if self.tensor_parallel else TargetHead(self.lm_head)
         self.hidden_size, self.hc = t.hidden_size, t.hc_count
         self.hidden_width = self.hc * self.hidden_size  # the "hidden" the proposer carries per row
         # SHARAR_FLASHNEXT_MTP_TRUNK: the draft head's own precision, bf16 or fp8 (default: the trunk's).
@@ -54,7 +58,7 @@ class FlashNextMtpHead:
         self.mlp_hc = HyperConnection.load(w, f"{p}.mlp_hyper_connection", self.hc, self.hidden_size, eps, device, precision=mixers)
         self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", self.hc, self.hidden_size, eps, device, combine=False, precision=mixers)
         self.ragged = ops.RaggedAttention(device, t.num_attention_heads, t.num_kv_heads, t.head_dim)
-        self.attn = FlashNextAttention(w, f"{p}.self_attn", 0, device, self.rope, self.ragged, t, precision)
+        self.attn = FlashNextAttention(w, f"{p}.self_attn", 0, device, self.rope, self.ragged, t, precision, sharded=False)
         # Routed experts, fused [E, 2I, H] (gate rows then up rows) and [E, H, I]: stored FP8 with one
         # scale per expert matrix, upcast per token for the ten gathered experts (5.2 GB BF16 would not
         # fit beside the target on the GB10); loaded expert by expert to avoid a 3.4 GB host temporary.
@@ -148,7 +152,8 @@ class FlashNextMtpHead:
 
     @torch.inference_mode()
     def logits(self, d: torch.Tensor) -> torch.Tensor:
-        return self.lm_head(self.mixer.mix(d)[0])
+        from sharar.distributed import all_gather
+        return all_gather(self.lm_head(self.mixer.mix(d)[0]))  # the whole vocabulary on every rank
 
     def head_input(self, d: torch.Tensor) -> torch.Tensor:
         """What the vocabulary projection reads: the MTP's own mixer over the hyper stream."""
@@ -158,5 +163,10 @@ class FlashNextMtpHead:
         """Draft through a head of its own (`proposers/draft_head.py`): over these token ids only
         (len(ids) rows of the shared lm_head instead of the vocabulary) and/or a 3-bit copy whose
         top `rescore` candidates the shared lm_head rescores."""
-        from sharar.proposers.draft_head import ShortlistHead
+        from sharar.proposers.draft_head import ShortlistHead, VocabParallelHead
+        if self.tensor_parallel:
+            if ids is not None:
+                raise ValueError("a reduced draft vocabulary (SHARAR_DRAFT_VOCAB) is not served tensor-parallel")
+            self.draft_head = VocabParallelHead(self.lm_head, fmt, rescore)
+            return
         self.draft_head = ShortlistHead(self.lm_head, ids, fmt, rescore)

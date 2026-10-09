@@ -14,6 +14,7 @@ from pathlib import Path
 
 import torch
 
+from sharar.distributed import all_gather, all_reduce, div_even, get_tp_info
 from sharar.engine.config import current
 from sharar.engine.context import ForwardContext, scratch_prefill_context
 from sharar.engine.contracts import ForwardResult
@@ -28,6 +29,7 @@ from sharar.model.gdn_plan import prepare_gdn_prefill
 from sharar.model.rope import PartialRotary
 from sharar.target import FLASHNEXT, Target
 from sharar.weights.safetensors import SnapshotWeights
+from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 
 PREFIX = "model.language_model"
 
@@ -55,23 +57,28 @@ class DecoderLayer:
         if self.ple is not None:
             hyper = hyper + self.ple.forward(hyper, input_ids, ctx, eos)
         h, res = self.attn_hc.mix(hyper)
-        h = self.mixer.forward(h, ctx)
+        # The mixer's and the experts' last projections are row-parallel: sum the ranks' partial outputs.
+        h = all_reduce(self.mixer.forward(h, ctx))
         hyper = self.attn_hc.combine(h, res)
         h, res = self.mlp_hc.mix(hyper)
-        h = self.moe(h)
+        h = all_reduce(self.moe(h))
         return self.mlp_hc.combine(h, res)
 
 
 class FlashNext:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", log=print, target: Target = FLASHNEXT, precision: str | None = None, **_ignored):
         from sharar.cache.ledger import check_load_headroom
-        self.target = target
+        tp = get_tp_info()
+        # This rank's share (`Target.shard`): every layer loads and computes its own heads and expert columns; the
+        # MTP draft head is replicated and builds from the whole geometry.
+        self.full_target = target
         self._extras = None
         self.precision = precision or current().flashnext_trunk  # bf16 | fp8
-        check_load_headroom(target.weight_load_peak_bytes)
+        check_load_headroom(target.weight_load_peak_bytes // tp.size)  # the experts dominate, and each rank loads its half
         self.device = torch.device(device)
         cfg = target.load_model_config(snap)
         types = target.layer_types_of(cfg)
+        self.target = target = target.shard(tp.size)
         self.eos = int(cfg["text_config"]["eos_token_id"])
         started = time.perf_counter()
         w = SnapshotWeights(snap)
@@ -90,7 +97,9 @@ class FlashNext:
                 f"w13 {sum(e[0] for e in errors) / len(errors):.4f}, w2 {sum(e[1] for e in errors) / len(errors):.4f} (mean over layers)")
         self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", target.hc_count, target.hidden_size, target.rms_norm_eps, self.device,
                                           combine=False, precision=current().flashnext_mixers)
-        self.lm_head = TrunkLinear.load(w, ["lm_head.weight"], self.device, self.precision)
+        # Vocabulary-parallel: each rank scores its rows of the vocabulary and `logits` gathers them.
+        self.lm_head = TrunkLinear.load(w, ["lm_head.weight"], self.device, self.precision,
+                                        ColumnParallel((div_even(target.vocab_size, tp.size),)))
         w.close()
         torch.cuda.synchronize()
         # Bytes one decode token streams: the trunk, the head, one embedding row and its routed experts.
@@ -148,10 +157,16 @@ class FlashNext:
         missing = sorted(set(calibrated.weights) - set(linears))
         if missing:
             raise ValueError(f"calibrated names not in this model: {missing[:4]}")
+        skipped = []
         for name in calibrated.weights:
-            linears[name].w3 = calibrated.load(name, linears[name])
+            lin = linears[name]
+            if lin.shard is ROW_PARALLEL and lin.in_features % 128:  # a part the 3-bit format cannot hold (the shared down's 320 columns)
+                skipped.append(name)
+                continue
+            lin.w3 = calibrated.load(name, lin, lin.shard)
         if log:
-            log(f"  w3: {len(calibrated.weights)} calibrated trunk matrices from {directory}")
+            log(f"  w3: {len(calibrated.weights) - len(skipped)} calibrated trunk matrices from {directory}"
+                + (f"; {len(skipped)} tensor-parallel parts stay FP8 (input width not a multiple of 128)" if skipped else ""))
         return calibrated.identity
 
     def forward_extras(self):
@@ -202,4 +217,4 @@ class FlashNext:
     @torch.inference_mode()
     def logits(self, hidden: torch.Tensor) -> torch.Tensor:
         """hidden: the hyper stream [T, hc*H] from `forward()["norm"]` -> logits [T, V]."""
-        return self.lm_head(self.mixer.mix(hidden)[0])
+        return all_gather(self.lm_head(self.mixer.mix(hidden)[0]))

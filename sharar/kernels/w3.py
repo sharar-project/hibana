@@ -305,7 +305,7 @@ def attach_model(model, log=print, codebook=DEFAULT_CODEBOOK) -> dict:
         raise ValueError("calibrated W3 checkpoint must contain every target layer projection")
     for name, lin in linears:
         if getattr(lin, "w3", None) is None:
-            lin.w3 = calibrated.load(name, lin) if calibrated else pack(lin.dequantize(), codebook)
+            lin.w3 = calibrated.load(name, lin, lin.shard) if calibrated else pack(lin.dequantize(), codebook)
             total += lin.w3.bytes; count += 1
     torch.cuda.synchronize()
     model.w3_identity = calibrated.identity if calibrated else "nearest:" + str(codebook)

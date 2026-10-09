@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import torch
 
 from sharar.weights.safetensors import SnapshotWeights
+from sharar.weights.sharding import REPLICATED, Shard
 
 FP8_MAX = torch.finfo(torch.float8_e4m3fn).max  # 448
 
@@ -26,6 +27,7 @@ class Fp8Linear:
     input_scale: torch.Tensor  # [] float32
     alpha: torch.Tensor = None  # [] float32 = input_scale * weight_scale
     w3: object = None  # optional 3-bit decode copy (sharar.kernels.w3.W3Weight)
+    shard: Shard = REPLICATED  # which part of the checkpoint's matrix this rank holds (its 3-bit copy loads the same)
 
     def __post_init__(self):
         if self.alpha is None:
@@ -60,6 +62,7 @@ class Nvfp4Linear:
     out_features: int
     in_features: int
     w3: object = None  # optional 3-bit decode copy (sharar.kernels.w3.W3Weight)
+    shard: Shard = REPLICATED  # which part of the checkpoint's matrix this rank holds (its 3-bit copy loads the same)
 
     @property
     def bytes(self) -> int:
@@ -80,8 +83,8 @@ def _to_fp8(x: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return (x.float() / scale).clamp(-FP8_MAX, FP8_MAX).to(torch.float8_e4m3fn)
 
 
-def load_fp8_linear(w: SnapshotWeights, prefixes: list[str], device: torch.device) -> Fp8Linear:
-    """Load one FP8 linear, or several fused along the output dim."""
+def load_fp8_linear(w: SnapshotWeights, prefixes: list[str], device: torch.device, shard: Shard = REPLICATED) -> Fp8Linear:
+    """Load one FP8 linear, or several fused along the output dim; `shard` keeps this rank's part."""
     weights = [w.get(f"{p}.weight") for p in prefixes]
     scales = [w.get(f"{p}.weight_scale").float().reshape(()) for p in prefixes]
     input_scales = [w.get(f"{p}.input_scale").float().reshape(()) for p in prefixes]
@@ -93,11 +96,12 @@ def load_fp8_linear(w: SnapshotWeights, prefixes: list[str], device: torch.devic
         # FP16. Skipping this boundary changes packed weights in fused shards.
         wt = _to_fp8(wt.half() * sc.to(device), max_scale.to(device))
         parts.append(wt)
-    weight = torch.cat(parts, dim=0).contiguous()
+    weight = shard(torch.cat(parts, dim=0)).contiguous()
     return Fp8Linear(
         weight=weight,
         weight_scale=max_scale.to(device),
         input_scale=torch.stack(input_scales).max().to(device),
+        shard=shard,
     )
 
 
@@ -130,15 +134,15 @@ def unpack_fp4(packed: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
     return magnitudes[codes & 7] * torch.where(codes & 8 != 0, -1, 1) * scales.float().repeat_interleave(16, -1)
 
 
-def load_nvfp4_linear(w: SnapshotWeights, prefixes: list[str], device: torch.device) -> Nvfp4Linear:
+def load_nvfp4_linear(w: SnapshotWeights, prefixes: list[str], device: torch.device, shard: Shard = REPLICATED) -> Nvfp4Linear:
     weights = [w.get(f"{p}.weight") for p in prefixes]
     scales = [w.get(f"{p}.weight_scale") for p in prefixes]
     scale2 = torch.stack([w.get(f"{p}.weight_scale_2").float().reshape(()) for p in prefixes])
     input_scale = torch.stack([w.get(f"{p}.input_scale").float().reshape(()) for p in prefixes])
     if len(prefixes) > 1 and not torch.all(scale2 == scale2[0]):
         raise ValueError(f"NVFP4 fused shards must share weight_scale_2: {prefixes} {scale2.tolist()}")
-    weight = torch.cat([x.to(device) for x in weights], dim=0).contiguous()
-    scale = torch.cat([x.to(device) for x in scales], dim=0)
+    weight = shard(torch.cat([x.to(device) for x in weights], dim=0)).contiguous()
+    scale = shard(torch.cat([x.to(device) for x in scales], dim=0))
     n, k_half = weight.shape
     k = k_half * 2
     if n % 32 or k % 32:
@@ -154,4 +158,5 @@ def load_nvfp4_linear(w: SnapshotWeights, prefixes: list[str], device: torch.dev
         input_scale_inv=(1.0 / input_scale_max).to(device),
         out_features=n,
         in_features=k,
+        shard=shard,
     )

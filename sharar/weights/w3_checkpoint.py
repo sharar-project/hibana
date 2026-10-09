@@ -17,6 +17,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from sharar.model.qwen38_config import MODEL_REVISION
+from sharar.weights.sharding import REPLICATED, Shard
 
 FORMAT_VERSION = 1
 
@@ -60,13 +61,11 @@ class CalibratedWeights:
         self.weights = self.manifest["weights"]
         self.identity = sha256(self.directory / "manifest.json")
 
-    def load(self, name: str, linear):
+    def load(self, name: str, linear, shard: Shard = REPLICATED):
+        """`linear`'s copy: its tensor-parallel part `shard` of the checkpoint's whole matrix."""
         from sharar.kernels.w3 import W3Weight, _codebook, lut_of
         entry = self.weights[name]
-        n = linear.out_features
-        k = getattr(linear, "in_features", linear.weight.shape[1])
-        if (entry["out_features"], entry["in_features"]) != (n, k):
-            raise ValueError(f"calibrated W3 shape mismatch for {name}")
+        n, k = entry["out_features"], entry["in_features"]
         filename = entry["file"]
         if Path(filename).name != filename:
             raise ValueError("calibrated W3 files must be directly inside the checkpoint")
@@ -81,10 +80,17 @@ class CalibratedWeights:
                                                      for key, (shape, dtype) in expected.items()):
             raise ValueError(f"invalid calibrated W3 tensors for {name}")
         levels = _codebook(entry["codebook"])
+        # The fragment tensors index 32 rows by dim 0 and a 128-wide K chunk by dim 1; row scales follow the rows.
+        planes, scales = (shard.cols(shard.rows(tensors[key], 32), dim=1) for key in ("planes", "scales"))
+        row_scale = shard.rows(tensors["row_scale"])
+        n, k = row_scale.shape[0], planes.shape[1] * 128
+        if (n, k) != (linear.out_features, linear.in_features):
+            raise ValueError(f"calibrated W3 shape mismatch for {name}")
         # On GB10, copying a file-backed mmap directly to CUDA is much slower
         # than staging it in ordinary CPU storage, as the draft loader does.
         # Only one projection is staged at a time.
-        return W3Weight(*(tensors[key].clone().to(linear.weight.device) for key in expected), n, k, levels, lut_of(levels))
+        return W3Weight(*(t.clone(memory_format=torch.contiguous_format).to(linear.weight.device) for t in (planes, scales, row_scale)),
+                        n, k, levels, lut_of(levels))
 
 
 def fetch(target, root: str | Path, log=print) -> Path:

@@ -44,6 +44,7 @@ class EngineConfig:
     max_context: int | None = None            # SHARAR_MAX_CONTEXT (0/unset: the target's)
     max_batch: int = 4                        # SHARAR_MAX_BATCH: most requests decoded together, 1-16 (the throughput profile: 16)
     cuda_arch: str = "12.1a"                  # SHARAR_CUDA_ARCH for the JIT-built CUDA kernels
+    tp_allreduce: str = "rdma"                # SHARAR_TP_ALLREDUCE: rdma (the one-shot for decode-sized all-reduces between two ranks) or nccl (every one on NCCL, as vLLM)
     # --- weights and numerics
     w3_decode: bool = False                   # SHARAR_W3_DECODE: 3-bit decode copies for calls of <= 64 rows (the 27B's layers and FP8 draft, Flash-Next's trunk)
     w3_checkpoint: str | None = None          # SHARAR_W3_CHECKPOINT: the target's calibrated copies (required on Flash-Next; the 27B rounds to nearest without)
@@ -94,6 +95,7 @@ class EngineConfig:
             max_context=_int(e, "SHARAR_MAX_CONTEXT", 0) or None,
             max_batch=_int(e, "SHARAR_MAX_BATCH", 4),
             cuda_arch=_str(e, "SHARAR_CUDA_ARCH", "12.1a"),
+            tp_allreduce=_str(e, "SHARAR_TP_ALLREDUCE", "rdma"),
             w3_decode=_flag(e, "SHARAR_W3_DECODE"),
             w3_checkpoint=_str(e, "SHARAR_W3_CHECKPOINT"),
             w3_warning=_str(e, "SHARAR_W3_WARNING"),
