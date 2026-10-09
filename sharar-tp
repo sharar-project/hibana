@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# The 27B tensor-parallel on two DGX Sparks (docs/tensor-parallel.md): rank 0 here with the HTTP API on
-# 127.0.0.1:30001, rank 1 on the peer, each from its uv venv. `./sharar-ctl serve 27b --tp 2` runs this, and
-# `./sharar-ctl stop | status | logs | chat | launch` follow it as they follow the container.
+# A target tensor-parallel on two DGX Sparks (docs/tensor-parallel.md): rank 0 here with the HTTP API on
+# 127.0.0.1:30001, rank 1 on the peer, each from its uv venv. `./sharar-ctl serve 27b|flashnext --tp 2` runs this,
+# and `./sharar-ctl stop | status | logs | chat | launch` follow it as they follow the container.
 #
 #   ./sharar-tp serve [--exact | --balanced | --fast | --throughput] [sharar serve arguments...]   in the background
 #   ./sharar-tp status | stop | logs [-f]
 #   ./sharar-tp setup      the venv on both Sparks; model, draft and 3-bit checkpoint here, copied to the peer
-#                          (the first serve runs it)
+#                          (the first serve of each target runs it)
+#
+# The target is SHARAR_TARGET (qwen38 or flashnext; default qwen38), served with its settings as the single-Spark
+# launcher resolves them (config/targets/<target>.env through tools/launcher-config.sh; the environment wins); a
+# failed rank ends the other and the pair restarts (up to 5 times in 10 minutes).
 #   ./sharar-tp comm [--vllm] [--nccl-env vllm-batch-invariant]
 #                          the RDMA one-shot all-reduce against NCCL between the two Sparks (profiling/tp_comm.py)
+#   ./sharar-tp draft-head the vocabulary-parallel draft head against the whole-vocabulary one (profiling/tp_draft_head.py)
 #
 # Profiles are sharar-ctl's (tools/serving-profile.sh; fast by default); SHARAR_W3_DECODE=0 serves the native NVFP4/FP8
 # weights instead of the 3-bit copies, and SHARAR_TP_ALLREDUCE=nccl runs every all-reduce on NCCL (no RDMA one-shot).
@@ -19,6 +24,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 [[ -f config/gb10.env ]] && source config/gb10.env
 source tools/serving-profile.sh
+TARGET=${SHARAR_TARGET:-qwen38}
+case "$TARGET" in 27b) TARGET=qwen38 ;; flash-next) TARGET=flashnext ;; esac
+# The target's settings as the single-Spark launcher resolves them; a variable already set in the environment wins.
+while IFS='=' read -r key value; do
+  [[ $key == SHARAR_* && -z ${!key+set} ]] && export "$key=$value"
+done < <(bash tools/launcher-config.sh print "$TARGET")
 HF_CACHE=${SHARAR_HF_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}}
 W3_ROOT=${SHARAR_RESULTS:-$HOME/.local/share/sharar}/w3-checkpoints
 RUN=results/tp  # the serving pair's log and process group, and the peer setup was done for
@@ -44,7 +55,11 @@ link() {  # PEER and ADDR (where the ranks meet), and ENV: what both ranks run w
   dev=$(sed -n 's/.* dev \([^ ]*\).*/\1/p' <<< "$route")
   ADDR=$(sed -n 's/.* src \([^ ]*\).*/\1/p' <<< "$route"):29500
   ENV=(SHARAR_HF_CACHE="$HF_CACHE" HF_HUB_OFFLINE=1 TOKENIZERS_PARALLELISM=false PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-       CUDA_HOME=/usr/local/cuda PATH="/usr/local/cuda/bin:$PATH" NCCL_SOCKET_IFNAME="$dev")
+       CUDA_HOME=/usr/local/cuda PATH="$PWD/.venv/bin:/usr/local/cuda/bin:$PATH" NCCL_SOCKET_IFNAME="$dev")  # the venv's ninja builds the RDMA extension
+  local key
+  for key in $(compgen -e SHARAR_); do  # the engine's settings (rank 0 broadcasts its own to the others)
+    [[ $key == SHARAR_TP_PREFIX || $key == SHARAR_TP_PEER ]] || ENV+=("$key=${!key}")
+  done
 }
 
 mirror() {  # the checkout, at the same path on the peer
@@ -58,7 +73,7 @@ both_ranks() {  # MODULE ARGS...: rank 1 on the peer over ssh, rank 0 here, each
   mirror
   # A terminal for rank 1 (-tt): it gets SIGHUP and exits when its ssh ends, which ends with this script.
   trap 'kill $(jobs -p) 2>/dev/null' EXIT
-  ssh -tt "$PEER" "cd $PWD && env ${ENV[*]} tools/lxcfs-run.sh ${prefix[*]} .venv/bin/python -u -m $module $* --tp-rank 1" \
+  ssh -tt "$PEER" "cd $PWD && env $(printf '%q ' "${ENV[@]}") tools/lxcfs-run.sh ${prefix[*]} .venv/bin/python -u -m $module $(printf '%q ' "$@") --tp-rank 1" \
     2>&1 < /dev/null | sed -u 's/\r$//; s/^/[rank 1] /' &
   env "${ENV[@]}" tools/lxcfs-run.sh "${prefix[@]}" .venv/bin/python -u -m "$module" "$@" --tp-rank 0 &
   local rank0=$! status
@@ -90,38 +105,63 @@ serve_pair() {  # ARGS...: both ranks of `sharar`, started again when either fai
 }
 
 cmd_setup() {
-  local model rev draft drev
+  local model rev draft drev models=()
   PEER=$(peer)
-  echo "setting up this Spark and $PEER"
+  echo "setting up $TARGET on this Spark and $PEER"
   [[ -x .venv/bin/python ]] || tools/setup-venv.sh
   mirror
   ssh "$PEER" "mkdir -p .local/bin && test -x .local/bin/uv" || scp -q "$(command -v uv)" "$PEER:.local/bin/uv"
   ssh "$PEER" "cd $PWD && { test -x .venv/bin/python || PATH=\$HOME/.local/bin:\$PATH tools/setup-venv.sh; }"
-  read -r model rev draft drev <<< "$("${PY[@]}" -c 'from sharar.model.qwen38_config import MODEL_ID, MODEL_REVISION
-from sharar.proposers.parallel import PINS
-print(MODEL_ID, MODEL_REVISION, *PINS["dflash2"])' 2>/dev/null)"
+  # The RDMA all-reduce is a torch extension built on first use: it needs the interpreter's C headers on both Sparks.
+  local headers='import os, sysconfig; raise SystemExit(not os.path.exists(os.path.join(sysconfig.get_paths()["include"], "Python.h")))'
+  if ! .venv/bin/python -c "$headers" || ! ssh "$PEER" "cd $PWD && .venv/bin/python -c '$headers'"; then
+    echo "the RDMA all-reduce needs the Python headers on both Sparks: sudo apt install python3.12-dev (or SHARAR_TP_ALLREDUCE=nccl)" >&2
+    exit 1
+  fi
+  read -r model rev <<< "$("${PY[@]}" -c "from sharar.target import get; t = get('$TARGET'); print(t.model_id, t.model_revision)" 2>/dev/null)"
   mkdir -p "$HF_CACHE/hub" "$W3_ROOT" "$RUN"
   .venv/bin/python tools/fetch-model.py "$model" "$rev" "$HF_CACHE/hub" "$HF_CACHE"
-  .venv/bin/python tools/fetch-model.py "$draft" "$drev" "$HF_CACHE/hub" "$HF_CACHE"
-  "${PY[@]}" -m sharar.weights.w3_checkpoint fetch --target qwen38 --root "$W3_ROOT" 2>/dev/null
+  models+=("$HF_CACHE/hub/models--${model//\//--}")
+  if [[ ${SHARAR_PROPOSER:-} == dflash2 || ${SHARAR_PROPOSER:-} == dspark ]]; then  # a separate draft checkpoint
+    read -r draft drev <<< "$("${PY[@]}" -c "from sharar.proposers.parallel import PINS; print(*PINS['$SHARAR_PROPOSER'])" 2>/dev/null)"
+    .venv/bin/python tools/fetch-model.py "$draft" "$drev" "$HF_CACHE/hub" "$HF_CACHE"
+    models+=("$HF_CACHE/hub/models--${draft//\//--}")
+  fi
+  "${PY[@]}" -m sharar.weights.w3_checkpoint fetch --target "$TARGET" --root "$W3_ROOT" 2>/dev/null ||
+    echo "no calibrated 3-bit checkpoint could be fetched for $TARGET"
   echo "copying the model, draft and 3-bit checkpoint to $PEER"
   ssh "$PEER" mkdir -p "$HF_CACHE/hub" "$W3_ROOT"
-  rsync -a "$HF_CACHE/hub/models--${model//\//--}" "$HF_CACHE/hub/models--${draft//\//--}" "$PEER:$HF_CACHE/hub/"
+  rsync -a "${models[@]}" "$PEER:$HF_CACHE/hub/"
   rsync -a "$W3_ROOT/" "$PEER:$W3_ROOT/"
-  echo "$PEER" > "$RUN/setup-peer"
+  echo "$PEER" > "$RUN/setup-peer-$TARGET"
   echo "both Sparks are set up"
 }
 
 cmd_run() {  # both ranks in the foreground: what `serve` starts in the background
   local profile=fast w3=""
   case "${1:-}" in --exact|--balanced|--fast|--throughput) profile=${1#--}; shift ;; esac
-  serving_profile "$profile" qwen38
-  link
+  serving_profile "$profile" "$TARGET"
   local w3_decode=${SHARAR_W3_DECODE:-$P_W3}
-  [[ $w3_decode == 1 ]] && w3=$(realpath "${SHARAR_W3_CHECKPOINT:-$W3_ROOT/qwen38-current}")
-  ENV+=(SHARAR_PROFILE="$profile" SHARAR_W3_DECODE="$w3_decode" SHARAR_W3_CHECKPOINT="$w3" SHARAR_DEVICE_ACCEPT="$P_DEVICE_ACCEPT"
-       SHARAR_TP_ALLREDUCE="${SHARAR_TP_ALLREDUCE:-rdma}")
-  local args=(serve --tp 2 --tp-address "$ADDR" --proposer dflash2 --spec 15 --verify-state reconstruct --draft-precision fp8
+  if [[ $w3_decode == 1 ]]; then
+    w3=${SHARAR_W3_CHECKPOINT:-auto}
+    [[ $w3 == auto ]] && w3=$W3_ROOT/$TARGET-current
+    if [[ -e $w3 ]]; then w3=$(realpath "$w3")
+    elif [[ $TARGET == flashnext ]]; then echo "no calibrated 3-bit trunk at $w3: serving the FP8 trunk"; w3=""; w3_decode=0
+    fi
+  fi
+  export SHARAR_PROFILE="$profile" SHARAR_W3_DECODE="$w3_decode" SHARAR_W3_CHECKPOINT="$w3" SHARAR_DEVICE_ACCEPT="$P_DEVICE_ACCEPT"
+  export SHARAR_TP_ALLREDUCE="${SHARAR_TP_ALLREDUCE:-rdma}"
+  # The NVMe session store, as the single-Spark launcher keeps it (off disables): each rank stores its own heads of
+  # every session on its own Spark, at the same path.
+  local sessions=${SHARAR_SESSION_DIR:-${SHARAR_RESULTS:-$HOME/.local/share/sharar}/sessions-tp}
+  if [[ $sessions == off ]]; then unset SHARAR_SESSION_DIR
+  else
+    mkdir -p "$sessions"; ssh "$(peer)" mkdir -p "$sessions"
+    export SHARAR_SESSION_DIR=$sessions SHARAR_SESSION_GIB=${SHARAR_SESSION_GIB:-200} SHARAR_SESSION_MIN_TOKENS=${SHARAR_SESSION_MIN_TOKENS:-4096}
+  fi
+  link
+  local args=(serve --tp 2 --tp-address "$ADDR" --target "$TARGET" --proposer "$SHARAR_PROPOSER" --spec "$SHARAR_SPEC"
+              --verify-state "$SHARAR_VERIFY_STATE" --draft-precision "$SHARAR_DRAFT_PRECISION"
               --accept-default "$P_ACCEPT" --max-batch "$P_MAX_BATCH")
   [[ $P_ACCEPT_SAMPLED == 1 && $P_ACCEPT != off ]] &&
     args+=(--accept-default-sampled ${P_ACCEPT_SAMPLED_THRESHOLD:+--accept-default-sampled-threshold "$P_ACCEPT_SAMPLED_THRESHOLD"})
@@ -134,13 +174,13 @@ cmd_serve() {
   if curl -sf "$URL/get_server_info" > /dev/null; then echo "something already serves $URL: stop it first (./sharar-ctl stop)"; exit 1; fi
   local peer
   peer=$(peer)
-  [[ -f $RUN/setup-peer && $(cat "$RUN/setup-peer") == "$peer" ]] || cmd_setup
+  [[ -f $RUN/setup-peer-$TARGET && $(cat "$RUN/setup-peer-$TARGET") == "$peer" ]] || cmd_setup
   mkdir -p "$RUN"
   setsid "$0" _run "$@" > "$RUN/serve.log" 2>&1 < /dev/null &
   echo $! > "$RUN/pid"
-  echo "starting the 27B on two Sparks (this Spark and $peer); about a minute"
+  echo "starting $TARGET on two Sparks (this Spark and $peer); a minute or a few"
   # Rank 0's milestones as they land; done at "serving on", a traceback from either rank, or an exit.
-  local milestones='^(loading|  weights loaded|  w3: packed [0-9]+ matrices|  captured verify graph for batch|  warmup done|serving on)'
+  local milestones='^(loading|  weights loaded|  w3: |  captured verify graph for batch|  warmup done|serving on)'
   local shown=0 lines
   while :; do
     lines=$(grep -E "$milestones" "$RUN/serve.log" || true)
@@ -198,5 +238,6 @@ case "${1:-}" in
   logs) shift; tail -n 50 "$@" "$RUN/serve.log" ;;
   setup) cmd_setup ;;
   comm) shift; cmd_comm "$@" ;;
+  draft-head) link; both_ranks profiling.tp_draft_head --tp-address "$ADDR" 2>&1 | grep -v '^\[rank 1\]' ;;
   *) sed -n '2,15p' "$0"; exit 2 ;;
 esac
