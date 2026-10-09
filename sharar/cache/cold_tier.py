@@ -91,7 +91,11 @@ class ManagedArena:
             return None
         from sharar.cache.ledger import mem_available_bytes
 
-        if mem_available_bytes() - self.SLAB < self.floor_bytes + 4 * GIB:
+        from sharar.distributed import all_reduce_min
+
+        # Tensor-parallel ranks grow their tiers together (each holds its own share of the same sessions): one rank's
+        # tight host refuses the slab on every rank, so all of them park, drop and restore alike.
+        if not all_reduce_min(int(mem_available_bytes() - self.SLAB >= self.floor_bytes + 4 * GIB))[0]:
             return None  # the host is tight: do not grow the tier
         block = _ManagedBlock(self.SLAB)
         block.rt.cudaMemPrefetchAsync(block.ptr, ctypes_size(self.SLAB), ctypes_int(0), ctypes_ptr(0))
@@ -374,8 +378,13 @@ class ColdTier:
         arena (Parked) or only in the session store (its index records)."""
         hits = [e for e in self.entries if len(e.key) <= len(ids) and ids[: len(e.key)] == e.key]
         if self.disk is not None:
+            from sharar.distributed import common_values
             present = {tuple(e.key) for e in self.entries}
-            hits += [r for r in self.disk.find(ids) if tuple(r.key) not in present]
+            stored = [r for r in self.disk.find(ids) if tuple(r.key) not in present]
+            # Records land when each rank's background writer finishes: restore only those every rank holds. A key
+            # is a prefix of `ids`, so its length names it.
+            common = set(common_values(sorted(len(r.key) for r in stored)))
+            hits += [r for r in stored if len(r.key) in common]
         hits.sort(key=lambda e: len(e.key))
         return hits
 
@@ -386,7 +395,10 @@ class ColdTier:
         straight from its file instead. Returns the auxiliary dict for the
         re-inserted node, or None when a stored record could not be read."""
         if not isinstance(entry, Parked):
-            return self._restore_record(entry, pages, slot, start)
+            from sharar.distributed import all_reduce_min
+            aux = self._restore_record(entry, pages, slot, start)
+            # A record one rank could not read is a miss on every rank (the caller frees what it allocated).
+            return aux if all_reduce_min(int(aux is not None))[0] else None
         t0 = time.perf_counter()
         assert int(pages.shape[0]) == entry.own - start
         kvp = self.kv_pool

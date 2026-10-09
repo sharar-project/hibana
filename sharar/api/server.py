@@ -703,6 +703,33 @@ def _split_chat(text: str, in_reasoning: bool, tools: list | None) -> tuple[str,
     return rp.reasoning, content, calls
 
 
+def _handled_signals_server():
+    import contextlib
+
+    import uvicorn
+
+    class HandledSignals(uvicorn.Server):
+        """uvicorn re-raises the SIGTERM it handled once it has stopped. In a container the server is PID 1, which
+        ignores it; run directly (two Sparks, from the venv) it ends the process before the engine drains and its
+        sessions persist. The signal stays handled and serve() returns."""
+
+        @contextlib.contextmanager
+        def capture_signals(self):
+            with super().capture_signals():
+                yield
+                self._captured_signals.clear()
+
+    return HandledSignals
+
+
+def _persist_sessions(ex, engine, log) -> None:
+    """Cached sessions survive the restart in the session store, once the engine has stopped: on every
+    tensor-parallel rank or on none (parking grows the tiers through collectives)."""
+    from sharar.distributed import all_reduce_min
+    if all_reduce_min(int(not engine.thread.is_alive()))[0]:
+        ex.persist_sessions(log)
+
+
 def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
           traces: str | None = None, traces_max_mib: int = 32768, draft_dir: str | None = None,
           accept_default: tuple[int, float] = (1, 0.0), target: str | None = None, max_context: int | None = None,
@@ -737,8 +764,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     ex = Executor(model, log=log, spec_config=spec_config, max_context=max_context, max_batch=max_batch)
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
-    if get_tp_info().size == 1:  # tensor-parallel ranks would park and restore sessions apart
-        ex.enable_cold_tier(log=log)
+    ex.enable_cold_tier(log=log)  # tensor-parallel ranks agree on every tier decision (cache/cold_tier.py)
     cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=ex.profile.max_queued,
                           chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget)
     sched = Scheduler(ex, cfg)
@@ -747,6 +773,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         engine = EngineLoop(sched, Grammars.from_tokenizer(tok._tok, served.vocab_size, SamplingParams().stop_token_ids))
         engine.start()
         engine.thread.join()
+        _persist_sessions(ex, engine, log)
         return
     sink = None
     if traces:
@@ -792,11 +819,10 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     app = create_app(engine, tok, tmpl, describe)
     log(f"serving on http://{host}:{port}")
     try:
-        uvicorn.run(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=30)
+        _handled_signals_server()(uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=30)).run()
     finally:
         engine.drain(timeout=5)
         engine.thread.join(timeout=6)
-        if not engine.thread.is_alive():
-            ex.persist_sessions(log)  # cached sessions survive the restart in the session store
+        _persist_sessions(ex, engine, log)
         if sink is not None:
             sink.close()

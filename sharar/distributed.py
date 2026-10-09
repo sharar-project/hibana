@@ -109,9 +109,13 @@ def expect_peer_exit() -> None:
 
 
 def close_distributed() -> None:
-    """Leave the group once this rank's engine has stopped."""
+    """End this rank once its engine has stopped and its sessions persisted. NCCL's destroy_process_group can wait
+    forever on two Sparks (measured: both ranks blocked in it after a clean stop), and nothing is left to tear down
+    that the process exit does not release, so the rank exits here."""
     expect_peer_exit()
-    dist.destroy_process_group()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 def div_even(n: int, size: int) -> int:
@@ -156,3 +160,14 @@ def all_reduce_min(*values: int) -> list[int]:
     t = torch.tensor(values, dtype=torch.int64, device="cuda")
     dist.all_reduce(t, op=dist.ReduceOp.MIN)
     return t.tolist()
+
+
+def common_values(values: list[int]) -> list[int]:
+    """The values every rank holds, in this rank's order: the session-store records whose background writes have
+    landed on every rank (a record one rank has not written yet is not restored on any)."""
+    if _TP_INFO.size == 1:
+        return values
+    held = [None] * _TP_INFO.size
+    dist.all_gather_object(held, list(values))
+    common = set.intersection(*(set(h) for h in held))
+    return [v for v in values if v in common]
