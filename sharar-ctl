@@ -8,6 +8,7 @@ container launchers `run-sharar.sh` and `run-sharar-train.sh`.
   sharar-ctl launch show      # base URLs, model name and context for any other tool
   sharar-ctl pull             # fetch the newest published image (the launcher pulls a missing one itself)
   sharar-ctl serve [27b | flashnext] [--no-traces] [--pinned | --draft DIR] [--fp8] [--exact | --balanced | --fast | --throughput]
+  sharar-ctl serve 27b --tp 2 [--exact | --balanced | --fast | --throughput]   # on two Sparks: ./sharar-tp
   sharar-ctl stop [27b | flashnext]
   sharar-ctl status [27b | flashnext]
   sharar-ctl train            # stop serving, train until `train stop`
@@ -19,7 +20,7 @@ container launchers `run-sharar.sh` and `run-sharar-train.sh`.
   sharar-ctl chat [27b | flashnext] [--think] [--max-tokens N] [--temperature T] [--no-trace]
 
 The target defaults to SHARAR_TARGET, else the 27B; stop, status, logs and chat pick the target that is
-serving when none is named. Settings come from the environment, config/gb10.env (optional), the target's
+serving when none is named, and the 27B on two Sparks when ./sharar-tp serves it. Settings come from the environment, config/gb10.env (optional), the target's
 config/targets/<target>.env and defaults, resolved by tools/launcher-config.sh as the launcher resolves them.
 A missing model or draft is downloaded on the first serve.
 
@@ -41,6 +42,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+TP_PID = ROOT / "results" / "tp" / "pid"  # ./sharar-tp's serving pair
 
 
 TARGETS = ("27b", "flashnext", "qwen38", "flash-next")  # user-facing names; tools/launcher-config.sh maps them
@@ -133,7 +135,22 @@ def current_draft(env: dict) -> Path | None:
     return target if (target / "config.json").is_file() else None
 
 
+def tp_serving() -> bool:
+    """Whether ./sharar-tp is serving the 27B on two Sparks."""
+    if not TP_PID.is_file():
+        return False
+    try:
+        os.kill(int(TP_PID.read_text()), 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 def cmd_serve(args, env, dry) -> int:
+    if args.tp == 2:
+        if env["SHARAR_TARGET"] != "qwen38" or args.draft or args.pinned:
+            sys.exit("--tp 2 serves the 27B with its pinned draft (docs/tensor-parallel.md)")
+        return run([str(ROOT / "sharar-tp"), "serve", *([f"--{args.profile}"] if args.profile else [])], env, dry)
     env = dict(env)
     if args.no_traces:
         env.pop("SHARAR_TRACES", None)
@@ -230,10 +247,14 @@ def cmd_pull(args, env, dry) -> int:
 
 
 def cmd_stop(args, env, dry) -> int:
+    if tp_serving():
+        return run([str(ROOT / "sharar-tp"), "stop"], env, dry)
     return run([str(ROOT / "run-sharar.sh"), "--stop"], env, dry)
 
 
 def cmd_status(args, env, dry) -> int:
+    if tp_serving():
+        return run([str(ROOT / "sharar-tp"), "status"], env, dry)
     port = env["SHARAR_PORT"]
     serving = container_running(env["SHARAR_CONTAINER"])
     info = server_info(port) if serving else None
@@ -431,6 +452,8 @@ def cmd_chat(args, env, dry) -> int:
 
 
 def cmd_logs(args, env, dry) -> int:
+    if tp_serving() and not args.train:
+        return run([str(ROOT / "sharar-tp"), "logs", "-n", str(args.lines), *(["-f"] if args.follow else [])], env, dry)
     name = env.get("SHARAR_TRAIN_CONTAINER", "sharar-train") if args.train else env["SHARAR_CONTAINER"]
     return run(["docker", "logs", "--tail", str(args.lines)] + (["--follow"] if args.follow else []) + [name], env, dry)
 
@@ -445,6 +468,8 @@ def main(argv=None) -> int:
     p.add_argument("--pinned", action="store_true", help="serve the publisher draft even if one was promoted")
     p.add_argument("--draft", default=None, help="serve this checkpoint directory")
     p.add_argument("--fp8", action="store_true", help="FP8 draft precision (the optimized measured profile)")
+    p.add_argument("--tp", type=int, choices=(1, 2), default=1, help="Sparks to serve on: 2 serves the 27B tensor-parallel "
+                   "from the uv venv on each (./sharar-tp; docs/tensor-parallel.md)")
     g = p.add_mutually_exclusive_group()
     for name, text in (("exact", "the target's own distribution: exact acceptance, no lossy weight copies"),
                        ("balanced", "relaxed greedy acceptance top-2/1.0, the 27B's calibrated 3-bit copies"),

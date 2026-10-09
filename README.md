@@ -59,6 +59,12 @@ Any OpenAI-compatible client works against `http://127.0.0.1:30001/v1`, and
 Anthropic Messages clients against `http://127.0.0.1:30001`
 ([API guide](docs/api.md)).
 
+## Two Sparks
+
+`./sharar-ctl serve 27b --tp 2` serves the 27B tensor-parallel across two Sparks linked by their ConnectX ports, from a
+uv venv on each (the first run sets both up); `stop`, `status`, `logs`, `chat` and `launch` work as on one Spark: 119.1 tok/s single-stream against 77.1 on one Spark with the same `fast` profile,
+at the same GSM8K accuracy ([tensor parallel](docs/tensor-parallel.md)).
+
 ## Coding agents
 
 ```bash
