@@ -13,6 +13,10 @@ a gloo round trip costs about 5 ms, an NCCL one about 0.2 ms.
 
 from __future__ import annotations
 
+import os
+import socket
+import sys
+import threading
 from dataclasses import dataclass
 
 import torch
@@ -59,10 +63,54 @@ def init_distributed(rank: int, size: int, address: str, allreduce: str = "rdma"
         infos = [None, None]
         dist.all_gather_object(infos, _ONE_SHOT.info())
         _ONE_SHOT.connect(infos[1 - rank])
+    if size > 1:
+        _watch_peers(rank, size, address)
+
+
+# A rank that dies leaves the others inside a collective until NCCL's timeout (10 minutes). Each rank above 0 holds
+# a TCP connection to the primary; the kernel closes it the moment a process ends, however it ends, and keepalive
+# probes notice a host that vanished. Either side then ends its own process, so the launcher restarts the pair.
+_PEER_EXIT_EXPECTED = threading.Event()
+_KEEPALIVE = ((socket.TCP_KEEPIDLE, 2), (socket.TCP_KEEPINTVL, 1), (socket.TCP_KEEPCNT, 3))  # a lost host: ~5 s
+
+
+def _watch_peers(rank: int, size: int, address: str) -> None:
+    host, port = address.rsplit(":", 1)
+    if rank == 0:
+        server = socket.create_server((host, int(port) + 1))
+        dist.barrier()  # listening before the others connect
+        peers = [server.accept()[0] for _ in range(size - 1)]
+        server.close()
+    else:
+        dist.barrier()
+        peers = [socket.create_connection((host, int(port) + 1), timeout=60)]
+    for sock in peers:
+        sock.settimeout(None)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for opt, value in _KEEPALIVE:
+            sock.setsockopt(socket.IPPROTO_TCP, opt, value)
+        threading.Thread(target=_watch, args=(sock,), name="tp-peer-watch", daemon=True).start()
+
+
+def _watch(sock: socket.socket) -> None:
+    try:
+        sock.recv(1)  # nothing is ever sent: this returns or raises only when the peer is gone
+    except OSError:
+        pass
+    if not _PEER_EXIT_EXPECTED.is_set():
+        print(f"tensor-parallel rank {_TP_INFO.rank}: a peer rank exited; ending this rank so the pair restarts",
+              file=sys.stderr, flush=True)
+        os._exit(1)
+
+
+def expect_peer_exit() -> None:
+    """The pair is stopping on purpose (the primary broadcast its stop): a peer that exits now is not a failure."""
+    _PEER_EXIT_EXPECTED.set()
 
 
 def close_distributed() -> None:
     """Leave the group once this rank's engine has stopped."""
+    expect_peer_exit()
     dist.destroy_process_group()
 
 

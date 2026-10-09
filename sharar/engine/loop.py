@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import torch
 
-from sharar.distributed import broadcast_pyobj, get_tp_info
+from sharar.distributed import broadcast_pyobj, expect_peer_exit, get_tp_info
 from sharar.engine.grammar import Grammars
 from sharar.engine.request import Request
 from sharar.engine.sampler import InvalidRequest, SamplingParams
@@ -155,6 +155,7 @@ class EngineLoop:
             result = self.sched.ex.reload_draft(cmd[1])
         elif kind == "stop":
             self.stop = True
+            expect_peer_exit()
         if self.tp.is_primary():
             self._applied.append(cmd)
         return result

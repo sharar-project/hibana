@@ -61,10 +61,32 @@ both_ranks() {  # MODULE ARGS...: rank 1 on the peer over ssh, rank 0 here, each
   ssh -tt "$PEER" "cd $PWD && env ${ENV[*]} tools/lxcfs-run.sh ${prefix[*]} .venv/bin/python -u -m $module $* --tp-rank 1" \
     2>&1 < /dev/null | sed -u 's/\r$//; s/^/[rank 1] /' &
   env "${ENV[@]}" tools/lxcfs-run.sh "${prefix[@]}" .venv/bin/python -u -m "$module" "$@" --tp-rank 0 &
-  local rank0=$!
+  local rank0=$! status
   # `stop` signals this script, which passes it to rank 0 alone: rank 0 drains its requests, and its stop ends rank 1.
-  trap "kill -TERM $rank0" TERM
+  trap "STOPPING=1; kill -TERM $rank0" TERM
   while kill -0 "$rank0" 2>/dev/null; do wait "$rank0" || true; done
+  wait "$rank0" && status=0 || status=$?
+  kill $(jobs -p) 2>/dev/null || true  # rank 1's ssh, if it outlived rank 0
+  wait 2>/dev/null || true
+  return "$status"
+}
+
+serve_pair() {  # ARGS...: both ranks of `sharar`, started again when either fails (a rank that dies ends the other)
+  local starts=() status now recent t
+  while :; do
+    both_ranks sharar "$@" && status=0 || status=$?
+    [[ $status == 0 || ${STOPPING:-0} == 1 ]] && return "$status"
+    now=$(date +%s)
+    starts+=("$now")
+    recent=0
+    for t in "${starts[@]}"; do (( now - t < 600 )) && recent=$((recent + 1)); done
+    if (( recent >= 5 )); then
+      echo "the pair failed $recent times in 10 minutes (exit $status); not restarting"
+      return "$status"
+    fi
+    echo "the pair exited (status $status); restarting in 5 s"
+    sleep 5
+  done
 }
 
 cmd_setup() {
@@ -104,7 +126,7 @@ cmd_run() {  # both ranks in the foreground: what `serve` starts in the backgrou
   [[ $P_ACCEPT_SAMPLED == 1 && $P_ACCEPT != off ]] &&
     args+=(--accept-default-sampled ${P_ACCEPT_SAMPLED_THRESHOLD:+--accept-default-sampled-threshold "$P_ACCEPT_SAMPLED_THRESHOLD"})
   [[ -n $P_SPEC_DEPTHS ]] && args+=(--spec-depths "$P_SPEC_DEPTHS")
-  both_ranks sharar "${args[@]}" "$@"
+  serve_pair "${args[@]}" "$@"
 }
 
 cmd_serve() {
