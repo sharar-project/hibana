@@ -3,8 +3,9 @@
 ## Profile and prerequisites
 
 Use one NVIDIA GB10 (SM 12.1), `aarch64`, about 128 GB unified memory, NVIDIA
-driver 580 or newer, Docker and a working user systemd manager for the guard
-(two Sparks: [tensor parallel](tensor-parallel.md)).
+driver 580 or newer, the CUDA 13 toolkit in `/usr/local/cuda` (DGX OS ships it; FlashInfer and Sharar compile
+their GB10 kernels on first use), [uv](https://docs.astral.sh/uv/) and a working user systemd manager
+(`loginctl enable-linger` keeps it after logout). Two Sparks: [tensor parallel](tensor-parallel.md).
 Two targets, one per process, chosen by name: `27b` (`RadixArk/Qwen3.8-27B-NVFP4` at `319f741`, with the
 DFlash2 drafter `incoai/Qwen3.8-27B-DFlash2` at `dedf8df`) and `flashnext`
 (`RadixArk/Qwen3.8-Flash-Next-NVFP4` at `7b71922`, its own MTP head). The first serve downloads whatever
@@ -14,19 +15,26 @@ the cache lacks (about 26 GB for the 27B, 135 GB for Flash-Next) after checking 
 No configuration file is needed. Settings resolve in this order, first wins
 ([tools/launcher-config.sh](../tools/launcher-config.sh)): the environment and `config/gb10.env` (optional;
 copy [the example](../config/gb10.env.example)), the target's settings in `config/targets/<target>.env`
-(port, container, drafter), then defaults: models in `SHARAR_HF_CACHE` (default `$HF_HOME`, else
+(port, service, drafter), then defaults: models in `SHARAR_HF_CACHE` (default `$HF_HOME`, else
 `~/.cache/huggingface`; Flash-Next in `SHARAR_FLASHNEXT_CACHE`, default the same) and results, traces,
 sessions and drafter runs in `SHARAR_RESULTS` (default `~/.local/share/sharar`).
 
-## Build and launch
+## Install and launch
 
 ```bash
+./sharar-ctl setup                # the Python environment; serve runs it when .venv is missing or stale
 ./sharar-ctl serve 27b            # or flashnext; ./run-sharar.sh --check previews the launch
 tools/verify-sharar.sh
+./sharar-ctl logs -f              # $SHARAR_RESULTS/logs/<service>.log
 ```
 
-`docker/build.sh` builds the image from this checkout; set `SHARAR_IMAGE` to its tag to serve it.
-The launcher starts `sharar-memory-guard.service`. The guard protects a 16 GiB `MemAvailable` floor.
+`tools/setup-venv.sh` builds `.venv` (or `SHARAR_VENV`) with uv from [the pinned constraints](../constraints/gb10-cu130.txt):
+CUDA 13 PyTorch, FlashInfer with its JIT cache, the serving packages, and `sharar` installed editable. It
+records a stamp of the constraints, `pyproject.toml` and itself, and the launchers rebuild the environment when
+the stamp no longer matches. The launcher runs `python -m sharar serve` from the checkout as a user systemd service
+(`systemd-run --user`, unit `sharar-qwen38` or `sharar-flashnext`): `stop` sends SIGTERM, and the server drains its
+requests and stores its sessions first. Its log is `$SHARAR_RESULTS/logs/<service>.log` (the previous run's is
+`.log.1`). The launcher also starts `sharar-memory-guard.service`. The guard protects a 16 GiB `MemAvailable` floor.
 Startup needs at least 40 GiB available and checks the prospective pool/draft
 budget separately. Automatic KV capacity depends on available memory.
 
@@ -41,8 +49,8 @@ budget separately. Automatic KV capacity depends on available memory.
 | Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length` (the engine's own default is 32,768). The pool guarantees one request at that length (8 GiB of FP8 KV at 262K) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
 | Requests decoded together | 4; `throughput`: 16 on the 27B, 128 on Flash-Next (64 with NVFP4 experts) | `SHARAR_MAX_BATCH` / `sharar serve --max-batch`, 1-128 (graph buckets 1, 2, 4, ... 128). Above four, the pool guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full context |
 | Verify depth per batch size | the proposer's depth at every batch; `throughput` on Flash-Next: `16:3` | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` / `sharar serve --spec-depths` (0 = plain decode). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
-| Image | `ghcr.io/abdelfattah-lab/sharar:latest` ([tools/image.sh](../tools/image.sh)), pulled when missing | `SHARAR_IMAGE=sharar:<tag>` serves a local `docker/build.sh` build |
-| Container / port | 27B `sharar-qwen38` / 30001, Flash-Next `sharar-flashnext` / 30004 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
+| Python environment | `.venv` in the checkout | `SHARAR_VENV=/dir` (built there by `tools/setup-venv.sh`) |
+| Service / port | 27B `sharar-qwen38` / 30001, Flash-Next `sharar-flashnext` / 30004 | `SHARAR_SERVICE` / `SHARAR_PORT` |
 | Request traces | on under `sharar-ctl` (`$SHARAR_RESULTS/traces`), off under `run-sharar.sh` | `sharar-ctl serve --no-traces`; `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
 | Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, fetched on first serve | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
 | Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `SHARAR_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
@@ -51,10 +59,9 @@ budget separately. Automatic KV capacity depends on available memory.
 For MTP on the 27B, use `SHARAR_PROPOSER=mtp SHARAR_SPEC=3`. DSpark (`SHARAR_PROPOSER=dspark SHARAR_SPEC=7
 SHARAR_MAX_CONTEXT=32768`, pinned `RadixArk/Qwen3.8-27B-DSpark@b9a5dbd`) keeps draft features for the whole
 context rather than DFlash2's 2,048-token window, so it serves at up to 32K. `sharar serve --help` lists the
-CLI choices; the launcher also owns container and guard setup.
+CLI choices; the launcher also owns the service and guard setup.
 
-Before replacing an existing container, run `./sharar-ctl stop`. Updating Git or rebuilding a tag does not
-replace a running container.
+The running server keeps the code it started with: after `git pull`, run `./sharar-ctl stop` and `serve`.
 
 ## Serving profiles
 
@@ -131,7 +138,7 @@ position; `params` records the request's acceptance rule. The setting is read
 when the proposer is built (the draft graphs capture the extra output); off,
 nothing changes. It is the calibration data for adaptive draft depth.
 
-Inspect `docker logs sharar-qwen38`, `/health` and `/get_server_info` for status.
+Inspect `./sharar-ctl logs`, `/health` and `/get_server_info` for status.
 The latter reports draft precision, scheduler settings, KV/state geometry and
 cache statistics. `cache.draft_features` reports retained features and fallbacks.
 At 96 slots, DFlash2 feature retention reserves up to 1,900 MiB before planning
@@ -168,15 +175,10 @@ bash tools/check.sh setup-cpu
 python3 tools/check_links.py
 ```
 
-The runtime image is built from pinned [constraints](../constraints/gb10-cu130.txt).
-It includes the compiler needed for SM121 JIT kernels. CPU distributions
-include the CUDA source; executing those kernels still requires the GPU stack.
-
-`tools/dev-shell.sh` mounts current source and local caches into a development
-container of the Sharar runtime image (`SHARAR_DEV_IMAGE`, else the config's `SHARAR_IMAGE`).
-Reserve an exclusive GPU window and arrange an active memory guard before
-loading a model or running `bash tools/check.sh gpu`. The development helper
-does not stop production or start the guard automatically.
+On the GB10, `.venv` is the development environment too: `.venv/bin/python -m sharar ...` runs this checkout's
+code (the editable install), and `tools/gpu-tests.sh` runs the GPU suite from it. Reserve an exclusive GPU window
+(`flock $SHARAR_RESULTS/.gpu.lock ...`) before loading a model. CPU distributions include the CUDA source;
+executing those kernels still requires the GPU stack.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for numerical and lifecycle checks.
 

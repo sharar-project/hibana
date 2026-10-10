@@ -1,6 +1,6 @@
 """3-bit decode GEMM: correctness against the dequantized reference and bandwidth per target shape.
 
-Runs inside the runtime image with the GPU idle. For each (N, K) of the target's
+Runs from the Python environment (.venv) with the GPU idle. For each (N, K) of the target's
 decode projections (plus the lm_head and the draft's q/o) and M in (16, 32, 64)
 it packs a random matrix, checks the kernel against an FP32 reference on the
 same E4M3 activations, sweeps the split-K factor and reports the achieved

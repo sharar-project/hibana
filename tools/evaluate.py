@@ -2,22 +2,23 @@
 """Evaluate one Sharar build with sharar-eval: serve it, run quality suites and/or the speed benchmark, record both versions.
 
     tools/evaluate.py --target flashnext --profile fast --suite quick
-    tools/evaluate.py --target flashnext --profile fast --build --suite hard --speed
+    tools/evaluate.py --target flashnext --profile fast --suite hard --speed
     tools/evaluate.py --target qwen38 --profile exact --tasks gpqa,mmlupro --limit 50 --name gpqa50
     tools/evaluate.py --target flashnext --profile fast --suite quick --baseline $SHARAR_RESULTS/reviews/<date>-evaluate-<name>
 
 - **What is served.** The target's launcher config (config/gb10.env if present, then config/targets/<target>.env
   and defaults: tools/launcher-config.sh) with `--profile` and `--env SHARAR_KEY=VALUE` overrides, resolved by
-  run-sharar.sh, on `--image` (default: the config's SHARAR_IMAGE, else the published image). `--build` first builds an image from this checkout
-  (docker/build.sh, tag sharar:eval-<commit>; a dirty tree is refused unless --allow-dirty).
+  run-sharar.sh, from this checkout's engine and Python environment (.venv or SHARAR_VENV). The run records the
+  commit; uncommitted engine changes are refused unless --allow-dirty (and then recorded as a hash). To evaluate
+  another revision, run this tool from a worktree of it.
 - **What runs.** sharar-eval (`--evals`, default ../sharar-eval, with its .venv) against the server:
   - `--suite quick|full|hard|long|agentic|all`, or `--tasks a,b` with `--limit N` (`evals.suite`);
   - `--speed` adds the AIPerf benchmark (`evals.speed`, `--workload code|design|reasoning|all`).
     Speed requests carry no acceptance fields, so both measure the served profile as a client sees it.
-- **Where.** One GPU window under $SHARAR_RESULTS/.gpu.lock, on --port (30200-30299) as container
-  sharar-evaluate; the server stops afterwards. Output goes to
+- **Where.** One GPU window under $SHARAR_RESULTS/.gpu.lock, on --port (30200-30299) as the user systemd
+  service sharar-evaluate; the server stops afterwards. Output goes to
   $SHARAR_RESULTS/reviews/<date>-evaluate-<name>/:
-  - manifest.json: image id, sharar commit, sharar-eval commit, config;
+  - manifest.json: the engine (commit, uncommitted changes), sharar-eval commit, config;
   - served/: launch log, /get_server_info, server log;
   - suite/: the sharar-eval run directory;
   - speed/: the AIPerf run;
@@ -55,7 +56,7 @@ def load_gate():
 
 
 gate = load_gate()
-gate.CONTAINER = "sharar-evaluate"  # served_config, Served and gpu_window read it at call time
+gate.SERVICE = "sharar-evaluate"  # served_config, Served and gpu_window read it at call time
 log = gate.log
 
 
@@ -70,28 +71,12 @@ class Served(gate.Served):
             raise RuntimeError(f"run-sharar.sh failed: {(r.stdout + r.stderr).strip().splitlines()[-1:]}")
         deadline = time.monotonic() + 1200
         while not gate.health(self.url):
-            state = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", gate.CONTAINER],
-                                   capture_output=True, text=True).stdout.strip()
-            if state != "true" or time.monotonic() > deadline or gate.available_gib() < gate.FLOOR_GIB:
-                raise RuntimeError(f"server did not come up (running={state}); see {self.dir / 'launch.log'}")
+            if not self.running() or time.monotonic() > deadline or gate.available_gib() < gate.FLOOR_GIB:
+                raise RuntimeError(f"server did not come up (running={self.running()}); see {self.log}")
             time.sleep(5)
         info = gate.get_json(f"{self.url}/get_server_info")
         (self.dir / "server_info.json").write_text(json.dumps(info, indent=1) + "\n")
         log(f"serving on {self.url}: {info.get('target')} profile {(info.get('config') or {}).get('profile')}")
-
-
-def build_image(allow_dirty: bool) -> str:
-    commit = gate.git("rev-parse", "--short=12", "HEAD")
-    dirty = bool(gate.git("status", "--porcelain", "--", "sharar", "docker", "pyproject.toml"))
-    if dirty and not allow_dirty:
-        raise SystemExit("the engine tree has uncommitted changes; commit them or pass --allow-dirty")
-    tag = f"sharar:eval-{commit}{'-dirty' if dirty else ''}"
-    if subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0 and not dirty:
-        log(f"image {tag} exists")
-        return tag
-    log(f"building {tag}")
-    subprocess.run([str(REPO / "docker" / "build.sh"), tag], check=True)
-    return tag
 
 
 def evals_cmd(python: str, *args: str) -> list[str]:
@@ -103,9 +88,7 @@ def main(argv=None) -> int:
     ap.add_argument("--target", choices=("flashnext", "qwen38"), required=True)
     ap.add_argument("--profile", choices=gate.PROFILE_NAMES, default="fast")
     ap.add_argument("--env", action="append", default=[], help="SHARAR_KEY=VALUE override (repeatable)")
-    ap.add_argument("--image", default=None, help="runtime image (default: the config's SHARAR_IMAGE)")
-    ap.add_argument("--build", action="store_true", help="build an image from this checkout first (sharar:eval-<commit>)")
-    ap.add_argument("--allow-dirty", action="store_true", help="--build with uncommitted engine changes")
+    ap.add_argument("--allow-dirty", action="store_true", help="evaluate with uncommitted engine changes (recorded as a hash)")
     ap.add_argument("--suite", choices=("quick", "full", "hard", "long", "agentic", "all"), default=None)
     ap.add_argument("--tasks", default=None, help="comma-separated sharar-eval tasks instead of (or within) --suite")
     ap.add_argument("--limit", type=int, default=0, help="the first N items of each task")
@@ -142,13 +125,10 @@ def main(argv=None) -> int:
         raise SystemExit(f"set SHARAR_RESULTS (in {conf_path} or the environment)")
     gate.LOCK = results / ".gpu.lock"
     overrides = gate.parse_env(args.env)
-    image = build_image(args.allow_dirty) if args.build and not args.dry_run else (args.image or config.get("SHARAR_IMAGE") or gate.default_image())
-    config.pop("SHARAR_IMAGE", None)
-    image_id = subprocess.run(["docker", "image", "inspect", image, "--format", "{{.Id}}"], capture_output=True, text=True).stdout.strip()
-    if not image_id and not (args.build and args.dry_run):
-        raise SystemExit(f"image {image} not found")
-    engine = f"{image} {image_id[:19]}"  # the image is the engine; --build tags it with the commit it was built from
-    spec = {"target": args.target, "profile": args.profile, "env": overrides, "image": image, "image_id": image_id}
+    engine = gate.engine_identity()
+    if "+dirty" in engine and not args.allow_dirty:
+        raise SystemExit("the engine has uncommitted changes; commit them or pass --allow-dirty")
+    spec = {"target": args.target, "profile": args.profile, "env": overrides, "engine": engine}
     existing = sorted((results / "reviews").glob(f"*-evaluate-{name}"))
     run_dir = None
     for d in reversed(existing):
@@ -170,11 +150,12 @@ def main(argv=None) -> int:
     if args.dry_run:
         print(json.dumps({"run_dir": str(run_dir), "engine": engine, **manifest}, indent=1))
         return 0
+    gate.ensure_venv()
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
     log(f"{name}: {run_dir}")
 
-    served = Served("evaluate", run_dir / "served", gate.served_config(config, args.profile, overrides, image, args.port),
+    served = Served("evaluate", run_dir / "served", gate.served_config(config, args.profile, overrides, args.port),
                     args.port, python, args.evals, {})
     speed_dir = run_dir / "speed"
     speed_done = (speed_dir / "summary.json").is_file() and json.loads((speed_dir / "summary.json").read_text()).get("completed")

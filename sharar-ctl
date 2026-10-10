@@ -2,11 +2,13 @@
 """Operate Sharar on this machine: serve, record traces, train the drafter, promote.
 
 Host-side and dependency-free (Python 3 standard library only); it drives the
-container launchers `run-sharar.sh` and `run-sharar-train.sh`.
+launchers `run-sharar.sh` and `run-sharar-train.sh`, which run Sharar from this
+checkout's Python environment (.venv, built by tools/setup-venv.sh) as user
+systemd services.
 
   sharar-ctl launch claude|opencode|aider [ARGS...]   # a coding agent set up for the serving target
   sharar-ctl launch show      # base URLs, model name and context for any other tool
-  sharar-ctl pull             # fetch the newest published image (the launcher pulls a missing one itself)
+  sharar-ctl setup            # build or update the Python environment (serve does this itself when needed)
   sharar-ctl serve [27b | flashnext] [--no-traces] [--pinned | --draft DIR] [--fp8] [--exact | --balanced | --fast | --throughput]
   sharar-ctl serve [27b | flashnext] --tp 2 [--exact | --balanced | --fast | --throughput]   # on two Sparks: ./sharar-tp
   sharar-ctl stop [27b | flashnext]
@@ -36,7 +38,7 @@ import os
 import shutil
 import subprocess
 import sys
-import urllib.error
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -65,16 +67,12 @@ def load_env(target: str | None = None) -> dict:
     return env
 
 
-def default_image() -> str:
-    """SHARAR_DEFAULT_IMAGE from tools/image.sh, the launchers' default."""
-    for line in (ROOT / "tools" / "image.sh").read_text().splitlines():
-        if line.startswith("SHARAR_DEFAULT_IMAGE="):
-            return line.partition("=")[2].strip()
-    raise SystemExit("tools/image.sh does not set SHARAR_DEFAULT_IMAGE")
+def venv_python(env: dict) -> str:
+    return str(Path(env.get("SHARAR_VENV") or ROOT / ".venv") / "bin" / "python")
 
 
-def image(env: dict) -> str:
-    return env.get("SHARAR_IMAGE") or default_image()
+def log_file(env: dict, service: str) -> Path:
+    return Path(env["SHARAR_RESULTS"]) / "logs" / f"{service}.log"
 
 
 def run(command: list[str], env: dict, dry: bool) -> int:
@@ -84,9 +82,8 @@ def run(command: list[str], env: dict, dry: bool) -> int:
     return subprocess.call(command, env=env, cwd=ROOT)
 
 
-def container_running(name: str) -> bool:
-    out = subprocess.run(["docker", "inspect", "--format", "{{.State.Running}}", name], capture_output=True, text=True)
-    return out.returncode == 0 and out.stdout.strip() == "true"
+def service_running(name: str) -> bool:
+    return subprocess.run(["systemctl", "--user", "is-active", "--quiet", name]).returncode == 0
 
 
 def server_info(port: str) -> dict | None:
@@ -114,9 +111,9 @@ def post_json(port: str, route: str, payload: dict, timeout: float = 120) -> dic
 
 def reload_served_draft(env: dict, run: str | None, dry: bool) -> bool:
     """Swap the draft in the running server: a run name, or None for the pinned draft.
-    Returns False when nothing is serving. Runs are mounted read-only at /runs."""
+    Returns False when nothing is serving."""
     port = env["SHARAR_PORT"]
-    target = f"/runs/{run}/best" if run else "pinned"
+    target = str(Path(env["SHARAR_DRAFT_RUNS"]) / run / "best") if run else "pinned"
     if dry:
         print(f"+ POST http://127.0.0.1:{port}/reload_draft {{\"draft\": \"{target}\"}}")
         return True
@@ -162,7 +159,31 @@ def cmd_serve(args, env, dry) -> int:
         env["SHARAR_DRAFT_PRECISION"] = "fp8"
     if args.profile:
         env["SHARAR_PROFILE"] = args.profile
-    return run([str(ROOT / "run-sharar.sh")], env, dry)
+    rc = run([str(ROOT / "run-sharar.sh")], env, dry)
+    return rc if rc or dry else follow_startup(env)
+
+
+MILESTONES = ("loading", "  weights loaded", "  w3: ", "  captured verify graph for batch", "  warmup done", "serving on")
+
+
+def follow_startup(env: dict) -> int:
+    """Print the server's startup milestones from its log until it serves, fails or exits."""
+    service, log = env["SHARAR_SERVICE"], log_file(env, env["SHARAR_SERVICE"])
+    shown = 0
+    while True:
+        lines = log.read_text(errors="replace").splitlines() if log.is_file() else []
+        for line in lines[shown:]:
+            if line.startswith(MILESTONES):
+                print("  " + line.strip())
+            if line.startswith("serving on"):
+                print(f"ready: http://127.0.0.1:{env['SHARAR_PORT']} (sharar-ctl chat, sharar-ctl launch claude, sharar-ctl stop)")
+                return 0
+        shown = len(lines)
+        if not service_running(service) or any(line.startswith("Traceback") for line in lines):
+            print("\n".join(lines[-30:]))
+            print(f"{service} failed to start; full log: {log}")
+            return 1
+        time.sleep(2)
 
 
 HARNESSES = ("claude", "opencode", "aider", "codex", "show")
@@ -239,11 +260,8 @@ def cmd_launch(args, env, dry) -> int:
     os.execvpe(command[0], command, henv)  # in the caller's directory, replacing this process
 
 
-def cmd_pull(args, env, dry) -> int:
-    name = image(env)
-    if "/" not in name:
-        sys.exit(f"SHARAR_IMAGE={name} is a local build (docker/build.sh {name}); unset it to use {default_image()}")
-    return run(["docker", "pull", name], env, dry)
+def cmd_setup(args, env, dry) -> int:
+    return run(["bash", str(ROOT / "tools" / "setup-venv.sh")], env, dry)
 
 
 def cmd_stop(args, env, dry) -> int:
@@ -256,7 +274,7 @@ def cmd_status(args, env, dry) -> int:
     if tp_serving():
         return run([str(ROOT / "sharar-tp"), "status"], env, dry)
     port = env["SHARAR_PORT"]
-    serving = container_running(env["SHARAR_CONTAINER"])
+    serving = service_running(env["SHARAR_SERVICE"])
     info = server_info(port) if serving else None
     if info:
         spec = info.get("speculative") or {}
@@ -271,7 +289,7 @@ def cmd_status(args, env, dry) -> int:
             print("  traces: off")
     else:
         print("serving: " + ("starting" if serving else "down"))
-    training = container_running(env.get("SHARAR_TRAIN_CONTAINER", "sharar-train"))
+    training = service_running(env.get("SHARAR_TRAIN_SERVICE", "sharar-train"))
     print("training: " + ("running (sharar-ctl train stop to finish)" if training else "not running"))
     draft = current_draft(env)
     if draft:
@@ -351,9 +369,8 @@ def cmd_draft(args, env, dry) -> int:
 
 
 def cmd_traces(args, env, dry) -> int:
-    traces = env["SHARAR_TRACES"]
-    return run(["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}", "--volume", f"{traces}:/traces:ro",
-                "--entrypoint", "python3", image(env), "-m", "sharar", "traces", "--dir", "/traces"], env, dry)
+    env = {**env, "PYTHONPATH": str(ROOT)}
+    return run([venv_python(env), "-m", "sharar", "traces", "--dir", env["SHARAR_TRACES"]], env, dry)
 
 
 def cmd_chat(args, env, dry) -> int:
@@ -454,8 +471,8 @@ def cmd_chat(args, env, dry) -> int:
 def cmd_logs(args, env, dry) -> int:
     if tp_serving() and not args.train:
         return run([str(ROOT / "sharar-tp"), "logs", "-n", str(args.lines), *(["-f"] if args.follow else [])], env, dry)
-    name = env.get("SHARAR_TRAIN_CONTAINER", "sharar-train") if args.train else env["SHARAR_CONTAINER"]
-    return run(["docker", "logs", "--tail", str(args.lines)] + (["--follow"] if args.follow else []) + [name], env, dry)
+    name = env.get("SHARAR_TRAIN_SERVICE", "sharar-train") if args.train else env["SHARAR_SERVICE"]
+    return run(["tail", "-n", str(args.lines)] + (["-F"] if args.follow else []) + [str(log_file(env, name))], env, dry)
 
 
 def main(argv=None) -> int:
@@ -474,13 +491,13 @@ def main(argv=None) -> int:
     for name, text in (("exact", "the target's own distribution: exact acceptance, no lossy weight copies"),
                        ("balanced", "relaxed greedy acceptance top-2/1.0, the 27B's calibrated 3-bit copies"),
                        ("fast", "the default: every measured speed option, lossy ones included (docs/operations.md#serving-profiles)"),
-                       ("throughput", "fast with up to 16 requests at once and shallower verification above four (evals, many agents)")):
+                       ("throughput", "fast with more requests at once (27B 16, Flash-Next 128) for evals and many agents")):
         g.add_argument(f"--{name}", dest="profile", action="store_const", const=name, help=text)
     p = sub.add_parser("launch", help="start a coding agent (claude, opencode, aider) set up for the serving target; `show` prints the settings for any other tool")
     p.add_argument("harness", choices=HARNESSES)
     p.add_argument("--target", choices=TARGETS, default=None, help="before the agent name; default: the target that is serving")
     p.add_argument("args", nargs=argparse.REMAINDER, help="passed to the agent unchanged")
-    sub.add_parser("pull", help="fetch the newest published image (SHARAR_IMAGE, default from tools/image.sh)")
+    sub.add_parser("setup", help="build or update the Python environment (tools/setup-venv.sh)")
     sub.add_parser("stop", help="stop serving").add_argument("target", nargs="?", choices=TARGETS)
     sub.add_parser("status", help="serving, training, current draft and trace directory").add_argument("target", nargs="?", choices=TARGETS)
     p = sub.add_parser("train", help="stop serving and train the drafter on the recorded traces")
@@ -499,7 +516,7 @@ def main(argv=None) -> int:
     p.add_argument("--temperature", type=float, default=0.0, help="0 = greedy")
     p.add_argument("--no-trace", action="store_true", help="do not record this conversation")
     p.add_argument("--timeout", type=float, default=600)
-    p = sub.add_parser("logs", help="container logs")
+    p = sub.add_parser("logs", help="the server's (or trainer's) log")
     p.add_argument("target", nargs="?", choices=TARGETS)
     p.add_argument("--train", action="store_true")
     p.add_argument("-n", "--lines", type=int, default=50)
@@ -507,12 +524,12 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     target = getattr(args, "target", None)
     env = load_env(target)
-    if target is None and args.command in ("stop", "status", "logs", "chat", "launch") and not container_running(env["SHARAR_CONTAINER"]):
+    if target is None and args.command in ("stop", "status", "logs", "chat", "launch") and not service_running(env["SHARAR_SERVICE"]):
         # nothing named and the default target is not serving: follow the one that is
         other = load_env("qwen38" if env["SHARAR_TARGET"] == "flashnext" else "flashnext")
-        if container_running(other["SHARAR_CONTAINER"]):
+        if service_running(other["SHARAR_SERVICE"]):
             env = other
-    handler = {"serve": cmd_serve, "launch": cmd_launch, "pull": cmd_pull, "stop": cmd_stop, "status": cmd_status, "train": cmd_train,
+    handler = {"serve": cmd_serve, "launch": cmd_launch, "setup": cmd_setup, "stop": cmd_stop, "status": cmd_status, "train": cmd_train,
                "draft": cmd_draft, "traces": cmd_traces, "logs": cmd_logs, "chat": cmd_chat}[args.command]
     return handler(args, env, args.dry_run)
 

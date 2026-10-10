@@ -1,4 +1,4 @@
-# Use the cu130 PyTorch and FlashInfer indexes (see docker/Dockerfile).
+# Use the cu130 PyTorch and FlashInfer indexes (see tools/setup-venv.sh).
 -c common.txt
 torch==2.13.0+cu130
 triton==3.7.1

@@ -33,7 +33,7 @@ LIMIT = 2051  # rows at or past this index select sparsely (budget + ratio - 1)
 
 
 def snapshot() -> Path:
-    """The pinned Flash-Next snapshot through the target (SHARAR_FLASHNEXT_CACHE), so host and container runs agree."""
+    """The pinned Flash-Next snapshot through the target (SHARAR_FLASHNEXT_CACHE), as the server finds it."""
     from sharar.target import FLASHNEXT
     return FLASHNEXT.snapshot_dir()
 

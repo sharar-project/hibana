@@ -25,14 +25,13 @@ useful for a repository coding proxy. The calibration driver collects one
 layer's covariances at a time; it materializes the BF16 SiLU product to observe
 the down-projection inputs. It does not train on answers or logits.
 
-In an exclusive, memory-guarded GB10 container, with the source checkpoint and
-output directory mounted:
+From the Python environment, with the GPU otherwise idle and the memory guard watching:
 
 ```bash
-SHARAR_W3_DECODE=0 python3 -m sharar.weights.w3_calibrate \
-  --inputs /proof/calibration-inputs.json \
-  --source /source-cache/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a \
-  --output /proof/calibrated-w3
+SHARAR_W3_DECODE=0 .venv/bin/python -m sharar.weights.w3_calibrate \
+  --inputs calibration-inputs.json \
+  --source $SHARAR_HF_CACHE/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a \
+  --output $SHARAR_RESULTS/w3-checkpoints/<date>-qwen38-gptq
 ```
 
 `--layers 1` runs an incomplete development screen. `--resume` verifies input
@@ -56,7 +55,7 @@ serve `$SHARAR_RESULTS/w3-checkpoints/<target>-current` (`qwen38-current`,
 `flashnext-current`). When that link is missing, `run-sharar.sh` fetches the
 target's published checkpoint, pinned by revision in the target's config
 (`W3_REPO`, `W3_REVISION`), into `w3-checkpoints/<target>-<revision>` and links it
-(`python3 -m sharar.weights.w3_checkpoint fetch`, run in the image; `HF_TOKEN` is
+(`python -m sharar.weights.w3_checkpoint fetch`, from the Python environment; `HF_TOKEN` is
 passed through for a private repository). Both targets have one: Flash-Next's
 (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`) and the 27B's
 (`yemara/Qwen3.8-27B-NVFP4-sharar-w3`, GPTQ from the FP8 release on the

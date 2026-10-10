@@ -1,7 +1,7 @@
 # Profiling Sharar
 
-In-process tools that look inside the engine: they load the model and kernels themselves, so they run in the
-runtime image (`python3 -m profiling.<tool>`, the checkout at `/workspace/sharar`), on an exclusive, guarded GPU.
+In-process tools that look inside the engine: they load the model and kernels themselves, so they run from the
+Python environment (`.venv/bin/python -m profiling.<tool>` in the checkout), on an exclusive, guarded GPU.
 To measure a served build (quality suites, AIPerf speed, a lossy option) use the tools in
 [evaluation](../docs/evaluation.md) instead; HTTP benchmarks live in
 [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval).
@@ -35,7 +35,7 @@ The 3-bit calibration builders that produce the serving artifacts moved into the
   repository's files; `--exclude LOG` keeps a test set's file/task pairs out of the traffic.
 - `draft/draft_ab.py` replays a trace directory's newest held-out prompts (or `--all`) at batch one against a
   running server and reports throughput, tokens per round and output hashes, for A/B of drafts across windows.
-- `draft/dflash2_reference.py` runs inside the runtime container on an exclusive GPU and checks the training
+- `draft/dflash2_reference.py` runs on an exclusive GPU and checks the training
   forward against the serving proposer and the publisher's reference model, and the objective against
   SpecForge, then runs a short training smoke. `draft/target_features.py` recomputes raw target features for it.
 

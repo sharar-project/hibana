@@ -1,4 +1,4 @@
-"""The host-side control command composes the launcher calls without torch or docker."""
+"""The host-side control command composes the launcher calls without torch, systemd or a server."""
 import importlib.util
 import json
 import os
@@ -23,7 +23,8 @@ def ctl(monkeypatch, tmp_path):
         monkeypatch.delenv(name, raising=False)
     calls = []
     monkeypatch.setattr(module, "run", lambda command, env, dry: calls.append((command, env)) or 0)
-    monkeypatch.setattr(module, "container_running", lambda name: False)
+    monkeypatch.setattr(module, "service_running", lambda name: False)
+    monkeypatch.setattr(module, "follow_startup", lambda env: 0)
     monkeypatch.setattr(module, "server_info", lambda port: None)  # never touch a real server
     return module, calls, tmp_path / "results"
 
@@ -70,24 +71,43 @@ def test_draft_list_use_and_pinned(ctl, capsys):
     assert "current draft: pinned publisher draft" in capsys.readouterr().out
 
 
-def test_pull_fetches_the_published_image_and_refuses_a_local_build(ctl, monkeypatch):
-    module, calls, _ = ctl
-    monkeypatch.delenv("SHARAR_IMAGE", raising=False)
-    default = module.default_image()
-    assert default.startswith("ghcr.io/abdelfattah-lab/sharar:")
-    for launcher in ("run-sharar.sh", "run-sharar-train.sh"):  # the launchers share tools/image.sh's default
-        assert 'IMAGE="${SHARAR_IMAGE:-$SHARAR_DEFAULT_IMAGE}"' in (ROOT / launcher).read_text()
-    assert module.main(["pull"]) == 0 and calls[-1][0] == ["docker", "pull", default]
-    monkeypatch.setenv("SHARAR_IMAGE", "sharar:local")
-    with pytest.raises(SystemExit, match="local build"):
-        module.main(["pull"])
+def test_setup_builds_the_python_environment_and_traces_and_logs_use_it(ctl, monkeypatch):
+    module, calls, results = ctl
+    assert module.main(["setup"]) == 0 and calls[-1][0] == ["bash", str(ROOT / "tools" / "setup-venv.sh")]
+    assert module.main(["traces"]) == 0
+    command, env = calls[-1]
+    assert command == [str(ROOT / ".venv" / "bin" / "python"), "-m", "sharar", "traces", "--dir", str(results / "traces")]
+    assert env["PYTHONPATH"] == str(ROOT)
+    monkeypatch.setenv("SHARAR_VENV", "/opt/venv")
+    assert module.main(["traces"]) == 0 and calls[-1][0][0] == "/opt/venv/bin/python"
+    assert module.main(["logs", "-f"]) == 0 and calls[-1][0] == ["tail", "-n", "50", "-F", str(results / "logs" / "sharar-qwen38.log")]
+    assert module.main(["logs", "--train"]) == 0 and calls[-1][0][-1] == str(results / "logs" / "sharar-train.log")
+    for launcher in ("run-sharar.sh", "run-sharar-train.sh"):  # no container runtime left in the launchers
+        assert "docker" not in (ROOT / launcher).read_text()
+
+
+def test_follow_startup_prints_milestones_until_serving(ctl, monkeypatch, capsys, tmp_path):
+    from importlib.machinery import SourceFileLoader
+    spec = importlib.util.spec_from_file_location("sharar_ctl2", ROOT / "sharar-ctl", loader=SourceFileLoader("sharar_ctl2", str(ROOT / "sharar-ctl")))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    log = tmp_path / "logs" / "svc.log"
+    log.parent.mkdir()
+    log.write_text("loading qwen38\nnoise\n  weights loaded in 30 s\nserving on http://127.0.0.1:30001\n")
+    monkeypatch.setattr(module, "service_running", lambda name: True)
+    env = {"SHARAR_SERVICE": "svc", "SHARAR_RESULTS": str(tmp_path), "SHARAR_PORT": "30001"}
+    assert module.follow_startup(env) == 0
+    out = capsys.readouterr().out
+    assert "loading qwen38" in out and "weights loaded" in out and "noise" not in out and "ready:" in out
+    log.write_text("loading qwen38\nTraceback (most recent call last):\nRuntimeError: boom\n")
+    assert module.follow_startup(env) == 1 and "boom" in capsys.readouterr().out
 
 
 def test_serve_names_a_target_and_gets_its_settings(ctl):
     module, calls, _ = ctl
     assert module.main(["serve", "flashnext"]) == 0
     _, env = calls[-1]
-    assert (env["SHARAR_TARGET"], env["SHARAR_PORT"], env["SHARAR_CONTAINER"], env["SHARAR_PROPOSER"]) == ("flashnext", "30004", "sharar-flashnext", "mtp")
+    assert (env["SHARAR_TARGET"], env["SHARAR_PORT"], env["SHARAR_SERVICE"], env["SHARAR_PROPOSER"]) == ("flashnext", "30004", "sharar-flashnext", "mtp")
     assert module.main(["serve", "27b"]) == 0
     _, env = calls[-1]
     assert (env["SHARAR_TARGET"], env["SHARAR_PORT"], env["SHARAR_PROPOSER"]) == ("qwen38", "30001", "dflash2")
@@ -98,7 +118,7 @@ def test_serve_names_a_target_and_gets_its_settings(ctl):
 
 def test_commands_without_a_target_follow_the_one_serving(ctl, monkeypatch):
     module, calls, _ = ctl
-    monkeypatch.setattr(module, "container_running", lambda name: name == "sharar-flashnext")
+    monkeypatch.setattr(module, "service_running", lambda name: name == "sharar-flashnext")
     assert module.main(["stop"]) == 0 and calls[-1][1]["SHARAR_TARGET"] == "flashnext"
     assert module.main(["stop", "27b"]) == 0 and calls[-1][1]["SHARAR_TARGET"] == "qwen38"
 
@@ -147,7 +167,7 @@ def test_dry_run_prints_instead_of_running(ctl, capsys, monkeypatch):
     module, calls, _ = ctl
     monkeypatch.setattr(module, "run", lambda command, env, dry: (print("+ " + " ".join(command)) or 0) if dry else 1)
     assert module.main(["--dry-run", "traces"]) == 0
-    assert "sharar traces --dir /traces" in capsys.readouterr().out
+    assert "-m sharar traces --dir " in capsys.readouterr().out
 
 
 def test_draft_use_pinned_and_reload_swap_the_running_server(ctl, capsys, monkeypatch):
@@ -163,9 +183,9 @@ def test_draft_use_pinned_and_reload_swap_the_running_server(ctl, capsys, monkey
     monkeypatch.setattr(module, "server_info", lambda port: {"speculative": {}})
     monkeypatch.setattr(module, "post_json", lambda port, route, payload, timeout=120: posted.append((port, route, payload)) or {"draft": payload["draft"], "seconds": 1.5})
     assert module.main(["draft", "use", "run-3"]) == 0
-    assert posted[-1] == ("30001", "/reload_draft", {"draft": "/runs/run-3/best"})
-    assert "serving now uses /runs/run-3/best" in capsys.readouterr().out
-    assert module.main(["draft", "reload"]) == 0 and posted[-1][2] == {"draft": "/runs/run-3/best"}
+    assert posted[-1] == ("30001", "/reload_draft", {"draft": str(best)})
+    assert f"serving now uses {best}" in capsys.readouterr().out
+    assert module.main(["draft", "reload"]) == 0 and posted[-1][2] == {"draft": str(best)}
     assert module.main(["draft", "pinned"]) == 0 and posted[-1][2] == {"draft": "pinned"}
     assert module.main(["draft", "reload"]) == 0 and posted[-1][2] == {"draft": "pinned"}  # no current link: the pinned draft
     assert module.main(["--dry-run", "draft", "reload"]) == 0 and "POST" in capsys.readouterr().out and len(posted) == 4

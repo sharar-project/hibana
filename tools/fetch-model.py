@@ -1,7 +1,7 @@
 """Download one pinned Hugging Face snapshot into a model cache after checking that it fits on the disk.
 
-run-sharar.sh runs it inside the runtime image (which has huggingface_hub) for a model or draft the target needs
-and the cache lacks:  python3 fetch-model.py REPO REVISION CACHE_IN_CONTAINER HOST_CACHE
+run-sharar.sh and sharar-tp run it from the Python environment (which has huggingface_hub) for a model or draft the
+target needs and the cache lacks:  python fetch-model.py REPO REVISION CACHE_HUB CACHE
 Files already in the snapshot are not fetched again, so an interrupted download resumes.
 """
 import shutil

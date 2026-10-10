@@ -11,10 +11,11 @@ A candidate is a serving profile (`--profile`, default exact) plus `--env KEY=VA
 the target's launcher config (config/gb10.env if present, the target's config/targets/<target>.env, defaults;
 tools/launcher-config.sh), resolved the
 way run-sharar.sh resolves them (the profile table is tools/serving-profile.sh, read per target); the baseline is `--baseline-profile` (default exact) with
-`--baseline-env`. Both run the same image (`--image`, default the config's SHARAR_IMAGE, else the published one). The run is
+`--baseline-env`. Both arms run this checkout's engine from its Python environment (.venv or SHARAR_VENV; the
+scorecard records the commit and any uncommitted engine changes). The run is
 unattended and resumable: every step writes its own file and a rerun with the same name skips what
 exists. Do not wrap the tool in flock: it takes $SHARAR_RESULTS/.gpu.lock itself for each
-GPU phase (at most --hold-minutes), and waits while another model container runs.
+GPU phase (at most --hold-minutes), and waits while another model server or GPU process runs.
 
 Layers, cheapest first:
   1  Distribution distance (in-process, tools/gate/lossy_gate.py): the baseline's own greedy
@@ -25,7 +26,7 @@ Layers, cheapest first:
   2  Speculation health (same process): tokens per verify round, round cost and decode tok/s of
      each prompt, greedy with the profile's acceptance rule, paired per prompt; the floor is a
      second baseline pass. The speed delta of the verdict is the decode tok/s ratio here.
-  3  Task battery (served over HTTP: run-sharar.sh starts container sharar-lossy-gate on --port, and
+  3  Task battery (served over HTTP: run-sharar.sh starts the service sharar-lossy-gate on --port, and
      sharar-eval's `evals.suite` runs with the server's own acceptance default): paired per item,
      McNemar. Screen: the `quick` suite (GSM8K first 300, HumanEval 164, MGSM 24 per language, plus
      long-context needles at 16K and 64K as a smoke test). Full, when the screen is close: the `full`
@@ -56,7 +57,7 @@ pooled interval already excludes a loss of more than 1.0 point. Layer 1 decides 
 Outputs: $SHARAR_RESULTS/reviews/<date>-lossy-gate-<name>/ (manifest.json, arm configs, logs,
 scorecard.json, SUMMARY.md); the baseline arm is cached under
 $SHARAR_RESULTS/reviews/lossy-gate-baselines/<target>-<profile>-<key>/ and reused by every
-candidate with the same baseline, image, prompts and eval code.
+candidate with the same baseline, engine, prompts and eval code.
 """
 from __future__ import annotations
 
@@ -70,6 +71,8 @@ import math
 import os
 import random
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -80,8 +83,8 @@ REPO = Path(__file__).resolve().parents[1]
 WORKLOAD = REPO / "tools" / "gate" / "workloads" / "lossy_v1.json"
 WORKER = REPO / "tools" / "gate" / "lossy_gate.py"
 LOCK: Path | None = None  # $SHARAR_RESULTS/.gpu.lock, set by main()
-CONTAINER = "sharar-lossy-gate"
-TOOL_CONTAINER = "sharar-lossy-gate-tool"
+SERVICE = "sharar-lossy-gate"  # the served arm's user systemd unit (run-sharar.sh)
+VENV = Path(os.environ.get("SHARAR_VENV") or REPO / ".venv")
 PROTOCOL = 2  # bump when a step's meaning changes (it keys the baseline cache)
 CHUNK, FLOOR_CHUNK = 64, 32
 FLOOR_GIB = 16.0  # tools/memory-guard.sh floor
@@ -95,11 +98,11 @@ PROFILE_SETTINGS = {"P_ACCEPT": "SHARAR_ACCEPT_DEFAULT", "P_ACCEPT_SAMPLED": "SH
                     "P_ACCEPT_SAMPLED_THRESHOLD": "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD",
                     "P_W3": "SHARAR_W3_DECODE",
                     "P_DEVICE_ACCEPT": "SHARAR_DEVICE_ACCEPT", "P_MAX_BATCH": "SHARAR_MAX_BATCH", "P_SPEC_DEPTHS": "SHARAR_SPEC_DEPTHS"}
-# Settings run-sharar.sh forwards into the container unchanged (when set).
+# Settings run-sharar.sh forwards to the server unchanged (when set).
 FORWARDED = ("SHARAR_DEVICE_ACCEPT", "SHARAR_DRAFT_VOCAB", "SHARAR_DRAFT_HEAD", "SHARAR_QSA_SPARSE_GRAPHS", "SHARAR_COLD_TIER_GIB")
-# Settings only the launcher reads (paths, container, serve flags); every other --env override also goes
-# into the in-process container, and the served arm's configuration check catches one the launcher drops.
-LAUNCHER_ONLY = {"SHARAR_IMAGE", "SHARAR_CONTAINER", "SHARAR_PORT", "SHARAR_PROPOSER", "SHARAR_SPEC", "SHARAR_VERIFY_STATE",
+# Settings only the launcher reads (paths, service, serve flags); every other --env override also goes
+# into the in-process worker, and the served arm's configuration check catches one the launcher drops.
+LAUNCHER_ONLY = {"SHARAR_VENV", "SHARAR_SERVICE", "SHARAR_PORT", "SHARAR_PROPOSER", "SHARAR_SPEC", "SHARAR_VERIFY_STATE",
                  "SHARAR_DRAFT_PRECISION", "SHARAR_DRAFT", "SHARAR_DRAFT_RUNS", "SHARAR_TRACES", "SHARAR_TRACES_MAX_MIB",
                  "SHARAR_MAX_CONTEXT", "SHARAR_HF_CACHE", "SHARAR_RESULTS", "SHARAR_FLASHNEXT_CACHE", "SHARAR_SESSION_DIR",
                  "SHARAR_SESSION_GIB", "SHARAR_SESSION_MIN_TOKENS", "SHARAR_MIN_AVAILABLE_KIB", "SHARAR_CONFIG_FILE",
@@ -129,11 +132,20 @@ def log(msg: str) -> None:
 
 # ---------------------------------------------------------------- configuration
 
-def default_image() -> str:
-    """The launchers' default image (tools/image.sh)."""
-    out = subprocess.run(["bash", "-c", 'source "$0"; echo "$SHARAR_DEFAULT_IMAGE"', str(REPO / "tools" / "image.sh")],
-                         capture_output=True, text=True, check=True)
-    return out.stdout.strip()
+def engine_identity() -> str:
+    """The engine both arms run: this checkout's commit, plus a hash of any uncommitted engine changes."""
+    commit = git("rev-parse", "HEAD")
+    paths = ["sharar", "pyproject.toml", "constraints"]
+    diff = subprocess.run(["git", "-C", str(REPO), "diff", "HEAD", "--", *paths], capture_output=True).stdout
+    diff += subprocess.run(["git", "-C", str(REPO), "ls-files", "--others", "--exclude-standard", "--", *paths], capture_output=True).stdout
+    return commit + (f"+dirty-{sha256(diff)[:12]}" if diff else "")
+
+
+def ensure_venv() -> None:
+    """Build the Python environment the arms run when it is missing or stale (tools/setup-venv.sh)."""
+    env = {**os.environ, "SHARAR_VENV": str(VENV)}
+    if subprocess.run(["bash", str(REPO / "tools" / "setup-venv.sh"), "--check"], env=env).returncode:
+        subprocess.run(["bash", str(REPO / "tools" / "setup-venv.sh")], env=env, check=True)
 
 
 def load_env(path: Path) -> dict:
@@ -215,7 +227,7 @@ def accept_rule(text: str) -> str:
 
 
 def arm_plan(env: dict) -> dict:
-    """What the arm runs: the container environment, mounts and the executor built as `sharar serve` builds it."""
+    """What the arm runs: the server environment and the executor built as `sharar serve` builds it."""
     target = env.get("SHARAR_TARGET") or "qwen38"
     proposer = env.get("SHARAR_PROPOSER", "dflash2")
     spec = int(env.get("SHARAR_SPEC", "15"))
@@ -230,37 +242,33 @@ def arm_plan(env: dict) -> dict:
     if sampled == "1:0.0":
         cenv["SHARAR_ACCEPT_DEFAULT_SAMPLED"], sampled = "0", ""
     cenv["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] = sampled
-    mounts = {}
     if env.get("SHARAR_W3_CHECKPOINT"):
-        mounts["/w3"] = str(Path(env["SHARAR_W3_CHECKPOINT"]).resolve())
-        cenv["SHARAR_W3_CHECKPOINT"] = "/w3"
+        cenv["SHARAR_W3_CHECKPOINT"] = str(Path(env["SHARAR_W3_CHECKPOINT"]).resolve())   # run-sharar.sh passes its realpath
     if target == "flashnext":
-        cenv.update(SHARAR_TARGET="flashnext", SHARAR_FLASHNEXT_CACHE="/cache/flash-next",
+        cenv.update(SHARAR_TARGET="flashnext", SHARAR_FLASHNEXT_CACHE=env["SHARAR_FLASHNEXT_CACHE"],
                     SHARAR_FLASHNEXT_TRUNK=env.get("SHARAR_FLASHNEXT_TRUNK") or "fp8")
-        mounts["/cache/flash-next"] = env["SHARAR_FLASHNEXT_CACHE"]
     elif env.get("SHARAR_TARGET"):
         cenv["SHARAR_TARGET"] = env["SHARAR_TARGET"]
     for k in FORWARDED:
         if env.get(k):
             cenv[k] = env[k]
     for k in env["_OVERRIDES"]:
-        if k not in cenv and k not in LAUNCHER_ONLY and k not in mounts.values():
+        if k not in cenv and k not in LAUNCHER_ONLY:
             cenv[k] = env[k]
     draft = None
     if env["_DRAFT_DIR"] and proposer in ("dflash2", "dspark") and spec:
-        mounts["/draft"] = env["_DRAFT_DIR"]
-        draft = "/draft"
-    return {"target": target, "env": cenv, "mounts": mounts, "proposer": proposer, "spec": spec,
+        draft = str(Path(env["_DRAFT_DIR"]).resolve())
+    return {"target": target, "env": cenv, "proposer": proposer, "spec": spec,
             "verify_state": env.get("SHARAR_VERIFY_STATE", "reconstruct"), "draft_precision": precision, "draft": draft,
             "accept": accept}
 
 
-def served_config(base: dict, profile: str, overrides: dict, image: str, port: int) -> str:
+def served_config(base: dict, profile: str, overrides: dict, port: int) -> str:
     """The launcher config file of a served arm: the target's file, the arm's profile and overrides (the launcher
-    resolves them itself; the configuration check compares the result with the in-process arm), our container and port."""
+    resolves them itself; the configuration check compares the result with the in-process arm), our service and port."""
     lines = [f"{k}={v}" for k, v in base.items()]
     lines += [f"SHARAR_PROFILE={profile}"] + [f"{k}={v}" for k, v in overrides.items()]
-    lines += [f"SHARAR_IMAGE={image}", f"SHARAR_CONTAINER={CONTAINER}", f"SHARAR_PORT={port}", "SHARAR_SESSION_DIR=off", "SHARAR_TRACES="]
+    lines += [f"SHARAR_VENV={VENV}", f"SHARAR_SERVICE={SERVICE}", f"SHARAR_PORT={port}", "SHARAR_SESSION_DIR=off", "SHARAR_TRACES="]
     if "SHARAR_COLD_TIER_GIB" not in overrides:  # host memory for Terminal-Bench's task containers; caching only, same in every stage
         lines.append("SHARAR_COLD_TIER_GIB=0")
     return "# written by tools/lossy-gate.py\n" + "\n".join(lines) + "\n"
@@ -283,21 +291,29 @@ def available_gib() -> float:
     raise RuntimeError("MemAvailable not found")
 
 
-def other_model_containers() -> list[str]:
-    out = subprocess.run(["docker", "ps", "--format", "{{.Names}}\t{{.Image}}"], capture_output=True, text=True).stdout
+def other_gpu_work() -> list[str]:
+    """Model servers and GPU processes that are not this tool's: Sharar services, model containers, GPU processes."""
+    busy = []
+    units = subprocess.run(["systemctl", "--user", "list-units", "--state=active", "--plain", "--no-legend", "sharar-*.service"],
+                           capture_output=True, text=True).stdout.split()
+    busy += [u for u in units if u.endswith(".service") and u not in (f"{SERVICE}.service", "sharar-memory-guard.service")]
+    out = subprocess.run(["docker", "ps", "--format", "{{.Names}}\t{{.Image}}"], capture_output=True, text=True).stdout if shutil.which("docker") else ""
     rows = [line.split("\t") for line in out.splitlines() if "\t" in line]
-    return [f"{n} ({i})" for n, i in rows if (i.startswith("sharar") or n.startswith("sharar") or "sglang" in i) and n not in (CONTAINER, TOOL_CONTAINER)]
+    busy += [f"{n} ({i})" for n, i in rows if i.startswith("sharar") or n.startswith("sharar") or "sglang" in i or "vllm" in i]
+    out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,process_name", "--format=csv,noheader"], capture_output=True, text=True).stdout
+    busy += [f"GPU process {line.strip()}" for line in out.splitlines() if line.strip()]
+    return busy
 
 
 @contextlib.contextmanager
 def gpu_window(what: str, lock: Path | None = None):
-    """Hold the shared GPU lock for one phase; start only when no other model container runs."""
+    """Hold the shared GPU lock for one phase; start only when no other model server or GPU process runs."""
     lock = lock or LOCK
     while True:
         f = open(lock, "a")
         log(f"waiting for the GPU lock ({what})")
         fcntl.flock(f, fcntl.LOCK_EX)
-        busy = other_model_containers()
+        busy = other_gpu_work()
         if not busy and available_gib() >= 40:
             break
         fcntl.flock(f, fcntl.LOCK_UN)
@@ -308,8 +324,7 @@ def gpu_window(what: str, lock: Path | None = None):
     try:
         yield
     finally:
-        for name in (CONTAINER, TOOL_CONTAINER):
-            subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+        subprocess.run(["systemctl", "--user", "stop", f"{SERVICE}.service"], capture_output=True)
         fcntl.flock(f, fcntl.LOCK_UN)
         f.close()
         log(f"GPU lock released: {what}")
@@ -331,47 +346,26 @@ def watch(proc: subprocess.Popen, deadline: float, trace, label: str, stop) -> i
     return proc.returncode
 
 
-def tool_container(image: str, plan: dict, results: Path, hf_cache: str, out: Path, base: Path | None) -> list[str]:
-    cmd = ["docker", "run", "--rm", "--name", TOOL_CONTAINER, "--network", "none", "--pull", "never",
-           "--user", f"{os.getuid()}:{os.getgid()}", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true",
-           "--pids-limit", "4096", "--shm-size", "16g", "--workdir", "/gate"]
-    lib = "/usr/lib/aarch64-linux-gnu"
-    for dev in ("/dev/nvidia0", "/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools", "/dev/nvidia-modeset", "/dev/dri/renderD128"):
-        cmd += ["--device", dev]
-    for so, dst in (("libcuda.so.1", "libcuda.so.1"), ("libcuda.so.1", "libcuda.so"), ("libnvidia-ptxjitcompiler.so.1", "libnvidia-ptxjitcompiler.so.1"),
-                    ("libnvidia-ptxjitcompiler.so.1", "libnvidia-ptxjitcompiler.so"), ("libnvidia-ml.so.1", "libnvidia-ml.so.1"), ("libnvidia-ml.so.1", "libnvidia-ml.so"),
-                    ("libnvidia-nvvm.so.4", "libnvidia-nvvm.so.4"), ("libnvidia-nvvm.so.4", "libnvidia-nvvm.so"), ("libcudadebugger.so.1", "libcudadebugger.so.1")):
-        cmd += ["--mount", f"type=bind,src={os.path.realpath(f'{lib}/{so}')},dst={lib}/{dst},readonly"]
-    for gpucomp in Path(lib).glob("libnvidia-gpucomp.so.*"):
-        cmd += ["--mount", f"type=bind,src={gpucomp},dst={gpucomp},readonly"]
-    cmd += ["--mount", "type=bind,src=/usr/bin/nvidia-smi,dst=/usr/bin/nvidia-smi,readonly",
-            "--mount", f"type=bind,src={hf_cache},dst=/cache/huggingface,readonly",
-            "--mount", f"type=bind,src={results}/runtime-state,dst=/state",
-            # only the gate package over the image: the engine is the image's own code
-            "--mount", f"type=bind,src={REPO / 'tools' / 'gate'},dst=/gate/gate,readonly",
-            "--mount", f"type=bind,src={out},dst=/out"]
-    if base is not None:
-        cmd += ["--mount", f"type=bind,src={base},dst=/base,readonly"]
-    for dst, src in plan["mounts"].items():
-        cmd += ["--mount", f"type=bind,src={src},dst={dst},readonly"]
-    env = {"PYTHONPATH": "/gate:/workspace/sharar", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1", "HOME": "/state",
-           "SHARAR_HF_CACHE": "/cache/huggingface", "HF_HUB_OFFLINE": "1", "TOKENIZERS_PARALLELISM": "false",
-           "TRITON_LIBCUDA_PATH": lib, "SHARAR_RESULTS": "/state", **plan["env"]}
-    for k, v in env.items():
-        cmd += ["--env", f"{k}={v}"]
-    cmd += ["--entrypoint", "python3", image, "-m", "gate.lossy_gate", "--prompts", "/gate/gate/workloads/lossy_v1.json",
-            "--out", "/out", "--accept", plan["accept"], "--proposer", plan["proposer"], "--spec", str(plan["spec"]),
-            "--verify-state", plan["verify_state"], "--draft-precision", plan["draft_precision"], "--chunk", str(CHUNK)]
+def tool_command(plan: dict, results: Path, hf_cache: str, out: Path, base: Path | None) -> tuple[list[str], dict]:
+    """The in-process worker (tools/gate/lossy_gate.py) on this checkout's engine, and its environment."""
+    env = {"PATH": f"{VENV}/bin:/usr/local/cuda/bin:/usr/bin:/bin", "HOME": os.environ["HOME"], "CUDA_HOME": "/usr/local/cuda",
+           "PYTHONPATH": f"{REPO / 'tools'}:{REPO}", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1",
+           "SHARAR_HF_CACHE": hf_cache, "HF_HUB_OFFLINE": "1", "TOKENIZERS_PARALLELISM": "false",
+           "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True", "SHARAR_RESULTS": str(results), **plan["env"]}
+    cmd = [str(REPO / "tools" / "lxcfs-run.sh"), str(VENV / "bin" / "python"), "-m", "gate.lossy_gate", "--prompts", str(WORKLOAD),
+           "--out", str(out), "--accept", plan["accept"], "--proposer", plan["proposer"], "--spec", str(plan["spec"]),
+           "--verify-state", plan["verify_state"], "--draft-precision", plan["draft_precision"], "--chunk", str(CHUNK)]
     if plan["draft"]:
         cmd += ["--draft", plan["draft"]]
     if base is None:
         cmd += ["--passes", "2", "--floor-chunk", str(FLOOR_CHUNK)]
     else:
-        cmd += ["--base", "/base"]
-    return cmd
+        cmd += ["--base", str(base)]
+    return cmd, env
 
 
-def run_inprocess(label: str, cmd: list[str], out: Path, done: Path, minutes: float) -> None:
+def run_inprocess(label: str, command: tuple[list[str], dict], out: Path, done: Path, minutes: float) -> None:
+    cmd, env = command
     if done.exists():
         log(f"{label}: in-process layers already done ({done})")
         return
@@ -380,11 +374,10 @@ def run_inprocess(label: str, cmd: list[str], out: Path, done: Path, minutes: fl
         if done.exists():  # another gate run finished this (shared baseline) while we waited
             log(f"{label}: in-process layers already done ({done})")
             return
-        (out / "command.json").write_text(json.dumps(cmd, indent=1) + "\n")
+        (out / "command.json").write_text(json.dumps({"command": cmd, "env": env}, indent=1) + "\n")
         with (out / "worker.log").open("a") as logf, (out / "memory.jsonl").open("a") as trace:
-            proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT)
-            rc = watch(proc, time.monotonic() + 60 * minutes, trace, label,
-                       lambda: subprocess.run(["docker", "stop", "--timeout", "10", TOOL_CONTAINER], capture_output=True))
+            proc = subprocess.Popen(cmd, env=env, cwd=REPO, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+            rc = watch(proc, time.monotonic() + 60 * minutes, trace, label, lambda: os.killpg(proc.pid, signal.SIGTERM))
     if rc != 0 or not done.exists():
         raise SystemExit(f"{label}: in-process worker failed (exit {rc}); see {out / 'worker.log'}")
     log(f"{label}: in-process layers done")
@@ -406,7 +399,7 @@ def get_json(url: str) -> dict:
 
 
 class Served:
-    """One served arm: start with run-sharar.sh, check the installed configuration, run eval shards, stop."""
+    """One served arm: start with run-sharar.sh (the service SERVICE), check the installed configuration, run eval shards, stop."""
 
     def __init__(self, label, arm_dir: Path, conf_text: str, port: int, python: str, evals: Path, expect: dict):
         self.label, self.dir, self.port, self.python, self.evals, self.expect = label, arm_dir, port, python, evals, expect
@@ -415,6 +408,11 @@ class Served:
         arm_dir.mkdir(parents=True, exist_ok=True)
         self.conf.write_text(conf_text)
         self.env = {**os.environ, "SHARAR_CONFIG_FILE": str(self.conf)}
+        results = load_env(self.conf).get("SHARAR_RESULTS") or os.environ.get("SHARAR_RESULTS", "")
+        self.log = Path(results) / "logs" / f"{SERVICE}.log"
+
+    def running(self) -> bool:
+        return subprocess.run(["systemctl", "--user", "is-active", "--quiet", f"{SERVICE}.service"]).returncode == 0
 
     def start(self) -> None:
         subprocess.run([str(REPO / "run-sharar.sh"), "--stop"], env=self.env, capture_output=True)
@@ -424,9 +422,8 @@ class Served:
             raise RuntimeError(f"{self.label}: run-sharar.sh failed: {(r.stdout + r.stderr).strip().splitlines()[-1:]}")
         deadline = time.monotonic() + 1200
         while not health(self.url):
-            state = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", CONTAINER], capture_output=True, text=True).stdout.strip()
-            if state != "true" or time.monotonic() > deadline or available_gib() < FLOOR_GIB:
-                raise RuntimeError(f"{self.label}: server did not come up (running={state})")
+            if not self.running() or time.monotonic() > deadline or available_gib() < FLOOR_GIB:
+                raise RuntimeError(f"{self.label}: server did not come up (running={self.running()}); see {self.log}")
             time.sleep(5)
         info = get_json(f"{self.url}/get_server_info")
         (self.dir / "server_info.json").write_text(json.dumps(info, indent=1) + "\n")
@@ -442,9 +439,10 @@ class Served:
         log(f"{self.label}: serving on {self.url}, configuration matches the in-process arm")
 
     def stop(self) -> None:
-        with (self.dir / "server.log").open("a") as f:
-            subprocess.run(["docker", "logs", CONTAINER], stdout=f, stderr=subprocess.STDOUT)
         subprocess.run([str(REPO / "run-sharar.sh"), "--stop"], env=self.env, capture_output=True)
+        if self.log.is_file():
+            with (self.dir / "server.log").open("a") as f:
+                f.write(self.log.read_text(errors="replace"))
 
 def run_suite(label: str, served: Served, suite: str, l3: Path, skip: list[str], minutes: float, engine: str) -> None:
     """Run one sharar-eval suite on a served arm in GPU windows of at most `minutes` each; the suite keeps
@@ -635,7 +633,7 @@ def summary_md(card: dict) -> str:
     lines = [f"# Lossy-change gate: {m['name']} ({m['target']})", "",
              f"`{card['verdict_line']}`", "",
              f"Candidate: profile `{m['candidate']['profile']}` + `{m['candidate']['env']}`; baseline: profile `{m['baseline']['profile']}` + `{m['baseline']['env']}`.",
-             f"Image `{m['image']}` ({m['image_id'][:19]}), engine source sha256 {card.get('engine_source_sha256', '?')[:12]} (the image's), "
+             f"Engine `{m['engine']}`, engine source sha256 {card.get('engine_source_sha256', '?')[:12]}, "
              f"gate source {m['source']}{' (dirty)' if m['dirty'] else ''}, evals {m['evals_commit'][:10]}. Batch size 1 (layers 1-2), 4 streams (layer 3), greedy, "
              f"prompts `{m['workload']}` (sha256 {m['workload_sha256'][:12]}). Baseline arm: `{m['baseline_dir']}`.", "",
              "Why: " + "; ".join(card["why"]), ""]
@@ -712,7 +710,6 @@ def main(argv=None) -> int:
     ap.add_argument("--baseline-env", action="append", default=[])
     ap.add_argument("--through", choices=("inprocess", "screen", "full", "auto"), default="auto",
                     help="inprocess: layers 1-2; screen: also the layer-3 screen (forced); full: also the full sets; auto: the cascade")
-    ap.add_argument("--image", default=None, help="runtime image (default: the config's SHARAR_IMAGE, else tools/image.sh's)")
     ap.add_argument("--port", type=int, default=30100, help="served arms' port (30100-30199)")
     ap.add_argument("--battery", choices=sorted(BATTERIES), default="quick",
                     help="quick: the screen, then the full sets when close; hard / long / all: also sharar-eval's hard suite "
@@ -739,15 +736,11 @@ def main(argv=None) -> int:
     results = Path(results)
     global LOCK
     LOCK = results / ".gpu.lock"  # the shared GPU lock every Sharar tool takes
-    image = args.image or config.get("SHARAR_IMAGE") or default_image()
-    config.pop("SHARAR_IMAGE", None)
+    engine = engine_identity()
     hf_cache = config.get("SHARAR_HF_CACHE") or os.environ.get("SHARAR_HF_CACHE")
     cand_over, base_over = parse_env(args.env), parse_env(args.baseline_env)
     arms = {"baseline": resolve(config, args.baseline_profile, base_over), "candidate": resolve(config, args.profile, cand_over)}
     plans = {k: arm_plan(v) for k, v in arms.items()}
-    image_id = subprocess.run(["docker", "image", "inspect", image, "--format", "{{.Id}}"], capture_output=True, text=True).stdout.strip()
-    if not image_id:
-        raise SystemExit(f"image {image} not found")
     if not (args.evals / "evals" / "suite.py").is_file():
         raise SystemExit(f"{args.evals}: no sharar-eval with evals.suite; set --evals or SHARAR_EVALS")
     args.python = args.python or str(args.evals / ".venv" / "bin" / "python")
@@ -756,12 +749,12 @@ def main(argv=None) -> int:
     evals_commit = git("rev-parse", "HEAD", cwd=args.evals)
     workload_sha = sha256(WORKLOAD.read_bytes())
     key_src = {"protocol": PROTOCOL, "target": args.target, "baseline": arms["baseline"],
-               "image_id": image_id, "workload": workload_sha, "worker": sha256(WORKER.read_bytes()),
+               "engine": engine, "workload": workload_sha, "worker": sha256(WORKER.read_bytes()),
                "evals": git("rev-parse", "HEAD:evals", cwd=args.evals)}
     key = sha256(json.dumps(key_src, sort_keys=True).encode())[:12]
     base_dir = results / "reviews" / "lossy-gate-baselines" / f"{args.target}-{args.baseline_profile}-{key}"
     spec = {"target": args.target, "candidate": {"profile": args.profile, "env": cand_over}, "baseline": {"profile": args.baseline_profile, "env": base_over},
-            "image": image, "baseline_key": key}
+            "engine": engine, "baseline_key": key}
     existing = sorted((results / "reviews").glob(f"*-lossy-gate-{args.name}"))
     run_dir = None
     for d in reversed(existing):
@@ -773,7 +766,7 @@ def main(argv=None) -> int:
         if existing:
             raise SystemExit(f"{existing[-1]} holds another candidate spec; choose another --name")
         run_dir = results / "reviews" / f"{dt.date.today().isoformat()}-lossy-gate-{args.name}"
-    manifest = {**spec, "name": args.name, "image_id": image_id, "config_file": str(conf_path), "through": args.through, "battery": args.battery,
+    manifest = {**spec, "name": args.name, "config_file": str(conf_path), "through": args.through, "battery": args.battery,
                 "source": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--", "tools")),
                 "evals": str(args.evals), "evals_commit": evals_commit, "workload": json.loads(WORKLOAD.read_text())["version"],
                 "workload_sha256": workload_sha, "baseline_dir": str(base_dir), "port": args.port,
@@ -794,8 +787,9 @@ def main(argv=None) -> int:
     # layers 1-2, in process: baseline once (cached), then the candidate
     b_in, c_in = base_dir / "inprocess", run_dir / "inprocess"
     if not args.report:
-        run_inprocess("baseline", tool_container(image, plans["baseline"], results, hf_cache, b_in, None), b_in, b_in / "floor.json", args.hold_minutes)
-        run_inprocess("candidate", tool_container(image, plans["candidate"], results, hf_cache, c_in, b_in), c_in, c_in / "dist.json", args.hold_minutes)
+        ensure_venv()
+        run_inprocess("baseline", tool_command(plans["baseline"], results, hf_cache, b_in, None), b_in, b_in / "floor.json", args.hold_minutes)
+        run_inprocess("candidate", tool_command(plans["candidate"], results, hf_cache, c_in, b_in), c_in, c_in / "dist.json", args.hold_minutes)
     card = {"manifest": manifest, "stage": None}
     l1 = l2 = l3 = None
     if (c_in / "dist.json").exists() and (b_in / "floor.json").exists():
@@ -810,7 +804,6 @@ def main(argv=None) -> int:
     want = args.through in ("screen", "full") or (args.through == "auto" and v0 not in ("exact", "rejected"))
     if want and l1 is not None:
         arm_info = {k: json.loads(((b_in if k == "baseline" else c_in) / "arm.json").read_text()) for k in plans}
-        engine = f"{image} {image_id[:19]}"
         servers = {}
         for side in plans:
             info = arm_info[side]
@@ -818,7 +811,7 @@ def main(argv=None) -> int:
                       "draft_precision": plans[side]["draft_precision"], "w3_identity": info["w3_identity"]}
             profile, over = (args.baseline_profile, base_over) if side == "baseline" else (args.profile, cand_over)
             servers[side] = Served(side, (base_dir if side == "baseline" else run_dir) / "served",
-                                   served_config(config, profile, over, image, args.port), args.port, args.python, args.evals, expect)
+                                   served_config(config, profile, over, args.port), args.port, args.python, args.evals, expect)
         dirs = {"baseline": base_dir / "l3", "candidate": run_dir / "l3"}
 
         def battery(stage_name: str) -> dict:
