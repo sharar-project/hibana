@@ -7,8 +7,8 @@ from dataclasses import dataclass
 # four requests (sixteen in the throughput profile, #59) share the KV pool, and
 # admission budgets each request's actual tokens.
 MAX_CONTEXT = 262144
-MAX_BATCH = 16
-BUCKETS = (1, 2, 4, 8, 16)  # CUDA-graph batch sizes; a batch pads to the smallest that holds it
+MAX_BATCH = 128
+BUCKETS = (1, 2, 4, 8, 16, 32, 64, 128)  # CUDA-graph batch sizes; a batch pads to the smallest that holds it
 
 
 @dataclass(frozen=True)

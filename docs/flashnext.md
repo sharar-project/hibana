@@ -28,7 +28,7 @@ tower (not loaded).
 | `linear.py` | `TrunkLinear`: FP8 at load with a dynamic activation scale (`SHARAR_FLASHNEXT_TRUNK=bf16` for parity) |
 | `gdn.py`, `attention.py` | the 27B modules with these projections and the sigmoid gate; the attention layers run the indexer |
 | `indexer.py` | sparse-attention indexer: index keys in page aux rows, group compression, top-512 selection |
-| `moe.py` | FlashInfer `cutlass_fused_moe` on the checkpoint's packing (fc1 rows are `[up; gate]`) |
+| `moe.py` | routed experts: FlashInfer `cutlass_fused_moe` on the checkpoint's NVFP4 packing (fc1 rows are `[up; gate]`), or the 3-bit experts from the W3 checkpoint through `kernels/w3_moe.py` (never both resident) |
 | `ple.py` | table as numpy memory maps of the 128 shards; hash, gather, gate, convolution; window state in `StatePool.aux` |
 | `model.py` | `FlashNext`: the executor's model contract; `norm` is the hyper stream, `logits()` applies the mixer |
 | `mtp.py` | `FlashNextMtpHead`: the checkpoint's MTP layer on the `MtpHead` surface for the `mtp` proposer |
@@ -249,18 +249,132 @@ acceptance adds x1.051 but is not bitwise (identity 2/44; the draft KV's FP8 act
 bucket, so proposals and round boundaries drift), with acceptance unchanged. The launcher turns it on only in the
 `fast` profile (`tools/serving-profile.sh`); `exact` and `balanced`, and the 27B, keep it off.
 
+## The round, kernel by kernel; draft-step fusion (2026-10-10, #9)
+
+The served `fast` round at batch one (`profiling/flashnext_round.py --phase-kernels --gap-profile --accept 3:2.0`
+with `SHARAR_BENCH_VERIFY_STATE=reconstruct`, as served; the profiler's default `snapshots` state and exact
+acceptance leave out the device-acceptance graph) spends 50.4 ms: draft 7.65, verify 40.6, accept 1.63 (GPU replay
+time) and 0.47 ms of host gaps. What each phase is made of:
+
+- **Draft: not launch-bound any more.** Each of the four steps is one graph replay of 1.9 ms with 91 kernels, of
+  which the 3-bit draft head is 1.10 ms (the lm_head's 258 MB at 235 GB/s) and the layer's FP8 weights (attention
+  34 MB, experts 49 MB, mixers, shared expert) about 0.5 ms. Inside a replay the device-side bubble between kernels
+  is 0.2 us (`--kernel-gaps`); "launch-bound" means each small kernel's own 1.5 to 5 us, about 0.3 ms per step. The
+  11.6 ms of #9 predates the 3-bit draft head.
+- **Accept: bandwidth, not variance.** 1.63 ms at batch one, 4.17 at four, is the device-acceptance graph; 1.02 /
+  3.29 ms of it is `_reconstruct`, which reads and rewrites the 36 GDN layers' FP32 recurrent states (113 MB per
+  request each way). The 5 to 40 ms "unexplained" accept phase of 2026-09-19 was the host acceptance path that
+  device acceptance replaced (#36): accept is now 1.63 to 1.65 ms on every prompt.
+- **Verify** (40.6 ms, two replays): fused NVFP4 MoE 19.1 ms, 3-bit trunk GEMMs 8.0, the hyper-connection mixers'
+  FP8 GEMMs through cuBLAS at five rows 3.9 (163 GB/s), BF16 router and inject GEMMs 2.0, MoE bookkeeping kernels
+  1.4, and the mixers' one-program FP8 quantization of their 5 x 10,240 input 1.6 ms (194 launches of 8 us).
+
+Fused, every change bitwise (the same arithmetic in fewer launches; `tests/gpu/test_flashnext_fused.py` checks each
+against the chain it replaces, and every fused call of eager generations was compared with main's chain on the real
+activations: 0 mismatches in 402,702 calls):
+
+| Where | Before | After |
+|---|---|---|
+| FP8 GEMVs of up to four rows (draft layer, the mixers, decode) | quantize (one program) + GEMV | the GEMV quantizes its input itself (CUDA and the any-K Triton GEMV); the mixer's down GEMV reads the norm's block maxima |
+| Hyper-connection norm + FP8 down projection, many rows (verify) | norm + one-program quantization (8 us at five rows) | the norm writes per-block maxima; quantization is one parallel launch |
+| Draft attention | q/k norm + RoPE (2 launches), v copy, two index writes | one kernel writes q and the draft KV |
+| Draft routed experts | `repeat_interleave`, GEMV, SiLU-mul, GEMV, four reduction launches, combine | GEMV reading its input row by index, GEMV applying SiLU-mul to its input, combine with the routed sum (PyTorch's four-accumulator order, each product rounded alone) |
+| Shared-expert SiLU-mul into the 3-bit down projection (verify) | SiLU-mul + grouped E4M3 quantization | one kernel with the CUDA quantizer's fast-math arithmetic |
+| GDN `in_qkv` / `in_z` 3-bit copies (verify) | each quantizes the same input | one grouped quantization for both |
+
+A draft step goes from 91 to 66 kernels and its replay from 1.96 to 1.91 ms (`profiling/flashnext_draft_step.py`,
+whose `--check` compares a step's outputs bitwise across code versions).
+
+| `fast`, served round (ms) | draft | verify | accept | idle | round |
+|---|---:|---:|---:|---:|---:|
+| batch one, before | 7.65 | 40.60 | 1.63 | 0.47 | 50.36 |
+| batch one, after | 7.23 | 39.34 | 1.61 | 0.47 | 48.66 |
+| batch four, before | 9.74 | 77.72 | 4.16 | 1.37 | 92.99 |
+| batch four, after | 9.19 | 76.58 | 4.12 | 1.70 | 91.59 |
+
+Served, one Spark, the launcher's `fast` settings (the same venv; main 32e3fcb against the branch, servers started
+in turn):
+
+| | main | branch |
+|---|---:|---:|
+| Seven single prompts (`profiling/tp_serve_bench.py`), median decode tok/s, cold / second pass | 73.4 / 75.1 | 75.2 / 77.3 (+2.5 / +2.9%) |
+| the same: round ms (server spec stats); rounds; outputs | 52.1 / 51.2; 717 / 722 | 50.5 / 49.8; 717 / 722; 7/7 identical both passes |
+| JSON extraction prompt, batch one | 93.4 tok/s | 96.0 (+2.7%), identical |
+| Three 10K-token prompts (code, design, reasoning) | 68.4 / 74.8 / 73.0 | 69.9 / 76.4 / 74.7 (+2.1 to +2.3%), TTFT unchanged |
+| `conc_bench.py` 1 / 4 / 16 concurrent, 256 tokens, mean of four runs | 71.2 / 134.5 / 123.9 | 72.1 / 135.0 / 126.3 |
+| GSM8K-150 / HumanEval-60 (concurrency 4) | 145 / 58 | 144 / 58 (discordant 3 / 2 and 0 / 0) |
+
+At four and sixteen requests the round is 1 to 3% shorter but the tokens per round move by as much from run to run
+(see the identity note below), so the aggregate is unchanged within noise.
+
+Identity (`profiling/ab_identity.py`, in process, 256 tokens, two passes per build): at batch one 14 of 14 outputs
+are identical to main's (seven prompts including JSON and a needle, exact and 3:2.0 acceptance). At batch four main
+does not repeat itself (4 of 8 batch-four outputs differ between its own two passes, from token 184 on); every
+batch-four output main repeats is identical. The first version of the routed sum let the compiler contract each
+product into an FMA: 4 in 100,000 BF16 outputs differed, enough to move one prose output at token 221 of 256;
+the bisection and the real-activation comparison found it, and the test now covers 4M outputs.
+
+Not done: the draft head is 58% of a draft step at bandwidth; the mixers' down GEMV (320 rows of 10,240) runs on
+10 programs at 140 GB/s (an ordered split-K keeps the bits); the draft head's `topk` over the vocabulary is five
+launches; the verify's router and mixer GEMMs go through cuBLAS at 130 to 160 GB/s (a GEMV would be faster, not
+bitwise); `_reconstruct` is bandwidth; at batch four the host still holds the verify for about 1 ms after the
+last draft step (the last token's PLE rows), and main's batch-four outputs are not repeatable.
+
 ## 3-bit routed experts, simulated (2026-09-29, #73)
 
-`SHARAR_FLASHNEXT_EXPERTS_SIM3=32` (`sharar/weights/expert_sim3.py`, off by default) rewrites the NVFP4 experts at
-load into a 3-bit format, eight levels {±0.5, ±1.5, ±3, ±4} times one E4M3 scale per 32 weights (3.25 bits per weight
-against NVFP4's 4.5). The format is exactly representable in NVFP4, so the CUTLASS fused MoE computes what a 3-bit
-kernel would: a quality screen, with no speed or memory change. Relative weight error against the NVFP4 experts is
-0.18; the Lloyd codebook a real kernel would use measures 0.16 on the same experts, so the screen is pessimistic.
-Lossy-change gate, `fast` plus the simulated experts against `exact` (screen stage): verdict `fast`, pooled
--0.3 pp [-2.2, +1.6] (p 0.89; GSM8K-300 96.0 vs 95.0, HumanEval 93.3 vs 95.1, MGSM-264 86.7 vs 87.5), decode-path
-KL 0.108 against 0.083 for `fast` alone (prose and multilingual move most), tokens per round x1.18. A kernel would
-save 17.6 GiB of resident experts (63.3 to 45.7) and about 6 ms per MTP round at batch one (~+12% single-stream) if
-it matches the NVFP4 path's efficiency; that kernel is #73. Evidence `$SHARAR_RESULTS/reviews/2026-09-29-lossy-gate-experts-sim3-g32/`.
+## 3-bit routed experts (2026-09-30, #73)
+
+With the 3-bit copies on (`fast`, `throughput`) and a W3 checkpoint that carries the experts
+(`layers.N.experts.w13` / `.w2`), `MoeLayer` loads the 3-bit experts and never reads the NVFP4 ones; without
+expert entries it serves NVFP4 exactly as before. There is no setting of its own: the checkpoint decides.
+
+- **Format**: the trunk's W3 format per expert matrix (`kernels/w3.py`): 3-bit codes into the Lloyd codebook,
+  one E4M3 scale per 32 weights, an FP32 multiplier per row; fc1's rows are reordered so each 32-row block is
+  sixteen up rows and their sixteen gate rows. 2.01 MB an expert against NVFP4's 2.76 MB: 46.1 GiB of experts
+  instead of 63.3.
+- **Calibration** (`sharar/weights/flashnext_w3_experts.py`, [how](w3-calibration.md#routed-experts-flash-next-73)): from the
+  NVFP4 experts, group scales on a clipping grid minimizing the weight error, nearest level. Mean relative weight
+  error against the NVFP4 experts 0.164 (fc1) / 0.163 (fc2), against 0.18-0.19 for the screened simulation
+  (`SHARAR_FLASHNEXT_EXPERTS_SIM3`, removed with this change).
+- **Kernel** (`kernels/w3_moe.py`, `csrc/w3_gemm.cu` namespace `moe`): four graph-capturable launches for any row
+  count (plan and activation quantization; fc1 with silu(gate) * up and the intermediate's quantization in its
+  epilogue; fc2; the weighted sum in selection order). The trunk W3 kernel's streaming loop, each selected expert's
+  weights once per pass of at most 64 of its rows, E4M3 activations per (row, 32-group). No atomics in any sum:
+  deterministic, and graph replay equals eager. Calls of more than 16 rows stage the activations in shared
+  memory (bit-identical to the per-lane loads).
+
+One layer, real weights (8 layers in one CUDA graph, routing matched to recorded traffic up to 8 rows, uniform
+beyond), `profiling/flashnext_moe_w3.py`, routed experts only:
+
+| Rows | CUTLASS NVFP4 | 3-bit | speedup |
+|---:|---:|---:|---:|
+| 1 | 174 us | 95 us | 1.84 |
+| 5 (MTP k=4 verify) | 395 us | 257 us | 1.54 |
+| 16 | 916 us | 628 us | 1.46 |
+| 64 | 4.46 ms | 3.11 ms | 1.43 |
+| 2048 (a prefill chunk) | 8.15 ms | 6.75 ms | 1.21 |
+| 4096 (two requests' chunks) | 10.4 ms | 13.4 ms | 0.78 |
+
+Served, `fast`, same image, today's trunk checkpoint against the same trunk plus the 3-bit experts (h2h decode
+workload, 22 prompts, arms A B B A):
+
+| | NVFP4 experts | 3-bit experts |
+|---|---|---|
+| Single-stream greedy, median | 82.8 tok/s | 98.4 tok/s (paired x1.187 [1.160, 1.222], 22/22 prompts faster) |
+| Single-stream t=0.7, median | 71.4 tok/s | 85.6 tok/s (paired x1.177 [1.145, 1.207], 22/22) |
+| Ledger weights | 70.25 GiB | 53.03 GiB (-17.2 GiB; KV pages 5.1 -> 8.2 GiB, state slots 14 -> 62) |
+| Weight load | 115 s | 47 s |
+| Cold TTFT 2K / 16K / 64K | 1.32-1.76 / 9.1-9.6 / 37.7-39.6 s | 1.00-1.19 / 9.2-9.4 / 38.4-39.3 s |
+
+Prefill is unchanged within noise at one request (2,048-row chunks); a step that prefills 4,096 rows (several
+requests at once, the `throughput` profile) runs its MoE about 30% slower than CUTLASS. Lossy-change gate, full
+stage, `fast` + 3-bit experts against `exact`: **rejected**. Pooled -0.8 pp [-1.5, -0.0] over 4,733 items
+(133 better, 169 worse, McNemar p 0.044): GSM8K-1319 94.5 -> 93.8, HumanEval 94.5 -> 93.3, MBPP-500 81.0 -> 79.2,
+MGSM-2750 87.0 -> 86.4, none significant alone. Decode-path KL 0.101 (`fast` alone 0.083, the simulation 0.108),
+worst in prose and multilingual; tokens per round x1.19, in-process decode x1.73. `fast` alone has only been screened
+(-0.7 pp over 728 items, not significant), so how much of the loss is the experts' is not measured. The checkpoint
+is not promoted; GPTQ on routed activations (the calibration's next step) is untried.
+Evidence `$SHARAR_RESULTS/reviews/2026-09-30-experts-3bit-integration/` and `2026-09-30-lossy-gate-experts3/`.
 
 ## Router statistics (2026-09-27, #32)
 

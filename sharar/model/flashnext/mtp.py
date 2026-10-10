@@ -18,7 +18,6 @@ import torch
 import torch.nn.functional as F
 
 from sharar.engine.config import current
-from sharar.engine.context import ForwardContext
 from sharar.kernels import ops
 from sharar.cache.kv_pool import KvPool
 from sharar.model.flashnext.attention import FlashNextAttention
@@ -110,24 +109,38 @@ class FlashNextMtpHead:
         return (h + e.unsqueeze(-2)).reshape(-1, self.hidden_width)
 
     def _moe(self, x: torch.Tensor) -> torch.Tensor:
-        from sharar.kernels.flashnext_fused import expert_gemv, moe_combine, route_topk, silu_mul
-        m = x.shape[0]
-        ids, weights = route_topk(x @ self.router.T, self.topk)
+        from sharar.kernels import flashnext_fused as fk
+        ids, weights = fk.route_topk(x @ self.router.T, self.topk)
         flat = ids.reshape(-1)
-        xr = x.repeat_interleave(self.topk, 0)  # [M*topk, H]
-        h = silu_mul(expert_gemv(self.gate_up, self.gate_up_scale, xr, flat))  # [M*topk, I]
-        y = expert_gemv(self.down, self.down_scale, h, flat)  # [M*topk, H]
-        routed = (y.float() * weights.reshape(-1)[:, None]).view(m, self.topk, -1).sum(1).to(torch.bfloat16)
-        shared = self.shared_down(silu_mul(self.shared_gate_up(x)))
-        return moe_combine(routed, shared, x, self.shared_gate.reshape(-1))
+        # routed row r reads input row r // topk; the down projection applies silu_mul to its [gate | up] rows itself
+        gu = fk.expert_gemv_fused(self.gate_up, self.gate_up_scale, x, flat, x_div=self.topk)  # [M*topk, 2I]
+        y = fk.expert_gemv_fused(self.down, self.down_scale, gu, flat, act=fk.ACT_SILU_MUL)  # [M*topk, H]
+        shared = self.shared_down(self.shared_gate_up(x), act=fk.ACT_SILU_MUL)
+        return fk.moe_combine_routed(y, weights, shared, x, self.shared_gate.reshape(-1))
 
-    def _ctx(self, positions: torch.Tensor, write_pages: torch.Tensor, wrapper) -> ForwardContext:
-        return ForwardContext(mode="verify", kv_pool=self.kv, state_pool=None, positions=positions, pages=write_pages,
-                              seq_len=positions.shape[0], prefix_len=1, paged_prefill_wrapper=wrapper)
+    def _qkv_write(self, h: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """The attention's q/k norm and RoPE, v, and the draft KV write in one launch (the bits of
+        `Attention._split_qkv` + `KvPool.write`): (q [T, Hq, D], the qkv rows)."""
+        from sharar.kernels.flashnext_fused import qkv_epilogue
+        a = self.attn
+        qkv = a.qkv(h)
+        k_cache, v_cache = self.kv.cache(0)
+        q = qkv_epilogue(qkv, positions, a.rope.cos_sin, a.q_norm.weight, a.k_norm.weight, k_cache, v_cache, write_pages,
+                         a.num_heads, a.num_kv_heads, a.head_dim, a.rope.rotary_dim, a.eps)
+        return q, qkv
+
+    def _attention(self, h: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor, wrapper) -> torch.Tensor:
+        """`Attention.prefill` in its verify mode (each row attends over its sequence's draft KV) with the fused epilogue."""
+        a = self.attn
+        t = h.shape[0]
+        q, qkv = self._qkv_write(h, positions, write_pages)
+        attn = wrapper.run(q, self.kv.cache(0)).view(t, a.q_size)
+        gate = qkv[:, : a.q_size * 2].view(t, a.num_heads, 2 * a.head_dim)[..., a.head_dim:]
+        return a._finish(attn, gate)
 
     def _layer(self, u: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor, wrapper) -> torch.Tensor:
         h, res = self.attn_hc.mix(u)
-        a = self.attn.prefill(h, positions, self._ctx(positions, write_pages, wrapper))
+        a = self._attention(h, positions, write_pages, wrapper)
         u = self.attn_hc.combine(a, res)
         h, res = self.mlp_hc.mix(u)
         return self.mlp_hc.combine(self._moe(h), res)
@@ -137,8 +150,7 @@ class FlashNextMtpHead:
     def write_kv(self, tokens: torch.Tensor, hidden: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor) -> None:
         """Commit target-conditioned KV for rows the draft never runs (prefill ingestion, bonus inputs)."""
         h, _ = self.attn_hc.mix(self._fuse(tokens, hidden))
-        _, k, v, _ = self.attn._split_qkv(self.attn.qkv(h), positions)
-        self.kv.write(0, write_pages, k, v)
+        self._qkv_write(h, positions, write_pages)
 
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, hidden: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor, qo_lens: list[int], kv_pages: list[torch.Tensor]) -> torch.Tensor:

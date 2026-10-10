@@ -67,30 +67,61 @@ class TrunkLinear:
     def dequantize(self) -> torch.Tensor:
         return self.weight.float() * self.scale.float() if self.scale is not None else self.weight.float()
 
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+    def _uses_w3(self, rows: int) -> bool:
+        if self.w3 is None:
+            return False
+        from sharar.kernels import w3
+        return rows <= w3.MAX_ROWS
+
+    def __call__(self, x: torch.Tensor, act: int = 0, amax_parts: torch.Tensor | None = None) -> torch.Tensor:
+        """y = act(x) @ W^T. `act` (`flashnext_fused.ACT_*`) applies SiLU, or SiLU-mul to a [gate | up] input of
+        twice the width, inside the FP8 quantization where it can (the BF16 activation is then never written);
+        `amax_parts`: per-block maxima of |x| its producer computed (`grouped_gemma_rms(..., amax=True)`), which
+        let the FP8 path quantize many rows in parallel. Either way the result is bitwise the unfused chain's."""
+        from sharar.kernels import flashnext_fused as fk
         flat = x.reshape(-1, x.shape[-1])
-        if self.scale is None:
-            out = flat @ self.weight.T
-        else:
-            flat = flat.contiguous()
-            if self.w3 is not None:
+        rows = flat.shape[0]
+        k = self.in_features
+        if self.scale is not None and act == fk.ACT_SILU_MUL and self._uses_w3(rows) and k % 32 == 0:
+            # SiLU-mul straight into the 3-bit GEMM's grouped E4M3 input (one launch; the bits of silu_mul + quant_groups)
+            from sharar.kernels import w3
+            x_q, x_scale = fk.silu_mul_quant_groups(flat.contiguous())
+            return w3.w3_linear(x_q, self.w3, x_scale).reshape(*x.shape[:-1], self.out_features)
+        if self.scale is None or self._uses_w3(rows):
+            if act == fk.ACT_SILU:
+                flat = torch.nn.functional.silu(flat)
+            elif act == fk.ACT_SILU_MUL:
+                flat = fk.silu_mul(flat)
+            if self.scale is None:
+                out = flat @ self.weight.T
+            else:
                 from sharar.kernels import w3
-                if flat.shape[0] <= w3.MAX_ROWS:
-                    return w3.w3_linear(flat, self.w3).reshape(*x.shape[:-1], self.out_features)
-            k = flat.shape[1]
-            if flat.numel() <= 65536:  # decode rows: one-kernel quantization that also emits alpha
-                from sharar.kernels.flashnext_fused import quant_fp8_small
-                x_q, x_scale, alpha = quant_fp8_small(flat, self.scale)
+                out = w3.w3_linear(flat.contiguous(), self.w3)
+            return out.reshape(*x.shape[:-1], self.out_features)
+        flat = flat.contiguous()
+        if rows <= GEMV_MAX_ROWS and k % 512 == 0 and k <= 8192:  # the CUDA GEMV kernel's shape rule
+            # decode rows: the GEMV quantizes its input itself (one launch; the bits of quant_fp8_small + fp8_gemv_cuda)
+            from sharar.kernels.fp8_gemv_cuda import fp8_gemv_quant_cuda
+            if act == fk.ACT_SILU:
+                flat = torch.nn.functional.silu(flat)
+            elif act == fk.ACT_SILU_MUL:
+                flat = fk.silu_mul(flat)
+            out = fp8_gemv_quant_cuda(flat, self.weight, self.scale)
+        elif rows <= GEMV_MAX_ROWS and k % 16 == 0:  # other widths (mixers K=320/10240, shared down K=640)
+            if act == fk.ACT_SILU:  # computed once here: per GEMV program, the precise SiLU costs more than a launch
+                flat, act = torch.nn.functional.silu(flat), fk.ACT_NONE
+            out = fk.fp8_gemv_quant_any(flat, self.weight, self.scale, act, amax_parts=amax_parts if act == fk.ACT_NONE else None)
+        else:
+            if act == fk.ACT_SILU:
+                flat = torch.nn.functional.silu(flat)
+            elif act == fk.ACT_SILU_MUL:
+                flat = fk.silu_mul(flat)
+            if amax_parts is not None and act == fk.ACT_NONE:  # the producer's block maxima: a parallel quantization
+                x_q, x_scale = fk.quant_fp8_parts(flat, amax_parts)
+            elif flat.numel() <= 65536:  # decode rows: one-kernel quantization
+                x_q, x_scale, _ = fk.quant_fp8_small(flat, self.scale)
             else:
                 from sharar.kernels.draft_fp8 import quant_dynamic
                 x_q, x_scale = quant_dynamic(flat)
-                alpha = None
-            if flat.shape[0] <= GEMV_MAX_ROWS and k % 512 == 0 and k <= 8192:  # the CUDA GEMV kernel's shape rule
-                from sharar.kernels.fp8_gemv_cuda import fp8_gemv_cuda
-                out = fp8_gemv_cuda(x_q, self.weight, alpha if alpha is not None else (x_scale * self.scale).reshape(1))
-            elif flat.shape[0] <= GEMV_MAX_ROWS and k % 16 == 0:  # other widths (mixers K=320/10240, shared down K=640)
-                from sharar.kernels.flashnext_fused import fp8_gemv_any
-                out = fp8_gemv_any(x_q, self.weight, alpha if alpha is not None else (x_scale * self.scale).reshape(1))
-            else:
-                out = torch._scaled_mm(x_q, self.weight.T, scale_a=x_scale, scale_b=self.scale, out_dtype=torch.bfloat16)
+            out = torch._scaled_mm(x_q, self.weight.T, scale_a=x_scale, scale_b=self.scale, out_dtype=torch.bfloat16)
         return out.reshape(*x.shape[:-1], self.out_features)

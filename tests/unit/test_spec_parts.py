@@ -89,10 +89,12 @@ def test_batch_depth_by_bucket():
     assert FixedDepth(3).sizes_for(3, sizes) == sizes
 
 
-def test_profile_buckets_up_to_sixteen():
+def test_profile_buckets_up_to_128():
     from sharar.engine.profile import ServingProfile
     assert ServingProfile().graph_sizes == (1, 2, 4)  # the default profile is unchanged
     assert ServingProfile(max_batch=16).graph_sizes == (1, 2, 4, 8, 16)
     assert ServingProfile(max_batch=12).graph_sizes == (1, 2, 4, 8, 12)
+    assert ServingProfile(max_batch=128).graph_sizes == (1, 2, 4, 8, 16, 32, 64, 128)
+    assert ServingProfile(max_batch=48).graph_sizes == (1, 2, 4, 8, 16, 32, 48)
     with pytest.raises(ValueError):
-        ServingProfile(max_batch=17)
+        ServingProfile(max_batch=129)
