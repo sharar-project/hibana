@@ -52,7 +52,7 @@ budget separately. Automatic KV capacity depends on available memory.
 | Python environment | `.venv` in the checkout | `SHARAR_VENV=/dir` (built there by `tools/setup-venv.sh`) |
 | Service / port | 27B `sharar-qwen38` / 30001, Flash-Next `sharar-flashnext` / 30004 | `SHARAR_SERVICE` / `SHARAR_PORT` |
 | Request traces | on under `sharar-ctl` (`$SHARAR_RESULTS/traces`), off under `run-sharar.sh` | `sharar-ctl serve --no-traces`; `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
-| Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, fetched on first serve | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
+| Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
 | Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `SHARAR_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
 | Shape-stable prefill numerics | off | `SHARAR_STABLE_NUMERICS=1` (M-invariant kernels for the three row-count-dependent ops; see [limits](#numerical-limits)) |
 

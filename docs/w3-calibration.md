@@ -52,15 +52,19 @@ the decode-path KL it causes, though it did not move task accuracy, so the serve
 
 The profiles that use 3-bit copies (`balanced` for the 27B, `fast`, `throughput`)
 serve `$SHARAR_RESULTS/w3-checkpoints/<target>-current` (`qwen38-current`,
-`flashnext-current`). When that link is missing, `run-sharar.sh` fetches the
-target's published checkpoint, pinned by revision in the target's config
-(`W3_REPO`, `W3_REVISION`), into `w3-checkpoints/<target>-<revision>` and links it
-(`python -m sharar.weights.w3_checkpoint fetch`, from the Python environment; `HF_TOKEN` is
-passed through for a private repository). Both targets have one: Flash-Next's
-(`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`) and the 27B's
-(`yemara/Qwen3.8-27B-NVFP4-sharar-w3`, GPTQ from the FP8 release on the
-`bc7984f` inputs, 2026-10-01). To serve a new calibration, point the link at its
-directory or set `SHARAR_W3_CHECKPOINT=/host/calibrated-w3`.
+`flashnext-current`). Every serve (`run-sharar.sh`, `sharar-tp`) keeps that link on the target's published
+checkpoint, pinned by revision in the target's config (`W3_REPO`, `W3_REVISION`)
+(`python -m sharar.weights.w3_checkpoint fetch`; `HF_TOKEN` is passed through for a private repository):
+
+- no link, or a link to a revision fetched earlier (`<target>-<12-character revision>`): the pinned revision is
+  downloaded into `w3-checkpoints/<target>-<revision>`, verified, and linked; older directories are kept;
+- a link to any other directory is a local calibration: it stays, and the serve prints a note with the command that
+  switches to the published copies (`fetch --target T --root R --switch`).
+
+Both targets have one: Flash-Next's (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`: the 3-bit trunk and the GPTQ
+routed experts) and the 27B's (`yemara/Qwen3.8-27B-NVFP4-sharar-w3`, GPTQ from the FP8 release on the `bc7984f`
+inputs, 2026-10-01). To serve a new calibration, point the link at its directory or set
+`SHARAR_W3_CHECKPOINT=/path/to/calibrated-w3`.
 
 The loader checks the target revision, projection coverage, dimensions, dtypes
 and hashes before graph capture. `/get_server_info` exposes `w3_target_identity`,

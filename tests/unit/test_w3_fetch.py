@@ -48,12 +48,43 @@ def test_fetch_downloads_the_pinned_revision_and_links_current(tmp_path, hub):
     assert len(calls) == 1  # a finished download is not fetched again
 
 
-def test_fetch_leaves_an_existing_current_link(tmp_path, hub):
+def test_fetch_keeps_a_local_calibration_and_says_how_to_switch(tmp_path, hub):
+    calls, _ = hub
     local = tmp_path / "20260929-flashnext-gptq"
     publish(local, FLASHNEXT)
     (tmp_path / "flashnext-current").symlink_to(local.name)
-    w3_checkpoint.fetch(FLASHNEXT, tmp_path, log=lambda *_: None)
-    assert (tmp_path / "flashnext-current").resolve() == local.resolve()
+    notes = []
+    assert w3_checkpoint.fetch(FLASHNEXT, tmp_path, log=notes.append) == local.resolve()
+    assert (tmp_path / "flashnext-current").resolve() == local.resolve() and calls == []  # nothing downloaded
+    assert len(notes) == 1 and "local calibration" in notes[0] and "--switch" in notes[0]
+    dest = w3_checkpoint.fetch(FLASHNEXT, tmp_path, log=lambda *_: None, switch=True)
+    assert (tmp_path / "flashnext-current").resolve() == dest.resolve() and local.is_dir()  # the local copy is kept
+
+
+def test_fetch_moves_current_off_an_earlier_fetched_revision(tmp_path, hub):
+    """#130 pinned a new Flash-Next checkpoint; machines with the old one linked must follow the pin."""
+    calls, _ = hub
+    old = tmp_path / w3_checkpoint.fetched_name(FLASHNEXT, "970cbfc0cbc174d2f59d902eb4af0af07ece1564")
+    publish(old, FLASHNEXT)
+    (tmp_path / "flashnext-current").symlink_to(old.name)
+    notes = []
+    dest = w3_checkpoint.fetch(FLASHNEXT, tmp_path, log=notes.append)
+    assert calls == [(FLASHNEXT.w3_repo, FLASHNEXT.w3_revision)]
+    assert (tmp_path / "flashnext-current").resolve() == dest.resolve() and old.is_dir()
+    assert any(old.name in n and dest.name in n for n in notes)
+    assert not (tmp_path / ".flashnext-current.tmp").exists()
+
+
+def test_fetch_replaces_a_dangling_link(tmp_path, hub):
+    (tmp_path / "flashnext-current").symlink_to("gone")
+    dest = w3_checkpoint.fetch(FLASHNEXT, tmp_path, log=lambda *_: None)
+    assert (tmp_path / "flashnext-current").resolve() == dest.resolve()
+
+
+def test_fetched_names_are_told_from_local_calibrations():
+    assert w3_checkpoint.is_fetched(FLASHNEXT, w3_checkpoint.fetched_name(FLASHNEXT, FLASHNEXT.w3_revision))
+    for name in ("20260929-flashnext-gptq", "flashnext-current", "qwen38-694e2790772b", "flashnext-694e2790772"):
+        assert not w3_checkpoint.is_fetched(FLASHNEXT, name)
 
 
 def test_fetch_rejects_a_corrupt_download_and_links_nothing(tmp_path, hub):

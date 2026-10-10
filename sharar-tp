@@ -176,6 +176,13 @@ cmd_serve() {
   local peer
   peer=$(peer)
   [[ -f $RUN/setup-peer-$TARGET && $(cat "$RUN/setup-peer-$TARGET") == "$peer" ]] || cmd_setup
+  # The 3-bit checkpoint follows the pinned revision on every serve (weights/w3_checkpoint.fetch), and the peer gets
+  # whatever changed (rsync copies only what differs).
+  if HF_HUB_OFFLINE=0 "${PY[@]}" -m sharar.weights.w3_checkpoint fetch --target "$TARGET" --root "$W3_ROOT" >/dev/null; then
+    rsync -a "$W3_ROOT/" "$peer:$W3_ROOT/"
+  else
+    echo "could not update the 3-bit checkpoint for $TARGET; serving the one in $TARGET-current"
+  fi
   mkdir -p "$RUN"
   setsid "$0" _run "$@" > "$RUN/serve.log" 2>&1 < /dev/null &
   echo $! > "$RUN/pid"
