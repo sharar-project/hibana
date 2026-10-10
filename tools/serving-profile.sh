@@ -26,6 +26,7 @@ serving_profile() {
               # max_tokens at 3:2.0 in Claude Code sessions (#11) and not at 2:1.0; Flash-Next's did not loop at 3:2.0
               if [[ "$2" == flashnext ]]; then P_DEVICE_ACCEPT=1; else P_DEVICE_ACCEPT=0; P_ACCEPT_SAMPLED_THRESHOLD=2:1.0; fi ;;
     throughput) serving_profile fast "$2"; P_MAX_BATCH=16
+              [[ "$2" == flashnext ]] && P_MAX_BATCH=64  # one Spark: 230 tok/s at 16, 328 at 32, 456 at 64 (128 needs 46.6 GiB of pools)
               if [[ "$2" == flashnext ]]; then P_SPEC_DEPTHS=16:3; fi ;;  # the 27B: SHARAR_SPEC everywhere
     *) return 1 ;;
   esac

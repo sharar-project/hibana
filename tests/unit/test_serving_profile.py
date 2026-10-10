@@ -75,7 +75,8 @@ def test_throughput_is_fast_with_sixteen_requests(target, depths):
     # the 27B keeps its full depth at every batch (operator decision, GSM8K x1.74).
     fast, wide = resolve("fast", target), resolve("throughput", target)
     assert {k: wide[k] for k in KNOBS[:4]} == {k: fast[k] for k in KNOBS[:4]}
-    assert wide["P_MAX_BATCH"] == "16" and wide["P_SPEC_DEPTHS"] == depths
+    # Flash-Next decodes up to 64 requests on one Spark (456 tok/s against 230 at 16)
+    assert wide["P_MAX_BATCH"] == ("64" if target == "flashnext" else "16") and wide["P_SPEC_DEPTHS"] == depths
     for bucket, depth in (item.split(":") for item in filter(None, depths.split(","))):
         assert int(bucket) * (int(depth) + 1) <= 64 and int(depth) <= 4
 

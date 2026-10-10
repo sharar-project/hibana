@@ -26,7 +26,7 @@ def test_profiles_come_from_the_launcher_table():
     assert gate.profile_defaults("fast", "flashnext")["SHARAR_DEVICE_ACCEPT"] == "1"
     assert gate.profile_defaults("fast", "qwen38")["SHARAR_DEVICE_ACCEPT"] == "0"
     wide = gate.profile_defaults("throughput", "flashnext")
-    assert wide["SHARAR_MAX_BATCH"] == "16" and wide["SHARAR_SPEC_DEPTHS"] == "16:3"
+    assert wide["SHARAR_MAX_BATCH"] == "64" and wide["SHARAR_SPEC_DEPTHS"] == "16:3"
     for name in gate.PROFILE_NAMES:
         assert set(gate.profile_defaults(name, "qwen38")) == set(gate.PROFILE_SETTINGS.values())
     with pytest.raises(ValueError, match="unknown serving profile"):
