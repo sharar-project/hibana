@@ -63,6 +63,20 @@ class CalibratedWeights:
 
     def load(self, name: str, linear, shard: Shard = REPLICATED):
         """`linear`'s copy: its tensor-parallel part `shard` of the checkpoint's whole matrix."""
+        return self._load(name, linear.out_features, linear.in_features, linear.weight.device, shard)
+
+    def expert_layers(self) -> set[int]:
+        """The layers whose routed experts the checkpoint carries (`layers.N.experts.w13` / `.w2`, kernels/w3_moe.py)."""
+        return {int(name.split(".")[1]) for name in self.weights if name.startswith("layers.") and ".experts." in name}
+
+    def load_experts(self, layer: int, experts: int, inter: int, hidden: int, device):
+        """Layer `layer`'s routed experts, whole (one rank): fc1 (rows in w3_moe.fc1_order) and fc2 stacked over the experts."""
+        from sharar.kernels.w3_moe import W3Experts
+        fc1 = self._load(f"layers.{layer}.experts.w13", experts * 2 * inter, hidden, device)
+        fc2 = self._load(f"layers.{layer}.experts.w2", experts * hidden, inter, device)
+        return W3Experts.from_stacked(fc1, fc2, experts)
+
+    def _load(self, name: str, out_features: int, in_features: int, device, shard: Shard = REPLICATED):
         from sharar.kernels.w3 import W3Weight, _codebook, lut_of
         entry = self.weights[name]
         n, k = entry["out_features"], entry["in_features"]
@@ -84,12 +98,12 @@ class CalibratedWeights:
         planes, scales = (shard.cols(shard.rows(tensors[key], 32), dim=1) for key in ("planes", "scales"))
         row_scale = shard.rows(tensors["row_scale"])
         n, k = row_scale.shape[0], planes.shape[1] * 128
-        if (n, k) != (linear.out_features, linear.in_features):
+        if (n, k) != (out_features, in_features):
             raise ValueError(f"calibrated W3 shape mismatch for {name}")
         # On GB10, copying a file-backed mmap directly to CUDA is much slower
         # than staging it in ordinary CPU storage, as the draft loader does.
-        # Only one projection is staged at a time.
-        return W3Weight(*(t.clone(memory_format=torch.contiguous_format).to(linear.weight.device) for t in (planes, scales, row_scale)),
+        # Only one projection (or one layer's experts) is staged at a time.
+        return W3Weight(*(t.clone(memory_format=torch.contiguous_format).to(device) for t in (planes, scales, row_scale)),
                         n, k, levels, lut_of(levels))
 
 

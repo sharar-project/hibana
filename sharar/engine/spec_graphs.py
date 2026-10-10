@@ -35,7 +35,8 @@ class VerifyGraphs:
         self.max_context = spec.ex.max_context + depth
         self.sizes = capture_sizes(spec.ex.max_batch) if sizes is None else tuple(sizes)  # a depth per batch bucket captures its buckets only
         self._pool = torch.cuda.graph_pool_handle()
-        self._ws = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=self.device)
+        # FlashInfer's split-KV scratch grows with the verified rows: 388 MB at 128 requests x 5 rows
+        self._ws = torch.empty(256 * 1024 * 1024 * max(1, -(-spec.ex.max_batch // 64)), dtype=torch.uint8, device=self.device)
         self.variants = graph_variants(spec.ex)
         self._st: dict[int, dict] = {}
         self._graphs: dict[tuple[int, str], torch.cuda.CUDAGraph] = {}

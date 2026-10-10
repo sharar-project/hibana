@@ -18,10 +18,23 @@ structured), thinking off ([h2h benchmark](https://github.com/abdelfattah-lab/sh
 | Qwen3.8-Flash-Next, greedy | **85.4** | 41.8 |
 | Qwen3.8-Flash-Next, temperature 0.7 | **74.4** | 40.5 |
 
-Sharar: 2026-10-05, the published image (main e4a2045), default `fast` profile, `sharar-ctl serve 27b|flashnext`; the 27B at
-temperature 0.7 re-measured 2026-10-06 after its sampled requests moved to a tighter relaxed-acceptance threshold (#11; 71.5 before).
-SGLang: 2026-09-24 on the same GB10. Code and math run fastest (27B greedy 106 and 133 tok/s), prose and
-multilingual slowest (57 and 44), because the drafter guesses predictable text better.
+Sharar: 2026-10-05/06, the published image, default `fast` profile. SGLang: 2026-09-24 on the same GB10.
+Code and math run fastest (27B greedy 106 and 133 tok/s), prose and multilingual slowest (57 and 44), because
+the drafter guesses predictable text better.
+
+## Which model
+
+| | Qwen3.8-27B | Qwen3.8-Flash-Next |
+|---|---|---|
+| Download / weights in memory | 26 GB / 28 GiB | 135 GB / 53 GiB |
+| MMLU-Pro / GPQA Diamond / IFEval | 75.4 / 59.6 / 78.7 | 81.6 / 73.7 / 84.8 |
+| Decode at 128K / 256K context | 54 / 46 tok/s | 66 / 57 tok/s |
+| A five-turn Claude Code session (30/30 tests both) | 31 min | 19 min |
+
+Flash-Next is the stronger model and the better agent, and it attends sparsely past 2,048 tokens, so it slows
+less with context. The 27B is smaller and loads faster (measured 2026-10-05/06, `fast` profile, #11; Flash-Next
+has since moved to 3-bit routed experts, about 20% faster single-stream at the same MMLU-Pro and GPQA within noise,
+#73).
 
 ## Setup
 
@@ -61,9 +74,10 @@ Anthropic Messages clients against `http://127.0.0.1:30001`
 
 ## Two Sparks
 
-`./sharar-ctl serve 27b --tp 2` serves the 27B tensor-parallel across two Sparks linked by their ConnectX ports, from a
-uv venv on each (the first run sets both up); `stop`, `status`, `logs`, `chat` and `launch` work as on one Spark: 119.1 tok/s single-stream against 77.1 on one Spark with the same `fast` profile,
-at the same GSM8K accuracy ([tensor parallel](docs/tensor-parallel.md)).
+`./sharar-ctl serve 27b --tp 2` (or `flashnext --tp 2`) serves a target tensor-parallel across two Sparks linked
+by their ConnectX ports, from a uv venv on each (the first run sets both up); `stop`, `status`, `logs`, `chat` and
+`launch` work as on one Spark. Single-stream decode goes from 77 to 119 tok/s on the 27B and from 74 to 99 on
+Flash-Next, at the same GSM8K accuracy ([tensor parallel](docs/tensor-parallel.md)).
 
 ## Coding agents
 
@@ -77,8 +91,8 @@ at the same GSM8K accuracy ([tensor parallel](docs/tensor-parallel.md)).
 
 Each agent gets its own configuration for the serving target (address, model, context window), so your own
 settings are untouched: Claude Code uses `~/.claude-sharar` instead of your Anthropic login, OpenCode and Aider
-read files under `~/.config/sharar`. Arguments after the agent's name go to the agent. Codex needs the Responses
-API, which is next (#19). After the first request of a session, later turns start in under a second.
+read files under `~/.config/sharar`. Arguments after the agent's name go to the agent. Codex is not supported
+(it needs the OpenAI Responses API). After the first request of a session, later turns start in under a second.
 For **Pi**, see the [Pi configuration](docs/api.md#pi).
 
 ## Train the drafter on your traffic
@@ -92,27 +106,29 @@ machine; `"trace": false` opts a request out).
 ./sharar-ctl draft list     # runs, their held-out gains, the draft in use
 ```
 
-Serving follows the promoted draft and swaps it in without a restart. On a
-repository-coding workload, four serve-then-train rounds raised serving
-throughput by 12.4% ([draft adaptation](docs/draft-adaptation.md)).
+Serving follows the promoted draft and swaps it in without a restart. Only the 27B's DFlash2 drafter trains,
+and the gain is modest and specific to your work: a few percent on code and chat after a dozen sessions, more on
+code very like what it trained on ([draft adaptation](docs/draft-adaptation.md)). Training is opt-in.
 
 ## Develop
 
 ```bash
 bash tools/check.sh setup-cpu     # CPU tests, no GPU or model needed
 tools/gpu-tests.sh                # GPU suite in the runtime image (exclusive GPU)
-python3 tools/check_evidence.py   # documentation links
+python3 tools/check_links.py      # documentation links
 ```
 
 | Path | Purpose |
 |---|---|
 | `sharar/` | Engine (`engine/`), caches (`cache/`), models (`model/`, `model/flashnext/`), kernels, weights, proposers, trainer, API |
-| `sharar-ctl`, `run-sharar.sh` | Host command and the container launcher |
+| `sharar-ctl`, `run-sharar.sh`, `sharar-tp` | Host command, the container launcher, the two-Spark launcher |
 | `profiling/`, `tests/`, `tools/`, `docker/` | In-process profilers, tests, checks and gates, image build |
-| `docs/` | [Architecture](docs/architecture.md), [optimizations](docs/optimizations.md), [performance](docs/performance.md), [Flash-Next](docs/flashnext.md), [roadmap](roadmap.md) |
+| `docs/` | [Operations](docs/operations.md), [API](docs/api.md), [architecture](docs/architecture.md), [the rest](docs/README.md) |
 
 Quality and speed benchmarks live in [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval) and
 measure any running server over HTTP. `tools/evaluate.py --target flashnext --profile fast --suite quick --speed`
 serves this build and runs them ([evaluation](docs/evaluation.md); [profiling](profiling/README.md) for in-process tools). Read
 [CONTRIBUTING.md](CONTRIBUTING.md) before changing the engine. Apache 2.0
 ([license](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md)).
+
+Work in progress and ideas are tracked as [GitHub issues](https://github.com/abdelfattah-lab/sharar/issues).

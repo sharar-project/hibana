@@ -4,13 +4,13 @@ Sharar can train its DFlash2 drafter on the requests a machine actually
 serves, so accepted tokens per verification round rise on that workload. Only
 the drafter changes: the target, its vocabulary head, the verifier and every
 engine contract stay fixed, so the gates are held-out tokens per round on the
-user's own newest traffic, served throughput, and memory. This page is the
-guide; the dated evidence is the [draft training report](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/gb10-draft-training.md).
+user's own newest traffic, served throughput, and memory. Only the 27B's
+DFlash2 drafter trains today.
 
 ## Using it
 
 ```bash
-./sharar-ctl serve          # serve; every request is recorded under $SHARAR_RESULTS/traces
+./sharar-ctl serve 27b      # serve; every request is recorded under $SHARAR_RESULTS/traces
 ./sharar-ctl train          # stops serving, trains until told to stop
 ./sharar-ctl train stop     # final held-out evaluation, promotion, serving relaunches (or reloads if it kept running)
 ./sharar-ctl draft list     # runs, their held-out gains, the draft in use
@@ -72,7 +72,7 @@ training window. Operational details are in [operations](operations.md#request-t
 
 Features are recorded rather than recomputed because the target's prefill
 numerics depend on sequence length and chunking (see
-[performance](performance.md#limits)); features computed later never match
+[numerical limits](operations.md#numerical-limits)); features computed later never match
 what the drafter saw. Recording them also removes the target from training.
 
 ## How training works
@@ -124,35 +124,25 @@ generates proxy traffic (ShareGPT or coding requests over a repository) and
 `profiling/draft/draft_ab.py` replays a trace directory's held-out prompts at batch one
 to compare drafts on throughput and tokens per round.
 
-## Results and limits
+## What to expect
 
-The [2026-09-17 calibrated-W3 run](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-calibration-adaptation.md)
-uses separate source files for training, validation and final testing.
-Step 200 of a 300-step session improves BF16 validation tokens per round by
-5.83%; the selected checkpoint improves actual FP8/W3 served throughput by
-3.60% at concurrency one and 4.43% at concurrency four over two repeated
-pairs. Paired source-file intervals for acceptance and request latency are
-positive; the concurrent latency interval does not describe aggregate-TPS
-uncertainty. This is a synthetic repository-coding proxy, not user traffic.
+From the long-use study (#118: a recorded corpus of code, chat and agent traffic replayed through a dozen
+training sessions, then confirmed with served cycles):
 
-On a repository-coding proxy workload: a 300-step session raised held-out
-tokens per round 5.367 to 5.739 and served throughput 46.3 to 52.3 tokens/s
-(+12.9%); a 1,000-request serve-then-train loop raised acceptance while
-serving from 27.5% to 31.5% of proposals and throughput by 12.4%. On diverse
-ShareGPT traffic the gain was 1.4%. The proxy has only about 150 distinct
-prompts, and a second session over the same pool at the first-session rate
-regressed an unseen-prompt test set by 1% while the trainer's own held-out
-slice stayed flat; at the continuation rate (3e-5) the same session improved
-the held-out slice, a fixed ShareGPT regression set and the test set together,
-which is why continuation uses the smaller rate and a 0.5% regression
-tolerance. On-policy selector supervision scored within seed spread of the
-teacher-forced default and is optional.
+- The method is sound: on 20 requests the drafter memorizes them (4.8 to 15.8 tokens per round against a
+  maximum of 16), and replayed gains match served ones.
+- The gains are modest and specific to the traffic: after eight sessions, code from libraries never trained on
+  +4%, chat +2-3%, agent traffic about 0; served throughput about +3% on code and chat. Code from the same
+  pool as the training data gains more (+4% to +10% as the data grows from 150 to 1,100 requests). Each session
+  adds less than the one before, while the training loss keeps falling.
+- The best settings are the defaults: lr 1e-4 (3e-5 when continuing), `attn`, about 1,000 steps. Training
+  every weight does not help, and lr 3e-4 hurts.
+- Batched and sequential scoring of the same checkpoint differ by up to 0.7% on the GPU, so differences
+  under about 1% between checkpoints are noise.
 
-A different drafter can change greedy continuations through the target's
-own shape sensitivity: round boundaries move, the same token is computed in a
-different verification row, and a near-tie flips. Each draft is deterministic
-run to run; the sensitivity belongs to the target numerics track.
+A large speedup needs a stronger base drafter or engine changes, not local fine-tuning. A different drafter
+can also change greedy continuations through the target's shape sensitivity (round boundaries move); each draft
+is deterministic run to run.
 
-Not in scope here: target training or quantization, changing k, tree
-verification and sampling kernels. Traces are used for drafter training and
-its evaluation only.
+Not in scope here: target training or quantization, changing k, tree verification and sampling kernels.
+Traces are used for drafter training and its evaluation only.

@@ -21,13 +21,6 @@ class Mlp:
         self._down_scale_inv_1d = self.down.input_scale_inv.reshape(1)
         self._masked_m: dict[int, torch.Tensor] = {}
 
-    def forward_prequantized(self, pre: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
-        """MLP on an input already quantized to NVFP4 (by the fused norm)."""
-        gate_up = ops.nvfp4_linear(None, self.gate_up, prequantized=pre)
-        if self.fused_silu_quant:
-            return ops.nvfp4_linear(None, self.down, prequantized=silu_mul_nvfp4_quantize(gate_up, self.down.input_scale_inv))
-        return ops.nvfp4_linear(ops.silu_and_mul(gate_up), self.down)
-
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         gate_up = ops.nvfp4_linear(x, self.gate_up)
         if ops.w3_decode(self.down, x.shape[0]):

@@ -42,7 +42,7 @@ class EngineConfig:
     hf_cache: str | None = None               # SHARAR_HF_CACHE, else HF_HOME: the 27B's model cache
     flashnext_cache: str | None = None        # SHARAR_FLASHNEXT_CACHE: Flash-Next's model cache
     max_context: int | None = None            # SHARAR_MAX_CONTEXT (0/unset: the target's)
-    max_batch: int = 4                        # SHARAR_MAX_BATCH: most requests decoded together, 1-16 (the throughput profile: 16)
+    max_batch: int = 4                        # SHARAR_MAX_BATCH: most requests decoded together, 1-128 (the throughput profile: 16)
     cuda_arch: str = "12.1a"                  # SHARAR_CUDA_ARCH for the JIT-built CUDA kernels
     tp_allreduce: str = "rdma"                # SHARAR_TP_ALLREDUCE: rdma (the one-shot for decode-sized all-reduces between two ranks) or nccl (every one on NCCL, as vLLM)
     # --- weights and numerics
@@ -51,12 +51,13 @@ class EngineConfig:
     w3_warning: str | None = None             # SHARAR_W3_WARNING: why the launcher serves without the profile's calibrated copies
     stable_numerics: bool = False             # SHARAR_STABLE_NUMERICS: M-invariant prefill kernels
     gdn_prefill: str = "auto"                 # SHARAR_GDN_PREFILL: auto (CuTe on SM12x), cute, triton
-    fused_norm_nvfp4: bool = False            # SHARAR_FUSED_NORM_NVFP4 (27B compatibility switch)
     flashnext_trunk: str = "fp8"              # SHARAR_FLASHNEXT_TRUNK: bf16 | fp8
     flashnext_mixers: str = "fp8"             # SHARAR_FLASHNEXT_MIXERS
     flashnext_mtp_trunk: str | None = None    # SHARAR_FLASHNEXT_MTP_TRUNK: the MTP draft head's precision (unset: the trunk's)
     trunk_keep_bf16: str | None = None        # SHARAR_TRUNK_KEEP_BF16: regex of Flash-Next projections kept BF16
+    experts_sim_bits: int = 3                 # SHARAR_EXPERTS_SIM_BITS: 3 | 2, the simulated experts' level set (2: a 2-bit screen)
     flashnext_experts_sim3: int = 0           # SHARAR_FLASHNEXT_EXPERTS_SIM3: routed experts rounded to a 3-bit format with this group (16/32), a quality screen (weights/expert_sim3.py)
+    flashnext_experts: str = "w3"             # SHARAR_FLASHNEXT_EXPERTS: w3 (the W3 checkpoint's 3-bit routed experts when it carries them, #73) | nvfp4
     # --- speculation
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
     spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
@@ -102,12 +103,13 @@ class EngineConfig:
             w3_warning=_str(e, "SHARAR_W3_WARNING"),
             stable_numerics=_flag(e, "SHARAR_STABLE_NUMERICS"),
             gdn_prefill=_str(e, "SHARAR_GDN_PREFILL", "auto"),
-            fused_norm_nvfp4=_flag(e, "SHARAR_FUSED_NORM_NVFP4"),
             flashnext_trunk=_str(e, "SHARAR_FLASHNEXT_TRUNK", "fp8"),
             flashnext_mixers=_str(e, "SHARAR_FLASHNEXT_MIXERS", "fp8"),
             flashnext_mtp_trunk=_str(e, "SHARAR_FLASHNEXT_MTP_TRUNK"),
             trunk_keep_bf16=_str(e, "SHARAR_TRUNK_KEEP_BF16"),
             flashnext_experts_sim3=_int(e, "SHARAR_FLASHNEXT_EXPERTS_SIM3", 0) or 0,
+            experts_sim_bits=_int(e, "SHARAR_EXPERTS_SIM_BITS", 3) or 3,
+            flashnext_experts=_str(e, "SHARAR_FLASHNEXT_EXPERTS", "w3"),
             spec=_str(e, "SHARAR_SPEC"),
             spec_depths=_str(e, "SHARAR_SPEC_DEPTHS"),
             draft_dir=_str(e, "SHARAR_DRAFT"),

@@ -1,8 +1,7 @@
 # Execution and ownership contracts
 
-Phases 7B/7D keep the GB10 model path specialized and expose four small seams.
-`engine/contracts.py` imports no GPU backend. These are Python structural types,
-not a plugin registry or a promise of arbitrary model support.
+The rules every change to scheduling, speculation, caching or the HTTP lifecycle keeps. The seams are Python
+structural types in `engine/contracts.py` (which imports no GPU backend), not a plugin registry.
 
 | Boundary | Owner | Consumers |
 |---|---|---|
@@ -19,11 +18,10 @@ the verify buffers from it; pools and the ledger accept a `target` and default
 to the 27B for tools written against it. One process serves one target,
 chosen at launch (`sharar serve --target`, `SHARAR_TARGET`); nothing is
 discovered at run time. `model/qwen38_config.py` holds the 27B's constants,
-`config.py` remains the compatibility facade over that default target, device
-constraints stay in `hardware/gb10.py` and the limits in `engine/profile.py`.
-The current attention and recurrent kernels take their shapes from the
-tensors and the target, but they are still validated only for the pinned
-targets.
+`config.py` is the facade over that default target, device constraints are in
+`hardware/gb10.py` and the limits in `engine/profile.py`. The attention and
+recurrent kernels take their shapes from the tensors and the target, but are
+validated only for the pinned targets.
 
 A second target adds a `Target` instance, a loader in `target.load_model`,
 and a model package whose forward honors `ForwardResult`; the scheduler,
@@ -52,8 +50,7 @@ event. The ordinary target acceptance download completes the previous copy;
 direct callers also get an event lifetime check before staging reuse. One upload
 feeds per-request KV correction at the original projection row shape, preserving
 BF16 rounding and target-conditioned bonus-input KV. Required writes are queued
-on the executor's CUDA stream. An additional graph-capture prototype showed no
-consistent gain beyond pinned transport and remains in the benchmark only.
+on the executor's CUDA stream.
 
 ## Request state
 
@@ -123,8 +120,7 @@ slots, prefixes or checkpoints change. Layers must not reconstruct this plan
 or read lengths back from CUDA. Planning does not set `ctx.cu_seqlens` for a
 cold single request, because that would change `ctx.batched` and select a
 different attention path. Standalone chunk callers may omit the prepared
-metadata and use the existing fallback. See [the exact-state and timing
-evidence](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/prefill-plan.md).
+metadata and use the existing fallback.
 
 For `T` flattened tokens and hidden size `H`, `ForwardResult['norm']` is BF16
 `[T,H]`: the final Gemma RMSNorm output consumed by the target LM head.
@@ -161,9 +157,9 @@ metadata. `accepted` is the callback whose graph feature tensors are owned clone
 An adapter receives `ProposerContext(device, max_batch, max_context)`, a fixed
 width `k` and immutable `ProposerRequirements`. Install once before capturing
 graphs. The executor rejects unsupported width/context/features before
-allocating shared verify buffers. MTP/n-gram support k=1–4, DSpark k=1–7,
-and DFlash2 k=1–15. Target verify graphs have B=1/2/4 buckets (B=8/16 too
-when `max_batch` is 16, the throughput profile). Normal startup captures the
+allocating shared verify buffers. MTP supports k=1–8, n-gram k=1–4, DSpark k=1–7,
+and DFlash2 k=1–15. Target verify graphs have batch buckets 1, 2, 4, ... up to
+`max_batch` (at most 128). Normal startup captures the
 selected verification depth; benchmarks can explicitly capture additional
 supported depths. `SHARAR_SPEC_DEPTHS` sets a depth per batch bucket
 (`engine/depth.py` `BatchDepth`): each depth's verify graphs cover only its
@@ -213,16 +209,13 @@ work is bounded by `max_batch * (k + 1)` rows. Metadata uses one asynchronous
 upload; no GPU scalar extraction is added. Single-row feedback and interior
 checkpoint cases use the per-row helper. MTP's batch callback runs its existing
 row calculations; n-gram feedback is empty. Target state/page ownership remains
-with StateManager. [Batching evidence](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/accepted-batch.md) records BF16 shape
-differences, cache/snapshot routing, and measured costs. Third-party proposers
-implementing the former `accepted(req, ..., row)` callback must migrate to
-`accepted_batch`; a loop over their existing calculation is sufficient.
+with StateManager.
 
 For an all-greedy DFlash2 batch, `kernels/draft_selection.py` traverses that
 lattice on the device and returns owned IDs. It preserves candidate rank/tie
 semantics, borrows score/candidate graph views only for the ordered kernel
 launch, and adds no target-state ownership. Mixed/sampled batches keep the
-conditional-law path below. See [the measured selection change](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/draft-selection.md).
+conditional-law path below.
 
 For sampled verification, probabilities are FP32 after temperature/top-k/top-p
 and all selector/Markov effects. Dense q has shape `[B,k,V]`; sparse q and its
@@ -230,9 +223,8 @@ unique token support have shape `[B,k,C]`. `None` means point-mass proposals.
 The shared verifier accepts with `min(1,p[y]/q[y])`, samples a rejection from
 normalized `max(p-q,0)`, and draws a target bonus after full acceptance. It does
 not consume target draws past the first rejection. Each sampled request owns
-its generator, including requests without a supplied seed. MTP/n-gram still use
-ordinary decode for positive temperature. Sampled verification is an explicit
-reference path with scalar transfers, not a claimed optimized GPU sampler.
+its generator, including requests without a supplied seed. MTP proposals are
+verified as point masses; n-gram uses ordinary decode for positive temperature.
 
 ## Draft cache and memory
 
@@ -272,8 +264,8 @@ Pass `SpecConfig` to `Executor` at startup to reserve checkpoint-derived draft
 weight/KV/feature costs and verify buffers before optional target cache sizing.
 Graph/activation/slack reserves are explicitly estimates. Adapter declared
 bytes include reserved feature-cache capacity; they need not equal current
-CUDA allocations. The host floor remains 16 GiB. Reclaiming cache IDs does not
-release monolithic physical allocations; reclaimable slabs remain Phase 8.
+CUDA allocations. The host floor is 16 GiB. Reclaiming cache IDs does not
+release monolithic physical allocations.
 
 ## Engine and HTTP ownership
 
@@ -345,11 +337,21 @@ affected request uncacheable. Post-write `MemoryError` becomes a non-retryable
 failure so pool-pressure retry cannot reuse partially advanced recurrent state.
 Rollback frees reservations; it does not undo in-place writes. Full snapshots
 remain the default and bitwise control. No CPU reads of hot state, BF16 state
-compression or managed-memory faults are introduced. See the
-[direct reconstruction evidence](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/direct-state.md).
+compression or managed-memory faults are introduced.
 
-Rejected width/latency policies and mixed prefill/verification execution are
-archived at commit `56605f0`, including their benchmark runner. They expose no
-current runtime hooks. Scheduler performs bounded ordinary prefill and separate
-decode rounds. Verification preparation, acceptance and state ownership remain
-explicit so future experiments can be developed outside the serving path.
+## Failure and lifecycle invariants
+
+| Area | Invariant |
+|---|---|
+| Termination | First-token EOS/length requests reach release. Queued cancellation becomes terminal and is published even when the scheduler is idle. Completion, cancellation and release are idempotent. |
+| Speculative commit | Accepted output is truncated at the budget/EOS before the GDN/conv snapshot is selected and KV pages are kept. `committed_len` names the prefix the state and KV represent; cache insertion rejects a mismatched label. |
+| Flush | Invalidated entries are hidden at once; pinned pages and snapshots stay until their last reader releases them, and insertion is bypassed while the flush drains. `/flush_cache` acknowledges invalidation; `flush_pending` reports retained readers. |
+| Retraction | Readmission replays prompt plus emitted output and keeps output IDs, stream cursor, first-token time, output budget and RNG state; replay samples only the next new token. |
+| Sampling | Each seeded request owns its generator; identical seeds never share one. |
+| Accounting | Decode counts use actual output deltas; speculative counts exclude candidates discarded by stopping; tokens per round excludes the first prefill token. |
+| Limits | Invalid IDs, empty prompts, bad budgets or sampling values and prompt+budget overflow are rejected before admission; graph sizes and context buffers derive from executor limits; KV lengths are checked before replay planning. |
+| Failures | Outstanding tickets fail, HTTP returns 503 or an SSE error, health fails and new work is rejected; owned resources are released where safe, and a failed forward never publishes cache entries. |
+
+CPU lifecycle tests cover cancellation, failure, flush and retraction; checkpoint-feature tests cover auxiliary
+ownership; GPU lifecycle, draft-lifecycle and cold-tier tests cover the real model path. Exact state ownership
+and numerical continuation are separate checks: floating-point partition changes can change greedy output IDs.

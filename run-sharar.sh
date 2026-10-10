@@ -186,7 +186,7 @@ Sharar preflight OK
   Traces: ${TRACES_DIR:-off}${TRACES_DIR:+ (cap $TRACES_MAX_MIB MiB)}${TRACES_DIR:+, draft confidence $([[ "${SHARAR_TRACE_CONFIDENCE:-0}" == 1 ]] && echo on || echo off) (SHARAR_TRACE_CONFIDENCE)}
   Cold tier: ${SHARAR_COLD_TIER_GIB:-automatic (spare memory up to 24 GiB)}${SHARAR_COLD_TIER_GIB:+ GiB (SHARAR_COLD_TIER_GIB)}
   Device-resident acceptance: $(onoff "$DEVICE_ACCEPT") (SHARAR_DEVICE_ACCEPT; the fast profile turns it on for Flash-Next)
-  Serving profile: $PROFILE (SHARAR_PROFILE: exact / balanced / fast / throughput; measured costs in docs/optimizations.md#serving-profiles)
+  Serving profile: $PROFILE (SHARAR_PROFILE: exact / balanced / fast / throughput; docs/operations.md#serving-profiles)
   Batch: up to $MAX_BATCH requests (SHARAR_MAX_BATCH), verify depth by batch ${SPEC_DEPTHS:-$SPEC everywhere} (SHARAR_SPEC_DEPTHS)
   Relaxed acceptance default: $ACCEPT_DEFAULT, sampled requests $(onoff "$ACCEPT_DEFAULT_SAMPLED")${ACCEPT_DEFAULT_SAMPLED_THRESHOLD:+ at $ACCEPT_DEFAULT_SAMPLED_THRESHOLD} (requests may set accept_top_k/accept_margin; 1 = exact)
   Three-bit decode copies: $(onoff "$W3_DECODE")$([[ "$W3_DECODE" == 1 ]] && echo ", ${W3_CHECKPOINT:-nearest rounding from the pinned serving weights}") (SHARAR_W3_DECODE, SHARAR_W3_CHECKPOINT)
@@ -270,13 +270,13 @@ if [[ "$TARGET_NAME" == flashnext ]]; then
          --env "SHARAR_FLASHNEXT_TRUNK=${SHARAR_FLASHNEXT_TRUNK:-fp8}")   # trunk precision at load: fp8 (default) or bf16
 fi
 args+=(--env "SHARAR_DEVICE_ACCEPT=$DEVICE_ACCEPT")   # device-resident acceptance graphs (engine/accept_graphs.py)
+if [[ -n "${SHARAR_FLASHNEXT_EXPERTS:-}" ]]; then
+  [[ "$SHARAR_FLASHNEXT_EXPERTS" == w3 || "$SHARAR_FLASHNEXT_EXPERTS" == nvfp4 ]] || fail "SHARAR_FLASHNEXT_EXPERTS must be w3 or nvfp4"
+  args+=(--env "SHARAR_FLASHNEXT_EXPERTS=$SHARAR_FLASHNEXT_EXPERTS")   # nvfp4 keeps the checkpoint's experts when the W3 checkpoint carries 3-bit ones (#73)
+fi
 if [[ -n "${SHARAR_DRAFT_VOCAB:-}" ]]; then
   [[ "$SHARAR_DRAFT_VOCAB" =~ ^[0-9]+$ ]] || fail "SHARAR_DRAFT_VOCAB must be a row count (0 = the full lm_head)"
   args+=(--env "SHARAR_DRAFT_VOCAB=$SHARAR_DRAFT_VOCAB")   # MTP drafts over the N most likely ids (proposers/draft_vocab.py)
-fi
-if [[ -n "${SHARAR_FLASHNEXT_EXPERTS_SIM3:-}" && "${SHARAR_FLASHNEXT_EXPERTS_SIM3}" != 0 ]]; then
-  [[ "$SHARAR_FLASHNEXT_EXPERTS_SIM3" == 16 || "$SHARAR_FLASHNEXT_EXPERTS_SIM3" == 32 ]] || fail "SHARAR_FLASHNEXT_EXPERTS_SIM3 must be 16 or 32"
-  args+=(--env "SHARAR_FLASHNEXT_EXPERTS_SIM3=$SHARAR_FLASHNEXT_EXPERTS_SIM3")   # routed experts rounded to a 3-bit format (a quality screen, weights/expert_sim3.py)
 fi
 if [[ -n "${SHARAR_DRAFT_HEAD:-}" ]]; then
   [[ "$SHARAR_DRAFT_HEAD" == fp8 || "$SHARAR_DRAFT_HEAD" == w3 ]] || fail "SHARAR_DRAFT_HEAD must be fp8 or w3"

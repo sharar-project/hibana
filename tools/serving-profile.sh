@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared by run-sharar.sh (and tests/unit/test_serving_profile.py): the default each serving profile gives
 # every speed/fidelity knob that the environment or the config file does not set explicitly
-# (#27, docs/optimizations.md#serving-profiles).
+# (docs/operations.md#serving-profiles).
 #   exact     the target's own distribution: exact acceptance, no lossy weight copies (benchmarks, traces)
 #   balanced  relaxed greedy acceptance top-2 within 1.0 logit; the 27B's calibrated 3-bit decode copies
 #   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy requests
@@ -26,6 +26,8 @@ serving_profile() {
               # max_tokens at 3:2.0 in Claude Code sessions (#11) and not at 2:1.0; Flash-Next's did not loop at 3:2.0
               if [[ "$2" == flashnext ]]; then P_DEVICE_ACCEPT=1; else P_DEVICE_ACCEPT=0; P_ACCEPT_SAMPLED_THRESHOLD=2:1.0; fi ;;
     throughput) serving_profile fast "$2"; P_MAX_BATCH=16
+              # one Spark: NVFP4 experts 230 tok/s at 16, 456 at 64 (128 does not fit); the 3-bit experts free 17 GiB: 607 at 128
+              [[ "$2" == flashnext ]] && { [[ ${SHARAR_FLASHNEXT_EXPERTS:-w3} == w3 ]] && P_MAX_BATCH=128 || P_MAX_BATCH=64; }
               if [[ "$2" == flashnext ]]; then P_SPEC_DEPTHS=16:3; fi ;;  # the 27B: SHARAR_SPEC everywhere
     *) return 1 ;;
   esac
