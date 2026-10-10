@@ -9,7 +9,7 @@ MODEL_ARCHITECTURE = "Qwen4ExpForConditionalGeneration"
 # is missing. Private until the redistribution terms of the NVFP4 export are checked; the fetch then fails and the
 # launcher serves the FP8 trunk with a warning.
 W3_REPO = "yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3"
-W3_REVISION = "970cbfc0cbc174d2f59d902eb4af0af07ece1564"
+W3_REVISION = "694e2790772b36297b52bb1dffdc33281d766671"  # 3-bit trunk + GPTQ 3-bit routed experts (#73); the trunk-only copies were 970cbfc
 
 HIDDEN_SIZE = 2560
 NUM_LAYERS = 48
