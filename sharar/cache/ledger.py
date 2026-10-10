@@ -112,7 +112,8 @@ class Ledger:
             )
         spare = int((budget - must_kv - must_state) * cache_fraction)
         kv_tokens = min(kv_token_target, must_tokens + int(spare * 0.4) // page_bytes)
-        state_slots = min(state_slot_target, max_running + 1 + int(spare * 0.6) // state_bytes_per_slot)
+        # the target never cuts the guaranteed slots: a batch of 128 needs 129, and room for cached sessions besides
+        state_slots = min(max(state_slot_target, 2 * max_running + 1), max_running + 1 + int(spare * 0.6) // state_bytes_per_slot)
         return Plan(kv_tokens=kv_tokens, state_slots=state_slots, reserved_bytes=prefill_reserve_bytes + future_bytes)
 
     def above_floor(self) -> bool:

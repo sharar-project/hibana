@@ -42,7 +42,7 @@ class EngineConfig:
     hf_cache: str | None = None               # SHARAR_HF_CACHE, else HF_HOME: the 27B's model cache
     flashnext_cache: str | None = None        # SHARAR_FLASHNEXT_CACHE: Flash-Next's model cache
     max_context: int | None = None            # SHARAR_MAX_CONTEXT (0/unset: the target's)
-    max_batch: int = 4                        # SHARAR_MAX_BATCH: most requests decoded together, 1-16 (the throughput profile: 16)
+    max_batch: int = 4                        # SHARAR_MAX_BATCH: most requests decoded together, 1-128 (the throughput profile: 16)
     cuda_arch: str = "12.1a"                  # SHARAR_CUDA_ARCH for the JIT-built CUDA kernels
     tp_allreduce: str = "rdma"                # SHARAR_TP_ALLREDUCE: rdma (the one-shot for decode-sized all-reduces between two ranks) or nccl (every one on NCCL, as vLLM)
     # --- weights and numerics

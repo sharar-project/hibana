@@ -763,7 +763,8 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
     ex.enable_cold_tier(log=log)  # tensor-parallel ranks agree on every tier decision (cache/cold_tier.py)
-    cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=ex.profile.max_queued,
+    # a burst as wide as the batch must queue, not be refused: the queue holds at least two batches
+    cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=max(ex.profile.max_queued, 2 * ex.profile.max_batch),
                           chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget)
     sched = Scheduler(ex, cfg)
     if not get_tp_info().is_primary():

@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--traces", default=None, help="directory for opt-in request traces (default: SHARAR_TRACES; unset disables recording)")
     p_serve.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: SHARAR_TRACES_MAX_MIB or 32768)")
     p_serve.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request, up to 262144 (default: SHARAR_MAX_CONTEXT, else the target profile's 32768)")
-    p_serve.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-16 (default: SHARAR_MAX_BATCH, else 4; the throughput profile sets 16)")
+    p_serve.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: SHARAR_MAX_BATCH, else 4; the throughput profile sets 16)")
     p_serve.add_argument("--spec-depths", default=None, help="verify depth per batch bucket as BUCKET:DEPTH pairs, e.g. 8:1,16:0 (0: plain decode; default: SHARAR_SPEC_DEPTHS, else --spec everywhere)")
     p_serve.add_argument("--accept-default-sampled", action="store_true", default=None, help="also apply the relaxed acceptance default to sampled requests (default: SHARAR_ACCEPT_DEFAULT_SAMPLED=1, else greedy only)")
     p_serve.add_argument("--accept-default-sampled-threshold", default=None, help="with --accept-default-sampled, the K:M sampled requests get instead of --accept-default's (default: SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD)")
