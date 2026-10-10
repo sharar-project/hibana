@@ -22,9 +22,10 @@ from sharar.kernels.fla.fused_sigmoid_gating_recurrent import fused_sigmoid_gati
 from sharar.kernels.fla.layernorm_gated import rms_norm_gated
 from sharar.kernels.fp8_quant import quant_fp8
 from sharar.kernels.verify_conv import verify_convolve
-from sharar.cache.state_pool import CONV_DIM, CONV_STATE_LEN
+from sharar.cache.state_pool import CONV_STATE_LEN
 from sharar.model.gdn_plan import prepare_gdn_prefill
 from sharar.weights.modelopt import Fp8Linear, load_fp8_linear
+from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 from sharar.weights.safetensors import SnapshotWeights
 
 
@@ -40,24 +41,29 @@ class GatedDeltaNet:
         self.key_dim = self.num_k_heads * self.head_k_dim
         self.value_dim = self.num_v_heads * self.head_v_dim
         self.conv_dim = 2 * self.key_dim + self.value_dim
-        assert self.conv_dim == CONV_DIM
+        # Head counts are this rank's (`Target.shard`): every per-head tensor keeps its rows of q, k, v (and z, b,
+        # a), whole heads of each, so a value head stays with its key head; out_proj is row-parallel.
+        qkv_heads = ColumnParallel((self.key_dim, self.key_dim, self.value_dim))
+        v_heads = ColumnParallel((self.num_v_heads,))
         # The reference fuses [q | k | v | z] into one FP8 projection whose shards
         # are requantized to a shared scale. Keep that layout but run
         # two GEMMs so both outputs are contiguous with no copy.
-        fused = load_fp8_linear(w, [f"{prefix}.in_proj_qkv", f"{prefix}.in_proj_z"], device)
+        fused = load_fp8_linear(w, [f"{prefix}.in_proj_qkv", f"{prefix}.in_proj_z"], device,
+                                ColumnParallel((self.key_dim, self.key_dim, self.value_dim, self.value_dim)))
         self.in_qkvz = fused
-        self.in_qkv = Fp8Linear(fused.weight[: self.conv_dim].contiguous(), fused.weight_scale, fused.input_scale)
-        self.in_z = Fp8Linear(fused.weight[self.conv_dim :].contiguous(), fused.weight_scale, fused.input_scale)
+        self.in_qkv = Fp8Linear(fused.weight[: self.conv_dim].contiguous(), fused.weight_scale, fused.input_scale, shard=qkv_heads)
+        self.in_z = Fp8Linear(fused.weight[self.conv_dim :].contiguous(), fused.weight_scale, fused.input_scale,
+                              shard=ColumnParallel((self.value_dim,)))
         del fused.weight
         self.in_qkvz = None
-        self.in_ba = torch.cat([w.get(f"{prefix}.in_proj_b.weight"), w.get(f"{prefix}.in_proj_a.weight")], dim=0).to(device)
-        self.conv_weight = w.get(f"{prefix}.conv1d.weight").to(device).view(self.conv_dim, target.linear_conv_kernel)
-        self.A_log = w.get(f"{prefix}.A_log").to(device).float().contiguous()
-        self.dt_bias = w.get(f"{prefix}.dt_bias").to(device).contiguous()
+        self.in_ba = torch.cat([v_heads(w.get(f"{prefix}.in_proj_b.weight")), v_heads(w.get(f"{prefix}.in_proj_a.weight"))], dim=0).to(device)
+        self.conv_weight = qkv_heads(w.get(f"{prefix}.conv1d.weight").view(-1, target.linear_conv_kernel)).contiguous().to(device)
+        self.A_log = v_heads(w.get(f"{prefix}.A_log")).to(device).float().contiguous()
+        self.dt_bias = v_heads(w.get(f"{prefix}.dt_bias")).to(device).contiguous()
         # Per-head gated RMSNorm as a grouped norm over [T, value_dim] so the
         # z gate can stay a strided view of the qkvz projection (no copy).
         self.norm_weight = w.get(f"{prefix}.norm.weight").to(device).repeat(self.num_v_heads).contiguous()
-        self.out = load_fp8_linear(w, [f"{prefix}.out_proj"], device)
+        self.out = load_fp8_linear(w, [f"{prefix}.out_proj"], device, ROW_PARALLEL)
         self._scratch_conv: torch.Tensor | None = None
         self._scratch_ssm: torch.Tensor | None = None
 

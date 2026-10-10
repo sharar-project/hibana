@@ -18,7 +18,7 @@ def runtime():
     from sharar.engine.executor import Executor
     from sharar.kernels import ops
     from sharar.model.qwen38 import Qwen38
-    from sharar.parity.prompts import PARAGRAPH
+    from sharar.engine.prompts import PARAGRAPH
     from sharar.tokenizer import SnapshotTokenizer
     from sharar.train.draft import Head, TrainableDraft
     from sharar.weights.safetensors import SnapshotWeights

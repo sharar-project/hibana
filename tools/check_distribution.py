@@ -51,7 +51,7 @@ def main():
              'from sharar.kernels.fp8_gemv_cuda import _SRC; assert _SRC.is_file(); '
              'from sharar.benchmark_workloads import materialize; '
              'assert len(materialize(lambda text: list(text.encode()), "code", 10000)) == 10000'], cwd=work, env=env)
-        run([sys.executable, '-m', 'sharar', 'benchmark', '--help'], cwd=work, env=env)
+        run([sys.executable, '-m', 'sharar', '--help'], cwd=work, env=env)
         run([sys.executable, '-c', '''
 import torch
 from sharar.kernels.w3 import pack, dequantize
@@ -65,7 +65,7 @@ weight = linear.dequantize()
 assert torch.equal(weight, torch.ones(128, 128))
 assert torch.isfinite(dequantize(pack(weight))).all()
 '''], cwd=work, env=env)
-    print('Source distribution, wheel assets, installed CUDA loader and benchmark CLI passed.')
+    print('Source distribution, wheel assets, installed CUDA loader and CLI passed.')
 
 
 if __name__ == '__main__':

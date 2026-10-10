@@ -5,20 +5,30 @@ so the model output starts inside the reasoning block and "</think>" closes it.
 With thinking disabled the template already closed an empty block, so the
 output is plain content. Both cases, and an explicit "<think>" at the start of
 the output, are handled.
+
+With tools offered, a model can also write its tool call inside a reasoning
+block it never closes, and end the turn there (#120: Flash-Next, twice in
+308 Claude Code turns). Reasoning from a "<tool_call>" on is held back: a later
+"</think>" releases it as reasoning (a call drafted while thinking), and if the
+output ends first while it holds a complete call, it becomes content, where
+the tool parser finds the call.
 """
 
 from __future__ import annotations
 
 THINK_START = "<think>"
 THINK_END = "</think>"
+TOOL_START = "<tool_call>"
+TOOL_END = "</tool_call>"
 
 
 class ReasoningParser:
-    def __init__(self, in_reasoning: bool):
+    def __init__(self, in_reasoning: bool, tools: bool = False):
         self.in_reasoning = in_reasoning
+        self.tools = tools
         self.reasoning = ""
         self.content = ""
-        self._pending = ""  # tail that might be the start of a tag
+        self._pending = ""  # reasoning or content not emitted yet: a possible tag start, or a held tool call
         self._seen_any = False
 
     def feed(self, delta: str) -> tuple[str, str]:
@@ -42,9 +52,12 @@ class ReasoningParser:
                     text = text[idx + len(THINK_END):]
                     self.in_reasoning = False
                     continue
-                keep = _partial_suffix(text, THINK_END)
-                r_out += text[: len(text) - keep]
-                self._pending = text[len(text) - keep:]
+                hold = text.find(TOOL_START) if self.tools else -1
+                if hold < 0:
+                    hold = len(text) - max(_partial_suffix(text, THINK_END),
+                                           _partial_suffix(text, TOOL_START) if self.tools else 0)
+                r_out += text[:hold]
+                self._pending = text[hold:]
                 text = ""
             else:
                 c_out += text
@@ -54,11 +67,11 @@ class ReasoningParser:
         return r_out, c_out
 
     def finish(self) -> tuple[str, str]:
-        """Flush any held-back tail as whichever side we are on."""
+        """Flush any held-back tail as whichever side we are on; a complete tool call held in reasoning is content."""
         tail, self._pending = self._pending, ""
         if not tail:
             return "", ""
-        if self.in_reasoning:
+        if self.in_reasoning and not (tail.startswith(TOOL_START) and TOOL_END in tail):
             self.reasoning += tail
             return tail, ""
         self.content += tail

@@ -44,6 +44,7 @@ class EngineConfig:
     max_context: int | None = None            # SHARAR_MAX_CONTEXT (0/unset: the target's)
     max_batch: int = 4                        # SHARAR_MAX_BATCH: most requests decoded together, 1-16 (the throughput profile: 16)
     cuda_arch: str = "12.1a"                  # SHARAR_CUDA_ARCH for the JIT-built CUDA kernels
+    tp_allreduce: str = "rdma"                # SHARAR_TP_ALLREDUCE: rdma (the one-shot for decode-sized all-reduces between two ranks) or nccl (every one on NCCL, as vLLM)
     # --- weights and numerics
     w3_decode: bool = False                   # SHARAR_W3_DECODE: 3-bit decode copies for calls of <= 64 rows (the 27B's layers and FP8 draft, Flash-Next's trunk)
     w3_checkpoint: str | None = None          # SHARAR_W3_CHECKPOINT: the target's calibrated copies (required on Flash-Next; the 27B rounds to nearest without)
@@ -54,6 +55,7 @@ class EngineConfig:
     flashnext_mixers: str = "fp8"             # SHARAR_FLASHNEXT_MIXERS
     flashnext_mtp_trunk: str | None = None    # SHARAR_FLASHNEXT_MTP_TRUNK: the MTP draft head's precision (unset: the trunk's)
     trunk_keep_bf16: str | None = None        # SHARAR_TRUNK_KEEP_BF16: regex of Flash-Next projections kept BF16
+    flashnext_experts: str = "w3"             # SHARAR_FLASHNEXT_EXPERTS: w3 (the W3 checkpoint's 3-bit routed experts when it carries them, #73) | nvfp4
     # --- speculation
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
     spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
@@ -64,6 +66,7 @@ class EngineConfig:
     device_accept: bool = False               # SHARAR_DEVICE_ACCEPT
     accept_default: str = "2:1.0"             # SHARAR_ACCEPT_DEFAULT (greedy requests that set neither field)
     accept_default_sampled: bool = False      # SHARAR_ACCEPT_DEFAULT_SAMPLED
+    accept_default_sampled_threshold: str | None = None  # SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD: K:M for sampled requests (unset: accept_default's)
     qsa_sparse_graphs: bool = True            # SHARAR_QSA_SPARSE_GRAPHS=0: rows past the indexer budget run eagerly
     # --- cache tiers
     cold_tier_gib: float | None = None        # SHARAR_COLD_TIER_GIB (unset: from free memory, capped at 24)
@@ -92,6 +95,7 @@ class EngineConfig:
             max_context=_int(e, "SHARAR_MAX_CONTEXT", 0) or None,
             max_batch=_int(e, "SHARAR_MAX_BATCH", 4),
             cuda_arch=_str(e, "SHARAR_CUDA_ARCH", "12.1a"),
+            tp_allreduce=_str(e, "SHARAR_TP_ALLREDUCE", "rdma"),
             w3_decode=_flag(e, "SHARAR_W3_DECODE"),
             w3_checkpoint=_str(e, "SHARAR_W3_CHECKPOINT"),
             w3_warning=_str(e, "SHARAR_W3_WARNING"),
@@ -101,6 +105,7 @@ class EngineConfig:
             flashnext_mixers=_str(e, "SHARAR_FLASHNEXT_MIXERS", "fp8"),
             flashnext_mtp_trunk=_str(e, "SHARAR_FLASHNEXT_MTP_TRUNK"),
             trunk_keep_bf16=_str(e, "SHARAR_TRUNK_KEEP_BF16"),
+            flashnext_experts=_str(e, "SHARAR_FLASHNEXT_EXPERTS", "w3"),
             spec=_str(e, "SHARAR_SPEC"),
             spec_depths=_str(e, "SHARAR_SPEC_DEPTHS"),
             draft_dir=_str(e, "SHARAR_DRAFT"),
@@ -110,6 +115,7 @@ class EngineConfig:
             device_accept=_flag(e, "SHARAR_DEVICE_ACCEPT"),
             accept_default=e.get("SHARAR_ACCEPT_DEFAULT", "2:1.0"),
             accept_default_sampled=_flag(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED"),
+            accept_default_sampled_threshold=_str(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"),
             qsa_sparse_graphs=e.get("SHARAR_QSA_SPARSE_GRAPHS", "1") != "0",
             cold_tier_gib=float(cold) if cold is not None else None,
             session_dir=_str(e, "SHARAR_SESSION_DIR"),

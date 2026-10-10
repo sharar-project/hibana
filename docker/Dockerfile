@@ -21,14 +21,14 @@ RUN pip install -c /opt/constraints/gb10-cu130.txt torch --index-url https://dow
 RUN pip install -c /opt/constraints/gb10-cu130.txt flashinfer-python flashinfer-jit-cache \
       --extra-index-url https://flashinfer.ai/whl/cu130
 RUN pip install -c /opt/constraints/gb10-cu130.txt safetensors tokenizers jinja2 numpy \
-      einops packaging fastapi uvicorn pytest httpx
+      einops packaging fastapi uvicorn pytest httpx xgrammar
 COPY docker/repair_wheel_tag.py /opt/repair_wheel_tag.py
 RUN python3 /opt/repair_wheel_tag.py && pip check
 
 COPY sharar /workspace/sharar/sharar
 COPY pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES.md /workspace/sharar/
 COPY tests /workspace/sharar/tests
-COPY bench /workspace/sharar/bench
+COPY profiling /workspace/sharar/profiling
 COPY tools/check.sh /workspace/sharar/tools/check.sh
 COPY constraints /workspace/sharar/constraints
 WORKDIR /workspace/sharar
@@ -40,9 +40,14 @@ ENV PYTHONPATH=/workspace/sharar \
     HOME=/state
 RUN mkdir -p /state && chmod 777 /state && python3 -c "import sharar, flashinfer, torch; print(torch.__version__, flashinfer.__version__)"
 
+# The source commit (docker/build.sh passes it; "+dirty" for uncommitted changes). The source label links the
+# published package to the repository on ghcr.io.
+ARG REVISION=unknown
 LABEL io.sharar.target="gb10-sm121" \
       io.sharar.engine="sharar" \
-      io.sharar.reference-model="RadixArk/Qwen3.8-27B-NVFP4"
+      io.sharar.reference-model="RadixArk/Qwen3.8-27B-NVFP4" \
+      org.opencontainers.image.source="https://github.com/abdelfattah-lab/sharar" \
+      org.opencontainers.image.revision="${REVISION}"
 EXPOSE 30001
 ENTRYPOINT ["python3", "-u", "-m", "sharar"]
 CMD ["serve", "--host", "0.0.0.0", "--port", "30001"]

@@ -4,7 +4,7 @@ weight scale and quantizes activations per call (the draft's dynamic scheme), or
 matrix itself for parity runs. A 3-bit decode copy can be attached later like the draft's.
 
 SHARAR_TRUNK_KEEP_BF16=<regex> keeps the matching projections in BF16 (a diagnostic: which
-module's quantization moves the logits, `bench/flashnext_quant.py`). Finer FP8 scales (per
+module's quantization moves the logits, `profiling/flashnext_quant.py`). Finer FP8 scales (per
 row, per output channel) were measured and do not beat numerical noise (#5)."""
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass
 
 import torch
+
+from sharar.weights.sharding import REPLICATED, Shard
 
 FP8_MAX = 448.0
 GEMV_MAX_ROWS = 4
@@ -23,29 +25,32 @@ class TrunkLinear:
     weight: torch.Tensor  # [N, K] bf16, or float8_e4m3fn with `scale`
     scale: torch.Tensor | None = None  # [1, 1] fp32 weight scale (fp8 only)
     w3: object = None  # optional 3-bit decode copy (sharar.kernels.w3.W3Weight)
+    shard: Shard = REPLICATED  # which part of the checkpoint's matrix this rank holds (its 3-bit copy loads the same)
 
     @classmethod
-    def from_bf16(cls, weight: torch.Tensor, precision: str) -> "TrunkLinear":
+    def from_bf16(cls, weight: torch.Tensor, precision: str, shard: Shard = REPLICATED) -> "TrunkLinear":
+        """`weight` is the checkpoint's whole matrix; this rank keeps its `shard`, quantized with the whole matrix's
+        FP8 scale, so every rank's part is exactly its rows or columns of the single-GPU copy."""
         if weight.ndim != 2 or weight.dtype != torch.bfloat16:
             raise ValueError("trunk projections are BF16 matrices in the checkpoint")
         if precision == "bf16":
-            return cls(weight.contiguous())
+            return cls(shard(weight).contiguous(), shard=shard)
         if precision != "fp8":
             raise ValueError(f"unknown trunk precision {precision!r}")
         scale = (weight.float().abs().amax() / FP8_MAX).clamp_min(1e-12).reshape(1, 1)
-        packed = (weight.float() / scale).clamp(-FP8_MAX, FP8_MAX).to(torch.float8_e4m3fn)
-        return cls(packed.contiguous(), scale)
+        packed = (shard(weight).float() / scale).clamp(-FP8_MAX, FP8_MAX).to(torch.float8_e4m3fn)
+        return cls(packed.contiguous(), scale, shard=shard)
 
     @classmethod
-    def load(cls, w, names: list[str], device, precision: str) -> "TrunkLinear":
-        """One projection, or several fused along the output dimension."""
+    def load(cls, w, names: list[str], device, precision: str, shard: Shard = REPLICATED) -> "TrunkLinear":
+        """One projection, or several fused along the output dimension; `shard` keeps this rank's part."""
         parts = [w.get(n).to(device) for n in names]
         weight = parts[0] if len(parts) == 1 else torch.cat(parts, dim=0)
         from sharar.engine.config import current
         keep = current().trunk_keep_bf16
         if keep and re.search(keep, names[0]):
             precision = "bf16"
-        return cls.from_bf16(weight, precision)
+        return cls.from_bf16(weight, precision, shard)
 
     @property
     def out_features(self) -> int:

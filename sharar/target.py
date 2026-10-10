@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from sharar.distributed import div_even
 from sharar.engine.profile import DEFAULT_PROFILE, ServingProfile
 from sharar.hardware.gb10 import COMPUTE_CAPABILITY, GPU_NAME, MIN_DRIVER_MAJOR, MIN_TOTAL_MEMORY_KIB
 
@@ -82,6 +83,16 @@ class Target:
     def __post_init__(self):
         if len(self.layer_types) != self.num_layers or any(t not in ("full_attention", "linear_attention") for t in self.layer_types):
             raise ValueError("layer_types must name every layer as full_attention or linear_attention")
+
+    def shard(self, size: int) -> Target:
+        """One tensor-parallel rank's share of `size`: attention and linear-attention heads and the MLP widths
+        (dense, routed experts', shared expert's) are per rank (what its pools, kernels and graphs size from); the
+        hidden size, the vocabulary, the expert count and the indexer stay whole."""
+        if size == 1:
+            return self
+        split = ("num_attention_heads", "num_kv_heads", "linear_num_key_heads", "linear_num_value_heads",
+                 "intermediate_size", "moe_intermediate_size", "shared_expert_intermediate_size")
+        return replace(self, **{name: div_even(getattr(self, name), size) for name in split if getattr(self, name)})
 
     # ---- derived geometry ----
     @property
@@ -230,7 +241,7 @@ def _qwen38() -> Target:
         linear_key_head_dim=c.LINEAR_KEY_HEAD_DIM, linear_value_head_dim=c.LINEAR_VALUE_HEAD_DIM,
         linear_conv_kernel=c.LINEAR_CONV_KERNEL, vocab_size=c.VOCAB_SIZE, rms_norm_eps=c.RMS_NORM_EPS,
         max_position_embeddings=c.MAX_POSITION_EMBEDDINGS, nvfp4_group_size=c.NVFP4_GROUP_SIZE,
-        weight_load_peak_bytes=c.WEIGHT_LOAD_PEAK_BYTES,
+        weight_load_peak_bytes=c.WEIGHT_LOAD_PEAK_BYTES, w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION,
     )
 
 

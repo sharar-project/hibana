@@ -3,16 +3,20 @@ import math
 from sharar.engine.sampler import InvalidRequest, SamplingParams
 
 # Relaxed acceptance applied to requests that set neither accept_top_k nor
-# accept_margin: greedy ones, and sampled ones when ACCEPT_DEFAULT_SAMPLED;
-# (1, 0.0) means exact. Set once by serve() from --accept-default(-sampled).
+# accept_margin: ACCEPT_DEFAULT to greedy ones, ACCEPT_DEFAULT_SAMPLED to sampled
+# ones; (1, 0.0) means exact. Set once by serve() from --accept-default(-sampled)
+# and --accept-default-sampled-threshold.
 ACCEPT_DEFAULT = (1, 0.0)
-ACCEPT_DEFAULT_SAMPLED = False
+ACCEPT_DEFAULT_SAMPLED = (1, 0.0)
 
 
-def set_accept_default(top_k: int, margin: float, sampled: bool = False) -> None:
+def set_accept_default(top_k: int, margin: float, sampled: bool | tuple[int, float] = False) -> None:
+    """sampled: False keeps sampled requests exact, True gives them the greedy threshold, (K, M) their own."""
     global ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED
-    SamplingParams(accept_top_k=top_k, accept_margin=margin).validate()
-    ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED = (top_k, margin), bool(sampled)
+    threshold = sampled if isinstance(sampled, tuple) else (top_k, margin) if sampled else (1, 0.0)
+    for k, m in ((top_k, margin), threshold):
+        SamplingParams(accept_top_k=k, accept_margin=m).validate()
+    ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED = (top_k, margin), threshold
 
 
 def parse_accept_default(text: str | None) -> tuple[int, float]:
@@ -53,9 +57,10 @@ def _sampling_from(body: dict, max_default: int = 512) -> SamplingParams:
         accept_top_k=integer(body.get("accept_top_k", sp.get("accept_top_k", 1))),
         accept_margin=body.get("accept_margin", sp.get("accept_margin", 0.0)),
     )
+    default = ACCEPT_DEFAULT if params.greedy else ACCEPT_DEFAULT_SAMPLED
     if ("accept_top_k" not in body and "accept_top_k" not in sp and "accept_margin" not in body and "accept_margin" not in sp
-            and (params.greedy or ACCEPT_DEFAULT_SAMPLED) and ACCEPT_DEFAULT != (1, 0.0)):
-        params.accept_top_k, params.accept_margin = ACCEPT_DEFAULT
+            and default != (1, 0.0)):
+        params.accept_top_k, params.accept_margin = default
     params.validate()
     return params
 
@@ -88,11 +93,34 @@ def _template_kwargs(body: dict) -> tuple[dict, bool]:
     return kwargs, bool(kwargs.pop("enable_thinking", True))
 
 
-def _validate_chat_controls(body: dict) -> None:
-    """Accept only unconstrained output; fail before rendering or admission."""
+def _output_spec(body: dict) -> tuple[str, object] | None:
+    """The output constraint a chat request asks for, validated before rendering or admission (engine/grammar.py):
+    ("tool_call", function name or None for any tool), ("json_object", None), ("json_schema", schema) or None."""
+    spec = None
     choice = body.get("tool_choice")
     if choice is not None and choice not in ("auto", "none"):
-        raise InvalidRequest("tool_choice supports only null, 'auto' or 'none'; forced tool calls are not supported")
+        name = (choice.get("function") or {}).get("name") if isinstance(choice, dict) and choice.get("type") == "function" else None
+        if choice == "required":
+            spec = ("tool_call", None)
+        elif isinstance(name, str) and name:
+            spec = ("tool_call", name)
+        else:
+            raise InvalidRequest("tool_choice must be null, 'auto', 'none', 'required' or "
+                                 "{'type': 'function', 'function': {'name': ...}}")
+        if not body.get("tools"):
+            raise InvalidRequest("a tool_choice that requires a call needs tools")
     response_format = body.get("response_format")
     if response_format is not None and response_format != {"type": "text"}:
-        raise InvalidRequest('response_format supports only null or {"type":"text"}; constrained output is not supported')
+        kind = response_format.get("type") if isinstance(response_format, dict) else None
+        schema = (response_format.get("json_schema") or {}).get("schema") if kind == "json_schema" and isinstance(response_format.get("json_schema"), dict) else None
+        if kind == "json_object":
+            fmt = ("json_object", None)
+        elif isinstance(schema, dict):
+            fmt = ("json_schema", schema)
+        else:
+            raise InvalidRequest('response_format must be {"type": "text"}, {"type": "json_object"} or '
+                                 '{"type": "json_schema", "json_schema": {"name": ..., "schema": {...}}}')
+        if spec is not None:
+            raise InvalidRequest("a tool_choice that requires a call cannot be combined with a JSON response_format")
+        spec = fmt
+    return spec

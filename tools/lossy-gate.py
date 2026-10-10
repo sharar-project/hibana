@@ -4,29 +4,35 @@
     tools/lossy-gate.py --target flashnext --name fast --profile fast
     tools/lossy-gate.py --target flashnext --name recal --profile fast --env SHARAR_W3_CHECKPOINT=/path/to/candidate
     tools/lossy-gate.py --target qwen38 --name fewer-experts --profile exact --env SHARAR_X=1 --through full
+    tools/lossy-gate.py --target flashnext --name experts3 --profile fast --env SHARAR_W3_CHECKPOINT=/path --battery hard
+    tools/lossy-gate.py --target flashnext --name kv-fp4 --profile fast --env SHARAR_X=1 --battery long
 
 A candidate is a serving profile (`--profile`, default exact) plus `--env KEY=VALUE` overrides on
-the target's launcher config (config/flashnext.env, or config/gb10.env for the 27B), resolved the
+the target's launcher config (config/gb10.env if present, the target's config/targets/<target>.env, defaults;
+tools/launcher-config.sh), resolved the
 way run-sharar.sh resolves them (the profile table is tools/serving-profile.sh, read per target); the baseline is `--baseline-profile` (default exact) with
-`--baseline-env`. Both run the same image (`--image`, default the config's SHARAR_IMAGE). The run is
+`--baseline-env`. Both run the same image (`--image`, default the config's SHARAR_IMAGE, else the published one). The run is
 unattended and resumable: every step writes its own file and a rerun with the same name skips what
 exists. Do not wrap the tool in flock: it takes $SHARAR_RESULTS/.gpu.lock itself for each
 GPU phase (at most --hold-minutes), and waits while another model container runs.
 
 Layers, cheapest first:
-  1  Distribution distance (in-process, bench/lossy_gate.py): the baseline's own greedy
-     continuations of the 28 frozen prompts of bench/workloads/lossy_v1.json (code, math, prose,
+  1  Distribution distance (in-process, tools/gate/lossy_gate.py): the baseline's own greedy
+     continuations of the 28 frozen prompts of tools/gate/workloads/lossy_v1.json (code, math, prose,
      multilingual, structured, short chat), scored 64 rows per forward (the decode path) as
      argmax agreement and truncated KL(baseline || candidate); the floor is the baseline scored at
      32 rows per forward against itself. Per domain.
   2  Speculation health (same process): tokens per verify round, round cost and decode tok/s of
      each prompt, greedy with the profile's acceptance rule, paired per prompt; the floor is a
      second baseline pass. The speed delta of the verdict is the decode tok/s ratio here.
-  3  Task battery (served over HTTP: run-sharar.sh starts container sharar-lossy-gate on --port,
-     sharar-evals' accuracy_eval with the server's own acceptance default): paired per item,
-     McNemar. Screen: GSM8K first 300, HumanEval 164, MGSM 24 per language (264), plus long-context
-     needles at 16K and 64K (smoke). Full, when the screen is close: GSM8K 1319, HumanEval 164,
-     MBPP 500, MGSM 2750.
+  3  Task battery (served over HTTP: run-sharar.sh starts container sharar-lossy-gate on --port, and
+     sharar-eval's `evals.suite` runs with the server's own acceptance default): paired per item,
+     McNemar. Screen: the `quick` suite (GSM8K first 300, HumanEval 164, MGSM 24 per language, plus
+     long-context needles at 16K and 64K as a smoke test). Full, when the screen is close: the `full`
+     suite (GSM8K 1319, HumanEval 164, MBPP 500, MGSM 2750). `--battery` adds suites after the screen or
+     full stage: `hard` (MMLU-Pro, GPQA Diamond, IFEval, WMT24++; 4-6 hours per arm), `long` (RULER v2 at
+     32K and 128K, 120 items each; about 3 hours per arm), `all` (both) or `agentic` (Terminal-Bench 2.1 through
+     Harbor, the 78 tasks valid on the GB10 twice; about 18 hours per arm, in one GPU window).
 
 Verdict rules (also in CONTRIBUTING.md, "Judge a lossy option"). Intervals are 95%: bootstrap over
 64-position blocks (layer 1) or prompts (layer 2), normal approximation of the paired difference
@@ -36,8 +42,10 @@ Verdict rules (also in CONTRIBUTING.md, "Judge a lossy option"). Intervals are 9
             (interval includes 1); a lossless change. Layer 3 is skipped (--through screen forces it).
   rejected  any of: no measurable speed gain, the speed interval's lower bound at or below 1.035 (a
             lossy option must pay for itself, beyond the layer's 3.5% noise; layer 3 is skipped); a
-            task or the pooled battery significantly worse (McNemar p < 0.05, more losses than wins);
-            pooled accuracy delta below -2.0 points.
+            task or the pooled battery significantly worse (McNemar p < 0.05, more losses than wins;
+            with --battery this includes MMLU-Pro, GPQA, IFEval and each RULER v2 length (paired sign
+            test), while WMT24++ chrF++ is reported and decides nothing); pooled accuracy delta below -2.0 points. Pooled is the
+            stage's tasks only.
   balanced  not rejected, the full stage ran, pooled delta interval lower bound >= -1.0 point and
             every task's delta >= -1.0 point.
   fast      not rejected otherwise (the loss is not significant and at most 2.0 points).
@@ -69,12 +77,12 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-WORKLOAD = REPO / "bench" / "workloads" / "lossy_v1.json"
-WORKER = REPO / "bench" / "lossy_gate.py"
+WORKLOAD = REPO / "tools" / "gate" / "workloads" / "lossy_v1.json"
+WORKER = REPO / "tools" / "gate" / "lossy_gate.py"
 LOCK: Path | None = None  # $SHARAR_RESULTS/.gpu.lock, set by main()
 CONTAINER = "sharar-lossy-gate"
 TOOL_CONTAINER = "sharar-lossy-gate-tool"
-PROTOCOL = 1  # bump when a step's meaning changes (it keys the baseline cache)
+PROTOCOL = 2  # bump when a step's meaning changes (it keys the baseline cache)
 CHUNK, FLOOR_CHUNK = 64, 32
 FLOOR_GIB = 16.0  # tools/memory-guard.sh floor
 BLOCK = 64  # layer-1 bootstrap unit: consecutive continuation positions
@@ -84,6 +92,7 @@ BLOCK = 64  # layer-1 bootstrap unit: consecutive continuation positions
 SERVING_PROFILE = REPO / "tools" / "serving-profile.sh"
 PROFILE_NAMES = ("exact", "balanced", "fast", "throughput")
 PROFILE_SETTINGS = {"P_ACCEPT": "SHARAR_ACCEPT_DEFAULT", "P_ACCEPT_SAMPLED": "SHARAR_ACCEPT_DEFAULT_SAMPLED",
+                    "P_ACCEPT_SAMPLED_THRESHOLD": "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD",
                     "P_W3": "SHARAR_W3_DECODE",
                     "P_DEVICE_ACCEPT": "SHARAR_DEVICE_ACCEPT", "P_MAX_BATCH": "SHARAR_MAX_BATCH", "P_SPEC_DEPTHS": "SHARAR_SPEC_DEPTHS"}
 # Settings run-sharar.sh forwards into the container unchanged (when set).
@@ -93,20 +102,21 @@ FORWARDED = ("SHARAR_DEVICE_ACCEPT", "SHARAR_DRAFT_VOCAB", "SHARAR_DRAFT_HEAD", 
 LAUNCHER_ONLY = {"SHARAR_IMAGE", "SHARAR_CONTAINER", "SHARAR_PORT", "SHARAR_PROPOSER", "SHARAR_SPEC", "SHARAR_VERIFY_STATE",
                  "SHARAR_DRAFT_PRECISION", "SHARAR_DRAFT", "SHARAR_DRAFT_RUNS", "SHARAR_TRACES", "SHARAR_TRACES_MAX_MIB",
                  "SHARAR_MAX_CONTEXT", "SHARAR_HF_CACHE", "SHARAR_RESULTS", "SHARAR_FLASHNEXT_CACHE", "SHARAR_SESSION_DIR",
-                 "SHARAR_SESSION_GIB", "SHARAR_SESSION_MIN_TOKENS", "SHARAR_MIN_AVAILABLE_KIB", "SHARAR_REFERENCE_CONTAINER",
-                 "SHARAR_REFERENCE_URL", "SHARAR_CONFIG_FILE",
+                 "SHARAR_SESSION_GIB", "SHARAR_SESSION_MIN_TOKENS", "SHARAR_MIN_AVAILABLE_KIB", "SHARAR_CONFIG_FILE",
                  "SHARAR_MAX_BATCH", "SHARAR_SPEC_DEPTHS"}  # batch 8-16 settings: the served arm only (layers 1-2 run batch one)
 # EngineConfig fields the served arm must report exactly as the in-process arm installed them.
 CHECKED = ("target", "profile", "w3_decode", "w3_checkpoint", "stable_numerics", "flashnext_trunk",
            "flashnext_mixers", "flashnext_mtp_trunk", "trunk_keep_bf16", "draft_vocab", "draft_head",
-           "draft_head_rescore", "device_accept", "accept_default", "accept_default_sampled", "qsa_sparse_graphs")
+           "draft_head_rescore", "device_accept", "accept_default", "accept_default_sampled",
+           "accept_default_sampled_threshold", "qsa_sparse_graphs", "flashnext_experts")
 
-SCREEN = [("gsm8k", {"limit": 300}), ("humaneval", {}), ("mgsm", {"per_language": 24})]
-FULL = [("gsm8k", {}), ("humaneval", {}), ("mbpp", {}), ("mgsm", {})]
-TASK_SIZE = {"gsm8k": 1319, "humaneval": 164, "mbpp": 500, "mgsm": 2750}
-SHARD = 100  # the screen's GSM8K-300 is the first three shards of the full set
-SECONDS_PER_ITEM = {"gsm8k": 3.0, "humaneval": 2.5, "mbpp": 1.5, "mgsm": 3.5}  # first-shard guesses (Flash-Next, 4 streams)
-NEEDLES = ["--lengths", "16384,65536", "--depths", "0.9,0.5,0.1", "--output-tokens", "64"]
+# Layer-3 stages: the sharar-eval suite each runs and the tasks its verdict reads (the suite's GSM8K-300 is the first
+# three shards of the full set, so the full stage reuses them).
+STAGES = {"screen": ("quick", ["gsm8k", "humaneval", "mgsm-pl24", "needles"]), "full": ("full", ["gsm8k", "humaneval", "mbpp", "mgsm", "needles"]),
+          "hard": ("hard", ["mmlupro", "gpqa", "ifeval", "wmt"]), "long": ("long", ["ruler2-32k", "ruler2-128k"]),
+          "agentic": ("agentic", ["tbench"])}
+BATTERIES = {"quick": [], "hard": ["hard"], "long": ["long"], "agentic": ["agentic"], "all": ["hard", "long"]}
+AGENTIC_HOLD_MINUTES = 36 * 60  # one window: a Terminal-Bench task cut off by a window restarts from scratch
 BALANCED_MARGIN, FAST_MARGIN = 1.0, 2.0  # accuracy points
 # Layer-2 speed resolution (Flash-Next, 2026-09-27): a warm baseline repeat reads x1.035 and a second exact
 # process x0.986, so a gain must clear 3.5% to be told from the instrument's own noise.
@@ -118,6 +128,13 @@ def log(msg: str) -> None:
 
 
 # ---------------------------------------------------------------- configuration
+
+def default_image() -> str:
+    """The launchers' default image (tools/image.sh)."""
+    out = subprocess.run(["bash", "-c", 'source "$0"; echo "$SHARAR_DEFAULT_IMAGE"', str(REPO / "tools" / "image.sh")],
+                         capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
 
 def load_env(path: Path) -> dict:
     """KEY=VALUE lines of a launcher config file, in order (later lines win, as `source` does)."""
@@ -131,12 +148,23 @@ def load_env(path: Path) -> dict:
 
 
 def target_config(target: str) -> Path:
-    if target == "flashnext":
-        return REPO / "config" / "flashnext.env"
-    path = Path(os.environ.get("SHARAR_CONFIG_FILE") or REPO / "config" / "gb10.env")
-    if not path.is_file():
-        raise SystemExit(f"{path} not found: copy config/gb10.env.example to config/gb10.env or set SHARAR_CONFIG_FILE")
-    return path
+    """The user's launcher config file (optional: without one the launcher's defaults apply)."""
+    return Path(os.environ.get("SHARAR_CONFIG_FILE") or REPO / "config" / "gb10.env")
+
+
+def launcher_config(target: str) -> dict:
+    """What run-sharar.sh starts from for `target` before the profile: the user's config file, the target's settings
+    (config/targets/<target>.env) and the default paths, resolved by tools/launcher-config.sh from the file alone
+    (SHARAR_* in this process's environment are not mixed in)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SHARAR_")}
+    env["SHARAR_CONFIG_FILE"] = str(target_config(target))
+    out = subprocess.run(["bash", str(REPO / "tools" / "launcher-config.sh"), "print", target], env=env,
+                         capture_output=True, text=True)
+    if out.returncode:
+        raise SystemExit(out.stderr.strip() or "tools/launcher-config.sh failed")
+    config = dict(line.split("=", 1) for line in out.stdout.splitlines() if "=" in line)
+    config.pop("SHARAR_CONFIG_FILE", None)
+    return config
 
 
 def profile_defaults(profile: str, target: str) -> dict:
@@ -196,6 +224,12 @@ def arm_plan(env: dict) -> dict:
     cenv = {"SHARAR_PROFILE": env["SHARAR_PROFILE"], "SHARAR_SPEC": str(spec), "SHARAR_ACCEPT_DEFAULT": accept,
             "SHARAR_ACCEPT_DEFAULT_SAMPLED": "1" if env["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "1" and accept != "1:0.0" else "0",
             "SHARAR_W3_DECODE": env["SHARAR_W3_DECODE"]}
+    # sampled requests' own K:M, as `sharar serve` records it: only while they are relaxed (an exact one turns them off)
+    sampled = env.get("SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD") or ""
+    sampled = accept_rule(sampled) if sampled and cenv["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "1" else ""
+    if sampled == "1:0.0":
+        cenv["SHARAR_ACCEPT_DEFAULT_SAMPLED"], sampled = "0", ""
+    cenv["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] = sampled
     mounts = {}
     if env.get("SHARAR_W3_CHECKPOINT"):
         mounts["/w3"] = str(Path(env["SHARAR_W3_CHECKPOINT"]).resolve())
@@ -227,6 +261,8 @@ def served_config(base: dict, profile: str, overrides: dict, image: str, port: i
     lines = [f"{k}={v}" for k, v in base.items()]
     lines += [f"SHARAR_PROFILE={profile}"] + [f"{k}={v}" for k, v in overrides.items()]
     lines += [f"SHARAR_IMAGE={image}", f"SHARAR_CONTAINER={CONTAINER}", f"SHARAR_PORT={port}", "SHARAR_SESSION_DIR=off", "SHARAR_TRACES="]
+    if "SHARAR_COLD_TIER_GIB" not in overrides:  # host memory for Terminal-Bench's task containers; caching only, same in every stage
+        lines.append("SHARAR_COLD_TIER_GIB=0")
     return "# written by tools/lossy-gate.py\n" + "\n".join(lines) + "\n"
 
 
@@ -311,8 +347,8 @@ def tool_container(image: str, plan: dict, results: Path, hf_cache: str, out: Pa
     cmd += ["--mount", "type=bind,src=/usr/bin/nvidia-smi,dst=/usr/bin/nvidia-smi,readonly",
             "--mount", f"type=bind,src={hf_cache},dst=/cache/huggingface,readonly",
             "--mount", f"type=bind,src={results}/runtime-state,dst=/state",
-            # only the gate's bench package over the image: the engine is the image's own code
-            "--mount", f"type=bind,src={REPO / 'bench'},dst=/gate/bench,readonly",
+            # only the gate package over the image: the engine is the image's own code
+            "--mount", f"type=bind,src={REPO / 'tools' / 'gate'},dst=/gate/gate,readonly",
             "--mount", f"type=bind,src={out},dst=/out"]
     if base is not None:
         cmd += ["--mount", f"type=bind,src={base},dst=/base,readonly"]
@@ -323,7 +359,7 @@ def tool_container(image: str, plan: dict, results: Path, hf_cache: str, out: Pa
            "TRITON_LIBCUDA_PATH": lib, "SHARAR_RESULTS": "/state", **plan["env"]}
     for k, v in env.items():
         cmd += ["--env", f"{k}={v}"]
-    cmd += ["--entrypoint", "python3", image, "-m", "bench.lossy_gate", "--prompts", "/gate/bench/workloads/lossy_v1.json",
+    cmd += ["--entrypoint", "python3", image, "-m", "gate.lossy_gate", "--prompts", "/gate/gate/workloads/lossy_v1.json",
             "--out", "/out", "--accept", plan["accept"], "--proposer", plan["proposer"], "--spec", str(plan["spec"]),
             "--verify-state", plan["verify_state"], "--draft-precision", plan["draft_precision"], "--chunk", str(CHUNK)]
     if plan["draft"]:
@@ -369,26 +405,6 @@ def get_json(url: str) -> dict:
         return json.loads(r.read())
 
 
-def shards(stage: list) -> list[dict]:
-    out = []
-    for task, opt in stage:
-        if task == "mgsm" and opt.get("per_language"):
-            out.append({"task": task, "start": 0, "limit": 0, "per_language": opt["per_language"], "file": f"mgsm-pl{opt['per_language']}"})
-            continue
-        total = opt.get("limit") or TASK_SIZE[task]
-        for s in range(0, total, SHARD):
-            out.append({"task": task, "start": s, "limit": min(SHARD, total - s), "per_language": 0, "file": f"{task}-s{s:05d}"})
-    return out
-
-
-def shard_items(sh: dict) -> int:
-    return sh["per_language"] * 11 if sh["per_language"] else sh["limit"]
-
-
-def shard_path(l3: Path, sh: dict) -> Path:
-    return l3 / f"{sh['file']}-n{shard_items(sh)}.json"
-
-
 class Served:
     """One served arm: start with run-sharar.sh, check the installed configuration, run eval shards, stop."""
 
@@ -430,60 +446,39 @@ class Served:
             subprocess.run(["docker", "logs", CONTAINER], stdout=f, stderr=subprocess.STDOUT)
         subprocess.run([str(REPO / "run-sharar.sh"), "--stop"], env=self.env, capture_output=True)
 
-    def eval_cmd(self, sh: dict, out: Path) -> list[str]:
-        cmd = [self.python, "-m", "evals.accuracy_eval", "--url", self.url, "--task", sh["task"], "--label", sh["file"],
-               "--accept", "server", "--output", str(out)]
-        if sh["per_language"]:
-            cmd += ["--per-language", str(sh["per_language"])]
-        else:
-            cmd += ["--start", str(sh["start"]), "--limit", str(sh["limit"])]
-        return cmd
-
-
-def run_served(label: str, served: Served, todo: list[dict], l3: Path, needles: bool, minutes: float, rates: dict) -> None:
-    """Run the missing shards (and the needle smoke) in GPU windows of at most `minutes` each."""
-    l3.mkdir(parents=True, exist_ok=True)
-    needle_file = l3 / "needles.jsonl"
-    def pending():
-        return [sh for sh in todo if not shard_path(l3, sh).exists()], needles and not (l3 / "needles.done").exists()
-
-    while True:
-        missing, want_needles = pending()
-        if not missing and not want_needles:
-            return
-        with gpu_window(f"{label} layer 3 ({len(missing)} shards{', needles' if want_needles else ''})"):
-            missing, want_needles = pending()  # another gate run may have filled the shared baseline meanwhile
-            if not missing and not want_needles:
+def run_suite(label: str, served: Served, suite: str, l3: Path, skip: list[str], minutes: float, engine: str) -> None:
+    """Run one sharar-eval suite on a served arm in GPU windows of at most `minutes` each; the suite keeps
+    100-item shards, so a window that ends mid-suite loses at most one shard and the next resumes."""
+    done = l3 / f".{suite}{''.join('-no-' + t for t in skip)}.done"
+    while not done.exists():
+        with gpu_window(f"{label} {suite} suite"):
+            if done.exists():  # another gate run filled the shared baseline meanwhile
                 return
-            started = time.monotonic()
+            before = len(list(l3.glob("*/s*.json")))
             served.start()
             try:
+                cmd = [served.python, "-m", "evals.suite", "run", "--url", served.url, "--label", label, "--suite", suite,
+                       "--out", str(l3), "--engine", engine, *[a for t in skip for a in ("--skip", t)]]
+                log(f"{label}: {suite} suite")
                 with (served.dir / "evals.log").open("a") as logf:
-                    for sh in missing:
-                        est = shard_items(sh) * rates.get(sh["task"], SECONDS_PER_ITEM[sh["task"]])
-                        used = time.monotonic() - started
-                        if used > 0 and used + est > 60 * minutes and sh is not missing[0]:
-                            break
-                        log(f"{label}: {sh['file']} ({shard_items(sh)} items, ~{est / 60:.0f} min)")
-                        tmp = l3 / "partial"
-                        t0 = time.monotonic()
-                        proc = subprocess.Popen(served.eval_cmd(sh, tmp), cwd=served.evals, stdout=logf, stderr=subprocess.STDOUT)
-                        rc = watch(proc, started + 60 * (minutes + 15), None, sh["file"], proc.kill)
-                        if rc != 0:
-                            raise RuntimeError(f"{label}: {sh['file']} failed (exit {rc}); see {served.dir / 'evals.log'}")
-                        rates[sh["task"]] = (time.monotonic() - t0) / shard_items(sh)
-                        (tmp / f"{sh['file']}-{sh['task']}.json").rename(shard_path(l3, sh))
-                    else:
-                        if want_needles and time.monotonic() - started < 60 * minutes:
-                            log(f"{label}: long-context needles")
-                            needle_file.unlink(missing_ok=True)
-                            proc = subprocess.Popen([served.python, "-m", "evals.long_context", "--url", served.url, *NEEDLES, "--log", str(needle_file)],
-                                                    cwd=served.evals, stdout=logf, stderr=subprocess.STDOUT)
-                            if watch(proc, started + 60 * (minutes + 15), None, "needles", proc.kill) != 0:
-                                raise RuntimeError(f"{label}: needles failed; see {served.dir / 'evals.log'}")
-                            (l3 / "needles.done").write_text("")
+                    proc = subprocess.Popen(cmd, cwd=served.evals, stdout=logf, stderr=subprocess.STDOUT)
+                    rc = watch(proc, time.monotonic() + 60 * minutes, None, f"{label} {suite}", proc.kill)
             finally:
                 served.stop()
+            if rc == 0:
+                done.write_text("")
+            elif rc != -1 or len(list(l3.glob("*/s*.json"))) == before:
+                raise RuntimeError(f"{label}: {suite} suite failed (exit {rc}); see {served.dir / 'evals.log'}")
+
+
+def suite_compare(python: str, evals: Path, base: Path, cand: Path, tasks: list[str]) -> dict:
+    """sharar-eval's paired scorecard over `tasks` (the needles count only when both arms ran them)."""
+    out = cand / f"compare-{'-'.join(tasks)}.json"
+    r = subprocess.run([python, "-m", "evals.suite", "compare", str(base), str(cand), "--tasks", ",".join(tasks),
+                        "--json", str(out)], cwd=evals, capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError(f"evals.suite compare failed: {r.stderr.strip()[-500:]}")
+    return json.loads(out.read_text())
 
 
 # ---------------------------------------------------------------- statistics
@@ -560,65 +555,19 @@ def layer2(base_spec: dict, cand_spec: dict) -> dict:
     return out
 
 
-def mcnemar_p(wins: int, losses: int) -> float:
-    n = wins + losses
-    if not n:
-        return 1.0
-    return min(1.0, sum(math.comb(n, i) for i in range(n + 1) if abs(i - n / 2) >= abs(wins - n / 2)) / 2 ** n)
-
-
-def paired_acc(base: list[bool], cand: list[bool]) -> dict:
-    n = len(base)
-    wins = sum(1 for x, y in zip(base, cand) if y and not x)
-    losses = sum(1 for x, y in zip(base, cand) if x and not y)
-    diff = (wins - losses) / n
-    se = math.sqrt(max(0.0, (wins + losses) / n - diff ** 2) / n)
-    return {"n": n, "base": sum(base) / n, "cand": sum(cand) / n, "delta_pp": 100 * diff,
-            "ci95_pp": [100 * (diff - 1.96 * se), 100 * (diff + 1.96 * se)], "wins": wins, "losses": losses, "p": mcnemar_p(wins, losses)}
-
-
-def load_items(l3: Path, stage: list) -> dict[str, list[dict]]:
-    out = {}
-    for sh in shards(stage):
-        out.setdefault(sh["task"], []).extend(json.loads(shard_path(l3, sh).read_text())["items"])
-    return out
-
-
-def layer3(base_l3: Path, cand_l3: Path, stage: list) -> dict:
-    b, c = load_items(base_l3, stage), load_items(cand_l3, stage)
-    out, pb, pc = {"tasks": {}}, [], []
-    for task in b:
-        xb, xc = [x["correct"] for x in b[task]], [x["correct"] for x in c[task]]
-        assert len(xb) == len(xc), task
-        out["tasks"][task] = paired_acc(xb, xc)
-        if task == "mgsm":
-            langs = {}
-            for ib, ic in zip(b[task], c[task]):
-                langs.setdefault(ib["lang"], ([], []))[0].append(ib["correct"])
-                langs[ib["lang"]][1].append(ic["correct"])
-            out["tasks"][task]["languages"] = {k: paired_acc(*v) for k, v in sorted(langs.items())}
-        for side, items, acc in (("base", b[task], pb), ("cand", c[task], pc)):
-            toks = sum(x.get("completion_tokens") or 0 for x in items)
-            out["tasks"][task][f"{side}_tokens_per_item"] = toks / len(items)
-        pb += xb
-        pc += xc
-    out["pooled"] = paired_acc(pb, pc)
-    return out
-
-
-def needles(l3: Path) -> dict | None:
-    f = l3 / "needles.jsonl"
-    if not f.exists():
-        return None
-    rows = [json.loads(line) for line in f.read_text().splitlines() if line.strip()]
-    hits = [r for r in rows if r.get("kind") == "needle"]
-    return {"correct": sum(r["correct"] for r in hits), "n": len(hits),
-            "decode_tps": {f"{r['length']}/{r['mode']}": r["decode_tps"] for r in rows if r.get("kind") == "decode"}}
-
-
 # ---------------------------------------------------------------- verdict
 
-def verdict(l1: dict | None, l2: dict | None, l3: dict | None, stage: str | None) -> tuple[str, list[str]]:
+def binary(card: dict | None) -> dict:
+    """The pass/fail tasks of a sharar-eval scorecard."""
+    return {t: r for t, r in (card or {}).get("tasks", {}).items() if r["kind"] == "binary"}
+
+
+def deciding(card: dict | None) -> dict:
+    """The tasks of an added battery that can reject: pass/fail tasks and RULER v2 (WMT24++ chrF++ and the needles are reported only)."""
+    return {t: r for t, r in (card or {}).get("tasks", {}).items() if r["kind"] == "binary" or t.startswith("ruler2")}
+
+
+def verdict(l1: dict | None, l2: dict | None, l3: dict | None, stage: str | None, extra: dict | None = None) -> tuple[str, list[str]]:
     """The profile the candidate can enter, and why (the rules in the module docstring)."""
     why = []
     l1_within = l1 is not None and all(d["within_floor"] for k, d in l1.items() if k != "all")
@@ -631,17 +580,19 @@ def verdict(l1: dict | None, l2: dict | None, l3: dict | None, stage: str | None
                             f"lower bound not above {1 + SPEED_NOISE:.3f}"]
     if l3 is None:
         return "undecided", ["layer 3 has not run"]
-    bad = [f"{t} {r['delta_pp']:+.1f} pp (p {r['p']:.3f})" for t, r in l3["tasks"].items() if r["p"] < 0.05 and r["losses"] > r["wins"]]
+    tasks = {**binary(l3), **{t: r for card in (extra or {}).values() for t, r in deciding(card).items()}}
+    bad = [f"{t} {r['delta']:+.1f} {'pp' if r['kind'] == 'binary' else 'points'} (p {r['p']:.3f})" for t, r in tasks.items()
+           if r["p"] < 0.05 and r["losses"] > r["wins"]]
     pooled = l3["pooled"]
     if pooled["p"] < 0.05 and pooled["losses"] > pooled["wins"]:
-        bad.append(f"pooled {pooled['delta_pp']:+.1f} pp (p {pooled['p']:.3f})")
-    if pooled["delta_pp"] < -FAST_MARGIN:
-        bad.append(f"pooled loss {pooled['delta_pp']:+.1f} pp exceeds {FAST_MARGIN} pp")
+        bad.append(f"pooled {pooled['delta']:+.1f} pp (p {pooled['p']:.3f})")
+    if pooled["delta"] < -FAST_MARGIN:
+        bad.append(f"pooled loss {pooled['delta']:+.1f} pp exceeds {FAST_MARGIN} pp")
     if bad:
         return "rejected", ["significantly worse: " + "; ".join(bad)]
-    if stage == "full" and pooled["ci95_pp"][0] >= -BALANCED_MARGIN and all(r["delta_pp"] >= -BALANCED_MARGIN for r in l3["tasks"].values()):
-        return "balanced", [f"full battery non-inferior at {BALANCED_MARGIN} pp: pooled {pooled['delta_pp']:+.1f} pp {fmt_ci(pooled['ci95_pp'])}"]
-    why.append(f"loss not significant: pooled {pooled['delta_pp']:+.1f} pp {fmt_ci(pooled['ci95_pp'])}, p {pooled['p']:.2f}")
+    if stage == "full" and pooled["ci95"][0] >= -BALANCED_MARGIN and all(r["delta"] >= -BALANCED_MARGIN for r in binary(l3).values()):
+        return "balanced", [f"full battery non-inferior at {BALANCED_MARGIN} pp: pooled {pooled['delta']:+.1f} pp {fmt_ci(pooled['ci95'])}"]
+    why.append(f"loss not significant: pooled {pooled['delta']:+.1f} pp {fmt_ci(pooled['ci95'])}, p {pooled['p']:.2f}")
     if stage != "full":
         why.append("balanced needs the full stage")
     return "fast", why
@@ -650,14 +601,14 @@ def verdict(l1: dict | None, l2: dict | None, l3: dict | None, stage: str | None
 def screen_is_close(l3: dict) -> bool:
     """Escalate to the full sets unless the screen rejects or already excludes a loss beyond the balanced margin."""
     v, _ = verdict(None, None, l3, "screen")
-    return v != "rejected" and l3["pooled"]["ci95_pp"][0] < -BALANCED_MARGIN
+    return v != "rejected" and l3["pooled"]["ci95"][0] < -BALANCED_MARGIN
 
 
 def fmt_ci(ci) -> str:
     return f"[{ci[0]:+.1f}, {ci[1]:+.1f}]"
 
 
-def one_line(name: str, target: str, v: str, l1, l2, l3, stage) -> str:
+def one_line(name: str, target: str, v: str, l1, l2, l3, stage, extra=None) -> str:
     parts = [f"VERDICT {name} ({target}): {v}"]
     if l2:
         s = l2["decode_tps"]
@@ -672,7 +623,10 @@ def one_line(name: str, target: str, v: str, l1, l2, l3, stage) -> str:
         parts.append(f"L2 tok/round x{t['ratio']:.3f} [{t['ci95'][0]:.3f}, {t['ci95'][1]:.3f}]")
     if l3:
         p = l3["pooled"]
-        parts.append(f"L3 {stage} {p['delta_pp']:+.1f} pp {fmt_ci(p['ci95_pp'])} ({p['wins']}/{p['losses']}, p {p['p']:.2f})")
+        parts.append(f"L3 {stage} {p['delta']:+.1f} pp {fmt_ci(p['ci95'])} ({p['wins']}/{p['losses']}, p {p['p']:.2f})")
+    for name, card in (extra or {}).items():
+        parts.append(f"{name} " + ", ".join(f"{t} {r['delta']:+.{2 if r['kind'] == 'score' else 1}f} (p {r['p']:.2f})"
+                                            for t, r in card["tasks"].items() if r["kind"] != "needles"))
     return " | ".join(parts)
 
 
@@ -703,20 +657,34 @@ def summary_md(card: dict) -> str:
         lines += ["", f"Tokens per round {l2['base_tok_per_round']:.3f} -> {l2['cand_tok_per_round']:.3f}; relaxed acceptances "
                       f"{100 * l2['relaxed_share']:.1f}% of emitted tokens. By domain: "
                   + ", ".join(f"{k} x{v['ratio']:.3f}" for k, v in l2["domains"].items() if v.get("n")), ""]
-    if l3:
-        lines += [f"## Layer 3: task battery ({card['stage']}, served, 4 streams, paired, McNemar)", "",
-                  "| task | n | baseline | candidate | delta pp [95%] | better/worse | p | tokens/item |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
-        for t, r in list(l3["tasks"].items()) + [("pooled", l3["pooled"])]:
-            tok = f"{r['base_tokens_per_item']:.0f} / {r['cand_tokens_per_item']:.0f}" if "base_tokens_per_item" in r else ""
-            lines.append(f"| {t} | {r['n']} | {100 * r['base']:.1f}% | {100 * r['cand']:.1f}% | {r['delta_pp']:+.1f} {fmt_ci(r['ci95_pp'])} | "
-                         f"{r['wins']}/{r['losses']} | {r['p']:.3f} | {tok} |")
-        if "mgsm" in l3["tasks"]:
-            langs = l3["tasks"]["mgsm"]["languages"]
-            lines += ["", "MGSM by language (delta pp, better/worse): " + ", ".join(f"{k} {v['delta_pp']:+.0f} ({v['wins']}/{v['losses']})" for k, v in langs.items())]
-        for side in ("baseline", "candidate"):
-            nd = card.get(f"needles_{side}")
-            if nd:
-                lines.append(f"Needles ({side}): {nd['correct']}/{nd['n']} correct; decode tok/s {nd['decode_tps']}")
+    titles = {"hard": "Hard battery (served, 4 streams, paired; WMT24++ chrF++ decides nothing)",
+              "agentic": "Agentic battery: Terminal-Bench 2.1 (Terminus-2, 2 tasks at a time, two attempts, paired McNemar)",
+              "long": "Long battery: RULER v2 (served, 4 streams, paired bootstrap of the 0-100 item score)"}
+    for title, sc in [(f"Layer 3: task battery ({card['stage']}, served, 4 streams, paired, McNemar)", l3)] + \
+                     [(titles[k], v) for k, v in (card.get("extra") or {}).items()]:
+        if not sc:
+            continue
+        lines += [f"## {title}", "", "| task | n | baseline | candidate | delta [95%] | better/worse | p | tokens/item | capped |",
+                  "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+        for t, r in sc["tasks"].items():
+            if r["kind"] == "needles":
+                continue
+            pct = r["kind"] == "binary"
+            val = (lambda x: f"{100 * x:.1f}%") if pct else (lambda x: f"{x:.2f}")
+            cap = f"{r['base_side']['capped']} / {r['cand_side']['capped']}" if r["base_side"]["capped"] is not None else ""
+            lines.append(f"| {t} | {r['n']} | {val(r['base'])} | {val(r['cand'])} | {r['delta']:+.{1 if pct else 2}f} {fmt_ci(r['ci95'])} | "
+                         f"{r['wins']}/{r['losses']} | {r['p']:.3f} | {r['base_side']['tokens_per_item']:.0f} / {r['cand_side']['tokens_per_item']:.0f} | {cap} |")
+        if "pooled" in sc and sc is l3:
+            r = sc["pooled"]
+            lines.append(f"| pooled | {r['n']} | {100 * r['base']:.1f}% | {100 * r['cand']:.1f}% | {r['delta']:+.1f} {fmt_ci(r['ci95'])} | "
+                         f"{r['wins']}/{r['losses']} | {r['p']:.3f} | | |")
+        for t in ("mgsm", "mgsm-pl24"):
+            if (sc["tasks"].get(t) or {}).get("groups"):
+                lines += ["", f"{t} by language (delta pp): " + ", ".join(f"{g} {100 * (c - b):+.0f}" for g, (b, c) in sc["tasks"][t]["groups"].items())]
+        nd = sc["tasks"].get("needles")
+        if nd:
+            for side in ("base", "cand"):
+                lines.append(f"Needles ({'baseline' if side == 'base' else 'candidate'}): {nd[side]['correct']}/{nd[side]['n']} correct; decode tok/s {nd[side]['decode_tps']}")
         lines.append("")
     lines += ["Rules: `tools/lossy-gate.py` docstring and CONTRIBUTING.md (Judge a lossy option).", ""]
     return "\n".join(lines)
@@ -744,13 +712,15 @@ def main(argv=None) -> int:
     ap.add_argument("--baseline-env", action="append", default=[])
     ap.add_argument("--through", choices=("inprocess", "screen", "full", "auto"), default="auto",
                     help="inprocess: layers 1-2; screen: also the layer-3 screen (forced); full: also the full sets; auto: the cascade")
-    ap.add_argument("--image", default=None, help="runtime image (default: the config's SHARAR_IMAGE)")
+    ap.add_argument("--image", default=None, help="runtime image (default: the config's SHARAR_IMAGE, else tools/image.sh's)")
     ap.add_argument("--port", type=int, default=30100, help="served arms' port (30100-30199)")
-    ap.add_argument("--evals", type=Path, default=Path(os.environ.get("SHARAR_EVALS") or REPO.parent / "sharar-evals"),
-                    help="sharar-evals checkout (default: SHARAR_EVALS, else beside this one)")
-    venv = REPO / ".venv-cpu" / "bin" / "python"
-    ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON") or str(venv if venv.is_file() else sys.executable),
-                    help="host Python for sharar-evals (the needles need `tokenizers`)")
+    ap.add_argument("--battery", choices=sorted(BATTERIES), default="quick",
+                    help="quick: the screen, then the full sets when close; hard / long / all: also sharar-eval's hard suite "
+                         "(4-6 h per arm), long suite (RULER v2, ~3 h per arm) or both; agentic: Terminal-Bench 2.1 (~18 h per arm)")
+    ap.add_argument("--evals", type=Path, default=Path(os.environ.get("SHARAR_EVALS") or REPO.parent / "sharar-eval"),
+                    help="sharar-eval checkout (default: SHARAR_EVALS, else beside this one)")
+    ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
+                    help="host Python for sharar-eval (default: its .venv)")
     ap.add_argument("--hold-minutes", type=float, default=45, help="longest GPU hold per phase")
     ap.add_argument("--no-needles", action="store_true")
     ap.add_argument("--report", action="store_true", help="only rebuild the scorecard from what exists")
@@ -762,14 +732,14 @@ def main(argv=None) -> int:
         ap.error("--name: letters, digits, . _ -")
 
     conf_path = target_config(args.target)
-    config = load_env(conf_path)
+    config = launcher_config(args.target)
     results = os.environ.get("SHARAR_RESULTS") or config.get("SHARAR_RESULTS")
     if not results:
         raise SystemExit(f"set SHARAR_RESULTS (in {conf_path} or the environment)")
     results = Path(results)
     global LOCK
     LOCK = results / ".gpu.lock"  # the shared GPU lock every Sharar tool takes
-    image = args.image or config.get("SHARAR_IMAGE") or "sharar:qwen38-27b"
+    image = args.image or config.get("SHARAR_IMAGE") or default_image()
     config.pop("SHARAR_IMAGE", None)
     hf_cache = config.get("SHARAR_HF_CACHE") or os.environ.get("SHARAR_HF_CACHE")
     cand_over, base_over = parse_env(args.env), parse_env(args.baseline_env)
@@ -778,9 +748,11 @@ def main(argv=None) -> int:
     image_id = subprocess.run(["docker", "image", "inspect", image, "--format", "{{.Id}}"], capture_output=True, text=True).stdout.strip()
     if not image_id:
         raise SystemExit(f"image {image} not found")
-    acc = args.evals / "evals" / "accuracy_eval.py"
-    if not acc.is_file() or "mgsm" not in acc.read_text() or "--start" not in acc.read_text():
-        raise SystemExit(f"{args.evals}: no sharar-evals with MGSM/MBPP/--start (its main from 327a396); set --evals or SHARAR_EVALS")
+    if not (args.evals / "evals" / "suite.py").is_file():
+        raise SystemExit(f"{args.evals}: no sharar-eval with evals.suite; set --evals or SHARAR_EVALS")
+    args.python = args.python or str(args.evals / ".venv" / "bin" / "python")
+    if not Path(args.python).is_file():
+        raise SystemExit(f"{args.python} not found: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt in {args.evals}")
     evals_commit = git("rev-parse", "HEAD", cwd=args.evals)
     workload_sha = sha256(WORKLOAD.read_bytes())
     key_src = {"protocol": PROTOCOL, "target": args.target, "baseline": arms["baseline"],
@@ -801,8 +773,8 @@ def main(argv=None) -> int:
         if existing:
             raise SystemExit(f"{existing[-1]} holds another candidate spec; choose another --name")
         run_dir = results / "reviews" / f"{dt.date.today().isoformat()}-lossy-gate-{args.name}"
-    manifest = {**spec, "name": args.name, "image_id": image_id, "config_file": str(conf_path), "through": args.through,
-                "source": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--", "bench", "tools")),
+    manifest = {**spec, "name": args.name, "image_id": image_id, "config_file": str(conf_path), "through": args.through, "battery": args.battery,
+                "source": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--", "tools")),
                 "evals": str(args.evals), "evals_commit": evals_commit, "workload": json.loads(WORKLOAD.read_text())["version"],
                 "workload_sha256": workload_sha, "baseline_dir": str(base_dir), "port": args.port,
                 "arms": {k: {"launcher_env": {kk: vv for kk, vv in v.items() if kk.startswith("SHARAR_") or kk == "_DRAFT_DIR"}, "plan": plans[k]} for k, v in arms.items()}}
@@ -838,27 +810,34 @@ def main(argv=None) -> int:
     want = args.through in ("screen", "full") or (args.through == "auto" and v0 not in ("exact", "rejected"))
     if want and l1 is not None:
         arm_info = {k: json.loads(((b_in if k == "baseline" else c_in) / "arm.json").read_text()) for k in plans}
-        rates: dict = {}
-        stages = [("screen", SCREEN)]
-        for stage_name, tasks in stages:
-            for side, l3dir in (("baseline", base_dir / "l3"), ("candidate", run_dir / "l3")):
-                info = arm_info[side]
-                expect = {"config": {k: info["config"][k] for k in CHECKED}, "spec": plans[side]["spec"],
-                          "draft_precision": plans[side]["draft_precision"], "w3_identity": info["w3_identity"]}
-                profile, over = (args.baseline_profile, base_over) if side == "baseline" else (args.profile, cand_over)
-                served = Served(side, (base_dir if side == "baseline" else run_dir) / "served",
-                                served_config(config, profile, over, image, args.port), args.port, args.python, args.evals, expect)
+        engine = f"{image} {image_id[:19]}"
+        servers = {}
+        for side in plans:
+            info = arm_info[side]
+            expect = {"config": {k: info["config"][k] for k in CHECKED}, "spec": plans[side]["spec"],
+                      "draft_precision": plans[side]["draft_precision"], "w3_identity": info["w3_identity"]}
+            profile, over = (args.baseline_profile, base_over) if side == "baseline" else (args.profile, cand_over)
+            servers[side] = Served(side, (base_dir if side == "baseline" else run_dir) / "served",
+                                   served_config(config, profile, over, image, args.port), args.port, args.python, args.evals, expect)
+        dirs = {"baseline": base_dir / "l3", "candidate": run_dir / "l3"}
+
+        def battery(stage_name: str) -> dict:
+            suite, tasks = STAGES[stage_name]
+            for side in plans:
                 if not args.report:
-                    run_served(side, served, shards(tasks), l3dir, stage_name == "screen" and not args.no_needles, args.hold_minutes, rates)
-            stage = stage_name
-            l3 = layer3(base_dir / "l3", run_dir / "l3", tasks)
-            if stage_name == "screen" and (args.through == "full" or (args.through == "auto" and screen_is_close(l3))):
-                stages.append(("full", FULL))
-        card["needles_baseline"], card["needles_candidate"] = needles(base_dir / "l3"), needles(run_dir / "l3")
+                    run_suite(side, servers[side], suite, dirs[side], ["needles"] if args.no_needles else [],
+                              AGENTIC_HOLD_MINUTES if stage_name == "agentic" else args.hold_minutes, engine)
+            card = suite_compare(args.python, args.evals, dirs["baseline"], dirs["candidate"], tasks)
+            return card if card["tasks"] else None  # --report before the arms ran
+
+        stage, l3 = "screen", battery("screen")
+        if l3 and (args.through == "full" or (args.through == "auto" and screen_is_close(l3))):
+            stage, l3 = "full", battery("full")
+        card["extra"] = {name: c for name in BATTERIES[args.battery] if (c := battery(name))}
     card["layer3"], card["stage"] = l3, stage
-    v, why = verdict(l1, l2, l3, stage)
+    v, why = verdict(l1, l2, l3, stage, card.get("extra"))
     card["verdict"], card["why"] = v, why
-    card["verdict_line"] = one_line(args.name, args.target, v, l1, l2, l3, stage)
+    card["verdict_line"] = one_line(args.name, args.target, v, l1, l2, l3, stage, card.get("extra"))
     card["finished"] = dt.datetime.now().isoformat(timespec="seconds")
     (run_dir / "scorecard.json").write_text(json.dumps(card, indent=1) + "\n")
     (run_dir / "SUMMARY.md").write_text(summary_md(card))

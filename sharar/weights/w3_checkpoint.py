@@ -17,6 +17,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from sharar.model.qwen38_config import MODEL_REVISION
+from sharar.weights.sharding import REPLICATED, Shard
 
 FORMAT_VERSION = 1
 
@@ -60,27 +61,25 @@ class CalibratedWeights:
         self.weights = self.manifest["weights"]
         self.identity = sha256(self.directory / "manifest.json")
 
-    def load(self, name: str, linear):
-        n = linear.out_features
-        k = getattr(linear, "in_features", linear.weight.shape[1])
-        return self._load(name, n, k, linear.weight.device)
+    def load(self, name: str, linear, shard: Shard = REPLICATED):
+        """`linear`'s copy: its tensor-parallel part `shard` of the checkpoint's whole matrix."""
+        return self._load(name, linear.out_features, linear.in_features, linear.weight.device, shard)
 
     def expert_layers(self) -> set[int]:
         """The layers whose routed experts the checkpoint carries (`layers.N.experts.w13` / `.w2`, kernels/w3_moe.py)."""
         return {int(name.split(".")[1]) for name in self.weights if name.startswith("layers.") and ".experts." in name}
 
     def load_experts(self, layer: int, experts: int, inter: int, hidden: int, device):
-        """Layer `layer`'s routed experts: fc1 (rows in w3_moe.fc1_order) and fc2 stacked over the experts."""
+        """Layer `layer`'s routed experts, whole (one rank): fc1 (rows in w3_moe.fc1_order) and fc2 stacked over the experts."""
         from sharar.kernels.w3_moe import W3Experts
         fc1 = self._load(f"layers.{layer}.experts.w13", experts * 2 * inter, hidden, device)
         fc2 = self._load(f"layers.{layer}.experts.w2", experts * hidden, inter, device)
         return W3Experts.from_stacked(fc1, fc2, experts)
 
-    def _load(self, name: str, n: int, k: int, device):
+    def _load(self, name: str, out_features: int, in_features: int, device, shard: Shard = REPLICATED):
         from sharar.kernels.w3 import W3Weight, _codebook, lut_of
         entry = self.weights[name]
-        if (entry["out_features"], entry["in_features"]) != (n, k):
-            raise ValueError(f"calibrated W3 shape mismatch for {name}")
+        n, k = entry["out_features"], entry["in_features"]
         filename = entry["file"]
         if Path(filename).name != filename:
             raise ValueError("calibrated W3 files must be directly inside the checkpoint")
@@ -95,10 +94,17 @@ class CalibratedWeights:
                                                      for key, (shape, dtype) in expected.items()):
             raise ValueError(f"invalid calibrated W3 tensors for {name}")
         levels = _codebook(entry["codebook"])
+        # The fragment tensors index 32 rows by dim 0 and a 128-wide K chunk by dim 1; row scales follow the rows.
+        planes, scales = (shard.cols(shard.rows(tensors[key], 32), dim=1) for key in ("planes", "scales"))
+        row_scale = shard.rows(tensors["row_scale"])
+        n, k = row_scale.shape[0], planes.shape[1] * 128
+        if (n, k) != (out_features, in_features):
+            raise ValueError(f"calibrated W3 shape mismatch for {name}")
         # On GB10, copying a file-backed mmap directly to CUDA is much slower
         # than staging it in ordinary CPU storage, as the draft loader does.
         # Only one projection (or one layer's experts) is staged at a time.
-        return W3Weight(*(tensors[key].clone().to(device) for key in expected), n, k, levels, lut_of(levels))
+        return W3Weight(*(t.clone(memory_format=torch.contiguous_format).to(device) for t in (planes, scales, row_scale)),
+                        n, k, levels, lut_of(levels))
 
 
 def fetch(target, root: str | Path, log=print) -> Path:

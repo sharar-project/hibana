@@ -22,14 +22,17 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from jinja2 import TemplateError
 
 from sharar import target as targets
+from sharar.distributed import get_tp_info
 from sharar.api import messages as messages_api
+from sharar.api import refusal_guard
 from sharar.api.chat_template import ChatTemplate
 from sharar.api.detok import Detokenizer
 from sharar.api.parsers.reasoning import ReasoningParser
 from sharar.api.parsers.tools import TOOL_CALL_START, has_tool_call, parse_tool_calls
-from sharar.api.validation import _sampling_from, _stops, _template_kwargs, _validate_chat_controls
+from sharar.api.validation import _output_spec, _sampling_from, _stops, _template_kwargs
 from sharar.engine.loop import EngineUnavailable, Ticket, EngineLoop
-from sharar.engine.sampler import InvalidRequest
+from sharar.engine.grammar import Grammars
+from sharar.engine.sampler import InvalidRequest, SamplingParams
 from sharar.engine.scheduler import QueueFull, Scheduler
 from sharar.tokenizer import SnapshotTokenizer
 
@@ -38,7 +41,7 @@ from sharar.tokenizer import SnapshotTokenizer
 MAX_CHOICES = 16  # n per chat request: the scheduler queues what exceeds four running
 
 
-def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, describe: dict) -> FastAPI:
+def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, describe: dict, grammars: Grammars | None = None) -> FastAPI:
     MODEL_ID = describe.get("model_path", targets.DEFAULT_TARGET.model_id)  # the served checkpoint id, reported as the model name
     @asynccontextmanager
     async def lifespan(app):
@@ -53,6 +56,37 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     started = time.time()
     # Messages API requests this server declines or reduces, to see what harnesses send.
     messages_stats = {"forced_tool_choice_rejected": 0, "server_tools_ignored": 0}
+    # Requests with constrained output (#16), by kind.
+    constrained_stats = {"json_schema": 0, "json_object": 0, "tool_call": 0}
+    # Turns the refusal guard changed (#108): a reminder added after repeated refusals, or the turn ended by the server.
+    guard_stats = {"refusal_reminders": 0, "refusal_stops": 0}
+
+    def _guard(messages: list[dict], body: dict) -> tuple[list[dict], refusal_guard.Refusals | None]:
+        """The messages to render (with a reminder after repeated refusals) and, when the server ends the turn
+        itself, the refusals that made it (api/refusal_guard.py)."""
+        action, found = refusal_guard.decide(messages, body)
+        if action == "nudge":
+            guard_stats["refusal_reminders"] += 1
+            return [*messages, refusal_guard.reminder(found)], None
+        if action == "stop":
+            guard_stats["refusal_stops"] += 1
+            return messages, found
+        return messages, None
+    grammar_builder = [grammars]  # made from the tokenizer on the first constrained request
+
+    def _constraint(spec: tuple[str, object], tools: list | None, in_reasoning: bool):
+        """The request's Constraint (engine/grammar.py); compiling runs off the event loop."""
+        if grammar_builder[0] is None:
+            grammar_builder[0] = Grammars.from_tokenizer(tok._tok, describe.get("vocab_size", targets.DEFAULT_TARGET.vocab_size),
+                                                         SamplingParams().stop_token_ids)
+        g, (kind, arg), armed = grammar_builder[0], spec, not in_reasoning
+        try:
+            constraint = (g.tool_call(tools or [], arg, armed) if kind == "tool_call" else
+                          g.json_object(armed) if kind == "json_object" else g.json_schema(arg, armed))
+        except ValueError as exc:
+            raise InvalidRequest(str(exc))
+        constrained_stats[kind] += 1
+        return constraint
 
     @app.exception_handler(InvalidRequest)
     async def invalid_request(http, exc):
@@ -111,7 +145,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         Content is held back once a tool call starts; the final step carries
         the parsed calls, with reason "tool_calls" when there are any. Returns
         early when the client disconnects; raises EngineUnavailable on engine failure."""
-        rp = ReasoningParser(in_reasoning)
+        rp = ReasoningParser(in_reasoning, tools=bool(tools))
         out: list[int] = []
         buffered_tool = ""
         while True:
@@ -166,6 +200,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         if engine.sched.ex.spec is not None:
             info["spec_stats"] = engine.sched.ex.spec.stats()
         info["messages_api"] = dict(messages_stats)
+        info["constrained"] = dict(constrained_stats)
+        info["refusal_guard"] = dict(guard_stats)
         return info
 
     @app.get("/metrics")
@@ -340,14 +376,26 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     # ---- OpenAI chat ----
     @app.post("/v1/chat/completions")
     async def chat(body: dict, http: HttpRequest):
-        _validate_chat_controls(body)
+        spec = _output_spec(body)
         messages = body.get("messages") or []
         if not messages:
             raise HTTPException(400, "messages required")
         kwargs, thinking = _template_kwargs(body)
         tools = None if body.get("tool_choice") == "none" else body.get("tools")  # "none": generate without tool schemas
+        messages, stopped = _guard(messages, body)
+        if stopped is not None:
+            return _chat_stopped(body, refusal_guard.stop_message(stopped))
         ids, in_reasoning = _chat_prompt(messages, tools, thinking, kwargs)
-        params = _sampling_from(body, max_default=512)
+        # Without max_tokens (or max_completion_tokens) a reply may run to the end of the context window, as in the
+        # OpenAI API, vLLM and SGLang: a fixed default cut off clients that leave it unset (Aider) mid-thought.
+        limit = describe.get("context_length", targets.DEFAULT_TARGET.context_length)
+        if "temperature" not in body and "temperature" not in (body.get("sampling_params") or {}):
+            # OpenAI's default temperature, and both targets' generation_config (top_p 0.95 and top_k 20 are the
+            # defaults). OpenCode sends no sampling fields; greedy thinking looped to max_tokens in its runs (#28).
+            body = {**body, "temperature": 1.0}
+        params = _sampling_from(body, max_default=max(1, limit - len(ids)))
+        if spec is not None:
+            params.constraint = await asyncio.to_thread(_constraint, spec, tools, in_reasoning)
         stop = _stops(body)
         n = body.get("n", 1)
         if type(n) is not int or not 1 <= n <= MAX_CHOICES:
@@ -408,6 +456,20 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                 "choices": [{"index": 0, "message": message, "finish_reason": reason}],
                 "usage": usage(len(out), reasoning_tokens)}
 
+    def _chat_stopped(body: dict, text: str):
+        """A chat turn the server ends itself (the refusal guard): the text as the reply, no generation."""
+        cid, created = f"chatcmpl-{uuid.uuid4().hex[:24]}", int(time.time())
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        if body.get("stream"):
+            def chunk(delta, finish):
+                return f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_ID, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]})}\n\n"
+            events = [chunk({"role": "assistant", "content": text}, None), chunk({}, "stop")]
+            if (body.get("stream_options") or {}).get("include_usage"):
+                events.append(f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_ID, 'choices': [], 'usage': usage})}\n\n")
+            return StreamingResponse(iter(events + ["data: [DONE]\n\n"]), media_type="text/event-stream")
+        return {"id": cid, "object": "chat.completion", "created": created, "model": MODEL_ID,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}], "usage": usage}
+
     async def _chat_choices(ids, params, stop, in_reasoning, tools, n, http):
         """n choices from one prefill. A one-token primer prefills the prompt
         and, when the engine reaps it at the start of its next step, publishes
@@ -458,6 +520,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
     def _messages_prompt(body: dict, choice: str) -> tuple[messages_api.MessagesRequest, list[dict] | None, list[int], bool]:
         req = messages_api.parse_request(body)
+        req.messages, req.stopped = _guard(req.messages, body)
         kwargs, thinking = _template_kwargs(body)
         if req.thinking is not None:
             thinking = req.thinking
@@ -474,10 +537,12 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
     async def _messages(body: dict, http: HttpRequest):
         choice = messages_api.tool_choice(body)
+        forced = None
         if choice in ("any", "tool"):
-            messages_stats["forced_tool_choice_rejected"] += 1
-            raise InvalidRequest(f"tool_choice type '{choice}' is not supported yet: forced tool calls need constrained "
-                                 "decoding; use 'auto' or 'none'")
+            name = body["tool_choice"].get("name") if choice == "tool" else None
+            if choice == "tool" and (not isinstance(name, str) or not name):
+                raise InvalidRequest("tool_choice of type 'tool' needs a name")
+            forced = ("tool_call", name)
         model = body.get("model", MODEL_ID)
         if not isinstance(model, str):
             raise InvalidRequest("model must be a string")
@@ -486,13 +551,22 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             raise InvalidRequest("max_tokens is required")
         req, tools, ids, in_reasoning = _messages_prompt(body, choice)
         messages_stats["server_tools_ignored"] += req.ignored_tools
+        if req.stopped is not None:
+            return _messages_stopped(body, model, refusal_guard.stop_message(req.stopped))
         limit = describe.get("context_length", targets.DEFAULT_TARGET.context_length)
         if len(ids) >= limit:
             raise InvalidRequest(f"prompt is too long: {len(ids)} tokens > {limit - 1} maximum")
         if isinstance(max_tokens, (int, float)) and not isinstance(max_tokens, bool):
             max_tokens = min(max_tokens, limit - len(ids))  # clients size max_tokens for a larger window
         sampling = {k: body[k] for k in ("temperature", "top_p", "top_k", "trace", "accept_top_k", "accept_margin") if k in body}
+        # Anthropic's default temperature, and both targets' generation_config (top_p 0.95 and top_k 20 are the
+        # chat defaults). Claude Code sends no sampling fields; greedy thinking looped to max_tokens in its sessions (#11).
+        sampling.setdefault("temperature", 1.0)
         params = _sampling_from({**sampling, "max_tokens": max_tokens})
+        if forced is not None:
+            if not tools:
+                raise InvalidRequest("a tool_choice that requires a call needs tools")
+            params.constraint = await asyncio.to_thread(_constraint, forced, tools, in_reasoning)
         stop = _stops({"stop": body.get("stop_sequences")})
         ticket = await _submit(ids, params)
         mid = messages_api.new_id("msg")
@@ -537,6 +611,23 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         return {"id": mid, "type": "message", "role": "assistant", "model": model,
                 "content": messages_api.content_blocks(reasoning, content, calls),
                 "stop_reason": stop_reason, "stop_sequence": stop_sequence, "usage": usage(len(out))}
+
+    def _messages_stopped(body: dict, model: str, text: str):
+        """A Messages turn the server ends itself (the refusal guard): one text block, end_turn, no generation."""
+        mid = messages_api.new_id("msg")
+        usage = {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+        if body.get("stream"):
+            sse = messages_api.sse
+            writer = messages_api.EventWriter()
+            events = [sse("message_start", {"type": "message_start", "message": {
+                "id": mid, "type": "message", "role": "assistant", "model": model, "content": [],
+                "stop_reason": None, "stop_sequence": None, "usage": usage}})]
+            events += writer.delta("text", text) + writer.finish([])
+            events += [sse("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": usage}),
+                       sse("message_stop", {"type": "message_stop"})]
+            return StreamingResponse(iter(events), media_type="text/event-stream")
+        return {"id": mid, "type": "message", "role": "assistant", "model": model, "content": [{"type": "text", "text": text}],
+                "stop_reason": "end_turn", "stop_sequence": None, "usage": usage}
 
     @app.post("/v1/messages/count_tokens")
     async def count_tokens(http: HttpRequest):
@@ -605,23 +696,50 @@ def _tool_arguments_as_objects(messages: list[dict]) -> list[dict]:
 
 def _split_chat(text: str, in_reasoning: bool, tools: list | None) -> tuple[str, str, list[dict]]:
     """Complete chat output as (reasoning, content, tool_calls)."""
-    rp = ReasoningParser(in_reasoning)
+    rp = ReasoningParser(in_reasoning, tools=bool(tools))
     rp.feed(text)
     rp.finish()
     content, calls = (parse_tool_calls(rp.content, tools) if tools else (rp.content, []))
     return rp.reasoning, content, calls
 
 
+def _serve_http(app, host: str, port: int) -> None:
+    """uvicorn.run, except that a handled SIGTERM ends here instead of being raised again once the server stops: in
+    a container the server is PID 1 and ignores it, but run directly (two Sparks, from the venv) it would end the
+    process before the engine drains and its sessions persist."""
+    import contextlib
+
+    import uvicorn
+
+    class Server(uvicorn.Server):
+        @contextlib.contextmanager
+        def capture_signals(self):
+            with super().capture_signals():
+                yield
+                self._captured_signals.clear()
+
+    Server(uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=30)).run()
+
+
+def _persist_sessions(ex, engine, log) -> None:
+    """Cached sessions survive the restart in the session store, once the engine has stopped: on every
+    tensor-parallel rank or on none (parking grows the tiers through collectives)."""
+    from sharar.distributed import all_reduce_min
+    if all_reduce_min(int(not engine.thread.is_alive()))[0]:
+        ex.persist_sessions(log)
+
+
 def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
           traces: str | None = None, traces_max_mib: int = 32768, draft_dir: str | None = None,
           accept_default: tuple[int, float] = (1, 0.0), target: str | None = None, max_context: int | None = None,
-          accept_default_sampled: bool = False, max_batch: int = 4) -> None:
+          accept_default_sampled: bool | tuple[int, float] = False, max_batch: int = 4) -> None:
     from sharar.cache.spec_budget import SpecConfig
     from sharar.api.validation import set_accept_default
 
     if accept_default != (1, 0.0) and not spec:
         raise ValueError('a relaxed acceptance default requires speculation')
     set_accept_default(*accept_default, sampled=accept_default_sampled)
+    from sharar.api.validation import ACCEPT_DEFAULT_SAMPLED as sampled_threshold
 
     if not spec and draft_precision != 'bf16':
         raise ValueError('draft precision requires speculation')
@@ -633,7 +751,6 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         from sharar.proposers.factory import draft_snapshot
         if proposer in ('dspark', 'dflash2'):
             draft_snapshot(proposer, draft_dir, served)  # fail before loading the target
-    import uvicorn
 
     from sharar.engine.executor import Executor
     from sharar.engine.scheduler import SchedulerConfig
@@ -645,10 +762,17 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     ex = Executor(model, log=log, spec_config=spec_config, max_context=max_context, max_batch=max_batch)
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
-    ex.enable_cold_tier(log=log)
+    ex.enable_cold_tier(log=log)  # tensor-parallel ranks agree on every tier decision (cache/cold_tier.py)
     cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=ex.profile.max_queued,
                           chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget)
     sched = Scheduler(ex, cfg)
+    if not get_tp_info().is_primary():
+        log(f"tensor-parallel rank {get_tp_info().rank}: serving the primary rank's requests")
+        engine = EngineLoop(sched, Grammars.from_tokenizer(tok._tok, served.vocab_size, SamplingParams().stop_token_ids))
+        engine.start()
+        engine.thread.join()
+        _persist_sessions(ex, engine, log)
+        return
     sink = None
     if traces:
         from sharar.engine.traces import TraceSink
@@ -667,6 +791,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "w3_target_identity": getattr(model, "w3_identity", None),
         "w3_warning": current().w3_warning,
         "context_length": ex.max_context,
+        "tp_size": get_tp_info().size,
         "max_running_requests": cfg.max_running,
         "max_queued_requests": cfg.max_queued,
         "chunked_prefill_size": cfg.chunk_size,
@@ -679,7 +804,8 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
                         "draft_precision": draft_precision, "draft": getattr(ex.spec.proposer.model, "source", None)
                         if hasattr(ex.spec.proposer, "model") else None,
                         "accept_default": {"accept_top_k": accept_default[0], "accept_margin": accept_default[1],
-                                           "sampled": accept_default_sampled}} if spec else None,
+                                           "sampled": sampled_threshold != (1, 0.0), "sampled_accept_top_k": sampled_threshold[0],
+                                           "sampled_accept_margin": sampled_threshold[1]}} if spec else None,
         "attention_backend": "flashinfer",
         "gdn_backend": "triton",
         "kv_cache_dtype": "float8_e4m3fn",
@@ -691,11 +817,10 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     app = create_app(engine, tok, tmpl, describe)
     log(f"serving on http://{host}:{port}")
     try:
-        uvicorn.run(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=30)
+        _serve_http(app, host, port)
     finally:
         engine.drain(timeout=5)
         engine.thread.join(timeout=6)
-        if not engine.thread.is_alive():
-            ex.persist_sessions(log)  # cached sessions survive the restart in the session store
+        _persist_sessions(ex, engine, log)
         if sink is not None:
             sink.close()

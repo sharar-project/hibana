@@ -24,7 +24,7 @@ def draft_snapshot(proposer, draft_dir=None, target=None):
     return directory
 
 
-def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', draft_dir=None):
+def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', draft_dir=None, padding_rows=0):
     if proposer == "mtp":
         from sharar.model.mtp import MtpHead
         from sharar.proposers.mtp import MtpProposer
@@ -33,12 +33,12 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
         try:
             if model.target.family == "flashnext":
                 from sharar.model.flashnext.mtp import FlashNextMtpHead
-                head = FlashNextMtpHead(w, context.device, model, num_pages)
+                head = FlashNextMtpHead(w, context.device, model, num_pages, padding_rows=padding_rows)
             else:
-                head = MtpHead(w, context.device, model.embed, model.lm_head, model.rope, num_pages)
+                head = MtpHead(w, context.device, model.embed, model.lm_head, model.rope, num_pages, padding_rows=padding_rows)
         finally:
             w.close()
-        head.target = model.target
+        head.target = getattr(model, "full_target", model.target)  # a tensor-parallel draft is whole on every rank
         from sharar.engine.config import current
         cfg = current()
         vocab = cfg.draft_vocab  # reduced draft vocabulary rows (0: the full lm_head)

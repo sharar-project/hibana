@@ -4,7 +4,7 @@ Layout is FlashInfer "NHD" paged: k[layer] and v[layer] are
 [num_pages, page_size, num_kv_heads, head_dim] in float8_e4m3fn. K/V are
 written with scale 1.0, as the reference does for this checkpoint (it ships no
 k_scale/v_scale). Page size is 1 like the reference. Measured 2026-09-18 with
-`bench/kv_page_size.py`: page 16 would leave decode attention unchanged and
+`bench/kv_page_size.py`, tag archive/bench-pre-split-2026-10-04: page 16 would leave decode attention unchanged and
 save about 0.45 ms (batch one) to 1.1 ms (batch four) of 16-row verify
 attention per round at 10K context, under 1% of the round, so the
 token-granular cache stays.
@@ -21,7 +21,7 @@ KV_DTYPE = torch.float8_e4m3fn
 
 class KvPool:
     def __init__(self, num_pages: int, device: torch.device, page_size: int = 1, layer_ids: list[int] | None = None, dtype: torch.dtype = KV_DTYPE,
-                 target: Target | None = None):
+                 target: Target | None = None, padding_rows: int = 0):
         self.target = target or DEFAULT_TARGET
         self.num_pages = num_pages
         self.page_size = page_size
@@ -29,7 +29,10 @@ class KvPool:
         self.dtype = dtype
         self.num_kv_heads, self.head_dim = self.target.num_kv_heads, self.target.head_dim
         self.layer_ids = layer_ids if layer_ids is not None else list(self.target.attention_layer_ids)
-        shape = (num_pages, page_size, self.num_kv_heads, self.head_dim)
+        # Write-only pages past the allocatable ones, one per padded row of a CUDA graph (`padding_pages`).
+        self.padding_rows = padding_rows
+        self.padding_pages = torch.arange(num_pages, num_pages + padding_rows, dtype=torch.int32, device=device)
+        shape = (num_pages + padding_rows, page_size, self.num_kv_heads, self.head_dim)
         self.k = {i: torch.zeros(shape, dtype=dtype, device=device) for i in self.layer_ids}
         self.v = {i: torch.zeros(shape, dtype=dtype, device=device) for i in self.layer_ids}
         # Per-page rows that belong to a token like its K/V and travel with the page
@@ -45,7 +48,7 @@ class KvPool:
 
     @property
     def bytes(self) -> int:
-        n = self.num_pages * self.page_size * self.num_kv_heads * self.head_dim
+        n = (self.num_pages + self.padding_rows) * self.page_size * self.num_kv_heads * self.head_dim
         kv = n * 2 * len(self.layer_ids) * self.k[self.layer_ids[0]].element_size()
         return kv + sum(t.numel() * t.element_size() for t in self.page_aux.values())
 
@@ -53,8 +56,17 @@ class KvPool:
         """A [num_pages, *row_shape] tensor indexed by page id like K/V."""
         if name in self.page_aux:
             raise ValueError(f"page aux {name!r} registered twice")
-        self.page_aux[name] = torch.zeros((self.num_pages * self.page_size, *row_shape), dtype=dtype, device=self.device)
+        self.page_aux[name] = torch.zeros(((self.num_pages + self.padding_rows) * self.page_size, *row_shape), dtype=dtype, device=self.device)
         return self.page_aux[name]
+
+    def pad_pages(self, n: int) -> torch.Tensor:
+        """Distinct pages for the K/V of n padded graph rows. Padded rows still attend to page 0, but they must
+        not write it together: a duplicate-index write keeps an arbitrary row's values, so page 0 and the
+        padded rows would differ from replay to replay, and Flash-Next's per-tensor activation scale carries
+        that into the real rows (#94)."""
+        if n > self.padding_rows:
+            raise ValueError(f"{n} padded rows need more than the pool's {self.padding_rows} padding pages")
+        return self.padding_pages[:n]
 
     def alloc(self, n: int) -> torch.Tensor:
         return self.alloc_with_ids(n)[0]

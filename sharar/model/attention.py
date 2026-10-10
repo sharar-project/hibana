@@ -16,6 +16,7 @@ from sharar.kernels.qk_norm_rope import qk_norm_rope
 from sharar.model.norm import GemmaRMSNorm
 from sharar.model.rope import PartialRotary
 from sharar.weights.modelopt import load_fp8_linear
+from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 from sharar.weights.safetensors import SnapshotWeights
 
 
@@ -29,9 +30,11 @@ class Attention:
         self.head_dim = target.head_dim
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
-        # q_proj rows are [head0: q(256) | gate(256), head1: ...], k/v follow.
-        self.qkv = load_fp8_linear(w, [f"{prefix}.q_proj", f"{prefix}.k_proj", f"{prefix}.v_proj"], device)
-        self.o = load_fp8_linear(w, [f"{prefix}.o_proj"], device)
+        # q_proj rows are [head0: q(256) | gate(256), head1: ...], k/v follow. Head counts are this rank's
+        # (`Target.shard`): q|k|v column-parallel by head, o_proj row-parallel.
+        self.qkv = load_fp8_linear(w, [f"{prefix}.q_proj", f"{prefix}.k_proj", f"{prefix}.v_proj"], device,
+                                   ColumnParallel((2 * self.q_size, self.kv_size, self.kv_size)))
+        self.o = load_fp8_linear(w, [f"{prefix}.o_proj"], device, ROW_PARALLEL)
         self.q_norm = GemmaRMSNorm(w.get(f"{prefix}.q_norm.weight").to(device), self.eps)
         self.k_norm = GemmaRMSNorm(w.get(f"{prefix}.k_norm.weight").to(device), self.eps)
         self.rope = rope

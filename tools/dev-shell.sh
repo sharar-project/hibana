@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# Start a development container from the frozen reference image with this
-# repository mounted. torch, FlashInfer and Triton therefore match the reference
-# exactly. `sglang` is NOT on PYTHONPATH unless --with-reference is given, which
-# is only for tools/reference/ oracle scripts.
+# Start a development container from the Sharar runtime image (SHARAR_DEV_IMAGE, else the
+# config's SHARAR_IMAGE) with this repository mounted over the image's copy.
 #
-# Usage: tools/dev-shell.sh [--with-reference] [--] [command...]
+# Usage: tools/dev-shell.sh [--tty] [--serve PORT] [--] [command...]
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,18 +13,16 @@ if [[ -r "$CONFIG_FILE" ]]; then
   source "$CONFIG_FILE"
 fi
 fail() { echo "dev-shell: $*" >&2; exit 1; }
-IMAGE="${SHARAR_DEV_IMAGE:-sparklang-gb10-engine:qwen38-27b}"
+IMAGE="${SHARAR_DEV_IMAGE:-${SHARAR_IMAGE:-sharar:qwen38-27b}}"
 CACHE_DIR="${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in config/gb10.env}"
 RESULTS_DIR="${SHARAR_RESULTS:?set SHARAR_RESULTS in config/gb10.env}"
 DRIVER_LIB_DIR="/usr/lib/aarch64-linux-gnu"
 NAME="${SHARAR_DEV_CONTAINER:-sharar-dev-$$}"
 
-with_reference=false
 tty=false
 serve_port=""
 while [[ "${1:-}" == --* && "${1:-}" != "--" ]]; do
   case "$1" in
-    --with-reference) with_reference=true ;;
     --tty) tty=true ;;
     --serve) serve_port="$2"; shift ;;
     *) fail "unknown option $1" ;;
@@ -40,11 +36,7 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "missing image $IMAGE"
 [[ -d "$CACHE_DIR" ]] || fail "missing model cache $CACHE_DIR"
 mkdir -p "$RESULTS_DIR/home"
 
-if $with_reference; then
-  pythonpath="/workspace/sharar/tools/reference:/sgl-workspace/sglang/python:/workspace/sharar"
-else
-  pythonpath="/workspace/sharar"
-fi
+pythonpath="/workspace/sharar"
 
 devices=(
   /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools
@@ -79,7 +71,6 @@ args=(
   --env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
   --env SHARAR_RESULTS=/results
   --env SHARAR_HF_CACHE=/cache/huggingface
-  --env SHARAR_REFERENCE_URL="${SHARAR_REFERENCE_URL:-http://127.0.0.1:30000}"
 )
 for device in "${devices[@]}"; do
   [[ -e "$device" ]] || fail "missing device $device"

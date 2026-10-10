@@ -70,6 +70,79 @@ def test_draft_list_use_and_pinned(ctl, capsys):
     assert "current draft: pinned publisher draft" in capsys.readouterr().out
 
 
+def test_pull_fetches_the_published_image_and_refuses_a_local_build(ctl, monkeypatch):
+    module, calls, _ = ctl
+    monkeypatch.delenv("SHARAR_IMAGE", raising=False)
+    default = module.default_image()
+    assert default.startswith("ghcr.io/abdelfattah-lab/sharar:")
+    for launcher in ("run-sharar.sh", "run-sharar-train.sh"):  # the launchers share tools/image.sh's default
+        assert 'IMAGE="${SHARAR_IMAGE:-$SHARAR_DEFAULT_IMAGE}"' in (ROOT / launcher).read_text()
+    assert module.main(["pull"]) == 0 and calls[-1][0] == ["docker", "pull", default]
+    monkeypatch.setenv("SHARAR_IMAGE", "sharar:local")
+    with pytest.raises(SystemExit, match="local build"):
+        module.main(["pull"])
+
+
+def test_serve_names_a_target_and_gets_its_settings(ctl):
+    module, calls, _ = ctl
+    assert module.main(["serve", "flashnext"]) == 0
+    _, env = calls[-1]
+    assert (env["SHARAR_TARGET"], env["SHARAR_PORT"], env["SHARAR_CONTAINER"], env["SHARAR_PROPOSER"]) == ("flashnext", "30004", "sharar-flashnext", "mtp")
+    assert module.main(["serve", "27b"]) == 0
+    _, env = calls[-1]
+    assert (env["SHARAR_TARGET"], env["SHARAR_PORT"], env["SHARAR_PROPOSER"]) == ("qwen38", "30001", "dflash2")
+    assert module.main(["serve"]) == 0 and calls[-1][1]["SHARAR_TARGET"] == "qwen38"  # no target named: the 27B
+    with pytest.raises(SystemExit):
+        module.main(["serve", "llama"])
+
+
+def test_commands_without_a_target_follow_the_one_serving(ctl, monkeypatch):
+    module, calls, _ = ctl
+    monkeypatch.setattr(module, "container_running", lambda name: name == "sharar-flashnext")
+    assert module.main(["stop"]) == 0 and calls[-1][1]["SHARAR_TARGET"] == "flashnext"
+    assert module.main(["stop", "27b"]) == 0 and calls[-1][1]["SHARAR_TARGET"] == "qwen38"
+
+
+class FakeResponse:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return json.dumps(self.body).encode()
+
+
+def test_launch_sets_up_each_agent_for_the_serving_target(ctl, monkeypatch, tmp_path):
+    module, _, _ = ctl
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda url, timeout: FakeResponse({"context_length": 131072}))
+    monkeypatch.setattr(module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    launched = []
+    monkeypatch.setattr(module.os, "execvpe", lambda file, command, env: launched.append((command, env)))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "real-key")
+    module.main(["launch", "claude", "-p", "fix it"])
+    command, env = launched[-1]
+    assert command == ["claude", "-p", "fix it"] and env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:30001"
+    assert "ANTHROPIC_API_KEY" not in env and env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "131072" and "claude" in env["ANTHROPIC_MODEL"]
+    module.main(["launch", "--target", "flashnext", "opencode"])
+    command, env = launched[-1]
+    config = json.loads(Path(env["OPENCODE_CONFIG"]).read_text())
+    assert command == ["opencode"] and config["model"] == "sharar/qwen3.8-flash-next"
+    provider = config["provider"]["sharar"]
+    assert provider["options"]["baseURL"] == "http://127.0.0.1:30004/v1" and provider["models"]["qwen3.8-flash-next"]["limit"]["context"] == 131072
+    module.main(["launch", "aider", "--yes"])
+    command, env = launched[-1]
+    assert command[:3] == ["aider", "--model", "openai/qwen3.8-27b"] and command[-1] == "--yes" and env["OPENAI_API_BASE"] == "http://127.0.0.1:30001/v1"
+    assert json.loads(Path(command[4]).read_text())["openai/qwen3.8-27b"]["max_input_tokens"] == 131072
+    with pytest.raises(SystemExit, match="Responses API"):
+        module.main(["launch", "codex"])
+
+
 def test_dry_run_prints_instead_of_running(ctl, capsys, monkeypatch):
     module, calls, _ = ctl
     monkeypatch.setattr(module, "run", lambda command, env, dry: (print("+ " + " ".join(command)) or 0) if dry else 1)

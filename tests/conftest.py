@@ -34,9 +34,3 @@ def snapshot():
         return config.snapshot_dir()
     except FileNotFoundError as exc:
         pytest.skip(str(exc))
-
-
-@pytest.fixture(scope="session")
-def results_dir() -> Path:
-    return Path(os.environ.get("SHARAR_RESULTS", "/tmp/sharar-results"))
-

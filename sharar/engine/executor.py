@@ -10,10 +10,12 @@ from typing import TYPE_CHECKING
 import torch
 
 from sharar.target import Target
+from sharar.distributed import all_reduce_min, get_tp_info
 from sharar.engine.debug import debug_sync
 from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import DecodeGraphs
 from sharar.engine.request import Request, State
+from sharar.engine.grammar import sample_masks
 from sharar.engine.sampler import InvalidRequest, Sampler, SamplingParams
 from sharar.cache.kv_pool import KV_DTYPE, KvPool
 from sharar.cache.ledger import Ledger
@@ -63,11 +65,17 @@ class Executor:
             plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future, extra_page_bytes=extra_page)
             num_pages = num_pages or plan.kv_tokens
             num_slots = num_slots or plan.state_slots
+        num_pages, num_slots = all_reduce_min(num_pages, num_slots)  # tensor-parallel ranks admit and evict alike
         if type(num_pages) is not int or num_pages < 2 or type(num_slots) is not int or num_slots < 2:
             raise ValueError("pools need at least one usable entry plus the reserved dummy entry")
         from sharar.cache.ledger import check_load_headroom
         check_load_headroom(num_pages * (self.target.kv_bytes_per_token + extra_page) + num_slots * self.target.state_bytes_per_slot + future + 8 * 2**30)
-        self.kv_pool = KvPool(num_pages, self.device, target=self.target)
+        # One write-only page per padded graph row: the widest bucket's padding times the widest verify block any
+        # proposer may use (speculation can be enabled after construction).
+        from sharar.engine.graphs import capture_sizes
+        from sharar.proposers.factory import MAX_DEPTHS
+        width = max(MAX_DEPTHS.values()) + 1
+        self.kv_pool = KvPool(num_pages, self.device, target=self.target, padding_rows=(max(capture_sizes(max_batch)) - 1) * width)
         model.register_pages(self.kv_pool)  # per-page rows beyond K/V, e.g. Flash-Next's sparse-attention index keys (KvPool.page_aux)
         self.ledger.record_cuda_allocated("kv_pool")
         self.state_pool = StatePool(num_slots, self.device, target=self.target)
@@ -137,7 +145,8 @@ class Executor:
         check_load_headroom(fixed + per_page * self.kv_pool.num_pages + 8 * 2**30)
         context = ProposerContext(self.device, self.max_batch, self.max_context)
         from sharar.proposers.factory import create
-        adapter = create(proposer, k, self.model, context, self.kv_pool.num_pages, draft_precision=draft_precision, draft_dir=draft_dir)
+        adapter = create(proposer, k, self.model, context, self.kv_pool.num_pages, draft_precision=draft_precision, draft_dir=draft_dir,
+                         padding_rows=self.kv_pool.padding_rows)
         self.set_proposer(adapter, state_strategy=state_strategy)
         self.ledger.record_cuda_allocated("proposer_and_verify")
         if log:
@@ -207,10 +216,11 @@ class Executor:
 
     def can_admit(self, prompt_ids: list[int], reserve_tokens: int = 0) -> bool:
         ledger = getattr(self, "ledger", None)
-        if ledger is not None and not ledger.above_floor():
+        if ledger is not None and not all_reduce_min(ledger.above_floor())[0]:
             # Unified memory: pool IDs being free does not mean DRAM is. Hold
             # admission (running requests keep decoding and release memory as
             # they finish) instead of letting the host guard stop the server.
+            # A collective with more than one rank: the scheduler calls it in lockstep.
             self.floor_holds = getattr(self, "floor_holds", 0) + 1
             return False
         return self.state.can_admit(prompt_ids, reserve_tokens)
@@ -249,17 +259,23 @@ class Executor:
             else:
                 spare = mem_available_bytes() - self.ledger.floor_bytes - 8 * GIB - 4 * GIB
                 budget_gib = min(24.0, spare / GIB)
+        # Tensor-parallel ranks keep tiers of one budget (in MiB), so they park and drop the same sessions.
+        budget_gib = all_reduce_min(int(budget_gib * 1024))[0] / 1024
         if budget_gib < 1.0:
             if log:
                 log("  cold tier: disabled (less than 1 GiB spare)")
             return
+        tier, failure = None, None
         try:
-            self.cache.tier = ColdTier(self.kv_pool, self.state_pool, int(budget_gib * GIB), self.device, log=log,
-                                       disk=self._session_disk(log))
+            tier = ColdTier(self.kv_pool, self.state_pool, int(budget_gib * GIB), self.device, log=log,
+                            disk=self._session_disk(log))
         except (RuntimeError, MemoryError, OSError, ImportError) as exc:
+            failure = exc
+        if not all_reduce_min(int(tier is not None))[0]:  # a tier on every rank or on none
             if log:
-                log(f"  cold tier: disabled ({exc})")
+                log(f"  cold tier: disabled ({failure or 'not available on another tensor-parallel rank'})")
             return
+        self.cache.tier = tier
         proposer = self.spec.proposer if self.spec is not None else None
         if proposer is not None and proposer.requirements.capabilities.cold_payload:
             self.cache.tier.register_codec(*proposer.auxiliary_codec())
@@ -279,9 +295,11 @@ class Executor:
         from sharar.cache.ledger import GIB
         from sharar.cache.session_disk import SessionDisk
         t = self.target
+        tp = get_tp_info()
         identity = {"target": t.name, "revision": t.model_revision, "w3": getattr(self.model, "w3_identity", None),
                     "kv_bytes_per_token": t.kv_bytes_per_token, "state_bytes_per_slot": t.state_bytes_per_slot,
-                    "stable_numerics": "1" if cfg.stable_numerics else "0"}
+                    "stable_numerics": "1" if cfg.stable_numerics else "0",
+                    **({"tensor_parallel": f"{tp.rank}/{tp.size}"} if tp.size > 1 else {})}  # a rank's records hold its heads
         return SessionDisk(directory, int(cfg.session_gib * GIB), identity, self.device, log=log,
                            min_tokens=cfg.session_min_tokens)
 
@@ -290,7 +308,7 @@ class Executor:
         the store holds it across the restart. Returns the number parked."""
         tier = self.cache.tier if self.cache is not None else None
         if tier is None or tier.disk is None:
-            return 0
+            return 0  # alike on every tensor-parallel rank (enable_cold_tier agrees on the tier)
         before = tier.parks
         self.cache.evict(need_pages=self.kv_pool.num_pages, need_slots=self.state_pool.num_slots)  # every unlocked leaf
         tier.disk.drain()
@@ -477,7 +495,9 @@ class Executor:
         tokens = None
         if finishing:
             logits = self.model.logits(out["norm"][[last_rows[i] for i in finishing]])
-            tokens = self.sampler.sample(logits, [chunks[i][0].params for i in finishing], [chunks[i][0].generator for i in finishing]).tolist()
+            done = [chunks[i][0] for i in finishing]
+            tokens = self.sampler.sample(logits, [r.params for r in done], [r.generator for r in done],
+                                         sample_masks(done, logits.shape[-1])).tolist()
         for req, n_new in chunks:
             self._chunk_checkpoint(req, req.prefill_pos, req.prefill_pos + n_new)
         if self.spec is not None:
@@ -513,7 +533,7 @@ class Executor:
         token = None
         if end == n:
             logits = self.model.logits(out["norm"][-1:])
-            token = int(self.sampler.sample(logits, [req.params], [req.generator]).item())
+            token = int(self.sampler.sample(logits, [req.params], [req.generator], sample_masks([req], logits.shape[-1])).item())
             # Allocate the immutable endpoint before the proposer attaches its
             # features; the active committed slot continues advancing in decode.
             self.state.checkpoint(req, n, copy=True)
@@ -529,7 +549,7 @@ class Executor:
     def warmup(self, log=None) -> None:
         """Run every prefill path once so first requests do not pay backend
         initialization (b12x module load, cuDNN handles, Triton compiles)."""
-        from sharar.parity.prompts import random_ids
+        from sharar.engine.prompts import random_ids
 
         params = SamplingParams(max_new_tokens=1)
         a = self.admit(random_ids(300, 11), params)
@@ -631,7 +651,8 @@ class Executor:
             out = self.model.forward(tokens, ctx)
             debug_sync("after plain decode forward", reqs)
             logits = self.model.logits(out["norm"])
-        next_tokens = self.sampler.sample(logits, [r.params for r in reqs], [r.generator for r in reqs]).tolist()
+        next_tokens = self.sampler.sample(logits, [r.params for r in reqs], [r.generator for r in reqs],
+                                          sample_masks(reqs, logits.shape[-1])).tolist()
         for i, (r, tok) in enumerate(zip(reqs, next_tokens)):
             pending = r.output_ids[-1]
             self.state.commit(r, 1)

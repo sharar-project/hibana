@@ -66,12 +66,12 @@ graph variant a batch needs); `register_pages` / `register_state`.
 | GPU time of one batch-1 decode step (graph replay) | 38.1 ms; about 3,600 kernels per step, so ~12 ms of tiny kernels over the 26 ms byte floor and ~10 ms of graph launch and syncs per step |
 | Phase 3 fused kernels + FP8 mixers (2026-09-19 19:00) | batch-1 step 48.0 -> 42.1 to 43.2 ms (23.2 to 23.8 tok/s), batch 4 49.9 -> 42.9 to 43.2 ms (93 tok/s); parity unchanged |
 | + parallel PLE row reads (20:15) | batch-1 step 40.1 ms (24.9 tok/s), batch 4 43.7 ms (91.6 tok/s). The serial memory-map gather paid up to sixteen NVMe latencies per token (4.7 ms cold); 32 threads of `pread` take 1.4 ms. GPU time per step is 32.5 ms, graph launch 0.05 ms |
-| MTP k=3, batch 1 (`bench-decode --spec 3`, reconstruct strategy) | JSON prompt 22.3 -> 44.4 tok/s (1.99x, 79% accepted, 3.32 tok/round), needle prompt 1.79x; per round draft 11.6 ms + verify 59 ms + accept 5 to 40 ms (the accept commit phase varies by prompt and run: 2 to 36 ms, 376 ms once; unexplained, profile next) |
+| MTP k=3, batch 1 (`sharar bench-decode --spec 3`, removed 2026-10-03; reconstruct strategy) | JSON prompt 22.3 -> 44.4 tok/s (1.99x, 79% accepted, 3.32 tok/round), needle prompt 1.79x; per round draft 11.6 ms + verify 59 ms + accept 5 to 40 ms (the accept commit phase varies by prompt and run: 2 to 36 ms, 376 ms once; unexplained, profile next) |
 | MTP k=3, batch 4 | JSON 1.97x (172 tok/s), needle 1.54x (136 tok/s); k=2 is not better at either batch size |
 | `SHARAR_FLASHNEXT_TRUNK=w3` (nearest-rounded 3.25-bit decode copies over FP8, mixers stay FP8) | batch-1 step 31.0 ms (32.3 tok/s), batch 4 35.8 ms (112 tok/s); parity: long code prompts unchanged, the two short text prompts drop (top-1 71 to 89%, confident 83 to 100%) as nearest rounding did on the 27B; served accuracy gate FAILED: GSM8K 92.0% (FP8 96.0%), HumanEval 89.6% (94.5%), and no faster at concurrency 4 (the 16-row verify is where the 3-bit kernel is compute-bound). Calibrated (GPTQ) copies are the fix (#6); the nearest-rounded option was removed 2026-09-30 (#72) |
 | Served through the launcher (`config/flashnext.env`, MTP k=3, exact greedy, concurrency 4), 2026-09-19 | GSM8K-300 96.0% in 1,002 s (SGLang 95.3% in 1,889 s; 27B 95.0%), HumanEval 94.5% in 390 s (SGLang 94.5% in 714 s; 27B 90.9%) |
 
-Serving: `SHARAR_CONFIG_FILE=config/flashnext.env ./run-sharar.sh` (image
+Serving today: `./sharar-ctl serve flashnext` (settings in `config/targets/flashnext.env`). At the time: (image
 `sharar:main-20260919`, port 30004, MTP k=3, reconstruct; the 27B and Flash-Next
 do not fit together, so stop production first). Evidence and launchers:
 `~/sharar-results/reviews/2026-09-18-flash-next/`
@@ -129,7 +129,7 @@ kernel (3.6x faster than the torch scoring at 262K for one row).
 
 ## FP8 trunk scales (2026-09-24, #5)
 
-`bench/flashnext_quant.py` scores a trunk precision against the BF16 trunk on
+`profiling/flashnext_quant.py` scores a trunk precision against the BF16 trunk on
 the serving path (8 prompts of 8,000 tokens), with BF16 at another prefill
 chunk size as the noise floor: argmax 85.7 / 90.6% and KL 0.36 / 0.27 nats
 (dense / sparse rows) from rounding alone. The per-tensor FP8 trunk sits at
@@ -141,7 +141,7 @@ calibrated FP4 trunk. Evidence `$SHARAR_RESULTS/reviews/2026-09-24-fp8-scales/`.
 
 ## 3-bit trunk sensitivity (2026-09-28, #61)
 
-`bench/flashnext_quant.py score --chunk 64` (the decode path: 64-row calls read the 3-bit copies), 8 prompts of
+`profiling/flashnext_quant.py score --chunk 64` (the decode path: 64-row calls read the 3-bit copies), 8 prompts of
 8,000 tokens, KL(BF16 || trunk) over BF16's top 32. A regex option (retired 2026-09-30, #72) left the matching
 `linears()` names without their calibrated copy. One module kind at a time in 3-bit (the rest FP8) costs no KL:
 every kind lands at or below the FP8 trunk, so no kind is the sensitive one. All of them together double it.
@@ -157,7 +157,7 @@ every kind lands at or below the FP8 trunk, so no kind is the sensitive one. All
 The cause is a coherent bias, not one module: the MSE-optimal codebook and clipped scales shrink each 3-bit row
 by about its relative error squared (weight-space gain 0.90 to 0.97, FP8 0.999). Per matrix that is optimal; through
 48 residual layers every sublayer's update shrinks the same way while the noise adds incoherently.
-`bench/flashnext_w3_calibrate.py --unbias weight` scales each row back through its FP32 row scale (codes, format
+`sharar/weights/flashnext_w3_calibrate.py --unbias weight` scales each row back through its FP32 row scale (codes, format
 and bytes unchanged). The covariance-weighted variant (`--unbias output`) corrects less (1.5% against 4%) and
 removed less KL (0.70 overall against 0.60): the calibration covariance under-states what decode inputs see.
 Keeping depth bands in FP8 on the corrected set helps only for the last layers (0-11, 12-23, 24-35 FP8: no
@@ -191,7 +191,7 @@ draft picks what the full head would pick unless the two disagree on a near-tie
 (`SHARAR_DRAFT_HEAD_RESCORE`, default 8; 0 takes the 3-bit argmax). It combines with the reduced
 vocabulary (`SHARAR_DRAFT_VOCAB`). Evidence `$SHARAR_RESULTS/reviews/2026-09-25-draft-head/`:
 
-| Check (`bench/draft_head.py`: hidden rows recorded during generation, 1,257 draft steps over 5 prompts) | FP8 head | 3-bit | 3-bit, top 8 rescored | FP8, 65K rows |
+| Check (`bench/draft_head.py` at [the archive tag](https://github.com/abdelfattah-lab/sharar/tree/archive/bench-pre-split-2026-10-04/bench): hidden rows recorded during generation, 1,257 draft steps over 5 prompts) | FP8 head | 3-bit | 3-bit, top 8 rescored | FP8, 65K rows |
 |---|---:|---:|---:|---:|
 | ms per draft step, 1 / 4 rows (graph replay) | 2.74 / 2.72 | 1.03 / 1.07 | 1.09 / 1.13 | 0.67 / 0.67 |
 | Picks equal to the FP8 head's (all / multilingual) | 1 / 1 | 0.939 / 0.886 | **0.991 / 0.980** | 0.966 / 0.886 |
@@ -199,7 +199,7 @@ vocabulary (`SHARAR_DRAFT_VOCAB`). Evidence `$SHARAR_RESULTS/reviews/2026-09-25-
 A shortlist of 4, 8 or 16 gives the same 0.9905: the remainder are near-ties the served head's
 FP8 activation rounding breaks the other way, not tokens missing from the shortlist.
 
-Served, image `sharar:draft-head`, `config/flashnext.env`, `evals.h2h` (22 prompts per mode, `sharar-evals`),
+Served, image `sharar:draft-head`, `config/flashnext.env`, `evals.h2h` (22 prompts per mode, `sharar-eval`),
 arms interleaved FP8 / 3-bit / FP8 / 3-bit:
 
 | Arm | probes | greedy median | t=0.7 median | tokens per round |
@@ -209,7 +209,7 @@ arms interleaved FP8 / 3-bit / FP8 / 3-bit:
 
 Paired per prompt: greedy x1.087 [1.075, 1.100], t=0.7 x1.077 [1.065, 1.090], faster on all 22
 prompts in both modes and in every category (multilingual x1.06 greedy, x1.08 sampled). The launcher
-default in `config/flashnext.env` is `w3`; the code default stays the target's head.
+default in `config/targets/flashnext.env` is `w3`; the code default stays the target's head.
 
 ## Draft depth (2026-09-25)
 
@@ -222,13 +222,13 @@ arms k = 3, 5, 4, 3, 5; paired per prompt against k = 3:
 | 4 | 56.5 | 52.4 | x1.040 [1.010, 1.071] | x1.032 [1.003, 1.062] | code 1.09, math 1.10, prose 0.94 | 97 |
 | 5 | 58.3 / 58.9 | 53.9 / 52.1 | x1.053 [1.005, 1.103] | x1.034 [0.986, 1.085] | code 1.16, math 1.14, prose 0.92, multilingual 0.98 | 98 / 95 |
 
-Deeper drafts win where acceptance is high and lose where it is low; `config/flashnext.env` uses
+Deeper drafts win where acceptance is high and lose where it is low; `config/targets/flashnext.env` uses
 k = 4. Adaptive depth (stop drafting when the draft is unsure) is the follow-up.
 
 ## Round idle gaps (2026-09-28)
 
 The GPU waited for the host for about 7.7 ms of each 55.7 ms MTP round (fast profile, batch one, #36;
-`bench/flashnext_round.py --gap-profile --kernel-gaps`). Inside the verify graph the node bubbles are only
+`profiling/flashnext_round.py --gap-profile --kernel-gaps`). Inside the verify graph the node bubbles are only
 0.3 ms, so the "9 ms outside kernels" of #25 was this host time between replays. Draft->verify: the PLE rows
 waited for the whole draft block, then went through the 32-thread pool even when the page cache held them
 (1.1 ms for 80 cached rows), then the plan and indexer rows ran. Now the plan and indexer rows come first, cached
@@ -259,7 +259,7 @@ expert entries it serves NVFP4 exactly as before. There is no setting of its own
   one E4M3 scale per 32 weights, an FP32 multiplier per row; fc1's rows are reordered so each 32-row block is
   sixteen up rows and their sixteen gate rows. 2.01 MB an expert against NVFP4's 2.76 MB: 46.1 GiB of experts
   instead of 63.3.
-- **Calibration** (`bench/flashnext_w3_experts.py`, [how](w3-calibration.md#routed-experts-flash-next-73)): from the
+- **Calibration** (`sharar/weights/flashnext_w3_experts.py`, [how](w3-calibration.md#routed-experts-flash-next-73)): from the
   NVFP4 experts, group scales on a clipping grid minimizing the weight error, nearest level. Mean relative weight
   error against the NVFP4 experts 0.164 (fc1) / 0.163 (fc2), against 0.18-0.19 for the screened simulation
   (`SHARAR_FLASHNEXT_EXPERTS_SIM3`, removed with this change).
@@ -271,7 +271,7 @@ expert entries it serves NVFP4 exactly as before. There is no setting of its own
   memory (bit-identical to the per-lane loads).
 
 One layer, real weights (8 layers in one CUDA graph, routing matched to recorded traffic up to 8 rows, uniform
-beyond), `bench/flashnext_moe_w3.py`, routed experts only:
+beyond), `profiling/flashnext_moe_w3.py`, routed experts only:
 
 | Rows | CUTLASS NVFP4 | 3-bit | speedup |
 |---:|---:|---:|---:|
@@ -327,7 +327,7 @@ Evidence and the dataset (77K tokens, 19K verify rounds, schema in `data/README.
 
 Speculation for sampled requests (MTP is greedy-only, #22), layer feature
 capture (DFlash2-style drafters), W3 trunk and experts, fused hyper-connection
-and small-GEMV kernels, family-gate inputs,
+and small-GEMV kernels,
 accuracy gate, production image. Determinism: cold prefills and eager decode
 are bit-identical to each other; a prefix-cache-hit continuation diverges from
 the cold one (token 9 on the 512-token code prompt), consistent with the FP8

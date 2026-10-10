@@ -146,3 +146,75 @@ def pack_head(lin, rows_per_chunk: int = 16384):
     first = parts[0]
     return w3.W3Weight(torch.cat([p.planes for p in parts]), torch.cat([p.scales for p in parts]), torch.cat([p.row_scale for p in parts]),
                        lin.out_features, lin.in_features, first.codebook, first.lut)
+
+
+class VocabParallelHead:
+    """A draft head over a vocabulary-parallel lm_head (tensor parallel): each rank scores only its rows of the
+    vocabulary, from its FP8 rows (`fmt="fp8"`) or a 3-bit copy of them (`"w3"`), and the ranks agree on the
+    pick through two small collectives instead of every rank reading the whole head each draft step.
+
+    Without rescoring the pick is the best of every rank's best. With `rescore` r > 1 each rank proposes its r
+    best by the 3-bit logits, the r best of those are the shortlist, and each candidate's FP8 logit (computed by
+    the rank that holds its row) chooses among them: what `ShortlistHead` picks over the whole head, since a row's
+    3-bit copy and FP8 logit do not depend on which rank holds it."""
+
+    rows_changed = True
+
+    def __init__(self, lm_head, fmt: str = "fp8", rescore: int = 0):
+        from sharar.distributed import get_tp_info
+        if fmt not in ("fp8", "w3"):
+            raise ValueError(f"draft head format must be fp8 or w3, not {fmt!r}")
+        tp = get_tp_info()
+        self.lm_head, self.fmt = lm_head, fmt
+        self.local = lm_head.out_features  # this rank's rows: [rank * local, (rank + 1) * local)
+        self.offset = tp.rank * self.local
+        self.w3 = pack_head(lm_head) if fmt == "w3" else None
+        self.rescore = rescore if fmt == "w3" and rescore > 1 else 0
+
+    @property
+    def bytes(self) -> int:
+        return self.w3.bytes if self.w3 is not None else 0
+
+    def _logits(self, flat: torch.Tensor) -> torch.Tensor:
+        if self.w3 is not None:
+            from sharar.kernels import w3
+            return torch.cat([w3.w3_linear(part.contiguous(), self.w3) for part in flat.split(w3.MAX_ROWS)])
+        return self.lm_head(flat)
+
+    def _gather(self, x: torch.Tensor) -> torch.Tensor:
+        """[M, n] from every rank -> [M, size * n] in rank order."""
+        from sharar.distributed import all_gather
+        return all_gather(x.contiguous())
+
+    def _pick(self, flat: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
+        from sharar.distributed import all_reduce
+        r = max(self.rescore, 1)
+        values, local = logits.topk(r, dim=-1)
+        values, ids = self._gather(values.float()), self._gather(local + self.offset)  # [M, size * r]
+        if not self.rescore:
+            return ids.gather(-1, values.argmax(-1, keepdim=True)).squeeze(-1)
+        top = values.topk(r, dim=-1).indices
+        cand = ids.gather(-1, top)  # the shortlist's global ids [M, r]
+        mine = (cand >= self.offset) & (cand < self.offset + self.local)
+        rows = self.lm_head.weight[(cand - self.offset).clamp(0, self.local - 1)].float()  # [M, r, K]
+        exact = torch.bmm(rows, flat.float().unsqueeze(-1)).squeeze(-1) * mine  # each candidate's logit on its own rank
+        exact = all_reduce(exact)  # FP32: NCCL; exactly one rank adds each candidate's logit to zeros
+        return cand.gather(-1, exact.argmax(-1, keepdim=True)).squeeze(-1)
+
+    def argmax(self, x: torch.Tensor) -> torch.Tensor:
+        flat = x.reshape(-1, x.shape[-1])
+        return self._pick(flat, self._logits(flat)).view(x.shape[:-1])
+
+    def argmax_confidence(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """The argmax and the softmax top-1 probability and margin over the whole vocabulary: each rank's
+        log-sum-exp and best two, combined."""
+        flat = x.reshape(-1, x.shape[-1])
+        logits = self._logits(flat)
+        local = logits.float()
+        stats = self._gather(torch.cat([torch.logsumexp(local, -1, keepdim=True), local.topk(2, dim=-1).values], -1))
+        size = stats.shape[-1] // 3
+        stats = stats.view(-1, size, 3)
+        lse = torch.logsumexp(stats[..., 0], -1)
+        top = stats[..., 1:].reshape(-1, 2 * size).topk(2, dim=-1).values
+        probs = torch.exp(top - lse.unsqueeze(-1))
+        return self._pick(flat, logits).view(x.shape[:-1]), torch.stack([probs[:, 0], probs[:, 0] - probs[:, 1]], -1)

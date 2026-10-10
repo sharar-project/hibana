@@ -15,9 +15,14 @@ from sharar.proposers.parallel import DraftState
 @pytest.fixture(scope='module', params=['dflash2', 'dspark'])
 def runtime(request):
     from sharar import config
+    from sharar.proposers.factory import draft_snapshot
+    from sharar.proposers.parallel import PINS
+    if not (draft_snapshot(request.param) / 'model.safetensors').is_file():
+        name, revision = PINS[request.param]
+        pytest.skip(f'{request.param} draft weights not in the model cache: {name}@{revision[:7]}')
     from sharar.engine.executor import Executor
     from sharar.model.qwen38 import Qwen38
-    from sharar.parity.prompts import PARAGRAPH
+    from sharar.engine.prompts import PARAGRAPH
     from sharar.tokenizer import SnapshotTokenizer
     gc.collect()
     torch.cuda.empty_cache()

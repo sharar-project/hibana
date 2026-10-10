@@ -17,6 +17,7 @@ from sharar.target import QWEN38, Target
 from sharar.engine.context import ForwardContext, scratch_prefill_context
 from sharar.model.gdn_plan import prepare_gdn_prefill
 from sharar.engine.contracts import ForwardResult
+from sharar.distributed import all_gather, all_reduce, div_even, get_tp_info
 from sharar.kernels import ops
 from sharar.model.attention import Attention
 from sharar.model.gdn import GatedDeltaNet
@@ -24,6 +25,7 @@ from sharar.model.mlp import Mlp
 from sharar.model.norm import GemmaRMSNorm
 from sharar.model.rope import PartialRotary
 from sharar.weights.modelopt import load_nvfp4_linear
+from sharar.weights.sharding import ColumnParallel
 from sharar.weights.safetensors import SnapshotWeights
 
 PREFIX = "model.language_model"
@@ -41,7 +43,7 @@ class DecoderLayer:
             self.mixer = Attention(w, f"{p}.self_attn", index, device, rope, ragged, target=target)
         else:
             self.mixer = GatedDeltaNet(w, f"{p}.linear_attn", index, device, target=target)
-        self.mlp = Mlp(w, f"{p}.mlp", device, fused_silu_quant=fused_silu_quant)
+        self.mlp = Mlp(w, f"{p}.mlp", device, target.intermediate_size, fused_silu_quant=fused_silu_quant)
         # Retained compatibility switch for prequantized MLP inputs (SHARAR_FUSED_NORM_NVFP4). Both routes
         # use the phase-specific norm and the same BF16-to-NVFP4 boundary.
         from sharar.engine.config import current
@@ -51,14 +53,15 @@ class DecoderLayer:
         inplace = not ctx.capture
         # Input norm also emits the FP8 input of the mixer's first projection.
         hidden, hidden_q, residual = self.input_norm.fused_add_quant(hidden, residual, self.mixer.input_scale, inplace=inplace, verify=ctx.mode == "verify")
-        hidden = self.mixer.forward(hidden, ctx, hidden_q)
+        # The mixer's and the MLP's last projections are row-parallel: sum the ranks' partial outputs.
+        hidden = all_reduce(self.mixer.forward(hidden, ctx, hidden_q))
         if self.fused_norm_nvfp4:
             # Preserve the same target arithmetic with prequantized MLP inputs.
             pre, residual = self.post_norm.fused_add_nvfp4(hidden, residual, self.mlp.gate_up.input_scale_inv, inplace=inplace, verify=ctx.mode == "verify")
-            hidden = self.mlp.forward_prequantized(pre)
+            hidden = all_reduce(self.mlp.forward_prequantized(pre))
         else:
             hidden, residual = self.post_norm.fused_add(hidden, residual, inplace=inplace, verify=ctx.mode == "verify")
-            hidden = self.mlp(hidden)
+            hidden = all_reduce(self.mlp(hidden))
         return hidden, residual
 
     def prefill(self, hidden: torch.Tensor, residual: torch.Tensor | None, positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -73,11 +76,13 @@ class Qwen38:
         from sharar.engine.config import current
         if current().w3_checkpoint and not w3.enabled():
             raise ValueError("SHARAR_W3_CHECKPOINT requires SHARAR_W3_DECODE=1")
-        self.target = target
+        tp = get_tp_info()
         check_load_headroom(target.weight_load_peak_bytes)
         self.device = torch.device(device)
         cfg = target.load_model_config(snap)
         types = target.layer_types_of(cfg)
+        # This rank's share: every layer below loads and computes its own heads and MLP columns.
+        self.target = target = target.shard(tp.size)
         started = time.perf_counter()
         w = SnapshotWeights(snap)
         self.embed = w.get(f"{PREFIX}.embed_tokens.weight").to(self.device)
@@ -101,7 +106,8 @@ class Qwen38:
             if log and (i + 1) % 8 == 0:
                 log(f"  loaded {i + 1}/{len(types)} layers ({time.perf_counter() - started:.0f}s)")
         self.final_norm = GemmaRMSNorm(w.get(f"{PREFIX}.norm.weight").to(self.device), target.rms_norm_eps)
-        self.lm_head = load_nvfp4_linear(w, ["lm_head"], self.device)
+        # Vocabulary-parallel: each rank scores its rows of the vocabulary and `logits` gathers them.
+        self.lm_head = load_nvfp4_linear(w, ["lm_head"], self.device, ColumnParallel((div_even(target.vocab_size, tp.size),)))
         w.close()
         torch.cuda.synchronize()
         if log:
@@ -160,16 +166,4 @@ class Qwen38:
 
     @torch.inference_mode()
     def logits(self, hidden: torch.Tensor) -> torch.Tensor:
-        return ops.nvfp4_linear(hidden, self.lm_head)
-
-    @torch.inference_mode()
-    def argmax_and_topk(self, hidden: torch.Tensor, k: int = 8, chunk: int = 1024) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Per-position argmax, top-k ids and top-k logits without holding all logits."""
-        arg, top_ids, top_vals = [], [], []
-        for start in range(0, hidden.shape[0], chunk):
-            lg = self.logits(hidden[start : start + chunk]).float()
-            vals, ids = lg.topk(k, dim=-1)
-            arg.append(lg.argmax(dim=-1))
-            top_ids.append(ids)
-            top_vals.append(vals)
-        return torch.cat(arg), torch.cat(top_ids), torch.cat(top_vals)
+        return all_gather(ops.nvfp4_linear(hidden, self.lm_head))

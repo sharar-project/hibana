@@ -5,6 +5,10 @@ system text and text blocks become content parts (the template concatenates
 them), assistant ``tool_use`` blocks become ``tool_calls`` with the input
 object as arguments, ``thinking`` blocks become ``reasoning_content``, and
 ``tool_result`` blocks become ``tool`` messages in their original order.
+Images and documents are rejected (a text-only model), except inside a
+``tool_result``: there the agent fetched them, not the user, so each becomes a
+short text note and the turn goes on (#121: Claude Code read a PNG and quit on
+the 400).
 Custom tools become OpenAI function schemas; typed Anthropic tools (server
 tools such as web search) have no rendering and are dropped. Unknown
 top-level fields are ignored; unknown content blocks are rejected.
@@ -25,6 +29,7 @@ from sharar.engine.sampler import InvalidRequest
 
 SIGNATURE = "sharar-unsigned"
 _UNSUPPORTED_MEDIA = ("image", "document")
+MEDIA_NOTE = "[{kind} omitted: this model reads text only and cannot see it]"
 
 
 @dataclass
@@ -38,6 +43,7 @@ class MessagesRequest:
     # boundaries.
     cache_breakpoints: list[tuple] = field(default_factory=list)
     ignored_tools: int = 0  # typed (server) tools dropped from the schema list
+    stopped: object = None  # refusal_guard.Refusals when the server ends this turn itself (#108)
 
 
 def parse_request(body: dict) -> MessagesRequest:
@@ -143,13 +149,17 @@ def _user_turn(blocks: list, m: int, breakpoints: list[tuple]) -> list[dict]:
                 text = []
             content = block.get("content")
             if isinstance(content, list):
-                content = _text_parts(content, f"{where}.content", (), [])
+                content = _text_parts([{"type": "text", "text": MEDIA_NOTE.format(kind=part["type"])}
+                                       if isinstance(part, dict) and part.get("type") in _UNSUPPORTED_MEDIA else part
+                                       for part in content], f"{where}.content", (), [])
             elif content is None:
                 content = ""
             elif not isinstance(content, str):
                 raise InvalidRequest(f"{where}.content must be a string or a list of text blocks")
             # is_error has no rendering in the template; clients put the error in the text.
-            out.append({"role": "tool", "tool_call_id": block.get("tool_use_id"), "content": content})
+            # is_error is kept for the refusal guard (api/refusal_guard.py); the template does not read it.
+            out.append({"role": "tool", "tool_call_id": block.get("tool_use_id"), "content": content,
+                        "is_error": bool(block.get("is_error"))})
         else:
             raise InvalidRequest(f"{where}: unsupported content block type '{kind}' in a user turn")
         if block.get("cache_control") is not None:

@@ -8,34 +8,50 @@ own traffic so it gets faster at the work you do.
 
 ## Speed
 
-Batch Size 1
-([h2h benchmark](https://github.com/abdelfattah-lab/sharar/issues/26)):
+One request at a time, median decode rate over 22 prompts (chat, code, math, multilingual, prose,
+structured), thinking off ([h2h benchmark](https://github.com/abdelfattah-lab/sharar/issues/26)):
 
 | tok/s | Sharar | SGLang (fastest public setup) |
 |---|---:|---:|
-| Qwen3.8-27B, greedy | **92.5** | 44.8 |
-| Qwen3.8-27B, temperature 0.7 | **74.5** | 43.7 |
-| Qwen3.8-Flash-Next, greedy | **72.9** | 41.8 |
-| Qwen3.8-Flash-Next, temperature 0.7 | **67.9** | 40.5 |
+| Qwen3.8-27B, greedy | **92.3** | 44.8 |
+| Qwen3.8-27B, temperature 0.7 | **66.5** | 43.7 |
+| Qwen3.8-Flash-Next, greedy | **85.4** | 41.8 |
+| Qwen3.8-Flash-Next, temperature 0.7 | **74.4** | 40.5 |
+
+Sharar: 2026-10-05, the published image (main e4a2045), default `fast` profile, `sharar-ctl serve 27b|flashnext`; the 27B at
+temperature 0.7 re-measured 2026-10-06 after its sampled requests moved to a tighter relaxed-acceptance threshold (#11; 71.5 before).
+SGLang: 2026-09-24 on the same GB10. Code and math run fastest (27B greedy 106 and 133 tok/s), prose and
+multilingual slowest (57 and 44), because the drafter guesses predictable text better.
 
 ## Setup
 
-Copy [config/gb10.env.example](config/gb10.env.example) to `config/gb10.env`,
-set the model cache and results paths, then:
-
 ```bash
-docker/build.sh
-./sharar-ctl serve                                        # Qwen3.8-27B on 127.0.0.1:30001
-SHARAR_CONFIG_FILE=config/flashnext.env ./sharar-ctl serve   # Flash-Next on 127.0.0.1:30004
+./sharar-ctl serve 27b         # Qwen3.8-27B on 127.0.0.1:30001
+./sharar-ctl serve flashnext   # or Qwen3.8-Flash-Next on 127.0.0.1:30004 (one at a time)
 ./sharar-ctl chat
 ```
+
+No configuration is needed. The first serve downloads the model and drafter (about 26 GB for the 27B,
+135 GB for Flash-Next) into the Hugging Face cache (`$HF_HOME`, else `~/.cache/huggingface`) after checking
+free disk, and keeps results, traces and sessions under `~/.local/share/sharar`. To use other locations, copy
+[config/gb10.env.example](config/gb10.env.example) to `config/gb10.env` and set them there.
+
+The first serve also pulls the runtime image `ghcr.io/abdelfattah-lab/sharar:latest`, which the nightly GB10 check
+publishes from main after its GPU suite and serve checks pass; `./sharar-ctl pull` updates it. While the
+repository is private the image is too: log in once with a GitHub token that can read packages
+(`gh auth refresh -s read:packages`, then `gh auth token | docker login ghcr.io -u <github user> --password-stdin`).
+To serve your own build, run `docker/build.sh` and set `SHARAR_IMAGE=sharar:qwen38-27b`.
+
+The default `fast` profile downloads its calibrated 3-bit checkpoint on first serve
+([calibration](docs/w3-calibration.md)); the preflight warns when it serves without one.
 
 `sharar-ctl` needs only Python 3 on the host. [Operations](docs/operations.md)
 covers prerequisites, the launcher settings and the memory guard.
 
 | Command | What it does |
 |---|---|
-| `./sharar-ctl serve [--exact]` | Start serving (fastest settings by default; `--exact` for the model's own outputs, e.g. benchmarks) |
+| `./sharar-ctl pull` | Fetch the newest published image |
+| `./sharar-ctl serve 27b\|flashnext [--exact]` | Start serving a target (fastest settings by default; `--exact` for the model's own outputs, e.g. benchmarks) |
 | `./sharar-ctl chat` | Terminal chat against the running server |
 | `./sharar-ctl status` / `stop` / `logs` | Server state, stop, container logs |
 
@@ -43,18 +59,26 @@ Any OpenAI-compatible client works against `http://127.0.0.1:30001/v1`, and
 Anthropic Messages clients against `http://127.0.0.1:30001`
 ([API guide](docs/api.md)).
 
+## Two Sparks
+
+`./sharar-ctl serve 27b --tp 2` serves the 27B tensor-parallel across two Sparks linked by their ConnectX ports, from a
+uv venv on each (the first run sets both up); `stop`, `status`, `logs`, `chat` and `launch` work as on one Spark: 119.1 tok/s single-stream against 77.1 on one Spark with the same `fast` profile,
+at the same GSM8K accuracy ([tensor parallel](docs/tensor-parallel.md)).
+
 ## Coding agents
 
 ```bash
-tools/claude-sharar.sh                      # Claude Code on Sharar (SHARAR_URL=http://127.0.0.1:30004 for Flash-Next)
-tools/claude-sharar.sh -p "fix the failing test and run the suite"
+./sharar-ctl launch claude                  # Claude Code on whichever target is serving
+./sharar-ctl launch claude -p "fix the failing test and run the suite"
+./sharar-ctl launch opencode                # OpenCode
+./sharar-ctl launch aider                   # Aider
+./sharar-ctl launch show                    # the settings for any other tool (Cline, Continue, Zed, Pi, ...)
 ```
 
-The script points Claude Code at the server with its own config directory
-(`~/.claude-sharar`), so your Anthropic login and settings are untouched.
-OpenAI-compatible harnesses (OpenCode, Cline, Aider, Continue, Zed) use base URL
-`http://127.0.0.1:30001/v1` with any API key and model name. After the first
-request of a session, later turns start in under a second.
+Each agent gets its own configuration for the serving target (address, model, context window), so your own
+settings are untouched: Claude Code uses `~/.claude-sharar` instead of your Anthropic login, OpenCode and Aider
+read files under `~/.config/sharar`. Arguments after the agent's name go to the agent. Codex needs the Responses
+API, which is next (#19). After the first request of a session, later turns start in under a second.
 For **Pi**, see the [Pi configuration](docs/api.md#pi).
 
 ## Train the drafter on your traffic
@@ -84,10 +108,11 @@ python3 tools/check_evidence.py   # documentation links
 |---|---|
 | `sharar/` | Engine (`engine/`), caches (`cache/`), models (`model/`, `model/flashnext/`), kernels, weights, proposers, trainer, API |
 | `sharar-ctl`, `run-sharar.sh` | Host command and the container launcher |
-| `bench/`, `tests/`, `tools/`, `docker/` | In-process benchmarks, tests, checks, image build |
+| `profiling/`, `tests/`, `tools/`, `docker/` | In-process profilers, tests, checks and gates, image build |
 | `docs/` | [Architecture](docs/architecture.md), [optimizations](docs/optimizations.md), [performance](docs/performance.md), [Flash-Next](docs/flashnext.md), [roadmap](roadmap.md) |
 
-HTTP evaluations (head-to-head, GSM8K/HumanEval, long context) live in
-[sharar-evals](https://github.com/abdelfattah-lab/sharar-evals). Read
+Quality and speed benchmarks live in [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval) and
+measure any running server over HTTP. `tools/evaluate.py --target flashnext --profile fast --suite quick --speed`
+serves this build and runs them ([evaluation](docs/evaluation.md); [profiling](profiling/README.md) for in-process tools). Read
 [CONTRIBUTING.md](CONTRIBUTING.md) before changing the engine. Apache 2.0
 ([license](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md)).

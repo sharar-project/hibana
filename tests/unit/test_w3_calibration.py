@@ -4,9 +4,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from sharar.distributed import set_tp_info
 from sharar.kernels import w3
 from sharar.model.qwen38_config import MODEL_REVISION
 from sharar.weights.w3_calibration import quantize
+from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 from sharar.weights.w3_checkpoint import CalibratedWeights, save_weight
 
 
@@ -63,7 +65,7 @@ def test_checkpoint_round_trip_and_identity_checks(tmp_path):
     manifest = {'format': 1, 'target_revision': MODEL_REVISION, 'weights': {'layer': entry}}
     path = tmp_path / 'manifest.json'
     path.write_text(json.dumps(manifest))
-    linear = SimpleNamespace(weight=torch.zeros(128, 128), out_features=128)
+    linear = SimpleNamespace(weight=torch.zeros(128, 128), out_features=128, in_features=128)  # Flash-Next's: no shard
     loaded = CalibratedWeights(tmp_path).load('layer', linear)
     assert torch.equal(w3.dequantize(loaded), w3.dequantize(weight))
     (tmp_path / 'layer.safetensors').write_bytes(b'corrupt')
@@ -73,6 +75,23 @@ def test_checkpoint_round_trip_and_identity_checks(tmp_path):
     path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match='revision'):
         CalibratedWeights(tmp_path)
+
+
+@pytest.mark.parametrize('rank', [0, 1])
+def test_checkpoint_loads_a_tensor_parallel_part(tmp_path, rank):
+    """A rank's copy is exactly its part of the whole matrix: rows of each fused block, or a K slice."""
+    weight = w3.pack(torch.randn(256, 512))
+    entry = save_weight(tmp_path / 'layer.safetensors', weight)
+    (tmp_path / 'manifest.json').write_text(json.dumps({'format': 1, 'target_revision': MODEL_REVISION, 'weights': {'layer': entry}}))
+    full = w3.dequantize(weight)
+    column = torch.cat([full[64 * rank:64 * (rank + 1)], full[128 + 64 * rank:128 + 64 * (rank + 1)]])
+    set_tp_info(rank, 2)
+    try:
+        for shard, part in ((ColumnParallel((64, 64)), column), (ROW_PARALLEL, full[:, 256 * rank:256 * (rank + 1)])):
+            linear = SimpleNamespace(weight=torch.zeros(0), out_features=part.shape[0], in_features=part.shape[1])
+            assert torch.equal(w3.dequantize(CalibratedWeights(tmp_path).load('layer', linear, shard)), part)
+    finally:
+        set_tp_info(0, 1)
 
 
 def test_calibration_rejects_invalid_inputs():

@@ -132,5 +132,5 @@ membership can differ; synthetic fixed-output traces do not establish
 generated-code quality or completed tool tasks
 ([quality limitations](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/greedy-quality.md)).
 
-For new measurements, use [the benchmark guide](../bench/README.md). Keep cold
+For new measurements, use [evaluation](evaluation.md) (served builds) or [profiling](../profiling/README.md) (in-process). Keep cold
 requests, warm resumes, decode TPS and end-to-end TPS distinct.

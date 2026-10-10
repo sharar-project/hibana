@@ -15,7 +15,7 @@ def serve_rounds(trace_confidence: bool, rounds: int = 6):
     from sharar.engine import config as engine_config
     from sharar.engine.executor import Executor
     from sharar.model.qwen38 import Qwen38
-    from sharar.parity.prompts import PARAGRAPH
+    from sharar.engine.prompts import PARAGRAPH
     from sharar.tokenizer import SnapshotTokenizer
     gc.collect()
     torch.cuda.empty_cache()

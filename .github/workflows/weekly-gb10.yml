@@ -1,0 +1,22 @@
+name: Weekly GB10
+on:
+  schedule:
+    - cron: '0 2 * * 0'   # Sundays at 02:00 New York time
+      timezone: America/New_York
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: gb10
+  cancel-in-progress: false
+jobs:
+  weekly:
+    runs-on: [self-hosted, gb10]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - name: Image, speed and GSM8K/HumanEval of both targets against their baselines
+        run: bash tools/ci/gb10.sh image evaluate
+      - name: Stop CI containers
+        if: always()
+        run: bash tools/ci/gb10.sh --cleanup || true

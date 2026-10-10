@@ -213,7 +213,7 @@ def _module():
 
 
 _WORKSPACE: dict[torch.device, tuple[torch.Tensor, torch.Tensor]] = {}
-# Split-K factor per (N, K, rows): bench/w3_bench.py on GB10 (2026-09-17). More blocks help the weight stream
+# Split-K factor per (N, K, rows): profiling/w3_bench.py on GB10 (2026-09-17). More blocks help the weight stream
 # at 16 rows; at 64 rows the partial-sum traffic and the tensor-core work per block argue for fewer splits.
 SPLITS: dict[tuple[int, int, int], int] = {  # (N, K, rows) -> splits
     (5120, 17408, 16): 8, (5120, 17408, 32): 2, (5120, 17408, 64): 2,
@@ -305,7 +305,7 @@ def attach_model(model, log=print, codebook=DEFAULT_CODEBOOK) -> dict:
         raise ValueError("calibrated W3 checkpoint must contain every target layer projection")
     for name, lin in linears:
         if getattr(lin, "w3", None) is None:
-            lin.w3 = calibrated.load(name, lin) if calibrated else pack(lin.dequantize(), codebook)
+            lin.w3 = calibrated.load(name, lin, lin.shard) if calibrated else pack(lin.dequantize(), codebook)
             total += lin.w3.bytes; count += 1
     torch.cuda.synchronize()
     model.w3_identity = calibrated.identity if calibrated else "nearest:" + str(codebook)

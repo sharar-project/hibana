@@ -153,3 +153,21 @@ def test_accept_default_reaches_sampled_requests_only_when_enabled():
         assert not _sampling_from({"max_tokens": 4, "temperature": 0.7, "accept_top_k": 1}).relaxed
     finally:
         validation.ACCEPT_DEFAULT, validation.ACCEPT_DEFAULT_SAMPLED = saved
+
+
+def test_sampled_requests_can_have_their_own_threshold():
+    from sharar.api import validation
+    saved = validation.ACCEPT_DEFAULT, validation.ACCEPT_DEFAULT_SAMPLED
+    try:
+        validation.set_accept_default(3, 2.0, sampled=(2, 1.0))
+        greedy, sampled = _sampling_from({"max_tokens": 4}), _sampling_from({"max_tokens": 4, "temperature": 1.0})
+        assert (greedy.accept_top_k, greedy.accept_margin) == (3, 2.0)
+        assert (sampled.accept_top_k, sampled.accept_margin) == (2, 1.0)
+        explicit = _sampling_from({"max_tokens": 4, "temperature": 1.0, "accept_top_k": 3, "accept_margin": 2.0})
+        assert (explicit.accept_top_k, explicit.accept_margin) == (3, 2.0)  # a request's own fields win
+        validation.set_accept_default(1, 0.0, sampled=(2, 1.0))  # independent of the greedy default
+        assert not _sampling_from({"max_tokens": 4}).relaxed and _sampling_from({"max_tokens": 4, "temperature": 1.0}).relaxed
+        with pytest.raises(InvalidRequest):
+            validation.set_accept_default(3, 2.0, sampled=(0, 1.0))
+    finally:
+        validation.ACCEPT_DEFAULT, validation.ACCEPT_DEFAULT_SAMPLED = saved

@@ -49,10 +49,10 @@ def fake_engine(output='', reason='stop', chunk=3, prefix_len=0):
                            sched=SimpleNamespace(ex=SimpleNamespace(spec=None)))
 
 
-def fake_app(engine, describe=None):
+def fake_app(engine, describe=None, grammars=None):
     tok = SimpleNamespace(encode=Mock(side_effect=encode), decode=decode)
     tmpl = SimpleNamespace(render=Mock(side_effect=render))
-    return create_app(engine, tok, tmpl, describe or {}), tmpl
+    return create_app(engine, tok, tmpl, describe or {}, grammars=grammars), tmpl
 
 
 def body(**fields):
@@ -60,10 +60,10 @@ def body(**fields):
             'messages': [{'role': 'user', 'content': 'hello'}], **fields}
 
 
-def post(payload, output='', reason='stop', path='/v1/messages', describe=None, **kwargs):
+def post(payload, output='', reason='stop', path='/v1/messages', describe=None, grammars=None, **kwargs):
     async def scenario():
         engine = fake_engine(output, reason, **kwargs)
-        app, tmpl = fake_app(engine, describe)
+        app, tmpl = fake_app(engine, describe, grammars)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
             response = await client.post(path, json=payload)
         return response, engine, tmpl
@@ -120,14 +120,31 @@ def test_tool_history_translates_in_order():
         {'role': 'assistant', 'content': [{'type': 'text', 'text': 'Checking.'}], 'reasoning_content': 'Call the tool.',
          'tool_calls': [{'id': 'toolu_1', 'type': 'function', 'function': {'name': 'get_weather', 'arguments': {'city': 'Paris'}}},
                         {'id': 'toolu_2', 'type': 'function', 'function': {'name': 'get_weather', 'arguments': {'city': 'Rome'}}}]},
-        {'role': 'tool', 'tool_call_id': 'toolu_1', 'content': 'sunny'},
-        {'role': 'tool', 'tool_call_id': 'toolu_2', 'content': [{'type': 'text', 'text': 'no '}, {'type': 'text', 'text': 'data'}]},
+        {'role': 'tool', 'tool_call_id': 'toolu_1', 'content': 'sunny', 'is_error': False},
+        {'role': 'tool', 'tool_call_id': 'toolu_2', 'content': [{'type': 'text', 'text': 'no '}, {'type': 'text', 'text': 'data'}], 'is_error': True},
         {'role': 'user', 'content': [{'type': 'text', 'text': 'and tomorrow?'}]},
         {'role': 'user', 'content': [{'type': 'text', 'text': 'first'}]},
-        {'role': 'tool', 'tool_call_id': 'x', 'content': ''},
+        {'role': 'tool', 'tool_call_id': 'x', 'content': '', 'is_error': False},
     ]
     assert tmpl.render.call_args.kwargs['tools'] == [{'type': 'function', 'function': {
         'name': 'get_weather', 'description': 'Weather for a city', 'parameters': TOOLS[0]['input_schema']}}]
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_media_in_a_tool_result_becomes_a_note(stream):
+    """#121: an image a tool returned (Claude Code reading a PNG) is a text note, not a 400 that ends the session.
+    Media the user sends is still rejected (test_invalid_requests_return_anthropic_errors)."""
+    turns = [{'role': 'user', 'content': 'what is on the board?'},
+             {'role': 'assistant', 'content': [{'type': 'tool_use', 'id': 'toolu_1', 'name': 'Read', 'input': {'path': 'board.png'}}]},
+             {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'toolu_1', 'content': [
+                 {'type': 'text', 'text': 'board.png:'}, {'type': 'image', 'source': {'type': 'base64', 'data': 'iVBOR'}},
+                 {'type': 'document', 'source': {}}]}]}]
+    response, _, tmpl = post(body(messages=turns, stream=stream), 'I cannot see images.')
+    assert response.status_code == 200
+    assert rendered_messages(tmpl)[-1] == {'role': 'tool', 'tool_call_id': 'toolu_1', 'is_error': False, 'content': [
+        {'type': 'text', 'text': 'board.png:'},
+        {'type': 'text', 'text': '[image omitted: this model reads text only and cannot see it]'},
+        {'type': 'text', 'text': '[document omitted: this model reads text only and cannot see it]'}]}
 
 
 def test_cache_breakpoints_and_server_tools_are_recorded():
@@ -191,6 +208,13 @@ def test_sampling_fields_and_extensions_reach_the_engine():
     assert (params.accept_top_k, params.accept_margin, params.trace) == (3, 0.5, True)
 
 
+def test_omitted_sampling_fields_sample_like_anthropic():
+    """No sampling fields (Claude Code sends none) is Anthropic's temperature 1 with the models' top_p and top_k, not greedy."""
+    _, engine, _ = post(body())
+    params = engine.submit.await_args.args[1]
+    assert (params.temperature, params.top_p, params.top_k, params.greedy) == (1.0, 0.95, 20, False)
+
+
 def test_max_tokens_is_capped_by_the_context():
     _, engine, _ = post(body(max_tokens=32000), describe={'context_length': 100})
     assert engine.submit.await_args.args[1].max_new_tokens == 100 - len(encode(render([], enable_thinking=True)))
@@ -216,8 +240,6 @@ def test_model_is_echoed():
     (body(messages=[{'role': 'tool', 'content': 'x'}]), 'role'),
     (body(messages=[{'role': 'user', 'content': [{'type': 'image', 'source': {}}]}]), 'text-only'),
     (body(messages=[{'role': 'user', 'content': [{'type': 'document', 'source': {}}]}]), 'text-only'),
-    (body(messages=[{'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'a',
-                                                  'content': [{'type': 'image', 'source': {}}]}]}]), 'text-only'),
     (body(system=[{'type': 'image', 'source': {}}]), 'text-only'),
     (body(messages=[{'role': 'user', 'content': [{'type': 'search_result'}]}]), "'search_result'"),
     (body(messages=[{'role': 'user', 'content': [{'type': 'tool_use', 'name': 'x', 'input': {}}]}]), "'tool_use'"),
@@ -248,26 +270,31 @@ def test_non_object_body_is_rejected():
     asyncio.run(scenario())
 
 
-def test_forced_tool_choice_is_rejected_and_counted():
-    async def scenario():
+def test_forced_tool_choice_is_constrained_and_counted():
+    from tests.unit.test_grammar import PIECES, STOP, ID, V
+    from sharar.engine.grammar import Grammars
+    grammars = Grammars(PIECES, V, [STOP], ID['</think>'], byte_level=False)
+    for choice in ({'type': 'any'}, {'type': 'tool', 'name': 'get_weather'}):
+        response, engine, _ = post(body(tools=TOOLS, tool_choice=choice), 'ok', grammars=grammars)
+        assert response.status_code == 200
+        assert engine.submit.await_args.args[1].constraint.kind == 'tool_call'
+    for bad, match in (({'type': 'tool'}, 'needs a name'), ({'type': 'tool', 'name': 'other'}, 'not among the tools')):
+        response, engine, _ = post(body(tools=TOOLS, tool_choice=bad), 'ok', grammars=grammars)
+        assert response.status_code == 400 and match in response.json()['error']['message']
+        engine.submit.assert_not_awaited()
+    response, _, _ = post(body(tool_choice={'type': 'any'}), 'ok', grammars=grammars)
+    assert response.status_code == 400 and 'needs tools' in response.json()['error']['message']
+
+    async def scenario():  # counted per kind; server tools are still dropped
         engine = fake_engine('ok')
-        app, tmpl = fake_app(engine)
+        app, tmpl = fake_app(engine, grammars=grammars)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
-            for choice in ({'type': 'any'}, {'type': 'tool', 'name': 'get_weather'}):
-                response = await client.post('/v1/messages', json=body(tools=TOOLS, tool_choice=choice))
-                assert response.status_code == 400
-                error = response.json()['error']
-                assert error['type'] == 'invalid_request_error' and 'not supported' in error['message']
-            tmpl.render.assert_not_called()
-            engine.submit.assert_not_awaited()
-            info = (await client.get('/get_server_info')).json()
-            assert info['messages_api']['forced_tool_choice_rejected'] == 2
-            assert 'sharar_messages_forced_tool_choice_rejected 2' in (await client.get('/metrics')).text
-            response = await client.post('/v1/messages', json=body(tools=[*TOOLS, {'type': 'web_search_20250305', 'name': 'web_search'}]))
+            response = await client.post('/v1/messages', json=body(tools=[*TOOLS, {'type': 'web_search_20250305', 'name': 'web_search'}],
+                                                                   tool_choice={'type': 'any'}))
             assert response.status_code == 200
-            assert tmpl.render.call_args.kwargs['tools'][0]['function']['name'] == 'get_weather'
-            assert len(tmpl.render.call_args.kwargs['tools']) == 1
-            assert (await client.get('/get_server_info')).json()['messages_api']['server_tools_ignored'] == 1
+            assert [t['function']['name'] for t in tmpl.render.call_args.kwargs['tools']] == ['get_weather']
+            info = (await client.get('/get_server_info')).json()
+            assert info['constrained']['tool_call'] == 1 and info['messages_api']['server_tools_ignored'] == 1
     asyncio.run(scenario())
 
 
@@ -642,3 +669,41 @@ def test_effort_reaches_the_rendered_prompt(snapshot):
 
     assert 'Reasoning effort is set to low.' in asyncio.run(scenario({'output_config': {'effort': 'low'}}))
     assert 'Reasoning effort is set to xhigh.' in asyncio.run(scenario({'output_config': {'effort': 'high'}}))
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_tool_call_in_unclosed_thinking_is_a_tool_use(stream):
+    """#120: the model ends its turn inside thinking with a complete call in it; the client still gets the call."""
+    output = '\nLet me check.\n\n' + CALL
+    response, _, _ = post(body(stream=stream, tools=TOOLS, thinking={'type': 'enabled', 'budget_tokens': 1024}), output, chunk=2)
+    if stream:
+        events = sse_events(response.text)
+        deltas = [e['delta'] for e in events if e['type'] == 'content_block_delta']
+        assert ''.join(d.get('thinking', '') for d in deltas).strip() == 'Let me check.'
+        assert json.loads(''.join(d.get('partial_json', '') for d in deltas)) == {'city': 'Paris', 'days': 2}
+        assert events[-2]['delta']['stop_reason'] == 'tool_use'
+    else:
+        result = response.json()
+        assert [b['type'] for b in result['content']] == ['thinking', 'tool_use'] and result['stop_reason'] == 'tool_use'
+        assert result['content'][1]['input'] == {'city': 'Paris', 'days': 2}
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_chat_tool_call_in_unclosed_reasoning_is_a_tool_call(stream):
+    openai_tools = [{'type': 'function', 'function': {'name': t['name'], 'parameters': t['input_schema']}} for t in TOOLS]
+    payload = {'model': 'sharar', 'stream': stream, 'tools': openai_tools, 'chat_template_kwargs': {'enable_thinking': True},
+               'messages': [{'role': 'user', 'content': 'weather?'}]}
+    response, _, _ = post(payload, '\nLet me check.\n\n' + CALL, path='/v1/chat/completions', chunk=2)
+    if stream:
+        chunks = [json.loads(line[len('data: '):]) for line in response.text.splitlines()
+                  if line.startswith('data: ') and line != 'data: [DONE]']
+        deltas = [c['choices'][0]['delta'] for c in chunks if c.get('choices')]
+        args = ''.join(tc['function'].get('arguments') or '' for d in deltas for tc in d.get('tool_calls') or [])
+        finish = [c['choices'][0]['finish_reason'] for c in chunks if c.get('choices') and c['choices'][0]['finish_reason']]
+        assert json.loads(args) == {'city': 'Paris', 'days': 2} and finish == ['tool_calls']
+        assert not ''.join(d.get('content') or '' for d in deltas).strip()
+    else:
+        choice = response.json()['choices'][0]
+        assert choice['finish_reason'] == 'tool_calls' and not (choice['message']['content'] or '').strip()
+        assert json.loads(choice['message']['tool_calls'][0]['function']['arguments']) == {'city': 'Paris', 'days': 2}
+        assert choice['message']['reasoning_content'].strip() == 'Let me check.'

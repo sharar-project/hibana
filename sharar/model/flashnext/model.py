@@ -14,6 +14,7 @@ from pathlib import Path
 
 import torch
 
+from sharar.distributed import all_gather, all_reduce, div_even, get_tp_info
 from sharar.engine.config import current
 from sharar.engine.context import ForwardContext, scratch_prefill_context
 from sharar.engine.contracts import ForwardResult
@@ -28,6 +29,7 @@ from sharar.model.gdn_plan import prepare_gdn_prefill
 from sharar.model.rope import PartialRotary
 from sharar.target import FLASHNEXT, Target
 from sharar.weights.safetensors import SnapshotWeights
+from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 
 PREFIX = "model.language_model"
 
@@ -56,10 +58,11 @@ class DecoderLayer:
         if self.ple is not None:
             hyper = hyper + self.ple.forward(hyper, input_ids, ctx, eos)
         h, res = self.attn_hc.mix(hyper)
-        h = self.mixer.forward(h, ctx)
+        # The mixer's and the experts' last projections are row-parallel: sum the ranks' partial outputs.
+        h = all_reduce(self.mixer.forward(h, ctx))
         hyper = self.attn_hc.combine(h, res)
         h, res = self.mlp_hc.mix(hyper)
-        h = self.moe(h)
+        h = all_reduce(self.moe(h))
         return self.mlp_hc.combine(h, res)
 
 
@@ -76,24 +79,30 @@ def _w3_expert_saving(target: Target) -> int:
 class FlashNext:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", log=print, target: Target = FLASHNEXT, precision: str | None = None, **_ignored):
         from sharar.cache.ledger import check_load_headroom
-        self.target = target
+        tp = get_tp_info()
+        # This rank's share (`Target.shard`): every layer loads and computes its own heads and expert columns; the
+        # MTP draft head is replicated and builds from the whole geometry.
+        self.full_target = target
         self._extras = None
         self.precision = precision or current().flashnext_trunk  # bf16 | fp8
         # The calibrated 3-bit copies (SHARAR_W3_DECODE with SHARAR_W3_CHECKPOINT). When the checkpoint carries the
-        # routed experts (#73), those are the only expert copy: the NVFP4 experts are never read.
+        # routed experts (#73) and SHARAR_FLASHNEXT_EXPERTS is not nvfp4, those are the only expert copy: the NVFP4
+        # experts are never read. They load whole, so they serve on one rank only.
         calibrated = None
         if current().w3_decode:
             if not current().w3_checkpoint:
                 raise ValueError("Flash-Next's 3-bit copies are calibrated only: SHARAR_W3_DECODE=1 needs SHARAR_W3_CHECKPOINT")
             from sharar.weights.w3_checkpoint import CalibratedWeights
             calibrated = CalibratedWeights(current().w3_checkpoint, revision=target.model_revision)
-        expert_layers = calibrated.expert_layers() if calibrated else set()
+        expert_layers = calibrated.expert_layers() if calibrated and current().flashnext_experts != "nvfp4" and tp.size == 1 else set()
         if expert_layers and expert_layers != set(range(target.num_layers)):
             raise ValueError(f"the W3 checkpoint carries routed experts for {len(expert_layers)} of {target.num_layers} layers")
-        check_load_headroom(target.weight_load_peak_bytes - (_w3_expert_saving(target) if expert_layers else 0))
+        # the experts dominate, and each rank loads its half
+        check_load_headroom((target.weight_load_peak_bytes - (_w3_expert_saving(target) if expert_layers else 0)) // tp.size)
         self.device = torch.device(device)
         cfg = target.load_model_config(snap)
         types = target.layer_types_of(cfg)
+        self.target = target = target.shard(tp.size)
         self.eos = int(cfg["text_config"]["eos_token_id"])
         started = time.perf_counter()
         w = SnapshotWeights(snap)
@@ -112,7 +121,9 @@ class FlashNext:
             log(f"  experts: 3-bit from {current().w3_checkpoint} ({sum(layer.moe.expert_bytes for layer in self.layers) / 2**30:.1f} GiB)")
         self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", target.hc_count, target.hidden_size, target.rms_norm_eps, self.device,
                                           combine=False, precision=current().flashnext_mixers)
-        self.lm_head = TrunkLinear.load(w, ["lm_head.weight"], self.device, self.precision)
+        # Vocabulary-parallel: each rank scores its rows of the vocabulary and `logits` gathers them.
+        self.lm_head = TrunkLinear.load(w, ["lm_head.weight"], self.device, self.precision,
+                                        ColumnParallel((div_even(target.vocab_size, tp.size),)))
         w.close()
         torch.cuda.synchronize()
         # Bytes one decode token streams: the trunk, the head, one embedding row and its routed experts.
@@ -155,20 +166,29 @@ class FlashNext:
         yield "lm_head", self.lm_head
 
     def attach_calibrated(self, calibrated, log=print) -> str:
-        """Calibrated 3-bit decode copies (bench/flashnext_w3_calibrate.py) over the FP8 trunk, by `linears()` name;
+        """Calibrated 3-bit decode copies (sharar/weights/flashnext_w3_calibrate.py) over the FP8 trunk, by `linears()` name;
         calls of at most 64 rows then read them (`TrunkLinear.__call__`), prefill keeps the FP8 weights. The routed
-        experts' entries (`layers.N.experts.*`) were loaded with the layers."""
+        experts' entries (`layers.N.experts.*`) were loaded with the layers, or skipped."""
         if self.precision != "fp8":
             raise ValueError("calibrated 3-bit trunk copies go over the FP8 trunk (SHARAR_FLASHNEXT_TRUNK=fp8)")
+        if isinstance(calibrated, (str, Path)):
+            from sharar.weights.w3_checkpoint import CalibratedWeights
+            calibrated = CalibratedWeights(calibrated, revision=self.full_target.model_revision)
         linears = dict(self.linears())
         names = [name for name in calibrated.weights if ".experts." not in name]
         missing = sorted(set(names) - set(linears))
         if missing:
             raise ValueError(f"calibrated names not in this model: {missing[:4]}")
+        skipped = []
         for name in names:
-            linears[name].w3 = calibrated.load(name, linears[name])
+            lin = linears[name]
+            if lin.shard is ROW_PARALLEL and lin.in_features % 128:  # a part the 3-bit format cannot hold (the shared down's 320 columns)
+                skipped.append(name)
+                continue
+            lin.w3 = calibrated.load(name, lin, lin.shard)
         if log:
-            log(f"  w3: {len(names)} calibrated trunk matrices from {calibrated.directory}")
+            log(f"  w3: {len(names) - len(skipped)} calibrated trunk matrices from {calibrated.directory}"
+                + (f"; {len(skipped)} tensor-parallel parts stay FP8 (input width not a multiple of 128)" if skipped else ""))
         return calibrated.identity
 
     def forward_extras(self):
@@ -219,15 +239,4 @@ class FlashNext:
     @torch.inference_mode()
     def logits(self, hidden: torch.Tensor) -> torch.Tensor:
         """hidden: the hyper stream [T, hc*H] from `forward()["norm"]` -> logits [T, V]."""
-        return self.lm_head(self.mixer.mix(hidden)[0])
-
-    @torch.inference_mode()
-    def argmax_and_topk(self, hidden: torch.Tensor, k: int = 8, chunk: int = 1024) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        arg, top_ids, top_vals = [], [], []
-        for start in range(0, hidden.shape[0], chunk):
-            lg = self.logits(hidden[start : start + chunk]).float()
-            vals, ids = lg.topk(k, dim=-1)
-            arg.append(lg.argmax(dim=-1))
-            top_ids.append(ids)
-            top_vals.append(vals)
-        return torch.cat(arg), torch.cat(top_ids), torch.cat(top_vals)
+        return all_gather(self.lm_head(self.mixer.mix(hidden)[0]))

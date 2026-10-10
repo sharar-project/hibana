@@ -5,7 +5,6 @@ Pools are deliberately bounded so the test does not size itself to all RAM.
 """
 
 import os
-from pathlib import Path
 
 import pytest
 import torch
@@ -15,13 +14,13 @@ from sharar.engine.executor import Executor
 from sharar.engine.sampler import InvalidRequest, SamplingParams
 from sharar.engine.scheduler import Scheduler
 from sharar.cache.radix import RadixCache
-from sharar.parity.prompts import build_prompts, random_ids
+from sharar.engine.prompts import build_prompts, random_ids
 from sharar.tokenizer import SnapshotTokenizer
 
 
 
 def test_cache_restore_matches_manual_restore_at_every_layer(setup, tmp_path):
-    from sharar.parity.cache_trace import run
+    from sharar.engine.cache_trace import run
     configure, _ = setup
     ex, _ = configure(True, 'cold')
     spec = ex.spec
@@ -282,21 +281,16 @@ def test_unaligned_prefill_checkpoint_and_draft_cache_restore(setup, batched):
 
 
 @pytest.mark.parametrize('graphs', [False, True])
-def test_frozen_canaries(setup, graphs):
-    import json
-    from sharar.engine.run import _canary_checks, _compare_continuation
+def test_canaries_answer_exactly(setup, graphs):
+    from sharar.engine.run import _canary_checks
 
     configure, _ = setup
     ex, prompts = configure(graphs)
     tok = SnapshotTokenizer(config.snapshot_dir())
-    reference = Path(os.environ['SHARAR_RESULTS']) / 'parity/reference/http'
     for name, check in _canary_checks().items():
         r = ex.generate(prompts[name], SamplingParams(max_new_tokens=64))
         text = tok.decode(r.output_ids, skip_special_tokens=True)
         assert check(text), (name, text)
-        frozen = json.loads((reference / f'{name}.json').read_text())
-        _, ok = _compare_continuation(name, r.output_ids, frozen)
-        assert ok
 
 
 @pytest.mark.parametrize('graphs', [False, True])
@@ -378,3 +372,14 @@ def test_selected_features_are_post_block_residual_streams(runtime):
     fresh = ex.model.forward(ids, scratch_prefill_context(len(ids), ex.device))
     assert 'features' not in fresh
     assert all(torch.equal(value, expected[i]) for i, value in out['features'].items())
+
+
+def test_dense_path_is_repeatable_and_graphs_match_eager(setup):
+    """In-suite identity (#54): two eager runs of a fixed batch are bit-identical, and CUDA graphs reproduce them."""
+    configure, _ = setup
+    ex, prompts = configure(False)
+    items = [(prompts[name], SamplingParams(max_new_tokens=32)) for name in ('canary_json', 'canary_arith', 'canary_needle', 'canary_exact')]
+    eager = [r.output_ids for r in ex.generate_batch(items)]
+    assert [r.output_ids for r in ex.generate_batch(items)] == eager
+    ex, _ = configure(True)
+    assert [r.output_ids for r in ex.generate_batch(items)] == eager

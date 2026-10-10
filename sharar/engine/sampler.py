@@ -36,6 +36,8 @@ class SamplingParams:
     # continuation nor exact samples of the target distribution.
     accept_top_k: int = 1
     accept_margin: float = 0.0
+    # Constrained output (engine/grammar.py Constraint): every emitted token must keep the output inside the grammar.
+    constraint: object = None
 
     def validate(self) -> None:
         if type(self.max_new_tokens) is not int or self.max_new_tokens < 1:
@@ -75,8 +77,14 @@ class Sampler:
     def generator(self, seed: int | None) -> torch.Generator:
         return torch.Generator(device=self.device).manual_seed(secrets.randbits(64) if seed is None else seed)
 
-    def sample(self, logits: torch.Tensor, params: list[SamplingParams], generators: list[torch.Generator | None]) -> torch.Tensor:
-        """logits: [B, V] (bf16 or fp32). Returns [B] int64 token ids."""
+    def sample(self, logits: torch.Tensor, params: list[SamplingParams], generators: list[torch.Generator | None],
+               masks: torch.Tensor | None = None) -> torch.Tensor:
+        """logits: [B, V] (bf16 or fp32); masks: an optional host bitmask [B, W] of allowed tokens (engine/grammar.py).
+        Returns [B] int64 token ids."""
+        if masks is not None:
+            from sharar.engine.grammar import apply_bitmask
+            logits = logits.float().clone()
+            apply_bitmask(logits, masks)
         if all(p.greedy for p in params):
             return logits.argmax(dim=-1)
         out = torch.empty(logits.shape[0], dtype=torch.int64, device=logits.device)

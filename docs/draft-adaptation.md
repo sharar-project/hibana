@@ -116,12 +116,12 @@ Two deliberate choices:
   plan attend. SpecForge's sliding-window mask is causal inside the block; the
   reference harness records that difference explicitly.
 
-`bench/dflash2_reference.py` checks the forward against the serving proposer
+`profiling/draft/dflash2_reference.py` checks the forward against the serving proposer
 and the publisher's reference model, and the objective and selector against
 SpecForge's code; `tests/gpu/test_train_forward.py` covers the head, the
-forward and one optimizer step on the real checkpoint. `bench/trace_corpus.py`
+forward and one optimizer step on the real checkpoint. `profiling/draft/trace_corpus.py`
 generates proxy traffic (ShareGPT or coding requests over a repository) and
-`bench/draft_ab.py` replays a trace directory's held-out prompts at batch one
+`profiling/draft/draft_ab.py` replays a trace directory's held-out prompts at batch one
 to compare drafts on throughput and tokens per round.
 
 ## Results and limits
