@@ -2,6 +2,7 @@
 docs
 tools/*
 !tools/check.sh
+!tools/repair_wheel_tag.py
 .venv*
 *.egg-info
 results

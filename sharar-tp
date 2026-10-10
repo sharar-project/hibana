@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A target tensor-parallel on two DGX Sparks (docs/tensor-parallel.md): rank 0 here with the HTTP API on
 # 127.0.0.1:30001, rank 1 on the peer, each from its uv venv. `./sharar-ctl serve 27b|flashnext --tp 2` runs this,
-# and `./sharar-ctl stop | status | logs | chat | launch` follow it as they follow the container.
+# and `./sharar-ctl stop | status | logs | chat | launch` follow it as they follow the single-Spark service.
 #
 #   ./sharar-tp serve [--exact | --balanced | --fast | --throughput] [sharar serve arguments...]   in the background
 #   ./sharar-tp status | stop | logs [-f]

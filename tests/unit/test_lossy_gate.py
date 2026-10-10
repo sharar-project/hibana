@@ -52,7 +52,7 @@ def test_resolve_explicit_settings_win_over_the_profile(tmp_path):
     fast = gate.resolve(config, "fast", {})
     assert fast["SHARAR_W3_DECODE"] == "1" and fast["SHARAR_W3_CHECKPOINT"] == str(ck.resolve())
     plan = gate.arm_plan({**fast, "SHARAR_FLASHNEXT_CACHE": "/fn"})
-    assert plan["env"]["SHARAR_W3_CHECKPOINT"] == "/w3" and plan["mounts"]["/w3"] == str(ck.resolve())
+    assert plan["env"]["SHARAR_W3_CHECKPOINT"] == str(ck.resolve())  # the host path run-sharar.sh passes too
     assert gate.resolve({**config, "SHARAR_W3_DECODE": "0"}, "fast", {})["SHARAR_W3_CHECKPOINT"] == ""  # an explicit 0 wins
     exact = gate.arm_plan({**gate.resolve(config, "exact", {}), "SHARAR_FLASHNEXT_CACHE": "/fn"})
     assert exact["env"]["SHARAR_W3_DECODE"] == "0" and "SHARAR_W3_CHECKPOINT" not in exact["env"] and exact["accept"] == "1:0.0"
@@ -147,8 +147,8 @@ def test_added_batteries_reject_on_pass_fail_tasks_and_ruler_only():
     assert v == "rejected" and "ruler2-128k" in why[0] and "ruler2-32k" not in why[0]
     assert gate.BATTERIES["all"] == ["hard", "long"] and gate.STAGES["long"][0] == "long"
     assert gate.STAGES["agentic"] == ("agentic", ["tbench"])
-    assert "SHARAR_COLD_TIER_GIB=0" in gate.served_config({}, "fast", {}, "img", 30100)
-    assert "SHARAR_COLD_TIER_GIB=0" not in gate.served_config({}, "fast", {"SHARAR_COLD_TIER_GIB": "8"}, "img", 30100)
+    assert "SHARAR_COLD_TIER_GIB=0" in gate.served_config({}, "fast", {}, 30100)
+    assert "SHARAR_COLD_TIER_GIB=0" not in gate.served_config({}, "fast", {"SHARAR_COLD_TIER_GIB": "8"}, 30100)
 
 
 def test_stages_reuse_the_screen_shards():

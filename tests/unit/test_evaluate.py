@@ -22,6 +22,7 @@ def test_rejects_before_serving(argv, message, capsys):
     assert message in capsys.readouterr().err
 
 
-def test_serves_under_its_own_container_name():
-    assert evaluate.gate.CONTAINER == "sharar-evaluate"
-    assert "SHARAR_CONTAINER=sharar-evaluate" in evaluate.gate.served_config({}, "fast", {}, "img", 30200)
+def test_serves_under_its_own_service_name():
+    assert evaluate.gate.SERVICE == "sharar-evaluate"
+    conf = evaluate.gate.served_config({}, "fast", {}, 30200)
+    assert "SHARAR_SERVICE=sharar-evaluate" in conf and "SHARAR_PORT=30200" in conf and "SHARAR_VENV=" in conf

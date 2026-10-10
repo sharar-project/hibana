@@ -2,7 +2,7 @@
 publisher's reference model and SpecForge, then run a short training smoke
 on recorded traces.
 
-Runs inside the runtime container on an exclusive GPU. Optional reference
+Runs from the Python environment (.venv) on an exclusive GPU. Optional reference
 sources are mounted read-only:
 
 * ``--oracle-source DIR``: the publisher's ``model.py`` (DFlash2DraftModel);

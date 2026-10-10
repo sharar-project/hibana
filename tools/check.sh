@@ -14,11 +14,11 @@ case "$mode" in
   cpu)
     exec env CUDA_VISIBLE_DEVICES= SHARAR_RUN_GPU=0 OMP_NUM_THREADS=1 python3 -m pytest tests/unit -q -p no:cacheprovider "$@"
     ;;
-  gpu)  # inside a prepared GB10 environment (paths already set)
+  gpu)  # inside a prepared GB10 environment (paths already set, e.g. the optional image)
     exec env SHARAR_RUN_GPU=1 python3 -m pytest tests/unit tests/gpu -q -p no:cacheprovider "$@"
     ;;
-  gpu-container)  # from the host: the runtime image, this checkout mounted (tools/gpu-tests.sh)
-    exec tools/gpu-tests.sh "$@"
+  gpu-suite)  # from the host: this checkout's Python environment and the launcher's paths (tools/gpu-tests.sh)
+    exec tools/gpu-tests.sh tests/unit tests/gpu "$@"
     ;;
-  *) echo 'usage: tools/check.sh {setup-cpu|cpu|gpu|gpu-container} [pytest arguments]' >&2; exit 2 ;;
+  *) echo 'usage: tools/check.sh {setup-cpu|cpu|gpu|gpu-suite} [pytest arguments]' >&2; exit 2 ;;
 esac

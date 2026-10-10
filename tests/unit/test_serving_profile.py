@@ -9,7 +9,7 @@ KNOBS = ("P_ACCEPT", "P_ACCEPT_SAMPLED", "P_W3", "P_DEVICE_ACCEPT", "P_MAX_BATCH
 
 
 def resolve(profile: str, target: str = "", explicit: str | None = None) -> dict:
-    """The profile's knob defaults, and the device-acceptance value run-sharar.sh passes the container."""
+    """The profile's knob defaults, and the device-acceptance value run-sharar.sh passes the server."""
     script = (f'source "{ROOT}/tools/serving-profile.sh"; serving_profile {profile} "{target}" || exit 3; '
               + "".join(f'echo {k}=\"${k}\"; ' for k in KNOBS)
               + 'echo DEVICE_ACCEPT="${SHARAR_DEVICE_ACCEPT:-$P_DEVICE_ACCEPT}"')
@@ -64,7 +64,7 @@ def test_launcher_uses_the_shared_profile_table():
     text = (ROOT / "run-sharar.sh").read_text()
     assert 'source "$SCRIPT_DIR/tools/serving-profile.sh"' in text
     assert 'DEVICE_ACCEPT="${SHARAR_DEVICE_ACCEPT:-$P_DEVICE_ACCEPT}"' in text
-    assert 'args+=(--env "SHARAR_DEVICE_ACCEPT=$DEVICE_ACCEPT")' in text
+    assert 'SHARAR_DEVICE_ACCEPT="$DEVICE_ACCEPT"' in text
     assert 'ACCEPT_DEFAULT_SAMPLED_THRESHOLD="${SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD:-$P_ACCEPT_SAMPLED_THRESHOLD}"' in text
     assert '--accept-default-sampled-threshold "$ACCEPT_DEFAULT_SAMPLED_THRESHOLD"' in text
 
@@ -92,4 +92,5 @@ def test_launcher_forwards_batch_and_depths():
     text = (ROOT / "run-sharar.sh").read_text()
     assert 'MAX_BATCH="${SHARAR_MAX_BATCH:-$P_MAX_BATCH}"' in text
     assert 'SPEC_DEPTHS="${SHARAR_SPEC_DEPTHS:-$P_SPEC_DEPTHS}"' in text
-    assert 'serve_args+=(--max-batch "$MAX_BATCH")' in text
+    assert '--max-batch "$MAX_BATCH"' in text
+    assert "MAX_BATCH <= 128" in text  # the throughput profile's 128 on Flash-Next must pass the launcher's check

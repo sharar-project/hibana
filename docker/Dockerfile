@@ -22,7 +22,7 @@ RUN pip install -c /opt/constraints/gb10-cu130.txt flashinfer-python flashinfer-
       --extra-index-url https://flashinfer.ai/whl/cu130
 RUN pip install -c /opt/constraints/gb10-cu130.txt safetensors tokenizers jinja2 numpy \
       einops packaging fastapi uvicorn pytest httpx xgrammar
-COPY docker/repair_wheel_tag.py /opt/repair_wheel_tag.py
+COPY tools/repair_wheel_tag.py /opt/repair_wheel_tag.py
 RUN python3 /opt/repair_wheel_tag.py && pip check
 
 COPY sharar /workspace/sharar/sharar

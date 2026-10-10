@@ -60,7 +60,7 @@ class TrainConfig:
 
 def promote_link(link: Path, target: Path) -> None:
     """Atomically point ``link`` at ``target`` with a relative path, so the
-    link resolves both inside the container and on the host mount."""
+    link survives moving the runs directory."""
     link = Path(link)
     relative = os.path.relpath(target, link.parent)
     temporary = link.parent / f".{link.name}.tmp"
