@@ -20,31 +20,28 @@ It installs the pinned CPU PyTorch wheel and `.[test]`; no model, SGLang,
 FlashInfer, Triton or GPU is required. For subsequent runs use
 `.venv-cpu/bin/python -m pytest tests/unit -q`, or `tools/check.sh cpu` in an
 already prepared environment. Sharar's small GitHub CPU workflow uses the same
-setup command. Dependency constraints are in `constraints/`; the GB10 image
-uses `gb10-cu130.txt`, CUDA 13.0.3 and the pinned checkpoint revision.
+setup command. Dependency constraints are in `constraints/`; the GB10 environment
+(`tools/setup-venv.sh`, and the optional image) uses `gb10-cu130.txt` with the host's CUDA 13 toolkit.
 
 Also run `python3 tools/check_links.py` for documentation links, and `.venv-cpu/bin/python tools/check_distribution.py` to build an sdist and
 wheel and probe installed runtime assets outside the checkout. CI runs these
 checks; a source-only or editable installation does not validate packaging.
 
-The GPU suite (`tests/gpu`, about 11 minutes, both targets) runs from the host
-in the runtime image with this checkout mounted:
+The GPU suite (`tests/gpu`, about 11 minutes, both targets) runs from the checkout's Python environment:
 
 ```bash
-tools/gpu-tests.sh                 # or: tools/check.sh gpu-container
+tools/gpu-tests.sh                 # or: tools/check.sh gpu-suite (tests/unit too)
 tools/gpu-tests.sh tests/gpu/test_qsa.py -x
 ```
 
-It mounts the model caches, the calibrated W3 artifact and `$SHARAR_RESULTS`
-at their container paths (resolved as the launcher resolves them: `config/gb10.env` if
-present, else the defaults; `SHARAR_TEST_IMAGE` picks another image) and sets
-`SHARAR_RUN_GPU=1`; without it the GPU modules are not collected. Inside an
-already prepared GB10 container use `bash tools/check.sh gpu`. Preserve frozen
+It builds `.venv` first if needed, points the suite at the model caches, the calibrated W3 artifact and
+`$SHARAR_RESULTS` (resolved as the launcher resolves them: `config/gb10.env` if present, else the defaults)
+and sets `SHARAR_RUN_GPU=1`; without it the GPU modules are not collected. Preserve frozen
 workload content and checksums (`tools/gate/workloads/`, `profiling/workloads/`,
 `sharar/benchmark_workloads.py`) when moving readers.
 
 The real-checkpoint fixture uses bounded pools: 35,000 KV pages and 12 recurrent
-slots. Keep the external memory guard active for that container. The loader
+slots. Keep the memory guard active for the run (`tools/memory-guard.sh --pid PID`). The loader
 requires 40 GiB `MemAvailable`: a 24 GiB allowance based on the measured 21.3 GiB
 streaming-load peak plus the 16 GiB host floor. Runtime separately checks the
 prospective pool/draft budget before allocation.
@@ -54,8 +51,8 @@ stop or replace a running service.
 Anything that changes arithmetic (kernels, dispatch thresholds, draft
 precision, verify shapes, proposers) passes the GPU suite, then is measured
 against main with `tools/evaluate.py` ([evaluation](docs/evaluation.md#judge-a-change-to-arithmetic)):
-`--build --speed --suite quick` on the candidate, paired with the same run on
-main's image (`--baseline`). AIPerf speed moves by under 1% between identical
+`--speed --suite quick` from the candidate's checkout, paired with the same run from
+a checkout of main (`--baseline`). AIPerf speed moves by under 1% between identical
 builds; the `quick` suite (GSM8K, HumanEval, MGSM, needles) is compared item
 by item, and a paired quality loss is a regression. Bit-identical outputs are
 not required and not a substitute: the target's arithmetic already changes with
@@ -78,7 +75,7 @@ tools/lossy-gate.py --target qwen38 --name fast --profile fast
 ```
 
 The candidate is a serving profile plus `SHARAR_*` overrides on the target's
-launcher config, paired against the `exact` profile on the same image. The tool
+launcher config, paired against the `exact` profile on the same engine (this checkout). The tool
 runs unattended, takes the GPU lock for each phase, resumes after an
 interruption, and writes `$SHARAR_RESULTS/reviews/<date>-lossy-gate-<name>/`
 (`SUMMARY.md`, `scorecard.json`, one verdict line). Its three layers run
@@ -250,6 +247,6 @@ machine ([UMA guidance](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/opti
 Before building, write down the bottleneck evidence, the mechanism (what traffic or synchronization it
 removes), the predicted gain and the result that would make you abandon it. Measure against the same target
 work in separate fresh processes, with repeated runs and intervals; keep kernel-cost comparisons apart from
-generation runs when changed continuations alter the amount of work. Record source, image, model, draft,
+generation runs when changed continuations alter the amount of work. Record the source commit, model, draft,
 shapes, cache state, sampling and host load with the results, negative ones included, in the issue or pull
 request. A microbenchmark alone does not establish a serving gain.

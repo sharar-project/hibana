@@ -37,8 +37,8 @@ relaunching. The trainer loads only the draft, the target's embeddings and its
 NVFP4 head, about 40 GiB in total.
 
 Underneath, `sharar-ctl` drives `run-sharar-train.sh`, which runs
-`sharar train --steps 0 --continue-from /runs/current --promote-to /runs/current`
-in the runtime container; that command also takes explicit `--steps`,
+`sharar train --steps 0 --continue-from $SHARAR_DRAFT_RUNS/current --promote-to $SHARAR_DRAFT_RUNS/current`
+from the Python environment as the user service `sharar-train` (log: `$SHARAR_RESULTS/logs/sharar-train.log`); that command also takes explicit `--steps`,
 `--draft`, `--lr`, `--continue-lr`, `--holdout-tokens`, `--train-params`,
 `--kl-alpha`, `--on-policy`, `--regression-traces` and the other
 hyperparameters for controlled runs. Launcher variables: `SHARAR_TRAIN_LR`

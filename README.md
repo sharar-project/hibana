@@ -18,7 +18,7 @@ structured), thinking off ([h2h benchmark](https://github.com/abdelfattah-lab/sh
 | Qwen3.8-Flash-Next, greedy | **85.4** | 41.8 |
 | Qwen3.8-Flash-Next, temperature 0.7 | **74.4** | 40.5 |
 
-Sharar: 2026-10-05/06, the published image, default `fast` profile. SGLang: 2026-09-24 on the same GB10.
+Sharar: 2026-10-05/06, default `fast` profile. SGLang: 2026-09-24 on the same GB10.
 Code and math run fastest (27B greedy 106 and 133 tok/s), prose and multilingual slowest (57 and 44), because
 the drafter guesses predictable text better.
 
@@ -38,35 +38,37 @@ has since moved to 3-bit routed experts, about 20% faster single-stream at the s
 
 ## Setup
 
+Sharar runs from a Python environment in the checkout, like vLLM or SGLang: install [uv](https://docs.astral.sh/uv/)
+(`curl -LsSf https://astral.sh/uv/install.sh | sh`), then
+
 ```bash
+git clone https://github.com/abdelfattah-lab/sharar && cd sharar
 ./sharar-ctl serve 27b         # Qwen3.8-27B on 127.0.0.1:30001
 ./sharar-ctl serve flashnext   # or Qwen3.8-Flash-Next on 127.0.0.1:30004 (one at a time)
 ./sharar-ctl chat
 ```
 
-No configuration is needed. The first serve downloads the model and drafter (about 26 GB for the 27B,
+No configuration is needed. The first serve builds the Python environment (`.venv`: pinned CUDA 13 PyTorch, FlashInfer
+and the serving packages, a few GB; `./sharar-ctl setup` does it on its own) and downloads the model and drafter (about 26 GB for the 27B,
 135 GB for Flash-Next) into the Hugging Face cache (`$HF_HOME`, else `~/.cache/huggingface`) after checking
 free disk, and keeps results, traces and sessions under `~/.local/share/sharar`. To use other locations, copy
 [config/gb10.env.example](config/gb10.env.example) to `config/gb10.env` and set them there.
 
-The first serve also pulls the runtime image `ghcr.io/abdelfattah-lab/sharar:latest`, which the nightly GB10 check
-publishes from main after its GPU suite and serve checks pass; `./sharar-ctl pull` updates it. While the
-repository is private the image is too: log in once with a GitHub token that can read packages
-(`gh auth refresh -s read:packages`, then `gh auth token | docker login ghcr.io -u <github user> --password-stdin`).
-To serve your own build, run `docker/build.sh` and set `SHARAR_IMAGE=sharar:qwen38-27b`.
+The server runs as a user systemd service (`sharar-qwen38` or `sharar-flashnext`) from this checkout, so
+`git pull` then `./sharar-ctl stop` and `serve` updates it; the environment is rebuilt when its pins change.
 
 The default `fast` profile downloads its calibrated 3-bit checkpoint on first serve
 ([calibration](docs/w3-calibration.md)); the preflight warns when it serves without one.
 
-`sharar-ctl` needs only Python 3 on the host. [Operations](docs/operations.md)
-covers prerequisites, the launcher settings and the memory guard.
+[Operations](docs/operations.md) covers prerequisites, the launcher settings, the memory guard and the optional
+Docker image.
 
 | Command | What it does |
 |---|---|
-| `./sharar-ctl pull` | Fetch the newest published image |
+| `./sharar-ctl setup` | Build or update the Python environment (serve does it when needed) |
 | `./sharar-ctl serve 27b\|flashnext [--exact]` | Start serving a target (fastest settings by default; `--exact` for the model's own outputs, e.g. benchmarks) |
 | `./sharar-ctl chat` | Terminal chat against the running server |
-| `./sharar-ctl status` / `stop` / `logs` | Server state, stop, container logs |
+| `./sharar-ctl status` / `stop` / `logs [-f]` | Server state, stop, the server's log |
 
 Any OpenAI-compatible client works against `http://127.0.0.1:30001/v1`, and
 Anthropic Messages clients against `http://127.0.0.1:30001`
@@ -114,15 +116,16 @@ code very like what it trained on ([draft adaptation](docs/draft-adaptation.md))
 
 ```bash
 bash tools/check.sh setup-cpu     # CPU tests, no GPU or model needed
-tools/gpu-tests.sh                # GPU suite in the runtime image (exclusive GPU)
+tools/gpu-tests.sh                # GPU suite from .venv (exclusive GPU)
 python3 tools/check_links.py      # documentation links
 ```
 
 | Path | Purpose |
 |---|---|
 | `sharar/` | Engine (`engine/`), caches (`cache/`), models (`model/`, `model/flashnext/`), kernels, weights, proposers, trainer, API |
-| `sharar-ctl`, `run-sharar.sh`, `sharar-tp` | Host command, the container launcher, the two-Spark launcher |
-| `profiling/`, `tests/`, `tools/`, `docker/` | In-process profilers, tests, checks and gates, image build |
+| `sharar-ctl`, `run-sharar.sh`, `sharar-tp` | Host command, the single-Spark launcher, the two-Spark launcher |
+| `profiling/`, `tests/`, `tools/` | In-process profilers, tests, setup, checks and gates |
+| `docker/` | The optional runtime image ([operations](docs/operations.md#docker-image-optional)) |
 | `docs/` | [Operations](docs/operations.md), [API](docs/api.md), [architecture](docs/architecture.md), [the rest](docs/README.md) |
 
 Quality and speed benchmarks live in [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval) and
