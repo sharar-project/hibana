@@ -6,7 +6,7 @@ expand to FP8, multiply FP8 activations and accumulate in FP32; activations are 
 calls of at most 64 rows (decode and verification); larger calls use the original NVFP4/FP8 weights, which stay
 resident. On the 27B they cover 304 target matrices (MLP `gate_up` and `down` in all 64 layers, GDN `in_qkv`,
 `in_z`, `out`, attention `qkv`, `o`) plus 20 in the DFlash2 drafter (nearest-rounded at load, not calibrated);
-on Flash-Next, the trunk. Coverage and dispatch: `sharar/weights/w3_checkpoint.py`, `sharar/kernels/ops.py`,
+on Flash-Next, the trunk and the routed experts (below). Coverage and dispatch: `sharar/weights/w3_checkpoint.py`, `sharar/kernels/ops.py`,
 `sharar/model/draft_linear.py`.
 
 `sharar.weights.w3_calibrate` fits the target's optional W3 copies using activation
@@ -78,3 +78,43 @@ A fitted artifact is a candidate until it passes the lossy-change gate
 drafter traces after selecting the target profile. Keep validation and final
 test files out of training, and check any trained draft through the actual
 FP8/W3 serving path: the trainer's BF16 replay is a checkpoint selection proxy.
+
+## Routed experts (Flash-Next, #73)
+
+`sharar/weights/flashnext_w3_experts.py` writes a new Flash-Next checkpoint directory: the source checkpoint's trunk entries
+(copied and verified) plus every layer's routed experts as `layers.N.experts.w13` (fc1, rows in
+`w3_moe.fc1_order`) and `layers.N.experts.w2`, each one W3 matrix stacked over the 512 experts, with the same
+manifest format and per-file SHA256; `manifest.json` gains an `experts` block (method, codebook, scale grid,
+relative weight and output error per layer). There is no BF16 expert source: both methods fit the checkpoint's NVFP4
+experts, dequantized, with the trunk's Lloyd codebook.
+
+- `--method cheap` (2026-09-30): group scales on a 0.5-1.0 clipping grid minimizing the weight error
+  (`w3_calibration.fit_scales` with unit importance) and the nearest level. No activations. It lost recall
+  (MMLU-Pro law -13 pp against `exact`).
+- `--method gptq`: GPTQ on routed activations. `capture` prefills the calibration samples through the serving
+  model (FP8 trunk, NVFP4 experts) and stores each layer's MoE input rows on disk (about 4.5 GB a layer for 0.9M
+  rows); `fit` then takes one layer at a time: it routes the rows with the layer's router, accumulates per expert
+  H = sum g^2 x x^T (g the routing weight) for fc1 and the same over silu(gate) * up of the NVFP4 fc1 for fc2, and
+  runs `w3_calibration.quantize`'s pass batched over 32 experts (`gptq_batched`, tested against it). Experts with
+  fewer than `--min-tokens` routed rows keep the cheap fit; sparse experts' covariances are shrunk toward the
+  layer's pooled one (weight n0 / (n + n0), `--prior-tokens`). `--cheap-output` writes the cheap checkpoint from
+  the same pass.
+
+Samples: the frozen coding-proxy set (`w3_calibration_inputs` at bc7984f, the trunk's, sha256 `1f041589…`) plus
+knowledge questions (`sharar/weights/flashnext_expert_inputs.py`): MMLU's and MMLU-Pro's validation splits with
+anything overlapping MMLU-Pro test or GPQA removed, answered by the `fast` server itself (thinking off), rendered with
+the chat template.
+
+```bash
+SHARAR_TARGET=flashnext python3 -m sharar.weights.flashnext_w3_experts capture --inputs expert-inputs.json --activations ACT
+SHARAR_TARGET=flashnext python3 -m sharar.weights.flashnext_w3_experts fit --method gptq --activations ACT \
+  --source $SHARAR_RESULTS/w3-checkpoints/flashnext-current --output $SHARAR_RESULTS/w3-checkpoints/<date>-flashnext-experts3-gptq \
+  --cheap-output $SHARAR_RESULTS/w3-checkpoints/<date>-flashnext-experts3
+```
+
+Mean relative weight error against the NVFP4 experts: 0.164 (fc1) and 0.163 (fc2); nearest rounding without the
+scale search 0.187-0.195, the screened simulation's E2M1 level set 0.180-0.190. Serving the result replaces the
+NVFP4 experts (they are not loaded at all), so the checkpoint is also 17.2 GiB less resident memory.
+The GPTQ fit (output error against the NVFP4 experts 0.072 fc1 / 0.120 fc2) matched `fast` with NVFP4 experts
+within noise on MMLU-Pro, GPQA Diamond, GSM8K and HumanEval, and is the pinned checkpoint's (`694e279`).
+

@@ -19,6 +19,17 @@ E2M1 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)  # magnitude of code & 7; code &
 LEVELS = (0.5, 1.5, 3.0, 4.0)  # the eight-level set: these magnitudes, both signs
 LEVEL_CODES = (1, 3, 5, 6)  # their E2M1 magnitude codes
 SCALE_GRID = (0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00, 1.05)  # group scale = amax / 4 * f, rounded to E4M3
+# A 2-bit screen (SHARAR_EXPERTS_SIM_BITS=2): four levels {+-1, +-3}, the E2M1 pair closest to the MSE-optimal
+# four-level codebook for bell-shaped weights (spacing 1:3 against Lloyd's 1:3.3); 2.25 bits per weight at group 32.
+LEVELS_2BIT, LEVEL_CODES_2BIT = (1.0, 3.0), (2, 5)
+SCALE_GRID_2BIT = tuple(round(0.40 + 0.05 * i, 2) for i in range(14))  # four levels clip harder: amax / 3 * f
+
+
+def _level_set():
+    from sharar.engine.config import current
+    if current().experts_sim_bits == 2:
+        return LEVELS_2BIT, LEVEL_CODES_2BIT, SCALE_GRID_2BIT
+    return LEVELS, LEVEL_CODES, SCALE_GRID
 
 
 def _decode(packed: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
@@ -34,11 +45,12 @@ def _quantize(w: torch.Tensor, group: int) -> tuple[torch.Tensor, torch.Tensor]:
     g = w.reshape(r, k // group, group)
     mag = g.abs()
     amax = mag.amax(-1, keepdim=True)
-    levels = torch.tensor(LEVELS, device=w.device)
+    level_values, level_codes, scale_grid = _level_set()
+    levels = torch.tensor(level_values, device=w.device)
     bounds = (levels[1:] + levels[:-1]) / 2
     best_err = best_idx = best_scale = None
-    for f in SCALE_GRID:
-        scale = (amax / 4 * f).to(torch.float8_e4m3fn).float()
+    for f in scale_grid:
+        scale = (amax / level_values[-1] * f).to(torch.float8_e4m3fn).float()
         safe = torch.where(scale > 0, scale, torch.ones_like(scale))
         idx = torch.bucketize(mag / safe, bounds)
         err = (mag - levels[idx] * scale).square().sum(-1, keepdim=True)
@@ -49,7 +61,7 @@ def _quantize(w: torch.Tensor, group: int) -> tuple[torch.Tensor, torch.Tensor]:
             best_err = torch.where(better, err, best_err)
             best_idx = torch.where(better, idx, best_idx)
             best_scale = torch.where(better, scale, best_scale)
-    codes = torch.tensor(LEVEL_CODES, device=w.device, dtype=torch.uint8)[best_idx]
+    codes = torch.tensor(level_codes, device=w.device, dtype=torch.uint8)[best_idx]
     codes = torch.where(g < 0, codes | 8, codes).reshape(r, k)
     packed = (codes[:, 0::2] | (codes[:, 1::2] << 4)).to(torch.uint8)
     scales = best_scale.expand(r, k // group, group // 16).reshape(r, k // 16).to(torch.float8_e4m3fn)

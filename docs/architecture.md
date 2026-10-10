@@ -18,7 +18,7 @@ cache/      KV pool, state pool, radix prefix cache, request state, cold tier, N
 model/      Qwen38 (the 27B) and its layers; flashnext/ (the second target); mtp.py (27B MTP head);
             parallel_draft.py (DFlash2/DSpark body); draft_linear.py
 proposers/  factory; DFlash2/DSpark (parallel*), MTP (mtp*), n-gram; draft heads (draft_head, draft_vocab)
-kernels/    dispatch (ops.py), attention planner, 3-bit GEMM, FP8 GEMV, fused Triton kernels, the RDMA
+kernels/    dispatch (ops.py), attention planner, 3-bit GEMM and MoE, FP8 GEMV, fused Triton kernels, the RDMA
             one-shot all-reduce, vendored fla and qsa kernels
 weights/    safetensors loading, ModelOpt NVFP4/FP8 linears, the Linear interface, tensor-parallel sharding,
             3-bit calibration and checkpoints
@@ -61,8 +61,8 @@ target.py   Target value per checkpoint (geometry, optional family fields), regi
 | Device-resident acceptance | opt-in | on in `fast` |
 | Exact / relaxed / sampled acceptance | yes | yes |
 | Constrained output (JSON schema, forced tool calls) | yes | yes |
-| Calibrated 3-bit decode copies | layers and draft | trunk |
-| Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk, NVFP4 experts |
+| Calibrated 3-bit weights | layers and draft (decode copies) | trunk (decode copies) and routed experts (the only copy) |
+| Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk; 3-bit routed experts (NVFP4 in `exact` and on two Sparks) |
 | Prefix cache, cold tier, NVMe sessions, 262K context | yes | yes (sparse attention past 2,048 tokens) |
 | Tensor parallel on two Sparks | yes | yes |
 

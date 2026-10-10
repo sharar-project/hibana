@@ -158,8 +158,8 @@ An adapter receives `ProposerContext(device, max_batch, max_context)`, a fixed
 width `k` and immutable `ProposerRequirements`. Install once before capturing
 graphs. The executor rejects unsupported width/context/features before
 allocating shared verify buffers. MTP supports k=1–8, n-gram k=1–4, DSpark k=1–7,
-and DFlash2 k=1–15. Target verify graphs have B=1/2/4 buckets (B=8/16 too
-when `max_batch` is 16, the throughput profile). Normal startup captures the
+and DFlash2 k=1–15. Target verify graphs have batch buckets 1, 2, 4, ... up to
+`max_batch` (at most 128). Normal startup captures the
 selected verification depth; benchmarks can explicitly capture additional
 supported depths. `SHARAR_SPEC_DEPTHS` sets a depth per batch bucket
 (`engine/depth.py` `BatchDepth`): each depth's verify graphs cover only its

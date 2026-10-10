@@ -131,6 +131,7 @@ whole-vocabulary shortlist head's (`./sharar-tp draft-head`: identical picks at 
 
 ## Limits
 
+- Flash-Next keeps its NVFP4 routed experts on two Sparks (the 3-bit experts serve one Spark only).
 - The 27B with the parallel drafts (DFlash2, DSpark) or n-gram speculation, not MTP; Flash-Next with MTP. A reduced
   draft vocabulary (`SHARAR_DRAFT_VOCAB`) is not served tensor-parallel.
 - `reload_draft` needs the draft at the same path on every rank; a rank that cannot load it ends the pair.

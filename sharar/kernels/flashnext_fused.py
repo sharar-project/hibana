@@ -22,7 +22,7 @@ def _sigmoid(x):
 
 # ---- grouped Gemma RMS norm: x [T, G*H] -> (x / rms per group) * (1 + w) ----
 @triton.jit
-def _grouped_norm_kernel(X, W, Y, stride_x, stride_y, H: tl.constexpr, eps, BLOCK: tl.constexpr):
+def _grouped_norm_kernel(X, W, Y, Amax, stride_x, stride_y, H: tl.constexpr, eps, BLOCK: tl.constexpr, AMAX: tl.constexpr):
     t = tl.program_id(0)
     s = tl.program_id(1)
     cols = tl.arange(0, BLOCK)
@@ -32,16 +32,32 @@ def _grouped_norm_kernel(X, W, Y, stride_x, stride_y, H: tl.constexpr, eps, BLOC
     var = tl.sum(x * x, 0) / H
     w = tl.load(W + off, mask=mask, other=0.0).to(tl.float32)
     y = x * tl.rsqrt(var + eps) * (1.0 + w)
-    tl.store(Y + t * stride_y + off, y.to(tl.bfloat16), mask=mask)
+    yb = y.to(tl.bfloat16)
+    tl.store(Y + t * stride_y + off, yb, mask=mask)
+    if AMAX:  # this block's max |y| as stored, for a parallel per-tensor FP8 quantization of y (`quant_fp8_parts`)
+        tl.store(Amax + t * tl.num_programs(1) + s, tl.max(tl.where(mask, tl.abs(yb.to(tl.float32)), 0.0), 0))
 
 
-def grouped_gemma_rms(x: torch.Tensor, weight: torch.Tensor, eps: float, group: int) -> torch.Tensor:
-    """[T, G*group] -> bf16 [T, G*group]; RMS per `group` columns, one (1 + w) per column."""
+def grouped_gemma_rms(x: torch.Tensor, weight: torch.Tensor, eps: float, group: int, amax: bool = False):
+    """[T, G*group] -> bf16 [T, G*group]; RMS per `group` columns, one (1 + w) per column. With `amax`, also
+    returns each (row, group) block's max |y| [T*G] fp32, for `quant_fp8_parts`."""
     t, n = x.shape
     g = n // group
     y = torch.empty((t, n), dtype=torch.bfloat16, device=x.device)
-    _grouped_norm_kernel[(t, g)](x, weight, y, x.stride(0), y.stride(0), group, eps, BLOCK=triton.next_power_of_2(group), num_warps=8)
-    return y
+    parts = torch.empty((t * g,), dtype=torch.float32, device=x.device) if amax else y
+    _grouped_norm_kernel[(t, g)](x, weight, y, parts, x.stride(0), y.stride(0), group, eps, BLOCK=triton.next_power_of_2(group), AMAX=amax, num_warps=8)
+    return (y, parts) if amax else y
+
+
+def quant_fp8_parts(x: torch.Tensor, parts: torch.Tensor):
+    """Per-tensor dynamic FP8 of a contiguous x whose block maxima of |x| its producer already wrote: the bits of
+    `quant_fp8_small` / `draft_fp8.quant_dynamic` from one parallel launch. -> (fp8 like x, scale [1, 1])."""
+    from sharar.kernels.draft_fp8 import _pack
+    n = x.numel()
+    out = torch.empty(x.shape, device=x.device, dtype=torch.float8_e4m3fn)
+    scale = torch.empty((1, 1), device=x.device, dtype=torch.float32)
+    _pack[(triton.cdiv(n, 2048),)](x, parts, out, scale, n, parts.numel(), triton.next_power_of_2(parts.numel()), 2048)
+    return out, scale
 
 
 # ---- mixer gate and mean: mixed[t, c] = mean_s sigmoid(u[t, s*H + c]) * normed[t, s*H + c] ----
@@ -175,6 +191,54 @@ def moe_combine(routed: torch.Tensor, shared: torch.Tensor, x: torch.Tensor, gat
     return y
 
 
+# ---- routed sum + MoE combine: out = bf16(sum_k w_k * y_k) + sigmoid(x . g) * shared (the MTP head's experts) ----
+@triton.jit
+def _moe_combine_routed_kernel(Yr, Wt, S, X, G, Y, stride_yr, stride_s, stride_x, stride_y, H: tl.constexpr, TOPK: tl.constexpr,
+                               BLOCK: tl.constexpr, DBLOCK: tl.constexpr):
+    t = tl.program_id(0)
+    dot = tl.zeros([DBLOCK], dtype=tl.float32)
+    for start in tl.static_range(0, H, DBLOCK):
+        i = start + tl.arange(0, DBLOCK)
+        dot += tl.load(X + t * stride_x + i, mask=i < H, other=0.0).to(tl.float32) * tl.load(G + i, mask=i < H, other=0.0).to(tl.float32)
+    g = _sigmoid(tl.sum(dot, 0))
+    cols = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
+    mask = cols < H
+    # (y.float() * w).view(m, topk, H).sum(1) as PyTorch reduces it: four interleaved accumulators, then
+    # ((a0 + a1) + a2) + a3 (tests/gpu/test_flashnext_fused.py checks the bits). Each product is rounded on its own
+    # (`mul.rn`, which the compiler cannot contract into an FMA with the accumulation), as PyTorch's separate kernels do.
+    a0 = tl.zeros([BLOCK], dtype=tl.float32)
+    a1 = tl.zeros([BLOCK], dtype=tl.float32)
+    a2 = tl.zeros([BLOCK], dtype=tl.float32)
+    a3 = tl.zeros([BLOCK], dtype=tl.float32)
+    for k in tl.static_range(TOPK):
+        yk = tl.load(Yr + (t * TOPK + k) * stride_yr + cols, mask=mask, other=0.0).to(tl.float32)
+        wk = tl.full([BLOCK], 0.0, tl.float32) + tl.load(Wt + t * TOPK + k)
+        p = tl.inline_asm_elementwise("mul.rn.f32 $0, $1, $2;", "=r,r,r", [yk, wk], dtype=tl.float32, is_pure=True, pack=1)
+        if k % 4 == 0:
+            a0 += p
+        elif k % 4 == 1:
+            a1 += p
+        elif k % 4 == 2:
+            a2 += p
+        else:
+            a3 += p
+    r = (((a0 + a1) + a2) + a3).to(tl.bfloat16).to(tl.float32)
+    s = tl.load(S + t * stride_s + cols, mask=mask, other=0.0).to(tl.float32)
+    tl.store(Y + t * stride_y + cols, (r + g * s).to(tl.bfloat16), mask=mask)
+
+
+def moe_combine_routed(y: torch.Tensor, weights: torch.Tensor, shared: torch.Tensor, x: torch.Tensor, gate_w: torch.Tensor) -> torch.Tensor:
+    """`moe_combine((y.float() * weights.reshape(-1)[:, None]).view(m, topk, -1).sum(1).to(bf16), shared, x, gate_w)` in
+    one launch, bit for bit: y bf16 [m*topk, H] routed expert outputs, weights fp32 [m, topk]."""
+    m, topk = weights.shape
+    h = y.shape[1]
+    out = torch.empty((m, h), dtype=torch.bfloat16, device=y.device)
+    blk = 1024
+    _moe_combine_routed_kernel[(m, triton.cdiv(h, blk))](y, weights.contiguous(), shared, x, gate_w, out, y.stride(0), shared.stride(0), x.stride(0), out.stride(0),
+                                                         h, topk, BLOCK=blk, DBLOCK=1024)
+    return out
+
+
 # ---- SiLU-mul: [M, 2I] -> silu(gate) * up ----
 @triton.jit
 def _silu_mul_kernel(GU, Y, stride_gu, stride_y, I: tl.constexpr, BLOCK: tl.constexpr):
@@ -270,3 +334,219 @@ def fp8_gemv_any(x_q: torch.Tensor, w: torch.Tensor, alpha: torch.Tensor) -> tor
     block_n, block_k = 32, 512
     _fp8_gemv_kernel[(m, triton.cdiv(n, block_n))](x_q, w, alpha, y, x_q.stride(0), w.stride(0), y.stride(0), n, k, BLOCK_N=block_n, BLOCK_K=block_k, num_warps=4)
     return y
+
+
+# ---- draft-step fusions (#9): the arithmetic of the unfused chains above, fewer launches ----
+# Each kernel below reproduces, bit for bit, a chain the MTP draft step (and the trunk's small-row calls) ran as
+# separate launches; tests/gpu/test_flashnext_fused.py compares them bitwise with the unfused chains.
+
+ACT_NONE, ACT_SILU, ACT_SILU_MUL = 0, 1, 2
+
+
+@triton.jit
+def _silu_torch(x):
+    # torch.nn.functional.silu on CUDA: x / (1 + exp(-x)) in FP32 with the precise expf and an IEEE division
+    return tl.div_rn(x, 1.0 + tl.extra.cuda.libdevice.exp(-x))
+
+
+@triton.jit
+def _act_load(X, base, cols, cmask, HALF: tl.constexpr, ACT: tl.constexpr):
+    """One chunk of an activation row as the BF16 tensor the unfused chain materialized, in FP32:
+    ACT_NONE the row itself, ACT_SILU F.silu of it, ACT_SILU_MUL `silu_mul` of a [gate | up] row (HALF = I)."""
+    if ACT == 2:
+        g = tl.load(X + base + cols, mask=cmask, other=0.0).to(tl.float32)
+        u = tl.load(X + base + HALF + cols, mask=cmask, other=0.0).to(tl.float32)
+        x = (g * _sigmoid(g) * u).to(tl.bfloat16).to(tl.float32)
+    elif ACT == 1:
+        x = _silu_torch(tl.load(X + base + cols, mask=cmask, other=0.0).to(tl.float32)).to(tl.bfloat16).to(tl.float32)
+    else:
+        x = tl.load(X + base + cols, mask=cmask, other=0.0).to(tl.float32)
+    return x
+
+
+@triton.jit
+def _fp8_gemv_quant_kernel(X, W, WScale, Y, ScaleOut, Parts, M, NPARTS, stride_x, stride_w, stride_y, N: tl.constexpr, K: tl.constexpr,
+                           ACT: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, PBLOCK: tl.constexpr,
+                           STORE_SCALE: tl.constexpr, HAS_PARTS: tl.constexpr):
+    # quant_fp8_small's per-tensor scale over all M rows (a max: order-free; from the producer's block maxima when
+    # it wrote them), then `_fp8_gemv_kernel` on the quantized values, recomputed per program from the (small,
+    # cached) activation.
+    if HAS_PARTS:
+        j = tl.arange(0, PBLOCK)
+        peak = tl.load(Parts + j, mask=j < NPARTS, other=0.0)
+    else:
+        peak = tl.zeros([PBLOCK], dtype=tl.float32)
+        for m in range(M):
+            for p0 in tl.static_range(0, K, PBLOCK):
+                pc = p0 + tl.arange(0, PBLOCK)
+                peak = tl.maximum(peak, tl.abs(_act_load(X, m * stride_x, pc, pc < K, K, ACT)))
+    scale = tl.maximum(tl.max(peak, 0) * (1.0 / 448.0), 1.0e-12)
+    alpha = scale * tl.load(WScale).to(tl.float32)
+    r = tl.program_id(0)
+    if STORE_SCALE:
+        if r == 0 and tl.program_id(1) == 0:
+            tl.store(ScaleOut, scale)
+    rows = tl.program_id(1) * BLOCK_N + tl.arange(0, BLOCK_N)
+    rmask = rows < N
+    acc = tl.zeros([BLOCK_N], dtype=tl.float32)
+    for k0 in tl.static_range(0, K, BLOCK_K):
+        cols = k0 + tl.arange(0, BLOCK_K)
+        cmask = cols < K
+        w = tl.load(W + rows[:, None] * stride_w + cols[None, :], mask=rmask[:, None] & cmask[None, :], other=0.0).to(tl.float32)
+        xa = _act_load(X, r * stride_x, cols, cmask, K, ACT)
+        x = tl.minimum(tl.maximum(tl.div_rn(xa, scale), -448.0), 448.0).to(tl.float8e4nv).to(tl.float32)
+        acc += tl.sum(w * x[None, :], 1)
+    tl.store(Y + r * stride_y + rows, (acc * alpha).to(tl.bfloat16), mask=rmask)
+
+
+def fp8_gemv_quant_any(x: torch.Tensor, w: torch.Tensor, w_scale: torch.Tensor, act: int = ACT_NONE, scale_out: torch.Tensor | None = None,
+                       amax_parts: torch.Tensor | None = None) -> torch.Tensor:
+    """`fp8_gemv_any` of `quant_fp8_small(act(x), w_scale)` in one launch, bit for bit: x bf16 [M, K]
+    ([M, 2K] = [gate | up] for ACT_SILU_MUL), w fp8 [N, K] with its fp32 scale -> bf16 [M, N]. `amax_parts`: the
+    producer's block maxima of |x| (ACT_NONE), which spare every program the pass over x for the scale."""
+    m = x.shape[0]
+    k = x.shape[1] // 2 if act == ACT_SILU_MUL else x.shape[1]
+    n = w.shape[0]
+    assert w.shape[1] == k and x.stride(1) == 1 and (amax_parts is None or act == ACT_NONE)
+    y = torch.empty((m, n), dtype=torch.bfloat16, device=x.device)
+    block_n, block_k = 32, 512
+    nparts = amax_parts.numel() if amax_parts is not None else 0
+    pblock = triton.next_power_of_2(nparts) if amax_parts is not None else min(4096, triton.next_power_of_2(k))
+    _fp8_gemv_quant_kernel[(m, triton.cdiv(n, block_n))](x, w, w_scale, y, scale_out if scale_out is not None else y,
+                                                         amax_parts if amax_parts is not None else y, m, nparts, x.stride(0), w.stride(0),
+                                                         y.stride(0), n, k, ACT=act, BLOCK_N=block_n, BLOCK_K=block_k, PBLOCK=pblock,
+                                                         STORE_SCALE=scale_out is not None, HAS_PARTS=amax_parts is not None, num_warps=4)
+    return y
+
+
+# ---- SiLU-mul into the 3-bit GEMM's per-(row, 32-group) E4M3 input (`w3.quant_groups`, csrc/w3_gemm.cu) ----
+@triton.jit
+def _rcp_approx_ftz(x):
+    return tl.inline_asm_elementwise("rcp.approx.ftz.f32 $0, $1;", "=r,r", [x], dtype=tl.float32, is_pure=True, pack=1)
+
+
+@triton.jit
+def _mul_ftz(a, b):
+    return tl.inline_asm_elementwise("mul.ftz.f32 $0, $1, $2;", "=r,r,r", [a, b], dtype=tl.float32, is_pure=True, pack=1)
+
+
+@triton.jit
+def _silu_mul_quant_groups_kernel(GU, Q, S, stride_gu, I: tl.constexpr, GB: tl.constexpr):
+    # quant_groups_kernel's arithmetic as nvcc --use_fast_math compiles it: s = max(amax * (1/448), 1e-12),
+    # q = e4m3(x * rcp.approx.ftz(s)) with mul.ftz; tests/gpu/test_flashnext_fused.py checks the bits
+    t = tl.program_id(0)
+    grp = tl.program_id(1) * GB + tl.arange(0, GB)
+    cols = grp[:, None] * 32 + tl.arange(0, 32)[None, :]
+    mask = cols < I
+    g = tl.load(GU + t * stride_gu + cols, mask=mask, other=0.0).to(tl.float32)
+    u = tl.load(GU + t * stride_gu + I + cols, mask=mask, other=0.0).to(tl.float32)
+    x = (g * _sigmoid(g) * u).to(tl.bfloat16).to(tl.float32)
+    amax = tl.max(tl.abs(x), 1)
+    s = tl.maximum(_mul_ftz(amax, tl.full(amax.shape, 1.0 / 448.0, tl.float32)), 1.0e-12)
+    inv = _rcp_approx_ftz(s)
+    tl.store(S + t * (I // 32) + grp, s, mask=grp < I // 32)
+    tl.store(Q + t * I + cols, _mul_ftz(x, inv[:, None]).to(tl.float8e4nv), mask=mask)
+
+
+def silu_mul_quant_groups(gu: torch.Tensor):
+    """`w3.quant_groups(silu_mul(gu))` in one launch, bit for bit: gu bf16 [M, 2I] -> (e4m3 [M, I], fp32 scales [M, I/32])."""
+    m, n = gu.shape
+    i = n // 2
+    assert i % 32 == 0 and gu.stride(1) == 1
+    q = torch.empty((m, i), dtype=torch.float8_e4m3fn, device=gu.device)
+    s = torch.empty((m, i // 32), dtype=torch.float32, device=gu.device)
+    gb = 8
+    _silu_mul_quant_groups_kernel[(m, triton.cdiv(i // 32, gb))](gu, q, s, gu.stride(0), i, GB=gb, num_warps=2)
+    return q, s
+
+
+# ---- expert GEMV with the routed rows' input by index (no repeat_interleave) and the down projection's SiLU-mul ----
+@triton.jit
+def _expert_gemv_fused_kernel(W, S, X, IDX, Y, stride_we, stride_wn, stride_x, stride_y, N: tl.constexpr, K: tl.constexpr,
+                              X_DIV: tl.constexpr, ACT: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr):
+    r = tl.program_id(0)
+    n0 = tl.program_id(1) * BLOCK_N
+    e = tl.load(IDX + r).to(tl.int64)
+    xr = r // X_DIV
+    rows = n0 + tl.arange(0, BLOCK_N)
+    rmask = rows < N
+    acc = tl.zeros([BLOCK_N], dtype=tl.float32)
+    for k0 in tl.static_range(0, K, BLOCK_K):
+        cols = k0 + tl.arange(0, BLOCK_K)
+        cmask = cols < K
+        w = tl.load(W + e * stride_we + rows[:, None] * stride_wn + cols[None, :], mask=rmask[:, None] & cmask[None, :], other=0.0).to(tl.float32)
+        x = _act_load(X, xr * stride_x, cols, cmask, K, ACT)
+        acc += tl.sum(w * x[None, :], 1)
+    s = tl.load(S + e).to(tl.float32)
+    tl.store(Y + r * stride_y + rows, (acc * s).to(tl.bfloat16), mask=rmask)
+
+
+def expert_gemv_fused(w: torch.Tensor, scale: torch.Tensor, x: torch.Tensor, idx: torch.Tensor, x_div: int = 1, act: int = ACT_NONE) -> torch.Tensor:
+    """`expert_gemv(w, scale, act(x).repeat_interleave(x_div, 0), idx)` bit for bit: routed row r reads input row
+    r // x_div; ACT_SILU_MUL applies `silu_mul` to a [gate | up] input row on the fly. (Rows that chose the same
+    expert already share its weights through L2: a program per expert serving all of them was slower.)"""
+    e, n, k = w.shape
+    r = idx.numel()
+    y = torch.empty((r, n), dtype=torch.bfloat16, device=x.device)
+    block_n, block_k = 64, 256
+    _expert_gemv_fused_kernel[(r, triton.cdiv(n, block_n))](w, scale, x, idx, y, w.stride(0), w.stride(1), x.stride(0), y.stride(0), n, k,
+                                                             X_DIV=x_div, ACT=act, BLOCK_N=block_n, BLOCK_K=block_k, num_warps=4)
+    return y
+
+
+# ---- attention q/k norm + RoPE, v, and the KV write in one launch (the draft layer's rows) ----
+@triton.jit
+def _qkv_epilogue_kernel(QKV, CosSin, Pos, QW, KW, Q, KC, VC, Pages, stride_t, stride_qt, stride_qh, stride_kc, stride_kh, eps,
+                         HQ: tl.constexpr, HKV: tl.constexpr, D: tl.constexpr, R: tl.constexpr, HALF: tl.constexpr):
+    t = tl.program_id(0)
+    h = tl.program_id(1)
+    cols = tl.arange(0, D)
+    page = tl.load(Pages + t).to(tl.int64)
+    if h >= HQ + HKV:  # v: a copy into the cache
+        hv = h - HQ - HKV
+        v = tl.load(QKV + t * stride_t + HQ * 2 * D + HKV * D + hv * D + cols)
+        tl.store(VC + page * stride_kc + hv * stride_kh + cols, v)
+    else:
+        # `qk_norm_rope._norm_rope_kernel`, its arithmetic unchanged; q to its own tensor, k into the cache
+        if h < HQ:
+            base = QKV + t * stride_t + h * 2 * D
+            w_ptr = QW
+            out = Q + t * stride_qt + h * stride_qh
+        else:
+            base = QKV + t * stride_t + HQ * 2 * D + (h - HQ) * D
+            w_ptr = KW
+            out = KC + page * stride_kc + (h - HQ) * stride_kh
+        x = tl.load(base + cols).to(tl.float32)
+        w = tl.load(w_ptr + cols).to(tl.float32)
+        rstd = tl.rsqrt(tl.sum(x * x, axis=0) / D + eps)
+        y = (x * rstd * (1.0 + w)).to(tl.bfloat16).to(tl.float32)
+        tl.store(out + cols, y.to(tl.bfloat16), mask=cols >= R)
+        lane = tl.arange(0, HALF)
+        pos = tl.load(Pos + t)
+        cos = tl.load(CosSin + pos * R + lane).to(tl.float32)
+        sin = tl.load(CosSin + pos * R + HALF + lane).to(tl.float32)
+        x1 = tl.load(base + lane).to(tl.float32)
+        x2 = tl.load(base + HALF + lane).to(tl.float32)
+        w1 = tl.load(w_ptr + lane).to(tl.float32)
+        w2 = tl.load(w_ptr + HALF + lane).to(tl.float32)
+        y1 = (x1 * rstd * (1.0 + w1)).to(tl.bfloat16).to(tl.float32)
+        y2 = (x2 * rstd * (1.0 + w2)).to(tl.bfloat16).to(tl.float32)
+        o1 = y1 * cos - y2 * sin
+        o2 = y2 * cos + y1 * sin
+        tl.store(out + lane, o1.to(tl.bfloat16))
+        tl.store(out + HALF + lane, o2.to(tl.bfloat16))
+
+
+def qkv_epilogue(qkv: torch.Tensor, positions: torch.Tensor, cos_sin: torch.Tensor, q_weight: torch.Tensor, k_weight: torch.Tensor,
+                 k_cache: torch.Tensor, v_cache: torch.Tensor, pages: torch.Tensor, num_heads: int, num_kv_heads: int, head_dim: int,
+                 rotary_dim: int, eps: float) -> torch.Tensor:
+    """`qk_norm_rope` plus `KvPool.write` (page size 1) of k and v in one launch: returns q [T, Hq, D]; k and v land
+    in the caches at [pages, 0]. qkv rows are [head0: q | gate, ..., k heads, v heads] with unit column stride."""
+    t = qkv.shape[0]
+    assert qkv.stride(1) == 1 and k_cache.stride(-1) == 1 and k_cache.stride() == v_cache.stride() and k_cache.dtype == torch.bfloat16
+    q = torch.empty((t, num_heads, head_dim), dtype=torch.bfloat16, device=qkv.device)
+    _qkv_epilogue_kernel[(t, num_heads + 2 * num_kv_heads)](
+        qkv, cos_sin, positions, q_weight, k_weight, q, k_cache, v_cache, pages, qkv.stride(0), q.stride(0), q.stride(1),
+        k_cache.stride(0), k_cache.stride(2), eps, HQ=num_heads, HKV=num_kv_heads, D=head_dim, R=rotary_dim, HALF=rotary_dim // 2,
+        num_warps=4)
+    return q

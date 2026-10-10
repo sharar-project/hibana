@@ -39,12 +39,13 @@ budget separately. Automatic KV capacity depends on available memory.
 | Draft checkpoint | `draft-runs/current` when promoted, else pinned | `SHARAR_DRAFT=/dir` or `SHARAR_DRAFT=pinned` |
 | Accepted state | reconstruction | `SHARAR_VERIFY_STATE` |
 | Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length` (the engine's own default is 32,768). The pool guarantees one request at that length (8 GiB of FP8 KV at 262K) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
-| Requests decoded together | 4 (16 in `throughput`) | `SHARAR_MAX_BATCH` / `sharar serve --max-batch`, 1-16. Above four, the pool guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full context |
-| Verify depth per batch size | the proposer's depth at every batch; `throughput` on Flash-Next: `16:3` | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` / `sharar serve --spec-depths` (buckets 1, 2, 4, 8, 16; 0 = plain decode). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
+| Requests decoded together | 4; `throughput`: 16 on the 27B, 128 on Flash-Next (64 with NVFP4 experts) | `SHARAR_MAX_BATCH` / `sharar serve --max-batch`, 1-128 (graph buckets 1, 2, 4, ... 128). Above four, the pool guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full context |
+| Verify depth per batch size | the proposer's depth at every batch; `throughput` on Flash-Next: `16:3` | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` / `sharar serve --spec-depths` (0 = plain decode). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
 | Image | `ghcr.io/abdelfattah-lab/sharar:latest` ([tools/image.sh](../tools/image.sh)), pulled when missing | `SHARAR_IMAGE=sharar:<tag>` serves a local `docker/build.sh` build |
 | Container / port | 27B `sharar-qwen38` / 30001, Flash-Next `sharar-flashnext` / 30004 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
 | Request traces | on under `sharar-ctl` (`$SHARAR_RESULTS/traces`), off under `run-sharar.sh` | `sharar-ctl serve --no-traces`; `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
 | Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, fetched on first serve | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
+| Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `SHARAR_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
 | Shape-stable prefill numerics | off | `SHARAR_STABLE_NUMERICS=1` (M-invariant kernels for the three row-count-dependent ops; see [limits](#numerical-limits)) |
 
 For MTP on the 27B, use `SHARAR_PROPOSER=mtp SHARAR_SPEC=3`. DSpark (`SHARAR_PROPOSER=dspark SHARAR_SPEC=7
@@ -64,15 +65,16 @@ a knob set in the environment or the config file wins. `/get_server_info` report
 |---|---|---|---|---|
 | Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-2 within 1.0 logit | top-3 within 2.0 logits | as fast |
 | Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | off | Flash-Next top-3 within 2.0; the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
-| Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`) | off | the 27B only | on | on |
+| Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next also its routed experts) | off | the 27B only | on | on |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | off | Flash-Next only | as fast |
-| Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 4 | 16 |
+| Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
 
 Relaxed acceptance accepts a drafted token the target ranks within its top-k and within a logit margin of its
 argmax, so outputs are no longer the target's exact greedy continuation; a request can pin exact acceptance with
 `accept_top_k: 1` ([API](api.md)). The 3-bit copies (3.25 bits per weight, a tensor-core kernel for calls of at
-most 64 rows) cover the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resident) and Flash-Next's trunk;
-the lm_head keeps its original format. Speculative decoding itself, the Flash-Next 3-bit draft head, FP8/NVFP4
+most 64 rows) cover the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resident) and Flash-Next's trunk; Flash-Next's
+3-bit routed experts replace the NVFP4 ones at every row count (17 GiB less resident). The lm_head keeps its
+original format. Speculative decoding itself, the Flash-Next 3-bit draft head, FP8/NVFP4
 weights and CUDA graphs are lossless and on in every profile. Benchmarks, training traces and gates use `exact`.
 A new lossy option enters `balanced` or `fast` only through the lossy-change gate
 ([CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option)).

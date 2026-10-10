@@ -420,6 +420,72 @@ def kernel_gaps(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = 
     print(json.dumps(row), flush=True)
 
 
+def phase_kernels(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = None, top: int = 25):
+    """Kernels by round phase (#9): every activity of a draft, verify, accept or decode replay, tied to its graph
+    launch by correlation id, and the eager GPU work between replays, by kernel name: count and device ms per replay
+    (eager: per round). Batch `batch`, one generation of `tokens` under the torch profiler."""
+    from torch.profiler import record_function
+
+    def instrument(graph, kind):
+        orig = graph.replay
+
+        def replay():
+            with record_function(f"replay:{kind}"):
+                orig()
+        graph.replay = replay
+        return orig
+    restore = [(g, instrument(g, kind)) for kind, g in _replay_graphs(ex)]
+    params = _params(tokens, accept)
+    name, prompts = _batches(tok, batch)[0]
+    items = [(ids, params) for ids in prompts]
+    ex.generate_batch(items)
+    ex.flush_cache()
+    torch.cuda.synchronize()
+    ex.spec.reset_stats()
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        ex.generate_batch(items)
+        torch.cuda.synchronize()
+    rounds_n = max(1, ex.spec.rounds)
+    for g, orig in restore:
+        g.replay = orig
+    with tempfile.NamedTemporaryFile(suffix=".json") as f:
+        prof.export_chrome_trace(f.name)
+        events = json.load(open(f.name))["traceEvents"]
+    ranges = sorted((e["ts"], e["ts"] + e["dur"], e["name"].split(":", 1)[1]) for e in events
+                    if e.get("ph") == "X" and str(e.get("name", "")).startswith("replay:"))
+    launches = sorted((e["ts"], e["args"]["correlation"]) for e in events
+                      if e.get("ph") == "X" and e.get("cat") == "cuda_runtime" and "GraphLaunch" in e.get("name", ""))
+    acts = defaultdict(list)
+    for e in events:
+        if e.get("ph") == "X" and e.get("cat") in ("kernel", "gpu_memcpy", "gpu_memset"):
+            acts[e["args"].get("correlation")].append(e)
+    kinds, replays, graph_corr = {}, defaultdict(int), set()
+    li = 0
+    for start, end, kind in ranges:
+        while li < len(launches) and launches[li][0] < start:
+            li += 1
+        corr = [c for ts, c in launches[li:] if ts <= end][:1]
+        if corr and corr[0] in acts:
+            kinds[corr[0]] = kind
+            replays[kind] += 1
+    table = defaultdict(lambda: defaultdict(lambda: [0, 0.0]))
+    for corr, evs in acts.items():
+        kind = kinds.get(corr, "eager (outside graphs)")
+        for e in evs:
+            cell = table[kind][e["name"][:100]]
+            cell[0] += 1
+            cell[1] += e["dur"] / 1000
+    res = {"batch": batch, "prompt": name, "rounds": rounds_n, "replays": dict(replays), "phases": {}}
+    for kind, names in table.items():
+        n = replays.get(kind, rounds_n) or 1  # eager work: per round
+        total = sum(v[1] for v in names.values())
+        res["phases"][kind] = {"per": "replay" if kind in replays else "round", "kernels": round(sum(v[0] for v in names.values()) / n, 1),
+                               "device_ms": round(total / n, 3),
+                               "top": {k: [round(v[0] / n, 2), round(v[1] / n, 4)] for k, v in sorted(names.items(), key=lambda kv: -kv[1][1])[:top]}}
+    out.setdefault("phase_kernels", {})[f"batch{batch}"] = res
+    print(json.dumps(res, indent=1), flush=True)
+
+
 def accept_check(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = None):
     """Host against device-resident acceptance (SHARAR_DEVICE_ACCEPT) on the same prompts: outputs, the
     tokens each round emitted per request, and the first round whose boundaries differ. The device pass
@@ -499,6 +565,7 @@ def main():
     ap.add_argument("--host-profile", action="store_true")
     ap.add_argument("--gap-profile", action="store_true")
     ap.add_argument("--kernel-gaps", action="store_true", help="bubbles inside the graph replays (torch profiler)")
+    ap.add_argument("--phase-kernels", action="store_true", help="kernels by round phase: draft, verify, accept replays and eager work")
     ap.add_argument("--spec", type=int, default=4, help="MTP draft depth (config/targets/flashnext.env serves 4)")
     ap.add_argument("--batch", default="1", help="--gap-profile / --kernel-gaps: requests per generation, a comma list (1,4)")
     ap.add_argument("--accept", default=None, help="relaxed acceptance K:M for every request (the fast profile: 3:2.0)")
@@ -507,7 +574,9 @@ def main():
     args = ap.parse_args()
     model, ex, tok = _load(graphs=True, spec=args.spec)
     out = {"rounds": [], "m_curve": []}
-    if args.gap_profile or args.kernel_gaps or args.only_breakdown or args.accept_check:  # these combine in one load
+    if args.gap_profile or args.kernel_gaps or args.only_breakdown or args.accept_check or args.phase_kernels:  # these combine in one load
+        if args.rounds_only:
+            rounds(ex, tok, out, args.tokens, profiled=False)
         for batch in (int(b) for b in args.batch.split(",")):
             if args.accept_check:
                 accept_check(ex, tok, out, args.tokens, batch, args.accept)
@@ -517,6 +586,8 @@ def main():
                     gap_profile(ex, tok, out, args.tokens, batch, args.accept, cold=True)
             if args.kernel_gaps:
                 kernel_gaps(ex, tok, out, min(args.tokens, 96), batch, args.accept)
+            if args.phase_kernels:
+                phase_kernels(ex, tok, out, min(args.tokens, 96), batch, args.accept)
         if args.only_breakdown:
             verify_breakdown(ex, tok, out, args.tokens)
     elif args.host_profile:

@@ -26,15 +26,15 @@ the drafter guesses predictable text better.
 
 | | Qwen3.8-27B | Qwen3.8-Flash-Next |
 |---|---|---|
-| Download / weights in memory | 26 GB / 28 GiB | 135 GB / 70 GiB |
-| Load, warm page cache | about 30 s | about 2.5 min |
+| Download / weights in memory | 26 GB / 28 GiB | 135 GB / 53 GiB |
 | MMLU-Pro / GPQA Diamond / IFEval | 75.4 / 59.6 / 78.7 | 81.6 / 73.7 / 84.8 |
 | Decode at 128K / 256K context | 54 / 46 tok/s | 66 / 57 tok/s |
 | A five-turn Claude Code session (30/30 tests both) | 31 min | 19 min |
 
 Flash-Next is the stronger model and the better agent, and it attends sparsely past 2,048 tokens, so it slows
-less with context. The 27B is smaller, loads faster and decodes short greedy prompts faster (measured 2026-10-05/06,
-`fast` profile, #11).
+less with context. The 27B is smaller and loads faster (measured 2026-10-05/06, `fast` profile, #11; Flash-Next
+has since moved to 3-bit routed experts, about 20% faster single-stream at the same MMLU-Pro and GPQA within noise,
+#73).
 
 ## Setup
 

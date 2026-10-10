@@ -108,7 +108,7 @@ LAUNCHER_ONLY = {"SHARAR_IMAGE", "SHARAR_CONTAINER", "SHARAR_PORT", "SHARAR_PROP
 CHECKED = ("target", "profile", "w3_decode", "w3_checkpoint", "stable_numerics", "flashnext_trunk",
            "flashnext_mixers", "flashnext_mtp_trunk", "trunk_keep_bf16", "draft_vocab", "draft_head",
            "draft_head_rescore", "device_accept", "accept_default", "accept_default_sampled",
-           "accept_default_sampled_threshold", "qsa_sparse_graphs", "flashnext_experts_sim3")
+           "accept_default_sampled_threshold", "qsa_sparse_graphs", "flashnext_experts")
 
 # Layer-3 stages: the sharar-eval suite each runs and the tasks its verdict reads (the suite's GSM8K-300 is the first
 # three shards of the full set, so the full stage reuses them).

@@ -49,8 +49,17 @@ class FlashNextGdn(GatedDeltaNet):
         return None
 
     def _project(self, x: torch.Tensor, x_q: torch.Tensor | None = None):
-        mixed_qkv = self.in_qkv(x)
-        z = self.in_z(x)
+        rows = x.reshape(-1, x.shape[-1]).shape[0]
+        if self.in_qkv._uses_w3(rows) and self.in_z._uses_w3(rows):
+            # both 3-bit copies read the same input: quantize it once (the bits each call's own quantization gives)
+            from sharar.kernels import w3
+            flat = x.reshape(-1, x.shape[-1]).contiguous()
+            xq, xs = w3.quant_groups(flat)
+            mixed_qkv = w3.w3_linear(xq, self.in_qkv.w3, xs).reshape(*x.shape[:-1], self.in_qkv.out_features)
+            z = w3.w3_linear(xq, self.in_z.w3, xs).reshape(*x.shape[:-1], self.in_z.out_features)
+        else:
+            mixed_qkv = self.in_qkv(x)
+            z = self.in_z(x)
         b, a = self._project_ba(x)
         return mixed_qkv, z, b, a
 
