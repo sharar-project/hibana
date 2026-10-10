@@ -8,7 +8,9 @@ To measure a served build (quality suites, AIPerf speed, a lossy option) use the
 
 | Tool | Purpose |
 |---|---|
-| `flashnext_round.py` | Where a Flash-Next speculative round spends its time: draft, verify, acceptance and GPU idle gaps (`--gap-profile`, `--kernel-gaps`) |
+| `flashnext_round.py` | Where a Flash-Next speculative round spends its time: draft, verify, acceptance and GPU idle gaps (`--gap-profile`, `--kernel-gaps`), kernels by phase (`--phase-kernels`); `SHARAR_BENCH_VERIFY_STATE=reconstruct` and `--accept 3:2.0` reproduce the served `fast` round |
+| `flashnext_draft_step.py` | One MTP draft step on the head alone (loads in seconds): graph-replay time, kernels per step, and a bitwise check of the step's outputs across code versions (`--save` / `--check`) |
+| `ab_identity.py` | Greedy outputs of the speculative engine on fixed prompts (batch one and four, exact and relaxed acceptance, each twice): run on two builds and compare for identity |
 | `flashnext_profile.py` | Kernel-level breakdown of eager Flash-Next decode steps (torch profiler) plus graph-replay step time |
 | `flashnext_quant.py` | Flash-Next trunk quantization error against the BF16 trunk on the serving path: argmax agreement, truncated KL and NLL, dense and sparse regions, with a rounding-noise control |
 | `tp_comm.py` | Two Sparks: the RDMA one-shot all-reduce against NCCL's ring per message size, bitwise check, inside a CUDA graph after GPU work and back to back (`./sharar-tp comm` runs both ranks) |

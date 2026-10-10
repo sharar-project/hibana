@@ -204,13 +204,16 @@ def _moe_combine_routed_kernel(Yr, Wt, S, X, G, Y, stride_yr, stride_s, stride_x
     cols = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
     mask = cols < H
     # (y.float() * w).view(m, topk, H).sum(1) as PyTorch reduces it: four interleaved accumulators, then
-    # ((a0 + a1) + a2) + a3 (tests/gpu/test_flashnext_fused.py checks the bits)
+    # ((a0 + a1) + a2) + a3 (tests/gpu/test_flashnext_fused.py checks the bits). Each product is rounded on its own
+    # (`mul.rn`, which the compiler cannot contract into an FMA with the accumulation), as PyTorch's separate kernels do.
     a0 = tl.zeros([BLOCK], dtype=tl.float32)
     a1 = tl.zeros([BLOCK], dtype=tl.float32)
     a2 = tl.zeros([BLOCK], dtype=tl.float32)
     a3 = tl.zeros([BLOCK], dtype=tl.float32)
     for k in tl.static_range(TOPK):
-        p = tl.load(Yr + (t * TOPK + k) * stride_yr + cols, mask=mask, other=0.0).to(tl.float32) * tl.load(Wt + t * TOPK + k)
+        yk = tl.load(Yr + (t * TOPK + k) * stride_yr + cols, mask=mask, other=0.0).to(tl.float32)
+        wk = tl.full([BLOCK], 0.0, tl.float32) + tl.load(Wt + t * TOPK + k)
+        p = tl.inline_asm_elementwise("mul.rn.f32 $0, $1, $2;", "=r,r,r", [yk, wk], dtype=tl.float32, is_pure=True, pack=1)
         if k % 4 == 0:
             a0 += p
         elif k % 4 == 1:
@@ -362,16 +365,21 @@ def _act_load(X, base, cols, cmask, HALF: tl.constexpr, ACT: tl.constexpr):
 
 
 @triton.jit
-def _fp8_gemv_quant_kernel(X, W, WScale, Y, ScaleOut, M, stride_x, stride_w, stride_y, N: tl.constexpr, K: tl.constexpr,
+def _fp8_gemv_quant_kernel(X, W, WScale, Y, ScaleOut, Parts, M, NPARTS, stride_x, stride_w, stride_y, N: tl.constexpr, K: tl.constexpr,
                            ACT: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr, PBLOCK: tl.constexpr,
-                           STORE_SCALE: tl.constexpr):
-    # quant_fp8_small's per-tensor scale over all M rows (a max: order-free), then `_fp8_gemv_kernel` on the
-    # quantized values, recomputed per program from the (small, cached) activation.
-    peak = tl.zeros([PBLOCK], dtype=tl.float32)
-    for m in range(M):
-        for p0 in tl.static_range(0, K, PBLOCK):
-            pc = p0 + tl.arange(0, PBLOCK)
-            peak = tl.maximum(peak, tl.abs(_act_load(X, m * stride_x, pc, pc < K, K, ACT)))
+                           STORE_SCALE: tl.constexpr, HAS_PARTS: tl.constexpr):
+    # quant_fp8_small's per-tensor scale over all M rows (a max: order-free; from the producer's block maxima when
+    # it wrote them), then `_fp8_gemv_kernel` on the quantized values, recomputed per program from the (small,
+    # cached) activation.
+    if HAS_PARTS:
+        j = tl.arange(0, PBLOCK)
+        peak = tl.load(Parts + j, mask=j < NPARTS, other=0.0)
+    else:
+        peak = tl.zeros([PBLOCK], dtype=tl.float32)
+        for m in range(M):
+            for p0 in tl.static_range(0, K, PBLOCK):
+                pc = p0 + tl.arange(0, PBLOCK)
+                peak = tl.maximum(peak, tl.abs(_act_load(X, m * stride_x, pc, pc < K, K, ACT)))
     scale = tl.maximum(tl.max(peak, 0) * (1.0 / 448.0), 1.0e-12)
     alpha = scale * tl.load(WScale).to(tl.float32)
     r = tl.program_id(0)
@@ -391,51 +399,24 @@ def _fp8_gemv_quant_kernel(X, W, WScale, Y, ScaleOut, M, stride_x, stride_w, str
     tl.store(Y + r * stride_y + rows, (acc * alpha).to(tl.bfloat16), mask=rmask)
 
 
-def fp8_gemv_quant_any(x: torch.Tensor, w: torch.Tensor, w_scale: torch.Tensor, act: int = ACT_NONE, scale_out: torch.Tensor | None = None) -> torch.Tensor:
+def fp8_gemv_quant_any(x: torch.Tensor, w: torch.Tensor, w_scale: torch.Tensor, act: int = ACT_NONE, scale_out: torch.Tensor | None = None,
+                       amax_parts: torch.Tensor | None = None) -> torch.Tensor:
     """`fp8_gemv_any` of `quant_fp8_small(act(x), w_scale)` in one launch, bit for bit: x bf16 [M, K]
-    ([M, 2K] = [gate | up] for ACT_SILU_MUL), w fp8 [N, K] with its fp32 scale -> bf16 [M, N]."""
+    ([M, 2K] = [gate | up] for ACT_SILU_MUL), w fp8 [N, K] with its fp32 scale -> bf16 [M, N]. `amax_parts`: the
+    producer's block maxima of |x| (ACT_NONE), which spare every program the pass over x for the scale."""
     m = x.shape[0]
     k = x.shape[1] // 2 if act == ACT_SILU_MUL else x.shape[1]
     n = w.shape[0]
-    assert w.shape[1] == k and x.stride(1) == 1
+    assert w.shape[1] == k and x.stride(1) == 1 and (amax_parts is None or act == ACT_NONE)
     y = torch.empty((m, n), dtype=torch.bfloat16, device=x.device)
     block_n, block_k = 32, 512
-    _fp8_gemv_quant_kernel[(m, triton.cdiv(n, block_n))](x, w, w_scale, y, scale_out if scale_out is not None else y, m, x.stride(0), w.stride(0),
-                                                         y.stride(0), n, k, ACT=act, BLOCK_N=block_n, BLOCK_K=block_k,
-                                                         PBLOCK=min(4096, triton.next_power_of_2(k)), STORE_SCALE=scale_out is not None, num_warps=4)
+    nparts = amax_parts.numel() if amax_parts is not None else 0
+    pblock = triton.next_power_of_2(nparts) if amax_parts is not None else min(4096, triton.next_power_of_2(k))
+    _fp8_gemv_quant_kernel[(m, triton.cdiv(n, block_n))](x, w, w_scale, y, scale_out if scale_out is not None else y,
+                                                         amax_parts if amax_parts is not None else y, m, nparts, x.stride(0), w.stride(0),
+                                                         y.stride(0), n, k, ACT=act, BLOCK_N=block_n, BLOCK_K=block_k, PBLOCK=pblock,
+                                                         STORE_SCALE=scale_out is not None, HAS_PARTS=amax_parts is not None, num_warps=4)
     return y
-
-
-@triton.jit
-def _act_quant_small_kernel(X, Y, Scale, Alpha, WScale, M, stride_x, K: tl.constexpr, ACT: tl.constexpr, BLOCK: tl.constexpr):
-    # `quant_fp8_small(act(x))` in one program, two passes (rows past the GEMV's four: the cuBLAS FP8 path)
-    peak = tl.zeros([BLOCK], dtype=tl.float32)
-    for m in range(M):
-        for k0 in tl.static_range(0, K, BLOCK):
-            cols = k0 + tl.arange(0, BLOCK)
-            peak = tl.maximum(peak, tl.abs(_act_load(X, m * stride_x, cols, cols < K, K, ACT)))
-    scale = tl.maximum(tl.max(peak, 0) * (1.0 / 448.0), 1.0e-12)
-    tl.store(Scale, scale)
-    tl.store(Alpha, scale * tl.load(WScale).to(tl.float32))
-    for m in range(M):
-        for k0 in tl.static_range(0, K, BLOCK):
-            cols = k0 + tl.arange(0, BLOCK)
-            cmask = cols < K
-            x = _act_load(X, m * stride_x, cols, cmask, K, ACT)
-            q = tl.minimum(tl.maximum(tl.div_rn(x, scale), -448.0), 448.0)
-            tl.store(Y + m * K + cols, q.to(tl.float8e4nv), mask=cmask)
-
-
-def act_quant_fp8_small(x: torch.Tensor, w_scale: torch.Tensor, act: int):
-    """`quant_fp8_small(act(x), w_scale)` in one launch, bit for bit: (fp8 [M, K], scale [1, 1], alpha [1])."""
-    m = x.shape[0]
-    k = x.shape[1] // 2 if act == ACT_SILU_MUL else x.shape[1]
-    assert x.stride(1) == 1
-    y = torch.empty((m, k), dtype=torch.float8_e4m3fn, device=x.device)
-    scale = torch.empty((1, 1), dtype=torch.float32, device=x.device)
-    alpha = torch.empty((1,), dtype=torch.float32, device=x.device)
-    _act_quant_small_kernel[(1,)](x, y, scale, alpha, w_scale, m, x.stride(0), k, ACT=act, BLOCK=min(4096, triton.next_power_of_2(k)), num_warps=8)
-    return y, scale, alpha
 
 
 # ---- SiLU-mul into the 3-bit GEMM's per-(row, 32-group) E4M3 input (`w3.quant_groups`, csrc/w3_gemm.cu) ----
@@ -502,7 +483,8 @@ def _expert_gemv_fused_kernel(W, S, X, IDX, Y, stride_we, stride_wn, stride_x, s
 
 def expert_gemv_fused(w: torch.Tensor, scale: torch.Tensor, x: torch.Tensor, idx: torch.Tensor, x_div: int = 1, act: int = ACT_NONE) -> torch.Tensor:
     """`expert_gemv(w, scale, act(x).repeat_interleave(x_div, 0), idx)` bit for bit: routed row r reads input row
-    r // x_div; ACT_SILU_MUL applies `silu_mul` to a [gate | up] input row on the fly."""
+    r // x_div; ACT_SILU_MUL applies `silu_mul` to a [gate | up] input row on the fly. (Rows that chose the same
+    expert already share its weights through L2: a program per expert serving all of them was slower.)"""
     e, n, k = w.shape
     r = idx.numel()
     y = torch.empty((r, n), dtype=torch.bfloat16, device=x.device)

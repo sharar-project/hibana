@@ -107,22 +107,21 @@ class TrunkLinear:
             elif act == fk.ACT_SILU_MUL:
                 flat = fk.silu_mul(flat)
             out = fp8_gemv_quant_cuda(flat, self.weight, self.scale)
-        elif rows <= GEMV_MAX_ROWS and k % 16 == 0:  # other widths (mixers K=320/10240, shared down K=640), any activation
-            out = fk.fp8_gemv_quant_any(flat, self.weight, self.scale, act)
+        elif rows <= GEMV_MAX_ROWS and k % 16 == 0:  # other widths (mixers K=320/10240, shared down K=640)
+            if act == fk.ACT_SILU:  # computed once here: per GEMV program, the precise SiLU costs more than a launch
+                flat, act = torch.nn.functional.silu(flat), fk.ACT_NONE
+            out = fk.fp8_gemv_quant_any(flat, self.weight, self.scale, act, amax_parts=amax_parts if act == fk.ACT_NONE else None)
         else:
-            if act != fk.ACT_NONE and rows * k <= 65536:  # the activation inside the one-program quantization
-                x_q, x_scale, _ = fk.act_quant_fp8_small(flat, self.scale, act)
+            if act == fk.ACT_SILU:
+                flat = torch.nn.functional.silu(flat)
+            elif act == fk.ACT_SILU_MUL:
+                flat = fk.silu_mul(flat)
+            if amax_parts is not None and act == fk.ACT_NONE:  # the producer's block maxima: a parallel quantization
+                x_q, x_scale = fk.quant_fp8_parts(flat, amax_parts)
+            elif flat.numel() <= 65536:  # decode rows: one-kernel quantization
+                x_q, x_scale, _ = fk.quant_fp8_small(flat, self.scale)
             else:
-                if act == fk.ACT_SILU:
-                    flat = torch.nn.functional.silu(flat)
-                elif act == fk.ACT_SILU_MUL:
-                    flat = fk.silu_mul(flat)
-                if amax_parts is not None:  # the producer's block maxima: a parallel quantization
-                    x_q, x_scale = fk.quant_fp8_parts(flat, amax_parts)
-                elif flat.numel() <= 65536:  # decode rows: one-kernel quantization
-                    x_q, x_scale, _ = fk.quant_fp8_small(flat, self.scale)
-                else:
-                    from sharar.kernels.draft_fp8 import quant_dynamic
-                    x_q, x_scale = quant_dynamic(flat)
+                from sharar.kernels.draft_fp8 import quant_dynamic
+                x_q, x_scale = quant_dynamic(flat)
             out = torch._scaled_mm(x_q, self.weight.T, scale_a=x_scale, scale_b=self.scale, out_dtype=torch.bfloat16)
         return out.reshape(*x.shape[:-1], self.out_features)

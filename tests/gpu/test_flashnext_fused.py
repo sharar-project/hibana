@@ -163,18 +163,6 @@ def test_fp8_gemv_quant_any_bitwise(m, n, k, act):
         assert torch.equal(_bits(got), _bits(ref)) and torch.equal(got_scale, scale.reshape(1))
 
 
-@pytest.mark.parametrize("m", [5, 16, 20])
-@pytest.mark.parametrize("k,act", [(320, fk.ACT_SILU), (640, fk.ACT_SILU_MUL), (2560, fk.ACT_NONE)])
-def test_act_quant_small_bitwise(m, k, act):
-    ws = torch.tensor([[0.0123]], device="cuda")
-    for seed in range(3):
-        x = _act_input(m, 2 * k if act == fk.ACT_SILU_MUL else k, seed, outliers=seed != 0)
-        a = F.silu(x) if act == fk.ACT_SILU else fk.silu_mul(x) if act == fk.ACT_SILU_MUL else x
-        q, scale, alpha = fk.quant_fp8_small(a.contiguous(), ws)
-        q2, scale2, alpha2 = fk.act_quant_fp8_small(x, ws, act)
-        assert torch.equal(q.view(torch.uint8), q2.view(torch.uint8)) and torch.equal(scale, scale2) and torch.equal(alpha, alpha2)
-
-
 @triton.jit
 def _silu_probe(X, Y, N, BLOCK: tl.constexpr):
     i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
@@ -236,17 +224,19 @@ def test_qkv_epilogue_bitwise(t):
 
 @pytest.mark.parametrize("m", [1, 2, 4, 8])
 def test_moe_combine_routed_bitwise(m):
+    """Bits over 4M+ outputs: a contracted product (an FMA) flips the BF16 rounding of only a few in a million."""
     topk, h = 10, 2560
     g = torch.Generator(device="cuda").manual_seed(8)
-    y = (torch.randn(m * topk, h, device="cuda", generator=g) * 3).to(torch.bfloat16)
-    w = torch.rand(m, topk, device="cuda", generator=g)
-    w = w / w.sum(-1, keepdim=True)
-    shared = torch.randn(m, h, device="cuda", generator=g).to(torch.bfloat16)
-    x = torch.randn(m, h, device="cuda", generator=g).to(torch.bfloat16)
-    gate = torch.randn(h, device="cuda", generator=g) * 0.01
-    routed = (y.float() * w.reshape(-1)[:, None]).view(m, topk, -1).sum(1).to(torch.bfloat16)
-    ref = fk.moe_combine(routed, shared, x, gate)
-    assert torch.equal(_bits(fk.moe_combine_routed(y, w, shared, x, gate)), _bits(ref))
+    for _ in range(max(1, 1600 // m)):
+        y = (torch.randn(m * topk, h, device="cuda", generator=g) * 3).to(torch.bfloat16)
+        w = torch.rand(m, topk, device="cuda", generator=g)
+        w = w / w.sum(-1, keepdim=True)
+        shared = torch.randn(m, h, device="cuda", generator=g).to(torch.bfloat16)
+        x = torch.randn(m, h, device="cuda", generator=g).to(torch.bfloat16)
+        gate = torch.randn(h, device="cuda", generator=g) * 0.01
+        routed = (y.float() * w.reshape(-1)[:, None]).view(m, topk, -1).sum(1).to(torch.bfloat16)
+        ref = fk.moe_combine(routed, shared, x, gate)
+        assert torch.equal(_bits(fk.moe_combine_routed(y, w, shared, x, gate)), _bits(ref))
 
 
 @pytest.mark.parametrize("t", [1, 4, 5, 20])
