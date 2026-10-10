@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # Nightly and weekly checks on the GB10 (.github/workflows/{nightly,weekly}-gb10.yml, self-hosted runner `gb10`).
 #
-#   Nightly:  tools/ci/gb10.sh [--skip-if-tested] image gpu serve [publish]
-#   Weekly:   tools/ci/gb10.sh image evaluate
+#   Nightly:  tools/ci/gb10.sh [--skip-if-tested] venv gpu serve [publish]
+#   Weekly:   tools/ci/gb10.sh venv evaluate
 #   Cleanup:  tools/ci/gb10.sh --cleanup
 #
 # Stages (each needs the one before it to pass, so old code is never tested):
-#   image     build this checkout into sharar:ci (the previous sharar:ci is removed)
-#   gpu       tests/unit and tests/gpu in that image (tools/gpu-tests.sh)
-#   serve     serve each target from that image (run-sharar.sh, 32K context) and check it (tools/verify-sharar.sh)
-#   publish   push that image to ghcr.io/abdelfattah-lab/sharar as main-<commit> and latest (the launchers' default,
-#             tools/image.sh); only after gpu and serve passed in the same run, and the workflow asks for it only on
-#             main. Credentials: GHCR_TOKEN (and GHCR_USER) from the workflow, used through a private docker config so
-#             the runner's own `docker login` is untouched
+#   venv      the Python environment for this checkout (tools/setup-venv.sh; SHARAR_VENV, default ~/sharar-ci/venv, kept
+#             between runs and rebuilt when the constraints, pyproject.toml or the setup script change)
+#   gpu       tests/unit and tests/gpu from it (tools/gpu-tests.sh)
+#   serve     serve each target from it (run-sharar.sh as the service sharar-ci, 32K context) and check it
+#             (tools/verify-sharar.sh)
+#   publish   build the optional runtime image (docker/build.sh), check that it imports the engine, and push it to
+#             ghcr.io/abdelfattah-lab/sharar as main-<commit> and latest; only after gpu and serve passed in the same run,
+#             and the workflow asks for it only on main. Credentials: GHCR_TOKEN (and GHCR_USER) from the workflow, used
+#             through a private docker config so the runner's own `docker login` is untouched
 #   evaluate  each target, fast profile (tools/evaluate.py): AIPerf speed (code, design, reasoning) and, so that a
 #             speed gain from wrongly accepted drafts cannot pass, GSM8K (first 300) and HumanEval (164); paired with
 #             that target's baseline. Fails on more than 5% lower TPS or a quality loss of at least 1 point (p < 0.05,
@@ -22,7 +24,7 @@
 # The machine is shared, so the checks never hold anyone up. They are skipped when, at the start, the shared GPU
 # lock ($SHARAR_RESULTS/.gpu.lock) is held or awaited, another container with the GPU or a GPU process runs, or
 # under 40 GiB of memory is available. While they run, a watchdog checks the same every 10 s (ignoring the
-# checks' own containers and processes); on any sign of someone else's work it stops the checks' containers and
+# checks' own services and processes); on any sign of someone else's work it stops the checks' services and
 # ends the run as "gave way" (exit 0). A skipped or interrupted nightly run is not recorded as tested.
 #
 # Settings come from ~/sharar-ci/gb10.env (SHARAR_CONFIG_FILE): SHARAR_HF_CACHE, SHARAR_RESULTS, SHARAR_AIPERF,
@@ -31,10 +33,10 @@ set -Euo pipefail
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 cd "$(dirname "$SELF")/../.."
 
-ALL="image gpu serve publish evaluate"
-IMAGE=sharar:ci
+ALL="venv gpu serve publish evaluate"
+IMAGE=sharar:ci   # publish only: the optional runtime image
 REGISTRY=ghcr.io/abdelfattah-lab/sharar
-SERVE_CONTAINER=sharar-ci
+SERVE_SERVICE=sharar-ci
 SERVE_PORT=30011
 OUT="$PWD/ci-out"
 MIN_FREE_GIB=40
@@ -48,12 +50,18 @@ set -a; source "$SHARAR_CONFIG_FILE"; set +a
 : "${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in $SHARAR_CONFIG_FILE}"
 : "${SHARAR_RESULTS:?set SHARAR_RESULTS in $SHARAR_CONFIG_FILE}"
 EVALS="${SHARAR_EVALS:-$HOME/sharar-eval}"
+export SHARAR_VENV="${SHARAR_VENV:-$HOME/sharar-ci/venv}"
 LOCK="$SHARAR_RESULTS/.gpu.lock"
-OURS="$OUT/containers"     # the containers these checks started, one name per line
+OURS="$OUT/services"       # the user systemd services these checks started, one name per line
 SESSIONS="$OUT/sessions"   # the session ids of this run's processes (lock holders among them are ours)
 
 # ---- whose work is on the machine ----
 ours() { grep -qxF "$1" "$OURS" 2>/dev/null; }
+our_service() {  # whether a process runs in one of these checks' systemd services
+  local cg name; cg="$(cat "/proc/$1/cgroup" 2>/dev/null || true)"
+  while read -r name; do [[ -n "$name" && "$cg" == *"/$name.service"* ]] && return 0; done < <(cat "$OURS" 2>/dev/null)
+  return 1
+}
 our_session() { local sid; sid="$(ps -o sid= -p "$1" 2>/dev/null | tr -d ' ')"; [[ -n "$sid" ]] && grep -qxF "$sid" "$SESSIONS" 2>/dev/null; }
 lock_pids() {  # pids /proc/locks names for the GPU lock (holders, or waiters with `waiting`)
   [[ -e "$LOCK" ]] || return 0
@@ -70,20 +78,23 @@ take_lock() {
 
 # Prints why the machine is someone else's right now (nothing when it is free). `start` adds the memory floor.
 foreign_work() {
-  local why=() name id ids="" pid cg
-  # Containers with the GPU device that these checks did not start.
+  local why=() name pid
+  # Containers with the GPU device (these checks start none).
   while read -r name; do
     [[ -n "$name" ]] || continue
-    ours "$name" && { ids+=" $(docker inspect -f '{{.Id}}' "$name" 2>/dev/null)"; continue; }
     docker inspect -f '{{range .HostConfig.Devices}}{{.PathOnHost}} {{end}}{{len .HostConfig.DeviceRequests}}' "$name" 2>/dev/null \
       | grep -qE '/dev/nvidia|[1-9]$' && why+=("container $name has the GPU")
-  done < <(docker ps --format '{{.Names}}')
-  # GPU processes outside these checks' containers.
+  done < <(command -v docker >/dev/null && docker ps --format '{{.Names}}')
+  # Other Sharar services (someone serving or training from a checkout).
+  while read -r name; do
+    name="${name%.service}"
+    [[ -n "$name" && "$name" != sharar-memory-guard ]] && ! ours "$name" && why+=("service $name runs")
+  done < <(systemctl --user list-units --state=active --plain --no-legend 'sharar-*.service' 2>/dev/null | awk '{print $1}')
+  # GPU processes outside these checks' sessions and services.
   while IFS=, read -r pid _; do
     pid="${pid// /}"; [[ "$pid" =~ ^[0-9]+$ ]] || continue
-    cg="$(cat "/proc/$pid/cgroup" 2>/dev/null || true)"
-    for id in $ids; do [[ "$cg" == *"$id"* ]] && continue 2; done
     our_session "$pid" && continue
+    our_service "$pid" && continue
     why+=("GPU process $pid ($(ps -o comm= -p "$pid" 2>/dev/null || echo '?'))")
   done < <(nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null || true)
   # The shared GPU lock, held or awaited by anyone else.
@@ -104,9 +115,9 @@ foreign_work() {
 stop_ours() {
   local name
   while read -r name; do
-    [[ -n "$name" ]] && docker container inspect "$name" >/dev/null 2>&1 && docker rm -f "$name" >/dev/null 2>&1
+    [[ -n "$name" ]] && systemctl --user stop "$name.service" >/dev/null 2>&1
   done < <(cat "$OURS" 2>/dev/null)
-  systemctl --user stop sharar-memory-guard.service >/dev/null 2>&1 || true   # run-sharar.sh's guard of the served container
+  systemctl --user stop sharar-memory-guard.service >/dev/null 2>&1 || true   # run-sharar.sh's guard of the served service
   return 0
 }
 
@@ -128,44 +139,30 @@ for root in filter(None, sys.argv[1:]):
 }
 
 # ---- stages (each runs in its own session: `gb10.sh --stage NAME`) ----
-stage_image() {
-  local old new
-  old="$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null || true)"
-  bash docker/build.sh "$IMAGE" || return 1
-  new="$(docker image inspect -f '{{.Id}}' "$IMAGE")"
-  [[ -n "$old" && "$old" != "$new" ]] && docker rmi "$old" >/dev/null 2>&1   # untagged by the build; kept if in use
-  return 0
+stage_venv() {
+  bash tools/setup-venv.sh --check || bash tools/setup-venv.sh
 }
 
 # tests/unit too: some unit tests need the model or the GPU and only run here. Test temp files go in ci-out/ on
-# the host disk: the container's /tmp lacks RWF_NOWAIT, which tests/unit/test_ple_rows.py relies on.
+# the runner's disk: tests/unit/test_ple_rows.py relies on RWF_NOWAIT, which a tmpfs /tmp may lack.
 stage_gpu() {
   local pid rc=0
   take_lock || return 1
   evict_models
-  SHARAR_TEST_IMAGE="$IMAGE" bash tools/gpu-tests.sh tests/unit tests/gpu --basetemp=ci-out/pytest-tmp &
+  bash tools/gpu-tests.sh tests/unit tests/gpu --basetemp=ci-out/pytest-tmp &
   pid=$!
-  echo "sharar-gpu-tests-$pid" >>"$OURS"   # gpu-tests.sh names its container after its process id
-  guard "sharar-gpu-tests-$pid" 8>&- &
+  bash tools/memory-guard.sh --pid "$pid" 8>&- &
   wait "$pid" || rc=$?
   return "$rc"
 }
 
-guard() {  # tools/memory-guard.sh on a container once it exists (run-sharar.sh starts its own)
-  local _
-  for _ in $(seq 120); do
-    docker container inspect "$1" >/dev/null 2>&1 && exec bash tools/memory-guard.sh "$1"
-    sleep 1
-  done
-}
-
 # One target's launcher config: the CI config's paths, the target (its settings come from config/targets/), and the CI
-# image, container, port and context; no draft-runs, no saved sessions.
+# service, port and context; no draft-runs, no saved sessions.
 serve_config() {
   local conf="$OUT/serve-$1.env"
-  { grep -vE '^(SHARAR_TARGET|SHARAR_IMAGE|SHARAR_CONTAINER|SHARAR_PORT|SHARAR_MAX_CONTEXT|SHARAR_DRAFT|SHARAR_SESSION_DIR)=' "$SHARAR_CONFIG_FILE"
+  { grep -vE '^(SHARAR_TARGET|SHARAR_SERVICE|SHARAR_PORT|SHARAR_MAX_CONTEXT|SHARAR_DRAFT|SHARAR_SESSION_DIR)=' "$SHARAR_CONFIG_FILE"
     echo "SHARAR_TARGET=$1"
-    echo "SHARAR_IMAGE=$IMAGE"; echo "SHARAR_CONTAINER=$SERVE_CONTAINER"; echo "SHARAR_PORT=$SERVE_PORT"
+    echo "SHARAR_SERVICE=$SERVE_SERVICE"; echo "SHARAR_PORT=$SERVE_PORT"
     echo "SHARAR_MAX_CONTEXT=32768"; echo "SHARAR_DRAFT=pinned"; echo "SHARAR_SESSION_DIR=off"; } >"$conf"
   echo "$conf"
 }
@@ -173,15 +170,15 @@ serve_config() {
 stage_serve() {
   local target conf waited rc=0
   take_lock || return 1
-  echo "$SERVE_CONTAINER" >>"$OURS"
+  echo "$SERVE_SERVICE" >>"$OURS"
   for target in qwen38 flashnext; do
     conf="$(serve_config "$target")"
     evict_models
     SHARAR_CONFIG_FILE="$conf" bash run-sharar.sh 8>&- || { echo "$target: launch failed"; rc=1; continue; }
     waited=0
     until curl -fs "http://127.0.0.1:$SERVE_PORT/health" >/dev/null 2>&1; do
-      if [[ "$(docker container inspect -f '{{.State.Running}}' "$SERVE_CONTAINER" 2>/dev/null)" != true ]] || (( waited >= 900 )); then
-        echo "$target: not healthy"; docker logs --tail 100 "$SERVE_CONTAINER" 2>&1; rc=1; break
+      if ! systemctl --user is-active --quiet "$SERVE_SERVICE" || (( waited >= 900 )); then
+        echo "$target: not healthy"; tail -n 100 "$SHARAR_RESULTS/logs/$SERVE_SERVICE.log" 2>&1; rc=1; break
       fi
       sleep 5; waited=$(( waited + 5 ))
     done
@@ -189,18 +186,24 @@ stage_serve() {
       if SHARAR_URL="http://127.0.0.1:$SERVE_PORT" SHARAR_MAX_CONTEXT=32768 bash tools/verify-sharar.sh; then
         echo "$target: verified (healthy after ${waited}s)" >>"$OUT/notes-serve"
       else
-        echo "$target: verification failed"; docker logs --tail 100 "$SERVE_CONTAINER" 2>&1; rc=1
+        echo "$target: verification failed"; tail -n 100 "$SHARAR_RESULTS/logs/$SERVE_SERVICE.log" 2>&1; rc=1
       fi
     fi
-    SHARAR_CONFIG_FILE="$conf" bash run-sharar.sh --stop 8>&- || docker rm -f "$SERVE_CONTAINER" >/dev/null 2>&1
+    SHARAR_CONFIG_FILE="$conf" bash run-sharar.sh --stop 8>&- || systemctl --user stop "$SERVE_SERVICE.service" >/dev/null 2>&1
   done
   return "$rc"
 }
 
-# The image must be this checkout's build (docker/build.sh labels it with the commit); the GPU is not used.
+# The optional runtime image, built from this checkout (docker/build.sh labels it with the commit) after gpu and serve
+# passed on the same checkout; the GPU is not used.
 stage_publish() {
-  local commit rev tag
+  local commit rev tag old
   commit="$(git rev-parse HEAD)"
+  old="$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null || true)"
+  bash docker/build.sh "$IMAGE" || return 1
+  [[ -n "$old" && "$old" != "$(docker image inspect -f '{{.Id}}' "$IMAGE")" ]] && docker rmi "$old" >/dev/null 2>&1
+  docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help >/dev/null \
+    || { echo "$IMAGE does not import the engine"; return 1; }
   rev="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE")"
   [[ "$rev" == "$commit" ]] || { echo "$IMAGE is from ${rev:-an unlabeled build}, not $commit"; return 1; }
   [[ -n "${GHCR_TOKEN:-}" ]] || { echo "GHCR_TOKEN is not set"; return 1; }
@@ -218,13 +221,13 @@ stage_publish() {
 # tools/evaluate.py takes the GPU lock itself for its serving window.
 stage_evaluate() {
   local target name dir base rc=0 verdict paired
-  echo sharar-evaluate >>"$OURS"
+  echo sharar-evaluate >>"$OURS"   # tools/evaluate.py's service
   for target in qwen38 flashnext; do
     name="ci-weekly-$target-$(date -u +%Y%m%dT%H%M)"
     base="$SHARAR_RESULTS/ci/baseline-$target"
     paired=(); [[ -e "$base" ]] && paired=(--baseline "$(realpath "$base")")
     evict_models
-    python3 tools/evaluate.py --target "$target" --profile fast --image "$IMAGE" --tasks gsm8k,humaneval --limit 300 --speed --workload all \
+    python3 tools/evaluate.py --target "$target" --profile fast --tasks gsm8k,humaneval --limit 300 --speed --workload all \
       --name "$name" --evals "$EVALS" "${paired[@]}" || { echo "$target: evaluate did not complete"; rc=1; continue; }
     dir="$(ls -d "$SHARAR_RESULTS"/reviews/*-evaluate-"$name" | tail -1)"
     echo "$dir" >>"$OUT/evaluate-dirs"
@@ -324,7 +327,7 @@ run_stage() {
   rows+=("| $1 | **failed** | $took${note:+; $note} |"); failed=1; return 1
 }
 
-depends() { case $1 in gpu|serve|evaluate) echo image;; publish) echo image gpu serve;; esac; }
+depends() { case $1 in gpu|serve|evaluate) echo venv;; publish) echo venv gpu serve;; esac; }
 [[ -n "$busy" ]] || { watchdog & watchdog_pid=$!; }
 missing=" "
 for s in $ALL; do

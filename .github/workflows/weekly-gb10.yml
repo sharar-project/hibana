@@ -15,8 +15,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
-      - name: Image, speed and GSM8K/HumanEval of both targets against their baselines
-        run: bash tools/ci/gb10.sh image evaluate
-      - name: Stop CI containers
+      - name: Python environment, speed and GSM8K/HumanEval of both targets against their baselines
+        run: bash tools/ci/gb10.sh venv evaluate
+      - name: Stop CI services
         if: always()
         run: bash tools/ci/gb10.sh --cleanup || true

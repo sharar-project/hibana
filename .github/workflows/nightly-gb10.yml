@@ -16,14 +16,14 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
-      - name: Image, GPU suite, serve both targets, publish from main
+      - name: Python environment, GPU suite, serve both targets, publish the image from main
         # a scheduled run skips a commit it has already tested; a manual run always tests; only main is published
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
         run: >-
-          bash tools/ci/gb10.sh ${{ github.event_name == 'schedule' && '--skip-if-tested' || '' }} image gpu serve
+          bash tools/ci/gb10.sh ${{ github.event_name == 'schedule' && '--skip-if-tested' || '' }} venv gpu serve
           ${{ github.ref == 'refs/heads/main' && 'publish' || '' }}
-      - name: Stop CI containers
+      - name: Stop CI services
         if: always()
         run: bash tools/ci/gb10.sh --cleanup || true
