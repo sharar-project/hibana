@@ -32,5 +32,5 @@ NVFP4_GROUP_SIZE = 16
 
 # GB10 measured after releasing source mappings per layer: 21.36 GiB peak
 # MemAvailable drop (20 ms samples), 19.58 GiB CUDA peak. 24 GiB retains a
-# 2.64 GiB margin; the separate 16 GiB host floor still applies. See the Phase 7D study (archive branch).
+# 2.64 GiB margin; the separate 16 GiB host floor still applies.
 WEIGHT_LOAD_PEAK_BYTES = 24 * 2**30

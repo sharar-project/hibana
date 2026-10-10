@@ -38,7 +38,7 @@ Admission also checks the output budget and speculative scratch capacity.
 | `response_format` omitted/null/`{"type":"text"}` | Ordinary text output |
 | `response_format: {"type":"json_object"}` / `{"type":"json_schema","json_schema":{"schema":{...}}}` | Constrained: a JSON object / JSON valid against the schema ([constrained output](#constrained-output)) |
 | `trace` | `false` excludes this request from the opt-in [trace sink](operations.md#request-traces); accepted on every generation route |
-| `accept_top_k`, `accept_margin` | Relaxed speculative acceptance, off unless both are set (sampled requests may set them too; measured on 2026-09-23 at temperature 0.6 they cost about two GSM8K and three HumanEval points for +4% throughput, so the server default applies to greedy requests only unless `SHARAR_ACCEPT_DEFAULT_SAMPLED=1`, at the greedy threshold or `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD=K:M`; the `fast` profile turns it on, the 27B at 2:1.0): a drafted token is also accepted when the target ranks it within its top `accept_top_k` and within `accept_margin` logits of the argmax (a log-probability ratio; 1.0 means at least 37% of the top probability). Faster, and no longer the target's exact greedy continuation; the per-request `spec_relaxed_tokens` counts such tokens. **Default: the server applies top-2 within 1.0 logit to greedy requests that set neither field** (`--accept-default`, `SHARAR_ACCEPT_DEFAULT`; `off` keeps everything exact); send `accept_top_k: 1` to get the exact greedy continuation for one request. Accepted on every generation route |
+| `accept_top_k`, `accept_margin` | Relaxed speculative acceptance: a drafted token is also accepted when the target ranks it within its top `accept_top_k` and within `accept_margin` logits of the argmax (a log-probability ratio; 1.0 means at least 37% of the top probability). Faster, and no longer the target's exact continuation; the per-request `spec_relaxed_tokens` counts such tokens. **A request that sets neither field gets the server's default**, which the serving profile chooses ([operations](operations.md#serving-profiles); `fast`: top-3 within 2.0 for greedy requests, and for sampled ones top-3 within 2.0 on Flash-Next, top-2 within 1.0 on the 27B; `exact`: off). Send `accept_top_k: 1` for the exact continuation on one request. Accepted on every generation route |
 
 `GET /get_server_info` reports `speculative.draft` (the served draft
 directory), `speculative.accept_default`, `spec_stats` (rounds, proposed, accepted, emitted, `relaxed_accepts`) and, when
@@ -180,8 +180,8 @@ The OpenAI chat endpoint handles role `developer` the same way as `system`.
 
 The API's supported controls are checked in `tests/unit/test_chat_controls.py`
 and `tests/unit/test_messages_api.py`;
-failure, disconnect and drain behavior has separate lifecycle tests. Current
-request-level cache modes/priorities are only a [proposal](request-cache-policy.md).
+failure, disconnect and drain behavior has separate lifecycle tests. There are no
+request-level cache controls.
 
 ### Pi
 

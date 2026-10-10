@@ -1,7 +1,7 @@
 """Conv and SSM state slots for the 48 Gated DeltaNet layers.
 
 Every request owns one committed slot. Scratch slots are reserved for
-speculative verification (Phase 7). Acceptance either copies a retained
+speculative verification. Acceptance either copies a retained
 snapshot or reconstructs directly into validated private slots. The tensors are per layer so the
 kernels' `initial_state_indices` address the slot directly.
 """

@@ -1,8 +1,7 @@
 """CUDA small-M FP8 GEMV (see csrc/fp8_gemv.cu), compiled on first use.
 
-The build is cached by torch under $HOME/.cache/torch_extensions; in the dev
-container HOME lives on the results volume, so it persists. Phase 9 replaces
-this JIT step with a prebuilt artifact.
+The build is cached by torch under $HOME/.cache/torch_extensions; in the
+container HOME lives on the results volume, so it persists.
 """
 
 from __future__ import annotations

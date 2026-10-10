@@ -181,7 +181,7 @@ def write_config(path: Path, data: dict, dry: bool) -> None:
 def cmd_launch(args, env, dry) -> int:
     """Start a coding agent against the serving target with its own config (the user's own settings are not touched)."""
     if args.harness == "codex":
-        sys.exit("Codex needs the OpenAI Responses API (/v1/responses), which Sharar does not serve yet (#19)")
+        sys.exit("Codex needs the OpenAI Responses API (/v1/responses), which Sharar does not serve")
     url = (os.environ.get("SHARAR_URL") or f"http://127.0.0.1:{env['SHARAR_PORT']}").rstrip("/")
     try:
         with urllib.request.urlopen(f"{url}/get_server_info", timeout=3) as r:
@@ -473,7 +473,7 @@ def main(argv=None) -> int:
     g = p.add_mutually_exclusive_group()
     for name, text in (("exact", "the target's own distribution: exact acceptance, no lossy weight copies"),
                        ("balanced", "relaxed greedy acceptance top-2/1.0, the 27B's calibrated 3-bit copies"),
-                       ("fast", "the default: every measured speed option, lossy ones included (docs/optimizations.md#serving-profiles)"),
+                       ("fast", "the default: every measured speed option, lossy ones included (docs/operations.md#serving-profiles)"),
                        ("throughput", "fast with up to 16 requests at once and shallower verification above four (evals, many agents)")):
         g.add_argument(f"--{name}", dest="profile", action="store_const", const=name, help=text)
     p = sub.add_parser("launch", help="start a coding agent (claude, opencode, aider) set up for the serving target; `show` prints the settings for any other tool")

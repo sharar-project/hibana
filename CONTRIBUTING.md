@@ -4,8 +4,8 @@ Sharar specializes in local inference on one GB10. Keep the current Qwen
 target checkpoint, its vocabulary head and the numerical serving profile fixed
 unless a change explicitly validates a new one; the DFlash2 drafter is the one
 component trained on recorded traffic. Favor a small implementation with
-explicit tensor ownership over a registry or framework. Read [the interfaces](docs/interfaces.md),
-[the roadmap](roadmap.md), and [request ownership](docs/ownership.md).
+explicit tensor ownership over a registry or framework. Read [the architecture](docs/architecture.md) and
+[the interfaces](docs/interfaces.md) first; open work is in the GitHub issues.
 
 ## Run checks
 
@@ -23,8 +23,7 @@ already prepared environment. Sharar's small GitHub CPU workflow uses the same
 setup command. Dependency constraints are in `constraints/`; the GB10 image
 uses `gb10-cu130.txt`, CUDA 13.0.3 and the pinned checkpoint revision.
 
-Also run `python3 tools/check_evidence.py` for recursive evidence/link checks,
-and `.venv-cpu/bin/python tools/check_distribution.py` to build an sdist and
+Also run `python3 tools/check_links.py` for documentation links, and `.venv-cpu/bin/python tools/check_distribution.py` to build an sdist and
 wheel and probe installed runtime assets outside the checkout. CI runs these
 checks; a source-only or editable installation does not validate packaging.
 
@@ -48,7 +47,7 @@ The real-checkpoint fixture uses bounded pools: 35,000 KV pages and 12 recurrent
 slots. Keep the external memory guard active for that container. The loader
 requires 40 GiB `MemAvailable`: a 24 GiB allowance based on the measured 21.3 GiB
 streaming-load peak plus the 16 GiB host floor. Runtime separately checks the
-prospective pool/draft budget before allocation. See [7D evidence](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/phase7d.md).
+prospective pool/draft budget before allocation.
 Performance measurements need exclusive GPU use. The check command does not
 stop or replace a running service.
 
@@ -64,14 +63,13 @@ the row count, so outputs drift whenever shapes move.
 `profiling/flashnext_round.py` isolates round cost and tokens per round when a
 speed change needs explaining. A lossy option (one that changes what the model
 emits on purpose) is judged by the lossy-change gate below instead.
-When an optimization lands, changes its default or is retired, update its
-row in the [optimization inventory](docs/optimizations.md) in the same change.
+When a change alters a default or adds a setting, update [operations](docs/operations.md) in the same change.
 
 ## Judge a lossy option
 
 A lossy speed option (low-bit weights, fewer or pruned experts, relaxed
 acceptance, a reduced draft vocabulary) never enters the `exact` profile. It
-enters `balanced` or `fast` only through the lossy-change gate (#31), one
+enters `balanced` or `fast` only through the lossy-change gate, one
 command for either target:
 
 ```bash
@@ -121,10 +119,6 @@ early warning. Layer 2 resolves speed to about 3.5% (a warm baseline repeat read
 second exact process x0.986); a smaller gain needs the served, interleaved h2h
 arms. Argmax agreement breaks exact logit ties by index order, so identical
 distributions read about 99.3%, not 100%; the floor carries the same effect.
-Calibration on Flash-Next (2026-09-28): the nearest-rounded 3-bit trunk separates from
-exact on all three layers (layer-1 KL 0.184 against a 0.013 floor, tokens per round x0.65,
-screen -4.9 points, p < 0.001); exact against exact stays within every floor (screen
-+0.7 points, p 0.44).
 Relaxed acceptance does not move layer 1 (the distribution is
 unchanged); it shows in layers 2 and 3. Sampled requests are not scored.
 
@@ -247,24 +241,15 @@ needs its own pressure and graph-address tests.
 
 ## Propose a hardware optimization
 
-GB10 shares physical DRAM between CPU and GPU, but not every CUDA allocation
-is coherently CPU-accessible; a mapped-allocation experiment must establish
-its visibility and synchronization contract
-([porting notes](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/cuda.html)).
-Use host `MemAvailable` alongside allocator measurements, and benchmark with
-background CPU load as well as an idle machine
-([UMA guidance](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/optimization.html)).
-Use independent repeated runs with intervals appropriate to the sample count;
-do not infer tail latency from a handful of requests. Each experiment records
-the bottleneck evidence and predicted reduction; pinned source, image, model,
-draft, shapes, cache state, sampling and host load; an ablation against the
-same target work, separating kernel-cost comparisons from generation runs when
-changed continuations alter the amount of work; the affected tests, raw
-samples, emitted tokens and memory; and a keep/remove decision against the
-declared threshold, negative results included. The full historical plan is
-[archived](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/gb10-experiments-2026-09.md). Describe the mechanism,
-what traffic or synchronization it removes, the control experiment, and the
-condition that would make us abandon it. Keep tuning and algorithm/architecture
-experiments distinguishable. Report source/image/compiler identities, all raw
-samples, output checks and memory. Avoid claiming novelty or superiority from
-a microbenchmark or from the frozen plain-decode reference alone.
+GB10 shares physical DRAM between CPU and GPU, but not every CUDA allocation is coherently CPU-accessible; a
+mapped-allocation experiment must establish its visibility and synchronization contract
+([porting notes](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/cuda.html)). Use host
+`MemAvailable` alongside allocator measurements, and benchmark with background CPU load as well as an idle
+machine ([UMA guidance](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/optimization.html)).
+
+Before building, write down the bottleneck evidence, the mechanism (what traffic or synchronization it
+removes), the predicted gain and the result that would make you abandon it. Measure against the same target
+work in separate fresh processes, with repeated runs and intervals; keep kernel-cost comparisons apart from
+generation runs when changed continuations alter the amount of work. Record source, image, model, draft,
+shapes, cache state, sampling and host load with the results, negative ones included, in the issue or pull
+request. A microbenchmark alone does not establish a serving gain.
