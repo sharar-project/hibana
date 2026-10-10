@@ -111,6 +111,6 @@ class MoeLayer:
         )
         if isinstance(routed, (list, tuple)):  # flashinfer 0.6 returns [output]
             routed = routed[0]
-        from sharar.kernels.flashnext_fused import moe_combine, silu_mul
-        shared = self.shared_down(silu_mul(self.shared_gate_up(x)))
+        from sharar.kernels.flashnext_fused import ACT_SILU_MUL, moe_combine
+        shared = self.shared_down(self.shared_gate_up(x), act=ACT_SILU_MUL)  # SiLU-mul inside the down projection's quantization
         return moe_combine(routed, shared, x, self.shared_gate_vec)

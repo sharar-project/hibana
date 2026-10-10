@@ -85,6 +85,8 @@ class ShortlistHead:
     def _logits(self, flat: torch.Tensor) -> torch.Tensor:
         if self.w3 is not None:
             from sharar.kernels import w3
+            if flat.shape[0] <= w3.MAX_ROWS:  # one part: no concatenating copy of the [M, V] logits
+                return w3.w3_linear(flat.contiguous(), self.w3)
             return torch.cat([w3.w3_linear(part.contiguous(), self.w3) for part in flat.split(w3.MAX_ROWS)])
         return self.head(flat)
 

@@ -53,8 +53,10 @@ class HyperConnection:
     def mix(self, hyper: torch.Tensor):
         if self.fused:
             from sharar.kernels import flashnext_fused as fk
-            normed = fk.grouped_gemma_rms(hyper, self.norm, self.eps, self.hidden)
-            mixed = fk.gate_mean(self.up(F.silu(self.down(normed))), normed, self.hc, self.hidden)
+            # The norm writes its block maxima for the down projection's FP8 quantization and the up projection
+            # quantizes silu(down) itself: the unfused chain's bits in fewer, parallel launches (#9).
+            normed, parts = fk.grouped_gemma_rms(hyper, self.norm, self.eps, self.hidden, amax=True)
+            mixed = fk.gate_mean(self.up(self.down(normed, amax_parts=parts), act=fk.ACT_SILU), normed, self.hc, self.hidden)
             return mixed, (hyper, normed)
         normed = grouped_gemma_rms(hyper, self.norm, self.eps, self.hidden)
         gate = torch.sigmoid(self.up(F.silu(self.down(normed) / self.hc)))
