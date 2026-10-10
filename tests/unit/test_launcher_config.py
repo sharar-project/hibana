@@ -43,3 +43,9 @@ def test_launcher_pins_the_engines_checkpoints():
     pins = dict(re.findall(r'MODEL_REPO="([^"]+)"; MODEL_REVISION="([0-9a-f]{40})"', text))
     assert pins == {QWEN38.model_id: QWEN38.model_revision, FLASHNEXT.model_id: FLASHNEXT.model_revision}
     assert flashnext.MODEL_REVISION == FLASHNEXT.model_revision
+
+
+def test_gdn_backend_override_is_forwarded_by_both_launchers():
+    assert '--env "SHARAR_GDN_PREFILL=$SHARAR_GDN_PREFILL"' in (ROOT / 'run-sharar.sh').read_text()
+    assert 'export SHARAR_GDN_PREFILL="${SHARAR_GDN_PREFILL:-auto}"' in (ROOT / 'sharar-tp').read_text()
+    assert resolve('flashnext', SHARAR_GDN_PREFILL='triton')['SHARAR_GDN_PREFILL'] == 'triton'

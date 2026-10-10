@@ -151,6 +151,7 @@ cmd_run() {  # both ranks in the foreground: what `serve` starts in the backgrou
   fi
   export SHARAR_PROFILE="$profile" SHARAR_W3_DECODE="$w3_decode" SHARAR_W3_CHECKPOINT="$w3" SHARAR_DEVICE_ACCEPT="$P_DEVICE_ACCEPT"
   export SHARAR_TP_ALLREDUCE="${SHARAR_TP_ALLREDUCE:-rdma}"
+  export SHARAR_GDN_PREFILL="${SHARAR_GDN_PREFILL:-auto}"
   [[ ${SHARAR_DRAFT:-} == pinned ]] && unset SHARAR_DRAFT  # the publisher draft, as run-sharar.sh reads it
   # The NVMe session store, as the single-Spark launcher keeps it (off disables): each rank stores its own heads of
   # every session on its own Spark, at the same path.

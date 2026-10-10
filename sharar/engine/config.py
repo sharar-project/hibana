@@ -50,6 +50,7 @@ class EngineConfig:
     w3_checkpoint: str | None = None          # SHARAR_W3_CHECKPOINT: the target's calibrated copies (required on Flash-Next; the 27B rounds to nearest without)
     w3_warning: str | None = None             # SHARAR_W3_WARNING: why the launcher serves without the profile's calibrated copies
     stable_numerics: bool = False             # SHARAR_STABLE_NUMERICS: M-invariant prefill kernels
+    gdn_prefill: str = "auto"                 # SHARAR_GDN_PREFILL: auto (CuTe on SM12x), cute, triton
     fused_norm_nvfp4: bool = False            # SHARAR_FUSED_NORM_NVFP4 (27B compatibility switch)
     flashnext_trunk: str = "fp8"              # SHARAR_FLASHNEXT_TRUNK: bf16 | fp8
     flashnext_mixers: str = "fp8"             # SHARAR_FLASHNEXT_MIXERS
@@ -100,6 +101,7 @@ class EngineConfig:
             w3_checkpoint=_str(e, "SHARAR_W3_CHECKPOINT"),
             w3_warning=_str(e, "SHARAR_W3_WARNING"),
             stable_numerics=_flag(e, "SHARAR_STABLE_NUMERICS"),
+            gdn_prefill=_str(e, "SHARAR_GDN_PREFILL", "auto"),
             fused_norm_nvfp4=_flag(e, "SHARAR_FUSED_NORM_NVFP4"),
             flashnext_trunk=_str(e, "SHARAR_FLASHNEXT_TRUNK", "fp8"),
             flashnext_mixers=_str(e, "SHARAR_FLASHNEXT_MIXERS", "fp8"),

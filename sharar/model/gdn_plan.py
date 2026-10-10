@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import accumulate
+from math import gcd
 from typing import TYPE_CHECKING
 
 import torch
@@ -29,6 +30,12 @@ class GdnPrefillPlan:
     chunk_offsets: torch.Tensor
     # (destination slot, end of pre-conv inputs, entering-chunk state index)
     checkpoints: tuple[tuple[int, int, int], ...]
+    cute_cu_seqlens: torch.Tensor
+    checkpoint_interval: int
+    checkpoint_cu_starts: torch.Tensor
+    checkpoint_indices: torch.Tensor
+    checkpoint_destinations: torch.Tensor
+    checkpoint_count: int
 
 
 def prepare_gdn_prefill(ctx: ForwardContext | None, tokens: int, device: torch.device | str) -> GdnPrefillPlan:
@@ -54,6 +61,7 @@ def prepare_gdn_prefill(ctx: ForwardContext | None, tokens: int, device: torch.d
     offsets = (0, *accumulate((n + 63) // 64 for n in lengths))
     indices = [(i, c) for i, n in enumerate(lengths) for c in range((n + 63) // 64)]
     checkpoints = []
+    checkpoint_local = []
     if ctx is not None:
         if len(ctx.checkpoint_positions) != len(ctx.checkpoint_slots) or len(checkpoint_seqs) != len(ctx.checkpoint_slots):
             raise ValueError("GDN prefill checkpoint metadata has inconsistent lengths")
@@ -62,10 +70,30 @@ def prepare_gdn_prefill(ctx: ForwardContext | None, tokens: int, device: torch.d
             if local % 64 or not 0 < local < lengths[i]:
                 raise ValueError("GDN checkpoint must be an interior 64-token boundary")
             checkpoints.append((slot, starts[i] + local, offsets[i] + local // 64))
+            checkpoint_local.append((i, local))
+    # CuTe snapshots the state AFTER each interval, unlike FLA's entering-chunk
+    # history. Use the largest interval covering every requested boundary;
+    # ordinary serving checkpoints therefore do not need a full 64-token history.
+    interval = 0
+    for _, local in checkpoint_local:
+        interval = gcd(interval, local)
+    checkpoint_starts = (0, *accumulate(n // interval for n in lengths)) if interval else (0,) * (len(lengths) + 1)
+    unique_checkpoints = sorted(set(checkpoint_local))
+    packed_indices = {boundary: j for j, boundary in enumerate(unique_checkpoints)}
+    checkpoint_indices = [packed_indices[boundary] for boundary in checkpoint_local]
+    lookup = [-1] * checkpoint_starts[-1]
+    for (i, local), j in packed_indices.items():
+        lookup[checkpoint_starts[i] + local // interval - 1] = j
     plan = GdnPrefillPlan(
         cu, slots, upload([p > 0 for p in prefixes], torch.bool, device), lengths,
         upload(indices, cu.dtype, device),
         upload(offsets, torch.int64, device), tuple(checkpoints),
+        upload(starts, torch.int64, device), interval,
+        # Header: per-sequence lookup offsets. Body: compact snapshot index or-1.
+        upload((*checkpoint_starts, *lookup), torch.int64, device),
+        upload(checkpoint_indices, torch.int64, device),
+        upload([slot for slot, _, _ in checkpoints], torch.int64, device),
+        len(unique_checkpoints),
     )
     if ctx is not None:
         ctx.gdn_plan = plan

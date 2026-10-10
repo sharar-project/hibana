@@ -1,6 +1,6 @@
 """Gated DeltaNet linear-attention layer (48 of the 64 layers).
 
-Prefill mirrors SGLang's GDNAttnBackend.forward_extend with the Triton kernels:
+Prefill uses the tuned CuTe chunk32 backend on SM12x (Triton fallback):
 FP8 qkv/z projection, bf16 b/a projection, causal Conv1D with state write-back,
 fused gating, chunked gated delta rule with state write-back, gated RMSNorm,
 FP8 output projection. Decode mirrors forward_decode: Conv1D state update and
@@ -24,6 +24,7 @@ from sharar.kernels.fp8_quant import quant_fp8
 from sharar.kernels.verify_conv import verify_convolve
 from sharar.cache.state_pool import CONV_STATE_LEN
 from sharar.model.gdn_plan import prepare_gdn_prefill
+from sharar.kernels.gdn_prefill import prefill as gdn_prefill
 from sharar.weights.modelopt import Fp8Linear, load_fp8_linear
 from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 from sharar.weights.safetensors import SnapshotWeights
@@ -146,19 +147,10 @@ class GatedDeltaNet:
         k = k.reshape(1, t, self.num_k_heads, self.head_k_dim)
         v = v.reshape(1, t, self.num_v_heads, self.head_v_dim)
         g, beta = fused_gdn_gating(self.A_log, a, b, self.dt_bias)
-        core, _, h = chunk_gated_delta_rule(
+        core = gdn_prefill(
             q=q, k=k, v=v, g=g, beta=beta,
-            initial_state=ssm_states,
-            initial_state_indices=plan.cache_indices,
-            cu_seqlens=plan.query_start_loc,
-            chunk_indices=plan.chunk_indices,
-            chunk_offsets=plan.chunk_offsets,
-            head_first=False,
-            use_qk_l2norm_in_kernel=True,
+            state=ssm_states, plan=plan, triton_kernel=chunk_gated_delta_rule,
         )
-        # h[0, c] is the state entering chunk c, laid out per sequence.
-        for slot, _, chunk in plan.checkpoints:
-            ssm_states[slot] = h[0, chunk].to(ssm_states.dtype)
         return core
 
     def decode(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
