@@ -28,7 +28,7 @@ tower (not loaded).
 | `linear.py` | `TrunkLinear`: FP8 at load with a dynamic activation scale (`SHARAR_FLASHNEXT_TRUNK=bf16` for parity) |
 | `gdn.py`, `attention.py` | the 27B modules with these projections and the sigmoid gate; the attention layers run the indexer |
 | `indexer.py` | sparse-attention indexer: index keys in page aux rows, group compression, top-512 selection |
-| `moe.py` | FlashInfer `cutlass_fused_moe` on the checkpoint's packing (fc1 rows are `[up; gate]`) |
+| `moe.py` | routed experts: FlashInfer `cutlass_fused_moe` on the checkpoint's NVFP4 packing (fc1 rows are `[up; gate]`), or the 3-bit experts from the W3 checkpoint through `kernels/w3_moe.py` (never both resident) |
 | `ple.py` | table as numpy memory maps of the 128 shards; hash, gather, gate, convolution; window state in `StatePool.aux` |
 | `model.py` | `FlashNext`: the executor's model contract; `norm` is the hyper stream, `logits()` applies the mixer |
 | `mtp.py` | `FlashNextMtpHead`: the checkpoint's MTP layer on the `MtpHead` surface for the `mtp` proposer |
@@ -322,16 +322,59 @@ last draft step (the last token's PLE rows), and main's batch-four outputs are n
 
 ## 3-bit routed experts, simulated (2026-09-29, #73)
 
-`SHARAR_FLASHNEXT_EXPERTS_SIM3=32` (`sharar/weights/expert_sim3.py`, off by default) rewrites the NVFP4 experts at
-load into a 3-bit format, eight levels {±0.5, ±1.5, ±3, ±4} times one E4M3 scale per 32 weights (3.25 bits per weight
-against NVFP4's 4.5). The format is exactly representable in NVFP4, so the CUTLASS fused MoE computes what a 3-bit
-kernel would: a quality screen, with no speed or memory change. Relative weight error against the NVFP4 experts is
-0.18; the Lloyd codebook a real kernel would use measures 0.16 on the same experts, so the screen is pessimistic.
-Lossy-change gate, `fast` plus the simulated experts against `exact` (screen stage): verdict `fast`, pooled
--0.3 pp [-2.2, +1.6] (p 0.89; GSM8K-300 96.0 vs 95.0, HumanEval 93.3 vs 95.1, MGSM-264 86.7 vs 87.5), decode-path
-KL 0.108 against 0.083 for `fast` alone (prose and multilingual move most), tokens per round x1.18. A kernel would
-save 17.6 GiB of resident experts (63.3 to 45.7) and about 6 ms per MTP round at batch one (~+12% single-stream) if
-it matches the NVFP4 path's efficiency; that kernel is #73. Evidence `$SHARAR_RESULTS/reviews/2026-09-29-lossy-gate-experts-sim3-g32/`.
+## 3-bit routed experts (2026-09-30, #73)
+
+With the 3-bit copies on (`fast`, `throughput`) and a W3 checkpoint that carries the experts
+(`layers.N.experts.w13` / `.w2`), `MoeLayer` loads the 3-bit experts and never reads the NVFP4 ones; without
+expert entries it serves NVFP4 exactly as before. There is no setting of its own: the checkpoint decides.
+
+- **Format**: the trunk's W3 format per expert matrix (`kernels/w3.py`): 3-bit codes into the Lloyd codebook,
+  one E4M3 scale per 32 weights, an FP32 multiplier per row; fc1's rows are reordered so each 32-row block is
+  sixteen up rows and their sixteen gate rows. 2.01 MB an expert against NVFP4's 2.76 MB: 46.1 GiB of experts
+  instead of 63.3.
+- **Calibration** (`sharar/weights/flashnext_w3_experts.py`, [how](w3-calibration.md#routed-experts-flash-next-73)): from the
+  NVFP4 experts, group scales on a clipping grid minimizing the weight error, nearest level. Mean relative weight
+  error against the NVFP4 experts 0.164 (fc1) / 0.163 (fc2), against 0.18-0.19 for the screened simulation
+  (`SHARAR_FLASHNEXT_EXPERTS_SIM3`, removed with this change).
+- **Kernel** (`kernels/w3_moe.py`, `csrc/w3_gemm.cu` namespace `moe`): four graph-capturable launches for any row
+  count (plan and activation quantization; fc1 with silu(gate) * up and the intermediate's quantization in its
+  epilogue; fc2; the weighted sum in selection order). The trunk W3 kernel's streaming loop, each selected expert's
+  weights once per pass of at most 64 of its rows, E4M3 activations per (row, 32-group). No atomics in any sum:
+  deterministic, and graph replay equals eager. Calls of more than 16 rows stage the activations in shared
+  memory (bit-identical to the per-lane loads).
+
+One layer, real weights (8 layers in one CUDA graph, routing matched to recorded traffic up to 8 rows, uniform
+beyond), `profiling/flashnext_moe_w3.py`, routed experts only:
+
+| Rows | CUTLASS NVFP4 | 3-bit | speedup |
+|---:|---:|---:|---:|
+| 1 | 174 us | 95 us | 1.84 |
+| 5 (MTP k=4 verify) | 395 us | 257 us | 1.54 |
+| 16 | 916 us | 628 us | 1.46 |
+| 64 | 4.46 ms | 3.11 ms | 1.43 |
+| 2048 (a prefill chunk) | 8.15 ms | 6.75 ms | 1.21 |
+| 4096 (two requests' chunks) | 10.4 ms | 13.4 ms | 0.78 |
+
+Served, `fast`, same image, today's trunk checkpoint against the same trunk plus the 3-bit experts (h2h decode
+workload, 22 prompts, arms A B B A):
+
+| | NVFP4 experts | 3-bit experts |
+|---|---|---|
+| Single-stream greedy, median | 82.8 tok/s | 98.4 tok/s (paired x1.187 [1.160, 1.222], 22/22 prompts faster) |
+| Single-stream t=0.7, median | 71.4 tok/s | 85.6 tok/s (paired x1.177 [1.145, 1.207], 22/22) |
+| Ledger weights | 70.25 GiB | 53.03 GiB (-17.2 GiB; KV pages 5.1 -> 8.2 GiB, state slots 14 -> 62) |
+| Weight load | 115 s | 47 s |
+| Cold TTFT 2K / 16K / 64K | 1.32-1.76 / 9.1-9.6 / 37.7-39.6 s | 1.00-1.19 / 9.2-9.4 / 38.4-39.3 s |
+
+Prefill is unchanged within noise at one request (2,048-row chunks); a step that prefills 4,096 rows (several
+requests at once, the `throughput` profile) runs its MoE about 30% slower than CUTLASS. Lossy-change gate, full
+stage, `fast` + 3-bit experts against `exact`: **rejected**. Pooled -0.8 pp [-1.5, -0.0] over 4,733 items
+(133 better, 169 worse, McNemar p 0.044): GSM8K-1319 94.5 -> 93.8, HumanEval 94.5 -> 93.3, MBPP-500 81.0 -> 79.2,
+MGSM-2750 87.0 -> 86.4, none significant alone. Decode-path KL 0.101 (`fast` alone 0.083, the simulation 0.108),
+worst in prose and multilingual; tokens per round x1.19, in-process decode x1.73. `fast` alone has only been screened
+(-0.7 pp over 728 items, not significant), so how much of the loss is the experts' is not measured. The checkpoint
+is not promoted; GPTQ on routed activations (the calibration's next step) is untried.
+Evidence `$SHARAR_RESULTS/reviews/2026-09-30-experts-3bit-integration/` and `2026-09-30-lossy-gate-experts3/`.
 
 ## Router statistics (2026-09-27, #32)
 

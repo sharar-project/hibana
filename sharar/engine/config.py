@@ -57,6 +57,7 @@ class EngineConfig:
     trunk_keep_bf16: str | None = None        # SHARAR_TRUNK_KEEP_BF16: regex of Flash-Next projections kept BF16
     experts_sim_bits: int = 3                 # SHARAR_EXPERTS_SIM_BITS: 3 | 2, the simulated experts' level set (2: a 2-bit screen)
     flashnext_experts_sim3: int = 0           # SHARAR_FLASHNEXT_EXPERTS_SIM3: routed experts rounded to a 3-bit format with this group (16/32), a quality screen (weights/expert_sim3.py)
+    flashnext_experts: str = "w3"             # SHARAR_FLASHNEXT_EXPERTS: w3 (the W3 checkpoint's 3-bit routed experts when it carries them, #73) | nvfp4
     # --- speculation
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
     spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
@@ -108,6 +109,7 @@ class EngineConfig:
             trunk_keep_bf16=_str(e, "SHARAR_TRUNK_KEEP_BF16"),
             flashnext_experts_sim3=_int(e, "SHARAR_FLASHNEXT_EXPERTS_SIM3", 0) or 0,
             experts_sim_bits=_int(e, "SHARAR_EXPERTS_SIM_BITS", 3) or 3,
+            flashnext_experts=_str(e, "SHARAR_FLASHNEXT_EXPERTS", "w3"),
             spec=_str(e, "SHARAR_SPEC"),
             spec_depths=_str(e, "SHARAR_SPEC_DEPTHS"),
             draft_dir=_str(e, "SHARAR_DRAFT"),
