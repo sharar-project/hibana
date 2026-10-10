@@ -91,12 +91,13 @@ class Executor:
         # The CUDA-core decode kernel rejects GQA group size 6 (24/4 heads); the
         # tensor-core path is what the reference runs for this model too.
         self._decode_wrapper = flashinfer.BatchDecodeWithPagedKVCacheWrapper(self._ws, "NHD", use_tensor_cores=True)
-        self._prefill_ws = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=self.device)
+        wide = max(1, -(-max_batch // 64))  # FlashInfer's scratch grows with the rows: two batches of 64 need twice
+        self._prefill_ws = torch.empty(256 * 1024 * 1024 * wide, dtype=torch.uint8, device=self.device)
         self._paged_prefill = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self._prefill_ws, "NHD")
         # Eager verification plans its own wrapper: plan() uploads from a pinned buffer
         # asynchronously, so one wrapper shared with prefill could be re-planned in the same
         # scheduler step before the GPU read the previous plan.
-        self._verify_ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=self.device)
+        self._verify_ws = torch.empty(128 * 1024 * 1024 * wide, dtype=torch.uint8, device=self.device)
         self._verify_prefill = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self._verify_ws, "NHD")
         self.ledger.record_cuda_allocated("workspaces")
         self.graphs: DecodeGraphs | None = None
