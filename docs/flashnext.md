@@ -249,6 +249,77 @@ acceptance adds x1.051 but is not bitwise (identity 2/44; the draft KV's FP8 act
 bucket, so proposals and round boundaries drift), with acceptance unchanged. The launcher turns it on only in the
 `fast` profile (`tools/serving-profile.sh`); `exact` and `balanced`, and the 27B, keep it off.
 
+## The round, kernel by kernel; draft-step fusion (2026-10-10, #9)
+
+The served `fast` round at batch one (`profiling/flashnext_round.py --phase-kernels --gap-profile --accept 3:2.0`
+with `SHARAR_BENCH_VERIFY_STATE=reconstruct`, as served; the profiler's default `snapshots` state and exact
+acceptance leave out the device-acceptance graph) spends 50.4 ms: draft 7.65, verify 40.6, accept 1.63 (GPU replay
+time) and 0.47 ms of host gaps. What each phase is made of:
+
+- **Draft: not launch-bound any more.** Each of the four steps is one graph replay of 1.9 ms with 91 kernels, of
+  which the 3-bit draft head is 1.10 ms (the lm_head's 258 MB at 235 GB/s) and the layer's FP8 weights (attention
+  34 MB, experts 49 MB, mixers, shared expert) about 0.5 ms. Inside a replay the device-side bubble between kernels
+  is 0.2 us (`--kernel-gaps`); "launch-bound" means each small kernel's own 1.5 to 5 us, about 0.3 ms per step. The
+  11.6 ms of #9 predates the 3-bit draft head.
+- **Accept: bandwidth, not variance.** 1.63 ms at batch one, 4.17 at four, is the device-acceptance graph; 1.02 /
+  3.29 ms of it is `_reconstruct`, which reads and rewrites the 36 GDN layers' FP32 recurrent states (113 MB per
+  request each way). The 5 to 40 ms "unexplained" accept phase of 2026-09-19 was the host acceptance path that
+  device acceptance replaced (#36): accept is now 1.63 to 1.65 ms on every prompt.
+- **Verify** (40.6 ms, two replays): fused NVFP4 MoE 19.1 ms, 3-bit trunk GEMMs 8.0, the hyper-connection mixers'
+  FP8 GEMMs through cuBLAS at five rows 3.9 (163 GB/s), BF16 router and inject GEMMs 2.0, MoE bookkeeping kernels
+  1.4, and the mixers' one-program FP8 quantization of their 5 x 10,240 input 1.6 ms (194 launches of 8 us).
+
+Fused, every change bitwise (the same arithmetic in fewer launches; `tests/gpu/test_flashnext_fused.py` checks each
+against the chain it replaces, and every fused call of eager generations was compared with main's chain on the real
+activations: 0 mismatches in 402,702 calls):
+
+| Where | Before | After |
+|---|---|---|
+| FP8 GEMVs of up to four rows (draft layer, the mixers, decode) | quantize (one program) + GEMV | the GEMV quantizes its input itself (CUDA and the any-K Triton GEMV); the mixer's down GEMV reads the norm's block maxima |
+| Hyper-connection norm + FP8 down projection, many rows (verify) | norm + one-program quantization (8 us at five rows) | the norm writes per-block maxima; quantization is one parallel launch |
+| Draft attention | q/k norm + RoPE (2 launches), v copy, two index writes | one kernel writes q and the draft KV |
+| Draft routed experts | `repeat_interleave`, GEMV, SiLU-mul, GEMV, four reduction launches, combine | GEMV reading its input row by index, GEMV applying SiLU-mul to its input, combine with the routed sum (PyTorch's four-accumulator order, each product rounded alone) |
+| Shared-expert SiLU-mul into the 3-bit down projection (verify) | SiLU-mul + grouped E4M3 quantization | one kernel with the CUDA quantizer's fast-math arithmetic |
+| GDN `in_qkv` / `in_z` 3-bit copies (verify) | each quantizes the same input | one grouped quantization for both |
+
+A draft step goes from 91 to 66 kernels and its replay from 1.96 to 1.91 ms (`profiling/flashnext_draft_step.py`,
+whose `--check` compares a step's outputs bitwise across code versions).
+
+| `fast`, served round (ms) | draft | verify | accept | idle | round |
+|---|---:|---:|---:|---:|---:|
+| batch one, before | 7.65 | 40.60 | 1.63 | 0.47 | 50.36 |
+| batch one, after | 7.23 | 39.34 | 1.61 | 0.47 | 48.66 |
+| batch four, before | 9.74 | 77.72 | 4.16 | 1.37 | 92.99 |
+| batch four, after | 9.19 | 76.58 | 4.12 | 1.70 | 91.59 |
+
+Served, one Spark, the launcher's `fast` settings (the same venv; main 32e3fcb against the branch, servers started
+in turn):
+
+| | main | branch |
+|---|---:|---:|
+| Seven single prompts (`profiling/tp_serve_bench.py`), median decode tok/s, cold / second pass | 73.4 / 75.1 | 75.2 / 77.3 (+2.5 / +2.9%) |
+| the same: round ms (server spec stats); rounds; outputs | 52.1 / 51.2; 717 / 722 | 50.5 / 49.8; 717 / 722; 7/7 identical both passes |
+| JSON extraction prompt, batch one | 93.4 tok/s | 96.0 (+2.7%), identical |
+| Three 10K-token prompts (code, design, reasoning) | 68.4 / 74.8 / 73.0 | 69.9 / 76.4 / 74.7 (+2.1 to +2.3%), TTFT unchanged |
+| `conc_bench.py` 1 / 4 / 16 concurrent, 256 tokens, mean of four runs | 71.2 / 134.5 / 123.9 | 72.1 / 135.0 / 126.3 |
+| GSM8K-150 / HumanEval-60 (concurrency 4) | 145 / 58 | 144 / 58 (discordant 3 / 2 and 0 / 0) |
+
+At four and sixteen requests the round is 1 to 3% shorter but the tokens per round move by as much from run to run
+(see the identity note below), so the aggregate is unchanged within noise.
+
+Identity (`profiling/ab_identity.py`, in process, 256 tokens, two passes per build): at batch one 14 of 14 outputs
+are identical to main's (seven prompts including JSON and a needle, exact and 3:2.0 acceptance). At batch four main
+does not repeat itself (4 of 8 batch-four outputs differ between its own two passes, from token 184 on); every
+batch-four output main repeats is identical. The first version of the routed sum let the compiler contract each
+product into an FMA: 4 in 100,000 BF16 outputs differed, enough to move one prose output at token 221 of 256;
+the bisection and the real-activation comparison found it, and the test now covers 4M outputs.
+
+Not done: the draft head is 58% of a draft step at bandwidth; the mixers' down GEMV (320 rows of 10,240) runs on
+10 programs at 140 GB/s (an ordered split-K keeps the bits); the draft head's `topk` over the vocabulary is five
+launches; the verify's router and mixer GEMMs go through cuBLAS at 130 to 160 GB/s (a GEMV would be faster, not
+bitwise); `_reconstruct` is bandwidth; at batch four the host still holds the verify for about 1 ms after the
+last draft step (the last token's PLE rows), and main's batch-four outputs are not repeatable.
+
 ## 3-bit routed experts, simulated (2026-09-29, #73)
 
 `SHARAR_FLASHNEXT_EXPERTS_SIM3=32` (`sharar/weights/expert_sim3.py`, off by default) rewrites the NVFP4 experts at
