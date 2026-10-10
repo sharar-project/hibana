@@ -1,7 +1,13 @@
 # Calibrated three-bit decode weights
 
-For an introduction to bits, codebooks, scales and what is specific to this
-implementation, start with [3-bit quantization explained](3bit-quantization-explained.md).
+The 3-bit decode copies store each weight as one of eight levels of an E4M3 codebook, with an E4M3 scale per
+32 weights and a per-row multiplier: `3.25 + 32/K` bits per weight for input width `K`. Inside the kernel, codes
+expand to FP8, multiply FP8 activations and accumulate in FP32; activations are not 3-bit. The copies serve
+calls of at most 64 rows (decode and verification); larger calls use the original NVFP4/FP8 weights, which stay
+resident. On the 27B they cover 304 target matrices (MLP `gate_up` and `down` in all 64 layers, GDN `in_qkv`,
+`in_z`, `out`, attention `qkv`, `o`) plus 20 in the DFlash2 drafter (nearest-rounded at load, not calibrated);
+on Flash-Next, the trunk. Coverage and dispatch: `sharar/weights/w3_checkpoint.py`, `sharar/kernels/ops.py`,
+`sharar/model/draft_linear.py`.
 
 `sharar.weights.w3_calibrate` fits the target's optional W3 copies using activation
 covariances and the block-128 FP8 release. It uses the
@@ -41,7 +47,7 @@ The eight-level codebook is MSE-optimal, so each quantized row comes out shorter
 about its relative error squared. `quantize(..., unbias="weight")` (`sharar/weights/flashnext_w3_calibrate.py
 --unbias weight`) scales each row back through its row scale; codes, format and bytes do not change. On the
 Flash-Next trunk the shrinkage adds coherently through the residual layers and the correction removes most of
-the decode-path KL it causes ([Flash-Next](flashnext.md#3-bit-trunk-sensitivity-2026-09-28-61)).
+the decode-path KL it causes, though it did not move task accuracy, so the served checkpoint does not use it.
 
 ## Where the served copies come from
 
@@ -65,10 +71,7 @@ trunk (its copies are calibrated only); the preflight prints a warning and
 `/get_server_info` reports it as `w3_warning`.
 
 The loader stages each mapped tensor in ordinary CPU storage before copying
-it to CUDA. On GB10 this reduced warm-cache target construction from 63.2 to
-12.0 seconds while preserving all 304 matrices byte for byte. It changes
-loading, not decode arithmetic or throughput; see the
-[runtime profile](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-runtime-profile.md).
+it to CUDA (warm-cache target construction 63 s to 12 s, byte-identical).
 
 A fitted artifact is a candidate until it passes the lossy-change gate
 (`tools/lossy-gate.py`) against the intended serving profile. Collect fresh

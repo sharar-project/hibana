@@ -72,7 +72,7 @@ def test_device_round_matches_host_round(runtime, batch, relaxed, rounds):
     per-round counts, can drift after a few rounds. While the counts agree, the
     outputs are identical and the committed recurrent state is bitwise the
     host's; once round boundaries move, the target's own shape sensitivity
-    (docs/performance.md#limits) can change later tokens (seen at 12 rounds,
+    (docs/operations.md#numerical-limits) can change later tokens (seen at 12 rounds,
     batch 3), so outputs are compared up to the first round whose counts differ."""
     ex, prompts = runtime
     assert hasattr(ex.spec.verify_graphs, 'accept'), 'device accept graphs were not captured'

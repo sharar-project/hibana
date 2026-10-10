@@ -16,8 +16,8 @@ from sharar.kernels.nvfp4_quant import nvfp4_quantize
 from sharar.weights.modelopt import FP8_MAX, Fp8Linear, Nvfp4Linear
 from sharar.kernels import stable, verify_gemm, w3
 
-# cuBLAS FP8 GEMM reaches ~60% of DRAM bandwidth at M<=4 on SM121 (profile in
-# docs/phase2.md); the streaming GEMV is used up to this many rows.
+# cuBLAS FP8 GEMM reaches ~60% of DRAM bandwidth at M<=4 on SM121; the streaming
+# GEMV is used up to this many rows.
 FP8_GEMV_MAX_M = 4
 
 # CUTLASS preserves the pinned target's arithmetic. Faster backend candidates

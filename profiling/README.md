@@ -12,6 +12,8 @@ To measure a served build (quality suites, AIPerf speed, a lossy option) use the
 | `flashnext_profile.py` | Kernel-level breakdown of eager Flash-Next decode steps (torch profiler) plus graph-replay step time |
 | `flashnext_quant.py` | Flash-Next trunk quantization error against the BF16 trunk on the serving path: argmax agreement, truncated KL and NLL, dense and sparse regions, with a rounding-noise control |
 | `tp_comm.py` | Two Sparks: the RDMA one-shot all-reduce against NCCL's ring per message size, bitwise check, inside a CUDA graph after GPU work and back to back (`./sharar-tp comm` runs both ranks) |
+| `tp_draft_head.py` | Two Sparks: the vocabulary-parallel draft head against the whole-vocabulary one (`./sharar-tp draft-head`) |
+| `tp_serve_bench.py` | Served speed over HTTP on one Spark or two: single-stream decode, 4 and 16 concurrent requests, long-prompt time to first token |
 | `w3_bench.py` | 3-bit decode GEMM: correctness against the dequantized reference and DRAM bandwidth per decode shape at 16, 32 and 64 rows, split-K sweep |
 | `inputs.py`, `workloads/family_v1.json` | The frozen long prompts the profilers read: 18 synthetic task families and the three benchmark prompts, 10,000 tokens each, built from source with any tokenizer |
 
@@ -37,12 +39,5 @@ The 3-bit calibration builders that produce the serving artifacts moved into the
 
 See [draft adaptation](../docs/draft-adaptation.md).
 
-## Removed
-
-On 2026-10-04 `bench/` became this directory. Finished one-off studies (KV page size, batch throughput cells,
-draft-head variants), the SGLang parity check and the family gate (`tools/family-gate.py`, the family
-evaluator, its hooks, the 101-family set and the evidence helper) were removed; they are at the tag
-[`archive/bench-pre-split-2026-10-04`](https://github.com/abdelfattah-lab/sharar/tree/archive/bench-pre-split-2026-10-04/bench),
-and their conclusions are in [optimizations](../docs/optimizations.md). Older studies are on the
-[archive branch](https://github.com/abdelfattah-lab/sharar/tree/archive/pre-cleanup-2026-09-26). Raw tensors,
-outputs and traces stay outside Git.
+Raw tensors, outputs and traces stay outside Git. Finished one-off studies are at the tags
+`archive/bench-pre-split-2026-10-04` and `archive/pre-cleanup-2026-09-26`.

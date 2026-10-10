@@ -3,7 +3,8 @@
 ## Profile and prerequisites
 
 Use one NVIDIA GB10 (SM 12.1), `aarch64`, about 128 GB unified memory, NVIDIA
-driver 580 or newer, Docker and a working user systemd manager for the guard.
+driver 580 or newer, Docker and a working user systemd manager for the guard
+(two Sparks: [tensor parallel](tensor-parallel.md)).
 Two targets, one per process, chosen by name: `27b` (`RadixArk/Qwen3.8-27B-NVFP4` at `319f741`, with the
 DFlash2 drafter `incoai/Qwen3.8-27B-DFlash2` at `dedf8df`) and `flashnext`
 (`RadixArk/Qwen3.8-Flash-Next-NVFP4` at `7b71922`, its own MTP head). The first serve downloads whatever
@@ -25,50 +26,56 @@ tools/verify-sharar.sh
 ```
 
 `docker/build.sh` builds the image from this checkout; set `SHARAR_IMAGE` to its tag to serve it.
-The 27B binds `127.0.0.1:30001` in container `sharar-qwen38`, Flash-Next `127.0.0.1:30004` in
-`sharar-flashnext`; the launcher starts
-`sharar-memory-guard.service`. The guard protects a 16 GiB `MemAvailable` floor.
+The launcher starts `sharar-memory-guard.service`. The guard protects a 16 GiB `MemAvailable` floor.
 Startup needs at least 40 GiB available and checks the prospective pool/draft
 budget separately. Automatic KV capacity depends on available memory.
 
 | Setting | Launcher default | Override |
 |---|---|---|
-| Target | `qwen38` (the 27B) | `sharar-ctl serve flashnext` or `SHARAR_TARGET=flashnext` serves Qwen3.8-Flash-Next with its settings from `config/targets/flashnext.env` (MTP k=4, the 3-bit draft head, port 30004); it reads the model from `SHARAR_FLASHNEXT_CACHE` and takes `SHARAR_FLASHNEXT_TRUNK=fp8|bf16` |
-| Proposer | DFlash2 | `SHARAR_PROPOSER` |
-| Draft proposals | 15 (16 target verification rows) | `SHARAR_SPEC` |
-| Draft precision | FP8 (the measured serving profile; the 3-bit draft copy applies to it) | `SHARAR_DRAFT_PRECISION=bf16` for the publisher's precision |
-| Accepted state | Reconstruction | `SHARAR_VERIFY_STATE` |
-| Context per request (prompt plus output) | 262,144 (the model's native length) | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length` (the engine's own default is 32,768). The pool guarantees one request at that length (8 GiB of FP8 KV at 262K) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
-| Requests decoded together | 4 (16 in the throughput profile) | `SHARAR_MAX_BATCH` / `sharar serve --max-batch`, 1-16. Above four, the pool guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full context: at 262K, Flash-Next holds 16 requests of about 17K tokens each, the 27B 16 of 32K; a request that does not fit waits. `SHARAR_PROFILE=throughput` (`sharar-ctl serve --throughput`) sets 16 for evaluations and several agents at once ([measurements](optimizations.md#throughput-profile-59-2026-09-28)) |
-| Verify depth per batch size | The proposer's depth at every batch; the throughput profile: Flash-Next `16:3` | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` / `sharar serve --spec-depths` (buckets 1, 2, 4, 8, 16; 0 = plain decode). The 3-bit copies serve at most 64 rows: Flash-Next's `16:3` keeps a full batch on the fast profile's weights; the 27B's full depth (GSM8K x1.74 against batch four) verifies batches of five or more on the original NVFP4/FP8 weights, and `8:7,16:3` keeps fast's weights (x1.29) for paired evaluations of 27B weight candidates |
-| Image | `ghcr.io/abdelfattah-lab/sharar:latest` ([tools/image.sh](../tools/image.sh)), pulled when missing; the nightly GB10 check publishes it from main (`main-<commit>` and `latest`) | `SHARAR_IMAGE=sharar:<tag>` serves a local `docker/build.sh` build |
-| Container / port | `sharar-qwen38` / 30001 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
-| Request traces | Off | `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
-| Calibrated 3-bit checkpoint | `auto`: `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, fetched on first serve for a target with a published checkpoint (Flash-Next) | `SHARAR_W3_CHECKPOINT=/dir` serves another completed, checksummed calibration. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so. See [calibration](w3-calibration.md). |
-| Relaxed acceptance default | top-2 within 1.0 logit | `SHARAR_ACCEPT_DEFAULT=K:M` or `off` (greedy requests that do not set `accept_top_k`/`accept_margin`; the [study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/relaxed-acceptance.md)) |
-| Three-bit decode weights | Set by the serving profile: on in `balanced` (27B), `fast` and `throughput` | `SHARAR_W3_DECODE` (1 or 0) overrides the profile. 3.25-bit copies serve every decode call of at most 64 rows through a tensor-core kernel at the memory ceiling: the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resident), Flash-Next's trunk. The lm_head keeps NVFP4 (a 3-bit copy cost about two GSM8K points). The 27B's earlier profile gave decode x1.49 at batch one ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-cuda.md)); calibrated copies improve quality and speed over nearest rounding ([calibration results](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/w3-calibration-adaptation.md)). `SHARAR_PROFILE=exact` (or `SHARAR_W3_DECODE=0`) serves the original NVFP4/FP8 weights |
-| Device-resident acceptance | On for Flash-Next in the `fast` profile, otherwise off | `SHARAR_DEVICE_ACCEPT=1` runs acceptance, reconstruction and draft feedback in one captured graph per batch bucket ([study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/device-accept.md)); 27B: exact, +2% at batch one, no serving gain at batch four yet; Flash-Next MTP: served x1.057 batch one, x1.088 at four streams, outputs not identical to the host path ([Flash-Next](flashnext.md#round-idle-gaps-2026-09-28)) |
-| Shape-stable prefill numerics | Off | `SHARAR_STABLE_NUMERICS=1` (research baseline for row-count experiments; the [numerics study](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/target-numerics.md)) |
+| Target | the one named on `serve` (`27b` or `flashnext`) | `SHARAR_TARGET`; Flash-Next reads its model from `SHARAR_FLASHNEXT_CACHE` and takes `SHARAR_FLASHNEXT_TRUNK=fp8\|bf16` |
+| Serving profile | `fast` | `sharar-ctl serve --exact\|--balanced\|--fast\|--throughput` or `SHARAR_PROFILE` ([below](#serving-profiles)) |
+| Proposer / draft proposals | 27B: DFlash2, 15 (16 verify rows); Flash-Next: MTP, 4 | `SHARAR_PROPOSER`, `SHARAR_SPEC` (0 = plain decode) |
+| Draft precision | FP8 | `SHARAR_DRAFT_PRECISION=bf16` for the publisher's precision |
 | Draft checkpoint | `draft-runs/current` when promoted, else pinned | `SHARAR_DRAFT=/dir` or `SHARAR_DRAFT=pinned` |
+| Accepted state | reconstruction | `SHARAR_VERIFY_STATE` |
+| Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length` (the engine's own default is 32,768). The pool guarantees one request at that length (8 GiB of FP8 KV at 262K) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
+| Requests decoded together | 4 (16 in `throughput`) | `SHARAR_MAX_BATCH` / `sharar serve --max-batch`, 1-16. Above four, the pool guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full context |
+| Verify depth per batch size | the proposer's depth at every batch; `throughput` on Flash-Next: `16:3` | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` / `sharar serve --spec-depths` (buckets 1, 2, 4, 8, 16; 0 = plain decode). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
+| Image | `ghcr.io/abdelfattah-lab/sharar:latest` ([tools/image.sh](../tools/image.sh)), pulled when missing | `SHARAR_IMAGE=sharar:<tag>` serves a local `docker/build.sh` build |
+| Container / port | 27B `sharar-qwen38` / 30001, Flash-Next `sharar-flashnext` / 30004 | `SHARAR_CONTAINER` / `SHARAR_PORT` |
+| Request traces | on under `sharar-ctl` (`$SHARAR_RESULTS/traces`), off under `run-sharar.sh` | `sharar-ctl serve --no-traces`; `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
+| Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, fetched on first serve | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
+| Shape-stable prefill numerics | off | `SHARAR_STABLE_NUMERICS=1` (M-invariant kernels for the three row-count-dependent ops; see [limits](#numerical-limits)) |
 
-The launcher's defaults are the measured profile (FP8 DFlash2 with 15 proposals, relaxed acceptance, 3-bit layer and draft copies); the publisher's BF16 draft is
+For MTP on the 27B, use `SHARAR_PROPOSER=mtp SHARAR_SPEC=3`. DSpark (`SHARAR_PROPOSER=dspark SHARAR_SPEC=7
+SHARAR_MAX_CONTEXT=32768`, pinned `RadixArk/Qwen3.8-27B-DSpark@b9a5dbd`) keeps draft features for the whole
+context rather than DFlash2's 2,048-token window, so it serves at up to 32K. `sharar serve --help` lists the
+CLI choices; the launcher also owns container and guard setup.
 
-```bash
-SHARAR_DRAFT_PRECISION=bf16 ./run-sharar.sh
-```
+Before replacing an existing container, run `./sharar-ctl stop`. Updating Git or rebuilding a tag does not
+replace a running container.
 
-For MTP without the external draft, use
-`SHARAR_PROPOSER=mtp SHARAR_SPEC=3 ./run-sharar.sh`. Set `SHARAR_SPEC=0` for
-ordinary decode. DSpark (`SHARAR_PROPOSER=dspark SHARAR_SPEC=7 SHARAR_MAX_CONTEXT=32768`, pinned
-`RadixArk/Qwen3.8-27B-DSpark@b9a5dbd`) keeps draft features for the whole context rather than DFlash2's
-2,048-token window, so it serves at up to 32K. On 2026-10-03, exact profile, 10K code workload: 30.7 decode
-TPS against DFlash2's 37.0. `sharar serve --help` lists CLI choices; the launcher also
-owns container and guard setup.
+## Serving profiles
 
-Before replacing an existing container, use `./run-sharar.sh --stop` and
-launch the intended configuration. Updating Git or rebuilding a tag does not
-replace a running container. Validate the chosen image/profile before a
-production rollout; source benchmark qualification is separate from deployment.
+A profile sets the default of every speed/fidelity knob ([tools/serving-profile.sh](../tools/serving-profile.sh));
+a knob set in the environment or the config file wins. `/get_server_info` reports the profile under `config`.
+
+| Knob | exact | balanced | fast (default) | throughput |
+|---|---|---|---|---|
+| Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-2 within 1.0 logit | top-3 within 2.0 logits | as fast |
+| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | off | Flash-Next top-3 within 2.0; the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
+| Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`) | off | the 27B only | on | on |
+| Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | off | Flash-Next only | as fast |
+| Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 4 | 16 |
+
+Relaxed acceptance accepts a drafted token the target ranks within its top-k and within a logit margin of its
+argmax, so outputs are no longer the target's exact greedy continuation; a request can pin exact acceptance with
+`accept_top_k: 1` ([API](api.md)). The 3-bit copies (3.25 bits per weight, a tensor-core kernel for calls of at
+most 64 rows) cover the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resident) and Flash-Next's trunk;
+the lm_head keeps its original format. Speculative decoding itself, the Flash-Next 3-bit draft head, FP8/NVFP4
+weights and CUDA graphs are lossless and on in every profile. Benchmarks, training traces and gates use `exact`.
+A new lossy option enters `balanced` or `fast` only through the lossy-change gate
+([CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option)).
 
 ### Settings
 
@@ -115,12 +122,12 @@ the directory holds the user's own traffic. `sharar traces --dir DIR` summarizes
 input for [draft adaptation](draft-adaptation.md); they are the user's prompts
 and stay on this machine unless the user copies them elsewhere.
 
-**Draft confidence (MTP, #32).** With `SHARAR_TRACE_CONFIDENCE=1` beside
+**Draft confidence (MTP).** With `SHARAR_TRACE_CONFIDENCE=1` beside
 `SHARAR_TRACES` (the launcher forwards both), each round record also carries the
 MTP draft's top-1 probability `p1` and top-1/top-2 margin `m` per drafted
 position; `params` records the request's acceptance rule. The setting is read
 when the proposer is built (the draft graphs capture the extra output); off,
-nothing changes. It is the calibration data for adaptive draft depth (#43).
+nothing changes. It is the calibration data for adaptive draft depth.
 
 Inspect `docker logs sharar-qwen38`, `/health` and `/get_server_info` for status.
 The latter reports draft precision, scheduler settings, KV/state geometry and
@@ -129,8 +136,7 @@ At 96 slots, DFlash2 feature retention reserves up to 1,900 MiB before planning
 KV. The cold tier uses the same physical DRAM; it adds no physical memory.
 `SHARAR_COLD_TIER_GIB` caps its managed-memory budget (the launcher forwards
 it; 0 disables the tier; unset sizes it from spare memory, up to 24 GiB).
-A parked session spans as many 2 GiB slabs as it needs, so long contexts park
-too (before 2026-09-23 anything over about 60K tokens was rejected).
+A parked session spans as many 2 GiB slabs as it needs, so long contexts park too.
 
 **Session store.** Parked sessions are also written, in the background, to
 `$SHARAR_RESULTS/sessions` (`SHARAR_SESSION_DIR`; `off` disables it; budget
@@ -157,15 +163,12 @@ CPU development needs Python 3.12:
 ```bash
 bash tools/check.sh setup-cpu
 .venv-cpu/bin/python tools/check_distribution.py
-python3 tools/check_evidence.py
+python3 tools/check_links.py
 ```
 
 The runtime image is built from pinned [constraints](../constraints/gb10-cu130.txt).
-It still includes the compiler needed for SM121 JIT kernels. CPU distributions
+It includes the compiler needed for SM121 JIT kernels. CPU distributions
 include the CUDA source; executing those kernels still requires the GPU stack.
-The source-only `SHARAR_FUSED_NORM_NVFP4` switch remains an unpromoted numerical
-experiment, off by default. Its reference kernel/tests are retained; it is not
-part of the measured default configuration or a launcher optimization option.
 
 `tools/dev-shell.sh` mounts current source and local caches into a development
 container of the Sharar runtime image (`SHARAR_DEV_IMAGE`, else the config's `SHARAR_IMAGE`).
@@ -173,5 +176,17 @@ Reserve an exclusive GPU window and arrange an active memory guard before
 loading a model or running `bash tools/check.sh gpu`. The development helper
 does not stop production or start the guard automatically.
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for numerical/lifecycle checks and
-[historical environment details](https://github.com/abdelfattah-lab/sharar/blob/archive/pre-cleanup-2026-09-26/docs/archive/studies/env.md) for old reference runs.
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for numerical and lifecycle checks.
+
+## Numerical limits
+
+The target's arithmetic depends on execution shape even with unchanged weights: prefill features of a fixed
+prefix change with the total prefill length and chunking, and greedy continuations can change with batch shape,
+verification width or the drafter, because those move the round boundaries a token is computed in. Each
+configuration is deterministic run to run. The cause is three kernels whose arithmetic depends on the row count
+(cuBLAS's BF16 GEMM for the GDN b/a gates, cuBLASLt's FP8 GEMM for the 5120x6144 output projections at 27 to 32
+rows, the gated norm's rows-per-block choice), with FlashInfer's prefill schedule a rare fourth.
+`SHARAR_STABLE_NUMERICS=1` swaps in M-invariant replacements for the first three (a prefix is then bit-exact
+across prefill lengths, for under 1% prefill cost); chunked and cached-prefix prefills still take different
+attention paths. This is why changes are judged on paired quality and speed, not on identical outputs
+([evaluation](evaluation.md)).

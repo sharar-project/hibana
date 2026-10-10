@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared by run-sharar.sh (and tests/unit/test_serving_profile.py): the default each serving profile gives
 # every speed/fidelity knob that the environment or the config file does not set explicitly
-# (#27, docs/optimizations.md#serving-profiles).
+# (docs/operations.md#serving-profiles).
 #   exact     the target's own distribution: exact acceptance, no lossy weight copies (benchmarks, traces)
 #   balanced  relaxed greedy acceptance top-2 within 1.0 logit; the 27B's calibrated 3-bit decode copies
 #   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy requests

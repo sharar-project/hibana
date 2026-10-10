@@ -61,42 +61,24 @@ Every rank runs the whole engine (scheduler, speculation, CUDA graphs). The prim
 where it applies commands (`EngineLoop._publish`) it broadcasts them, and the other ranks apply the same ones there, so
 all schedulers take identical steps and the logits (all-reduced, then all-gathered) are identical on every rank.
 Decisions that read local memory take the minimum over ranks. Request constraints travel as their grammar source and
-compile again on each rank; sampled requests get one seed for all ranks. An engine failure ends the process; the
-other rank waits in its next collective until it times out (10 minutes, NCCL's default and the one-shot's), so
-restart the pair (`./sharar-ctl stop`, then `serve`).
+compile again on each rank; sampled requests get one seed for all ranks. An engine failure ends the process, and
+the other ranks follow within a second (see "A failed rank" above).
 
-## Results (2026-10-07, two GB10 containers linked by RoCE)
+## What it buys
 
-Single-stream greedy decode over seven prompts (chat, code, math, multilingual, prose, structured, a 12K-character
-code prompt), median tokens per second:
+Measured on two GB10s linked by RoCE, `fast` profile (27B 2026-10-07, Flash-Next 2026-10-09):
 
-| Settings | TP=1 | TP=2, NCCL all-reduce | TP=2, RDMA one-shot |
-|---|---:|---:|---:|
-| exact acceptance, NVFP4/FP8 weights | 42.4 | 72.9 | 80.2 |
-| relaxed acceptance, NVFP4/FP8 weights | 52.6 | 71.6 | |
-| `fast` profile (relaxed acceptance, 3-bit decode copies) | 77.1 | 105.9 | **119.1** |
+| | 27B, one Spark | 27B, two | Flash-Next, one Spark | Flash-Next, two |
+|---|---:|---:|---:|---:|
+| Single-stream greedy decode, median of seven prompts | 77.1 tok/s | 119.1 | 73.5 | 99.0 |
+| Four concurrent requests, aggregate | 135.1 tok/s | 199.1 | 147.6 | 198.7 |
 
-A speculative round of the `fast` profile takes 41 ms on two Sparks against 67 ms on one (46 ms with NCCL's
-all-reduce); every prompt is faster (x1.39 to x1.79). With exact acceptance the one-shot's outputs are bitwise those of
-NCCL's all-reduce. GSM8K (first 300, zero-shot, greedy): 95.3% on one Spark and 95.0% on two with the `fast` profile
-(the one-shot and NCCL alike), 95.0% and 94.3% with exact acceptance; the final answers agree on 282-284 of 300.
-
-Without the 3-bit copies (native NVFP4/FP8 weights, relaxed acceptance) two Sparks decode at 76.9 tok/s greedy and
-69.8 sampled (temperature 0.7) against 53.6 and 39.6 on one; four concurrent requests of 384 tokens reach 143.2 tok/s
-in aggregate against 92.8 (the `fast` profile: 199.1 against 135.1). Relaxed acceptance accepts the same on both
-(5.64 and 5.56 tokens per round greedy, 4.27 with exact acceptance), and GSM8K stays at 94.7-95.0% greedy and sampled.
-
-Cold prefill (a fresh prompt each time, `max_tokens` 1, median of three): x1.38 at 1K tokens (2304 -> 3188 tok/s),
-x1.64 at 8.6K, x1.70 at 28K (1751 -> 2979 tok/s; time to first token 16.1 -> 9.5 s). A 2048-token chunk's 128
-all-reduces of 20 MB run on NCCL's ring near the link's 23.4 GB/s, about 0.12 s of a 0.64 s chunk, not overlapped
-with compute.
-
-TP=2 is not bitwise TP=1: summing two partial products in another order moves the logits of this NVFP4/FP8 model as
-much as any other reassociation does. Teacher-forced over 6K tokens, TP=2 agrees with TP=1 on 88-95% of argmax tokens
-(mean KL 0.02-0.04); so does TP=1 with only its row-parallel FP8 sums split in two on one GPU, and TP=1 itself
-changes 6 of the 7 greedy outputs above when the same prompts are decoded in a batch of four. The flips are near ties
-(a median top-two margin of 0.25 nats, one or two BF16 steps of the logits). TP=1 is unchanged by this code: its
-logits are bitwise those of the commit before it.
+Cold prefill is x1.4 to x1.7 faster on two Sparks (28K tokens: time to first token 16.1 to 9.5 s on the 27B).
+Flash-Next holds 36.3 GiB of weights per rank against 70.3 on one Spark. GSM8K is unchanged (27B 95.3% on one, 95.0% on two). TP=2 is not bitwise TP=1: summing two partial products in
+another order moves the logits as much as any other reassociation (88-95% teacher-forced argmax agreement, flips
+at near ties), and TP=1 is unchanged by the tensor-parallel code. Flash-Next's verification scales less than its
+bytes: the fused MoE has a fixed cost per call, and the hyper-connection mixers, router and elementwise kernels
+are replicated.
 
 ## Profiling
 
@@ -114,33 +96,18 @@ node tracing), a DFlash2 draft graph (210 kernels, one all-gather, 7-8 ms) and a
 ## The link
 
 Each Spark's ConnectX-7 port reaches the GB10 through two PCIe Gen5 x4 halves, the two RDMA devices NCCL uses
-together: about 109 Gb/s each in raw RDMA, 21.8 GB/s (174 Gb/s) for a large NCCL all-reduce. DGX Spark has no
-GPUDirect RDMA (the driver reports neither GPUDirect RDMA nor dma-buf support: device memory of the integrated GPU
-is not coherently accessible to PCIe devices), so NCCL stages through registered host buffers and every collective
-pays a fixed 20-45 us however small it is. A decode or verification all-reduce moves 160 KiB, so its time is that
-fixed cost: about 4.5 GB/s effective. Moving 160 KiB each way across both devices at once takes about 12 us.
+together (about 22 GB/s for a large all-reduce). DGX Spark has no GPUDirect RDMA, so NCCL stages through host
+buffers and every collective pays a fixed 20-45 us however small it is; a decode or verification all-reduce moves
+only 160 KiB, so that fixed cost is its whole time.
 
-Two ranks need one exchange, not a ring's two steps, and the staging can be NVIDIA's own pattern for the GB10:
-`kernels/rdma_oneshot.py` registers cudaHostAlloc buffers with both RDMA devices; a kernel copies the partial in and
-rings a doorbell, a busy-polling CPU thread posts the RDMA writes (half per device, each followed by a flag), and the
-peer's kernel waits on the flags and adds. Per collective inside a CUDA graph, after ~100 us of GPU work as in
-serving:
-
-| Message | NCCL ring | NCCL one-shot (send/recv) | RDMA one-shot |
-|---|---:|---:|---:|
-| 10 KiB | 31.5 us | 29.1 us | **8.1 us** |
-| 160 KiB (verification, one request) | 50.7 us | 42.8 us | **18.7 us** |
-| 640 KiB (four requests) | 99.0 us | 74.6 us | **50.3 us** |
-
-No NCCL setting (protocol, channels, graph mixing) went below 45 us at 160 KiB. The one detail that mattered: only one
-GPU thread polls the flags in host memory; with every block polling, the NIC's flag writes contended with them and
-the wait grew from 4 to 17 us. The one-shot takes messages of up to 4 MiB (verification of up to 25 requests, prefill
-chunks of up to 409 tokens): 263 us at 4 MiB against NCCL's 721 (307 with `NCCL_PROTO=Simple`); at 8 MiB they tie and
-a 20 MiB prefill chunk keeps NCCL's ring (1,067 us against 1,420), where bandwidth sets the time. Fusing the two kernels or
-pipelining copy, wire and add in chunks gained nothing at 160 KiB and at most 5% above it, so the transport stays one
-copy, one exchange and one add. Raising the threshold from 1 to 4 MiB took the throughput profile at 16 concurrent
-requests (verification of 2.5 MiB) from 268.0 to 298.8 tok/s in aggregate, its rounds from 146.9 to 126.6 ms. NCCL's own
-defaults serve what remains on NCCL as well as any channel setting. The transport costs one busy CPU core per rank.
+Two ranks need one exchange, not a ring's two steps. `kernels/rdma_oneshot.py` registers cudaHostAlloc buffers
+with both RDMA devices; a kernel copies the partial in and rings a doorbell, a busy-polling CPU thread posts the
+RDMA writes (half per device, each followed by a flag), and the peer's kernel waits on the flags and adds. Only
+one GPU thread polls the flags (with every block polling, the NIC's flag writes contended with them). Inside a
+CUDA graph a 160 KiB all-reduce takes 19 us against NCCL's 51. The one-shot takes messages up to 4 MiB
+(verification of up to 25 requests, prefill chunks of up to 409 tokens); larger prefill chunks stay on NCCL's
+ring, where bandwidth sets the time. The transport costs one busy CPU core per rank. `./sharar-tp comm` measures
+both against each other.
 
 ## Flash-Next
 
@@ -161,23 +128,6 @@ The MTP draft layer is replicated and drafts through the target's vocabulary-par
 the ranks exchange their best eight, and the rank holding each candidate's FP8 row rescores it, so the pick is the
 whole-vocabulary shortlist head's (`./sharar-tp draft-head`: identical picks at 1 to 20 rows, graphed too) at
 0.72 ms per draft step instead of 1.17.
-
-### Flash-Next results (2026-10-09, `fast` profile, same checkout and venv on one Spark and on two)
-
-| | One Spark | Two Sparks |
-|---|---:|---:|
-| Weights per rank / bytes per decode token | 70.3 GiB / 5.74 GB | 36.3 GiB / 3.29 GB |
-| Single stream, median of seven prompts (`profiling/tp_serve_bench.py`) | 73.5 tok/s | 99.0 tok/s (x1.35) |
-| Four / sixteen concurrent requests, aggregate | 147.6 / 136.1 tok/s | 198.7 / 199.3 tok/s |
-| Long prompts, time to first token | 4.7-5.9 s | 3.8-4.8 s |
-| Round: draft / verify / accept (ms, synchronized timers) | 8.3 / 46.5 / 1.7 | 7.0 / 34.5 / 1.2 |
-
-Verification scales less than the bytes do. On one Spark a round's kernel time is about 25 ms of routed experts
-(the fused MoE has a fixed cost per call: half the columns take 0.6 of the time at five rows), 22 ms of GEMV/GEMM
-(the hyper-connection mixers and the BF16 router replicated; small GEMVs at half width keep part of their cost)
-and 7.5 ms of norms and elementwise kernels, which are launch-bound and replicated; that predicts the measured 34.5
-ms. Communication is about 1 ms a round (every all-reduce on NCCL, three times slower each, adds 1.9 ms). The next
-gains are kernel fusion of the elementwise work and the MoE kernel's fixed cost, which help one Spark as well.
 
 ## Limits
 

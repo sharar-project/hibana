@@ -1,6 +1,6 @@
-# Sharar runtime image: CUDA 13 devel base (nvcc is still needed for the
-# FlashInfer SM121 JIT modules and the CUDA GEMV extension until Phase 9 builds
-# them ahead of time) plus only the pinned Python packages.
+# Sharar runtime image: CUDA 13 devel base (nvcc is needed for the FlashInfer
+# SM121 JIT modules and the CUDA extensions, which build on first use) plus only
+# the pinned Python packages.
 ARG BASE_IMAGE=nvidia/cuda:13.0.3-devel-ubuntu24.04
 FROM ${BASE_IMAGE}
 
