@@ -80,8 +80,26 @@ def generate(args) -> None:
         with urllib.request.urlopen(req, timeout=3600) as r:
             return dict(it, answer=json.load(r)["choices"][0]["message"].get("content") or "")
 
+    # Answers append to OUTPUT.partial.jsonl as they finish, so an interrupted run resumes where it stopped.
+    import threading
+    partial = args.output.with_name(args.output.name + ".partial.jsonl")
+    done = {}
+    if partial.is_file():
+        for line in filter(None, partial.read_text().split("\n")):
+            row = json.loads(line)
+            done[row["prompt"]] = row
+    lock = threading.Lock()
+
+    def ask_saved(it):
+        if it["prompt"] in done:
+            return done[it["prompt"]]
+        row = ask(it)
+        with lock, partial.open("a") as f:
+            f.write(json.dumps(row) + "\n")
+        return row
+
     with ThreadPoolExecutor(args.concurrency) as pool:
-        answered = list(pool.map(ask, items))
+        answered = list(pool.map(ask_saved, items))
     args.output.write_text(json.dumps({"version": "flashnext-expert-answers-v1", "prompts_sha256": hashlib.sha256(args.prompts.read_bytes()).hexdigest(),
                                        "url": args.url, "max_tokens": args.max_tokens, "items": answered}))
     print(f"{len(answered)} answers -> {args.output}")
