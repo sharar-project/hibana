@@ -21,7 +21,7 @@ FlashInfer, Triton or GPU is required. For subsequent runs use
 `.venv-cpu/bin/python -m pytest tests/unit -q`, or `tools/check.sh cpu` in an
 already prepared environment. Sharar's small GitHub CPU workflow uses the same
 setup command. Dependency constraints are in `constraints/`; the GB10 environment
-(`tools/setup-venv.sh`, and the optional image) uses `gb10-cu130.txt` with the host's CUDA 13 toolkit.
+(`tools/setup-venv.sh`) uses `gb10-cu130.txt` with the host's CUDA 13 toolkit.
 
 Also run `python3 tools/check_links.py` for documentation links, and `.venv-cpu/bin/python tools/check_distribution.py` to build an sdist and
 wheel and probe installed runtime assets outside the checkout. CI runs these

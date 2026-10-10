@@ -182,24 +182,6 @@ executing those kernels still requires the GPU stack.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for numerical and lifecycle checks.
 
-## Docker image (optional)
-
-`docker/build.sh [TAG]` builds the same environment into an image (`docker/Dockerfile`, from the same
-constraints), and the nightly GB10 check publishes main's build to `ghcr.io/abdelfattah-lab/sharar` as
-`main-<commit>` and `latest` after its GPU suite and serve checks pass on that commit. It is for running Sharar
-where installing the environment is not wanted; the launchers do not use it. Its entry point is `sharar`:
-
-```bash
-docker run --rm --gpus all --network host -v ~/.cache/huggingface:/cache/huggingface \
-  ghcr.io/abdelfattah-lab/sharar:latest serve --target qwen38 --port 30001 --context-length 262144
-```
-
-`--gpus` needs the NVIDIA Container Toolkit, which DGX OS includes.
-
-With the image, the launcher's profile resolution, downloads, 3-bit checkpoint fetch, memory guard and traces are
-not applied: pass the `sharar serve` flags and `SHARAR_*` settings yourself (`sharar serve --help`).
-While the repository is private the package is too (`docker login ghcr.io` with a token that can read packages).
-
 ## Numerical limits
 
 The target's arithmetic depends on execution shape even with unchanged weights: prefill features of a fixed

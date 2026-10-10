@@ -60,8 +60,7 @@ The server runs as a user systemd service (`sharar-qwen38` or `sharar-flashnext`
 The default `fast` profile downloads its calibrated 3-bit checkpoint on first serve
 ([calibration](docs/w3-calibration.md)); the preflight warns when it serves without one.
 
-[Operations](docs/operations.md) covers prerequisites, the launcher settings, the memory guard and the optional
-Docker image.
+[Operations](docs/operations.md) covers prerequisites, the launcher settings and the memory guard.
 
 | Command | What it does |
 |---|---|
@@ -125,7 +124,6 @@ python3 tools/check_links.py      # documentation links
 | `sharar/` | Engine (`engine/`), caches (`cache/`), models (`model/`, `model/flashnext/`), kernels, weights, proposers, trainer, API |
 | `sharar-ctl`, `run-sharar.sh`, `sharar-tp` | Host command, the single-Spark launcher, the two-Spark launcher |
 | `profiling/`, `tests/`, `tools/` | In-process profilers, tests, setup, checks and gates |
-| `docker/` | The optional runtime image ([operations](docs/operations.md#docker-image-optional)) |
 | `docs/` | [Operations](docs/operations.md), [API](docs/api.md), [architecture](docs/architecture.md), [the rest](docs/README.md) |
 
 Quality and speed benchmarks live in [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval) and

@@ -43,7 +43,7 @@ def chat_ids(tok, prompt: str) -> list[int]:
 
 
 def source_hash() -> str:
-    """SHA-256 over the engine package's Python files (the image's code, not a mounted tree)."""
+    """SHA-256 over the engine package's Python files (the code this process imported)."""
     import sharar
     root = Path(sharar.__file__).parent
     h = hashlib.sha256()

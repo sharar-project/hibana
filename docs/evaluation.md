@@ -87,8 +87,7 @@ America/New_York):
 
 - **Nightly, 01:00** (skipped when main is unchanged): brings the runner's Python environment up to date
   (`SHARAR_VENV`, default `~/sharar-ci/venv`), runs `tests/unit` and `tests/gpu` from it, then serves and verifies
-  both targets. When all of that passes on main, it builds the optional Docker image and publishes it to
-  `ghcr.io/abdelfattah-lab/sharar` as `main-<commit>` and `latest`.
+  both targets.
 - **Weekly, Sunday 02:00:** `tools/evaluate.py` per target on the fast profile, AIPerf speed plus GSM8K (300)
   and HumanEval, paired with `$SHARAR_RESULTS/ci/baseline-<target>` (re-point the link to adopt a newer run).
   It fails on more than 5% lower TPS or a quality loss of at least 1 point at p < 0.05.

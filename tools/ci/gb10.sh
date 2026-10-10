@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Nightly and weekly checks on the GB10 (.github/workflows/{nightly,weekly}-gb10.yml, self-hosted runner `gb10`).
 #
-#   Nightly:  tools/ci/gb10.sh [--skip-if-tested] venv gpu serve [publish]
+#   Nightly:  tools/ci/gb10.sh [--skip-if-tested] venv gpu serve
 #   Weekly:   tools/ci/gb10.sh venv evaluate
 #   Cleanup:  tools/ci/gb10.sh --cleanup
 #
@@ -11,10 +11,6 @@
 #   gpu       tests/unit and tests/gpu from it (tools/gpu-tests.sh)
 #   serve     serve each target from it (run-sharar.sh as the service sharar-ci, 32K context) and check it
 #             (tools/verify-sharar.sh)
-#   publish   build the optional runtime image (docker/build.sh), check that it imports the engine, and push it to
-#             ghcr.io/abdelfattah-lab/sharar as main-<commit> and latest; only after gpu and serve passed in the same run,
-#             and the workflow asks for it only on main. Credentials: GHCR_TOKEN (and GHCR_USER) from the workflow, used
-#             through a private docker config so the runner's own `docker login` is untouched
 #   evaluate  each target, fast profile (tools/evaluate.py): AIPerf speed (code, design, reasoning) and, so that a
 #             speed gain from wrongly accepted drafts cannot pass, GSM8K (first 300) and HumanEval (164); paired with
 #             that target's baseline. Fails on more than 5% lower TPS or a quality loss of at least 1 point (p < 0.05,
@@ -33,9 +29,7 @@ set -Euo pipefail
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 cd "$(dirname "$SELF")/../.."
 
-ALL="venv gpu serve publish evaluate"
-IMAGE=sharar:ci   # publish only: the optional runtime image
-REGISTRY=ghcr.io/abdelfattah-lab/sharar
+ALL="venv gpu serve evaluate"
 SERVE_SERVICE=sharar-ci
 SERVE_PORT=30011
 OUT="$PWD/ci-out"
@@ -194,30 +188,6 @@ stage_serve() {
   return "$rc"
 }
 
-# The optional runtime image, built from this checkout (docker/build.sh labels it with the commit) after gpu and serve
-# passed on the same checkout; the GPU is not used.
-stage_publish() {
-  local commit rev tag old
-  commit="$(git rev-parse HEAD)"
-  old="$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null || true)"
-  bash docker/build.sh "$IMAGE" || return 1
-  [[ -n "$old" && "$old" != "$(docker image inspect -f '{{.Id}}' "$IMAGE")" ]] && docker rmi "$old" >/dev/null 2>&1
-  docker run --rm --entrypoint python3 "$IMAGE" -m sharar serve --help >/dev/null \
-    || { echo "$IMAGE does not import the engine"; return 1; }
-  rev="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE")"
-  [[ "$rev" == "$commit" ]] || { echo "$IMAGE is from ${rev:-an unlabeled build}, not $commit"; return 1; }
-  [[ -n "${GHCR_TOKEN:-}" ]] || { echo "GHCR_TOKEN is not set"; return 1; }
-  export DOCKER_CONFIG="$OUT/docker-config"
-  mkdir -p "$DOCKER_CONFIG"
-  printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-${GITHUB_ACTOR:-sharar-ci}}" --password-stdin >/dev/null || return 1
-  for tag in "main-${commit:0:7}" latest; do
-    docker tag "$IMAGE" "$REGISTRY:$tag" && docker push -q "$REGISTRY:$tag" >/dev/null || { echo "push of $tag failed"; return 1; }
-  done
-  docker rmi "$REGISTRY:main-${commit:0:7}" >/dev/null 2>&1   # keep only :latest tagged locally
-  echo "pushed $REGISTRY:main-${commit:0:7} and :latest" >>"$OUT/notes-publish"
-  docker logout ghcr.io >/dev/null 2>&1; rm -rf "$DOCKER_CONFIG"
-}
-
 # tools/evaluate.py takes the GPU lock itself for its serving window.
 stage_evaluate() {
   local target name dir base rc=0 verdict paired
@@ -327,7 +297,7 @@ run_stage() {
   rows+=("| $1 | **failed** | $took${note:+; $note} |"); failed=1; return 1
 }
 
-depends() { case $1 in gpu|serve|evaluate) echo venv;; publish) echo venv gpu serve;; esac; }
+depends() { case $1 in gpu|serve|evaluate) echo venv;; esac; }
 [[ -n "$busy" ]] || { watchdog & watchdog_pid=$!; }
 missing=" "
 for s in $ALL; do
@@ -335,7 +305,6 @@ for s in $ALL; do
   dep="$(depends "$s")"
   if [[ -n "$busy" ]]; then rows+=("| $s | skipped | machine in use |")
   elif [[ -f "$OUT/gave-way" ]]; then rows+=("| $s | skipped | gave way to other work |")
-  elif [[ "$s" == publish ]] && ! { wants gpu && wants serve; }; then rows+=("| $s | skipped | needs gpu and serve in the same run |")
   elif d="$(for x in $dep; do wants "$x" && [[ "$missing" == *" $x "* ]] && echo "$x"; done | head -1)"; [[ -n "$d" ]]; then
     rows+=("| $s | skipped | $d did not pass |")
   elif run_stage "$s"; then continue

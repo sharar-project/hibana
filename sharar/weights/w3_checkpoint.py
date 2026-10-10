@@ -3,9 +3,9 @@
 The NVFP4/FP8 prefill weights remain in the original checkpoint. These files
 only replace the optional W3 copies, before CUDA graph capture. The launcher
 serves `$SHARAR_RESULTS/w3-checkpoints/<target>-current`; when that is missing
-it runs `fetch` in the image for a target with a published checkpoint:
+it runs `fetch` from the Python environment for a target with a published checkpoint:
 
-    python3 -m sharar.weights.w3_checkpoint fetch --target flashnext --root /w3-checkpoints
+    python -m sharar.weights.w3_checkpoint fetch --target flashnext --root $SHARAR_RESULTS/w3-checkpoints
 """
 from __future__ import annotations
 
