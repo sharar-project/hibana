@@ -33,20 +33,3 @@ def test_nvfp4_ties_and_neighbors(scale, rows):
     assert torch.equal(codes[0, 7:14], tie_codes)
     assert torch.equal(codes[0, 28:35], tie_codes | 8)
     assert codes[0, -2:].tolist() == [0, 8]
-
-
-@pytest.mark.parametrize('fp32_sum', [False, True])
-def test_fused_norm_quantizer_quarter_ties(fp32_sum):
-    from sharar.kernels.fused_norm_nvfp4 import gemma_rmsnorm_nvfp4
-    from sharar.kernels.ops import fp4_quantize
-
-    desired = torch.tensor([.25, -.25, 6., -6.] * 32, device='cuda', dtype=torch.bfloat16)
-    x = torch.ones((37, 128), device='cuda', dtype=torch.bfloat16)
-    residual = torch.zeros_like(x)
-    # RMS(1)=1 with epsilon zero, so (1+weight) gives the exact tie inputs.
-    weight = desired - 1
-    scale = torch.ones((), device='cuda')
-    actual, _ = gemma_rmsnorm_nvfp4(
-        x, weight, 0., scale, residual=residual, fp32_residual_sum=fp32_sum)
-    expected, _ = fp4_quantize(desired.repeat(37, 1), scale)
-    assert torch.equal(actual, expected)

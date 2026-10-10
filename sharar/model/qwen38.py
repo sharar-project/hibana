@@ -44,10 +44,6 @@ class DecoderLayer:
         else:
             self.mixer = GatedDeltaNet(w, f"{p}.linear_attn", index, device, target=target)
         self.mlp = Mlp(w, f"{p}.mlp", device, target.intermediate_size, fused_silu_quant=fused_silu_quant)
-        # Retained compatibility switch for prequantized MLP inputs (SHARAR_FUSED_NORM_NVFP4). Both routes
-        # use the phase-specific norm and the same BF16-to-NVFP4 boundary.
-        from sharar.engine.config import current
-        self.fused_norm_nvfp4 = current().fused_norm_nvfp4
 
     def forward(self, hidden: torch.Tensor, residual: torch.Tensor | None, ctx: ForwardContext) -> tuple[torch.Tensor, torch.Tensor]:
         inplace = not ctx.capture
@@ -55,13 +51,8 @@ class DecoderLayer:
         hidden, hidden_q, residual = self.input_norm.fused_add_quant(hidden, residual, self.mixer.input_scale, inplace=inplace, verify=ctx.mode == "verify")
         # The mixer's and the MLP's last projections are row-parallel: sum the ranks' partial outputs.
         hidden = all_reduce(self.mixer.forward(hidden, ctx, hidden_q))
-        if self.fused_norm_nvfp4:
-            # Preserve the same target arithmetic with prequantized MLP inputs.
-            pre, residual = self.post_norm.fused_add_nvfp4(hidden, residual, self.mlp.gate_up.input_scale_inv, inplace=inplace, verify=ctx.mode == "verify")
-            hidden = all_reduce(self.mlp.forward_prequantized(pre))
-        else:
-            hidden, residual = self.post_norm.fused_add(hidden, residual, inplace=inplace, verify=ctx.mode == "verify")
-            hidden = all_reduce(self.mlp(hidden))
+        hidden, residual = self.post_norm.fused_add(hidden, residual, inplace=inplace, verify=ctx.mode == "verify")
+        hidden = all_reduce(self.mlp(hidden))
         return hidden, residual
 
     def prefill(self, hidden: torch.Tensor, residual: torch.Tensor | None, positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

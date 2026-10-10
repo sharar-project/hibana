@@ -54,14 +54,6 @@ class GemmaRMSNorm:
         out, _ = gemma_rmsnorm(x, self.weight, self.eps, residual=residual, verify=verify)
         return out, residual
 
-    def fused_add_nvfp4(self, x: torch.Tensor, residual: torch.Tensor, global_scale: torch.Tensor, inplace: bool = False, *, verify: bool = False):
-        """Normalize with the same arithmetic and quantize the BF16 result."""
-        from sharar.kernels.nvfp4_quant import nvfp4_quantize
-
-        out, residual = self.fused_add(x, residual, inplace=inplace, verify=verify)
-        pre = nvfp4_quantize(out, global_scale)
-        return pre, residual
-
     def fused_add_quant(self, x: torch.Tensor, residual: torch.Tensor | None, fp8_scale: torch.Tensor, inplace: bool = False, *, verify: bool = False):
         """Like fused_add but also returns the FP8-quantized output. With
         residual None (first layer) the residual becomes x itself."""
