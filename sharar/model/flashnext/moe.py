@@ -7,7 +7,8 @@ Two expert formats, never both resident:
   loudest expert's calibrated scale.
 - 3-bit (#73) when the 3-bit copies are on and the W3 checkpoint carries this layer's experts: the layer then
   never reads the NVFP4 experts, and every call, decode to prefill, runs `kernels/w3_moe.py` (W3 format per
-  expert, E4M3 activations). One rank only (no tensor parallel).
+  expert, E4M3 activations). Under tensor parallelism each rank holds a range of whole experts (expert parallel)
+  and sums the pairs routed to them: a partial sum, as the split NVFP4 experts give.
 """
 
 from __future__ import annotations
@@ -73,8 +74,8 @@ class MoeLayer:
         self.shared_down = linear_cls.load(w, [f"{prefix}.shared_expert.down_proj.weight"], device, precision, ROW_PARALLEL)
         self.w3 = w3
         if w3 is not None:
-            if w3.experts != self.experts:
-                raise ValueError(f"3-bit experts: {w3.experts} in the checkpoint, the model has {self.experts}")
+            if w3.base + w3.experts > self.experts:
+                raise ValueError(f"3-bit experts {w3.base}..{w3.base + w3.experts - 1}: the model has {self.experts}")
             return
         nv = load_nvfp4_experts(w, prefix, self.experts, device, ColumnParallel((self.inter,)).rows, ROW_PARALLEL.cols)
         self.sim3_error = None

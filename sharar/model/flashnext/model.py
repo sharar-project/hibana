@@ -87,14 +87,14 @@ class FlashNext:
         self.precision = precision or current().flashnext_trunk  # bf16 | fp8
         # The calibrated 3-bit copies (SHARAR_W3_DECODE with SHARAR_W3_CHECKPOINT). When the checkpoint carries the
         # routed experts (#73) and SHARAR_FLASHNEXT_EXPERTS is not nvfp4, those are the only expert copy: the NVFP4
-        # experts are never read. They load whole, so they serve on one rank only.
+        # experts are never read. Under tensor parallelism each rank holds half of them, whole (expert parallel).
         calibrated = None
         if current().w3_decode:
             if not current().w3_checkpoint:
                 raise ValueError("Flash-Next's 3-bit copies are calibrated only: SHARAR_W3_DECODE=1 needs SHARAR_W3_CHECKPOINT")
             from sharar.weights.w3_checkpoint import CalibratedWeights
             calibrated = CalibratedWeights(current().w3_checkpoint, revision=target.model_revision)
-        expert_layers = calibrated.expert_layers() if calibrated and current().flashnext_experts != "nvfp4" and tp.size == 1 else set()
+        expert_layers = calibrated.expert_layers() if calibrated and current().flashnext_experts != "nvfp4" else set()
         if expert_layers and expert_layers != set(range(target.num_layers)):
             raise ValueError(f"the W3 checkpoint carries routed experts for {len(expert_layers)} of {target.num_layers} layers")
         # the experts dominate, and each rank loads its half
@@ -111,7 +111,7 @@ class FlashNext:
         self.ragged = ops.RaggedAttention(self.device, target.num_attention_heads, target.num_kv_heads, target.head_dim)
         self.layers: list[DecoderLayer] = []
         for i, kind in enumerate(types):
-            experts3 = (calibrated.load_experts(i, target.num_experts, target.moe_intermediate_size, target.hidden_size, self.device)
+            experts3 = (calibrated.load_experts(i, target.num_experts, self.full_target.moe_intermediate_size, target.hidden_size, self.device)
                         if expert_layers else None)
             self.layers.append(DecoderLayer(w, snap, i, kind, self.device, self.rope, self.ragged, target, self.precision, experts3))
             w.close()  # the PLE keeps its own maps; expert shards are reopened per layer
