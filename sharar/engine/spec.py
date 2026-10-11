@@ -77,9 +77,15 @@ class SpecDecoder:
         # accept step commits a request's state with one strided copy per kind.
         self.state_strategy = state_strategy
         self.replay = None
+        quantized = getattr(executor.state_pool, "window", None) is not None
+        if quantized and state_strategy != "reconstruct":
+            raise ValueError("a quantized recurrent state (SHARAR_SSM_STATE=int8/int4) commits through the verify ring: use --verify-state reconstruct")
         if state_strategy == "reconstruct":
-            from sharar.kernels.fla.accepted_state import AcceptedState
-            self.replay = AcceptedState(executor.state_pool, n, self.steps, executor.target.linear_num_key_heads)
+            if quantized:  # one record per verified token; the commit appends or folds them
+                from sharar.kernels.ssm_window import WindowState as Replay
+            else:
+                from sharar.kernels.fla.accepted_state import AcceptedState as Replay
+            self.replay = Replay(executor.state_pool, n, self.steps, executor.target.linear_num_key_heads)
             self.inter_ssm_all, self.inter_ssm = None, {}
         else:
             self.inter_ssm_all = torch.zeros((len(layer_ids), n, self.steps, *ssm_shape), dtype=torch.float32, device=self.device)

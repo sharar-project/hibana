@@ -57,19 +57,26 @@ class Executor:
         self.extras = model.forward_extras()  # what the model's forwards need beyond the context (None for the 27B)
         self.ledger = Ledger(target=self.target)
         self.ledger.record_cuda_allocated("weights")
+        from sharar.cache.ssm_format import SsmFormat
+        from sharar.engine.config import current
+        self.ssm_format = SsmFormat.from_config(current())  # GDN recurrent state storage (SHARAR_SSM_STATE)
+        if self.ssm_format.quantized and self.target.family != "qwen38":  # the window kernel ends with the 27B's norm
+            raise ValueError(f"SHARAR_SSM_STATE={self.ssm_format.kind} runs on the 27B only, not {self.target.name}")
+        state_bytes = self.ssm_format.state_bytes_per_slot(self.target)
         future, extra_page = 2 * 2**30, 0
         if spec_config is not None:
             from sharar.cache.spec_budget import budget
             future, extra_page = budget(spec_config, max_batch, max_context, cache_slots=num_slots or 96, target=self.target)
         if num_pages is None or num_slots is None:
-            plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future, extra_page_bytes=extra_page)
+            plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future, extra_page_bytes=extra_page,
+                                    state_bytes_per_slot=state_bytes)
             num_pages = num_pages or plan.kv_tokens
             num_slots = num_slots or plan.state_slots
         num_pages, num_slots = all_reduce_min(num_pages, num_slots)  # tensor-parallel ranks admit and evict alike
         if type(num_pages) is not int or num_pages < 2 or type(num_slots) is not int or num_slots < 2:
             raise ValueError("pools need at least one usable entry plus the reserved dummy entry")
         from sharar.cache.ledger import check_load_headroom
-        check_load_headroom(num_pages * (self.target.kv_bytes_per_token + extra_page) + num_slots * self.target.state_bytes_per_slot + future + 8 * 2**30)
+        check_load_headroom(num_pages * (self.target.kv_bytes_per_token + extra_page) + num_slots * state_bytes + future + 8 * 2**30)
         # One write-only page per padded graph row: the widest bucket's padding times the widest verify block any
         # proposer may use (speculation can be enabled after construction).
         from sharar.engine.graphs import capture_sizes
@@ -78,7 +85,7 @@ class Executor:
         self.kv_pool = KvPool(num_pages, self.device, target=self.target, padding_rows=(max(capture_sizes(max_batch)) - 1) * width)
         model.register_pages(self.kv_pool)  # per-page rows beyond K/V, e.g. Flash-Next's sparse-attention index keys (KvPool.page_aux)
         self.ledger.record_cuda_allocated("kv_pool")
-        self.state_pool = StatePool(num_slots, self.device, target=self.target)
+        self.state_pool = StatePool(num_slots, self.device, target=self.target, ssm_format=self.ssm_format)
         model.register_state(self.state_pool)  # per-slot state beyond the GDN's, e.g. the PLE convolution window (StatePool.aux)
         self.ledger.record_cuda_allocated("state_pool")
         cache = RadixCache(self.kv_pool, self.state_pool, self.device) if use_cache else None
@@ -105,7 +112,7 @@ class Executor:
         self.spec = None
         self.feature_request = None  # explicit target features when no proposer is installed (draft training)
         if log:
-            log(f"  pools: {num_pages} KV pages ({self.kv_pool.bytes / 2**30:.2f} GiB), {num_slots} state slots ({num_slots * self.state_pool.bytes_per_slot / 2**30:.2f} GiB)")
+            log(f"  pools: {num_pages} KV pages ({self.kv_pool.bytes / 2**30:.2f} GiB), {num_slots} state slots ({num_slots * self.state_pool.bytes_per_slot / 2**30:.2f} GiB, {self.ssm_format.describe()} recurrent state)")
         if spec_config is not None:
             self.enable_spec(spec_config.depth, log=log, proposer=spec_config.name, state_strategy=spec_config.state_strategy,
                              draft_precision=spec_config.draft_precision, draft_dir=spec_config.draft_dir)
@@ -298,9 +305,11 @@ class Executor:
         t = self.target
         tp = get_tp_info()
         identity = {"target": t.name, "revision": t.model_revision, "w3": getattr(self.model, "w3_identity", None),
-                    "kv_bytes_per_token": t.kv_bytes_per_token, "state_bytes_per_slot": t.state_bytes_per_slot,
+                    "kv_bytes_per_token": t.kv_bytes_per_token, "state_bytes_per_slot": self.state_pool.bytes_per_slot,
                     "stable_numerics": "1" if cfg.stable_numerics else "0",
                     **({"tensor_parallel": f"{tp.rank}/{tp.size}"} if tp.size > 1 else {})}  # a rank's records hold its heads
+        if self.state_pool.window is not None:  # FP32 records keep their identity
+            identity["ssm_state"] = self.state_pool.ssm_format.describe()
         return SessionDisk(directory, int(cfg.session_gib * GIB), identity, self.device, log=log,
                            min_tokens=cfg.session_min_tokens)
 

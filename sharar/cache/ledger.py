@@ -82,6 +82,7 @@ class Ledger:
         cache_fraction: float = 0.5,
         future_bytes: int = 0,
         extra_page_bytes: int = 0,
+        state_bytes_per_slot: int | None = None,
     ) -> Plan:
         """Size the pools from what is available now.
 
@@ -95,10 +96,11 @@ class Ledger:
         does not fit waits. A cached request costs about three state snapshots
         (441 MiB) against 256 MiB of KV for an 8K prompt, and a soak test
         showed slots, not pages, drive eviction, so the split is 40% pages /
-        60% slots.
+        60% slots. `state_bytes_per_slot` defaults to the target's FP32 state.
         """
         context_len = self.target.context_length if context_len is None else context_len
-        kv_bytes_per_token, state_bytes_per_slot = self.target.kv_bytes_per_token, self.target.state_bytes_per_slot
+        kv_bytes_per_token = self.target.kv_bytes_per_token
+        state_bytes_per_slot = state_bytes_per_slot or self.target.state_bytes_per_slot
         available = mem_available_bytes()
         budget = available - self.floor_bytes - prefill_reserve_bytes - future_bytes
         page_bytes = kv_bytes_per_token + extra_page_bytes

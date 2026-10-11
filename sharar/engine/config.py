@@ -50,6 +50,9 @@ class EngineConfig:
     w3_checkpoint: str | None = None          # SHARAR_W3_CHECKPOINT: the target's calibrated copies (required on Flash-Next; the 27B rounds to nearest without)
     w3_warning: str | None = None             # SHARAR_W3_WARNING: why the launcher serves without the profile's calibrated copies
     stable_numerics: bool = False             # SHARAR_STABLE_NUMERICS: M-invariant prefill kernels
+    ssm_state: str = "fp32"                   # SHARAR_SSM_STATE: GDN recurrent state storage, fp32, int8 or int4 (LeapQuant per-window quantization, cache/ssm_format.py; lossy)
+    ssm_window: int = 16                      # SHARAR_SSM_WINDOW: committed tokens per requantization (8, 16, 32)
+    ssm_compensators: int | None = None       # SHARAR_SSM_COMPENSATORS: FP16 rank-one outlier terms kept beside the quantized state (0-16; unset: 4, or 8 for int4)
     flashnext_trunk: str = "fp8"              # SHARAR_FLASHNEXT_TRUNK: bf16 | fp8
     flashnext_mixers: str = "fp8"             # SHARAR_FLASHNEXT_MIXERS
     flashnext_mtp_trunk: str | None = None    # SHARAR_FLASHNEXT_MTP_TRUNK: the MTP draft head's precision (unset: the trunk's)
@@ -101,6 +104,9 @@ class EngineConfig:
             w3_checkpoint=_str(e, "SHARAR_W3_CHECKPOINT"),
             w3_warning=_str(e, "SHARAR_W3_WARNING"),
             stable_numerics=_flag(e, "SHARAR_STABLE_NUMERICS"),
+            ssm_state=_str(e, "SHARAR_SSM_STATE", "fp32"),
+            ssm_window=_int(e, "SHARAR_SSM_WINDOW", 16),
+            ssm_compensators=_int(e, "SHARAR_SSM_COMPENSATORS", None),
             flashnext_trunk=_str(e, "SHARAR_FLASHNEXT_TRUNK", "fp8"),
             flashnext_mixers=_str(e, "SHARAR_FLASHNEXT_MIXERS", "fp8"),
             flashnext_mtp_trunk=_str(e, "SHARAR_FLASHNEXT_MTP_TRUNK"),
