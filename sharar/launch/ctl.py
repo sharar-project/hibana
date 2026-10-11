@@ -36,15 +36,20 @@ def post_json(port: str, route: str, payload: dict, timeout: float = 120) -> dic
 
 
 def reload_served_draft(s: Settings, run: str | None, dry: bool = False) -> bool:
-    """Swap the draft in the running server: a run name, or None for the pinned draft.
+    """Swap the draft in the running server: a run name, or None for the pinned draft. On two Sparks the checkpoint is
+    copied to the peer first: every rank loads it from the same path, and a rank that cannot ends the pair.
     Returns False when nothing is serving."""
     port = str(s.port)
-    target = str(s.draft_runs / run / "best") if run else "pinned"
+    target = str((s.draft_runs / run / "best").resolve()) if run else "pinned"
     if dry:
         print(f"+ POST http://127.0.0.1:{port}/reload_draft {{\"draft\": \"{target}\"}}")
         return True
-    if server_info(port) is None:
+    info = server_info(port)
+    if info is None:
         return False
+    if run and info.get("tp_size", 1) > 1:
+        from sharar.launch import tp
+        tp.copy(tp.peer(s), [Path(target)])
     reply = post_json(port, "/reload_draft", {"draft": target})
     print(f"serving now uses {reply.get('draft')} ({reply.get('seconds')}s)")
     return True

@@ -192,6 +192,60 @@ def test_draft_list_use_pinned_and_reload(home, monkeypatch, capsys):
     assert cli.main(["draft", "use", "run-1"]) == 0
     assert posted[-1] == ("30001", "/reload_draft", {"draft": str(runs / "run-1" / "best")})
     assert cli.main(["draft", "pinned"]) == 0 and posted[-1][2] == {"draft": "pinned"} and not (runs / "current").exists()
+    # two Sparks: the checkpoint goes to the peer at the same path before the swap (a rank that cannot load it ends the pair)
+    from sharar.launch import tp
+    copied = []
+    monkeypatch.setattr(ctl, "server_info", lambda port: {"tp_size": 2})
+    monkeypatch.setattr(tp, "peer", lambda s: "peer-host")
+    monkeypatch.setattr(tp, "copy", lambda host, paths, log=print: copied.append((host, paths, len(posted))))
+    assert cli.main(["draft", "use", "run-2"]) == 0
+    best = (runs / "run-2" / "best").resolve()
+    assert copied == [("peer-host", [best], len(posted) - 1)] and posted[-1][2] == {"draft": str(best)}
+    assert cli.main(["draft", "pinned"]) == 0 and len(copied) == 1  # the pinned draft is on both Sparks already
+
+
+def test_a_restarted_pair_serves_the_current_draft(home, monkeypatch):
+    """`sharar draft use` swaps the draft in a running pair; when the pair restarts it starts on that draft, copied to
+    the peer, not on the one it was launched with."""
+    from sharar.launch import guard, settings, tp
+    runs = home / "results" / "draft-runs"
+    for name in ("run-1", "run-2"):
+        d = runs / name / "best"
+        d.mkdir(parents=True)
+        (d / "model.safetensors").write_bytes(b"")
+        (d / "config.json").write_text('{"architectures": ["DFlash2DraftModel"]}')
+    (runs / "current").symlink_to("run-1/best")
+    s = settings.resolve("27b", tp=2)
+    assert s.follows_current and s.draft_dir == (runs / "run-1" / "best").resolve()
+    starts, copied = [], []
+
+    class FakePair:
+        def __init__(self, peer, env, module, args, show_rank1=True):
+            starts.append(args)
+
+        def start(self):
+            pass
+
+        def wait(self):
+            if len(starts) == 1:  # the draft is swapped while the pair serves, then the pair fails
+                (runs / "current").unlink()
+                (runs / "current").symlink_to("run-2/best")
+                return 1
+            return 0
+
+        def signal_rank0(self, sig=None):
+            pass
+
+    for name, value in (("peer", lambda s: "peer-host"), ("mirror", lambda host: None), ("setup", lambda *a, **k: None),
+                        ("link", lambda host: ("10.0.0.1:29500", "eth0")), ("Pair", FakePair),
+                        ("copy", lambda host, paths, log=print: copied.append(paths))):
+        monkeypatch.setattr(tp, name, value)
+    monkeypatch.setattr(tp.time, "sleep", lambda t: None)
+    monkeypatch.setattr(guard, "start_thread", lambda **k: None)
+    assert tp.serve(s, None, log=lambda m: None) == 0
+    first, second = (a[a.index("--draft") + 1] for a in starts)
+    assert first.endswith("run-1/best") and second.endswith("run-2/best")
+    assert copied == [[(runs / "run-2" / "best").resolve()]]
 
 
 def test_no_launcher_scripts_left():

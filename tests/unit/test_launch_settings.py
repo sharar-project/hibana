@@ -131,6 +131,9 @@ def test_a_promoted_draft_is_served_only_when_it_matches_the_proposer(env, tmp_p
     assert resolve(env, "27b", overrides={"SHARAR_DRAFT": "pinned"}).draft_dir is None
     assert resolve(env, "27b", overrides={"SHARAR_PROPOSER": "dspark", "SHARAR_MAX_CONTEXT": "32768"}).draft_dir is None
     assert resolve(env, "flashnext").draft_dir is None
+    assert resolve(env, "27b").follows_current and not resolve(env, "flashnext").follows_current
+    assert not resolve(env, "27b", overrides={"SHARAR_DRAFT": "pinned"}).follows_current
+    assert launch.promoted_draft(runs, "dflash2") == best.resolve() and launch.promoted_draft(runs, "dspark") is None
 
 
 def test_tensor_parallel_limits(env):
