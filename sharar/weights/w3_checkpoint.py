@@ -72,11 +72,14 @@ class CalibratedWeights:
         return {int(name.split(".")[1]) for name in self.weights if name.startswith("layers.") and ".experts." in name}
 
     def load_experts(self, layer: int, experts: int, inter: int, hidden: int, device):
-        """Layer `layer`'s routed experts, whole (one rank): fc1 (rows in w3_moe.fc1_order) and fc2 stacked over the experts."""
+        """Layer `layer`'s routed experts: fc1 (rows in w3_moe.fc1_order) and fc2 stacked over the experts, whole
+        experts; under tensor parallelism this rank's range of them (`sharding.ExpertParallel`)."""
         from sharar.kernels.w3_moe import W3Experts
-        fc1 = self._load(f"layers.{layer}.experts.w13", experts * 2 * inter, hidden, device)
-        fc2 = self._load(f"layers.{layer}.experts.w2", experts * hidden, inter, device)
-        return W3Experts.from_stacked(fc1, fc2, experts)
+        from sharar.weights.sharding import ExpertParallel, expert_range
+        lo, hi = expert_range(experts)
+        fc1 = self._load(f"layers.{layer}.experts.w13", (hi - lo) * 2 * inter, hidden, device, ExpertParallel(experts, 2 * inter))
+        fc2 = self._load(f"layers.{layer}.experts.w2", (hi - lo) * hidden, inter, device, ExpertParallel(experts, hidden))
+        return W3Experts.from_stacked(fc1, fc2, hi - lo, base=lo)
 
     def _load(self, name: str, out_features: int, in_features: int, device, shard: Shard = REPLICATED):
         from sharar.kernels.w3 import W3Weight, _codebook, lut_of

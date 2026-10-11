@@ -375,8 +375,15 @@ struct Params {
   __nv_bfloat16* out;
   uint32_t lut_lo, lut_hi;
   int M;
-  bool sort;    // block 0 sorts the pairs (else `order` is given)
+  int e_lo, e_n;  // this rank's experts: ids e_lo .. e_lo + e_n - 1, stored from index 0 (expert parallel; else 0, 512)
+  bool sort;      // block 0 sorts the pairs (else `order` is given)
 };
+
+// A pair's expert as an index into this rank's experts, or -1 when another rank holds it.
+__device__ __forceinline__ int local_expert(const Params& p, int id) {
+  const int e = id - p.e_lo;
+  return e >= 0 && e < p.e_n ? e : -1;
+}
 
 __global__ void __launch_bounds__(512) prep_kernel(const Params p) {
   if (blockIdx.x > 0) {
@@ -389,9 +396,9 @@ __global__ void __launch_bounds__(512) prep_kernel(const Params p) {
   count[tid] = 0;  // 512 threads, one expert each
   __syncthreads();
   for (int i = tid; i < P; i += 512) {
-    const int e = p.ids[i];
+    const int e = local_expert(p, p.ids[i]);
     if (p.sort) ids[i] = e;
-    atomicAdd(count + e, 1);  // integer counts: the result does not depend on the order
+    if (e >= 0) atomicAdd(count + e, 1);  // integer counts: the result does not depend on the order
   }
   __syncthreads();
   if (tid < 32) {  // distinct experts in ascending id, and their exclusive starts
@@ -717,7 +724,9 @@ __global__ void __launch_bounds__(256) combine_kernel(const Params p) {
   const int r = idx / kH, col = idx - r * kH;
   float v = 0.f;
 #pragma unroll
-  for (int k = 0; k < kTopk; ++k) v += __ldg(p.weights + r * kTopk + k) * p.y[static_cast<size_t>(r * kTopk + k) * kH + col];
+  for (int k = 0; k < kTopk; ++k)
+    if (local_expert(p, __ldg(p.ids + r * kTopk + k)) >= 0)  // another rank's pairs: its partial sum has them
+      v += __ldg(p.weights + r * kTopk + k) * p.y[static_cast<size_t>(r * kTopk + k) * kH + col];
   p.out[idx] = __float2bfloat16_rn(v);
 }
 
@@ -778,11 +787,13 @@ std::vector<torch::Tensor> quant_groups(torch::Tensor x) {
 }
 
 // Routed experts in the three-bit format for x [M, 2560] bf16, ids [M, 10] int32, weights [M, 10] fp32 -> bf16
-// [M, 2560] (the routed sum; no shared expert). `order`: the pairs stably sorted by expert (int32 [M * 10]) when
-// there are more than 640 pairs, else empty (the prep kernel sorts them). The ids must be below the expert count.
+// [M, 2560] (the routed sum; no shared expert). The weights hold experts e_lo .. e_lo + E - 1 (all 512, or one
+// rank's range under expert parallelism): pairs routed elsewhere are skipped, and the result is this rank's partial
+// sum. `order`: when there are more than 640 pairs, this rank's pairs stably sorted by expert first (int32 [M * 10],
+// the others after them), else empty (the prep kernel sorts them). The ids must be below 512.
 torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, torch::Tensor order,
                      torch::Tensor planes13, torch::Tensor scales13, torch::Tensor row13,
-                     torch::Tensor planes2, torch::Tensor scales2, torch::Tensor row2, int64_t lut) {
+                     torch::Tensor planes2, torch::Tensor scales2, torch::Tensor row2, int64_t lut, int64_t e_lo) {
   using namespace moe;
   const int M = x.size(0), P = M * kTopk;
   TORCH_CHECK(M >= 1, "w3_moe: no rows");
@@ -794,7 +805,7 @@ torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, 
               "order: empty up to 640 pairs, else the int32 stable sort of the ids");
   TORCH_CHECK(planes13.dtype() == at::kUInt32 && planes2.dtype() == at::kUInt32 && scales13.dtype() == at::kByte && scales2.dtype() == at::kByte);
   const int64_t E = planes13.size(0);
-  TORCH_CHECK(E >= 1 && E <= kE, "at most 512 experts");
+  TORCH_CHECK(E >= 1 && e_lo >= 0 && e_lo + E <= kE, "at most 512 experts");
   TORCH_CHECK(planes13.numel() == E * 2 * kI * kH * 3 / 32 && planes2.numel() == E * kH * kI * 3 / 32, "expert planes");
   TORCH_CHECK(scales13.numel() == E * 2 * kI * kH / 32 && scales2.numel() == E * kH * kI / 32, "expert scales");
   TORCH_CHECK(row13.numel() == E * 2 * kI && row2.numel() == E * kH, "row scales");
@@ -812,8 +823,9 @@ torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, 
            (const float*)row13.data_ptr(), (const float*)row2.data_ptr(), (int*)plan.data_ptr(), (int*)sorted.data_ptr(),
            (uint8_t*)xq.data_ptr(), (float*)xs.data_ptr(), (uint8_t*)hq.data_ptr(), (float*)hs.data_ptr(), (float*)y.data_ptr(),
            (__nv_bfloat16*)out.data_ptr(),
-           static_cast<uint32_t>(lut & 0xFFFFFFFFu), static_cast<uint32_t>(static_cast<uint64_t>(lut) >> 32), M, sort};
-  const int slots = std::min(P, kE);
+           static_cast<uint32_t>(lut & 0xFFFFFFFFu), static_cast<uint32_t>(static_cast<uint64_t>(lut) >> 32), M,
+           static_cast<int>(e_lo), static_cast<int>(E), sort};
+  const int slots = std::min<int64_t>(P, E);
   cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
   prep_kernel<<<M + 1, 512, 0, stream>>>(p);
   if (M <= 16) {

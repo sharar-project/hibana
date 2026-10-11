@@ -115,6 +115,14 @@ The same roles on Flash-Next's layers (`model/flashnext/`): attention q|k|v by h
 GDN by head (8 of 16 key, 24 of 48 value heads), o_proj and out_proj row-parallel, and every expert's
 intermediate split, routed and shared alike (320 of 640 columns: gate|up column-parallel, down row-parallel),
 so each rank streams half of every selected expert and the decoder layer all-reduces one partial sum per block.
+The 3-bit routed experts (#73, the default when the W3 checkpoint carries them) are split by expert instead: rank r
+holds experts 256r to 256r + 255 whole (`sharding.ExpertParallel`), since a down projection's 320 columns per rank
+would not fill the 3-bit format's 128-wide chunks. `kernels/w3_moe.py` skips the pairs routed to the other rank's
+experts, so each rank returns the partial sum over its own, all-reduced as before; a rank holds 23.0 GiB of experts
+(27.6 GiB in all, against 36.3 with the split NVFP4 experts). A token's ten experts land unevenly (five each on
+average), which costs less than the bytes saved: on 2026-10-11 single-stream decode went from 93.4 to 102.8 tok/s and
+four requests from 192.9 to 237.7, with GSM8K (first 300) and HumanEval as on one Spark with the 3-bit experts
+(95.7% and 93.9% both; the split NVFP4 experts 94.0% and 93.9%).
 FlashInfer's fused NVFP4 MoE runs the 320-column experts as they are (two halves sum to the whole within BF16
 rounding; one MoE call of one row takes 97 us against 145 us, sixteen rows 944 against 1,645 us). FP8 trunk parts
 are quantized with the whole matrix's scale, so a rank's part is exactly its rows or columns of the single-GPU
@@ -131,7 +139,6 @@ whole-vocabulary shortlist head's (`./sharar-tp draft-head`: identical picks at 
 
 ## Limits
 
-- Flash-Next keeps its NVFP4 routed experts on two Sparks (the 3-bit experts serve one Spark only).
 - The 27B with the parallel drafts (DFlash2, DSpark) or n-gram speculation, not MTP; Flash-Next with MTP. A reduced
   draft vocabulary (`SHARAR_DRAFT_VOCAB`) is not served tensor-parallel.
 - `reload_draft` needs the draft at the same path on every rank; a rank that cannot load it ends the pair.
