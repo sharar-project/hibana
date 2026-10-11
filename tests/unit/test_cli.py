@@ -28,7 +28,10 @@ def home(monkeypatch, tmp_path):
     monkeypatch.setattr(preflight, "ensure_w3", lambda s, log=print, fetch=True: tmp_path / "w3" if s.get("SHARAR_W3_DECODE") == "1" else None)
     from sharar.launch import lxcfs
     monkeypatch.setattr(lxcfs, "reexec_if_needed", lambda: None)
-    return tmp_path
+    saved = dict(os.environ)  # serve and train install the engine's settings into this process's environment
+    yield tmp_path
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 def test_importing_the_cli_does_not_import_torch():
