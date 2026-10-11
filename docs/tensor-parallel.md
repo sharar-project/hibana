@@ -140,7 +140,9 @@ whole-vocabulary shortlist head's (`sharar dev tp-draft-head`: identical picks a
 
 - The 27B with the parallel drafts (DFlash2, DSpark) or n-gram speculation, not MTP; Flash-Next with MTP. A reduced
   draft vocabulary (`SHARAR_DRAFT_VOCAB`) is not served tensor-parallel.
-- `reload_draft` needs the draft at the same path on every rank; a rank that cannot load it ends the pair.
+- `reload_draft` needs the draft at the same path on every rank, and a rank that cannot load it ends the pair:
+  `sharar draft use | pinned | reload` copy the checkpoint to the peer first, and a pair that restarts serves the
+  current draft (`draft-runs/current`) unless `--draft` or `--pinned` named one.
 - Pool sizes, admission's memory floor and every scheduler step are collectives across the ranks: call the executor
   and scheduler only from the engine loop, which keeps them in lockstep.
 - The one-shot pairs each RDMA device with the peer's in name order (on two Sparks, the same-named ones).

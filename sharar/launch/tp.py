@@ -14,6 +14,7 @@ e.g. "nsys profile -o /path/tp2_%h ..." (%h: each host's name).
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import shlex
 import shutil
@@ -26,7 +27,7 @@ from pathlib import Path
 
 from sharar.launch import guard
 from sharar.launch.preflight import pinned_snapshots, snapshot_dir
-from sharar.launch.settings import CHECKOUT, Settings
+from sharar.launch.settings import CHECKOUT, Settings, promoted_draft
 
 TP_PORT = 29500  # where the ranks meet on rank 0's link address
 RESTARTS, RESTART_WINDOW = 5, 600
@@ -91,22 +92,27 @@ def setup(s: Settings, peer_host: str, w3: Path | None, log=print, models: bool 
             log(f"note: no ibverbs headers on {where or 'this Spark'}; the RDMA all-reduce cannot build (SHARAR_TP_ALLREDUCE=nccl works without)")
     if not models:
         return
-    copies: list[tuple[Path, Path]] = []  # (local path, its parent directory on the peer)
+    copies: list[Path] = []
     for cache, repo, revision in pinned_snapshots(s):
         snap = snapshot_dir(cache, repo, revision)
         if snap is not None:
-            copies.append((snap.parents[1], snap.parents[2]))  # models--<repo> into its cache root
+            copies.append(snap.parents[1])  # models--<repo>, into its cache root
     if s.draft_dir is not None:
-        copies.append((s.draft_dir, s.draft_dir.parent))
+        copies.append(s.draft_dir)
     if w3 is not None:  # the served checkpoint only: w3-checkpoints/ also holds other targets' and older calibrations
-        copies.append((w3, w3.parent))
-    for src, parent in copies:
-        ssh(peer_host, f"mkdir -p {shlex.quote(str(parent))}", check=True)
-        log(f"copying {src} to {peer_host}")
-        run(["rsync", "-a", str(src), f"{peer_host}:{parent}/"])
+        copies.append(w3)
+    copy(peer_host, copies, log)
     for d in (s.sessions, s.traces):
         if d is not None:
             ssh(peer_host, f"mkdir -p {shlex.quote(str(d))}", check=True)
+
+
+def copy(peer_host: str, paths: list[Path], log=print) -> None:
+    """Each directory at the same path on the peer (rsync copies only what changed)."""
+    for src in paths:
+        ssh(peer_host, f"mkdir -p {shlex.quote(str(src.parent))}", check=True)
+        log(f"copying {src} to {peer_host}")
+        run(["rsync", "-a", str(src), f"{peer_host}:{src.parent}/"])
 
 
 def rank_env(s: Settings, w3: Path | None, device: str) -> dict[str, str]:
@@ -194,6 +200,14 @@ def serve(s: Settings, w3: Path | None, log=print) -> int:
     starts: list[float] = []
     while True:
         mirror(peer_host)
+        if s.follows_current:  # `sharar draft use` may have swapped the draft since: start again on the current one
+            draft = promoted_draft(s.draft_runs, s.proposer)
+            if draft != s.draft_dir:
+                if draft is not None:
+                    copy(peer_host, [draft], log)
+                log(f"the draft is now {draft or 'the pinned draft'}")
+                s = dataclasses.replace(s, draft_dir=draft)
+                args = ["engine", *s.engine_args(tp=2), "--tp-address", address]
         pair = Pair(peer_host, env, "sharar", args)
         pair.start()
         code = pair.wait()

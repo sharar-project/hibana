@@ -31,6 +31,12 @@ serving: `train` stops a detached 27B server and refuses while one runs in the f
 waits for the final evaluation (up to 20 minutes, `SHARAR_TRAIN_STOP_GRACE_S`). The trainer loads only the draft, the
 target's embeddings and its NVFP4 head, about 40 GiB in total.
 
+**Two Sparks.** Training runs on one Spark, the one where `sharar train` runs, from that Spark's traces. A pair serving
+with `--tp 2` records them on rank 0's Spark (where `sharar serve 27b --tp 2` ran), so train there; `train` stops the
+pair. The next `serve 27b --tp 2` serves the promoted draft and copies it to the peer, and `draft use | pinned | reload`
+work on a running pair: the checkpoint goes to the peer at the same path before the swap, and a pair that restarts
+after a failure starts on the current draft.
+
 `sharar train --help` lists the hyperparameters for controlled runs (`--steps`, `--draft`, `--lr`, `--continue-lr`,
 `--holdout-tokens`, `--train-params`, `--kl-alpha`, `--on-policy`, `--regression-traces`, `--output`;
 `--continue-from none` starts from the pinned draft and `--promote-to none` promotes nothing).

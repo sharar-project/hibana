@@ -112,6 +112,19 @@ def read_config_file(path: Path | None, env: dict | None = None) -> dict[str, st
     return values
 
 
+def promoted_draft(runs: Path, proposer: str) -> Path | None:
+    """The checkpoint runs/current resolves to, when it is `proposer`'s architecture; else None (the pinned draft)."""
+    current = runs / "current"
+    if not current.is_symlink():
+        return None
+    resolved = current.resolve()
+    config = resolved / "config.json"
+    want = "DSparkDraftModel" if proposer == "dspark" else "DFlash2DraftModel"
+    if config.is_file() and (resolved / "model.safetensors").is_file() and f'"{want}"' in config.read_text():
+        return resolved
+    return None
+
+
 @dataclass
 class Settings:
     """One target's resolved settings: what the launcher, the engine and the tools agree on."""
@@ -132,6 +145,12 @@ class Settings:
 
     def get(self, key: str, default: str = "") -> str:
         return self.values.get(key) or default
+
+    @property
+    def follows_current(self) -> bool:
+        """Whether the draft is the promoted one (draft-runs/current), as nothing names another: what `sharar draft use`
+        swaps and what a restart reads again."""
+        return not self.get("SHARAR_DRAFT") and self.parallel_draft
 
     @property
     def proposer(self) -> str:
@@ -269,13 +288,7 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
                f"SHARAR_DRAFT={draft_dir} needs config.json and model.safetensors")
         _check(proposer in ("dflash2", "dspark") and spec > 0, "a trained draft requires an enabled parallel draft (DFlash2 or DSpark)")
     elif not draft_value and proposer in ("dflash2", "dspark") and spec > 0:
-        current = path(values.get("SHARAR_DRAFT_RUNS") or results / "draft-runs") / "current"
-        want = "DSparkDraftModel" if proposer == "dspark" else "DFlash2DraftModel"
-        if current.is_symlink():
-            resolved = current.resolve()
-            config = resolved / "config.json"
-            if config.is_file() and (resolved / "model.safetensors").is_file() and f'"{want}"' in config.read_text():
-                draft_dir = resolved
+        draft_dir = promoted_draft(path(values.get("SHARAR_DRAFT_RUNS") or results / "draft-runs"), proposer)
 
     trace_dir = None
     if traces and values.get("SHARAR_TRACES", "") != "off":
