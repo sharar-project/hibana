@@ -1,4 +1,8 @@
-"""Merge regression: quantized pools retain upstream's packed-state indexing."""
+"""Merge routing regression; importing the model requires the GPU runtime.
+
+The kernels are mocked, but the real GDN module imports FlashInfer and Triton.
+Keep this in the gated GPU suite, not dependency-light CPU unit CI.
+"""
 from types import SimpleNamespace
 
 import pytest
