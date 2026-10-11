@@ -2,7 +2,9 @@
 
 The service runs this checkout's `sharar` with the caller's SHARAR_* settings and config file; its output goes to
 $SHARAR_RESULTS/logs/<service>.log (the previous run's is .log.1); `systemctl --user stop` sends SIGTERM, so the server
-drains and stores its sessions and the trainer evaluates once more and promotes.
+drains and stores its sessions and the trainer evaluates once more and promotes. SIGTERM reaches the main process
+only (KillMode=mixed): on two Sparks that is the supervisor, which passes it to rank 0 alone, and rank 1's ssh must
+stay up until rank 0's stop has ended rank 1 (launch/tp.py); whatever is left when the main process exits is killed.
 """
 from __future__ import annotations
 
@@ -45,7 +47,8 @@ def start(unit: str, argv: list[str], log: Path, description: str, stop_seconds:
     env.update(PATH=os.environ.get("PATH", "/usr/bin:/bin"), PYTHONUNBUFFERED="1")
     setenv = [a for k, v in env.items() for a in ("--setenv", f"{k}={v}")]
     cmd = ["systemd-run", "--user", "--quiet", "--collect", "--unit", unit, "--description", description,
-           "--working-directory", os.getcwd(), "--property", "KillSignal=SIGTERM", "--property", f"TimeoutStopSec={stop_seconds}",
+           "--working-directory", os.getcwd(), "--property", "KillSignal=SIGTERM", "--property", "KillMode=mixed",
+           "--property", f"TimeoutStopSec={stop_seconds}",
            "--property", f"StandardOutput=append:{log}", "--property", f"StandardError=append:{log}", *setenv,
            sys.executable, "-m", "sharar", *argv]
     subprocess.run(cmd, check=True)
@@ -71,7 +74,7 @@ def follow_startup(unit: str, log: Path, url: str) -> int:
                 print(f"ready: {url} (sharar chat, sharar launch claude, sharar stop; logs: sharar logs -f)")
                 return 0
         shown = len(lines)
-        if not running(unit) or any(line.startswith("Traceback") for line in lines):
+        if not running(unit) or any(line.startswith(("Traceback", "[rank 1] Traceback")) for line in lines):
             print("\n".join(lines[-30:]))
             print(f"{unit} failed to start; full log: {log}")
             return 1

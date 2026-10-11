@@ -73,8 +73,9 @@ IBVERBS = ('test -e /usr/include/infiniband/verbs.h || test -d ibverbs || '
            '{ apt-get download libibverbs-dev >/dev/null 2>&1 && dpkg -x libibverbs-dev_*.deb ibverbs && rm -f libibverbs-dev_*.deb; }')
 
 
-def setup(s: Settings, peer_host: str, w3: Path | None, log=print) -> None:
-    """The peer's Python environment and copies of the model, draft and 3-bit checkpoint (only what changed)."""
+def setup(s: Settings, peer_host: str, w3: Path | None, log=print, models: bool = True) -> None:
+    """The peer's Python environment and copies of the model, draft and 3-bit checkpoint (only what changed; `models`
+    False: the environment only, for the diagnostics)."""
     venv = Path(sys.prefix)
     uv = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
     if ssh(peer_host, "test -x ~/.local/bin/uv || command -v uv", capture_output=True).returncode:
@@ -88,6 +89,8 @@ def setup(s: Settings, peer_host: str, w3: Path | None, log=print) -> None:
         r = ssh(where, command) if where else subprocess.run(["bash", "-c", command])
         if r.returncode:
             log(f"note: no ibverbs headers on {where or 'this Spark'}; the RDMA all-reduce cannot build (SHARAR_TP_ALLREDUCE=nccl works without)")
+    if not models:
+        return
     copies: list[tuple[Path, Path]] = []  # (local path, its parent directory on the peer)
     for cache, repo, revision in pinned_snapshots(s):
         snap = snapshot_dir(cache, repo, revision)
@@ -95,8 +98,8 @@ def setup(s: Settings, peer_host: str, w3: Path | None, log=print) -> None:
             copies.append((snap.parents[1], snap.parents[2]))  # models--<repo> into its cache root
     if s.draft_dir is not None:
         copies.append((s.draft_dir, s.draft_dir.parent))
-    if w3 is not None:
-        copies.append((s.w3_root, s.w3_root.parent))
+    if w3 is not None:  # the served checkpoint only: w3-checkpoints/ also holds other targets' and older calibrations
+        copies.append((w3, w3.parent))
     for src, parent in copies:
         ssh(peer_host, f"mkdir -p {shlex.quote(str(parent))}", check=True)
         log(f"copying {src} to {peer_host}")
@@ -130,11 +133,18 @@ class Pair:
     def start(self) -> None:
         exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in self.env.items())
         remote = f"cd {shlex.quote(str(CHECKOUT))} && env {exports} {shlex.join(self.command(1))}"
-        # A terminal for rank 1 (-tt): it gets SIGHUP and exits when its ssh ends, which ends with this process.
-        self.rank1 = subprocess.Popen(["ssh", "-tt", self.peer, remote], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                      stderr=subprocess.STDOUT, text=True, errors="replace")
+        # Ctrl-C signals the terminal's whole process group. Both ranks start with SIGINT ignored (an ignored signal
+        # stays ignored across exec, and Python and ssh keep it so), so only this process acts on it and passes SIGTERM
+        # to rank 0 alone: rank 1's ssh must stay up until rank 0's stop has ended rank 1 and both stored their sessions.
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            # A terminal for rank 1 (-tt): it gets SIGHUP and exits when its ssh ends, which ends with this process.
+            self.rank1 = subprocess.Popen(["ssh", "-tt", self.peer, remote], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                          stderr=subprocess.STDOUT, text=True, errors="replace")
+            self.rank0 = subprocess.Popen(self.command(0), env={**os.environ, **self.env}, cwd=CHECKOUT)
+        finally:
+            signal.signal(signal.SIGINT, previous)
         threading.Thread(target=self._relay, args=(self.rank1.stdout, self.show_rank1), daemon=True).start()
-        self.rank0 = subprocess.Popen(self.command(0), env={**os.environ, **self.env}, cwd=CHECKOUT)
 
     @staticmethod
     def _relay(stream, show: bool) -> None:
@@ -143,11 +153,12 @@ class Pair:
                 print(f"[rank 1] {line.rstrip()}", flush=True)
 
     def wait(self) -> int:
-        """Rank 0's exit status, once rank 1 is gone too."""
+        """Rank 0's exit status, once rank 1 is gone too (it ends by itself once rank 0 stops, after storing its
+        sessions, which can take longer than rank 0's: measured on the 27B, 18 sessions finished after rank 0 exited)."""
         code = self.rank0.wait()
         if self.rank1.poll() is None:
             try:
-                self.rank1.wait(timeout=10)
+                self.rank1.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 self.rank1.terminate()
                 self.rank1.wait()
@@ -160,6 +171,7 @@ class Pair:
 
 def serve(s: Settings, w3: Path | None, log=print) -> int:
     """Both ranks in the foreground, restarted when either fails; returns rank 0's last exit status."""
+    sys.stdout.reconfigure(line_buffering=True)  # this process's lines in order with the ranks'
     peer_host = peer(s)
     log(f"two Sparks: this one and {peer_host}")
     mirror(peer_host)
@@ -198,9 +210,10 @@ def serve(s: Settings, w3: Path | None, log=print) -> int:
 
 def diagnostic(module: str, args: list[str], s: Settings, log=print) -> int:
     """A two-rank profiler (profiling.tp_comm, profiling.tp_draft_head) on both Sparks; rank 1's output is dropped."""
+    sys.stdout.reconfigure(line_buffering=True)
     peer_host = peer(s)
     mirror(peer_host)
-    setup(s, peer_host, None, log)
+    setup(s, peer_host, None, log, models=False)
     address, device = link(peer_host)
     env = rank_env(s, None, device)
     pair = Pair(peer_host, env, module, [*args, "--tp-address", address], show_rank1=False)
