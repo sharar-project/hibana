@@ -10,44 +10,30 @@ DFlash2 drafter trains today.
 ## Using it
 
 ```bash
-./sharar-ctl serve 27b      # serve; every request is recorded under $SHARAR_RESULTS/traces
-./sharar-ctl train          # stops serving, trains until told to stop
-./sharar-ctl train stop     # final held-out evaluation, promotion, serving relaunches (or reloads if it kept running)
-./sharar-ctl draft list     # runs, their held-out gains, the draft in use
+uv run sharar serve 27b         # serve; every request is recorded under $SHARAR_RESULTS/traces
+uv run sharar train             # (after stopping the server) train until Ctrl-C, then evaluate and promote
+uv run sharar train --detach    # or as a service: sharar train stop finishes it, sharar logs --train follows it
+uv run sharar draft list        # runs, their held-out gains, the draft in use
 ```
 
-`train` continues from the current promoted checkpoint when there is one
-(at a smaller learning rate, 3e-5 instead of 1e-4) and trains on every recorded
-request, holding out the newest ones until they cover about 20K output tokens
-(at least four requests, at most a fifth of them). It evaluates every 100
-steps and once more on `stop`, and promotes only when held-out tokens per
-round improve and, when a regression set is configured, that set does not
-drop by more than 0.5% below its pre-training score; promotion updates
-`$SHARAR_RESULTS/draft-runs/current`, which `serve` follows. `serve --pinned`
-forces the publisher's draft, `serve --draft DIR` any checkpoint, `draft use
-RUN` another run, `draft pinned` removes the link; `use`, `pinned` and `draft
-reload` swap the draft inside a running server (`POST /reload_draft`) in about
-a second, without a restart: the checkpoint's weights are copied into the
-serving tensors between two verification rounds, so captured graphs, rings and
-the prefix cache stay valid. A reload refuses a checkpoint that changes the
-architecture or the frozen context weights. Training never shares the
-GPU with serving: `train` refuses while a server runs on this machine, and
-`stop` waits for the final evaluation (up to 20 minutes by default) before
-relaunching. The trainer loads only the draft, the target's embeddings and its
-NVFP4 head, about 40 GiB in total.
+`train` continues from the current promoted checkpoint when there is one (at a smaller learning rate, 3e-5 instead of
+1e-4) and trains on every recorded request, holding out the newest ones until they cover about 20K output tokens (at
+least four requests, at most a fifth of them). It evaluates every 100 steps and once more when it stops (Ctrl-C,
+`sharar train stop`, or `--steps N`), and promotes only when held-out tokens per round improve and, when a regression
+set is configured (`--regression-traces`, default `$SHARAR_RESULTS/draft-regression` when it exists), that set does
+not drop by more than 0.5% below its pre-training score; promotion updates `$SHARAR_RESULTS/draft-runs/current`, which
+`sharar serve` follows. `serve --pinned` forces the publisher's draft, `serve --draft DIR` any checkpoint, `draft use
+RUN` another run, `draft pinned` removes the link; `use`, `pinned` and `draft reload` swap the draft inside a running
+server (`POST /reload_draft`) in about a second, without a restart: the checkpoint's weights are copied into the
+serving tensors between two verification rounds, so captured graphs, rings and the prefix cache stay valid. A reload
+refuses a checkpoint that changes the architecture or the frozen context weights. Training never shares the GPU with
+serving: `train` stops a detached 27B server and refuses while one runs in the foreground; a detached run's `stop`
+waits for the final evaluation (up to 20 minutes, `SHARAR_TRAIN_STOP_GRACE_S`). The trainer loads only the draft, the
+target's embeddings and its NVFP4 head, about 40 GiB in total.
 
-Underneath, `sharar-ctl` drives `run-sharar-train.sh`, which runs
-`sharar train --steps 0 --continue-from $SHARAR_DRAFT_RUNS/current --promote-to $SHARAR_DRAFT_RUNS/current`
-from the Python environment as the user service `sharar-train` (log: `$SHARAR_RESULTS/logs/sharar-train.log`); that command also takes explicit `--steps`,
-`--draft`, `--lr`, `--continue-lr`, `--holdout-tokens`, `--train-params`,
-`--kl-alpha`, `--on-policy`, `--regression-traces` and the other
-hyperparameters for controlled runs. Launcher variables: `SHARAR_TRAIN_LR`
-(1e-4), `SHARAR_TRAIN_CONTINUE_LR` (3e-5, used when a promoted checkpoint
-exists), `SHARAR_TRAIN_PARAMS` (which weights to train), `SHARAR_TRAIN_KL_ALPHA`
-(1.0), `SHARAR_TRAIN_ON_POLICY` (0), `SHARAR_TRAIN_REGRESSION` (a trace
-directory used as the regression set, default `$SHARAR_RESULTS/draft-regression`
-when it exists), `SHARAR_TRAIN_HOLDOUT_TOKENS` (20000), `SHARAR_TRAIN_EVAL_EVERY`
-(100), `SHARAR_TRAIN_STOP_GRACE_S` (1200), `SHARAR_DRAFT_RUNS`.
+`sharar train --help` lists the hyperparameters for controlled runs (`--steps`, `--draft`, `--lr`, `--continue-lr`,
+`--holdout-tokens`, `--train-params`, `--kl-alpha`, `--on-policy`, `--regression-traces`, `--output`;
+`--continue-from none` starts from the pinned draft and `--promote-to none` promotes nothing).
 
 ## What is recorded
 

@@ -22,7 +22,7 @@ def test_rejects_before_serving(argv, message, capsys):
     assert message in capsys.readouterr().err
 
 
-def test_serves_under_its_own_service_name():
-    assert evaluate.gate.SERVICE == "sharar-evaluate"
-    conf = evaluate.gate.served_config({}, "fast", {}, 30200)
-    assert "SHARAR_SERVICE=sharar-evaluate" in conf and "SHARAR_PORT=30200" in conf and "SHARAR_VENV=" in conf
+def test_serves_this_checkout_as_a_user_would():
+    served = evaluate.Served("evaluate", Path("/tmp/sharar-evaluate-test"), "flashnext", "fast", {}, 30200, "python", Path("."), {})
+    assert served.command[3:10] == ["sharar", "serve", "flashnext", "--fast", "--port", "30200", "--no-traces"]
+    assert "--no-fetch" not in served.command  # the build as served: the 3-bit checkpoint follows the pin

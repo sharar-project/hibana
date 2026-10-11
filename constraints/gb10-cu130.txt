@@ -1,4 +1,4 @@
-# Use the cu130 PyTorch and FlashInfer indexes (see tools/setup-venv.sh).
+# The tested GB10 versions; pyproject.toml's [tool.uv] constraint-dependencies repeat them for uv.lock (keep in step).
 -c common.txt
 torch==2.13.0+cu130
 triton==3.7.1

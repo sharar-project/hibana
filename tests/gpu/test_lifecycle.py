@@ -1,6 +1,6 @@
 """Opt-in GB10 continuation/ownership checks with the pinned real checkpoint.
 
-Run with SHARAR_RUN_GPU=1 (tools/gpu-tests.sh) and tools/memory-guard.sh watching the test process.
+Run with SHARAR_RUN_GPU=1 (and `python -m sharar.launch.guard --pid PID` watching the test process).
 Pools are deliberately bounded so the test does not size itself to all RAM.
 """
 

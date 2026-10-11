@@ -35,7 +35,7 @@ def runtime():
     from sharar.engine import config
     gc.collect()
     torch.cuda.empty_cache()
-    # The exact profile: the FP8 trunk without 3-bit copies (tools/gpu-tests.sh mounts the 27B's for the rest of the suite).
+    # The exact profile: the FP8 trunk without 3-bit copies (tests/conftest.py points the rest of the suite at the 27B's).
     with config.using(config.current().replace(target="flashnext", w3_decode=False, w3_checkpoint=None)):
         model = targets.load_model(target, snap)
         torch.cuda.empty_cache()

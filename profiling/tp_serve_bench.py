@@ -1,6 +1,6 @@
 """Served speed of the 27B on one Spark or two (docs/tensor-parallel.md): what a client sees over HTTP.
 
-Start the server first (`./sharar-ctl serve 27b [--tp 2]`; `SHARAR_TP_ALLREDUCE=nccl` for NCCL's all-reduce
+Start the server first (`sharar serve 27b [--tp 2]`; `SHARAR_TP_ALLREDUCE=nccl` for NCCL's all-reduce
 everywhere), then `python3 profiling/tp_serve_bench.py --label NAME --out results/tp-bench/NAME.json`. Requests
 go to `/generate` with greedy sampling and the server's acceptance default (the profile's). Four phases:
 

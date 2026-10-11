@@ -1,7 +1,7 @@
 # Profiling Sharar
 
 In-process tools that look inside the engine: they load the model and kernels themselves, so they run from the
-Python environment (`.venv/bin/python -m profiling.<tool>` in the checkout), on an exclusive, guarded GPU.
+Python environment (`uv run python -m profiling.<tool>` in the checkout), on an exclusive, guarded GPU.
 To measure a served build (quality suites, AIPerf speed, a lossy option) use the tools in
 [evaluation](../docs/evaluation.md) instead; HTTP benchmarks live in
 [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval).
@@ -13,8 +13,8 @@ To measure a served build (quality suites, AIPerf speed, a lossy option) use the
 | `ab_identity.py` | Greedy outputs of the speculative engine on fixed prompts (batch one and four, exact and relaxed acceptance, each twice): run on two builds and compare for identity |
 | `flashnext_profile.py` | Kernel-level breakdown of eager Flash-Next decode steps (torch profiler) plus graph-replay step time |
 | `flashnext_quant.py` | Flash-Next trunk quantization error against the BF16 trunk on the serving path: argmax agreement, truncated KL and NLL, dense and sparse regions, with a rounding-noise control |
-| `tp_comm.py` | Two Sparks: the RDMA one-shot all-reduce against NCCL's ring per message size, bitwise check, inside a CUDA graph after GPU work and back to back (`./sharar-tp comm` runs both ranks) |
-| `tp_draft_head.py` | Two Sparks: the vocabulary-parallel draft head against the whole-vocabulary one (`./sharar-tp draft-head`) |
+| `tp_comm.py` | Two Sparks: the RDMA one-shot all-reduce against NCCL's ring per message size, bitwise check, inside a CUDA graph after GPU work and back to back (`sharar dev tp-comm` runs both ranks) |
+| `tp_draft_head.py` | Two Sparks: the vocabulary-parallel draft head against the whole-vocabulary one (`sharar dev tp-draft-head`) |
 | `tp_serve_bench.py` | Served speed over HTTP on one Spark or two: single-stream decode, 4 and 16 concurrent requests, long-prompt time to first token |
 | `w3_bench.py` | 3-bit decode GEMM: correctness against the dequantized reference and DRAM bandwidth per decode shape at 16, 32 and 64 rows, split-K sweep |
 | `inputs.py`, `workloads/family_v1.json` | The frozen long prompts the profilers read: 18 synthetic task families and the three benchmark prompts, 10,000 tokens each, built from source with any tokenizer |
@@ -31,7 +31,7 @@ The 3-bit calibration builders that produce the serving artifacts moved into the
 ## Draft adaptation tools (`draft/`)
 
 - `draft/trace_corpus.py` generates traced traffic over HTTP against a server started with traces on
-  (`./sharar-ctl serve`): `--dataset` replays ShareGPT first turns, `--repo DIR` sends coding requests over a
+  (`sharar serve 27b`): `--dataset` replays ShareGPT first turns, `--repo DIR` sends coding requests over a
   repository's files; `--exclude LOG` keeps a test set's file/task pairs out of the traffic.
 - `draft/draft_ab.py` replays a trace directory's newest held-out prompts (or `--all`) at batch one against a
   running server and reports throughput, tokens per round and output hashes, for A/B of drafts across windows.

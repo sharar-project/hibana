@@ -1,4 +1,4 @@
-"""The GPU suite runs only when asked (SHARAR_RUN_GPU=1, set by tools/gpu-tests.sh) on a CUDA device.
+"""The GPU suite runs only when asked (SHARAR_RUN_GPU=1; tests/conftest.py points it at the real checkpoints) on a CUDA device.
 Otherwise its modules are not even imported: several need Triton or FlashInfer at import time."""
 import os
 

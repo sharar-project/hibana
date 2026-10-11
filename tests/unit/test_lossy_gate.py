@@ -20,68 +20,68 @@ def _gate():
 gate = _gate()
 
 
-def test_profiles_come_from_the_launcher_table():
-    """The gate reads tools/serving-profile.sh (as run-sharar.sh does), per target."""
-    assert gate.profile_defaults("exact", "flashnext")["SHARAR_ACCEPT_DEFAULT"] == "off"
-    assert gate.profile_defaults("fast", "flashnext")["SHARAR_DEVICE_ACCEPT"] == "1"
-    assert gate.profile_defaults("fast", "qwen38")["SHARAR_DEVICE_ACCEPT"] == "0"
-    wide = gate.profile_defaults("throughput", "flashnext")
-    assert wide["SHARAR_MAX_BATCH"] == "128" and wide["SHARAR_SPEC_DEPTHS"] == "16:3"
-    for name in gate.PROFILE_NAMES:
-        assert set(gate.profile_defaults(name, "qwen38")) == set(gate.PROFILE_SETTINGS.values())
+@pytest.fixture
+def clean(monkeypatch, tmp_path):
+    """The gate resolves arms from the config file alone: point it at an empty one and a results directory."""
+    for key in [k for k in gate.os.environ if k.startswith("SHARAR_")]:
+        monkeypatch.delenv(key)
+    conf = tmp_path / "gb10.env"
+    conf.write_text(f"SHARAR_RESULTS={tmp_path}\nSHARAR_FLASHNEXT_CACHE=/fn\n")
+    monkeypatch.setenv("SHARAR_CONFIG_FILE", str(conf))
+    return tmp_path
+
+
+def test_arms_resolve_as_sharar_serve_does(clean):
+    """The gate and `sharar serve` share one resolver (sharar/launch/settings.py)."""
+    exact = gate.resolve("flashnext", "exact", {})
+    assert exact.get("SHARAR_ACCEPT_DEFAULT") == "off" and gate.arm_plan(exact)["accept"] == "1:0.0"
+    assert gate.resolve("flashnext", "fast", {}).get("SHARAR_DEVICE_ACCEPT") == "1"
+    assert gate.resolve("qwen38", "fast", {}).get("SHARAR_DEVICE_ACCEPT") == "0"
     with pytest.raises(ValueError, match="unknown serving profile"):
-        gate.profile_defaults("turbo", "qwen38")
+        gate.resolve("qwen38", "turbo", {})
 
 
-def test_batch_settings_stay_out_of_the_in_process_arm():
-    env = gate.resolve({"SHARAR_TARGET": "flashnext", "SHARAR_DRAFT": "pinned", "SHARAR_FLASHNEXT_CACHE": "/fn"}, "throughput", {})
-    plan = gate.arm_plan(env)
+def test_batch_settings_stay_out_of_the_in_process_arm(clean):
+    plan = gate.arm_plan(gate.resolve("flashnext", "throughput", {}))
     assert plan["env"]["SHARAR_DEVICE_ACCEPT"] == "1"
-    assert "SHARAR_MAX_BATCH" not in plan["env"] and "SHARAR_SPEC_DEPTHS" not in plan["env"]
+    assert "SHARAR_MAX_BATCH" not in plan["env"] and "SHARAR_SPEC_DEPTHS" not in plan["env"] and "SHARAR_SESSION_DIR" not in plan["env"]
 
 
-def test_resolve_explicit_settings_win_over_the_profile(tmp_path):
-    config = {"SHARAR_TARGET": "flashnext", "SHARAR_RESULTS": str(tmp_path), "SHARAR_DRAFT": "pinned"}
-    fast = gate.resolve(config, "fast", {})
-    assert fast["SHARAR_ACCEPT_DEFAULT"] == "3:2.0"
-    # auto without flashnext-current: Flash-Next's copies are calibrated only, so the trunk stays FP8
-    assert fast["SHARAR_W3_DECODE"] == "0" and fast["SHARAR_W3_CHECKPOINT"] == ""
-    ck = tmp_path / "w3-checkpoints" / "flashnext-current"
+def test_the_3bit_checkpoint_is_what_current_holds(clean):
+    fast = gate.arm_plan(gate.resolve("flashnext", "fast", {}))
+    # without flashnext-current: Flash-Next's copies are calibrated only, so the trunk stays FP8 (the gate does not fetch)
+    assert fast["env"]["SHARAR_W3_DECODE"] == "0" and "SHARAR_W3_CHECKPOINT" not in fast["env"]
+    ck = clean / "w3-checkpoints" / "flashnext-current"
     ck.mkdir(parents=True)
     (ck / "manifest.json").write_text("{}")
-    fast = gate.resolve(config, "fast", {})
-    assert fast["SHARAR_W3_DECODE"] == "1" and fast["SHARAR_W3_CHECKPOINT"] == str(ck.resolve())
-    plan = gate.arm_plan({**fast, "SHARAR_FLASHNEXT_CACHE": "/fn"})
-    assert plan["env"]["SHARAR_W3_CHECKPOINT"] == str(ck.resolve())  # the host path run-sharar.sh passes too
-    assert gate.resolve({**config, "SHARAR_W3_DECODE": "0"}, "fast", {})["SHARAR_W3_CHECKPOINT"] == ""  # an explicit 0 wins
-    exact = gate.arm_plan({**gate.resolve(config, "exact", {}), "SHARAR_FLASHNEXT_CACHE": "/fn"})
+    fast = gate.arm_plan(gate.resolve("flashnext", "fast", {}))
+    assert fast["env"]["SHARAR_W3_DECODE"] == "1" and fast["env"]["SHARAR_W3_CHECKPOINT"] == str(ck.resolve())
+    assert "SHARAR_W3_CHECKPOINT" not in gate.arm_plan(gate.resolve("flashnext", "fast", {"SHARAR_W3_DECODE": "0"}))["env"]
+    exact = gate.arm_plan(gate.resolve("flashnext", "exact", {}))
     assert exact["env"]["SHARAR_W3_DECODE"] == "0" and "SHARAR_W3_CHECKPOINT" not in exact["env"] and exact["accept"] == "1:0.0"
 
 
-def test_resolve_the_27b_rounds_to_nearest_without_a_checkpoint(tmp_path):
-    fast = gate.resolve({"SHARAR_RESULTS": str(tmp_path), "SHARAR_DRAFT": "pinned"}, "fast", {})
-    assert fast["SHARAR_W3_DECODE"] == "1" and fast["SHARAR_W3_CHECKPOINT"] == ""
-    ck = tmp_path / "w3-checkpoints" / "qwen38-current"
-    ck.mkdir(parents=True)
-    (ck / "manifest.json").write_text("{}")
-    assert gate.resolve({"SHARAR_RESULTS": str(tmp_path), "SHARAR_DRAFT": "pinned"}, "fast", {})["SHARAR_W3_CHECKPOINT"] == str(ck.resolve())
-
-
-def test_overrides_reach_the_in_process_arm():
-    env = gate.resolve({"SHARAR_DRAFT": "pinned"}, "exact", {"SHARAR_TRUNK_KEEP_BF16": "mlp", "SHARAR_PORT": "1"})
-    plan = gate.arm_plan(env)
+def test_overrides_reach_the_in_process_arm(clean):
+    plan = gate.arm_plan(gate.resolve("qwen38", "exact", {"SHARAR_TRUNK_KEEP_BF16": "mlp", "SHARAR_DRAFT": "pinned"}))
     assert plan["env"]["SHARAR_TRUNK_KEEP_BF16"] == "mlp"
-    assert "SHARAR_PORT" not in plan["env"]
-    assert plan["proposer"] == "dflash2" and plan["spec"] == 15 and plan["draft_precision"] == "fp8"
+    assert plan["proposer"] == "dflash2" and plan["spec"] == 15 and plan["draft_precision"] == "fp8" and plan["draft"] is None
 
 
-def test_sampled_threshold_reaches_the_in_process_arm_as_serve_records_it():
-    fast = gate.arm_plan(gate.resolve({"SHARAR_DRAFT": "pinned"}, "fast", {}))
+def test_sampled_threshold_reaches_the_in_process_arm_as_serve_records_it(clean):
+    fast = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_DRAFT": "pinned"}))
     assert fast["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "1" and fast["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] == "2:1.0"
-    off = gate.arm_plan(gate.resolve({"SHARAR_DRAFT": "pinned"}, "fast", {"SHARAR_ACCEPT_DEFAULT_SAMPLED": "0"}))
-    assert off["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] == ""
-    exact = gate.arm_plan(gate.resolve({"SHARAR_DRAFT": "pinned"}, "fast", {"SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD": "off"}))
-    assert exact["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "0" and exact["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] == ""
+    off = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_DRAFT": "pinned", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0"}))
+    assert off["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "0" and off["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] == ""
+    exact = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_DRAFT": "pinned", "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD": "off"}))
+    assert exact["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "0"
+
+
+def test_served_arms_are_sharar_serve_in_the_foreground(clean):
+    cmd = gate.served_command("flashnext", "fast", 30100)
+    assert cmd[2:] == ["-m", "sharar", "serve", "flashnext", "--fast", "--port", "30100", "--no-traces", "--no-sessions", "--no-fetch"]
+    assert gate.served_env({})["SHARAR_COLD_TIER_GIB"] == "0"
+    assert gate.served_env({"SHARAR_COLD_TIER_GIB": "8"})["SHARAR_COLD_TIER_GIB"] == "8"
+    assert "SHARAR_CONFIG_FILE" in gate.served_env({})
 
 
 def test_accept_rule_matches_serve():
@@ -147,8 +147,6 @@ def test_added_batteries_reject_on_pass_fail_tasks_and_ruler_only():
     assert v == "rejected" and "ruler2-128k" in why[0] and "ruler2-32k" not in why[0]
     assert gate.BATTERIES["all"] == ["hard", "long"] and gate.STAGES["long"][0] == "long"
     assert gate.STAGES["agentic"] == ("agentic", ["tbench"])
-    assert "SHARAR_COLD_TIER_GIB=0" in gate.served_config({}, "fast", {}, 30100)
-    assert "SHARAR_COLD_TIER_GIB=0" not in gate.served_config({}, "fast", {"SHARAR_COLD_TIER_GIB": "8"}, 30100)
 
 
 def test_stages_reuse_the_screen_shards():
