@@ -34,3 +34,9 @@ NVFP4_GROUP_SIZE = 16
 # MemAvailable drop (20 ms samples), 19.58 GiB CUDA peak. 24 GiB retains a
 # 2.64 GiB margin; the separate 16 GiB host floor still applies.
 WEIGHT_LOAD_PEAK_BYTES = 24 * 2**30
+
+# The pinned parallel drafts (repository, revision): DSpark and DFlash2 (proposers/parallel.py; the launcher downloads them).
+DRAFT_PINS = {
+    'dspark': ('RadixArk/Qwen3.8-27B-DSpark', 'b9a5dbdf03bc999c6c73c426b19c2d9041cea393'),
+    'dflash2': ('incoai/Qwen3.8-27B-DFlash2', 'dedf8df68adfb1afeaf7b7480c0a0243108177b4'),
+}

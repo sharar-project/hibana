@@ -6,20 +6,19 @@
     tools/evaluate.py --target qwen38 --profile exact --tasks gpqa,mmlupro --limit 50 --name gpqa50
     tools/evaluate.py --target flashnext --profile fast --suite quick --baseline $SHARAR_RESULTS/reviews/<date>-evaluate-<name>
 
-- **What is served.** The target's launcher config (config/gb10.env if present, then config/targets/<target>.env
-  and defaults: tools/launcher-config.sh) with `--profile` and `--env SHARAR_KEY=VALUE` overrides, resolved by
-  run-sharar.sh, from this checkout's engine and Python environment (.venv or SHARAR_VENV). The run records the
-  commit; uncommitted engine changes are refused unless --allow-dirty (and then recorded as a hash). To evaluate
-  another revision, run this tool from a worktree of it.
+- **What is served.** `sharar serve <target> --<profile>` with the `--env SHARAR_KEY=VALUE` overrides in its
+  environment (and the user's config file), from this checkout's engine and Python environment (`uv sync --frozen`).
+  The run records the commit; uncommitted engine changes are refused unless --allow-dirty (and then recorded as a
+  hash). To evaluate another revision, run this tool from a worktree of it.
 - **What runs.** sharar-eval (`--evals`, default ../sharar-eval, with its .venv) against the server:
   - `--suite quick|full|hard|long|agentic|all`, or `--tasks a,b` with `--limit N` (`evals.suite`);
   - `--speed` adds the AIPerf benchmark (`evals.speed`, `--workload code|design|reasoning|all`).
     Speed requests carry no acceptance fields, so both measure the served profile as a client sees it.
-- **Where.** One GPU window under $SHARAR_RESULTS/.gpu.lock, on --port (30200-30299) as the user systemd
-  service sharar-evaluate; the server stops afterwards. Output goes to
+- **Where.** One GPU window under $SHARAR_RESULTS/.gpu.lock, on --port (30200-30299), the server in the foreground
+  of this tool; it stops afterwards. Output goes to
   $SHARAR_RESULTS/reviews/<date>-evaluate-<name>/:
   - manifest.json: the engine (commit, uncommitted changes), sharar-eval commit, config;
-  - served/: launch log, /get_server_info, server log;
+  - served/: the serve command, /get_server_info, the server's log;
   - suite/: the sharar-eval run directory;
   - speed/: the AIPerf run;
   - SUMMARY.md.
@@ -27,7 +26,7 @@
 - **`--baseline DIR`.** An earlier evaluate output directory. The suite is paired with it item by item
   (`evals.suite compare`), and speed reuses its frozen inputs and reports the TPS change.
 
-This reuses the lossy gate's served-arm machinery (tools/lossy-gate.py: launcher config resolution,
+This reuses the lossy gate's served-arm machinery (tools/lossy-gate.py: settings resolution,
 GPU window, memory-floor watch, suite runner) without its in-process configuration check: there is
 no in-process arm to compare with, so /get_server_info is recorded instead.
 """
@@ -56,23 +55,25 @@ def load_gate():
 
 
 gate = load_gate()
-gate.SERVICE = "sharar-evaluate"  # served_config, Served and gpu_window read it at call time
 log = gate.log
 
 
 class Served(gate.Served):
-    """A served build: started by run-sharar.sh, recorded rather than checked against an in-process arm."""
+    """A served build: `sharar serve` as a user would run it (3-bit checkpoint fetched), recorded rather than checked
+    against an in-process arm."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.command = [a for a in self.command if a != "--no-fetch"]
 
     def start(self) -> None:
-        subprocess.run([str(REPO / "run-sharar.sh"), "--stop"], env=self.env, capture_output=True)
-        r = subprocess.run([str(REPO / "run-sharar.sh")], env=self.env, capture_output=True, text=True, cwd=REPO)
-        (self.dir / "launch.log").write_text(r.stdout + r.stderr)
-        if r.returncode:
-            raise RuntimeError(f"run-sharar.sh failed: {(r.stdout + r.stderr).strip().splitlines()[-1:]}")
-        deadline = time.monotonic() + 1200
+        with (self.dir / "server.log").open("a") as logf:
+            self.proc = subprocess.Popen(self.command, env=self.env, cwd=REPO, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+        deadline = time.monotonic() + 1800
         while not gate.health(self.url):
             if not self.running() or time.monotonic() > deadline or gate.available_gib() < gate.FLOOR_GIB:
-                raise RuntimeError(f"server did not come up (running={self.running()}); see {self.log}")
+                self.stop()
+                raise RuntimeError(f"server did not come up; see {self.dir / 'server.log'}")
             time.sleep(5)
         info = gate.get_json(f"{self.url}/get_server_info")
         (self.dir / "server_info.json").write_text(json.dumps(info, indent=1) + "\n")
@@ -118,13 +119,14 @@ def main(argv=None) -> int:
     if args.baseline and not (args.baseline / "manifest.json").is_file():
         raise SystemExit(f"{args.baseline}: not an evaluate output directory")
 
-    conf_path = gate.target_config(args.target)
-    config = gate.launcher_config(args.target)
-    results = Path(os.environ.get("SHARAR_RESULTS") or config.get("SHARAR_RESULTS") or "")
-    if not str(results):
-        raise SystemExit(f"set SHARAR_RESULTS (in {conf_path} or the environment)")
-    gate.LOCK = results / ".gpu.lock"
+    conf_path = gate.launch.config_file()
     overrides = gate.parse_env(args.env)
+    try:
+        settings = gate.resolve(args.target, args.profile, overrides)
+    except ValueError as exc:
+        raise SystemExit(f"evaluate: {exc}")
+    results = settings.results
+    gate.LOCK = results / ".gpu.lock"
     engine = gate.engine_identity()
     if "+dirty" in engine and not args.allow_dirty:
         raise SystemExit("the engine has uncommitted changes; commit them or pass --allow-dirty")
@@ -142,7 +144,7 @@ def main(argv=None) -> int:
         run_dir = results / "reviews" / f"{dt.date.today().isoformat()}-evaluate-{name}"
     suite_args = [*(["--suite", args.suite] if args.suite else []), *(["--tasks", args.tasks] if args.tasks else []),
                   *(["--limit", str(args.limit)] if args.limit else []), *[a for t in args.skip for a in ("--skip", t)]]
-    manifest = {**spec, "name": name, "config_file": str(conf_path), "port": args.port,
+    manifest = {**spec, "name": name, "config_file": str(conf_path) if conf_path else None, "port": args.port,
                 "launcher_source": gate.git("rev-parse", "HEAD"), "dirty": bool(gate.git("status", "--porcelain", "--", "sharar", "tools")),
                 "evals": str(args.evals), "evals_commit": gate.git("rev-parse", "HEAD", cwd=args.evals),
                 "suite": suite_args, "speed": args.workload if args.speed else None,
@@ -155,8 +157,7 @@ def main(argv=None) -> int:
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
     log(f"{name}: {run_dir}")
 
-    served = Served("evaluate", run_dir / "served", gate.served_config(config, args.profile, overrides, args.port),
-                    args.port, python, args.evals, {})
+    served = Served("evaluate", run_dir / "served", args.target, args.profile, overrides, args.port, python, args.evals, {})
     speed_dir = run_dir / "speed"
     speed_done = (speed_dir / "summary.json").is_file() and json.loads((speed_dir / "summary.json").read_text()).get("completed")
     with gate.gpu_window(f"evaluate {name}"):
@@ -178,7 +179,7 @@ def main(argv=None) -> int:
                     if args.baseline and (args.baseline / "speed" / "summary.json").is_file():
                         cmd += ["--inputs", str(args.baseline / "speed" / "frozen-inputs.json"), "--baseline", str(args.baseline / "speed")]
                     log(f"evals.speed --workload {args.workload}")
-                    env = {**os.environ, "SHARAR_HF_CACHE": config.get("SHARAR_HF_CACHE") or os.environ.get("SHARAR_HF_CACHE", "")}
+                    env = {**os.environ, "SHARAR_HF_CACHE": str(settings.hf_cache)}
                     proc = subprocess.Popen(cmd, cwd=args.evals, stdout=logf, stderr=subprocess.STDOUT, env=env)
                     if gate.watch(proc, time.monotonic() + 3600 * args.hold_hours, None, "speed", proc.kill) != 0:
                         raise RuntimeError(f"evals.speed failed; see {served.dir / 'evals.log'}")
@@ -186,7 +187,7 @@ def main(argv=None) -> int:
             served.stop()
 
     lines = [f"# Evaluate {name}", "", f"Engine `{engine}`; profile `{args.profile}` + `{overrides}`; "
-             f"sharar-eval {manifest['evals_commit'][:10]}; config `{conf_path.name}`.", ""]
+             f"sharar-eval {manifest['evals_commit'][:10]}; config `{conf_path.name if conf_path else 'none'}`.", ""]
     if suite_args:
         if args.baseline:
             out = subprocess.run(evals_cmd(python, "evals.suite", "compare", str(args.baseline / "suite"), str(run_dir / "suite"),

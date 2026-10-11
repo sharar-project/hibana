@@ -17,8 +17,8 @@ case "$mode" in
   gpu)  # inside a prepared GB10 environment (the venv active, paths already set)
     exec env SHARAR_RUN_GPU=1 python3 -m pytest tests/unit tests/gpu -q -p no:cacheprovider "$@"
     ;;
-  gpu-suite)  # from the host: this checkout's Python environment and the launcher's paths (tools/gpu-tests.sh)
-    exec tools/gpu-tests.sh tests/unit tests/gpu "$@"
+  gpu-suite)  # on the GB10: the project's environment (uv) and the launcher's paths (tests/conftest.py)
+    exec env SHARAR_RUN_GPU=1 uv run --frozen pytest tests/unit tests/gpu -q -p no:cacheprovider "$@"
     ;;
   *) echo 'usage: tools/check.sh {setup-cpu|cpu|gpu|gpu-suite} [pytest arguments]' >&2; exit 2 ;;
 esac

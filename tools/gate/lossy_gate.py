@@ -1,7 +1,7 @@
 """In-process layers of the lossy-change gate (`tools/lossy-gate.py`, #31) for one arm, one model load.
 
 tools/lossy-gate.py runs this from the Python environment with the arm's settings in the environment (the
-serving profile resolved as `run-sharar.sh` resolves it), on the same checkout's engine as the served arm, so the
+serving profile resolved as `sharar serve` resolves it), on the same checkout's engine as the served arm, so the
 arm measures that code in the served configuration: the
 executor is built as `sharar serve` builds it (proposer, depth, verify state, draft precision,
 draft), and greedy requests carry the profile's acceptance rule.

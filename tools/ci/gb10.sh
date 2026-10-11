@@ -6,11 +6,11 @@
 #   Cleanup:  tools/ci/gb10.sh --cleanup
 #
 # Stages (each needs the one before it to pass, so old code is never tested):
-#   venv      the Python environment for this checkout (tools/setup-venv.sh; SHARAR_VENV, default ~/sharar-ci/venv, kept
-#             between runs and rebuilt when the constraints, pyproject.toml or the setup script change)
-#   gpu       tests/unit and tests/gpu from it (tools/gpu-tests.sh)
-#   serve     serve each target from it (run-sharar.sh as the service sharar-ci, 32K context) and check it
-#             (tools/verify-sharar.sh)
+#   venv      the Python environment for this checkout: `uv sync --frozen` into UV_PROJECT_ENVIRONMENT (default
+#             ~/sharar-ci/venv, kept between runs; uv.lock decides what it holds)
+#   gpu       tests/unit and tests/gpu from it (`uv run pytest`, SHARAR_RUN_GPU=1, under the memory guard)
+#   serve     serve each target from it (`sharar serve <target>` in the foreground on port 30011, 32K context) and
+#             check it (`sharar verify`)
 #   evaluate  each target, fast profile (tools/evaluate.py): AIPerf speed (code, design, reasoning) and, so that a
 #             speed gain from wrongly accepted drafts cannot pass, GSM8K (first 300) and HumanEval (164); paired with
 #             that target's baseline. Fails on more than 5% lower TPS or a quality loss of at least 1 point (p < 0.05,
@@ -20,8 +20,8 @@
 # The machine is shared, so the checks never hold anyone up. They are skipped when, at the start, the shared GPU
 # lock ($SHARAR_RESULTS/.gpu.lock) is held or awaited, another container with the GPU or a GPU process runs, or
 # under 40 GiB of memory is available. While they run, a watchdog checks the same every 10 s (ignoring the
-# checks' own services and processes); on any sign of someone else's work it stops the checks' services and
-# ends the run as "gave way" (exit 0). A skipped or interrupted nightly run is not recorded as tested.
+# checks' own processes); on any sign of someone else's work it stops the checks' processes and ends the run as
+# "gave way" (exit 0). A skipped or interrupted nightly run is not recorded as tested.
 #
 # Settings come from ~/sharar-ci/gb10.env (SHARAR_CONFIG_FILE): SHARAR_HF_CACHE, SHARAR_RESULTS, SHARAR_AIPERF,
 # optionally SHARAR_FLASHNEXT_CACHE and SHARAR_EVALS (the sharar-eval checkout, default ~/sharar-eval).
@@ -30,7 +30,6 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 cd "$(dirname "$SELF")/../.."
 
 ALL="venv gpu serve evaluate"
-SERVE_SERVICE=sharar-ci
 SERVE_PORT=30011
 OUT="$PWD/ci-out"
 MIN_FREE_GIB=40
@@ -44,18 +43,12 @@ set -a; source "$SHARAR_CONFIG_FILE"; set +a
 : "${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in $SHARAR_CONFIG_FILE}"
 : "${SHARAR_RESULTS:?set SHARAR_RESULTS in $SHARAR_CONFIG_FILE}"
 EVALS="${SHARAR_EVALS:-$HOME/sharar-eval}"
-export SHARAR_VENV="${SHARAR_VENV:-$HOME/sharar-ci/venv}"
+export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$HOME/sharar-ci/venv}"
+export PATH="$HOME/.local/bin:$PATH"   # uv
 LOCK="$SHARAR_RESULTS/.gpu.lock"
-OURS="$OUT/services"       # the user systemd services these checks started, one name per line
 SESSIONS="$OUT/sessions"   # the session ids of this run's processes (lock holders among them are ours)
 
 # ---- whose work is on the machine ----
-ours() { grep -qxF "$1" "$OURS" 2>/dev/null; }
-our_service() {  # whether a process runs in one of these checks' systemd services
-  local cg name; cg="$(cat "/proc/$1/cgroup" 2>/dev/null || true)"
-  while read -r name; do [[ -n "$name" && "$cg" == *"/$name.service"* ]] && return 0; done < <(cat "$OURS" 2>/dev/null)
-  return 1
-}
 our_session() { local sid; sid="$(ps -o sid= -p "$1" 2>/dev/null | tr -d ' ')"; [[ -n "$sid" ]] && grep -qxF "$sid" "$SESSIONS" 2>/dev/null; }
 lock_pids() {  # pids /proc/locks names for the GPU lock (holders, or waiters with `waiting`)
   [[ -e "$LOCK" ]] || return 0
@@ -79,16 +72,14 @@ foreign_work() {
     docker inspect -f '{{range .HostConfig.Devices}}{{.PathOnHost}} {{end}}{{len .HostConfig.DeviceRequests}}' "$name" 2>/dev/null \
       | grep -qE '/dev/nvidia|[1-9]$' && why+=("container $name has the GPU")
   done < <(command -v docker >/dev/null && docker ps --format '{{.Names}}')
-  # Other Sharar services (someone serving or training from a checkout).
+  # Detached Sharar services (someone serving or training with --detach).
   while read -r name; do
-    name="${name%.service}"
-    [[ -n "$name" && "$name" != sharar-memory-guard ]] && ! ours "$name" && why+=("service $name runs")
+    [[ -n "$name" ]] && why+=("service $name runs")
   done < <(systemctl --user list-units --state=active --plain --no-legend 'sharar-*.service' 2>/dev/null | awk '{print $1}')
-  # GPU processes outside these checks' sessions and services.
+  # GPU processes outside these checks' sessions.
   while IFS=, read -r pid _; do
     pid="${pid// /}"; [[ "$pid" =~ ^[0-9]+$ ]] || continue
     our_session "$pid" && continue
-    our_service "$pid" && continue
     why+=("GPU process $pid ($(ps -o comm= -p "$pid" 2>/dev/null || echo '?'))")
   done < <(nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null || true)
   # The shared GPU lock, held or awaited by anyone else.
@@ -106,12 +97,11 @@ foreign_work() {
   return 0
 }
 
-stop_ours() {
-  local name
-  while read -r name; do
-    [[ -n "$name" ]] && systemctl --user stop "$name.service" >/dev/null 2>&1
-  done < <(cat "$OURS" 2>/dev/null)
-  systemctl --user stop sharar-memory-guard.service >/dev/null 2>&1 || true   # run-sharar.sh's guard of the served service
+stop_ours() {  # every process these checks started (each stage runs in a session of its own)
+  local sid
+  while read -r sid; do
+    [[ -n "$sid" && "$sid" != "$$" ]] && pkill -TERM -s "$sid" 2>/dev/null
+  done < <(tail -n +2 "$SESSIONS" 2>/dev/null)
   return 0
 }
 
@@ -134,7 +124,7 @@ for root in filter(None, sys.argv[1:]):
 
 # ---- stages (each runs in its own session: `gb10.sh --stage NAME`) ----
 stage_venv() {
-  bash tools/setup-venv.sh --check || bash tools/setup-venv.sh
+  uv sync --frozen --quiet
 }
 
 # tests/unit too: some unit tests need the model or the GPU and only run here. Test temp files go in ci-out/ on
@@ -143,47 +133,41 @@ stage_gpu() {
   local pid rc=0
   take_lock || return 1
   evict_models
-  bash tools/gpu-tests.sh tests/unit tests/gpu --basetemp=ci-out/pytest-tmp &
+  SHARAR_RUN_GPU=1 uv run --frozen pytest -q -p no:cacheprovider tests/unit tests/gpu --basetemp=ci-out/pytest-tmp &
   pid=$!
-  bash tools/memory-guard.sh --pid "$pid" 8>&- &
+  uv run --frozen python -m sharar.launch.guard --pid "$pid" 8>&- &
   wait "$pid" || rc=$?
   return "$rc"
 }
 
-# One target's launcher config: the CI config's paths, the target (its settings come from config/targets/), and the CI
-# service, port and context; no draft-runs, no saved sessions.
-serve_config() {
-  local conf="$OUT/serve-$1.env"
-  { grep -vE '^(SHARAR_TARGET|SHARAR_SERVICE|SHARAR_PORT|SHARAR_MAX_CONTEXT|SHARAR_DRAFT|SHARAR_SESSION_DIR)=' "$SHARAR_CONFIG_FILE"
-    echo "SHARAR_TARGET=$1"
-    echo "SHARAR_SERVICE=$SERVE_SERVICE"; echo "SHARAR_PORT=$SERVE_PORT"
-    echo "SHARAR_MAX_CONTEXT=32768"; echo "SHARAR_DRAFT=pinned"; echo "SHARAR_SESSION_DIR=off"; } >"$conf"
-  echo "$conf"
-}
-
+# Each target in the foreground on SERVE_PORT, 32K context, the pinned draft, nothing recorded; `sharar verify`, then
+# SIGTERM (as Ctrl-C).
 stage_serve() {
-  local target conf waited rc=0
+  local target pid waited rc=0 log
   take_lock || return 1
-  echo "$SERVE_SERVICE" >>"$OURS"
-  for target in qwen38 flashnext; do
-    conf="$(serve_config "$target")"
+  for target in 27b flashnext; do
     evict_models
-    SHARAR_CONFIG_FILE="$conf" bash run-sharar.sh 8>&- || { echo "$target: launch failed"; rc=1; continue; }
+    log="$OUT/serve-$target.log"
+    uv run --frozen sharar serve "$target" --port "$SERVE_PORT" --context-length 32768 --pinned --no-traces --no-sessions >"$log" 2>&1 8>&- &
+    pid=$!
     waited=0
     until curl -fs "http://127.0.0.1:$SERVE_PORT/health" >/dev/null 2>&1; do
-      if ! systemctl --user is-active --quiet "$SERVE_SERVICE" || (( waited >= 900 )); then
-        echo "$target: not healthy"; tail -n 100 "$SHARAR_RESULTS/logs/$SERVE_SERVICE.log" 2>&1; rc=1; break
+      if ! kill -0 "$pid" 2>/dev/null || (( waited >= 900 )); then
+        echo "$target: not healthy"; tail -n 100 "$log"; rc=1; break
       fi
       sleep 5; waited=$(( waited + 5 ))
     done
     if (( waited < 900 )) && curl -fs "http://127.0.0.1:$SERVE_PORT/health" >/dev/null 2>&1; then
-      if SHARAR_URL="http://127.0.0.1:$SERVE_PORT" SHARAR_MAX_CONTEXT=32768 bash tools/verify-sharar.sh; then
+      if uv run --frozen sharar verify "$target" --url "http://127.0.0.1:$SERVE_PORT"; then
         echo "$target: verified (healthy after ${waited}s)" >>"$OUT/notes-serve"
       else
-        echo "$target: verification failed"; tail -n 100 "$SHARAR_RESULTS/logs/$SERVE_SERVICE.log" 2>&1; rc=1
+        echo "$target: verification failed"; tail -n 100 "$log"; rc=1
       fi
     fi
-    SHARAR_CONFIG_FILE="$conf" bash run-sharar.sh --stop 8>&- || systemctl --user stop "$SERVE_SERVICE.service" >/dev/null 2>&1
+    kill -TERM "$pid" 2>/dev/null
+    for _ in $(seq 120); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+    kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
   done
   return "$rc"
 }
@@ -191,7 +175,6 @@ stage_serve() {
 # tools/evaluate.py takes the GPU lock itself for its serving window.
 stage_evaluate() {
   local target name dir base rc=0 verdict paired
-  echo sharar-evaluate >>"$OURS"   # tools/evaluate.py's service
   for target in qwen38 flashnext; do
     name="ci-weekly-$target-$(date -u +%Y%m%dT%H%M)"
     base="$SHARAR_RESULTS/ci/baseline-$target"
@@ -260,7 +243,7 @@ fi
 
 export SHARAR_PROFILE=fast   # what the lab serves; fixed here so a new default cannot shift the baselines
 rm -rf "$OUT"; mkdir -p "$OUT" "$SHARAR_RESULTS"
-: >"$OURS"; ps -o sid= -p $$ | tr -d ' ' >"$SESSIONS"
+ps -o sid= -p $$ | tr -d ' ' >"$SESSIONS"
 watchdog_pid=""
 finish() { [[ -n "$watchdog_pid" ]] && kill "$watchdog_pid" 2>/dev/null; stop_ours; }
 trap finish EXIT

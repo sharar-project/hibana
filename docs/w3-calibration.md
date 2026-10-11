@@ -28,7 +28,7 @@ the down-projection inputs. It does not train on answers or logits.
 From the Python environment, with the GPU otherwise idle and the memory guard watching:
 
 ```bash
-SHARAR_W3_DECODE=0 .venv/bin/python -m sharar.weights.w3_calibrate \
+SHARAR_W3_DECODE=0 uv run python -m sharar.weights.w3_calibrate \
   --inputs calibration-inputs.json \
   --source $SHARAR_HF_CACHE/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a \
   --output $SHARAR_RESULTS/w3-checkpoints/<date>-qwen38-gptq
@@ -52,7 +52,7 @@ the decode-path KL it causes, though it did not move task accuracy, so the serve
 
 The profiles that use 3-bit copies (`balanced` for the 27B, `fast`, `throughput`)
 serve `$SHARAR_RESULTS/w3-checkpoints/<target>-current` (`qwen38-current`,
-`flashnext-current`). Every serve (`run-sharar.sh`, `sharar-tp`) keeps that link on the target's published
+`flashnext-current`). Every `sharar serve` (one Spark or two) keeps that link on the target's published
 checkpoint, pinned by revision in the target's config (`W3_REPO`, `W3_REVISION`)
 (`python -m sharar.weights.w3_checkpoint fetch`; `HF_TOKEN` is passed through for a private repository):
 

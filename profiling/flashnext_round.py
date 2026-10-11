@@ -566,7 +566,7 @@ def main():
     ap.add_argument("--gap-profile", action="store_true")
     ap.add_argument("--kernel-gaps", action="store_true", help="bubbles inside the graph replays (torch profiler)")
     ap.add_argument("--phase-kernels", action="store_true", help="kernels by round phase: draft, verify, accept replays and eager work")
-    ap.add_argument("--spec", type=int, default=4, help="MTP draft depth (config/targets/flashnext.env serves 4)")
+    ap.add_argument("--spec", type=int, default=4, help="MTP draft depth (sharar serve flashnext serves 4)")
     ap.add_argument("--batch", default="1", help="--gap-profile / --kernel-gaps: requests per generation, a comma list (1,4)")
     ap.add_argument("--accept", default=None, help="relaxed acceptance K:M for every request (the fast profile: 3:2.0)")
     ap.add_argument("--ple-cold", action="store_true", help="--gap-profile also with the PLE table out of the page cache")

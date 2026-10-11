@@ -9,39 +9,31 @@ explicit tensor ownership over a registry or framework. Read [the architecture](
 
 ## Run checks
 
-On Linux with Python 3.12, this creates a CPU-only environment and runs the
-control, scheduling, cache, sampler, HTTP and transaction tests:
-
-```bash
-bash tools/check.sh setup-cpu
-```
-
-It installs the pinned CPU PyTorch wheel and `.[test]`; no model, SGLang,
-FlashInfer, Triton or GPU is required. For subsequent runs use
-`.venv-cpu/bin/python -m pytest tests/unit -q`, or `tools/check.sh cpu` in an
-already prepared environment. Sharar's small GitHub CPU workflow uses the same
-setup command. Dependency constraints are in `constraints/`; the GB10 environment
-(`tools/setup-venv.sh`) uses `gb10-cu130.txt` with the host's CUDA 13 toolkit.
+On the GB10, `uv sync` builds the environment from `uv.lock` and `uv run pytest tests/unit` runs the control,
+scheduling, cache, sampler, HTTP and transaction tests. Off the GB10, `bash tools/check.sh setup-cpu` creates a
+CPU-only environment with pip (the pinned CPU PyTorch wheel and `.[test]`; no model, FlashInfer or GPU) and runs the
+same tests; the GitHub CPU workflow uses it. The tested versions are in `constraints/`; `pyproject.toml`'s
+`[tool.uv] constraint-dependencies` repeat them for `uv.lock`, so a version change touches both and `uv lock`.
 
 Also run `python3 tools/check_links.py` for documentation links, and `.venv-cpu/bin/python tools/check_distribution.py` to build an sdist and
 wheel and probe installed runtime assets outside the checkout. CI runs these
 checks; a source-only or editable installation does not validate packaging.
 
-The GPU suite (`tests/gpu`, about 11 minutes, both targets) runs from the checkout's Python environment:
+The GPU suite (`tests/gpu`, about 15 minutes, both targets) runs with `SHARAR_RUN_GPU=1`; without it the GPU
+modules are not collected:
 
 ```bash
-tools/gpu-tests.sh                 # or: tools/check.sh gpu-suite (tests/unit too)
-tools/gpu-tests.sh tests/gpu/test_qsa.py -x
+SHARAR_RUN_GPU=1 uv run pytest tests/unit tests/gpu      # or: tools/check.sh gpu-suite
+SHARAR_RUN_GPU=1 uv run pytest tests/gpu/test_qsa.py -x
 ```
 
-It builds `.venv` first if needed, points the suite at the model caches, the calibrated W3 artifact and
-`$SHARAR_RESULTS` (resolved as the launcher resolves them: `config/gb10.env` if present, else the defaults)
-and sets `SHARAR_RUN_GPU=1`; without it the GPU modules are not collected. Preserve frozen
+`tests/conftest.py` points it at the model caches, the calibrated 3-bit checkpoint and `$SHARAR_RESULTS` as
+`sharar serve` resolves them (the environment wins). Preserve frozen
 workload content and checksums (`tools/gate/workloads/`, `profiling/workloads/`,
 `sharar/benchmark_workloads.py`) when moving readers.
 
 The real-checkpoint fixture uses bounded pools: 35,000 KV pages and 12 recurrent
-slots. Keep the memory guard active for the run (`tools/memory-guard.sh --pid PID`). The loader
+slots. Keep the memory guard active for the run (`uv run python -m sharar.launch.guard --pid PID`). The loader
 requires 40 GiB `MemAvailable`: a 24 GiB allowance based on the measured 21.3 GiB
 streaming-load peak plus the 16 GiB host floor. Runtime separately checks the
 prospective pool/draft budget before allocation.

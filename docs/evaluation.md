@@ -29,7 +29,7 @@ item by item with a paired test, never on point estimates.
 ## Judge a change to arithmetic
 
 A kernel, dispatch threshold, draft precision, verify shape or proposer passes the GPU suite
-(`tools/gpu-tests.sh`), then is measured against main: `tools/evaluate.py --build --speed --suite quick`
+(`SHARAR_RUN_GPU=1 uv run pytest tests/gpu`), then is measured against main: `tools/evaluate.py --speed --suite quick`
 from the candidate's checkout, paired with the same command from a checkout of main (`--baseline`; a worktree of
 main works). Bit-identical outputs are not
 required (the target's arithmetic changes with the row count), but a quality loss paired against main is a
@@ -69,7 +69,7 @@ tools/lossy-gate.py --target flashnext --name fast --profile fast --report      
 Do not wrap it in `flock`: it takes `$SHARAR_RESULTS/.gpu.lock` for each phase (at most `--hold-minutes`,
 default 45) and waits while another model server or GPU process runs. Layers 1 and 2 run `tools/gate/lossy_gate.py`
 (prompts `tools/gate/workloads/lossy_v1.json`) from the checkout's Python environment, built as `sharar serve`
-builds the executor; layer 3 serves each arm with `run-sharar.sh` as the service `sharar-lossy-gate` on `--port`
+builds the executor; layer 3 serves each arm with `sharar serve <target> --<profile>` in the foreground on `--port`
 (30100 by default), checks that
 `/get_server_info` reports the in-process arm's configuration, and runs sharar-eval's `evals.suite`
 (`--evals`, beside this checkout by default, with its `.venv`): `quick` as the screen, `full` when the screen
@@ -86,7 +86,7 @@ code) and reused by every candidate. A rerun with the same `--name` resumes; `--
 America/New_York):
 
 - **Nightly, 01:00** (skipped when main is unchanged): brings the runner's Python environment up to date
-  (`SHARAR_VENV`, default `~/sharar-ci/venv`), runs `tests/unit` and `tests/gpu` from it, then serves and verifies
+  (`UV_PROJECT_ENVIRONMENT`, default `~/sharar-ci/venv`), runs `tests/unit` and `tests/gpu` from it, then serves and verifies
   both targets.
 - **Weekly, Sunday 02:00:** `tools/evaluate.py` per target on the fast profile, AIPerf speed plus GSM8K (300)
   and HumanEval, paired with `$SHARAR_RESULTS/ci/baseline-<target>` (re-point the link to adopt a newer run).
