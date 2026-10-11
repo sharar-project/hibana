@@ -37,6 +37,8 @@ def _window(ctx):
 
 
 class GatedDeltaNet:
+    fused_window_norm = True  # the window kernel ends with this layer's gated RMS norm and FP8 out-projection input
+
     def __init__(self, w: SnapshotWeights, prefix: str, layer_id: int, device: torch.device, target: Target = QWEN38):
         self.layer_id = layer_id
         self.device = device
@@ -189,7 +191,7 @@ class GatedDeltaNet:
             mixed_qkv, conv_states, self.conv_weight, None, "silu", conv_state_indices=ctx.slots
         )
         if _window(ctx) is not None:
-            return ops.fp8_linear(None, self.out, x_q=self._window_decode(mixed_qkv, z, b, a, ctx))
+            return self._window_out(self._window_decode(mixed_qkv, z, b, a, ctx), z, b_sz)
         out = mixed_qkv.new_empty(b_sz, 1, self.num_v_heads, self.head_v_dim)
         fused_recurrent_gated_delta_rule_packed_decode(
             mixed_qkv=mixed_qkv,
@@ -208,7 +210,7 @@ class GatedDeltaNet:
     def _window_decode(self, mixed_qkv, z, b, a, ctx):
         """One token per row on a quantized pool, as a verify of one token accepted whole: the window recurrence writes
         the token's record to a one-step ring, and the commit appends it to the slot's window (folding a full one).
-        Returns the out projection's FP8 input."""
+        Returns the kernel's output, which `_window_out` finishes."""
         window = ctx.state_pool.window
         b_sz, d = mixed_qkv.shape[0], mixed_qkv.device
         q, k, v = self._split_heads(mixed_qkv.unsqueeze(0))
@@ -223,7 +225,13 @@ class GatedDeltaNet:
 
     def _window_norm(self, z):
         """The window kernel's epilogue: this layer's gated RMS norm and the out projection's input quantization."""
-        return z, self.norm_weight, self.eps, self.out.input_scale
+        return (z, self.norm_weight, self.eps, self.out.input_scale) if self.fused_window_norm else None
+
+    def _window_out(self, out, z, t, *, verify=False):
+        """The layer output from the window kernel's: the out projection of its FP8 input, or `_finish` of its core output."""
+        if self.fused_window_norm:
+            return ops.fp8_linear(None, self.out, x_q=out)
+        return self._finish(out, z, t, verify=verify)
 
     def _split_heads(self, conv):
         """[1, T, conv_dim] -> q/k [1, T, H, K], v [1, T, HV, V] (views)."""
@@ -239,8 +247,8 @@ class GatedDeltaNet:
         the state after every token so the accept step can commit any prefix."""
         mixed_qkv, z, b, a = self._project(x, x_q)
         core = self._verify_core(mixed_qkv, z, b, a, ctx)
-        if _window(ctx) is not None:  # the window kernel ends with the norm and quantization
-            return ops.fp8_linear(None, self.out, x_q=core)
+        if _window(ctx) is not None:
+            return self._window_out(core, z, x.shape[0], verify=True)
         return self._finish(core, z, x.shape[0], verify=True)
 
     def _verify_core(self, mixed_qkv, z, b, a, ctx):
@@ -252,7 +260,7 @@ class GatedDeltaNet:
                                ctx.verify_conv_windows[self.layer_id], s_len)
         q, k, v = self._split_heads(conv.reshape(1, b_sz * s_len, self.conv_dim))
         window = _window(ctx)
-        if window is not None:  # records into the round's ring; returns the out projection's FP8 input
+        if window is not None:  # records into the round's ring; `_window_out` finishes the output
             ring = ctx.verify_replay[self.layer_id]
             return window_verify(window.layout, window.layer[self.layer_id], q, k, v, a, b, self.A_log, self.dt_bias,
                                  ctx.seq_slots, s_len, ring["ring_k"], ring["ring_u"], ring["ring_g"],

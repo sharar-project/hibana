@@ -60,8 +60,6 @@ class Executor:
         from sharar.cache.ssm_format import SsmFormat
         from sharar.engine.config import current
         self.ssm_format = SsmFormat.from_config(current())  # GDN recurrent state storage (SHARAR_SSM_STATE)
-        if self.ssm_format.quantized and self.target.family != "qwen38":  # the window kernel ends with the 27B's norm
-            raise ValueError(f"SHARAR_SSM_STATE={self.ssm_format.kind} runs on the 27B only, not {self.target.name}")
         state_bytes = self.ssm_format.state_bytes_per_slot(self.target)
         future, extra_page = 2 * 2**30, 0
         if spec_config is not None:
