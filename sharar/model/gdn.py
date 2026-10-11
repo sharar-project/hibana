@@ -1,6 +1,7 @@
 """Gated DeltaNet linear-attention layer (48 of the 64 layers).
 
-Prefill mirrors SGLang's GDNAttnBackend.forward_extend with the Triton kernels:
+FP32-pool prefill uses tuned CuTe chunk32 on SM12x (Triton fallback).
+Quantized-window pools retain the Triton materialize/quantize path:
 FP8 qkv/z projection, bf16 b/a projection, causal Conv1D with state write-back,
 fused gating, chunked gated delta rule with state write-back, gated RMSNorm,
 FP8 output projection. Decode mirrors forward_decode: Conv1D state update and
@@ -25,6 +26,7 @@ from sharar.kernels.ssm_window import materialize, quantize, window_commit, wind
 from sharar.kernels.verify_conv import verify_convolve
 from sharar.cache.state_pool import CONV_STATE_LEN
 from sharar.model.gdn_plan import prepare_gdn_prefill
+from sharar.kernels.gdn_prefill import prefill as gdn_prefill
 from sharar.engine.upload import upload
 from sharar.weights.modelopt import Fp8Linear, load_fp8_linear
 from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
@@ -160,6 +162,14 @@ class GatedDeltaNet:
         ).transpose(0, 1)[:t]
         q, k, v = self._split_heads(mixed_qkv.unsqueeze(0))
         g, beta = fused_gdn_gating(self.A_log, a, b, self.dt_bias)
+        if window is None:
+            return gdn_prefill(
+                q=q, k=k, v=v, g=g, beta=beta,
+                state=ssm_states, plan=plan, triton_kernel=chunk_gated_delta_rule,
+            )
+        # Keep upstream's quantized-window prefill path unchanged. Its packed
+        # FP32 scratch slots and entering-chunk snapshots have separate indices
+        # from the persistent pool; the CuTe dispatcher handles FP32 pools only.
         core, _, h = chunk_gated_delta_rule(
             q=q, k=k, v=v, g=g, beta=beta,
             initial_state=ssm_states,
@@ -171,15 +181,11 @@ class GatedDeltaNet:
             use_qk_l2norm_in_kernel=True,
         )
         # h[0, c] is the state entering chunk c, laid out per sequence.
-        if window is not None:
-            views = window.layer[self.layer_id]
-            quantize(window.layout, views, ssm_states, plan.cache_indices)
-            if plan.checkpoints:
-                quantize(window.layout, views, h[0, [chunk for _, _, chunk in plan.checkpoints]],
-                         upload([slot for slot, _, _ in plan.checkpoints], torch.int32, device))
-            return core
-        for slot, _, chunk in plan.checkpoints:
-            ssm_states[slot] = h[0, chunk].to(ssm_states.dtype)
+        views = window.layer[self.layer_id]
+        quantize(window.layout, views, ssm_states, plan.cache_indices)
+        if plan.checkpoints:
+            quantize(window.layout, views, h[0, [chunk for _, _, chunk in plan.checkpoints]],
+                     upload([slot for slot, _, _ in plan.checkpoints], torch.int32, device))
         return core
 
     def decode(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:

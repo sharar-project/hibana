@@ -41,6 +41,11 @@ def test_config_is_frozen_and_describable():
     assert c.describe()["draft_head"] == "fp8" and len(c.describe()) == len(EngineConfig.__dataclass_fields__)
 
 
+def test_gdn_backend_configuration():
+    assert EngineConfig.from_env({}).gdn_prefill == "auto"
+    assert EngineConfig.from_env({"SHARAR_GDN_PREFILL": "triton"}).gdn_prefill == "triton"
+
+
 def test_no_module_reads_sharar_variables_at_import():
     import pathlib
     import re

@@ -59,6 +59,26 @@ def test_cached_single_keeps_its_committed_slot():
     assert not ctx.batched
 
 
+def test_cute_checkpoint_plan_reuses_cpu_metadata():
+    ctx = context(seq_len=257, checkpoint_positions=[192, 64], checkpoint_slots=[3, 2])
+    plan = prepare_gdn_prefill(ctx, 257, 'cpu')
+    assert plan.cute_cu_seqlens.dtype == torch.int64
+    assert plan.cute_cu_seqlens.tolist() == [0, 257]
+    assert plan.checkpoint_interval == 64
+    assert plan.checkpoint_count == 2
+    assert plan.checkpoint_indices.tolist() == [1, 0]
+    assert plan.checkpoint_cu_starts.tolist() == [0, 4, 0, -1, 1, -1]
+    assert plan.checkpoint_destinations.tolist() == [3, 2]
+
+
+def test_sparse_checkpoint_plan_uses_largest_interval():
+    ctx = context(seq_len=8192, checkpoint_positions=[6144, 2048], checkpoint_slots=[3, 2])
+    plan = prepare_gdn_prefill(ctx, 8192, 'cpu')
+    assert plan.checkpoint_interval == 2048
+    assert plan.checkpoint_count == 2
+    assert plan.checkpoint_indices.tolist() == [1, 0]
+
+
 @pytest.mark.parametrize('position', [0, 1, 65, 128])
 def test_checkpoint_must_be_interior_chunk_boundary(position):
     ctx = context(seq_len=128, checkpoint_positions=[position], checkpoint_slots=[1])

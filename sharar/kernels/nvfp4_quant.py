@@ -33,7 +33,10 @@ def _nvfp4_quant_kernel(
     stride_xm,
     BLOCK_K: tl.constexpr, SILU_MUL: tl.constexpr,
 ):
-    row = tl.program_id(0)
+    # Widen BEFORE multiplying by strides. B32x2K's dense gate/up tensor
+    # crosses 2^31 elements at row 61681; widening the product is too late.
+    # Keep packed-output and swizzled-scale row offsets wide as well.
+    row = tl.program_id(0).to(tl.int64)
     kb = tl.program_id(1)
     NB: tl.constexpr = BLOCK_K // 16
     cols = kb * BLOCK_K + tl.arange(0, BLOCK_K)

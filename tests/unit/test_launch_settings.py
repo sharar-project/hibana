@@ -119,6 +119,15 @@ def test_flashnext_without_a_checkpoint_serves_its_fp8_trunk(env):
     assert e["SHARAR_W3_DECODE"] == "0" and e["SHARAR_FLASHNEXT_CACHE"] and e["SHARAR_DRAFT_HEAD"] == "w3"
 
 
+@pytest.mark.parametrize("policy", ["auto", "cute", "triton"])
+def test_gdn_prefill_backend_reaches_engine_through_new_launcher(env, policy):
+    from sharar.engine.config import EngineConfig
+    resolved = resolve({**env, "SHARAR_GDN_PREFILL": policy}, "27b")
+    engine_env = resolved.engine_env(None)
+    assert engine_env["SHARAR_GDN_PREFILL"] == policy
+    assert EngineConfig.from_env(engine_env).gdn_prefill == policy
+
+
 def test_a_promoted_draft_is_served_only_when_it_matches_the_proposer(env, tmp_path):
     runs = tmp_path / "results" / "draft-runs"
     best = runs / "run-1" / "best"
