@@ -40,6 +40,10 @@ def test_serve_records_traces_by_default_and_honors_overrides(ctl):
     assert module.main(["serve", "--draft", "/ckpt"]) == 0 and calls[-1][1]["SHARAR_DRAFT"] == "/ckpt"
     assert module.main(["serve", "--throughput"]) == 0 and calls[-1][1]["SHARAR_PROFILE"] == "throughput"
     assert module.main(["stop"]) == 0 and calls[-1][0] == [str(ROOT / "run-sharar.sh"), "--stop"]
+    assert module.main(["serve", "--tp", "2"]) == 0
+    command, env = calls[-1]
+    assert command == [str(ROOT / "sharar-tp"), "serve"] and env["SHARAR_TRACES"] == str(results / "traces")
+    assert module.main(["serve", "--tp", "2", "--no-traces"]) == 0 and "SHARAR_TRACES" not in calls[-1][1]
 
 
 def test_train_commands_wrap_the_training_launcher(ctl):

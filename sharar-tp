@@ -160,10 +160,21 @@ cmd_run() {  # both ranks in the foreground: what `serve` starts in the backgrou
     mkdir -p "$sessions"; ssh "$(peer)" mkdir -p "$sessions"
     export SHARAR_SESSION_DIR=$sessions SHARAR_SESSION_GIB=${SHARAR_SESSION_GIB:-200} SHARAR_SESSION_MIN_TOKENS=${SHARAR_SESSION_MIN_TOKENS:-4096}
   fi
+  # The context and traces as the single-Spark launcher passes them: 262144 unless SHARAR_MAX_CONTEXT says otherwise,
+  # and request traces (rank 0 records them) when SHARAR_TRACES is set, as sharar-ctl sets it.
+  local max_context=${SHARAR_MAX_CONTEXT:-262144}
+  if [[ $SHARAR_PROPOSER == dspark && $SHARAR_SPEC != 0 && $max_context -gt 32768 ]]; then
+    echo "DSpark needs SHARAR_MAX_CONTEXT of at most 32768 (it keeps draft features for the whole context; got $max_context)" >&2
+    exit 1
+  fi
   link
   local args=(serve --tp 2 --tp-address "$ADDR" --target "$TARGET" --proposer "$SHARAR_PROPOSER" --spec "$SHARAR_SPEC"
               --verify-state "$SHARAR_VERIFY_STATE" --draft-precision "$SHARAR_DRAFT_PRECISION"
-              --accept-default "$P_ACCEPT" --max-batch "$P_MAX_BATCH")
+              --accept-default "$P_ACCEPT" --max-batch "$P_MAX_BATCH" --context-length "$max_context")
+  if [[ -n ${SHARAR_TRACES:-} ]]; then
+    mkdir -p "$SHARAR_TRACES"
+    args+=(--traces "$SHARAR_TRACES" --traces-max-mib "${SHARAR_TRACES_MAX_MIB:-32768}")
+  fi
   [[ $P_ACCEPT_SAMPLED == 1 && $P_ACCEPT != off ]] &&
     args+=(--accept-default-sampled ${P_ACCEPT_SAMPLED_THRESHOLD:+--accept-default-sampled-threshold "$P_ACCEPT_SAMPLED_THRESHOLD"})
   [[ -n $P_SPEC_DEPTHS ]] && args+=(--spec-depths "$P_SPEC_DEPTHS")

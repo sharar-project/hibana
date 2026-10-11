@@ -144,13 +144,13 @@ def tp_serving() -> bool:
 
 
 def cmd_serve(args, env, dry) -> int:
+    env = dict(env)
+    if args.no_traces:
+        env.pop("SHARAR_TRACES", None)
     if args.tp == 2:
         if env["SHARAR_TARGET"] not in ("qwen38", "flashnext") or args.draft or args.pinned:
             sys.exit("--tp 2 serves the 27B or Flash-Next with its pinned draft (docs/tensor-parallel.md)")
         return run([str(ROOT / "sharar-tp"), "serve", *([f"--{args.profile}"] if args.profile else [])], env, dry)
-    env = dict(env)
-    if args.no_traces:
-        env.pop("SHARAR_TRACES", None)
     if args.pinned:
         env["SHARAR_DRAFT"] = "pinned"
     elif args.draft:
