@@ -149,16 +149,22 @@ for d in "${downloads[@]}"; do
     || fail "could not download $repo@${revision:0:7} into $cache"
   snapshot_complete "$cache" "$repo" "$revision" || fail "$repo@${revision:0:7} is still incomplete in $cache after the download"
 done
-# Calibrated 3-bit copies (#72): auto serves $SHARAR_RESULTS/w3-checkpoints/<target>-current and, when that is
-# missing, fetches the target's published checkpoint into it (weights/w3_checkpoint.py; not during --check).
-# Without one Flash-Next serves its FP8 trunk and the 27B nearest-rounded copies, with a warning.
+# Calibrated 3-bit copies (#72): auto serves $SHARAR_RESULTS/w3-checkpoints/<target>-current, which every serve keeps
+# on the target's pinned published revision (weights/w3_checkpoint.fetch: downloads a new pin, leaves a local
+# calibration in place with a note; not during --check). Without one Flash-Next serves its FP8 trunk and the 27B
+# nearest-rounded copies, with a warning.
 W3_WARNING=""
 if [[ "$W3_CHECKPOINT" == auto ]]; then
   W3_ROOT="$RESULTS_DIR/w3-checkpoints"
-  if [[ ! -f "$W3_ROOT/$TARGET_NAME-current/manifest.json" && "${1:-}" != "--check" ]]; then
+  if [[ "${1:-}" != "--check" ]]; then
     mkdir -p "$W3_ROOT"
-    (cd "$SCRIPT_DIR" && HF_HUB_OFFLINE=0 "$PY" -m sharar.weights.w3_checkpoint fetch --target "$TARGET_NAME" --root "$W3_ROOT") >&2 \
-      || echo "sharar: no calibrated 3-bit checkpoint could be fetched for $TARGET_NAME" >&2
+    if ! (cd "$SCRIPT_DIR" && HF_HUB_OFFLINE=0 "$PY" -m sharar.weights.w3_checkpoint fetch --target "$TARGET_NAME" --root "$W3_ROOT" >/dev/null); then
+      if [[ -f "$W3_ROOT/$TARGET_NAME-current/manifest.json" ]]; then
+        echo "sharar: could not update the 3-bit checkpoint for $TARGET_NAME; serving the one in $TARGET_NAME-current" >&2
+      else
+        echo "sharar: no calibrated 3-bit checkpoint could be fetched for $TARGET_NAME" >&2
+      fi
+    fi
   fi
   W3_CHECKPOINT=""
   [[ -f "$W3_ROOT/$TARGET_NAME-current/manifest.json" ]] && W3_CHECKPOINT="$(realpath "$W3_ROOT/$TARGET_NAME-current")"
