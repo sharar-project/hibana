@@ -39,6 +39,19 @@ def _targets_and_mask(input_ids, loss_mask, anchors, keep_mask, block_size):
     return targets, binary_mask
 
 
+
+@pytest.fixture(autouse=True)
+def _isolated(monkeypatch, tmp_path):
+    """`sharar train` installs its environment and starts the memory guard: keep both inside each test, and keep its
+    default run directories out of the real results."""
+    monkeypatch.setenv("SHARAR_RESULTS", str(tmp_path / "results"))
+    monkeypatch.setattr("sharar.launch.guard.start_thread", lambda **kw: None)
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
+
 def _neg_log_q(logits, targets):
     return F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1), reduction="none").view_as(targets)
 

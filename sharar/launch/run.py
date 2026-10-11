@@ -206,7 +206,8 @@ def train(args, parser) -> int:
         print(f"training run {args.output}; log {s.log_file(TRAIN_SERVICE)}; sharar train stop finishes it (final evaluation, promotion)")
         return 0
     runs.mkdir(parents=True, exist_ok=True)
-    install_env({**s.engine_env(None), **engine_runtime_env()})
+    # the trainer's environment: the target and its paths (serving settings such as the profile do not apply)
+    install_env({"SHARAR_TARGET": "qwen38", "SHARAR_HF_CACHE": str(s.hf_cache), "SHARAR_RESULTS": str(s.results), **engine_runtime_env()})
     guard.start_thread()
     print(f"training run {args.output} on {args.traces}; Ctrl-C finishes it (final evaluation and promotion)", flush=True)
     from sharar.cli import run_train
