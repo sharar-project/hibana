@@ -67,6 +67,11 @@ class SpecDecoder:
         if policy is not None:  # depth per batch bucket (#59): verify graphs only where a bucket uses the depth
             self.depth_policy = policy
             self.verify_depths = policy.verify_depths
+        if current().spec_step_cost and proposer.requirements.capabilities.short_drafts:
+            # Adaptive depth per request (#43): the depth above is the cap, and every depth below it verifies.
+            from sharar.engine.depth import AcceptanceDepth
+            self.depth_policy = AcceptanceDepth(self.depth_policy, current().spec_step_cost)
+            self.verify_depths = self.depth_policy.verify_depths
         self.width_graphs = {}
         self.device = executor.device
         n = executor.max_batch
@@ -187,7 +192,6 @@ class SpecDecoder:
         k = policy.choose(reqs) if policy is not None else self.k
         if k not in getattr(self, 'verify_depths', (self.k,)):
             raise ValueError('uncaptured verification depth')
-        s_len = k + 1
         b_sz = len(reqs)
         d = self.device
         timing = self.timing
@@ -210,6 +214,7 @@ class SpecDecoder:
         proposed = self.proposer.propose(reqs, new_pages, inputs, graphs=ex.use_graphs, **({"depth": k} if short else {}))
         proposal = proposed if isinstance(proposed, Proposal) else Proposal(proposed)
         y = proposal.tokens
+        s_len = k + 1
         sampled = any(not r.params.greedy for r in reqs)
         if (y.shape != (b_sz, k if short else self.k) or y.dtype != torch.int64 or y.device.type != self.device.type
                 or (self.device.index is not None and y.device.index != self.device.index)):
@@ -376,6 +381,7 @@ class SpecDecoder:
         t2 = time.perf_counter()
         ex = self.ex
         k, s_len = y.shape[1], y.shape[1] + 1
+        observe = getattr(getattr(self, "depth_policy", None), "observe", None)  # adaptive depth learns each request's rate
         # ---- accept ----
         if proposal is None:
             exact = (y == z[:, :k])
@@ -470,6 +476,8 @@ class SpecDecoder:
             self.proposed += k
             self.accepted += a
             self.emitted += len(emitted)
+            if observe is not None:
+                observe(r, k, a)
             relaxed_here = min(used[i], count)  # stop truncation can cut accepted tokens
             self.relaxed_accepts += relaxed_here
             r.spec_relaxed += relaxed_here

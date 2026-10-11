@@ -67,8 +67,27 @@ rows past the budget eager.
 
 ## The MTP draft
 
-- **Depth.** k=4 (the target's settings, cap 8). Deeper drafts win on code and math and lose on
-  prose; adaptive depth is #43.
+- **Depth, per request (#43).** Deeper drafts win on code and math and lose on prose and multilingual text, so
+  no fixed depth suits both: on the h2h set (one Spark, `fast`, greedy) depth 8 beats 4 by 12-17% on code, math and
+  structured output and loses 9-13% on chat, prose and multilingual. `fast` sets the depth per request
+  (`engine/depth.AcceptanceDepth`, `SHARAR_SPEC_STEP_COST=0.14`): a moving average of the request's accepted drafts
+  per position tested, q, and the depth d up to 8 that maximizes the expected emitted tokens (1 - q^(d+1)) / (1 - q)
+  per round cost 1 + 0.14 (d - 1) (measured: 31.5 ms at depth 1, about 4.3 ms per token more). A batch verifies the
+  deepest depth its requests want, up to 4 for two or more requests (`SHARAR_SPEC_DEPTHS=2:4,4:4`: four streams
+  measured best at 4). The choice is made before drafting: stopping the draft on its own confidence step by step
+  (which the confidence predicts well, 95% accepted above 0.9 against 21% at 0.1-0.2) cost 17% in host waits between
+  steps. Measured 2026-10-11 against depth 4 on the h2h set, the means of two runs:
+
+  | | median | chat | code | math | multilingual | prose | structured | 4 streams |
+  |---|---:|---:|---:|---:|---:|---:|---:|---:|
+  | one Spark, greedy | 91.7 -> 101.3 | +6% | +11% | +11% | +1% | -2% | +22% | 162.9 -> 159.6 |
+  | one Spark, t=0.7 | 88.1 -> 93.4 | +2% | +11% | +12% | 0% | +7% | +14% | 148.1 -> 150.7 |
+  | two Sparks, greedy | 115.1 -> 131.1 | +9% | +19% | +22% | +1% | +13% | +23% | 219.0 -> 228.6 |
+  | two Sparks, t=0.7 | 117.1 -> 124.0 | +3% | +12% | +18% | +3% | +5% | +10% | 203.3 -> 199.8 |
+
+  Under exact acceptance the outputs do not depend on the depth; under `fast`'s relaxed acceptance a deeper round
+  gives the rule more positions; GSM8K (first 300) and HumanEval stayed within run-to-run noise (pooled -0.2 points
+  against a repeat of depth 4, whose two runs themselves differed by 1.3). `exact`, `balanced` and `throughput` keep depth 4.
 - **Draft-only head.** `SHARAR_DRAFT_HEAD=w3` gives the draft steps a 3-bit copy of the lm_head; its top 8
   candidates (`SHARAR_DRAFT_HEAD_RESCORE`) are rescored with the target's FP8 rows, so the draft picks what the
   full head would except on near-ties. Exact acceptance is unaffected. `SHARAR_DRAFT_VOCAB` restricts the draft

@@ -98,3 +98,24 @@ def test_profile_buckets_up_to_128():
     assert ServingProfile(max_batch=48).graph_sizes == (1, 2, 4, 8, 16, 32, 48)
     with pytest.raises(ValueError):
         ServingProfile(max_batch=129)
+
+
+
+def test_acceptance_depth_follows_each_requests_rate_under_the_cap():
+    from types import SimpleNamespace
+
+    from sharar.engine.depth import AcceptanceDepth, BatchDepth
+    sizes = (1, 2, 4, 8)
+    policy = AcceptanceDepth(FixedDepth(8), step_cost=0.14)
+    assert policy.verify_depths == tuple(range(1, 9)) and policy.sizes_for(8, sizes) == sizes and policy.sizes_for(9, sizes) == ()
+    easy, hard, fresh = (SimpleNamespace(spec_rate=None) for _ in range(3))
+    for _ in range(40):  # code-like: every draft accepted; prose-like: one in two
+        policy.observe(easy, 8, 8)
+        policy.observe(hard, 8, 1)
+    assert policy.choose([easy]) == 8 and policy.choose([hard]) <= 2 and 2 < policy.choose([fresh]) < 8
+    assert policy.choose([hard, easy]) == 8  # a batch verifies the deepest depth any request wants
+    capped = AcceptanceDepth(BatchDepth({1: 8, 2: 4, 4: 4, 8: 0}, 8), step_cost=0.14)
+    assert capped.choose([easy]) == 8 and capped.choose([easy, easy]) == 4 and capped.choose([easy] * 5) == 0
+    assert capped.sizes_for(5, sizes) == (1,) and capped.sizes_for(3, sizes) == (1, 2, 4)
+    with pytest.raises(ValueError):
+        AcceptanceDepth(FixedDepth(4), 0.0)
