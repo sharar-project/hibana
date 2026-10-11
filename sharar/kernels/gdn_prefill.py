@@ -52,7 +52,7 @@ def prefill(*, q, k, v, g, beta, state, plan, triton_kernel=None):
         return core
 
     from sharar.kernels.fla.l2norm import l2norm_fwd
-    from sharar.kernels.gdn_cute.delta_rule_sm120 import delta_rule_prefill_dsl
+    from sharar.kernels.cute.gdn.delta_rule_sm120 import delta_rule_prefill_dsl
 
     slots = plan.cache_indices.long()
     packed = state.index_select(0, slots).contiguous()
