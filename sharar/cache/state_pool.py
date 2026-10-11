@@ -4,12 +4,16 @@ Every request owns one committed slot. Scratch slots are reserved for
 speculative verification. Acceptance either copies a retained
 snapshot or reconstructs directly into validated private slots. The tensors are per layer so the
 kernels' `initial_state_indices` address the slot directly.
+
+The recurrent state is FP32 [HV, V, K] per layer and slot, or, with a quantized `SsmFormat` (int8, int4), one byte row
+per layer and slot that holds the per-window quantized state (`cache/ssm_format.py`; typed views in `window`).
 """
 
 from __future__ import annotations
 
 import torch
 
+from sharar.cache.ssm_format import FP32, SsmFormat, WindowPool
 from sharar.target import DEFAULT_TARGET, Target
 
 # The default target's convolution geometry, for tools written against the 27B.
@@ -18,8 +22,10 @@ CONV_STATE_LEN = DEFAULT_TARGET.conv_state_len
 
 
 class StatePool:
-    def __init__(self, num_slots: int, device: torch.device, num_scratch: int = 0, target: Target | None = None):
+    def __init__(self, num_slots: int, device: torch.device, num_scratch: int = 0, target: Target | None = None,
+                 ssm_format: SsmFormat = FP32):
         t = self.target = target or DEFAULT_TARGET
+        self.ssm_format = ssm_format
         self.num_slots = num_slots
         self.device = device
         self.layer_ids = list(t.gdn_layer_ids)
@@ -30,11 +36,17 @@ class StatePool:
         # per-layer view for the kernels; clearing or copying a slot across all
         # layers is then one strided copy instead of one launch per layer.
         self.conv_all = torch.zeros((n_layers, total, t.conv_dim, t.conv_state_len), dtype=torch.bfloat16, device=device)
-        self.ssm_all = torch.zeros(
-            (n_layers, total, t.linear_num_value_heads, t.linear_value_head_dim, t.linear_key_head_dim),
-            dtype=torch.float32,
-            device=device,
-        )
+        layout = ssm_format.layout(t)
+        if layout is None:
+            self.ssm_all = torch.zeros(
+                (n_layers, total, t.linear_num_value_heads, t.linear_value_head_dim, t.linear_key_head_dim),
+                dtype=torch.float32,
+                device=device,
+            )
+            self.window = None
+        else:  # a zeroed row is the zero state
+            self.ssm_all = torch.zeros((n_layers, total, layout.nbytes), dtype=torch.uint8, device=device)
+            self.window = WindowPool(layout, self.ssm_all, self.layer_ids)
         self.conv = {lid: self.conv_all[j] for j, lid in enumerate(self.layer_ids)}
         self.ssm = {lid: self.ssm_all[j] for j, lid in enumerate(self.layer_ids)}
         # Slot 0 is the dummy slot for padded batch rows; scratch slots follow the committed ones.
@@ -51,7 +63,7 @@ class StatePool:
 
     @property
     def bytes_per_slot(self) -> int:
-        return self.target.state_bytes_per_layer * len(self.layer_ids)
+        return self.ssm_format.state_bytes_per_slot(self.target)
 
     def alloc(self) -> int:
         if not self._free:

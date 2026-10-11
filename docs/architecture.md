@@ -24,6 +24,9 @@ weights/    safetensors loading, ModelOpt NVFP4/FP8 linears, the Linear interfac
             3-bit calibration and checkpoints
 train/      DFlash2 drafter trainer (data, loss, differentiable draft, promotion)
 distributed.py  tensor-parallel rank group and collectives
+cli.py      the `sharar` command (serve, chat, launch, train, status, ...; `engine` is the server with explicit settings)
+launch/     what `sharar serve` does before the engine: settings and profiles, preflight and downloads, the memory
+            guard, --detach services, two Sparks (tp.py), the client commands
 target.py   Target value per checkpoint (geometry, optional family fields), registry, loader
 ```
 
@@ -37,7 +40,7 @@ target.py   Target value per checkpoint (geometry, optional family fields), regi
 - **One speculative round.** `SpecDecoder` drives every proposer: reserve, propose, verify (graph or eager),
   accept (exact, relaxed or sampled rejection), commit, feed back.
 - **Configuration.** Every `SHARAR_*` setting is a field of one `EngineConfig` (`engine/config.py`), built at
-  startup and reported by `/get_server_info`. The launcher's serving profiles (`tools/serving-profile.sh`) set
+  startup and reported by `/get_server_info`. The serving profiles (`sharar/launch/settings.py`) set
   the defaults ([operations](operations.md#serving-profiles)).
 - **Model contract.** A model exposes `forward`, `logits`, `linears()`, `register_pages`, `register_state` and
   `forward_extras()`; side inputs (Flash-Next's PLE rows and sparse-attention bookkeeping) travel on

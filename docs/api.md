@@ -1,6 +1,6 @@
 # HTTP API
 
-The launcher exposes the API at `http://127.0.0.1:30001`; `./sharar-ctl chat` is a terminal client for it. The supported target
+The launcher exposes the API at `http://127.0.0.1:30001`; `sharar chat` is a terminal client for it. The supported target
 context is 262,144 tokens as launched (`SHARAR_MAX_CONTEXT`; the engine default is 32,768), with at most four running and 16 queued requests.
 Admission also checks the output budget and speculative scratch capacity.
 
@@ -152,7 +152,7 @@ block ends with its `signature_delta`; a tool call arrives whole as one
 `message_stop`. `message_start` counts the whole prompt as `input_tokens`
 because the prefix match happens at admission.
 
-To use Sharar from Claude Code, run `./sharar-ctl launch claude` (interactive, or
+To use Sharar from Claude Code, run `sharar launch claude` (interactive, or
 with `claude` arguments such as `-p "..."`; it finds the serving target, `SHARAR_URL` picks another server;
 `tools/claude-sharar.sh` is the same command). It
 sets the variables below from Claude Code's gateway and model-configuration

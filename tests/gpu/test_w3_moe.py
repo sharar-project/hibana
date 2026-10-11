@@ -42,3 +42,26 @@ def test_kernel_matches_reference(experts, m):
     graph.replay()
     torch.cuda.synchronize()
     assert torch.equal(captured, actual)  # deterministic: no atomics in the sums
+
+
+@pytest.mark.parametrize("m", [1, 5, 80])  # 80 rows: 800 pairs, sorted outside the kernel
+def test_expert_parallel_halves_sum_to_the_whole(experts, m):
+    """Two ranks' expert ranges (expert parallel): each sums only the pairs routed to its experts, and the two
+    partial sums add up to the whole layer's (each partial is rounded to BF16 on its own, as before the all-reduce)."""
+    from dataclasses import replace
+    torch.manual_seed(100 + m)
+    x = torch.randn(m, w3_moe.HIDDEN, device="cuda", dtype=torch.bfloat16)
+    ids = torch.stack([torch.randperm(E, device="cuda")[:w3_moe.TOPK] for _ in range(m)]).to(torch.int32)
+    weights = torch.softmax(torch.randn(m, w3_moe.TOPK, device="cuda"), -1)
+    half = E // 2
+
+    def part(lo):
+        return replace(experts, planes13=experts.planes13[lo:lo + half], scales13=experts.scales13[lo:lo + half],
+                       row13=experts.row13[lo:lo + half], planes2=experts.planes2[lo:lo + half],
+                       scales2=experts.scales2[lo:lo + half], row2=experts.row2[lo:lo + half], base=lo)
+
+    whole = w3_moe.w3_moe(experts, x, ids, weights).float()
+    parts = w3_moe.w3_moe(part(0), x, ids, weights).float() + w3_moe.w3_moe(part(half), x, ids, weights).float()
+    assert float((parts - whole).norm() / whole.norm()) < 4e-3
+    only = torch.full_like(ids, half)  # every pair on the second rank: the first rank's partial is zero
+    assert not w3_moe.w3_moe(part(0), x, only, weights).any()

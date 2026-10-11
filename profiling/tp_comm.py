@@ -1,6 +1,6 @@
 """Tensor-parallel communication between two Sparks: the RDMA one-shot all-reduce against NCCL's ring.
 
-Run on both Sparks at once (`./sharar-tp comm` starts both ranks). For each message size it checks that
+Run on both Sparks at once (`sharar dev tp-comm` starts both ranks). For each message size it checks that
 `sharar.distributed.all_reduce` (the RDMA one-shot up to `ONE_SHOT_MAX_BYTES`, NCCL above) gives NCCL's sum bit for
 bit on both ranks, then times both: inside a CUDA graph after about 100 us of GPU work per collective, as serving
 runs them, and back to back. Rank 0 prints us per collective and the effective rate (message bytes / time).

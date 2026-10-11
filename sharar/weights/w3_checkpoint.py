@@ -2,15 +2,17 @@
 
 The NVFP4/FP8 prefill weights remain in the original checkpoint. These files
 only replace the optional W3 copies, before CUDA graph capture. The launcher
-serves `$SHARAR_RESULTS/w3-checkpoints/<target>-current`; when that is missing
-it runs `fetch` in the image for a target with a published checkpoint:
+serves `$SHARAR_RESULTS/w3-checkpoints/<target>-current` and runs `fetch` on every serve for a target with a
+published checkpoint, which keeps that link on the pinned revision (a local calibration stays; see `fetch`):
 
-    python3 -m sharar.weights.w3_checkpoint fetch --target flashnext --root /w3-checkpoints
+    python -m sharar.weights.w3_checkpoint fetch --target flashnext --root $SHARAR_RESULTS/w3-checkpoints
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
 from pathlib import Path
 
 import torch
@@ -70,11 +72,14 @@ class CalibratedWeights:
         return {int(name.split(".")[1]) for name in self.weights if name.startswith("layers.") and ".experts." in name}
 
     def load_experts(self, layer: int, experts: int, inter: int, hidden: int, device):
-        """Layer `layer`'s routed experts, whole (one rank): fc1 (rows in w3_moe.fc1_order) and fc2 stacked over the experts."""
+        """Layer `layer`'s routed experts: fc1 (rows in w3_moe.fc1_order) and fc2 stacked over the experts, whole
+        experts; under tensor parallelism this rank's range of them (`sharding.ExpertParallel`)."""
         from sharar.kernels.w3_moe import W3Experts
-        fc1 = self._load(f"layers.{layer}.experts.w13", experts * 2 * inter, hidden, device)
-        fc2 = self._load(f"layers.{layer}.experts.w2", experts * hidden, inter, device)
-        return W3Experts.from_stacked(fc1, fc2, experts)
+        from sharar.weights.sharding import ExpertParallel, expert_range
+        lo, hi = expert_range(experts)
+        fc1 = self._load(f"layers.{layer}.experts.w13", (hi - lo) * 2 * inter, hidden, device, ExpertParallel(experts, 2 * inter))
+        fc2 = self._load(f"layers.{layer}.experts.w2", (hi - lo) * hidden, inter, device, ExpertParallel(experts, hidden))
+        return W3Experts.from_stacked(fc1, fc2, hi - lo, base=lo)
 
     def _load(self, name: str, out_features: int, in_features: int, device, shard: Shard = REPLICATED):
         from sharar.kernels.w3 import W3Weight, _codebook, lut_of
@@ -107,16 +112,40 @@ class CalibratedWeights:
                         n, k, levels, lut_of(levels))
 
 
-def fetch(target, root: str | Path, log=print) -> Path:
-    """Download `target`'s published copies (`w3_repo` at the pinned `w3_revision`) into
-    root/<target>-<revision>, verify every file against the manifest, and point root/<target>-current
-    at them unless that link exists already. Returns the directory."""
+def fetched_name(target, revision: str) -> str:
+    """The directory `fetch` downloads `revision` of `target`'s published copies into."""
+    return f"{target.name}-{revision[:12]}"
+
+
+def is_fetched(target, name: str) -> bool:
+    """Whether a directory name is one `fetch` made (any revision), not a local calibration."""
+    prefix = f"{target.name}-"
+    rest = name[len(prefix):] if name.startswith(prefix) else ""
+    return len(rest) == 12 and all(c in "0123456789abcdef" for c in rest)
+
+
+def fetch(target, root: str | Path, log=print, switch: bool = False) -> Path:
+    """Keep root/<target>-current on `target`'s published copies (`w3_repo` at the pinned `w3_revision`).
+
+    - No link (or a dangling one), or a link to an earlier revision this function fetched: download the pinned
+      revision into root/<target>-<revision> (verified against its manifest) and point the link at it.
+    - A link to anything else is a local calibration the user chose: it stays (unless `switch`), and a note says
+      that the published copies exist and how to switch.
+    Runs on every serve; with the link already on the pinned revision it downloads nothing.
+    Returns the directory the link points at afterwards."""
     if not target.w3_repo:
         raise LookupError(f"{target.name} has no published 3-bit checkpoint; calibrate one (docs/w3-calibration.md)")
-    from huggingface_hub import snapshot_download
     root = Path(root)
-    dest = root / f"{target.name}-{target.w3_revision[:12]}"
+    dest = root / fetched_name(target, target.w3_revision)
+    link = root / f"{target.name}-current"
+    current = os.readlink(link) if link.is_symlink() else None
+    if current is not None and link.exists() and not is_fetched(target, Path(current).name) and not switch:
+        if Path(current).name != dest.name:
+            log(f"note: {link} is a local calibration ({current}); the published {target.w3_repo}@{target.w3_revision[:12]} "
+                f"is not served. To switch: python -m sharar.weights.w3_checkpoint fetch --target {target.name} --root {root} --switch")
+        return link.resolve()
     if not (dest / "manifest.json").is_file():
+        from huggingface_hub import snapshot_download
         partial = dest.with_name(dest.name + ".partial")
         log(f"fetching {target.w3_repo}@{target.w3_revision[:12]} into {dest}")
         snapshot_download(target.w3_repo, revision=target.w3_revision, local_dir=partial,
@@ -126,10 +155,13 @@ def fetch(target, root: str | Path, log=print) -> Path:
             if sha256(partial / entry["file"]) != entry["sha256"]:
                 raise ValueError(f"fetched W3 checksum mismatch for {name}")
         partial.rename(dest)
-    link = root / f"{target.name}-current"
-    if not link.exists():
-        link.unlink(missing_ok=True)  # a dangling link
-        link.symlink_to(dest.name)
+    if current != dest.name:
+        if current is not None and link.exists():
+            log(f"{link}: {current} -> {dest.name} (the pinned revision; the old directory is kept)")
+        temporary = root / f".{link.name}.tmp"
+        temporary.unlink(missing_ok=True)
+        temporary.symlink_to(dest.name)
+        temporary.replace(link)
     return dest
 
 
@@ -141,8 +173,9 @@ if __name__ == "__main__":
     f = sub.add_parser("fetch", help="download the target's published calibrated copies")
     f.add_argument("--target", choices=sorted(TARGETS), required=True)
     f.add_argument("--root", type=Path, required=True)
+    f.add_argument("--switch", action="store_true", help="also replace a link to a local calibration with the published copies")
     args = ap.parse_args()
     try:
-        print(fetch(TARGETS[args.target], args.root))
+        print(fetch(TARGETS[args.target], args.root, log=lambda message: print(message, file=sys.stderr), switch=args.switch))
     except LookupError as error:
         raise SystemExit(str(error))

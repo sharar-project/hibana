@@ -4,8 +4,8 @@ DGX Spark has no GPUDirect RDMA, so NCCL stages each step of its ring through ho
 160 KiB all-reduce (one verification of 16 tokens) costs it about 50 us inside a CUDA graph, against about 12 us to
 move the bytes both ways. This exchanges the two partials once, through cudaHostAlloc buffers registered with both
 RDMA devices, and adds them: about 19 us, bitwise NCCL's sum. The devices are the ones with an IPv4 RoCE v2 GID (the
-connected ConnectX-7 halves), paired in name order with the peer's (on two Sparks, the same-named ones). Builds against the ibverbs headers
-tools/setup-venv.sh unpacks into the venv.
+connected ConnectX-7 halves), paired in name order with the peer's (on two Sparks, the same-named ones). Builds against the ibverbs headers:
+the system's, else the copy `sharar serve --tp 2` unpacks into the Python environment (sharar/launch/tp.py).
 """
 
 from __future__ import annotations

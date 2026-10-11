@@ -705,8 +705,8 @@ def _split_chat(text: str, in_reasoning: bool, tools: list | None) -> tuple[str,
 
 def _serve_http(app, host: str, port: int) -> None:
     """uvicorn.run, except that a handled SIGTERM ends here instead of being raised again once the server stops: in
-    a container the server is PID 1 and ignores it, but run directly (two Sparks, from the venv) it would end the
-    process before the engine drains and its sessions persist."""
+    a container the server is PID 1 and ignores it, but run directly (from the venv, as the launchers do) it would end
+    the process before the engine drains and its sessions persist."""
     import contextlib
 
     import uvicorn

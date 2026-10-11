@@ -1,11 +1,14 @@
-"""Fuse draft RMS pointwise work while retaining PyTorch's mean reduction."""
+"""Fuse draft RMS pointwise work while retaining PyTorch's mean reduction.
+
+N is a runtime argument: at batch > 1 the accepted-row feedback changes it every round, and as a constexpr every new
+count would compile (or reload) the kernels on the round's critical path."""
 import torch
 import triton
 import triton.language as tl
 
 
 @triton.jit
-def _square(X, Y, N: tl.constexpr, D: tl.constexpr, H: tl.constexpr,
+def _square(X, Y, N, D: tl.constexpr, H: tl.constexpr,
             X0: tl.constexpr, X1: tl.constexpr, BLOCK: tl.constexpr):
     i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     row = i // D
@@ -14,7 +17,7 @@ def _square(X, Y, N: tl.constexpr, D: tl.constexpr, H: tl.constexpr,
 
 
 @triton.jit
-def _finish(X, Variance, Weight, Y, N: tl.constexpr, D: tl.constexpr, H: tl.constexpr,
+def _finish(X, Variance, Weight, Y, N, D: tl.constexpr, H: tl.constexpr,
             X0: tl.constexpr, X1: tl.constexpr, EPS: tl.constexpr, BLOCK: tl.constexpr):
     i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     row = i // D

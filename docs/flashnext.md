@@ -1,8 +1,8 @@
 # Qwen3.8-Flash-Next in Sharar
 
-The second serving target (`sharar-ctl serve flashnext`, `sharar/model/flashnext/`). Checkpoint:
+The second serving target (`sharar serve flashnext`, `sharar/model/flashnext/`). Checkpoint:
 `RadixArk/Qwen3.8-Flash-Next-NVFP4` (ModelOpt NVFP4 W4A4 routed experts, everything else BF16; 135 GB,
-206 shards). Settings: `config/targets/flashnext.env`.
+206 shards). Settings: `TARGET_SETTINGS` in `sharar/launch/settings.py`.
 
 ## The model as served
 
@@ -67,7 +67,7 @@ rows past the budget eager.
 
 ## The MTP draft
 
-- **Depth.** k=4 (`config/targets/flashnext.env`, cap 8). Deeper drafts win on code and math and lose on
+- **Depth.** k=4 (the target's settings, cap 8). Deeper drafts win on code and math and lose on
   prose; adaptive depth is #43.
 - **Draft-only head.** `SHARAR_DRAFT_HEAD=w3` gives the draft steps a 3-bit copy of the lm_head; its top 8
   candidates (`SHARAR_DRAFT_HEAD_RESCORE`) are rescored with the target's FP8 rows, so the draft picks what the

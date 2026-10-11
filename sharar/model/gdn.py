@@ -1,6 +1,7 @@
 """Gated DeltaNet linear-attention layer (48 of the 64 layers).
 
-Prefill uses the tuned CuTe chunk32 backend on SM12x (Triton fallback):
+FP32-pool prefill uses tuned CuTe chunk32 on SM12x (Triton fallback).
+Quantized-window pools retain the Triton materialize/quantize path:
 FP8 qkv/z projection, bf16 b/a projection, causal Conv1D with state write-back,
 fused gating, chunked gated delta rule with state write-back, gated RMSNorm,
 FP8 output projection. Decode mirrors forward_decode: Conv1D state update and
@@ -21,16 +22,25 @@ from sharar.kernels.fla.fused_recurrent import fused_recurrent_gated_delta_rule_
 from sharar.kernels.fla.fused_sigmoid_gating_recurrent import fused_sigmoid_gating_delta_rule_update
 from sharar.kernels.fla.layernorm_gated import rms_norm_gated
 from sharar.kernels.fp8_quant import quant_fp8
+from sharar.kernels.ssm_window import materialize, quantize, window_commit, window_verify
 from sharar.kernels.verify_conv import verify_convolve
 from sharar.cache.state_pool import CONV_STATE_LEN
 from sharar.model.gdn_plan import prepare_gdn_prefill
 from sharar.kernels.gdn_prefill import prefill as gdn_prefill
+from sharar.engine.upload import upload
 from sharar.weights.modelopt import Fp8Linear, load_fp8_linear
 from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 from sharar.weights.safetensors import SnapshotWeights
 
 
+def _window(ctx):
+    """The quantized pool's views (`cache/ssm_format.py`), or None for an FP32 pool."""
+    return getattr(ctx.state_pool, "window", None) if ctx is not None else None
+
+
 class GatedDeltaNet:
+    fused_window_norm = True  # the window kernel ends with this layer's gated RMS norm and FP8 out-projection input
+
     def __init__(self, w: SnapshotWeights, prefix: str, layer_id: int, device: torch.device, target: Target = QWEN38):
         self.layer_id = layer_id
         self.device = device
@@ -128,6 +138,14 @@ class GatedDeltaNet:
         t, device = mixed_qkv.shape[0], mixed_qkv.device
         conv_states, ssm_states = self._states(ctx)
         plan = prepare_gdn_prefill(ctx, t, device)
+        window = _window(ctx)
+        if window is not None:
+            # Quantized pool: run the chunked kernel on FP32 copies of the slots' states, then quantize the final states
+            # and the checkpoints back as new boundary states.
+            ssm_states = materialize(window.layout, window.layer[self.layer_id], plan.cache_indices)
+            state_indices = torch.arange(ssm_states.shape[0], dtype=plan.cache_indices.dtype, device=device)
+        else:
+            state_indices = plan.cache_indices
         # Snapshot the last three pre-convolution inputs at each boundary.
         for slot, end, _ in plan.checkpoints:
             conv_states[slot] = mixed_qkv[end - CONV_STATE_LEN:end].transpose(0, 1)
@@ -142,15 +160,32 @@ class GatedDeltaNet:
             query_start_loc=plan.query_start_loc,
             seq_lens_cpu=plan.seq_lens,
         ).transpose(0, 1)[:t]
-        q, k, v = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
-        q = q.reshape(1, t, self.num_k_heads, self.head_k_dim)
-        k = k.reshape(1, t, self.num_k_heads, self.head_k_dim)
-        v = v.reshape(1, t, self.num_v_heads, self.head_v_dim)
+        q, k, v = self._split_heads(mixed_qkv.unsqueeze(0))
         g, beta = fused_gdn_gating(self.A_log, a, b, self.dt_bias)
-        core = gdn_prefill(
+        if window is None:
+            return gdn_prefill(
+                q=q, k=k, v=v, g=g, beta=beta,
+                state=ssm_states, plan=plan, triton_kernel=chunk_gated_delta_rule,
+            )
+        # Keep upstream's quantized-window prefill path unchanged. Its packed
+        # FP32 scratch slots and entering-chunk snapshots have separate indices
+        # from the persistent pool; the CuTe dispatcher handles FP32 pools only.
+        core, _, h = chunk_gated_delta_rule(
             q=q, k=k, v=v, g=g, beta=beta,
-            state=ssm_states, plan=plan, triton_kernel=chunk_gated_delta_rule,
+            initial_state=ssm_states,
+            initial_state_indices=state_indices,
+            cu_seqlens=plan.query_start_loc,
+            chunk_indices=plan.chunk_indices,
+            chunk_offsets=plan.chunk_offsets,
+            head_first=False,
+            use_qk_l2norm_in_kernel=True,
         )
+        # h[0, c] is the state entering chunk c, laid out per sequence.
+        views = window.layer[self.layer_id]
+        quantize(window.layout, views, ssm_states, plan.cache_indices)
+        if plan.checkpoints:
+            quantize(window.layout, views, h[0, [chunk for _, _, chunk in plan.checkpoints]],
+                     upload([slot for slot, _, _ in plan.checkpoints], torch.int32, device))
         return core
 
     def decode(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
@@ -161,6 +196,8 @@ class GatedDeltaNet:
         mixed_qkv = causal_conv1d_update(
             mixed_qkv, conv_states, self.conv_weight, None, "silu", conv_state_indices=ctx.slots
         )
+        if _window(ctx) is not None:
+            return self._window_out(self._window_decode(mixed_qkv, z, b, a, ctx), z, b_sz)
         out = mixed_qkv.new_empty(b_sz, 1, self.num_v_heads, self.head_v_dim)
         fused_recurrent_gated_delta_rule_packed_decode(
             mixed_qkv=mixed_qkv,
@@ -176,25 +213,64 @@ class GatedDeltaNet:
         )
         return self._finish(out, z, b_sz)
 
+    def _window_decode(self, mixed_qkv, z, b, a, ctx):
+        """One token per row on a quantized pool, as a verify of one token accepted whole: the window recurrence writes
+        the token's record to a one-step ring, and the commit appends it to the slot's window (folding a full one).
+        Returns the kernel's output, which `_window_out` finishes."""
+        window = ctx.state_pool.window
+        b_sz, d = mixed_qkv.shape[0], mixed_qkv.device
+        q, k, v = self._split_heads(mixed_qkv.unsqueeze(0))
+        ring_k = torch.empty((1, b_sz, self.num_k_heads, 1, self.head_k_dim), dtype=torch.float16, device=d)
+        ring_u = torch.empty((1, b_sz, self.num_v_heads, 1, self.head_v_dim), dtype=torch.float16, device=d)
+        ring_g = torch.empty((1, b_sz, self.num_v_heads, 1), dtype=torch.float32, device=d)
+        x_q = window_verify(window.layout, window.layer[self.layer_id], q, k, v, a, b, self.A_log, self.dt_bias,
+                            ctx.slots, 1, ring_k[0], ring_u[0], ring_g[0], norm=self._window_norm(z))
+        window_commit(window.layout, window.single[self.layer_id], ring_k, ring_u, ring_g, ctx.slots,
+                      torch.ones(b_sz, dtype=torch.int32, device=d))
+        return x_q
+
+    def _window_norm(self, z):
+        """The window kernel's epilogue: this layer's gated RMS norm and the out projection's input quantization."""
+        return (z, self.norm_weight, self.eps, self.out.input_scale) if self.fused_window_norm else None
+
+    def _window_out(self, out, z, t, *, verify=False):
+        """The layer output from the window kernel's: the out projection of its FP8 input, or `_finish` of its core output."""
+        if self.fused_window_norm:
+            return ops.fp8_linear(None, self.out, x_q=out)
+        return self._finish(out, z, t, verify=verify)
+
+    def _split_heads(self, conv):
+        """[1, T, conv_dim] -> q/k [1, T, H, K], v [1, T, HV, V] (views)."""
+        t = conv.shape[1]
+        q, k, v = torch.split(conv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
+        return (q.reshape(1, t, self.num_k_heads, self.head_k_dim), k.reshape(1, t, self.num_k_heads, self.head_k_dim),
+                v.reshape(1, t, self.num_v_heads, self.head_v_dim))
+
     def verify(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
         """Speculative verify: B sequences of S = k+1 tokens each. Fused conv
         reads the committed window and records candidate windows; the recurrent kernel
         starts from the committed SSM state, leaves it untouched, and records
         the state after every token so the accept step can commit any prefix."""
         mixed_qkv, z, b, a = self._project(x, x_q)
-        return self._finish(self._verify_core(mixed_qkv, b, a, ctx), z, x.shape[0], verify=True)
+        core = self._verify_core(mixed_qkv, z, b, a, ctx)
+        if _window(ctx) is not None:
+            return self._window_out(core, z, x.shape[0], verify=True)
+        return self._finish(core, z, x.shape[0], verify=True)
 
-    def _verify_core(self, mixed_qkv, b, a, ctx):
+    def _verify_core(self, mixed_qkv, z, b, a, ctx):
         s_len = ctx.verify_steps
         b_sz = mixed_qkv.shape[0] // s_len
         conv_states = ctx.state_pool.conv[self.layer_id]
         ssm_states = ctx.state_pool.ssm[self.layer_id]
         conv = verify_convolve(mixed_qkv, conv_states, self.conv_weight, ctx.seq_slots,
                                ctx.verify_conv_windows[self.layer_id], s_len)
-        q, k, v = torch.split(conv.reshape(1, b_sz * s_len, self.conv_dim), [self.key_dim, self.key_dim, self.value_dim], dim=-1)
-        q = q.reshape(1, b_sz * s_len, self.num_k_heads, self.head_k_dim)
-        k = k.reshape(1, b_sz * s_len, self.num_k_heads, self.head_k_dim)
-        v = v.reshape(1, b_sz * s_len, self.num_v_heads, self.head_v_dim)
+        q, k, v = self._split_heads(conv.reshape(1, b_sz * s_len, self.conv_dim))
+        window = _window(ctx)
+        if window is not None:  # records into the round's ring; `_window_out` finishes the output
+            ring = ctx.verify_replay[self.layer_id]
+            return window_verify(window.layout, window.layer[self.layer_id], q, k, v, a, b, self.A_log, self.dt_bias,
+                                 ctx.seq_slots, s_len, ring["ring_k"], ring["ring_u"], ring["ring_g"],
+                                 norm=self._window_norm(z))
         core = fused_sigmoid_gating_delta_rule_update(
             A_log=self.A_log, dt_bias=self.dt_bias, softplus_beta=1.0, softplus_threshold=20.0,
             q=q, k=k, v=v, a=a, b=b,

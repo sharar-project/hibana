@@ -8,6 +8,9 @@
   keeps its own slice of each, so every rank keeps whole heads of each block.
 - `ROW_PARALLEL` (`LinearRowParallel`, `LinearOProj`): input columns split; the local output is a partial sum the
   model all-reduces (`distributed.all_reduce`) where it rejoins the residual stream.
+- `ExpertParallel(experts, rows_per_expert)`: a stack of `experts` matrices of `rows_per_expert` output rows each; a rank keeps a
+  contiguous range of whole experts (the 3-bit routed experts: their down projection's 320 columns per rank would not
+  fill the format's 128-wide chunks). The routed sum over a rank's experts is a partial sum, all-reduced as above.
 
 `rows` and `cols` cut a tensor's output and input dimensions; calling a role cuts a [N, K]-shaped tensor in both.
 That covers FP8 weights [N, K]; NVFP4 packed weights [N, K/2] and block scales [N, K/16] (shards split K on a
@@ -65,3 +68,21 @@ class RowParallel(Shard):
 
 
 ROW_PARALLEL = RowParallel()
+
+
+def expert_range(experts: int) -> tuple[int, int]:
+    """This rank's experts under expert parallelism: [lo, hi) of `experts`."""
+    tp = get_tp_info()
+    n = div_even(experts, tp.size)
+    return tp.rank * n, (tp.rank + 1) * n
+
+
+@dataclass(frozen=True)
+class ExpertParallel(Shard):
+    experts: int          # experts in the stack
+    rows_per_expert: int  # output rows of each
+
+    def rows(self, t: torch.Tensor, unit: int = 1) -> torch.Tensor:
+        lo, hi = expert_range(self.experts)
+        per = div_even(self.rows_per_expert, unit)
+        return t[lo * per:hi * per]

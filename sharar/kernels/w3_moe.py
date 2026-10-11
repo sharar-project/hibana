@@ -38,6 +38,7 @@ class W3Experts:
     row2: torch.Tensor      # [E, H]
     codebook: tuple[float, ...]
     lut: int
+    base: int = 0           # the first expert's id: experts base .. base + E - 1 (expert parallel: one rank's range)
 
     @property
     def bytes(self) -> int:
@@ -61,13 +62,13 @@ class W3Experts:
                            e * n, k, self.codebook, self.lut)
 
     @classmethod
-    def from_stacked(cls, fc1: w3.W3Weight, fc2: w3.W3Weight, experts: int) -> "W3Experts":
+    def from_stacked(cls, fc1: w3.W3Weight, fc2: w3.W3Weight, experts: int, base: int = 0) -> "W3Experts":
         if fc1.codebook != fc2.codebook:
             raise ValueError("fc1 and fc2 of a layer's experts share one codebook")
         def split(m):
             return (m.planes.reshape(experts, -1, *m.planes.shape[1:]), m.scales.reshape(experts, -1, *m.scales.shape[1:]),
                     m.row_scale.reshape(experts, -1))
-        return cls(*split(fc1), *split(fc2), fc1.codebook, fc1.lut)
+        return cls(*split(fc1), *split(fc2), fc1.codebook, fc1.lut, base)
 
 
 def fc1_order(inter: int, device=None) -> torch.Tensor:
@@ -142,14 +143,20 @@ def calibrate(w13, s13, scale2_13, w2, s2, scale2_2, codebook="lloyd", ratios=RA
 
 def w3_moe(experts: W3Experts, x: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
     """Routed experts for x [M, 2560] bf16 with the router's ids [M, 10] int32 and weights [M, 10] fp32 -> bf16
-    [M, 2560], the weighted sum in selection order (no shared expert). Graph-capturable and deterministic."""
+    [M, 2560], the weighted sum in selection order (no shared expert). Graph-capturable and deterministic. When
+    `experts` holds one rank's range (expert parallel), pairs routed to another rank's experts are skipped: the result
+    is this rank's partial sum, which the decoder layer all-reduces."""
     ids = ids.to(torch.int32).contiguous()
     order = ids.new_empty(0)
     if ids.numel() > ORDER_IN_KERNEL:  # a stable sort keeps each expert's pairs in row order
-        order = torch.sort(ids.reshape(-1), stable=True).indices.to(torch.int32)
+        key = ids.reshape(-1)
+        if experts.experts < EXPERTS:  # this rank's pairs first, by expert; the others after them
+            local = key - experts.base
+            key = torch.where((local >= 0) & (local < experts.experts), local, EXPERTS)
+        order = torch.sort(key, stable=True).indices.to(torch.int32)
     return w3._module().w3_moe(x.contiguous(), ids, weights.float().contiguous(), order,
                                experts.planes13, experts.scales13, experts.row13, experts.planes2, experts.scales2, experts.row2,
-                               experts.lut)
+                               experts.lut, experts.base)
 
 
 def quant_e4m3(t: torch.Tensor, stage: str) -> torch.Tensor:

@@ -53,8 +53,8 @@ def test_no_module_reads_sharar_variables_at_import():
     offenders = []
     for path in root.rglob("*.py"):
         rel = path.relative_to(root).as_posix()
-        if rel in ("engine/config.py",) or rel.startswith("kernels/fla/"):
-            continue
+        if rel in ("engine/config.py",) or rel.startswith(("kernels/fla/", "launch/")):
+            continue  # launch/: the launcher's own settings (paths, peers, profiles), resolved before the engine starts
         if re.search(r"os\.environ[^\n]*SHARAR_|getenv\(\s*['\"]SHARAR_", path.read_text()):
             offenders.append(rel)
     assert offenders == []

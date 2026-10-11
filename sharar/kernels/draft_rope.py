@@ -6,7 +6,7 @@ import triton.language as tl
 
 @triton.jit
 def _rotate(X, V, Pos, Cos, Sin, Pages, Kout, Vout,
-            T: tl.constexpr, H: tl.constexpr, D: tl.constexpr,
+            T, H: tl.constexpr, D: tl.constexpr,
             X0: tl.constexpr, X1: tl.constexpr,
             V0: tl.constexpr, V1: tl.constexpr,
             C0: tl.constexpr, S0: tl.constexpr, P0: tl.constexpr, Page0: tl.constexpr,

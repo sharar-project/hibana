@@ -1,7 +1,6 @@
 """CUDA small-M FP8 GEMV (see csrc/fp8_gemv.cu), compiled on first use.
 
-The build is cached by torch under $HOME/.cache/torch_extensions; in the
-container HOME lives on the results volume, so it persists.
+The build is cached by torch under $HOME/.cache/torch_extensions, so it persists across restarts.
 """
 
 from __future__ import annotations

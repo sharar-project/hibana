@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
 # Nightly and weekly checks on the GB10 (.github/workflows/{nightly,weekly}-gb10.yml, self-hosted runner `gb10`).
 #
-#   Nightly:  tools/ci/gb10.sh [--skip-if-tested] image gpu serve [publish]
-#   Weekly:   tools/ci/gb10.sh image evaluate
+#   Nightly:  tools/ci/gb10.sh [--skip-if-tested] venv gpu serve
+#   Weekly:   tools/ci/gb10.sh venv evaluate
 #   Cleanup:  tools/ci/gb10.sh --cleanup
 #
 # Stages (each needs the one before it to pass, so old code is never tested):
-#   image     build this checkout into sharar:ci (the previous sharar:ci is removed)
-#   gpu       tests/unit and tests/gpu in that image (tools/gpu-tests.sh)
-#   serve     serve each target from that image (run-sharar.sh, 32K context) and check it (tools/verify-sharar.sh)
-#   publish   push that image to ghcr.io/abdelfattah-lab/sharar as main-<commit> and latest (the launchers' default,
-#             tools/image.sh); only after gpu and serve passed in the same run, and the workflow asks for it only on
-#             main. Credentials: GHCR_TOKEN (and GHCR_USER) from the workflow, used through a private docker config so
-#             the runner's own `docker login` is untouched
+#   venv      the Python environment for this checkout: `uv sync --frozen` into UV_PROJECT_ENVIRONMENT (default
+#             ~/sharar-ci/venv, kept between runs; uv.lock decides what it holds)
+#   gpu       tests/unit and tests/gpu from it (`uv run pytest`, SHARAR_RUN_GPU=1, under the memory guard)
+#   serve     serve each target from it (`sharar serve <target>` in the foreground on port 30011, 32K context) and
+#             check it (`sharar verify`)
 #   evaluate  each target, fast profile (tools/evaluate.py): AIPerf speed (code, design, reasoning) and, so that a
 #             speed gain from wrongly accepted drafts cannot pass, GSM8K (first 300) and HumanEval (164); paired with
 #             that target's baseline. Fails on more than 5% lower TPS or a quality loss of at least 1 point (p < 0.05,
@@ -22,8 +20,8 @@
 # The machine is shared, so the checks never hold anyone up. They are skipped when, at the start, the shared GPU
 # lock ($SHARAR_RESULTS/.gpu.lock) is held or awaited, another container with the GPU or a GPU process runs, or
 # under 40 GiB of memory is available. While they run, a watchdog checks the same every 10 s (ignoring the
-# checks' own containers and processes); on any sign of someone else's work it stops the checks' containers and
-# ends the run as "gave way" (exit 0). A skipped or interrupted nightly run is not recorded as tested.
+# checks' own processes); on any sign of someone else's work it stops the checks' processes and ends the run as
+# "gave way" (exit 0). A skipped or interrupted nightly run is not recorded as tested.
 #
 # Settings come from ~/sharar-ci/gb10.env (SHARAR_CONFIG_FILE): SHARAR_HF_CACHE, SHARAR_RESULTS, SHARAR_AIPERF,
 # optionally SHARAR_FLASHNEXT_CACHE and SHARAR_EVALS (the sharar-eval checkout, default ~/sharar-eval).
@@ -31,10 +29,7 @@ set -Euo pipefail
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 cd "$(dirname "$SELF")/../.."
 
-ALL="image gpu serve publish evaluate"
-IMAGE=sharar:ci
-REGISTRY=ghcr.io/abdelfattah-lab/sharar
-SERVE_CONTAINER=sharar-ci
+ALL="venv gpu serve evaluate"
 SERVE_PORT=30011
 OUT="$PWD/ci-out"
 MIN_FREE_GIB=40
@@ -48,12 +43,12 @@ set -a; source "$SHARAR_CONFIG_FILE"; set +a
 : "${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in $SHARAR_CONFIG_FILE}"
 : "${SHARAR_RESULTS:?set SHARAR_RESULTS in $SHARAR_CONFIG_FILE}"
 EVALS="${SHARAR_EVALS:-$HOME/sharar-eval}"
+export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$HOME/sharar-ci/venv}"
+export PATH="$HOME/.local/bin:$PATH"   # uv
 LOCK="$SHARAR_RESULTS/.gpu.lock"
-OURS="$OUT/containers"     # the containers these checks started, one name per line
 SESSIONS="$OUT/sessions"   # the session ids of this run's processes (lock holders among them are ours)
 
 # ---- whose work is on the machine ----
-ours() { grep -qxF "$1" "$OURS" 2>/dev/null; }
 our_session() { local sid; sid="$(ps -o sid= -p "$1" 2>/dev/null | tr -d ' ')"; [[ -n "$sid" ]] && grep -qxF "$sid" "$SESSIONS" 2>/dev/null; }
 lock_pids() {  # pids /proc/locks names for the GPU lock (holders, or waiters with `waiting`)
   [[ -e "$LOCK" ]] || return 0
@@ -70,19 +65,20 @@ take_lock() {
 
 # Prints why the machine is someone else's right now (nothing when it is free). `start` adds the memory floor.
 foreign_work() {
-  local why=() name id ids="" pid cg
-  # Containers with the GPU device that these checks did not start.
+  local why=() name pid
+  # Containers with the GPU device (these checks start none).
   while read -r name; do
     [[ -n "$name" ]] || continue
-    ours "$name" && { ids+=" $(docker inspect -f '{{.Id}}' "$name" 2>/dev/null)"; continue; }
     docker inspect -f '{{range .HostConfig.Devices}}{{.PathOnHost}} {{end}}{{len .HostConfig.DeviceRequests}}' "$name" 2>/dev/null \
       | grep -qE '/dev/nvidia|[1-9]$' && why+=("container $name has the GPU")
-  done < <(docker ps --format '{{.Names}}')
-  # GPU processes outside these checks' containers.
+  done < <(command -v docker >/dev/null && docker ps --format '{{.Names}}')
+  # Detached Sharar services (someone serving or training with --detach).
+  while read -r name; do
+    [[ -n "$name" ]] && why+=("service $name runs")
+  done < <(systemctl --user list-units --state=active --plain --no-legend 'sharar-*.service' 2>/dev/null | awk '{print $1}')
+  # GPU processes outside these checks' sessions.
   while IFS=, read -r pid _; do
     pid="${pid// /}"; [[ "$pid" =~ ^[0-9]+$ ]] || continue
-    cg="$(cat "/proc/$pid/cgroup" 2>/dev/null || true)"
-    for id in $ids; do [[ "$cg" == *"$id"* ]] && continue 2; done
     our_session "$pid" && continue
     why+=("GPU process $pid ($(ps -o comm= -p "$pid" 2>/dev/null || echo '?'))")
   done < <(nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null || true)
@@ -101,12 +97,11 @@ foreign_work() {
   return 0
 }
 
-stop_ours() {
-  local name
-  while read -r name; do
-    [[ -n "$name" ]] && docker container inspect "$name" >/dev/null 2>&1 && docker rm -f "$name" >/dev/null 2>&1
-  done < <(cat "$OURS" 2>/dev/null)
-  systemctl --user stop sharar-memory-guard.service >/dev/null 2>&1 || true   # run-sharar.sh's guard of the served container
+stop_ours() {  # every process these checks started (each stage runs in a session of its own)
+  local sid
+  while read -r sid; do
+    [[ -n "$sid" && "$sid" != "$$" ]] && pkill -TERM -s "$sid" 2>/dev/null
+  done < <(tail -n +2 "$SESSIONS" 2>/dev/null)
   return 0
 }
 
@@ -128,103 +123,64 @@ for root in filter(None, sys.argv[1:]):
 }
 
 # ---- stages (each runs in its own session: `gb10.sh --stage NAME`) ----
-stage_image() {
-  local old new
-  old="$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null || true)"
-  bash docker/build.sh "$IMAGE" || return 1
-  new="$(docker image inspect -f '{{.Id}}' "$IMAGE")"
-  [[ -n "$old" && "$old" != "$new" ]] && docker rmi "$old" >/dev/null 2>&1   # untagged by the build; kept if in use
-  return 0
+stage_venv() {
+  uv sync --frozen --quiet
 }
 
 # tests/unit too: some unit tests need the model or the GPU and only run here. Test temp files go in ci-out/ on
-# the host disk: the container's /tmp lacks RWF_NOWAIT, which tests/unit/test_ple_rows.py relies on.
+# the runner's disk: tests/unit/test_ple_rows.py relies on RWF_NOWAIT, which a tmpfs /tmp may lack.
 stage_gpu() {
   local pid rc=0
   take_lock || return 1
   evict_models
-  SHARAR_TEST_IMAGE="$IMAGE" bash tools/gpu-tests.sh tests/unit tests/gpu --basetemp=ci-out/pytest-tmp &
+  SHARAR_RUN_GPU=1 uv run --frozen pytest -q -p no:cacheprovider tests/unit tests/gpu --basetemp=ci-out/pytest-tmp &
   pid=$!
-  echo "sharar-gpu-tests-$pid" >>"$OURS"   # gpu-tests.sh names its container after its process id
-  guard "sharar-gpu-tests-$pid" 8>&- &
+  uv run --frozen python -m sharar.launch.guard --pid "$pid" 8>&- &
   wait "$pid" || rc=$?
   return "$rc"
 }
 
-guard() {  # tools/memory-guard.sh on a container once it exists (run-sharar.sh starts its own)
-  local _
-  for _ in $(seq 120); do
-    docker container inspect "$1" >/dev/null 2>&1 && exec bash tools/memory-guard.sh "$1"
-    sleep 1
-  done
-}
-
-# One target's launcher config: the CI config's paths, the target (its settings come from config/targets/), and the CI
-# image, container, port and context; no draft-runs, no saved sessions.
-serve_config() {
-  local conf="$OUT/serve-$1.env"
-  { grep -vE '^(SHARAR_TARGET|SHARAR_IMAGE|SHARAR_CONTAINER|SHARAR_PORT|SHARAR_MAX_CONTEXT|SHARAR_DRAFT|SHARAR_SESSION_DIR)=' "$SHARAR_CONFIG_FILE"
-    echo "SHARAR_TARGET=$1"
-    echo "SHARAR_IMAGE=$IMAGE"; echo "SHARAR_CONTAINER=$SERVE_CONTAINER"; echo "SHARAR_PORT=$SERVE_PORT"
-    echo "SHARAR_MAX_CONTEXT=32768"; echo "SHARAR_DRAFT=pinned"; echo "SHARAR_SESSION_DIR=off"; } >"$conf"
-  echo "$conf"
-}
-
+# Each target in the foreground on SERVE_PORT, 32K context, the pinned draft, nothing recorded; `sharar verify`, then
+# SIGTERM (as Ctrl-C).
 stage_serve() {
-  local target conf waited rc=0
+  local target pid waited rc=0 log
   take_lock || return 1
-  echo "$SERVE_CONTAINER" >>"$OURS"
-  for target in qwen38 flashnext; do
-    conf="$(serve_config "$target")"
+  for target in 27b flashnext; do
     evict_models
-    SHARAR_CONFIG_FILE="$conf" bash run-sharar.sh 8>&- || { echo "$target: launch failed"; rc=1; continue; }
+    log="$OUT/serve-$target.log"
+    uv run --frozen sharar serve "$target" --port "$SERVE_PORT" --context-length 32768 --pinned --no-traces --no-sessions >"$log" 2>&1 8>&- &
+    pid=$!
     waited=0
     until curl -fs "http://127.0.0.1:$SERVE_PORT/health" >/dev/null 2>&1; do
-      if [[ "$(docker container inspect -f '{{.State.Running}}' "$SERVE_CONTAINER" 2>/dev/null)" != true ]] || (( waited >= 900 )); then
-        echo "$target: not healthy"; docker logs --tail 100 "$SERVE_CONTAINER" 2>&1; rc=1; break
+      if ! kill -0 "$pid" 2>/dev/null || (( waited >= 900 )); then
+        echo "$target: not healthy"; tail -n 100 "$log"; rc=1; break
       fi
       sleep 5; waited=$(( waited + 5 ))
     done
     if (( waited < 900 )) && curl -fs "http://127.0.0.1:$SERVE_PORT/health" >/dev/null 2>&1; then
-      if SHARAR_URL="http://127.0.0.1:$SERVE_PORT" SHARAR_MAX_CONTEXT=32768 bash tools/verify-sharar.sh; then
+      if uv run --frozen sharar verify "$target" --url "http://127.0.0.1:$SERVE_PORT"; then
         echo "$target: verified (healthy after ${waited}s)" >>"$OUT/notes-serve"
       else
-        echo "$target: verification failed"; docker logs --tail 100 "$SERVE_CONTAINER" 2>&1; rc=1
+        echo "$target: verification failed"; tail -n 100 "$log"; rc=1
       fi
     fi
-    SHARAR_CONFIG_FILE="$conf" bash run-sharar.sh --stop 8>&- || docker rm -f "$SERVE_CONTAINER" >/dev/null 2>&1
+    kill -TERM "$pid" 2>/dev/null
+    for _ in $(seq 120); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+    kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
   done
   return "$rc"
-}
-
-# The image must be this checkout's build (docker/build.sh labels it with the commit); the GPU is not used.
-stage_publish() {
-  local commit rev tag
-  commit="$(git rev-parse HEAD)"
-  rev="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE")"
-  [[ "$rev" == "$commit" ]] || { echo "$IMAGE is from ${rev:-an unlabeled build}, not $commit"; return 1; }
-  [[ -n "${GHCR_TOKEN:-}" ]] || { echo "GHCR_TOKEN is not set"; return 1; }
-  export DOCKER_CONFIG="$OUT/docker-config"
-  mkdir -p "$DOCKER_CONFIG"
-  printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-${GITHUB_ACTOR:-sharar-ci}}" --password-stdin >/dev/null || return 1
-  for tag in "main-${commit:0:7}" latest; do
-    docker tag "$IMAGE" "$REGISTRY:$tag" && docker push -q "$REGISTRY:$tag" >/dev/null || { echo "push of $tag failed"; return 1; }
-  done
-  docker rmi "$REGISTRY:main-${commit:0:7}" >/dev/null 2>&1   # keep only :latest tagged locally
-  echo "pushed $REGISTRY:main-${commit:0:7} and :latest" >>"$OUT/notes-publish"
-  docker logout ghcr.io >/dev/null 2>&1; rm -rf "$DOCKER_CONFIG"
 }
 
 # tools/evaluate.py takes the GPU lock itself for its serving window.
 stage_evaluate() {
   local target name dir base rc=0 verdict paired
-  echo sharar-evaluate >>"$OURS"
   for target in qwen38 flashnext; do
     name="ci-weekly-$target-$(date -u +%Y%m%dT%H%M)"
     base="$SHARAR_RESULTS/ci/baseline-$target"
     paired=(); [[ -e "$base" ]] && paired=(--baseline "$(realpath "$base")")
     evict_models
-    python3 tools/evaluate.py --target "$target" --profile fast --image "$IMAGE" --tasks gsm8k,humaneval --limit 300 --speed --workload all \
+    python3 tools/evaluate.py --target "$target" --profile fast --tasks gsm8k,humaneval --limit 300 --speed --workload all \
       --name "$name" --evals "$EVALS" "${paired[@]}" || { echo "$target: evaluate did not complete"; rc=1; continue; }
     dir="$(ls -d "$SHARAR_RESULTS"/reviews/*-evaluate-"$name" | tail -1)"
     echo "$dir" >>"$OUT/evaluate-dirs"
@@ -287,7 +243,7 @@ fi
 
 export SHARAR_PROFILE=fast   # what the lab serves; fixed here so a new default cannot shift the baselines
 rm -rf "$OUT"; mkdir -p "$OUT" "$SHARAR_RESULTS"
-: >"$OURS"; ps -o sid= -p $$ | tr -d ' ' >"$SESSIONS"
+ps -o sid= -p $$ | tr -d ' ' >"$SESSIONS"
 watchdog_pid=""
 finish() { [[ -n "$watchdog_pid" ]] && kill "$watchdog_pid" 2>/dev/null; stop_ours; }
 trap finish EXIT
@@ -324,7 +280,7 @@ run_stage() {
   rows+=("| $1 | **failed** | $took${note:+; $note} |"); failed=1; return 1
 }
 
-depends() { case $1 in gpu|serve|evaluate) echo image;; publish) echo image gpu serve;; esac; }
+depends() { case $1 in gpu|serve|evaluate) echo venv;; esac; }
 [[ -n "$busy" ]] || { watchdog & watchdog_pid=$!; }
 missing=" "
 for s in $ALL; do
@@ -332,7 +288,6 @@ for s in $ALL; do
   dep="$(depends "$s")"
   if [[ -n "$busy" ]]; then rows+=("| $s | skipped | machine in use |")
   elif [[ -f "$OUT/gave-way" ]]; then rows+=("| $s | skipped | gave way to other work |")
-  elif [[ "$s" == publish ]] && ! { wants gpu && wants serve; }; then rows+=("| $s | skipped | needs gpu and serve in the same run |")
   elif d="$(for x in $dep; do wants "$x" && [[ "$missing" == *" $x "* ]] && echo "$x"; done | head -1)"; [[ -n "$d" ]]; then
     rows+=("| $s | skipped | $d did not pass |")
   elif run_stage "$s"; then continue

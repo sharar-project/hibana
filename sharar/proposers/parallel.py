@@ -14,10 +14,7 @@ from sharar.target import DEFAULT_TARGET
 from sharar.engine.contracts import Capabilities, FeatureRequest, ProposerRequirements
 from sharar.engine.rejection import Proposal, distribution
 
-PINS = {
-    'dspark': ('RadixArk/Qwen3.8-27B-DSpark', 'b9a5dbdf03bc999c6c73c426b19c2d9041cea393'),
-    'dflash2': ('incoai/Qwen3.8-27B-DFlash2', 'dedf8df68adfb1afeaf7b7480c0a0243108177b4'),
-}
+from sharar.model.qwen38_config import DRAFT_PINS as PINS  # the pinned parallel drafts
 
 
 class FeatureCache:

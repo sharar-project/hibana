@@ -19,11 +19,131 @@ dependencies = [
   "fastapi>=0.141,<0.142",
   "uvicorn>=0.52,<0.53",
   "xgrammar==0.2.8",  # constrained output (sharar/engine/grammar.py)
+  "huggingface_hub>=1.30",  # model and 3-bit checkpoint downloads
 ]
 
 [project.optional-dependencies]
-gpu = ["flashinfer-python==0.6.17", "triton==3.7.1", "einops==0.8.2", "numpy==2.3.5", "packaging==26.3"]
 test = ["pytest==9.1.1", "httpx==0.28.1"]
+
+# The GB10 environment: `uv sync` installs it (uv.lock pins every package; CPU CI uses pip and constraints/cpu.txt).
+[dependency-groups]
+gb10 = [
+  "torch==2.13.0+cu130",
+  "flashinfer-python==0.6.17",
+  "flashinfer-jit-cache==0.6.17+cu130",
+  "triton==3.7.1",
+  "einops==0.8.2",
+  "ninja==1.13.2",  # first-use builds of the CUDA kernels
+  "pytest==9.1.1",
+  "httpx==0.28.1",
+]
+
+[tool.uv]
+default-groups = ["gb10"]
+environments = ["sys_platform == 'linux' and platform_machine == 'aarch64'"]  # DGX Spark
+python-preference = "only-managed"  # a uv-managed Python carries the C headers the first-use kernel builds need
+# The tested GB10 versions (constraints/common.txt and gb10-cu130.txt; keep them in step).
+constraint-dependencies = [
+  "annotated-doc==0.0.5",
+  "annotated-types==0.8.0",
+  "anyio==4.15.0",
+  "apache-tvm-ffi==0.1.13.post3",
+  "certifi==2026.7.22",
+  "charset-normalizer==3.5.1",
+  "click==8.5.0",
+  "cuda-bindings==13.3.1",
+  "cuda-core==1.0.1",
+  "cuda-pathfinder==1.6.0",
+  "cuda-python==13.3.1",
+  "cuda-tile==1.5.0",
+  "cuda-toolkit==13.0.3.0",
+  "einops==0.8.2",
+  "fastapi==0.141.1",
+  "filelock==3.32.3",
+  "flashinfer-jit-cache==0.6.17+cu130",
+  "flashinfer-python==0.6.17",
+  "fsspec==2026.7.0",
+  "h11==0.16.0",
+  "hf-xet==1.6.0",
+  "httpcore==1.0.9",
+  "httpx==0.28.1",
+  "huggingface_hub==1.30.0",
+  "idna==3.19",
+  "iniconfig==2.3.0",
+  "jinja2==3.1.6",
+  "markdown-it-py==4.2.0",
+  "MarkupSafe==3.0.3",
+  "mdurl==0.1.2",
+  "mpmath==1.3.0",
+  "nccl4py==0.5.0",
+  "networkx==3.6.1",
+  "ninja==1.13.2",
+  "numpy==2.3.5",
+  "nvidia-cublas==13.1.1.3",
+  "nvidia-cuda-cupti==13.0.85",
+  "nvidia-cuda-nvdisasm==13.3.73",
+  "nvidia-cuda-nvrtc==13.0.88",
+  "nvidia-cuda-runtime==13.0.96",
+  "nvidia-cudnn-cu13==9.20.0.48",
+  "nvidia-cudnn-frontend==1.28.0",
+  "nvidia-cufft==12.0.0.61",
+  "nvidia-cufile==1.15.1.6",
+  "nvidia-curand==10.4.0.35",
+  "nvidia-cusolver==12.0.4.66",
+  "nvidia-cusparse==12.6.3.3",
+  "nvidia-cusparselt-cu13==0.8.1",
+  "nvidia-cutlass-dsl-libs-base==4.7.1",
+  "nvidia-cutlass-dsl-libs-core==4.7.1",
+  "nvidia-cutlass-dsl-libs-cu12==4.7.1",
+  "nvidia-cutlass-dsl==4.7.1",
+  "nvidia-ml-py==13.610.43",
+  "nvidia-nccl-cu13==2.29.7",
+  "nvidia-nvjitlink==13.3.33",
+  "nvidia-nvshmem-cu13==3.4.5",
+  "nvidia-nvtx==13.0.85",
+  "packaging==26.3",
+  "pluggy==1.6.0",
+  "protobuf==7.36.1",
+  "pydantic==2.13.5",
+  "pydantic_core==2.46.5",
+  "Pygments==2.21.0",
+  "pytest==9.1.1",
+  "PyYAML==6.0.3",
+  "regex==2026.9.29",
+  "requests==2.34.2",
+  "rich==15.0.0",
+  "safetensors==0.8.0",
+  "setuptools==78.1.0",
+  "shellingham==1.5.4",
+  "starlette==1.6.0",
+  "sympy==1.14.0",
+  "tabulate==0.10.0",
+  "tokenizers==0.22.2",
+  "torch==2.13.0+cu130",
+  "tqdm==4.70.0",
+  "transformers==5.15.1",
+  "triton==3.7.1",
+  "typer==0.27.2",
+  "typing-inspection==0.4.4",
+  "typing_extensions==4.16.0",
+  "urllib3==2.7.0",
+  "uvicorn==0.52.4",
+  "xgrammar==0.2.8",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+flashinfer-jit-cache = { index = "flashinfer-cu130" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "flashinfer-cu130"
+url = "https://flashinfer.ai/whl/cu130"
+explicit = true
 
 [project.scripts]
 sharar = "sharar.cli:main"
