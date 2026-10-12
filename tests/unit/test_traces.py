@@ -16,7 +16,7 @@ from sharar.engine.request import Request
 from sharar.engine.sampler import InvalidRequest, SamplingParams
 from sharar.engine.scheduler import Scheduler
 from sharar.engine.spec import SpecDecoder
-from sharar.engine.traces import FeatureRecorder, PinnedPool, TraceSink, iter_records, load_features, summarize
+from sharar.engine.traces import TraceSink, iter_records, summarize
 from sharar.cache.request_state import Reservation, StateManager
 from tests.unit.test_scheduler import FakeExecutor
 
@@ -41,16 +41,14 @@ def test_finished_requests_are_recorded_unless_opted_out(tmp_path):
     assert [d["id"] for d in docs] == [kept.request_id]
     doc = docs[0]
     assert doc["prompt_ids"] == [1, 2, 3] and doc["output_ids"] == kept.output_ids and len(doc["output_ids"]) == 2
-    assert doc["reason"] == "length" and doc["spec"] is None and doc["cached"] == 0 and doc["features"] is None
-    assert kept.trace_features is not None and kept.trace_features.rows == 0  # no proposer wrote any rows
+    assert doc["reason"] == "length" and doc["spec"] is None and doc["cached"] == 0 and doc["v"] == 4 and "features" not in doc
     assert doc["params"] == {"max_new_tokens": 2, "temperature": 0.5, "top_p": 0.95, "top_k": 20, "seed": 7, "ignore_eos": False,
                              "accept_top_k": 1, "accept_margin": 0.0}
     assert doc["arrival"] <= doc["finish"] <= time.time()
     stats = sched.stats()["traces"]
     assert stats["records"] == 1 and stats["dropped"] == 0 and stats["files"] == 1 and stats["bytes"] == stats["bytes_written"]
     assert summarize(tmp_path / "traces") == {"requests": 1, "prompt_tokens": 3, "output_tokens": 2, "reasons": {"length": 1},
-                                              "spec_rounds": 0, "accepted_tokens": 0, "tokens_per_round": None,
-                                              "requests_with_features": 0, "feature_rows": 0, "requests_with_topk": 0}
+                                              "spec_rounds": 0, "accepted_tokens": 0, "tokens_per_round": None}
 
 
 def test_no_sink_means_no_recording_state():
@@ -155,6 +153,7 @@ def test_rotation_and_retention_prune_oldest_files(tmp_path):
 
 
 def test_stats_include_existing_storage_without_scanning_on_the_engine_thread(tmp_path, monkeypatch):
+    """Traces recorded before format 4 kept feature files beside them: they count toward the cap."""
     trace = tmp_path / "traces-20260911-000000-0001.jsonl"
     trace.write_bytes(b"{}\n")
     features = tmp_path / "features" / trace.stem
@@ -170,48 +169,6 @@ def test_stats_include_existing_storage_without_scanning_on_the_engine_thread(tm
         assert sink.stats()["bytes"] == 9
     finally:
         sink.close()
-
-
-def test_recorder_stages_contiguous_rows_and_writes_them(tmp_path):
-    pool = PinnedPool(rows=4, dim=3)
-    rec = FeatureRecorder(pool)
-    rec.append(torch.arange(6, dtype=torch.bfloat16).view(2, 3), 10)  # positions 10, 11
-    rec.append(torch.arange(6, 15, dtype=torch.bfloat16).view(3, 3), 11)  # overlap at 11 is skipped -> 12, 13
-    rec.append(torch.full((3, 3), 9, dtype=torch.bfloat16), 14)  # crosses a chunk boundary
-    assert (rec.start, rec.end, rec.rows, len(rec.chunks), rec.used) == (10, 17, 7, 2, 3)
-    info = rec.write(tmp_path / "f" / "1.bin")
-    assert info == {"start": 10, "rows": 7, "dim": 3, "dtype": "bfloat16"} and pool.allocated == 2 and len(pool._free) == 2
-    info["path"] = str(tmp_path / "f" / "1.bin")
-    rows = load_features(info)
-    assert rows.shape == (7, 3) and rows[0].tolist() == [0, 1, 2] and rows[1].tolist() == [3, 4, 5]
-    assert rows[2].tolist() == [9, 10, 11] and rows[3].tolist() == [12, 13, 14] and rows[6].tolist() == [9, 9, 9]
-    gap = FeatureRecorder(pool)
-    gap.append(torch.ones(1, 3, dtype=torch.bfloat16), 0)
-    gap.append(torch.ones(1, 3, dtype=torch.bfloat16), 5)
-    assert not gap.valid and gap.write(tmp_path / "f" / "2.bin") is None and not (tmp_path / "f" / "2.bin").exists()
-    assert len(pool._free) == 2  # chunks returned on invalidation
-
-
-def test_sink_writes_feature_files_beside_traces_and_prunes_them(tmp_path):
-    sink = TraceSink(tmp_path, max_bytes=40_000, rotate_bytes=20_000)  # feature bytes must trigger rotation
-    params = SamplingParams(max_new_tokens=4)
-    for i in range(6):
-        req = Request(prompt_ids=[i] * 8, params=params, request_id=i)
-        req.output_ids, req.finish_reason, req.t_finish = [1, 2, 3], "length", time.perf_counter()
-        req.trace_features = sink.recorder()
-        req.trace_features.append(torch.full((2, 5120), float(i), dtype=torch.bfloat16), 6)  # 20 KiB each
-        assert sink.record(req)
-    _drain(sink, 6)
-    docs = list(iter_records(tmp_path))
-    assert docs and all(d["features"]["rows"] == 2 and d["features"]["start"] == 6 for d in docs)
-    assert all((tmp_path / d["features"]["file"]).exists() for d in docs)
-    total = sum(f.stat().st_size for f in tmp_path.rglob("*") if f.is_file())
-    assert total <= 40_000 and len(docs) < 6  # pruned to the cap, feature files included
-    assert sink.stats()["bytes"] == total
-    kept_dirs = {d["features"]["file"].split("/")[1] for d in docs}
-    assert {p.name for p in (tmp_path / "features").iterdir()} == kept_dirs  # pruned files took their directories
-    assert load_features(docs[-1]["features"])[0, 0].item() == docs[-1]["id"]
-    assert sink.stats()["feature_bytes_written"] == 6 * 2 * 5120 * 2 and sink.stats()["pinned_chunks"] >= 1
 
 
 def test_partial_trailing_line_is_skipped(tmp_path):
@@ -296,38 +253,8 @@ def test_traces_cli_summarizes(monkeypatch, tmp_path, capsys):
     _drain(sink, 1)
     assert cli.main(["traces", "--dir", str(tmp_path)]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["requests"] == 1 and out["spec_rounds"] == 1 and out["tokens_per_round"] == 3.0 and out["requests_with_features"] == 0
+    assert out["requests"] == 1 and out["spec_rounds"] == 1 and out["tokens_per_round"] == 3.0
     monkeypatch.delenv("SHARAR_TRACES", raising=False)
     monkeypatch.setenv("SHARAR_RESULTS", str(tmp_path / "nothing-recorded"))
     with pytest.raises(SystemExit, match="no traces"):
         cli.main(["traces"])
-
-
-def test_topk_recorder_writes_ids_and_logits_beside_features(tmp_path):
-    sink = TraceSink(tmp_path, max_bytes=10**9, rotate_bytes=10**8)
-    req = Request(prompt_ids=[1, 2, 3], params=SamplingParams(max_new_tokens=8), request_id=5)
-    req.output_ids, req.finish_reason, req.t_finish = [4, 5, 6, 7], "length", time.perf_counter()
-    req.trace_features = sink.recorder()
-    req.trace_topk = sink.topk_recorder()
-    req.trace_features.append(torch.zeros(6, 5120, dtype=torch.bfloat16), 0)
-    ids = torch.arange(2 * 16, dtype=torch.int32).view(2, 16)
-    logits = torch.linspace(0, 1, 32, dtype=torch.bfloat16).view(2, 16)
-    req.trace_topk.append(ids, logits, 3)  # rows for positions 3 and 4 (tokens at 4 and 5)
-    req.trace_topk.append(ids[:1] + 100, logits[:1], 5)
-    assert sink.record(req)
-    # a gap between appends invalidates the top-k stream only
-    req2 = Request(prompt_ids=[1], params=SamplingParams(max_new_tokens=8), request_id=6)
-    req2.output_ids, req2.finish_reason, req2.t_finish = [2, 3], "stop", time.perf_counter()
-    req2.trace_topk = sink.topk_recorder()
-    req2.trace_topk.append(ids[:1], logits[:1], 1)
-    req2.trace_topk.append(ids[:1], logits[:1], 5)
-    assert sink.record(req2)
-    _drain(sink, 2)
-    doc, doc2 = iter_records(tmp_path)
-    assert doc["topk"]["start"] == 3 and doc["topk"]["rows"] == 3 and doc["topk"]["k"] == 16
-    from sharar.engine.traces import load_topk
-    got_ids, got_logits = load_topk(doc["topk"])
-    assert got_ids.shape == (3, 16) and got_ids[0].tolist() == list(range(16)) and got_ids[2, 0] == 100
-    torch.testing.assert_close(got_logits[:2], logits)
-    assert summarize(tmp_path)["requests_with_topk"] == 1
-    assert doc2["topk"] is None and not list((tmp_path / "features").rglob("6.topk-*"))

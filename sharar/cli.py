@@ -1,4 +1,4 @@
-"""The `sharar` command: serve a model, talk to it, train its drafter, measure it.
+"""The `sharar` command: serve a model, talk to it, measure it.
 
     sharar serve 27b                 # Qwen3.8-27B on 127.0.0.1:30001, in the foreground (Ctrl-C stops it)
     sharar serve flashnext --detach  # Qwen3.8-Flash-Next on :30004 as a background service (sharar stop, sharar logs -f)
@@ -6,8 +6,6 @@
     sharar chat                      # chat with whichever target is serving
     sharar launch claude             # Claude Code (or opencode, aider) set up for the serving target
     sharar status | stop | logs
-    sharar train                     # train the 27B's drafter on your recorded traffic (Ctrl-C finishes and promotes)
-    sharar draft list | use RUN | pinned | reload
 
 Settings: command-line flags, then SHARAR_* environment variables, then the config file (SHARAR_CONFIG_FILE, else
 config/gb10.env in the checkout, else ~/.config/sharar/sharar.env), then the target's and the profile's defaults
@@ -37,7 +35,7 @@ def add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default="reconstruct")
     p.add_argument("--draft-precision", choices=("bf16", "fp8"), default="bf16", help="parallel draft matrix precision")
     p.add_argument("--spec", type=int, default=None, help="draft tokens per round (0 = off; default: SHARAR_SPEC, else the proposer's validated depth)")
-    p.add_argument("--draft", default=None, help="trained DFlash2 checkpoint directory to serve instead of the pinned draft (default: SHARAR_DRAFT)")
+    p.add_argument("--draft", default=None, help="DFlash2 checkpoint directory to serve instead of the pinned draft (default: SHARAR_DRAFT)")
     p.add_argument("--traces", default=None, help="directory for opt-in request traces (default: SHARAR_TRACES; unset disables recording)")
     p.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: SHARAR_TRACES_MAX_MIB or 32768)")
     p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request, up to 262144 (default: SHARAR_MAX_CONTEXT, else the target profile's 32768)")
@@ -49,37 +47,6 @@ def add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--tp", type=int, default=1, help="tensor-parallel ranks, one GPU (Spark) each; rank 0 serves HTTP")
     p.add_argument("--tp-rank", type=int, default=0, help="this process's tensor-parallel rank")
     p.add_argument("--tp-address", default=None, help="HOST:PORT on rank 0's host where the ranks meet (required with --tp > 1)")
-
-
-def add_train_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--traces", default=None, help="trace directory (default: SHARAR_TRACES, else $SHARAR_RESULTS/traces)")
-    p.add_argument("--output", default=None, help="run directory (default: $SHARAR_RESULTS/draft-runs/run-<time>): log.jsonl, manifest.json, step-*/ and best/ checkpoints")
-    p.add_argument("--draft", default=None, help="draft checkpoint directory to start from (default: the pinned publisher draft)")
-    p.add_argument("--steps", type=int, default=0, help="0 trains until stopped (SIGTERM), then evaluates once more")
-    p.add_argument("--promote-to", default=None, help="symlink kept pointing at the promoted checkpoint (default: <draft-runs>/current; 'none' promotes nothing)")
-    p.add_argument("--continue-from", default=None, help="a 'current' symlink: start from its checkpoint when it resolves (default: <draft-runs>/current; 'none' starts from the pinned draft)")
-    p.add_argument("--sequences-per-step", type=int, default=2)
-    p.add_argument("--anchors", type=int, default=128, help="random anchors per sequence")
-    p.add_argument("--anchor-chunk", type=int, default=128)
-    p.add_argument("--no-compile", action="store_true", help="train the block forward eagerly instead of torch.compile")
-    p.add_argument("--block", type=int, default=16, help="block size: serving's k proposals plus the anchor")
-    p.add_argument("--gamma", type=float, default=7.0, help="position weight decay exp(-(k-1)/gamma)")
-    p.add_argument("--selector-alpha", type=float, default=1.0)
-    p.add_argument("--kl-alpha", type=float, default=1.0, help="weight of the KL to the target's recorded top-k logits (0 disables)")
-    p.add_argument("--on-policy", action="store_true", help="anchor blocks at recorded rounds and train the selector on the target's answers to the drafter's own proposals")
-    p.add_argument("--regression-traces", default=None, help="fixed general trace directory; promotion also requires no regression on its newest slice (default: $SHARAR_RESULTS/draft-regression when it exists)")
-    p.add_argument("--regression-tolerance", type=float, default=0.005, help="promotion is refused when the regression set drops below base x (1 - tolerance)")
-    p.add_argument("--continue-lr", type=float, default=3e-5, help="learning rate used instead of --lr when --continue-from resolves to a checkpoint")
-    p.add_argument("--train-params", default="attn", choices=("attn", "all", "selector"), help="which draft weights to train (attn: attention, norms, convolutions and selector)")
-    p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--warmup-steps", type=int, default=10)
-    p.add_argument("--max-grad-norm", type=float, default=1.0)
-    p.add_argument("--max-length", type=int, default=8192)
-    p.add_argument("--holdout-tokens", type=int, default=20000, help="newest requests held out until they cover this many output tokens")
-    p.add_argument("--eval-every", type=int, default=100)
-    p.add_argument("--greedy-only", action="store_true")
-    p.add_argument("--train-context", action="store_true", help=argparse.SUPPRESS)  # needs raw target features; not recorded
-    p.add_argument("--seed", type=int, default=0)
 
 
 def run_engine(args, parser) -> int:
@@ -159,46 +126,6 @@ def run_engine(args, parser) -> int:
     return 0
 
 
-def run_train(args, parser) -> int:
-    """Train the drafter with explicit settings (`sharar train` fills the defaults)."""
-    import os
-
-    from pathlib import Path
-
-    from sharar.train.trainer import StopRequest, TrainConfig, load_runtime, resolve_draft, run
-
-    from sharar.engine.config import EngineConfig
-    traces = args.traces or EngineConfig.from_env().traces
-    if not traces:
-        parser.error("give --traces or set SHARAR_TRACES")
-    draft = args.draft
-    lr = args.lr
-    if draft is None and args.continue_from:
-        resolved = resolve_draft(Path(args.continue_from))
-        draft = str(resolved) if resolved is not None else None
-        if draft and args.continue_lr is not None:
-            lr = args.continue_lr
-        print(f"continuing from {draft} at learning rate {lr}" if draft else f"{args.continue_from} does not resolve to a checkpoint; starting from the pinned draft", flush=True)
-    cfg = TrainConfig(traces=traces, output=args.output, draft=draft, steps=args.steps, promote_to=args.promote_to,
-                      sequences_per_step=args.sequences_per_step, anchors_per_sequence=args.anchors,
-                      anchor_chunk=args.anchor_chunk, compile=not args.no_compile, block=args.block, gamma=args.gamma,
-                      selector_alpha=args.selector_alpha, kl_alpha=args.kl_alpha, train_params=args.train_params,
-                      on_policy=args.on_policy, regression_traces=args.regression_traces, regression_tolerance=args.regression_tolerance,
-                      learning_rate=lr, warmup_steps=args.warmup_steps,
-                      max_grad_norm=args.max_grad_norm, max_length=args.max_length, holdout_tokens=args.holdout_tokens,
-                      eval_every=args.eval_every, greedy_only=args.greedy_only,
-                      train_context=args.train_context, seed=args.seed)
-    draft, pinned = load_runtime(cfg)
-    stop = StopRequest()
-    stop.install()
-    try:
-        result = run(cfg, draft, pinned, stop=stop)
-    finally:
-        stop.restore()
-    print(json.dumps(result))
-    return 0
-
-
 def engine_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sharar engine", description=add_engine_args.__doc__)
     add_engine_args(p)
@@ -224,11 +151,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default=None, help="default: 127.0.0.1")
     p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request (default 262144)")
     p.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: the profile's)")
-    p.add_argument("--no-traces", action="store_true", help="do not record requests for drafter training")
+    p.add_argument("--traces", action="store_true", help="record each request's token IDs and speculative rounds (SHARAR_TRACES, else $SHARAR_RESULTS/traces)")
     p.add_argument("--no-sessions", action="store_true", help="do not store parked sessions on disk")
-    d = p.add_mutually_exclusive_group()
-    d.add_argument("--pinned", action="store_true", help="serve the publisher's draft even if a trained one was promoted")
-    d.add_argument("--draft", default=None, help="serve this trained draft checkpoint directory")
+    p.add_argument("--draft", default=None, help="serve this DFlash2 checkpoint directory instead of the publisher's draft")
     p.add_argument("--proposer", choices=("mtp", "dflash2"), default=None, help=argparse.SUPPRESS)
     p.add_argument("--spec", type=int, default=None, help=argparse.SUPPRESS)
     p.add_argument("--draft-precision", choices=("bf16", "fp8"), default=None, help=argparse.SUPPRESS)
@@ -238,10 +163,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-fetch", action="store_true", help=argparse.SUPPRESS)  # the detached child: the parent fetched
 
     sub.add_parser("stop", help="stop a detached server").add_argument("target", nargs="?", choices=TARGET_CHOICES, metavar="TARGET")
-    sub.add_parser("status", help="what is serving, training and the current draft").add_argument("target", nargs="?", choices=TARGET_CHOICES, metavar="TARGET")
-    p = sub.add_parser("logs", help="the log of a detached server (or of training)")
+    sub.add_parser("status", help="what is serving, with which settings").add_argument("target", nargs="?", choices=TARGET_CHOICES, metavar="TARGET")
+    p = sub.add_parser("logs", help="the log of a detached server")
     add_target(p)
-    p.add_argument("--train", action="store_true")
     p.add_argument("-n", "--lines", type=int, default=50)
     p.add_argument("-f", "--follow", action="store_true")
 
@@ -261,15 +185,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--target", choices=TARGET_CHOICES, default=None, help="before the agent name; default: the target that is serving")
     p.add_argument("args", nargs=argparse.REMAINDER, help="passed to the agent unchanged")
 
-    p = sub.add_parser("train", help="train the 27B's drafter on recorded traffic (foreground; Ctrl-C finishes and promotes)")
-    p.add_argument("action", nargs="?", choices=("start", "stop", "status"), default="start")
-    p.add_argument("-d", "--detach", action="store_true", help="run as a user systemd service (sharar train stop finishes it)")
-    p.add_argument("--keep-serving", action="store_true", help="train while a server runs (only on a machine with another GPU serving)")
-    add_train_args(p)
-
-    p = sub.add_parser("draft", help="trained drafts: list, use RUN, pinned, reload (swaps the running server's draft in place)")
-    p.add_argument("action", choices=("list", "use", "pinned", "reload"))
-    p.add_argument("run", nargs="?", help="with use: a run name from `sharar draft list`")
     p = sub.add_parser("traces", help="summarize the recorded traces")
     p.add_argument("--dir", default=None, help="default: SHARAR_TRACES, else $SHARAR_RESULTS/traces")
     p = sub.add_parser("verify", help="check a running server: health, pinned model, a short answer")
@@ -316,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     from sharar.launch import ctl, lxcfs, run
 
-    if args.command in ("serve", "train", "engine", "dev"):
+    if args.command in ("serve", "engine", "dev"):
         lxcfs.reexec_if_needed()  # before anything imports torch
     if args.command == "serve":
         return run.serve(args)
@@ -328,8 +243,6 @@ def main(argv: list[str] | None = None) -> int:
         return run.status(args)
     if args.command == "logs":
         return run.logs(args)
-    if args.command == "train":
-        return run.train(args, parser)
     if args.command in ("chat", "launch", "verify"):
         s = run.serving(args.target)
         if s is None:
@@ -339,13 +252,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "launch":
             return ctl.cmd_launch(args, s)
         return ctl.verify(args.url or s.url, s)
-    if args.command == "draft":
-        return ctl.cmd_draft(args, run.resolve("27b"))
     if args.command == "traces":
         from sharar.engine.traces import summarize
-        directory = args.dir or run.resolve("27b").traces
+        directory = args.dir or run.resolve("27b", traces=True).traces
         if not directory or not Path(directory).is_dir():
-            sys.exit(f"no traces at {directory} (serve with traces on, the default, or give --dir)")
+            sys.exit(f"no traces at {directory} (serve with --traces, or give --dir)")
         print(json.dumps(summarize(str(directory)), indent=2))
         return 0
     return dev(args, parser)

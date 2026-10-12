@@ -102,11 +102,7 @@ def test_server_default_applies_only_to_greedy_requests_that_do_not_choose(monke
         validation.set_accept_default(0, 1.0)
 
 
-def test_relaxed_positions_are_recorded_masked_and_never_held_out(monkeypatch, tmp_path):
-    import json
-    from sharar.train.data import load_samples, split
-    from sharar.train.loss import block_targets
-
+def test_relaxed_positions_are_recorded(monkeypatch):
     ex = tiny_executor(monkeypatch)
     ex.set_proposer(WrongDraft(ProposerContext(ex.device, ex.max_batch, ex.max_context), k=3))
     req = ex.admit([7, 7, 7], SamplingParams(max_new_tokens=9, accept_top_k=2, accept_margin=6.0))
@@ -115,30 +111,9 @@ def test_relaxed_positions_are_recorded_masked_and_never_held_out(monkeypatch, t
     while not req.finished:
         ex.decode_step([req])
     ex.release(req)
-    offsets = [j for r in req.trace_rounds for j in r.get("rx", [])]
-    assert offsets and all(0 <= j < 3 for j in offsets)
-    # a trace file with one relaxed and one exact request, newest last
-    def doc(rid, rounds, finish):
-        return {"v": 2, "id": rid, "finish": finish, "reason": "length", "prompt_ids": [7, 7, 7], "output_ids": req.output_ids,
-                "cached": 0, "params": {"temperature": 0.0, "max_new_tokens": 9}, "spec": {"k": 3, "rounds": rounds}}
-    exact_rounds = [{k: v for k, v in r.items() if k != "rx"} for r in req.trace_rounds]
-    (tmp_path / "traces-1.jsonl").write_text(json.dumps(doc(1, req.trace_rounds, 1.0)) + "\n" + json.dumps(doc(2, exact_rounds, 2.0)) + "\n")
-    samples = load_samples(str(tmp_path), max_length=64, require_features=False, min_output=1)
-    relaxed_sample, exact_sample = samples
-    assert relaxed_sample.relaxed and not exact_sample.relaxed
-    positions = set(relaxed_sample.relaxed)
-    assert all(relaxed_sample.ids[p] == 126 for p in positions)  # every masked position is a draft pick
-    train, held = split(samples, holdout_tokens=1, min_requests=1)
-    assert held == [exact_sample] and train == [relaxed_sample]
-    ids = torch.tensor(relaxed_sample.ids)
-    banned = torch.zeros(len(ids), dtype=torch.bool)
-    banned[list(positions)] = True
-    anchors = torch.tensor([relaxed_sample.prompt_len])
-    _, _, with_mask, _ = block_targets(ids, anchors, 4, relaxed_sample.prompt_len, None, banned)
-    _, _, without, _ = block_targets(ids, anchors, 4, relaxed_sample.prompt_len, None)
-    assert with_mask.sum() < without.sum()
-    idx = (anchors[:, None] + torch.arange(4)[None, :]).clamp(max=len(ids) - 1)
-    assert not bool((with_mask.bool() & banned[idx]).any())
+    offsets = [(r, j) for r in req.trace_rounds for j in r.get("rx", [])]
+    assert offsets and all(0 <= j < 3 for _, j in offsets)
+    assert all(j < r["a"] and r["y"][j] != r["z"][j] for r, j in offsets)  # accepted draft picks, not the argmax
 
 
 def test_accept_default_reaches_sampled_requests_only_when_enabled():

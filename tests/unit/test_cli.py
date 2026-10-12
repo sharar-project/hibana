@@ -28,7 +28,7 @@ def home(monkeypatch, tmp_path):
     monkeypatch.setattr(preflight, "ensure_w3", lambda s, log=print, fetch=True: tmp_path / "w3" if s.get("SHARAR_W3_DECODE") == "1" else None)
     from sharar.launch import lxcfs
     monkeypatch.setattr(lxcfs, "reexec_if_needed", lambda: None)
-    saved = dict(os.environ)  # serve and train install the engine's settings into this process's environment
+    saved = dict(os.environ)  # serve installs the engine's settings into this process's environment
     yield tmp_path
     os.environ.clear()
     os.environ.update(saved)
@@ -45,14 +45,17 @@ def test_serve_runs_the_engine_in_the_foreground(home, monkeypatch):
     monkeypatch.setattr(run.guard, "start_thread", lambda **kw: started.append("guard"))
     monkeypatch.setattr(cli, "run_engine", lambda args, parser: started.append((args, dict(os.environ))) or 0)
     monkeypatch.setenv("SHARAR_DRAFT", "pinned")  # set by the caller; the engine gets the resolved draft, not this
-    assert cli.main(["serve", "flashnext", "--exact", "--no-traces", "--port", "30500"]) == 0
+    assert cli.main(["serve", "flashnext", "--exact", "--port", "30500"]) == 0
     assert started[0] == "guard"
     args, env = started[1]
     assert (args.target, args.port, args.proposer, args.spec, args.accept_default) == ("flashnext", 30500, "mtp", 4, "off")
-    assert args.traces is None and args.context_length == 262144
+    assert args.traces is None and args.context_length == 262144  # traces are opt-in
     assert env["SHARAR_PROFILE"] == "exact" and env["SHARAR_W3_DECODE"] == "0" and env["HF_HUB_OFFLINE"] == "1"
     assert "SHARAR_DRAFT" not in env and "/usr/local/cuda/bin" in env["PATH"]
-    assert (home / "results" / "sessions").is_dir()
+    assert (home / "results" / "sessions").is_dir() and not (home / "results" / "traces").exists()
+    assert cli.main(["serve", "flashnext", "--traces", "--port", "30500"]) == 0
+    args, _ = started[-1]
+    assert args.traces == str(home / "results" / "traces") and (home / "results" / "traces").is_dir()
 
 
 def test_serve_refuses_a_busy_port_and_bad_settings(home, monkeypatch):
@@ -65,7 +68,7 @@ def test_serve_refuses_a_busy_port_and_bad_settings(home, monkeypatch):
 
 def test_detach_starts_the_same_command_as_a_service(home, monkeypatch):
     started = []
-    monkeypatch.setattr(service, "start", lambda unit, argv, log, description, stop_seconds=120: started.append((unit, argv, log)))
+    monkeypatch.setattr(service, "start", lambda unit, argv, log, description: started.append((unit, argv, log)))
     monkeypatch.setattr(service, "follow_startup", lambda unit, log, url: 0)
     monkeypatch.setattr(sys, "argv", ["sharar", "serve", "27b", "--detach", "--throughput"])
     assert cli.main(["serve", "27b", "--detach", "--throughput"]) == 0
@@ -110,24 +113,6 @@ def test_stop_status_and_logs_follow_what_is_serving(home, monkeypatch, capsys):
     assert cli.main(["logs", "-f"]) == 0 and tails[-1] == ["tail", "-n", "50", "-F", str(log)]
 
 
-def test_train_fills_the_run_from_the_settings(home, monkeypatch):
-    traces = home / "results" / "traces"
-    traces.mkdir(parents=True)
-    ran = []
-    monkeypatch.setattr(run.guard, "start_thread", lambda **kw: None)
-    monkeypatch.setattr(cli, "run_train", lambda args, parser: ran.append(args) or 0)
-    assert cli.main(["train", "--steps", "10"]) == 0
-    args = ran[-1]
-    runs = home / "results" / "draft-runs"
-    assert args.traces == str(traces) and args.output.startswith(str(runs / "run-")) and args.steps == 10
-    assert args.promote_to == args.continue_from == str(runs / "current") and args.lr == 1e-4 and args.continue_lr == 3e-5
-    assert cli.main(["train", "--promote-to", "none", "--continue-from", "none"]) == 0
-    assert ran[-1].promote_to is None and ran[-1].continue_from is None
-    monkeypatch.setattr(ctl, "server_info", lambda port: {"target": "qwen38"} if port == "30001" else None)
-    with pytest.raises(SystemExit, match="foreground"):
-        cli.main(["train"])
-
-
 class FakeResponse:
     def __init__(self, body):
         self.body = body
@@ -170,82 +155,6 @@ def test_launch_sets_up_each_agent_for_the_serving_target(home, monkeypatch, tmp
 def test_launch_and_chat_need_a_server(home):
     with pytest.raises(SystemExit, match="nothing is serving"):
         cli.main(["chat"])
-
-
-def test_draft_list_use_pinned_and_reload(home, monkeypatch, capsys):
-    runs = home / "results" / "draft-runs"
-    for name, best in (("run-1", 5.1), ("run-2", 5.4)):
-        d = runs / name / "best"
-        d.mkdir(parents=True)
-        (d / "config.json").write_text("{}")
-        (runs / name / "manifest.json").write_text(json.dumps({"base_eval": {"tokens_per_round": 5.0}, "best": {"step": 40, "tokens_per_round": best}}))
-    assert cli.main(["draft", "use", "run-2"]) == 0
-    assert os.readlink(runs / "current") == "run-2/best" and "serving is down" in capsys.readouterr().out
-    assert cli.main(["draft", "list"]) == 0
-    out = capsys.readouterr().out
-    assert "run-2: base 5.000 -> best 5.400 at step 40 *" in out and "run-1: base 5.000 -> best 5.100" in out
-    with pytest.raises(SystemExit):
-        cli.main(["draft", "use", "run-9"])
-    posted = []
-    monkeypatch.setattr(ctl, "server_info", lambda port: {"speculative": {}})
-    monkeypatch.setattr(ctl, "post_json", lambda port, route, payload, timeout=120: posted.append((port, route, payload)) or {"draft": payload["draft"], "seconds": 1.5})
-    assert cli.main(["draft", "use", "run-1"]) == 0
-    assert posted[-1] == ("30001", "/reload_draft", {"draft": str(runs / "run-1" / "best")})
-    assert cli.main(["draft", "pinned"]) == 0 and posted[-1][2] == {"draft": "pinned"} and not (runs / "current").exists()
-    # two Sparks: the checkpoint goes to the peer at the same path before the swap (a rank that cannot load it ends the pair)
-    from sharar.launch import tp
-    copied = []
-    monkeypatch.setattr(ctl, "server_info", lambda port: {"tp_size": 2})
-    monkeypatch.setattr(tp, "peer", lambda s: "peer-host")
-    monkeypatch.setattr(tp, "copy", lambda host, paths, log=print: copied.append((host, paths, len(posted))))
-    assert cli.main(["draft", "use", "run-2"]) == 0
-    best = (runs / "run-2" / "best").resolve()
-    assert copied == [("peer-host", [best], len(posted) - 1)] and posted[-1][2] == {"draft": str(best)}
-    assert cli.main(["draft", "pinned"]) == 0 and len(copied) == 1  # the pinned draft is on both Sparks already
-
-
-def test_a_restarted_pair_serves_the_current_draft(home, monkeypatch):
-    """`sharar draft use` swaps the draft in a running pair; when the pair restarts it starts on that draft, copied to
-    the peer, not on the one it was launched with."""
-    from sharar.launch import guard, settings, tp
-    runs = home / "results" / "draft-runs"
-    for name in ("run-1", "run-2"):
-        d = runs / name / "best"
-        d.mkdir(parents=True)
-        (d / "model.safetensors").write_bytes(b"")
-        (d / "config.json").write_text('{"architectures": ["DFlash2DraftModel"]}')
-    (runs / "current").symlink_to("run-1/best")
-    s = settings.resolve("27b", tp=2)
-    assert s.follows_current and s.draft_dir == (runs / "run-1" / "best").resolve()
-    starts, copied = [], []
-
-    class FakePair:
-        def __init__(self, peer, env, module, args, show_rank1=True):
-            starts.append(args)
-
-        def start(self):
-            pass
-
-        def wait(self):
-            if len(starts) == 1:  # the draft is swapped while the pair serves, then the pair fails
-                (runs / "current").unlink()
-                (runs / "current").symlink_to("run-2/best")
-                return 1
-            return 0
-
-        def signal_rank0(self, sig=None):
-            pass
-
-    for name, value in (("peer", lambda s: "peer-host"), ("mirror", lambda host: None), ("setup", lambda *a, **k: None),
-                        ("link", lambda host: ("10.0.0.1:29500", "eth0")), ("Pair", FakePair),
-                        ("copy", lambda host, paths, log=print: copied.append(paths))):
-        monkeypatch.setattr(tp, name, value)
-    monkeypatch.setattr(tp.time, "sleep", lambda t: None)
-    monkeypatch.setattr(guard, "start_thread", lambda **k: None)
-    assert tp.serve(s, None, log=lambda m: None) == 0
-    first, second = (a[a.index("--draft") + 1] for a in starts)
-    assert first.endswith("run-1/best") and second.endswith("run-2/best")
-    assert copied == [[(runs / "run-2" / "best").resolve()]]
 
 
 def test_no_launcher_scripts_left():

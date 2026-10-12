@@ -87,7 +87,7 @@ def download(cache: Path, repo: str, revision: str, log=print) -> None:
 
 
 def pinned_snapshots(s: Settings) -> list[tuple[Path, str, str]]:
-    """(cache, repo, revision) of the target's checkpoint and, for a parallel draft that is not a trained one, its draft."""
+    """(cache, repo, revision) of the target's checkpoint and, for a parallel draft served from the pinned snapshot, its draft."""
     if s.target == "flashnext":
         from sharar.model.flashnext import config as c
     else:
@@ -154,7 +154,7 @@ def summary(s: Settings, host: dict[str, str], w3: Path | None, tp: int = 1) -> 
     if s.proposer == "mtp":
         draft = "the model's own MTP head"
     elif s.draft_dir:
-        draft = f"trained {s.draft_dir}"
+        draft = f"checkpoint {s.draft_dir}"
     elif s.parallel_draft:
         _, repo, revision = pinned_snapshots(s)[-1]
         draft = f"pinned {repo}@{revision[:7]}"

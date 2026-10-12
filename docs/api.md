@@ -13,7 +13,6 @@ Admission also checks the output budget and speculative scratch capacity.
 | `POST /generate` | Native text or token-ID input, output IDs and request metadata |
 | `POST /v1/tokenize` | Token counting/encoding |
 | `POST /flush_cache` | Invalidate reusable prefixes; active loans drain safely |
-| `POST /reload_draft` | Swap the served draft in place between rounds: `{"draft": DIR}` or `{"draft": "pinned"}`; refuses shape or context-weight changes |
 | `GET /v1/models` | Supported model |
 | `GET /health` | Engine availability |
 | `GET /get_server_info` | Serving profile, scheduler, cache and speculation statistics |

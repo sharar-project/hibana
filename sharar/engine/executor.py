@@ -343,15 +343,6 @@ class Executor:
     def flush_cache(self) -> None:
         self.state.flush()
 
-    def reload_draft(self, draft_dir: str | None) -> str:
-        """Copy a checkpoint (None = the pinned publisher draft) into the serving
-        draft between rounds; returns the served source. Only the parallel draft
-        (DFlash2) holds a reloadable model."""
-        if self.spec is None or not self.spec.proposer.requirements.capabilities.reloadable:
-            raise ValueError("no reloadable draft is being served")
-        from sharar.proposers.factory import draft_snapshot
-        return self.spec.proposer.reload(draft_snapshot(self.spec.proposer.name, draft_dir))
-
     # ---- steps ----
     def _plan_paged_prefill(self, prefix_pages: torch.Tensor, new_tokens: int) -> None:
         # Host index pointers: FlashInfer's plan() reads them on the CPU, so

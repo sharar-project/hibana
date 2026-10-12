@@ -216,21 +216,6 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         await engine.flush_cache()
         return PlainTextResponse("Cache invalidated; active readers release pinned entries on completion.\n")
 
-    @app.post("/reload_draft")
-    async def reload_draft(body: dict | None = None):
-        """Copy a draft checkpoint into the serving draft between rounds.
-        ``{"draft": DIR}`` loads a checkpoint directory, ``{"draft": "pinned"}``
-        or an empty body restores the publisher's draft."""
-        draft = (body or {}).get("draft")
-        if draft is not None and not isinstance(draft, str):
-            raise InvalidRequest("draft must be a directory path or 'pinned'")
-        draft_dir = None if draft in (None, "pinned") else draft
-        started = time.time()
-        source = await engine.reload_draft(draft_dir)
-        if describe.get("speculative"):
-            describe["speculative"]["draft"] = source
-        return {"draft": source, "seconds": round(time.time() - started, 3)}
-
     @app.post("/v1/tokenize")
     @app.post("/tokenize")
     async def tokenize(body: dict):
@@ -778,8 +763,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     if traces:
         from sharar.engine.traces import TraceSink
 
-        draft = getattr(ex.spec.proposer, "model", None) if ex.spec is not None else None  # projected rows: the draft's width
-        sink = TraceSink(traces, max_bytes=traces_max_mib * 2**20, **({"feature_dim": draft.hidden} if hasattr(draft, "hidden") else {}))
+        sink = TraceSink(traces, max_bytes=traces_max_mib * 2**20)
         sched.sink = sink
         log(f"recording opt-in request traces under {sink.directory} (cap {traces_max_mib} MiB)")
     from sharar.engine.config import current

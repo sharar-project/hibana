@@ -77,10 +77,7 @@ The loader stages each mapped tensor in ordinary CPU storage before copying
 it to CUDA (warm-cache target construction 63 s to 12 s, byte-identical).
 
 A fitted artifact is a candidate until it passes the lossy-change gate
-(`tools/lossy-gate.py`) against the intended serving profile. Collect fresh
-drafter traces after selecting the target profile. Keep validation and final
-test files out of training, and check any trained draft through the actual
-FP8/W3 serving path: the trainer's BF16 replay is a checkpoint selection proxy.
+(`tools/lossy-gate.py`) against the intended serving profile.
 
 ## Routed experts (Flash-Next, #73)
 

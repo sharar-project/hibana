@@ -22,9 +22,8 @@ kernels/    dispatch (ops.py), attention planner, 3-bit GEMM and MoE, FP8 GEMV, 
             one-shot all-reduce, vendored fla and qsa kernels
 weights/    safetensors loading, ModelOpt NVFP4/FP8 linears, the Linear interface, tensor-parallel sharding,
             3-bit calibration and checkpoints
-train/      DFlash2 drafter trainer (data, loss, differentiable draft, promotion)
 distributed.py  tensor-parallel rank group and collectives
-cli.py      the `sharar` command (serve, chat, launch, train, status, ...; `engine` is the server with explicit settings)
+cli.py      the `sharar` command (serve, chat, launch, status, ...; `engine` is the server with explicit settings)
 launch/     what `sharar serve` does before the engine: settings and profiles, preflight and downloads, the memory
             guard, --detach services, two Sparks (tp.py), the client commands
 target.py   Target value per checkpoint (geometry, optional family fields), registry, loader
@@ -46,7 +45,7 @@ target.py   Target value per checkpoint (geometry, optional family fields), regi
   `forward_extras()`; side inputs (Flash-Next's PLE rows and sparse-attention bookkeeping) travel on
   `ForwardContext.extras`, so `engine/` holds no model-specific code.
 - **Speculator parts.** A proposer declares its `Capabilities` (sampled, depth, graphs, device acceptance,
-  reload, cold payload, ...); the engine reads the flags instead of probing methods. Draft heads
+  checkpoint cache, cold payload, ...); the engine reads the flags instead of probing methods. Draft heads
   (`proposers/draft_head.py`) and the depth policy (`engine/depth.py`) are shared.
 - **Kernels.** One `Linear` interface over every weight format (`weights/linear.py`), one `AttentionPlanner`
   per KV geometry (`kernels/attention_plan.py`), one graph-set helper (`engine/graph_set.py`).
@@ -59,7 +58,6 @@ target.py   Target value per checkpoint (geometry, optional family fields), regi
 |---|---|---|
 | Served drafter | DFlash2, k=15 | MTP, k=4, 3-bit draft head |
 | Other drafters | MTP (BF16, unfused) | none (DFlash2 needs feature taps, #49) |
-| Drafter training on traffic, hot reload | DFlash2 | none (#40, #51) |
 | CUDA graphs: decode, verify, draft | yes | yes, dense and sparse-selecting variants |
 | Device-resident acceptance | opt-in | on in `fast` |
 | Exact / relaxed / sampled acceptance | yes | yes |
@@ -74,10 +72,9 @@ target.py   Target value per checkpoint (geometry, optional family fields), regi
 | Code | Where | Why |
 |---|---|---|
 | Engine, models, kernels, weights, cache, proposers | `sharar/` | Proposers share the verify graphs, state ownership, kernels and draft heads with the target. |
-| Drafter training | `sharar/train/` | It imports the serving draft body so its forward matches serving exactly, and promotion hot-reloads into the running server. The engine never imports `train`. |
 | HTTP evals and speed benchmarks | [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval) | They import nothing from `sharar` and run against any server. |
 | In-process profilers and the lossy gate's in-process layers | `profiling/`, `tools/gate/` | They reach into engine internals and version with them. |
-| Target-model training (distillation, LoRA) | a separate repository when it starts | Its own dependencies; uses Sharar as the rollout server. |
+| Target-model and drafter training (distillation, LoRA, drafter adaptation) | a separate repository when it starts | Its own dependencies; uses Sharar as the rollout server and `--draft DIR` to serve a drafter. Drafter training on recorded traffic left this repository at the tag `archive/draft-training`. |
 
 ## Performance rules
 

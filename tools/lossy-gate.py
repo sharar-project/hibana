@@ -184,11 +184,11 @@ def arm_plan(s: launch.Settings) -> dict:
 def served_command(target: str, profile: str, port: int) -> list[str]:
     """A served arm: `sharar serve` in the foreground, on our port, recording nothing."""
     return [str(VENV / "bin" / "python"), "-u", "-m", "sharar", "serve", target, f"--{profile}", "--port", str(port),
-            "--no-traces", "--no-sessions", "--no-fetch"]
+            "--no-sessions", "--no-fetch"]
 
 
 def served_env(overrides: dict) -> dict:
-    env = {**gate_env(), **overrides}
+    env = {**gate_env(), **overrides, "SHARAR_TRACES": "off"}  # recording nothing, whatever the config file says
     env.setdefault("SHARAR_COLD_TIER_GIB", "0")  # host memory for Terminal-Bench's task containers; caching only, same in every stage
     return env
 

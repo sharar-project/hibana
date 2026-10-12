@@ -6,7 +6,7 @@ MAX_DEPTHS = {"mtp": 8, "dflash2": 15}
 
 
 def draft_snapshot(proposer, draft_dir=None, target=None):
-    """The pinned publisher snapshot, or a trained checkpoint directory saved by `sharar train`."""
+    """The pinned publisher snapshot, or a DFlash2 checkpoint directory (`--draft DIR`)."""
     import json
     from pathlib import Path
     from sharar.proposers.parallel import PINS

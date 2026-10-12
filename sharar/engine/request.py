@@ -50,8 +50,6 @@ class Request(RequestState):
     spec_relaxed: int = 0  # emitted draft tokens accepted by the relaxed rule rather than as the argmax
     # opt-in trace sink (engine/traces.py): per-round records while recording, else None
     trace_rounds: list[dict] | None = None
-    trace_features: object = None  # FeatureRecorder while recording projected draft context, else None
-    trace_topk: object = None  # TopkRecorder for the target's top-k logits per verified row, else None
     # constrained output (engine/grammar.py): the request's position in its grammar, None when unconstrained
     grammar: object = None
 

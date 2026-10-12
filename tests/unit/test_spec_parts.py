@@ -11,14 +11,14 @@ from sharar.proposers.draft_head import ShortlistHead, TargetHead
 
 def test_declared_capabilities_need_their_methods():
     class Bare:
-        requirements = ProposerRequirements("bare", capabilities=Capabilities(reloadable=True))
-    with pytest.raises(TypeError, match="reloadable"):
+        requirements = ProposerRequirements("bare", capabilities=Capabilities(cold_payload=True))
+    with pytest.raises(TypeError, match="cold_payload"):
         check_capabilities(Bare())
 
-    class Reload(Bare):
-        def reload(self, snapshot):
-            return str(snapshot)
-    check_capabilities(Reload())
+    class Cold(Bare):
+        def auxiliary_codec(self):
+            return None
+    check_capabilities(Cold())
 
     class Head:
         requirements = ProposerRequirements("mtp", capabilities=Capabilities(draft_head=True))
@@ -28,10 +28,10 @@ def test_declared_capabilities_need_their_methods():
 
 
 def test_the_served_proposers_declare_what_they_implement():
-    from sharar.engine.contracts import DeviceFeedback, Reloadable, TraceFeatures
+    from sharar.engine.contracts import CheckpointCache, ColdPayload, DeviceFeedback
     from sharar.proposers.parallel import ParallelProposer
     from tests.ngram_proposer import NGramProposer
-    for protocol in (DeviceFeedback, Reloadable, TraceFeatures):
+    for protocol in (DeviceFeedback, CheckpointCache, ColdPayload):
         assert all(callable(getattr(ParallelProposer, name, None)) for name in protocol.__dict__
                    if not name.startswith("_") and callable(getattr(protocol, name, None)))
     assert NGramProposer.requirements.capabilities == Capabilities()

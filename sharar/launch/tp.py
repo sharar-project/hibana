@@ -14,7 +14,6 @@ e.g. "nsys profile -o /path/tp2_%h ..." (%h: each host's name).
 """
 from __future__ import annotations
 
-import dataclasses
 import os
 import shlex
 import shutil
@@ -27,7 +26,7 @@ from pathlib import Path
 
 from sharar.launch import guard
 from sharar.launch.preflight import pinned_snapshots, snapshot_dir
-from sharar.launch.settings import CHECKOUT, Settings, promoted_draft
+from sharar.launch.settings import CHECKOUT, Settings
 
 TP_PORT = 29500  # where the ranks meet on rank 0's link address
 RESTARTS, RESTART_WINDOW = 5, 600
@@ -203,14 +202,6 @@ def serve(s: Settings, w3: Path | None, log=print) -> int:
     starts: list[float] = []
     while True:
         mirror(peer_host)
-        if s.follows_current:  # `sharar draft use` may have swapped the draft since: start again on the current one
-            draft = promoted_draft(s.draft_runs, s.proposer)
-            if draft != s.draft_dir:
-                if draft is not None:
-                    copy(peer_host, [draft], log)
-                log(f"the draft is now {draft or 'the pinned draft'}")
-                s = dataclasses.replace(s, draft_dir=draft)
-                args = ["engine", *s.engine_args(tp=2), "--tp-address", address]
         pair = Pair(peer_host, env, "sharar", args)
         pair.start()
         code = pair.wait()

@@ -2,11 +2,11 @@
 
 On the GB10 the GPU allocates from host memory: when MemAvailable stays under the floor (SHARAR_MIN_AVAILABLE_KIB,
 default 16 GiB) the weights page and the whole machine stalls. The watch samples every two seconds and acts after
-three low samples in a row: it asks the workload to stop (SIGTERM: the server drains, the trainer evaluates) and
+three low samples in a row: it asks the workload to stop (SIGTERM: the server drains) and
 kills it 15 seconds later if it is still there. The scheduler also holds new admissions under the floor, so this is
 the backstop.
 
-    `sharar serve` and `sharar train` run it as a thread beside themselves (`start_thread`).
+    `sharar serve` runs it as a thread beside itself (`start_thread`).
     python -m sharar.launch.guard --pid PID   watches another process and its process group (the CI's GPU suite).
 """
 from __future__ import annotations
