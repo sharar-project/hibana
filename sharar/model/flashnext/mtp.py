@@ -6,29 +6,26 @@ mixer, `forward()["norm"]`), the head fuses u = fc_embedding(norm_e(embed(x_i)))
 the streams plus fc_hidden applied per stream to norm_h(h_{i-1}), runs one hyper-connected
 decoder layer (dense attention over its own BF16 KV, BF16 routed experts, shared expert) and
 returns the layer's hyper stream d; `logits()` applies the MTP's own mixer and the target's
-lm_head. Chained drafting feeds d back as the next hidden. Same call surface as the 27B's
-`MtpHead` so `proposers/mtp.py` and its graphs drive it unchanged.
+lm_head. Chained drafting feeds d back as the next hidden. The attention, the draft KV and the
+call surface are the shared MTP layer's (`model/mtp_layer.py`).
 """
 
 from __future__ import annotations
 
 
-import flashinfer
 import torch
 import torch.nn.functional as F
 
 from sharar.engine.config import current
-from sharar.kernels import ops
-from sharar.cache.kv_pool import KvPool
-from sharar.model.flashnext.attention import FlashNextAttention
 from sharar.model.flashnext.hyper import HyperConnection
 from sharar.model.flashnext.linear import TrunkLinear
+from sharar.model.mtp_layer import MtpLayer
 from sharar.model.norm import GemmaRMSNorm
 
 PREFIX = "mtp"
 
 
-class FlashNextMtpHead:
+class FlashNextMtpHead(MtpLayer):
     DRAFT_HEADS = True  # set_draft_head: reduced vocabulary and/or 3-bit shortlist (#35)
 
     def __init__(self, w, device: torch.device, model, num_pages: int, precision: str | None = None, padding_rows: int = 0):
@@ -36,8 +33,7 @@ class FlashNextMtpHead:
         # drafts through the target's vocabulary-parallel lm_head (`VocabParallelHead`: each rank reads its rows).
         t = self.target = getattr(model, "full_target", model.target)
         self.tensor_parallel = t is not model.target
-        self.device = device
-        self.embed, self.lm_head, self.rope, self.mixer_target = model.embed, model.lm_head, model.rope, model.mixer
+        self.embed, self.lm_head, self.mixer_target = model.embed, model.lm_head, model.mixer
         from sharar.proposers.draft_head import TargetHead, VocabParallelHead
         # replaced by set_draft_head (#35)
         self.draft_head = VocabParallelHead(self.lm_head) if self.tensor_parallel else TargetHead(self.lm_head)
@@ -56,8 +52,7 @@ class FlashNextMtpHead:
         self.attn_hc = HyperConnection.load(w, f"{p}.attn_hyper_connection", self.hc, self.hidden_size, eps, device, precision=mixers)
         self.mlp_hc = HyperConnection.load(w, f"{p}.mlp_hyper_connection", self.hc, self.hidden_size, eps, device, precision=mixers)
         self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", self.hc, self.hidden_size, eps, device, combine=False, precision=mixers)
-        self.ragged = ops.RaggedAttention(device, t.num_attention_heads, t.num_kv_heads, t.head_dim)
-        self.attn = FlashNextAttention(w, f"{p}.self_attn", 0, device, self.rope, self.ragged, t, precision, sharded=False)
+        self._attention_setup(w, f"{p}.self_attn", device, t, model.rope, precision, num_pages, padding_rows)
         # Routed experts, fused [E, 2I, H] (gate rows then up rows) and [E, H, I]: stored FP8 with one
         # scale per expert matrix, upcast per token for the ten gathered experts (5.2 GB BF16 would not
         # fit beside the target on the GB10); loaded expert by expert to avoid a 3.4 GB host temporary.
@@ -68,11 +63,6 @@ class FlashNextMtpHead:
         self.shared_gate = w.get(f"{p}.mlp.shared_expert_gate.weight").to(device).float().reshape(1, -1)
         self.shared_gate_up = TrunkLinear.load(w, [f"{p}.mlp.shared_expert.gate_proj.weight", f"{p}.mlp.shared_expert.up_proj.weight"], device, precision)
         self.shared_down = TrunkLinear.load(w, [f"{p}.mlp.shared_expert.down_proj.weight"], device, precision)
-        self.kv = KvPool(num_pages, device, layer_ids=[0], dtype=torch.bfloat16, target=t, padding_rows=padding_rows)  # padded draft-graph rows write these
-        self._ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
-        self._attn = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self._ws, "NHD")
-        from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
-        self.attention = AttentionPlanner(AttentionGeometry.of_target(t, 1, torch.bfloat16))  # BF16 draft KV, page 1
 
     @staticmethod
     def _fp8_experts(w, name: str, device) -> tuple[torch.Tensor, torch.Tensor]:
@@ -96,12 +86,6 @@ class FlashNextMtpHead:
                    + self.router.numel() * 2 + self.gate_up.numel() + self.down.numel() + self.shared_gate_up.bytes + self.shared_down.bytes)
         return weights + self.kv.bytes + self.draft_head.bytes
 
-    def plan(self, qo_lens: list[int], kv_pages: list[torch.Tensor]) -> None:
-        t = self.target
-        qo_indptr = torch.tensor([0] + list(torch.tensor(qo_lens).cumsum(0).tolist()), dtype=torch.int32)  # host: plan() reads them on the CPU
-        kv_indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_pages]).cumsum(0).tolist()), dtype=torch.int32)
-        self.attention.paged_prefill(self._attn, qo_indptr, kv_indptr, torch.cat(kv_pages), torch.ones(len(qo_lens), dtype=torch.int32), causal=True)
-
     # ---- pieces ----
     def _fuse(self, tokens: torch.Tensor, hidden: torch.Tensor) -> torch.Tensor:
         e = self.fc_e(self.norm_e(F.embedding(tokens, self.embed)))  # [T, H]
@@ -118,25 +102,8 @@ class FlashNextMtpHead:
         shared = self.shared_down(self.shared_gate_up(x), act=fk.ACT_SILU_MUL)
         return fk.moe_combine_routed(y, weights, shared, x, self.shared_gate.reshape(-1))
 
-    def _qkv_write(self, h: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """The attention's q/k norm and RoPE, v, and the draft KV write in one launch (the bits of
-        `Attention._split_qkv` + `KvPool.write`): (q [T, Hq, D], the qkv rows)."""
-        from sharar.kernels.flashnext_fused import qkv_epilogue
-        a = self.attn
-        qkv = a.qkv(h)
-        k_cache, v_cache = self.kv.cache(0)
-        q = qkv_epilogue(qkv, positions, a.rope.cos_sin, a.q_norm.weight, a.k_norm.weight, k_cache, v_cache, write_pages,
-                         a.num_heads, a.num_kv_heads, a.head_dim, a.rope.rotary_dim, a.eps)
-        return q, qkv
-
-    def _attention(self, h: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor, wrapper) -> torch.Tensor:
-        """`Attention.prefill` in its verify mode (each row attends over its sequence's draft KV) with the fused epilogue."""
-        a = self.attn
-        t = h.shape[0]
-        q, qkv = self._qkv_write(h, positions, write_pages)
-        attn = wrapper.run(q, self.kv.cache(0)).view(t, a.q_size)
-        gate = qkv[:, : a.q_size * 2].view(t, a.num_heads, 2 * a.head_dim)[..., a.head_dim:]
-        return a._finish(attn, gate)
+    def _attention_input(self, u: torch.Tensor) -> torch.Tensor:
+        return self.attn_hc.mix(u)[0]
 
     def _layer(self, u: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor, wrapper) -> torch.Tensor:
         h, res = self.attn_hc.mix(u)
@@ -145,23 +112,7 @@ class FlashNextMtpHead:
         h, res = self.mlp_hc.mix(u)
         return self.mlp_hc.combine(self._moe(h), res)
 
-    # ---- the MtpHead surface ----
-    @torch.inference_mode()
-    def write_kv(self, tokens: torch.Tensor, hidden: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor) -> None:
-        """Commit target-conditioned KV for rows the draft never runs (prefill ingestion, bonus inputs)."""
-        h, _ = self.attn_hc.mix(self._fuse(tokens, hidden))
-        self._qkv_write(h, positions, write_pages)
-
-    @torch.inference_mode()
-    def forward(self, tokens: torch.Tensor, hidden: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor, qo_lens: list[int], kv_pages: list[torch.Tensor]) -> torch.Tensor:
-        self.plan(qo_lens, kv_pages)
-        return self._layer(self._fuse(tokens, hidden), positions, write_pages, self._attn)
-
-    @torch.inference_mode()
-    def forward_static(self, tokens: torch.Tensor, hidden: torch.Tensor, positions: torch.Tensor, write_pages: torch.Tensor) -> torch.Tensor:
-        """One row per sequence with `self._attn` already planned (graph capture)."""
-        return self._layer(self._fuse(tokens, hidden), positions, write_pages, self._attn)
-
+    # ---- the vocabulary projection ----
     @torch.inference_mode()
     def logits(self, d: torch.Tensor) -> torch.Tensor:
         from sharar.distributed import all_gather
