@@ -87,7 +87,7 @@ rows past the budget eager.
 
   Under exact acceptance the outputs do not depend on the depth; under `fast`'s relaxed acceptance a deeper round
   gives the rule more positions; GSM8K (first 300) and HumanEval stayed within run-to-run noise (pooled -0.2 points
-  against a repeat of depth 4, whose two runs themselves differed by 1.3). `exact`, `balanced` and `throughput` keep depth 4.
+  against a repeat of depth 4, whose two runs themselves differed by 1.3). `exact` and `throughput` keep depth 4.
 - **Draft-only head.** `SHARAR_DRAFT_HEAD=w3` gives the draft steps a 3-bit copy of the lm_head; its top 8
   candidates (`SHARAR_DRAFT_HEAD_RESCORE`) are rescored with the target's FP8 rows, so the draft picks what the
   full head would except on near-ties. Exact acceptance is unaffected. `SHARAR_DRAFT_VOCAB` restricts the draft
