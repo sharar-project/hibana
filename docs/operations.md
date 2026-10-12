@@ -63,9 +63,8 @@ same) and results, traces, sessions, drafter runs, 3-bit checkpoints and logs in
 | GDN recurrent state | FP32 | `SHARAR_SSM_STATE=int8` or `int4` stores each GDN layer's state per window as in LeapQuant ([arXiv 2609.38166](https://arxiv.org/abs/2609.38166); `sharar/cache/ssm_format.py`, `sharar/kernels/ssm_window.py`): an integer residual with per-row scales and smoothed key columns, FP16 compensator terms (`SHARAR_SSM_COMPENSATORS`, unset: 4, or 8 for int4) and the committed tokens of the current window (`SHARAR_SSM_WINDOW`, 16), requantized once per window. The recurrent state per slot is 55 MiB (int8) or 41 MiB (int4) instead of 144 on the 27B, and 41 or 31 MiB instead of 108 on Flash-Next. Needs the reconstruct accepted state. Lossy and opt-in (measurements in [#129](https://github.com/abdelfattah-lab/sharar/pull/129)) |
 | Shape-stable prefill numerics | off | `SHARAR_STABLE_NUMERICS=1` (M-invariant kernels for the three row-count-dependent ops; see [limits](#numerical-limits)) |
 
-For MTP on the 27B, use `SHARAR_PROPOSER=mtp SHARAR_SPEC=3 SHARAR_DRAFT_PRECISION=bf16`. DSpark
-(`SHARAR_PROPOSER=dspark SHARAR_SPEC=7 SHARAR_MAX_CONTEXT=32768`, pinned `RadixArk/Qwen3.8-27B-DSpark@b9a5dbd`) keeps
-draft features for the whole context rather than DFlash2's 2,048-token window, so it serves at up to 32K.
+For MTP on the 27B, use `SHARAR_PROPOSER=mtp SHARAR_SPEC=3 SHARAR_DRAFT_PRECISION=bf16`. `SHARAR_PROPOSER` is `mtp`
+or `dflash2`.
 
 ## Serving profiles
 

@@ -9,7 +9,7 @@ from sharar.proposers.factory import draft_snapshot
 
 def _checkpoint(tmp_path, architecture="DFlash2DraftModel"):
     d = tmp_path / "best"
-    d.mkdir()
+    d.mkdir(parents=True)
     (d / "config.json").write_text(json.dumps({"architectures": [architecture]}))
     (d / "model.safetensors").write_bytes(b"")
     return d
@@ -25,7 +25,7 @@ def test_draft_snapshot_validates_the_directory(tmp_path):
     good = _checkpoint(tmp_path)
     assert draft_snapshot("dflash2", str(good)) == good
     with pytest.raises(ValueError):
-        draft_snapshot("dspark", str(good))  # architecture belongs to the other proposer
+        draft_snapshot("dflash2", str(_checkpoint(tmp_path / "other", "DSparkDraftModel")))  # another architecture
     with pytest.raises(FileNotFoundError):
         draft_snapshot("dflash2", str(tmp_path / "missing"))
     (good / "model.safetensors").unlink()

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Pinned Qwen DSpark/DFlash2 backbone, without Transformers or SGLang.
+"""Pinned Qwen DFlash2 backbone, without Transformers or SGLang.
 
 Model equations and checkpoint names follow the publishers' draft models and
 the Apache-2.0 SGLang implementation (see THIRD_PARTY_NOTICES.md). The five
@@ -97,7 +97,7 @@ class ParallelDraftModel:
         self.source = str(snapshot)  # identifies trained checkpoints in cache identities
         cfg = self.cfg
         self.kind = cfg['architectures'][0]
-        if self.kind not in ('DSparkDraftModel', 'DFlash2DraftModel'):
+        if self.kind != 'DFlash2DraftModel':
             raise ValueError('unsupported draft architecture')
         # The geometry is the checkpoint's (#49): hidden width, heads, KV heads, head size and layers.
         self.hidden, self.heads, self.kv_heads, self.head_dim = (cfg['hidden_size'], cfg['num_attention_heads'],
@@ -109,7 +109,7 @@ class ParallelDraftModel:
         from sharar.proposers.draft_head import TargetHead
         self.draft_head = TargetHead(lambda x: self.target.logits(x))  # the vocabulary projection the selector reads (#45); resolved per call
         self.features = tuple(cfg['dflash_config']['target_layer_ids'])
-        self.window = cfg['sliding_window'] or max_context
+        self.window = cfg['sliding_window']
         self.cos, self.sin = frequencies(cfg, max_context + 32, self.device)
         self.weights = {name: weight.to(self.device) for name, weight in self.read_weights(snapshot, cfg).items()}
         if precision == 'fp8':
@@ -214,13 +214,11 @@ class ParallelDraftModel:
             rotate_and_cache(k, v.view(-1, self.kv_heads, self.head_dim), positions, self.cos, self.sin, (keys, values), pages)
 
     def _prepare_conv(self, hidden, name):
-        if name + '.base_kernel' not in self.weights:
-            return hidden, None
         coefficients = (hidden @ self.weights[name + '.kernel_projection.weight'].T).view(*hidden.shape[:-1], 2, 2, self.hidden // 16)
         return convolve(hidden, coefficients[:, :, 0], self.weights[name + '.base_kernel'][0]), coefficients[:, :, 1]
 
     def _finish_conv(self, hidden, coefficients, name):
-        return convolve(hidden, coefficients, self.weights[name + '.base_kernel'][1]) if coefficients is not None else hidden
+        return convolve(hidden, coefficients, self.weights[name + '.base_kernel'][1])
 
     def forward(self, tokens, positions, pages, caches, attention):
         """Static noise-block forward. attention is a planned FlashInfer wrapper."""
@@ -261,7 +259,3 @@ class ParallelDraftModel:
         b = self.weights[p + 'successor_codebook'][candidates]
         scores = (a * gate[:, :, None]) @ b.transpose(-1, -2)
         return candidates, scores + values[:, :, None]
-
-    def markov(self, logits, previous, hidden):
-        latent = self.weights['markov_head.markov_w1.weight'][previous]
-        return logits + latent @ self.weights['markov_head.markov_w2.weight'].T

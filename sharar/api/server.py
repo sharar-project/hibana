@@ -749,7 +749,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     spec_config = SpecConfig(proposer, spec, state_strategy, draft_precision, draft_dir) if spec else None
     if spec_config is not None:
         from sharar.proposers.factory import draft_snapshot
-        if proposer in ('dspark', 'dflash2'):
+        if proposer == 'dflash2':
             draft_snapshot(proposer, draft_dir, served)  # fail before loading the target
 
     from sharar.engine.executor import Executor

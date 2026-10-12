@@ -34,11 +34,11 @@ def add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--target", default=None, help="pinned serving target (default: SHARAR_TARGET, else qwen38)")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=30001)
-    p.add_argument("--proposer", choices=("mtp", "ngram", "dspark", "dflash2"), default="dflash2")
+    p.add_argument("--proposer", choices=("mtp", "dflash2"), default="dflash2")
     p.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default="reconstruct")
     p.add_argument("--draft-precision", choices=("bf16", "fp8"), default="bf16", help="parallel draft matrix precision")
     p.add_argument("--spec", type=int, default=None, help="draft tokens per round (0 = off; default: SHARAR_SPEC, else the proposer's validated depth)")
-    p.add_argument("--draft", default=None, help="trained DFlash2/DSpark checkpoint directory to serve instead of the pinned draft (default: SHARAR_DRAFT)")
+    p.add_argument("--draft", default=None, help="trained DFlash2 checkpoint directory to serve instead of the pinned draft (default: SHARAR_DRAFT)")
     p.add_argument("--traces", default=None, help="directory for opt-in request traces (default: SHARAR_TRACES; unset disables recording)")
     p.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: SHARAR_TRACES_MAX_MIB or 32768)")
     p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request, up to 262144 (default: SHARAR_MAX_CONTEXT, else the target profile's 32768)")
@@ -101,11 +101,11 @@ def run_engine(args, parser) -> int:
     if args.spec is None:
         env = cfg.spec
         args.spec = int(env) if env not in (None, "", "auto") else {"mtp": 3}.get(args.proposer, MAX_DEPTHS[args.proposer])
-    if args.draft_precision == 'fp8' and (not args.spec or args.proposer not in ('dspark', 'dflash2')):
+    if args.draft_precision == 'fp8' and (not args.spec or args.proposer != 'dflash2'):
         parser.error('--draft-precision fp8 requires an enabled parallel draft')
     traces = args.traces or cfg.traces
     draft_dir = args.draft or cfg.draft_dir
-    if draft_dir and (not args.spec or args.proposer not in ('dspark', 'dflash2')):
+    if draft_dir and (not args.spec or args.proposer != 'dflash2'):
         parser.error('--draft requires an enabled parallel draft')
     max_mib = args.traces_max_mib if args.traces_max_mib is not None else cfg.traces_max_mib
     if max_mib < 1:
@@ -141,7 +141,7 @@ def run_engine(args, parser) -> int:
         if family not in ("qwen38", "flashnext"):
             parser.error("tensor parallel serves the 27B and Flash-Next")
         if family == "qwen38" and args.spec and args.proposer == "mtp":
-            parser.error("the 27B serves tensor-parallel with the parallel drafts or n-gram speculation, not MTP")
+            parser.error("the 27B serves tensor-parallel with DFlash2, not MTP")
     # One configuration for the process: the environment with the command line applied (#44).
     engine_config.install(cfg.replace(spec=str(args.spec), traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
                                       target=target, max_context=max_context, accept_default=f"{accept_default[0]}:{accept_default[1]}",
@@ -230,7 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     d = p.add_mutually_exclusive_group()
     d.add_argument("--pinned", action="store_true", help="serve the publisher's draft even if a trained one was promoted")
     d.add_argument("--draft", default=None, help="serve this trained draft checkpoint directory")
-    p.add_argument("--proposer", choices=("mtp", "ngram", "dspark", "dflash2"), default=None, help=argparse.SUPPRESS)
+    p.add_argument("--proposer", choices=("mtp", "dflash2"), default=None, help=argparse.SUPPRESS)
     p.add_argument("--spec", type=int, default=None, help=argparse.SUPPRESS)
     p.add_argument("--draft-precision", choices=("bf16", "fp8"), default=None, help=argparse.SUPPRESS)
     p.add_argument("--spec-depths", default=None, help=argparse.SUPPRESS)

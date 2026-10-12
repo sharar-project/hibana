@@ -1,7 +1,7 @@
 """Draft heads: how a draft body turns its hidden rows into token choices (#45).
 
 Every speculator ends in a vocabulary projection: the MTP heads take the argmax,
-DFlash2's selector takes the top-k with values, DSpark takes full logits. The
+DFlash2's selector takes the top-k with values. The
 default is the target's own head (`TargetHead`), which is what every proposer
 used before this module existed. A `ShortlistHead` reads fewer bytes: a subset
 of the head's rows (a reduced draft vocabulary), a 3-bit copy of them, or both,

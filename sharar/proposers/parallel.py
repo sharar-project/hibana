@@ -1,4 +1,4 @@
-"""DSpark/DFlash2 adapters with bounded context KV and feature restoration.
+"""The DFlash2 adapter with bounded context KV and feature restoration.
 
 Target pages and recurrent state remain owned by StateManager. This adapter
 owns a fixed-size draft ring per active request. Cached projected features
@@ -90,7 +90,7 @@ class ParallelProposer:
         self.model, self.context, self.k, self.name = model, context, k, name
         self.feedback_graphs = None
         self._feedback_enabled = False
-        self.noise_steps = k if name == 'dspark' else k + 1
+        self.noise_steps = k + 1  # the anchor (the last committed token) and k draft positions
         self.window = model.window
         self.pitch = self.window + self.noise_steps
         self.free_slots = list(range(context.max_batch, 0, -1))
@@ -104,14 +104,14 @@ class ParallelProposer:
         self.features = torch.empty((context.max_batch + 1, self.window, model.hidden), dtype=torch.bfloat16, device=device)
         self.feature_cache = FeatureCache(context.max_batch * self.window * model.hidden * 2)
         self.requirements = ProposerRequirements(name, FeatureRequest(layers=model.features),
-                                                persistent_bytes=self.bytes, greedy_only=False, max_depth=15 if name == 'dflash2' else 7,
+                                                persistent_bytes=self.bytes, greedy_only=False, max_depth=15,
                                                 capabilities=Capabilities(device_feedback=True, reloadable=True, checkpoint_cache=True,
                                                                           cold_payload=True, trace_features=True))
         self.workspace = torch.empty(128 * 2**20, dtype=torch.uint8, device=device)
         self.attention = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self.workspace, 'NHD')
         from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
         self.planner = AttentionPlanner(AttentionGeometry(model.heads, model.kv_heads, model.head_dim,
-                                                          window_left=self.window - 1 if name == 'dflash2' else -1))
+                                                          window_left=self.window - 1))
         self.graphs = None
         self.cache_hits = self.cache_fallbacks = 0
 
@@ -256,17 +256,13 @@ class ParallelProposer:
             write.append(noise)
             histories.append(torch.cat([history, noise]))
         if graphs and self.graphs is not None:
-            hidden, candidates, scores, base_logits = self.graphs.run(tokens, positions, torch.cat(write), histories)
+            hidden, candidates, scores = self.graphs.run(tokens, positions, torch.cat(write), histories)
         else:
             self._plan(self.attention, histories, batch)
-            hidden = self.model.forward(tokens, positions, torch.cat(write), self.caches, self.attention)
-            if self.name == 'dflash2':
-                hidden = hidden[:, 1:]
-                candidates, scores = self.model.selector(hidden, inputs.tokens)
-            else:
-                base_logits = self.model.draft_head.logits(hidden.reshape(-1, self.model.hidden)).view(batch, self.k, -1)
+            hidden = self.model.forward(tokens, positions, torch.cat(write), self.caches, self.attention)[:, 1:]
+            candidates, scores = self.model.selector(hidden, inputs.tokens)
         sampled = any(not r.params.greedy for r in requests)
-        if self.name == 'dflash2' and not sampled:
+        if not sampled:
             from sharar.kernels.draft_selection import greedy_lattice
             return Proposal(greedy_lattice(candidates, scores))
         all_tokens, all_q = [], []
@@ -274,18 +270,12 @@ class ParallelProposer:
             # The lattice walk is sequential, but every step stays on the
             # device: indices are 1-element tensors used with index_select, so
             # no step converts a CUDA scalar to a Python int (a host sync).
-            previous = inputs.tokens[row:row + 1]
             local = torch.zeros(1, dtype=torch.int64, device=device)
             chosen, laws = [], []
             for j in range(self.k):
-                if self.name == 'dflash2':
-                    logits = scores[row, j].index_select(0, local)[0]
-                else:
-                    logits = self.model.markov(base_logits[row:row + 1, j], previous, hidden[row:row + 1, j])[0]
-                law = distribution(logits, req.params)
+                law = distribution(scores[row, j].index_select(0, local)[0], req.params)
                 index = law.argmax().reshape(1) if req.params.greedy else torch.multinomial(law, 1, generator=req.generator)
-                token = candidates[row, j].index_select(0, index)[0] if self.name == 'dflash2' else index[0]
-                previous = token.reshape(1)
+                token = candidates[row, j].index_select(0, index)[0]
                 local = index
                 chosen.append(token)
                 if sampled:
@@ -294,7 +284,7 @@ class ParallelProposer:
             if sampled:
                 all_q.append(torch.stack(laws))
         return Proposal(torch.stack(all_tokens), torch.stack(all_q) if sampled else None,
-                        candidates if sampled and self.name == 'dflash2' else None)
+                        candidates if sampled else None)
 
     def accepted_batch(self, requests, emitted, features):
         """Project committed rows together, then scatter into private rings.

@@ -119,8 +119,7 @@ def promoted_draft(runs: Path, proposer: str) -> Path | None:
         return None
     resolved = current.resolve()
     config = resolved / "config.json"
-    want = "DSparkDraftModel" if proposer == "dspark" else "DFlash2DraftModel"
-    if config.is_file() and (resolved / "model.safetensors").is_file() and f'"{want}"' in config.read_text():
+    if proposer == "dflash2" and config.is_file() and (resolved / "model.safetensors").is_file() and '"DFlash2DraftModel"' in config.read_text():
         return resolved
     return None
 
@@ -162,7 +161,7 @@ class Settings:
 
     @property
     def parallel_draft(self) -> bool:
-        return self.proposer in ("dflash2", "dspark") and self.spec > 0
+        return self.proposer == "dflash2" and self.spec > 0
 
     @property
     def w3_root(self) -> Path:
@@ -269,15 +268,14 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(values.get("SHARAR_TRACES_MAX_MIB", "32768").isdigit() and int(values.get("SHARAR_TRACES_MAX_MIB", "32768")) > 0,
            "SHARAR_TRACES_MAX_MIB must be a positive integer")
     precision, proposer, spec = values.get("SHARAR_DRAFT_PRECISION"), values["SHARAR_PROPOSER"], int(values.get("SHARAR_SPEC", "15"))
-    _check(precision != "fp8" or (spec and proposer in ("dflash2", "dspark")), "FP8 draft precision requires enabled DFlash2 or DSpark speculation")
+    _check(proposer in ("mtp", "dflash2"), f"SHARAR_PROPOSER must be mtp or dflash2 (got {proposer!r})")
+    _check(precision != "fp8" or (spec and proposer == "dflash2"), "FP8 draft precision requires enabled DFlash2 speculation")
     max_context = int(values.get("SHARAR_MAX_CONTEXT") or DEFAULT_CONTEXT)
     _check(2 <= max_context <= DEFAULT_CONTEXT, f"SHARAR_MAX_CONTEXT must be in [2, {DEFAULT_CONTEXT}]")
-    if proposer == "dspark" and spec and max_context > 32768:
-        raise ValueError(f"DSpark needs SHARAR_MAX_CONTEXT of at most 32768 (it keeps draft features for the whole context; got {max_context})")
     if tp > 1:
         _check(name in ("qwen38", "flashnext"), "tensor parallel serves the 27B and Flash-Next")
         _check(not (name == "qwen38" and spec and proposer == "mtp"),
-               "the 27B serves tensor-parallel with the parallel drafts or n-gram speculation, not MTP")
+               "the 27B serves tensor-parallel with DFlash2, not MTP")
         _check(values.get("SHARAR_DRAFT_VOCAB", "0") == "0", "a reduced draft vocabulary (SHARAR_DRAFT_VOCAB) is not served tensor-parallel")
 
     # the draft: pinned, a directory, or the promoted checkpoint when it is this proposer's architecture
@@ -287,8 +285,8 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
         draft_dir = path(draft_value).resolve()
         _check((draft_dir / "config.json").is_file() and (draft_dir / "model.safetensors").is_file(),
                f"SHARAR_DRAFT={draft_dir} needs config.json and model.safetensors")
-        _check(proposer in ("dflash2", "dspark") and spec > 0, "a trained draft requires an enabled parallel draft (DFlash2 or DSpark)")
-    elif not draft_value and proposer in ("dflash2", "dspark") and spec > 0:
+        _check(proposer == "dflash2" and spec > 0, "a trained draft requires enabled DFlash2 speculation")
+    elif not draft_value and proposer == "dflash2" and spec > 0:
         draft_dir = promoted_draft(path(values.get("SHARAR_DRAFT_RUNS") or results / "draft-runs"), proposer)
 
     trace_dir = None

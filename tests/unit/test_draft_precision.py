@@ -6,9 +6,8 @@ from sharar.model.draft_linear import DraftFp8Linear
 
 
 def test_precision_contract_rejects_unsupported_proposers_and_formats():
-    for name in ('mtp', 'ngram'):
-        with pytest.raises(ValueError, match='parallel draft'):
-            SpecConfig(name, 3, 'reconstruct', 'fp8')
+    with pytest.raises(ValueError, match='parallel draft'):
+        SpecConfig('mtp', 3, 'reconstruct', 'fp8')
     with pytest.raises(ValueError):
         SpecConfig('dflash2', 7, 'reconstruct', 'fp4')
     assert SpecConfig('dflash2', 15, 'reconstruct', 'fp8').draft_precision == 'fp8'

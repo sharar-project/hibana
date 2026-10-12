@@ -1,6 +1,6 @@
 """Exact speculative rejection, independent of draft architecture and kernels.
 
-q is the *realized conditional proposal law*, after selector/Markov corrections
+q is the *realized conditional proposal law*, after selector corrections
 and draft sampling transforms. It is never reconstructed from uncorrected logits.
 None denotes deterministic proposals (point masses at the proposed tokens).
 """

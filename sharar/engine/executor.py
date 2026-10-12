@@ -64,7 +64,7 @@ class Executor:
         future, extra_page = 2 * 2**30, 0
         if spec_config is not None:
             from sharar.cache.spec_budget import budget
-            future, extra_page = budget(spec_config, max_batch, max_context, cache_slots=num_slots or 96, target=self.target)
+            future, extra_page = budget(spec_config, max_batch, cache_slots=num_slots or 96, target=self.target)
         if num_pages is None or num_slots is None:
             plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future, extra_page_bytes=extra_page,
                                     state_bytes_per_slot=state_bytes)
@@ -146,7 +146,7 @@ class Executor:
             raise ValueError("enable speculation once, before graph capture")
         from sharar.cache.spec_budget import SpecConfig, budget
         from sharar.cache.ledger import check_load_headroom
-        fixed, per_page = budget(SpecConfig(proposer, k, state_strategy, draft_precision), self.max_batch, self.max_context,
+        fixed, per_page = budget(SpecConfig(proposer, k, state_strategy, draft_precision), self.max_batch,
                                  cache_slots=self.state_pool.num_slots, target=self.target)
         check_load_headroom(fixed + per_page * self.kv_pool.num_pages + 8 * 2**30)
         context = ProposerContext(self.device, self.max_batch, self.max_context)
@@ -345,8 +345,8 @@ class Executor:
 
     def reload_draft(self, draft_dir: str | None) -> str:
         """Copy a checkpoint (None = the pinned publisher draft) into the serving
-        draft between rounds; returns the served source. Only parallel drafts
-        (DSpark, DFlash2) hold a reloadable model."""
+        draft between rounds; returns the served source. Only the parallel draft
+        (DFlash2) holds a reloadable model."""
         if self.spec is None or not self.spec.proposer.requirements.capabilities.reloadable:
             raise ValueError("no reloadable draft is being served")
         from sharar.proposers.factory import draft_snapshot
