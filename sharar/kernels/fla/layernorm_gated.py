@@ -1,12 +1,8 @@
 # Adapt from https://github.com/fla-org/flash-linear-attention/blob/main/fla/modules/layernorm_gated.py
 # Copyright (c) 2024, Tri Dao.
 # Based on the Triton LayerNorm tutorial: https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
-# For the backward pass, we keep weight_grad and bias_grad in registers and accumulate.
-# This backward pass is faster for dimensions up to 8k, but after that it's much slower due to register spilling.
-# The models we train have hidden dim up to 8k anyway (e.g. Llama 70B), so this is fine.
+# Forward only (the gated RMS norm of the GDN layers), CUDA only.
 
-
-from contextlib import nullcontext
 from functools import lru_cache
 
 import torch
@@ -14,22 +10,7 @@ import triton
 import triton.language as tl
 
 from sharar.kernels import stable
-from sharar.kernels._compat import is_arch_support_pdl
-from sharar.kernels._compat import (
-    Backend,
-    Phase,
-    cdiv,
-    check_cuda_graph_backend,
-    cpu_has_amx_support,
-    device_context,
-    is_batch_invariant_mode_enabled,
-    is_cpu,
-    is_npu,
-    next_power_of_2,
-)
-
-_is_npu = is_npu()
-_use_cpu = is_cpu() and cpu_has_amx_support()
+from sharar.kernels._compat import cdiv, device_context, is_arch_support_pdl, next_power_of_2
 
 # Maximum rows per Triton block for layernorm gated kernel
 MAX_ROWS_PER_BLOCK = 4
@@ -150,18 +131,13 @@ def _layer_norm_fwd_1pass_kernel(
 @lru_cache
 def _get_sm_count(device: torch.device) -> int:
     """Get and cache the SM count for a given device."""
-    if device.type == "xpu":
-        assert torch.xpu.is_available(), "XPU device is not available"
-        return torch.xpu.get_device_properties(device).gpu_subslice_count
     props = torch.cuda.get_device_properties(device)
     return props.multi_processor_count
 
 
 def calc_rows_per_block(M: int, device: torch.device) -> int:
     # Use a constant value when the row count must not affect kernel numerics.
-    if stable.enabled() or is_batch_invariant_mode_enabled() or check_cuda_graph_backend(
-        Phase.PREFILL, Backend.TC_PIECEWISE
-    ):
+    if stable.enabled():
         return MAX_ROWS_PER_BLOCK
     sm_count = _get_sm_count(device)
     rows_per_block = next_power_of_2(cdiv(M, 2 * sm_count))
@@ -219,21 +195,7 @@ def _layer_norm_fwd(
     # Update grid to use rows_per_block
     grid = (cdiv(M, rows_per_block), ngroups)
     pdl_kwargs = {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
-    # Workaround for PyTorch <= 2.12: torch.xpu.device is not Dynamo-compatible
-    # in that release — it creates a DynamoConfigPatchProxy that
-    # SourcelessBuilder cannot wrap, causing a hard error under
-    # torch.compile(fullgraph=True).  The device context is a functional no-op
-    # for Triton kernel launches (device is determined by the tensor, not the
-    # surrounding context), so we simply skip it when Dynamo is tracing.
-    # PyTorch main already has the proper fix (XPUDeviceVariable registered in
-    # torch/_dynamo/variables/ctx_manager.py analogous to CUDADeviceVariable).
-    # TODO: remove this branch once we upgrade from PyTorch 2.12.
-    device_ctx = (
-        nullcontext()
-        if x.device.type == "xpu" and torch.compiler.is_compiling()
-        else device_context(x.device)
-    )
-    with device_ctx:
+    with device_context(x.device):
         _layer_norm_fwd_1pass_kernel[grid](
             x,
             out,
@@ -259,10 +221,6 @@ def _layer_norm_fwd(
             **pdl_kwargs,
         )
     return out, mean, rstd
-
-
-if _is_npu:
-    from sgl_kernel_npu.fla.layernorm_gated import layer_norm_fwd_npu as _layer_norm_fwd
 
 
 def rms_norm_gated(
@@ -292,8 +250,6 @@ def rms_norm_gated(
     weight = weight.contiguous()
     if bias is not None:
         bias = bias.contiguous()
-    if _is_npu:
-        assert activation == "swish", "NPU only supports swish activation"
     y, mean, rstd = _layer_norm_fwd(
         x,
         weight,
@@ -306,47 +262,3 @@ def rms_norm_gated(
         activation=activation,
     )
     return y.reshape(x_shape_og)
-
-
-class LayerNormFn(torch.autograd.Function):
-
-    @staticmethod
-    def forward(
-        ctx,
-        x,
-        weight,
-        bias,
-        z=None,
-        eps=1e-6,
-        group_size=None,
-        norm_before_gate=True,
-        is_rms_norm=False,
-        activation: str = "swish",
-    ):
-        return rms_norm_gated(
-            x=x,
-            weight=weight,
-            bias=bias,
-            eps=eps,
-            z=z,
-            group_size=group_size,
-            norm_before_gate=norm_before_gate,
-            is_rms_norm=is_rms_norm,
-            activation=activation,
-        )
-
-
-def layernorm_fn(
-    x,
-    weight,
-    bias,
-    z=None,
-    eps=1e-6,
-    group_size=None,
-    norm_before_gate=True,
-    is_rms_norm=False,
-    activation: str = "swish",
-):
-    return LayerNormFn.apply(
-        x, weight, bias, z, eps, group_size, norm_before_gate, is_rms_norm, activation
-    )
