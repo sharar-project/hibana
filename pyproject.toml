@@ -7,7 +7,7 @@ name = "sharar"
 version = "0.0.1"
 description = "Thin single-target inference engine: Qwen3.8-27B NVFP4 on one NVIDIA GB10"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = "==3.12.*"  # the tested interpreter: uv installs and uses a managed 3.12
 license = {file = "LICENSE"}
 # Exact CPU and GB10 environments are recorded in constraints/.
 dependencies = [
