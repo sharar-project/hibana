@@ -19,7 +19,7 @@ def test_feedback_graphs_match_eager_and_keep_inputs_alive():
         for cache in caches:
             rotate_and_cache(k, v, positions, cos, sin, cache, pages)
     def model():
-        return SimpleNamespace(features=layers, project_features=lambda f: f[1] + f[3], context_kv=context)
+        return SimpleNamespace(features=layers, project_features=lambda f: f[1] + f[3], context_kv=context, hidden=5120, feature_width=5120)
     def proposer():
         return SimpleNamespace(k=15, window=window, pitch=pitch, context=SimpleNamespace(device=torch.device('cuda')),
             model=model(), features=torch.zeros(5, window, 5120, dtype=torch.bfloat16, device='cuda'),

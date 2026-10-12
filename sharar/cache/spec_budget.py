@@ -87,8 +87,8 @@ def budget(spec, batch, context, *, cache_slots=96, target=None):
         # and two temporaries while gathering and replacing a retained window.
         # Automatic pool sizing caps recurrent slots at 96; explicit pools pass
         # their actual count before allocation. This is a prospective cap.
-        fixed += (batch + cache_slots + 2) * window * 5120 * 2
-        fixed += 5 * (batch + 1) * (window + spec.depth + 1) * 2 * 8 * 128 * 2
+        fixed += (batch + cache_slots + 2) * window * cfg['hidden_size'] * 2
+        fixed += cfg['num_hidden_layers'] * (batch + 1) * (window + spec.depth + 1) * 2 * cfg['num_key_value_heads'] * cfg['head_dim'] * 2
         fixed += weights + 2 * largest + 128 * 2**20
     # Graph/workspace growth and allocator slack kept separate from live tensors.
     fixed += 2 * GIB

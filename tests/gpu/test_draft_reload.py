@@ -32,7 +32,7 @@ def test_reload_of_the_same_snapshot_is_bit_identical(precision):
     from sharar.model.parallel_draft import ParallelDraftModel
     from sharar.proposers.factory import draft_snapshot
     snapshot = draft_snapshot("dflash2")
-    model = ParallelDraftModel(snapshot, SimpleNamespace(device=torch.device("cuda")), 4096, precision=precision)
+    model = ParallelDraftModel(snapshot, SimpleNamespace(device=torch.device("cuda"), embed=torch.empty(1, 5120)), 4096, precision=precision)
     before = _bits(model)
     pointers = _pointers(model)
     # perturb a trainable weight so the reload has something to restore

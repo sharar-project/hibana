@@ -139,7 +139,8 @@ def test_prospective_budget_accounts_for_each_recurrent_feature_window(monkeypat
     name, revision = PINS['dflash2']
     draft = tmp_path / ('models--' + name.replace('/', '--')) / 'snapshots' / revision
     draft.mkdir(parents=True)
-    (draft / 'config.json').write_text(json.dumps({'sliding_window': 2048}))
+    (draft / 'config.json').write_text(json.dumps({'sliding_window': 2048, 'hidden_size': 5120, 'num_hidden_layers': 5,
+                                                  'num_key_value_heads': 8, 'head_dim': 128}))
     monkeypatch.setattr(Target, 'snapshot_dir', lambda self, cache_dir=None: snapshot)  # no model cache needed
     monkeypatch.setattr(spec_budget, 'tensor_bytes', lambda *args: (128, 64))
     spec = spec_budget.SpecConfig('dflash2', 15, 'reconstruct', 'fp8')

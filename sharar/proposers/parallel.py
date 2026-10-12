@@ -98,10 +98,11 @@ class ParallelProposer:
         self.cache_identity = (served.model_revision, *PINS[name], model.features, 'projected-bf16-kv-v1', self.window,
                                getattr(model, 'source', None))
         device = context.device
-        shape = ((context.max_batch + 1) * self.pitch, 1, 8, 128)
-        self.caches = [(torch.empty(shape, dtype=torch.bfloat16, device=device), torch.empty(shape, dtype=torch.bfloat16, device=device)) for _ in range(5)]
-        self.features = torch.empty((context.max_batch + 1, self.window, 5120), dtype=torch.bfloat16, device=device)
-        self.feature_cache = FeatureCache(context.max_batch * self.window * 5120 * 2)
+        shape = ((context.max_batch + 1) * self.pitch, 1, model.kv_heads, model.head_dim)
+        self.caches = [(torch.empty(shape, dtype=torch.bfloat16, device=device), torch.empty(shape, dtype=torch.bfloat16, device=device))
+                       for _ in range(model.layers)]
+        self.features = torch.empty((context.max_batch + 1, self.window, model.hidden), dtype=torch.bfloat16, device=device)
+        self.feature_cache = FeatureCache(context.max_batch * self.window * model.hidden * 2)
         self.requirements = ProposerRequirements(name, FeatureRequest(layers=model.features),
                                                 persistent_bytes=self.bytes, greedy_only=False, max_depth=15 if name == 'dflash2' else 7,
                                                 capabilities=Capabilities(device_feedback=True, reloadable=True, checkpoint_cache=True,
@@ -109,7 +110,8 @@ class ParallelProposer:
         self.workspace = torch.empty(128 * 2**20, dtype=torch.uint8, device=device)
         self.attention = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self.workspace, 'NHD')
         from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
-        self.planner = AttentionPlanner(AttentionGeometry(32, 8, 128, window_left=self.window - 1 if name == 'dflash2' else -1))
+        self.planner = AttentionPlanner(AttentionGeometry(model.heads, model.kv_heads, model.head_dim,
+                                                          window_left=self.window - 1 if name == 'dflash2' else -1))
         self.graphs = None
         self.cache_hits = self.cache_fallbacks = 0
 
@@ -121,7 +123,7 @@ class ParallelProposer:
     def bind_checkpoint_cache(self, pool):
         if self.feature_cache.entries:
             raise ValueError('bind checkpoint retention before serving requests')
-        self.feature_cache = CheckpointFeatureCache(pool, self.window * 5120 * 2)
+        self.feature_cache = CheckpointFeatureCache(pool, self.window * self.model.hidden * 2)
         self.requirements = replace(self.requirements, persistent_bytes=self.bytes)
 
     @property
@@ -262,7 +264,7 @@ class ParallelProposer:
                 hidden = hidden[:, 1:]
                 candidates, scores = self.model.selector(hidden, inputs.tokens)
             else:
-                base_logits = self.model.draft_head.logits(hidden.reshape(-1, 5120)).view(batch, self.k, -1)
+                base_logits = self.model.draft_head.logits(hidden.reshape(-1, self.model.hidden)).view(batch, self.k, -1)
         sampled = any(not r.params.greedy for r in requests)
         if self.name == 'dflash2' and not sampled:
             from sharar.kernels.draft_selection import greedy_lattice

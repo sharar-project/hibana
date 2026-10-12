@@ -50,7 +50,7 @@ def test_selector_lattice_conditions_on_anchor_then_previous_candidate():
                'candidate_selector.successor_codebook': torch.randn(32, 4)}
     from sharar.proposers.draft_head import TargetHead
     model = SimpleNamespace(target=SimpleNamespace(logits=lambda x: logits), draft_head=TargetHead(lambda x: logits), weights=weights,
-                            cfg={'dflash_config': {'selector_top_k': 4}})
+                            cfg={'dflash_config': {'selector_top_k': 4}}, hidden=hidden.shape[-1])
     anchor = torch.tensor([2, 9])
     candidates, scores = ParallelDraftModel.selector(model, hidden, anchor)
     gate = hidden @ weights['candidate_selector.hidden_projection.weight'].T
