@@ -130,7 +130,8 @@ def test_verdict_rules():
     assert gate.verdict(lossy, _l2(1.2, 1.1, 1.3), None, None)[0] == "undecided"
     assert gate.verdict(lossy, _l2(1.2, 1.1, 1.3), _l3(2, 14), "screen")[0] == "rejected"
     assert gate.verdict(lossy, _l2(1.2, 1.1, 1.3), _l3(6, 8), "screen")[0] == "fast"
-    assert gate.verdict(lossy, _l2(1.2, 1.1, 1.3), _l3(6, 8, n=3000), "full")[0] == "balanced"
+    v, why = gate.verdict(lossy, _l2(1.2, 1.1, 1.3), _l3(6, 8, n=3000), "full")
+    assert v == "fast" and "non-inferior at 1.0 pp" in why[0]
     assert gate.screen_is_close(_l3(6, 8))
     assert not gate.screen_is_close(_l3(2, 14))
 

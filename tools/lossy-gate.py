@@ -46,9 +46,9 @@ Verdict rules (also in CONTRIBUTING.md, "Judge a lossy option"). Intervals are 9
             with --battery this includes MMLU-Pro, GPQA, IFEval and each RULER v2 length (paired sign
             test), while WMT24++ chrF++ is reported and decides nothing); pooled accuracy delta below -2.0 points. Pooled is the
             stage's tasks only.
-  balanced  not rejected, the full stage ran, pooled delta interval lower bound >= -1.0 point and
-            every task's delta >= -1.0 point.
-  fast      not rejected otherwise (the loss is not significant and at most 2.0 points).
+  fast      not rejected otherwise (the loss is not significant and at most 2.0 points). The reasons
+            say when the full stage also holds the loss within 1.0 point (pooled interval lower bound
+            >= -1.0 and every task's delta >= -1.0).
 The screen escalates to the full stage (--through auto) unless it rejects the candidate or its
 pooled interval already excludes a loss of more than 1.0 point. Layer 1 decides nothing beyond
 `exact`; it locates the damage (which domain) and is the cheap early warning.
@@ -105,7 +105,7 @@ STAGES = {"screen": ("quick", ["gsm8k", "humaneval", "mgsm-pl24", "needles"]), "
           "agentic": ("agentic", ["tbench"])}
 BATTERIES = {"quick": [], "hard": ["hard"], "long": ["long"], "agentic": ["agentic"], "all": ["hard", "long"]}
 AGENTIC_HOLD_MINUTES = 36 * 60  # one window: a Terminal-Bench task cut off by a window restarts from scratch
-BALANCED_MARGIN, FAST_MARGIN = 1.0, 2.0  # accuracy points
+TIGHT_MARGIN, FAST_MARGIN = 1.0, 2.0  # accuracy points: the tighter one is reported and sets the screen escalation
 # Layer-2 speed resolution (Flash-Next, 2026-09-27): a warm baseline repeat reads x1.035 and a second exact
 # process x0.986, so a gain must clear 3.5% to be told from the instrument's own noise.
 SPEED_NOISE = 0.035
@@ -509,18 +509,16 @@ def verdict(l1: dict | None, l2: dict | None, l3: dict | None, stage: str | None
         bad.append(f"pooled loss {pooled['delta']:+.1f} pp exceeds {FAST_MARGIN} pp")
     if bad:
         return "rejected", ["significantly worse: " + "; ".join(bad)]
-    if stage == "full" and pooled["ci95"][0] >= -BALANCED_MARGIN and all(r["delta"] >= -BALANCED_MARGIN for r in binary(l3).values()):
-        return "balanced", [f"full battery non-inferior at {BALANCED_MARGIN} pp: pooled {pooled['delta']:+.1f} pp {fmt_ci(pooled['ci95'])}"]
+    if stage == "full" and pooled["ci95"][0] >= -TIGHT_MARGIN and all(r["delta"] >= -TIGHT_MARGIN for r in binary(l3).values()):
+        return "fast", [f"full battery non-inferior at {TIGHT_MARGIN} pp: pooled {pooled['delta']:+.1f} pp {fmt_ci(pooled['ci95'])}"]
     why.append(f"loss not significant: pooled {pooled['delta']:+.1f} pp {fmt_ci(pooled['ci95'])}, p {pooled['p']:.2f}")
-    if stage != "full":
-        why.append("balanced needs the full stage")
     return "fast", why
 
 
 def screen_is_close(l3: dict) -> bool:
-    """Escalate to the full sets unless the screen rejects or already excludes a loss beyond the balanced margin."""
+    """Escalate to the full sets unless the screen rejects or already excludes a loss beyond the tight margin."""
     v, _ = verdict(None, None, l3, "screen")
-    return v != "rejected" and l3["pooled"]["ci95"][0] < -BALANCED_MARGIN
+    return v != "rejected" and l3["pooled"]["ci95"][0] < -TIGHT_MARGIN
 
 
 def fmt_ci(ci) -> str:

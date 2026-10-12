@@ -32,7 +32,7 @@ uv run sharar launch claude   # Claude Code on the model (also opencode, aider; 
 |---|---|
 | `sharar serve 27b` / `sharar serve flashnext` | Serve a model in the foreground (Flash-Next on port 30004) |
 | `sharar serve 27b --detach` | The same as a background service; `sharar stop`, `sharar logs -f` |
-| `sharar serve 27b --exact` | The model's own outputs, for benchmarks (the default `fast` profile is faster and slightly lossy; also `--balanced`, `--throughput`) |
+| `sharar serve 27b --exact` | The model's own outputs, for benchmarks (the default `fast` profile is faster and slightly lossy; also `--throughput`) |
 | `sharar serve 27b --tp 2` | Tensor-parallel on two Sparks linked by their ConnectX ports ([tensor parallel](docs/tensor-parallel.md)) |
 | `sharar status` | What is serving, with which settings |
 | `sharar chat`, `sharar launch claude\|opencode\|aider\|show` | Use the serving model |
