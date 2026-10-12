@@ -13,8 +13,6 @@ from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 
 
 class FlashNextGdn(GatedDeltaNet):
-    fused_window_norm = False  # the window kernel's epilogue is the 27B's swish gate; `_finish` applies the sigmoid one
-
     def __init__(self, w, prefix: str, layer_id: int, device: torch.device, target, precision: str):  # noqa: D107
         self.layer_id = layer_id
         self.device = device
@@ -64,6 +62,14 @@ class FlashNextGdn(GatedDeltaNet):
             z = self.in_z(x)
         b, a = self._project_ba(x)
         return mixed_qkv, z, b, a
+
+    def _window_norm(self, z):
+        """The window kernel's epilogue: the gated RMS norm with this model's gate, in BF16 (the out projection quantizes
+        its own input)."""
+        return (z.reshape(-1, self.value_dim), self.norm_weight, self.eps, None, self.gate_activation)
+
+    def _window_out(self, out, z, t, *, verify=False):
+        return self.out(out)
 
     def _finish(self, core: torch.Tensor, z: torch.Tensor, t: int, *, verify: bool = False) -> torch.Tensor:
         core = rms_norm_gated(

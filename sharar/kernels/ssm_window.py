@@ -11,8 +11,9 @@ act on it:
   in the chunked delta-rule form: one 16-row triangular solve and a few small products instead of a serial loop
   over the tokens. It writes the outputs and one record per token (normalized key, correction u, log decay) into
   the round's ring and never writes the slot. One program owns a value head of a sequence and streams the
-  residual through shared memory in K chunks. Optionally it ends with the layer's gated RMS norm and the out
-  projection's FP8 input quantization, so the core output never round-trips through memory.
+  residual through shared memory in K chunks. Optionally it ends with the layer's gated RMS norm (the 27B's swish
+  gate or Flash-Next's sigmoid one) and, for an FP8 out projection, its input quantization, so the core output never
+  round-trips through memory.
 - `window_commit`: appends a row's first `count` ring records to its slot's window or, when the window would fill,
   folds the boundary and every record into the new state, refits the compensators by power iteration, smooths
   the key columns and quantizes once. One program owns one value head of one layer and slot.
@@ -185,13 +186,13 @@ def _verify_kernel(q, k, v, a, b, A_log, dt_bias, o, gate, norm_w, out_scale,
                    H: tl.constexpr, HV: tl.constexpr, K: tl.constexpr, V: tl.constexpr, BKC: tl.constexpr,
                    BT: tl.constexpr, P: tl.constexpr, R: tl.constexpr, BJ: tl.constexpr, RS: tl.constexpr,
                    BITS: tl.constexpr, PREC: tl.constexpr, LOG_BT: tl.constexpr, FUSED: tl.constexpr,
-                   STAGES: tl.constexpr):
+                   SIGMOID_GATE: tl.constexpr, QUANT: tl.constexpr, STAGES: tl.constexpr):
     """One value head of one sequence, all V columns. The integer residual streams through shared memory in K chunks
     (software-pipelined, so its loads overlap the products) into Q S and K S accumulators that hold whole rows; the
     kernel forms the rest of the block after the stream.
 
-    FUSED: the epilogue is the layer's gated RMS norm and the out projection's FP8 input quantization, and o is the
-    out projection's FP8 input [tokens, HV * V]."""
+    FUSED: the epilogue is the layer's gated RMS norm (gate z * sigmoid(z), or sigmoid(z) with SIGMOID_GATE) and o is
+    the out projection's input [tokens, HV * V]: FP8 with QUANT (the projection's input quantization), else BF16."""
     hv, i_n = tl.program_id(0), tl.program_id(1)
     i_h = hv // (HV // H)
     slot = tl.load(slots + i_n).to(tl.int64)
@@ -279,13 +280,21 @@ def _verify_kernel(q, k, v, a, b, A_log, dt_bias, o, gate, norm_w, out_scale,
     out = eg[:, None] * qs + tl.dot(tl.where(lower | (o_t[:, None] == o_t[None, :]), decay * qk, 0.), u, input_precision=PREC)
     tl.store(ring_u + (i_n * HV + hv) * RS * V + o_t[:, None] * V + o_v[None, :], u.to(tl.float16), mask=mt[:, None])
     if FUSED:
-        # The gated RMS norm of the BF16 core (verify_gated_norm, with FP32 scalars), then quant_fp8 of its BF16 result.
+        # The gated RMS norm of the BF16 core (verify_gated_norm, or rms_norm_gated's sigmoid gate, with FP32 scalars),
+        # then with QUANT quant_fp8 of its BF16 result.
         xo = out.to(tl.bfloat16).to(tl.float32)
         zg = tl.load(gate + tok[:, None] * stride_gate + hv * V + o_v[None, :], mask=mt[:, None], other=0.).to(tl.float32)
         rstd = tl.rsqrt(tl.sum(xo * xo, 1) / V + eps)
-        y = xo * rstd[:, None] * tl.load(norm_w + o_v).to(tl.float32)[None, :] * (zg * tl.sigmoid(zg))
-        yq = tl.minimum(tl.maximum(y.to(tl.bfloat16).to(tl.float32) / tl.load(out_scale), -448.), 448.)
-        tl.store(o + tok[:, None] * stride_o + hv * V + o_v[None, :], yq.to(tl.float8e4nv), mask=mt[:, None])
+        y = xo * rstd[:, None] * tl.load(norm_w + o_v).to(tl.float32)[None, :]
+        if SIGMOID_GATE:
+            y *= tl.sigmoid(zg)
+        else:
+            y *= zg * tl.sigmoid(zg)
+        if QUANT:
+            yq = tl.minimum(tl.maximum(y.to(tl.bfloat16).to(tl.float32) / tl.load(out_scale), -448.), 448.)
+            tl.store(o + tok[:, None] * stride_o + hv * V + o_v[None, :], yq.to(tl.float8e4nv), mask=mt[:, None])
+        else:
+            tl.store(o + tok[:, None] * stride_o + hv * V + o_v[None, :], y.to(tl.bfloat16), mask=mt[:, None])
     else:
         tl.store(o + tok[:, None] * stride_o + hv * V + o_v[None, :], out.to(o.dtype.element_ty), mask=mt[:, None])
 
@@ -399,8 +408,9 @@ def window_verify(layout: WindowLayout, views: dict[str, torch.Tensor], q, k, v,
     views: this layer's region views ([slots, ...] each). q/k [1, N*steps, H, K] and v [1, N*steps, HV, V] may be
     token-strided views of the convolution output; a/b [N*steps, HV] gate inputs. ring_* [>=N, heads, >=steps, ...]
     receive the records. Returns the core output [1, N*steps, HV, V] in q's dtype, or with norm = (gate [N*steps,
-    HV*V], weight [V], eps, FP8 input scale) the out projection's FP8 input [N*steps, HV*V]: the gated RMS norm and
-    quantization of `verify_gated_norm` and `quant_fp8` applied to that output."""
+    HV*V], weight [V], eps, FP8 input scale or None, gate activation "swish" or "sigmoid") the out projection's input
+    [N*steps, HV*V]: the gated RMS norm of `verify_gated_norm` (swish) or `rms_norm_gated` (sigmoid) applied to that
+    output, then `quant_fp8` with a scale (FP8), else BF16."""
     tokens, h, kd = q.shape[1], q.shape[2], q.shape[3]
     hv, vd = v.shape[2], v.shape[3]
     n = slots.numel()
@@ -413,12 +423,17 @@ def window_verify(layout: WindowLayout, views: dict[str, torch.Tensor], q, k, v,
     bt = _tile(steps)
     fused = norm is not None
     if fused:
-        gate, norm_w, eps, out_scale = norm
+        gate, norm_w, eps, out_scale, activation = norm
         if gate.shape != (tokens, hv * vd) or gate.stride(-1) != 1:
             raise ValueError("window verify: the norm gate must be [tokens, HV * V] with unit column stride")
-        o = torch.empty((tokens, hv * vd), dtype=torch.float8_e4m3fn, device=q.device)
+        if activation not in ("swish", "sigmoid"):
+            raise ValueError(f"window verify: no fused {activation!r} gate (swish or sigmoid)")
+        quant = out_scale is not None
+        o = torch.empty((tokens, hv * vd), dtype=torch.float8_e4m3fn if quant else torch.bfloat16, device=q.device)
+        if not quant:
+            out_scale = gate
     else:
-        gate, norm_w, eps, out_scale = q, q, 0., q
+        gate, norm_w, eps, out_scale, activation, quant = q, q, 0., q, "swish", False
         o = q.new_empty(1, tokens, hv, vd)
     _verify_kernel[(hv, n)](
         q, k, v, a, b, A_log, dt_bias, o, gate, norm_w, out_scale, *_parts(views), slots, ring_k, ring_u, ring_g,
@@ -426,6 +441,7 @@ def window_verify(layout: WindowLayout, views: dict[str, torch.Tensor], q, k, v,
         gate.stride(0) if fused else 0, hv * vd, kd ** -0.5, eps, steps,
         H=h, HV=hv, K=kd, V=vd, BKC=VERIFY_BKC, BT=bt, P=layout.window, LOG_BT=bt.bit_length() - 1, R=layout.rank,
         BJ=_tile(layout.window + layout.rank), RS=ring_u.shape[2], BITS=layout.bits, PREC=PREC, FUSED=fused,
+        SIGMOID_GATE=activation == "sigmoid", QUANT=quant,
         STAGES=VERIFY_STAGES, num_warps=VERIFY_WARPS, num_stages=VERIFY_STAGES,
     )
     return o

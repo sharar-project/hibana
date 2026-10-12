@@ -236,7 +236,7 @@ class GatedDeltaNet:
 
     def _window_norm(self, z):
         """The window kernel's epilogue: this layer's gated RMS norm and the out projection's input quantization."""
-        return (z, self.norm_weight, self.eps, self.out.input_scale) if self.fused_window_norm else None
+        return (z, self.norm_weight, self.eps, self.out.input_scale, "swish") if self.fused_window_norm else None
 
     def _window_out(self, out, z, t, *, verify=False):
         """The layer output from the window kernel's: the out projection of its FP8 input, or `_finish` of its core output."""

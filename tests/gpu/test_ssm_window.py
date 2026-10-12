@@ -143,12 +143,42 @@ def test_fused_norm_epilogue_matches_the_separate_kernels(steps, bits):
     want = quant_fp8(verify_gated_norm(core.reshape(tokens, -1).contiguous(), gate, weight, 1e-6, lay.v), out_scale)
     rk2, ru2, rg2 = _ring(batch, 16)
     got = W.window_verify(lay, views, slots=slots, steps=steps, ring_k=rk2, ring_u=ru2, ring_g=rg2,
-                          norm=(gate, weight, 1e-6, out_scale), **ins)
+                          norm=(gate, weight, 1e-6, out_scale, "swish"), **ins)
     assert got.dtype == torch.float8_e4m3fn and got.shape == want.shape
     assert torch.equal(ru2, ru) and torch.equal(rk2, rk) and torch.equal(rg2, rg)  # the same records
     # Only the norm's scalars differ (FP32 here, FP64 there): at most one FP8 step, and rarely.
     got, want = got.float(), want.float()
     step = torch.maximum(want.abs(), got.abs()) / 8 + 2 ** -9
+    assert ((got - want).abs() <= step).all()
+    assert (got != want).float().mean() < 0.01
+
+
+@pytest.mark.parametrize("steps", [1, 5, 16])
+def test_fused_sigmoid_norm_epilogue_matches_the_separate_kernel(steps):
+    """Flash-Next's epilogue: the sigmoid-gated RMS norm of `rms_norm_gated`, in BF16 (its out projection quantizes)."""
+    from sharar.kernels.fla.layernorm_gated import rms_norm_gated
+    lay, raw, pool = _pool()
+    views = pool.layer[0]
+    batch = 3
+    slots = torch.tensor([2, 5, 1], dtype=torch.int32, device="cuda")
+    W.quantize(lay, views, _state(batch), slots)
+    ins = _inputs(batch * steps)
+    tokens = batch * steps
+    g = torch.Generator(device="cuda").manual_seed(5)
+    gate = torch.randn((tokens, lay.value_heads * lay.v), device="cuda", generator=g).to(torch.bfloat16)
+    weight = (1 + 0.1 * torch.randn(lay.v, device="cuda", generator=g)).to(torch.bfloat16).repeat(lay.value_heads)
+    rk, ru, rg = _ring(batch, 16)
+    core = W.window_verify(lay, views, slots=slots, steps=steps, ring_k=rk, ring_u=ru, ring_g=rg, **ins)
+    want = rms_norm_gated(x=core.reshape(tokens, -1), weight=weight, bias=None, z=gate, eps=1e-6, group_size=lay.v,
+                          norm_before_gate=True, is_rms_norm=True, activation="sigmoid")
+    rk2, ru2, rg2 = _ring(batch, 16)
+    got = W.window_verify(lay, views, slots=slots, steps=steps, ring_k=rk2, ring_u=ru2, ring_g=rg2,
+                          norm=(gate, weight, 1e-6, None, "sigmoid"), **ins)
+    assert got.dtype == torch.bfloat16 and got.shape == want.shape
+    assert torch.equal(ru2, ru) and torch.equal(rk2, rk) and torch.equal(rg2, rg)  # the same records
+    # Only the order of the variance sum may differ: at most one BF16 step, and rarely.
+    got, want = got.float(), want.float()
+    step = torch.maximum(want.abs(), got.abs()) / 128 + 2 ** -126
     assert ((got - want).abs() <= step).all()
     assert (got != want).float().mean() < 0.01
 
