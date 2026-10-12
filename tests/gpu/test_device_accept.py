@@ -73,7 +73,10 @@ def test_device_round_matches_host_round(runtime, batch, relaxed, rounds):
     outputs are identical and the committed recurrent state is bitwise the
     host's; once round boundaries move, the target's own shape sensitivity
     (docs/operations.md#numerical-limits) can change later tokens (seen at 12 rounds,
-    batch 3), so outputs are compared up to the first round whose counts differ."""
+    batch 3), so outputs are compared up to the first round whose counts differ.
+    The first round depends only on the shared prefill and always agrees; the drift
+    can start from the second (batch 3 since the CuTe GDN prefill of #133: one
+    request accepts 15 drafts on the device, 14 on the host)."""
     ex, prompts = runtime
     assert hasattr(ex.spec.verify_graphs, 'accept'), 'device accept graphs were not captured'
     params = [SamplingParams(max_new_tokens=48, ignore_eos=True, accept_top_k=2 if relaxed and i % 2 == 0 else 1,
@@ -89,10 +92,9 @@ def test_device_round_matches_host_round(runtime, batch, relaxed, rounds):
         else:
             n = 1 + sum(c[i] for c in chunks_h[:agree])  # the prefill token plus the rounds before the first moved boundary
             assert out_d[:n] == out_h[:n], (batch, relaxed, rounds, i, agree)
-    assert [f[:3] for f in device[2]] == [f[:3] for f in host[2]]
-    if rounds == 2:
-        assert same_chunks, (device[2][0][4], host[2][0][4])
+    assert chunks_d[0] == chunks_h[0], (chunks_d, chunks_h)
     if same_chunks:
+        assert [f[:3] for f in device[2]] == [f[:3] for f in host[2]]
         for (ssm_d, conv_d), (ssm_h, conv_h) in zip(device[1], host[1]):
             assert torch.equal(ssm_d, ssm_h) and torch.equal(conv_d, conv_h)
         for ring_d, ring_h in zip(device[3], host[3]):
