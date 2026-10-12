@@ -35,7 +35,7 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
                 from sharar.model.flashnext.mtp import FlashNextMtpHead
                 head = FlashNextMtpHead(w, context.device, model, num_pages, padding_rows=padding_rows)
             else:
-                head = MtpHead(w, context.device, model.embed, model.lm_head, model.rope, num_pages, padding_rows=padding_rows)
+                head = MtpHead(w, context.device, model, num_pages, padding_rows=padding_rows)
         finally:
             w.close()
         head.target = getattr(model, "full_target", model.target)  # a tensor-parallel draft is whole on every rank
