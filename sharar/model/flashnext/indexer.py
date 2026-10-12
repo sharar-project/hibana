@@ -11,7 +11,7 @@ sees the (p + 1) // 4 complete groups; past 512 of them it scores each group
 as relu(q . k) summed over the heads / sqrt(128), keeps the top 512 and adds
 its own pending tail, which is at most 2,051 tokens. The semantics are
 SGLang's `qsa` package (checked in `tests/unit/test_qsa_reference.py` and
-against the reference forward); the attention itself is `kernels/qsa.py`.
+`tests/gpu/test_qsa.py`); the attention itself is `kernels/qsa.py`.
 
 Keys are maintained on every forward; selection runs only when some row is
 past the budget, otherwise attention stays the dense path it is equal to.

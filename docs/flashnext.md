@@ -27,8 +27,8 @@ stays on the NVMe as memory maps.
 | File | Role |
 |---|---|
 | `config.py` | pinned revision and geometry; `sharar/target.py` builds `FLASHNEXT` from it |
-| `reference.py` | plain-torch prefill used as the parity reference |
-| `hyper.py` | hyper-connection mix/combine and the grouped Gemma norm (shared with the reference) |
+| `reference.py` | plain-torch Gemma norm, NeoX RoPE and QSA token mask (the indexer and the QSA tests) |
+| `hyper.py` | hyper-connection mix/combine and the grouped Gemma norm |
 | `linear.py` | `TrunkLinear`: FP8 at load (`SHARAR_FLASHNEXT_TRUNK=bf16` for parity) with its 3-bit copy |
 | `gdn.py`, `attention.py` | the 27B modules with these projections and the sigmoid gate; attention runs the indexer |
 | `indexer.py` | sparse-attention indexer: index keys in page aux rows, group compression, top-512 selection |

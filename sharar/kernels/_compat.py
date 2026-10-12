@@ -21,35 +21,6 @@ def is_arch_support_pdl() -> bool:
 torch_release = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2])
 
 
-def is_cpu() -> bool:
-    return False
-
-
-def is_npu() -> bool:
-    return False
-
-
-def cpu_has_amx_support() -> bool:
-    return False
-
-
-def is_batch_invariant_mode_enabled() -> bool:
-    return False
-
-
-def check_cuda_graph_backend(*_args, **_kwargs) -> bool:
-    return False
-
-
-class Backend:  # placeholders for the signature of check_cuda_graph_backend
-    TC_PIECEWISE = "tc_piecewise"
-
-
-class Phase:
-    PREFILL = "prefill"
-    DECODE = "decode"
-
-
 def cdiv(a: int, b: int) -> int:
     return (a + b - 1) // b
 
