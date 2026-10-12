@@ -147,7 +147,10 @@ class Pair:
             # A terminal for rank 1 (-tt): it gets SIGHUP and exits when its ssh ends, which ends with this process.
             self.rank1 = subprocess.Popen(["ssh", "-tt", self.peer, remote], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                           stderr=subprocess.STDOUT, text=True, errors="replace")
-            self.rank0 = subprocess.Popen(self.command(0), env={**os.environ, **self.env}, cwd=CHECKOUT)
+            # The engine's settings are exactly the resolved ones (`rank_env`), as on one Spark (`run.install_env`): none of
+            # the caller's SHARAR_* settings, e.g. SHARAR_TRACES=off, which the engine would read as a trace directory.
+            base = {k: v for k, v in os.environ.items() if not k.startswith("SHARAR_")}
+            self.rank0 = subprocess.Popen(self.command(0), env={**base, **self.env}, cwd=CHECKOUT)
         finally:
             signal.signal(signal.SIGINT, previous)
         threading.Thread(target=self._relay, args=(self.rank1.stdout, self.show_rank1), daemon=True).start()

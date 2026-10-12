@@ -252,3 +252,22 @@ def test_no_launcher_scripts_left():
     for name in ("sharar-ctl", "sharar-tp", "run-sharar.sh", "run-sharar-train.sh"):
         assert not (ROOT / name).exists()
     assert sorted(p.name for p in (ROOT / "tools").glob("*.sh")) == ["check.sh"]
+
+
+def test_rank0_gets_the_resolved_settings_not_the_callers(monkeypatch):
+    """SHARAR_TRACES=off in the caller's environment must not reach rank 0, which would read it as a trace directory."""
+    from sharar.launch import tp
+    started = []
+
+    class FakePopen:
+        def __init__(self, cmd, env=None, **kw):
+            started.append((cmd, env))
+            self.stdout = iter(())
+
+    monkeypatch.setattr(tp.subprocess, "Popen", FakePopen)
+    monkeypatch.setenv("SHARAR_TRACES", "off")
+    monkeypatch.setenv("SHARAR_SPEC", "9")
+    monkeypatch.setenv("HOME_MARKER", "kept")
+    tp.Pair("peer-host", {"SHARAR_SPEC": "4", "SHARAR_TARGET": "qwen38"}, "sharar", ["engine"]).start()
+    (_, rank1_env), (_, rank0_env) = started
+    assert "SHARAR_TRACES" not in rank0_env and rank0_env["SHARAR_SPEC"] == "4" and rank0_env["HOME_MARKER"] == "kept"
