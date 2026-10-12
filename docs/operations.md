@@ -48,7 +48,7 @@ same) and results, traces, sessions, drafter runs, 3-bit checkpoints and logs in
 | Setting | Launcher default | Override |
 |---|---|---|
 | Target | the one named on `serve` (`27b` or `flashnext`) | `SHARAR_TARGET`; Flash-Next reads its model from `SHARAR_FLASHNEXT_CACHE` and takes `SHARAR_FLASHNEXT_TRUNK=fp8\|bf16` |
-| Serving profile | `fast` | `sharar serve --exact\|--balanced\|--fast\|--throughput` or `SHARAR_PROFILE` ([below](#serving-profiles)) |
+| Serving profile | `fast` | `sharar serve --exact\|--fast\|--throughput` or `SHARAR_PROFILE` ([below](#serving-profiles)) |
 | Proposer / draft proposals | 27B: DFlash2, 15 (16 verify rows); Flash-Next: MTP, 4 | `SHARAR_PROPOSER`, `SHARAR_SPEC` (0 = plain decode) |
 | Draft precision | FP8 | `SHARAR_DRAFT_PRECISION=bf16` for the publisher's precision |
 | Draft checkpoint | `draft-runs/current` when promoted, else pinned | `sharar serve --draft DIR` or `--pinned`; `SHARAR_DRAFT=/dir\|pinned` |
@@ -72,13 +72,13 @@ A profile sets the default of every speed/fidelity knob (`profile_defaults` in
 [sharar/launch/settings.py](../sharar/launch/settings.py)); a knob set on the command line, in the environment or in
 the config file wins. `/get_server_info` reports the profile under `config`.
 
-| Knob | exact | balanced | fast (default) | throughput |
-|---|---|---|---|---|
-| Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-2 within 1.0 logit | top-3 within 2.0 logits | as fast |
-| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | off | Flash-Next top-3 within 2.0; the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
-| Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next also its routed experts) | off | the 27B only | on | on |
-| Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | off | Flash-Next only | as fast |
-| Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
+| Knob | exact | fast (default) | throughput |
+|---|---|---|---|
+| Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-3 within 2.0 logits | as fast |
+| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | Flash-Next top-3 within 2.0; the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
+| Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next also its routed experts) | off | on | on |
+| Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next only | as fast |
+| Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
 
 Relaxed acceptance accepts a drafted token the target ranks within its top-k and within a logit margin of its
 argmax, so outputs are no longer the target's exact greedy continuation; a request can pin exact acceptance with
@@ -87,7 +87,7 @@ most 64 rows) cover the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resi
 3-bit routed experts replace the NVFP4 ones at every row count (17 GiB less resident). The lm_head keeps its
 original format. Speculative decoding itself, the Flash-Next 3-bit draft head, FP8/NVFP4
 weights and CUDA graphs are lossless and on in every profile. Benchmarks, training traces and gates use `exact`.
-A new lossy option enters `balanced` or `fast` only through the lossy-change gate
+A new lossy option enters `fast` (and so `throughput`) only through the lossy-change gate
 ([CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option)).
 
 ### Settings

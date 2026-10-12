@@ -39,7 +39,7 @@ def test_command_line_then_environment_then_file_then_target(env, tmp_path):
 
 
 @pytest.mark.parametrize("profile, target, device_accept", [
-    ("fast", "flashnext", "1"), ("fast", "27b", "0"), ("balanced", "flashnext", "0"), ("exact", "flashnext", "0"), ("exact", "27b", "0")])
+    ("fast", "flashnext", "1"), ("fast", "27b", "0"), ("exact", "flashnext", "0"), ("exact", "27b", "0")])
 def test_device_acceptance_defaults_on_only_for_fast_flashnext(env, profile, target, device_accept):
     assert resolve(env, target, profile).get("SHARAR_DEVICE_ACCEPT") == device_accept
 
@@ -53,25 +53,26 @@ def test_an_explicit_setting_wins_over_the_profile(env, explicit):
 def test_profile_knobs():
     pick = lambda p, t: {k: launch.profile_defaults(p, t)[k] for k in ("SHARAR_ACCEPT_DEFAULT", "SHARAR_ACCEPT_DEFAULT_SAMPLED", "SHARAR_W3_DECODE")}  # noqa: E731
     assert pick("exact", "qwen38") == {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "0"}
-    assert pick("balanced", "qwen38") == {"SHARAR_ACCEPT_DEFAULT": "2:1.0", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "1"}
     assert pick("fast", "qwen38") == pick("fast", "flashnext") == {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "1", "SHARAR_W3_DECODE": "1"}
     with pytest.raises(ValueError, match="unknown serving profile"):
         launch.profile_defaults("turbo", "qwen38")
+    with pytest.raises(ValueError, match="choose from exact, fast, throughput"):
+        launch.profile_defaults("balanced", "qwen38")
 
 
 @pytest.mark.parametrize("profile, target, threshold", [
     ("fast", "qwen38", "2:1.0"), ("throughput", "qwen38", "2:1.0"), ("fast", "flashnext", None), ("throughput", "flashnext", None),
-    ("balanced", "qwen38", None), ("exact", "qwen38", None)])
+    ("exact", "qwen38", None)])
 def test_the_27b_samples_at_a_tighter_threshold_under_fast(profile, target, threshold):
     # #11: at 3:2.0 the 27B's sampled thinking looped to max_tokens in Claude Code sessions, at 2:1.0 it did not
     assert launch.profile_defaults(profile, target).get("SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD") == threshold
 
 
 @pytest.mark.parametrize("profile, target, w3", [
-    ("exact", "qwen38", "0"), ("exact", "flashnext", "0"), ("balanced", "qwen38", "1"), ("balanced", "flashnext", "0"),
+    ("exact", "qwen38", "0"), ("exact", "flashnext", "0"),
     ("fast", "qwen38", "1"), ("fast", "flashnext", "1"), ("throughput", "qwen38", "1"), ("throughput", "flashnext", "1")])
 def test_the_profile_alone_turns_the_3bit_copies_on(profile, target, w3):
-    # #72: one switch for both targets; Flash-Next's 3-bit trunk is fast's (and throughput's), not balanced's
+    # #72: one switch for both targets
     assert launch.profile_defaults(profile, target)["SHARAR_W3_DECODE"] == w3
 
 
@@ -81,7 +82,7 @@ def test_throughput_decodes_more_requests(target, experts, batch, depths):
     # #59: Flash-Next verifies within the 64 rows its 3-bit copies serve; the 27B keeps its full depth (GSM8K x1.74)
     knobs = launch.profile_defaults("throughput", target, experts)
     assert knobs["SHARAR_MAX_BATCH"] == batch and knobs.get("SHARAR_SPEC_DEPTHS") == depths
-    for profile in ("exact", "balanced", "fast"):
+    for profile in ("exact", "fast"):
         assert launch.profile_defaults(profile, target)["SHARAR_MAX_BATCH"] == "4"
 
 

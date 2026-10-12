@@ -58,7 +58,7 @@ When a change alters a default or adds a setting, update [operations](docs/opera
 
 A lossy speed option (low-bit weights, fewer or pruned experts, relaxed
 acceptance, a reduced draft vocabulary) never enters the `exact` profile. It
-enters `balanced` or `fast` only through the lossy-change gate, one
+enters `fast` (and so `throughput`) only through the lossy-change gate, one
 command for either target:
 
 ```bash
@@ -98,8 +98,7 @@ The verdict (intervals are 95%; pooled = all tasks of the stage):
 |---|---|
 | `exact` | layers 1 and 2 within their floors in every domain (the change is lossless; layer 3 is skipped) |
 | rejected | no measurable speed gain (decode interval lower bound at or below 1.035, the layer's own noise), or a task or the pooled battery significantly worse (McNemar p < 0.05 with more losses than wins; with `--battery` also MMLU-Pro, GPQA, IFEval or a RULER v2 length (paired sign test), while WMT24++ chrF++ is reported only), or a pooled loss above 2.0 points |
-| `balanced` | not rejected, full stage run, pooled interval lower bound at or above -1.0 point and every task within -1.0 point |
-| `fast` | not rejected otherwise: the loss is not significant and at most 2.0 points |
+| `fast` | not rejected: the loss is not significant and at most 2.0 points. The reasons say when the full stage also holds it within 1.0 point (pooled interval lower bound at or above -1.0 point and every task within -1.0 point) |
 
 The screen escalates to the full sets unless it rejects the candidate or its
 pooled interval already excludes a loss of more than 1.0 point. Layer 1 grants

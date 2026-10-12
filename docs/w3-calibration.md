@@ -50,7 +50,7 @@ the decode-path KL it causes, though it did not move task accuracy, so the serve
 
 ## Where the served copies come from
 
-The profiles that use 3-bit copies (`balanced` for the 27B, `fast`, `throughput`)
+The profiles that use 3-bit copies (`fast`, `throughput`)
 serve `$SHARAR_RESULTS/w3-checkpoints/<target>-current` (`qwen38-current`,
 `flashnext-current`). Every `sharar serve` (one Spark or two) keeps that link on the target's published
 checkpoint, pinned by revision in the target's config (`W3_REPO`, `W3_REVISION`)

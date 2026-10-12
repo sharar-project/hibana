@@ -31,14 +31,13 @@ TARGET_SETTINGS = {
 
 # The serving profiles: the default of every speed/fidelity knob a setting does not fix.
 #   exact     the target's own distribution: exact acceptance, no lossy weight copies (benchmarks, training traces)
-#   balanced  relaxed greedy acceptance top-2 within 1.0 logit; the 27B's calibrated 3-bit decode copies
 #   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy requests and
 #             Flash-Next's sampled ones, top-2 within 1.0 for the 27B's sampled ones (at 3:2.0 its sampled thinking looped
 #             in Claude Code sessions, #11), the calibrated 3-bit copies, device-resident acceptance on Flash-Next (#36)
 #   throughput  fast with more requests decoded together: the 27B 16 (full depth; batches of five or more verify on
 #             the original weights, GSM8K x1.74), Flash-Next 128 with its 3-bit experts (64 with NVFP4 experts), three
 #             drafts above eight requests so verification stays within the 64 rows the 3-bit copies serve
-PROFILE_NAMES = ("exact", "balanced", "fast", "throughput")
+PROFILE_NAMES = ("exact", "fast", "throughput")
 
 
 def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3") -> dict[str, str]:
@@ -46,9 +45,6 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3") -
     flashnext = target == "flashnext"
     if profile == "exact":
         p = {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "0", "SHARAR_DEVICE_ACCEPT": "0"}
-    elif profile == "balanced":
-        p = {"SHARAR_ACCEPT_DEFAULT": "2:1.0", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_DEVICE_ACCEPT": "0",
-             "SHARAR_W3_DECODE": "0" if flashnext else "1"}  # Flash-Next's 3-bit trunk is fast's
     elif profile in ("fast", "throughput"):
         p = {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "1", "SHARAR_W3_DECODE": "1",
              "SHARAR_DEVICE_ACCEPT": "1" if flashnext else "0"}

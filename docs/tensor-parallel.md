@@ -1,7 +1,7 @@
 # Tensor parallel: the 27B and Flash-Next on two Sparks
 
 ```bash
-uv run sharar serve 27b --tp 2         # rank 0 here (http://127.0.0.1:30001), rank 1 on the peer; --exact, --balanced, --throughput
+uv run sharar serve 27b --tp 2         # rank 0 here (http://127.0.0.1:30001), rank 1 on the peer; --exact, --throughput
 uv run sharar serve flashnext --tp 2   # Flash-Next the same way (http://127.0.0.1:30004; MTP draft, its calibrated 3-bit trunk)
 uv run sharar status                   # chat, launch and verify work as on one Spark; --detach and stop too
 uv run sharar dev tp-comm              # the RDMA one-shot all-reduce against NCCL between the two Sparks

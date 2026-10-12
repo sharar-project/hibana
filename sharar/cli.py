@@ -24,7 +24,6 @@ from pathlib import Path
 from sharar.launch.settings import PROFILE_NAMES, TARGET_CHOICES
 
 PROFILE_HELP = {"exact": "the target's own distribution: exact acceptance, no lossy weight copies (benchmarks)",
-                "balanced": "relaxed greedy acceptance top-2/1.0, the 27B's calibrated 3-bit copies",
                 "fast": "the default: every measured speed option, lossy ones included (docs/operations.md#serving-profiles)",
                 "throughput": "fast with more requests at once (27B 16, Flash-Next 128) for evals and many agents"}
 
