@@ -117,5 +117,10 @@ def test_acceptance_depth_follows_each_requests_rate_under_the_cap():
     capped = AcceptanceDepth(BatchDepth({1: 8, 2: 4, 4: 4, 8: 0}, 8), step_cost=0.14)
     assert capped.choose([easy]) == 8 and capped.choose([easy, easy]) == 4 and capped.choose([easy] * 5) == 0
     assert capped.sizes_for(5, sizes) == (1,) and capped.sizes_for(3, sizes) == (1, 2, 4)
+    # above four requests a batch verifies its bucket's depth, with that depth's graphs only (throughput profile memory)
+    wide = AcceptanceDepth(BatchDepth({1: 8, 2: 4, 4: 4, 8: 4, 16: 3, 32: 3}, 8), step_cost=0.14)
+    assert wide.choose([hard] * 8) == 4 and wide.choose([hard] * 20) == 3 and wide.choose([hard]) <= 2
+    assert wide.verify_depths == tuple(range(1, 9)) and wide.sizes_for(3, (1, 2, 4, 8, 16, 32)) == (1, 2, 4, 16, 32)
+    assert wide.sizes_for(2, (1, 2, 4, 8, 16, 32)) == (1, 2, 4) and wide.sizes_for(4, (1, 2, 4, 8, 16, 32)) == (1, 2, 4, 8)
     with pytest.raises(ValueError):
         AcceptanceDepth(FixedDepth(4), 0.0)
