@@ -138,7 +138,7 @@ whole-vocabulary shortlist head's (`sharar dev tp-draft-head`: identical picks a
 
 ## Limits
 
-- The 27B with the parallel drafts (DFlash2, DSpark) or n-gram speculation, not MTP; Flash-Next with MTP. A reduced
+- The 27B with DFlash2, not MTP; Flash-Next with MTP. A reduced
   draft vocabulary (`SHARAR_DRAFT_VOCAB`) is not served tensor-parallel.
 - `reload_draft` needs the draft at the same path on every rank, and a rank that cannot load it ends the pair:
   `sharar draft use | pinned | reload` copy the checkpoint to the peer first, and a pair that restarts serves the

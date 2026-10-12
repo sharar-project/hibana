@@ -2,7 +2,7 @@
 
 from sharar.target import DEFAULT_TARGET
 
-MAX_DEPTHS = {"mtp": 8, "ngram": 4, "dspark": 7, "dflash2": 15}
+MAX_DEPTHS = {"mtp": 8, "dflash2": 15}
 
 
 def draft_snapshot(proposer, draft_dir=None, target=None):
@@ -17,7 +17,7 @@ def draft_snapshot(proposer, draft_dir=None, target=None):
     directory = Path(draft_dir)
     if not (directory / "config.json").is_file() or not (directory / "model.safetensors").is_file():
         raise FileNotFoundError(f"draft directory {directory} needs config.json and model.safetensors")
-    wanted = "DFlash2DraftModel" if proposer == "dflash2" else "DSparkDraftModel"
+    wanted = "DFlash2DraftModel"
     architectures = json.loads((directory / "config.json").read_text()).get("architectures")
     if architectures != [wanted]:
         raise ValueError(f"draft directory {directory} holds {architectures}, expected [{wanted!r}] for {proposer}")
@@ -50,10 +50,7 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
             ids = draft_vocab(model.target.snapshot_dir(), vocab, head.lm_head.out_features) if vocab else None
             head.set_draft_head(ids, fmt, cfg.draft_head_rescore)  # shortlist rescored by the target's head
         adapter = MtpProposer(head, context, k)
-    elif proposer == "ngram":
-        from sharar.proposers.ngram import NGramProposer
-        adapter = NGramProposer(context, k)
-    elif proposer in ("dspark", "dflash2"):
+    elif proposer == "dflash2":
         from sharar.model.parallel_draft import ParallelDraftModel
         from sharar.proposers.parallel import ParallelProposer
         snapshot = draft_snapshot(proposer, draft_dir, model.target)

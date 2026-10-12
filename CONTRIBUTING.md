@@ -143,8 +143,8 @@ against a reference server, the CPU contracts, the GPU lifecycle suites and a
 
 1. Put the adapter in `sharar/proposers/`. Implement `Proposer` and declare
    width, target-feature requirements and persistent/scratch bytes. Use
-   `ngram.py` for a feature-free example, `mtp.py` for a sequential draft, and
-   `parallel.py` for conditional DSpark/DFlash2 proposals and draft-cache handles.
+   `tests/ngram_proposer.py` (the tests' proposer) for a feature-free example, `mtp.py`
+   for a sequential draft, and `parallel.py` for conditional DFlash2 proposals and draft-cache handles.
 2. Own draft weights, KV, pending tokens and retained features inside the
    adapter. Declare exactly which post-block layers or final-normalized rows
    you need. Choose the adapter once with `Executor.set_proposer()` before
@@ -164,12 +164,12 @@ against a reference server, the CPU contracts, the GPU lifecycle suites and a
    Then run the GPU continuation suite, feature lifetime checks and a fixed
    workload comparison against the unchanged adapter.
 
-The verifier accepts flat proposals: MTP k≤8, n-gram k≤4, DSpark k≤7, DFlash2 k≤15.
+The verifier accepts flat proposals: MTP k≤8, DFlash2 k≤15.
 External sampled proposals include their actual transformed conditional q,
-including selector/Markov effects. `engine/rejection.py` is the common reference
-algorithm; test tiny distributions independently of model rounding. MTP/n-gram
-sampled requests are verified as point masses (MTP) or with their q (parallel drafts); n-gram
-sampled requests use ordinary decode. Tree proposals are not implemented.
+including selector effects. `engine/rejection.py` is the common reference
+algorithm; test tiny distributions independently of model rounding. Sampled
+requests are verified as point masses (MTP) or with their q (DFlash2); a
+`greedy_only` proposer's sampled requests use ordinary decode. Tree proposals are not implemented.
 Declare prospective memory in `cache/spec_budget.py`, and retain/restore draft
 features through identity-keyed metadata without taking ownership of target
 pages. Both full snapshots and accepted-state reconstruction use the same

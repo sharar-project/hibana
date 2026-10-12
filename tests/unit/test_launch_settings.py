@@ -87,7 +87,8 @@ def test_throughput_decodes_more_requests(target, experts, batch, depths):
 
 @pytest.mark.parametrize("override, message", [
     ({"SHARAR_MAX_BATCH": "129"}, "MAX_BATCH"), ({"SHARAR_SPEC_DEPTHS": "8"}, "SPEC_DEPTHS"),
-    ({"SHARAR_DRAFT_PRECISION": "fp4"}, "DRAFT_PRECISION"), ({"SHARAR_PROPOSER": "dspark", "SHARAR_MAX_CONTEXT": "65536"}, "DSpark"),
+    ({"SHARAR_DRAFT_PRECISION": "fp4"}, "DRAFT_PRECISION"), ({"SHARAR_PROPOSER": "dspark"}, "SHARAR_PROPOSER"),
+    ({"SHARAR_PROPOSER": "ngram"}, "SHARAR_PROPOSER"),
     ({"SHARAR_PROPOSER": "mtp"}, "FP8 draft precision"), ({"SHARAR_FLASHNEXT_EXPERTS": "fp4"}, "EXPERTS")])
 def test_bad_settings_are_refused(env, override, message):
     with pytest.raises(ValueError, match=message):
@@ -138,11 +139,11 @@ def test_a_promoted_draft_is_served_only_when_it_matches_the_proposer(env, tmp_p
     env = {**env, "SHARAR_RESULTS": str(tmp_path / "results")}
     assert resolve(env, "27b").draft_dir == best.resolve()
     assert resolve(env, "27b", overrides={"SHARAR_DRAFT": "pinned"}).draft_dir is None
-    assert resolve(env, "27b", overrides={"SHARAR_PROPOSER": "dspark", "SHARAR_MAX_CONTEXT": "32768"}).draft_dir is None
+    assert resolve(env, "27b", overrides={"SHARAR_PROPOSER": "mtp", "SHARAR_DRAFT_PRECISION": "bf16"}).draft_dir is None
     assert resolve(env, "flashnext").draft_dir is None
     assert resolve(env, "27b").follows_current and not resolve(env, "flashnext").follows_current
     assert not resolve(env, "27b", overrides={"SHARAR_DRAFT": "pinned"}).follows_current
-    assert launch.promoted_draft(runs, "dflash2") == best.resolve() and launch.promoted_draft(runs, "dspark") is None
+    assert launch.promoted_draft(runs, "dflash2") == best.resolve() and launch.promoted_draft(runs, "mtp") is None
 
 
 def test_tensor_parallel_limits(env):

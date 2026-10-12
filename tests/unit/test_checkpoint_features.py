@@ -144,8 +144,8 @@ def test_prospective_budget_accounts_for_each_recurrent_feature_window(monkeypat
     monkeypatch.setattr(Target, 'snapshot_dir', lambda self, cache_dir=None: snapshot)  # no model cache needed
     monkeypatch.setattr(spec_budget, 'tensor_bytes', lambda *args: (128, 64))
     spec = spec_budget.SpecConfig('dflash2', 15, 'reconstruct', 'fp8')
-    small, _ = spec_budget.budget(spec, 4, 32768, cache_slots=5)
-    large, _ = spec_budget.budget(spec, 4, 32768, cache_slots=24)
+    small, _ = spec_budget.budget(spec, 4, cache_slots=5)
+    large, _ = spec_budget.budget(spec, 4, cache_slots=24)
     assert large - small == 19 * 2048 * 5120 * 2
 
 

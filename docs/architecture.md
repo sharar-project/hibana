@@ -16,8 +16,8 @@ engine/     loop (engine thread, request tickets) and scheduler (admission, chun
 cache/      KV pool, state pool, radix prefix cache, request state, cold tier, NVMe session store, ledger,
             speculation memory budget
 model/      Qwen38 (the 27B) and its layers; flashnext/ (the second target); mtp.py (27B MTP head);
-            parallel_draft.py (DFlash2/DSpark body); draft_linear.py
-proposers/  factory; DFlash2/DSpark (parallel*), MTP (mtp*), n-gram; draft heads (draft_head, draft_vocab)
+            parallel_draft.py (DFlash2 body); draft_linear.py
+proposers/  factory; DFlash2 (parallel*), MTP (mtp*); draft heads (draft_head, draft_vocab)
 kernels/    dispatch (ops.py), attention planner, 3-bit GEMM and MoE, FP8 GEMV, fused Triton kernels, the RDMA
             one-shot all-reduce, vendored fla and qsa kernels
 weights/    safetensors loading, ModelOpt NVFP4/FP8 linears, the Linear interface, tensor-parallel sharding,
@@ -58,7 +58,7 @@ target.py   Target value per checkpoint (geometry, optional family fields), regi
 | Capability | 27B | Flash-Next |
 |---|---|---|
 | Served drafter | DFlash2, k=15 | MTP, k=4, 3-bit draft head |
-| Other drafters | MTP (BF16, unfused), DSpark, n-gram | none (DFlash2 needs feature taps, #49) |
+| Other drafters | MTP (BF16, unfused) | none (DFlash2 needs feature taps, #49) |
 | Drafter training on traffic, hot reload | DFlash2 | none (#40, #51) |
 | CUDA graphs: decode, verify, draft | yes | yes, dense and sparse-selecting variants |
 | Device-resident acceptance | opt-in | on in `fast` |

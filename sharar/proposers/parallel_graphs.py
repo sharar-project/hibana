@@ -30,12 +30,8 @@ class ParallelGraphs:
             self.static[batch] = st
             p._plan(st['wrapper'], [torch.arange(i * s, (i + 1) * s, device=device) for i in range(batch)], batch)
             def forward():
-                hidden = p.model.forward(st['tokens'], st['positions'], st['pages'], p.caches, st['wrapper'])
-                st['hidden'] = hidden[:, 1:] if p.name == 'dflash2' else hidden
-                if p.name == 'dflash2':
-                    st['candidates'], st['scores'] = p.model.selector(st['hidden'], st['tokens'][:, 0])
-                else:
-                    st['logits'] = p.model.draft_head.logits(hidden.reshape(-1, p.model.hidden)).view(batch, p.k, -1)
+                st['hidden'] = p.model.forward(st['tokens'], st['positions'], st['pages'], p.caches, st['wrapper'])[:, 1:]
+                st['candidates'], st['scores'] = p.model.selector(st['hidden'], st['tokens'][:, 0])
             self.graphs[batch] = graph_set.capture(self.pool, forward)
             if log:
                 log(f'  captured {p.name} backbone/projection graph for batch {batch}')
@@ -57,7 +53,4 @@ class ParallelGraphs:
         p._plan(st['wrapper'], padded, size)
         self.graphs[size].replay()
         # Borrowed only until next replay; proposal sampling creates owned IDs/q.
-        return (st['hidden'][:batch],
-                st['candidates'][:batch] if p.name == 'dflash2' else None,
-                st['scores'][:batch] if p.name == 'dflash2' else None,
-                st['logits'][:batch] if p.name == 'dspark' else None)
+        return st['hidden'][:batch], st['candidates'][:batch], st['scores'][:batch]

@@ -157,8 +157,7 @@ metadata. `accepted` is the callback whose graph feature tensors are owned clone
 An adapter receives `ProposerContext(device, max_batch, max_context)`, a fixed
 width `k` and immutable `ProposerRequirements`. Install once before capturing
 graphs. The executor rejects unsupported width/context/features before
-allocating shared verify buffers. MTP supports k=1–8, n-gram k=1–4, DSpark k=1–7,
-and DFlash2 k=1–15. Target verify graphs have batch buckets 1, 2, 4, ... up to
+allocating shared verify buffers. MTP supports k=1–8 and DFlash2 k=1–15. Target verify graphs have batch buckets 1, 2, 4, ... up to
 `max_batch` (at most 128). Normal startup captures the
 selected verification depth; benchmarks can explicitly capture additional
 supported depths. `SHARAR_SPEC_DEPTHS` sets a depth per batch bucket
@@ -172,8 +171,9 @@ verifies; others draft `k` and the round verifies the first `d`.
 `ingest_prefill(req, ids, start, result)` consumes each freshly computed chunk;
 `start(req, token)` publishes its first emitted token. `ready(req)` selects
 whether a request may enter speculation. Otherwise ordinary decoding
-continues. MTP owns its prefill alignment and pending hidden/token state;
-n-gram searches a bounded prompt/output suffix and requires no target features.
+continues. MTP owns its prefill alignment and pending hidden/token state; the
+tests' n-gram proposer (`tests/ngram_proposer.py`) searches a bounded prompt/output
+suffix and requires no target features.
 
 `propose(requests, pages, StepInputs, graphs=...)` returns int64 `[B,k]` tokens
 or a `Proposal` containing those tokens, their actual conditional probabilities,
@@ -196,19 +196,17 @@ verify padding. `release(req)` drops adapter
 state on finish, failure or retraction. `capture_graphs` owns only draft graphs;
 the engine owns target verify graphs and intermediate snapshots.
 
-MTP, n-gram, DSpark and DFlash2 share this path. N-gram remains a reference
-adapter. Feature feedback covers prefill, ordinary decode and verification.
-Accepted-callback graph features are owned clones; callers still need to budget
-retained views. DSpark consumes the checkpoint's anchor prediction and applies its
-Markov correction; DFlash2 discards the anchor query, then walks its sparse
-conditional selector lattice. Neither imports the reference framework.
+MTP and DFlash2 share this path. Feature feedback covers prefill, ordinary decode
+and verification. Accepted-callback graph features are owned clones; callers still
+need to budget retained views. DFlash2 discards the anchor query, then walks its
+sparse conditional selector lattice, without importing the reference framework.
 
-DSpark/DFlash2 concatenate the committed feature rows for one shared projection
+DFlash2 concatenates the committed feature rows for one shared projection
 and five layer KV projections, then scatter into their private rings. Temporary
 work is bounded by `max_batch * (k + 1)` rows. Metadata uses one asynchronous
 upload; no GPU scalar extraction is added. Single-row feedback and interior
 checkpoint cases use the per-row helper. MTP's batch callback runs its existing
-row calculations; n-gram feedback is empty. Target state/page ownership remains
+row calculations. Target state/page ownership remains
 with StateManager.
 
 For an all-greedy DFlash2 batch, `kernels/draft_selection.py` traverses that
@@ -218,13 +216,13 @@ launch, and adds no target-state ownership. Mixed/sampled batches keep the
 conditional-law path below.
 
 For sampled verification, probabilities are FP32 after temperature/top-k/top-p
-and all selector/Markov effects. Dense q has shape `[B,k,V]`; sparse q and its
+and all selector effects. Dense q has shape `[B,k,V]`; sparse q and its
 unique token support have shape `[B,k,C]`. `None` means point-mass proposals.
 The shared verifier accepts with `min(1,p[y]/q[y])`, samples a rejection from
 normalized `max(p-q,0)`, and draws a target bonus after full acceptance. It does
 not consume target draws past the first rejection. Each sampled request owns
 its generator, including requests without a supplied seed. MTP proposals are
-verified as point masses; n-gram uses ordinary decode for positive temperature.
+verified as point masses; a `greedy_only` proposer uses ordinary decode for positive temperature.
 
 ## Draft cache and memory
 
@@ -256,7 +254,7 @@ import with `slot=` naming the newly allocated target slot. Copies and frees rem
 on the engine stream. Prospective allocation checks include the feature-window cap
 and gather/replacement temporaries before sizing optional target pools; dropping
 feature tensors returns allocator capacity, not a promise to release DRAM to the OS.
-DSpark retains the supported target context, DFlash2 a 2,048-token window.
+DFlash2 retains a 2,048-token window.
 Restoration projects only draft K/V from saved features. Target-snapshot eviction
 uses bounded LRU, not an optimized saved-time-per-byte policy.
 

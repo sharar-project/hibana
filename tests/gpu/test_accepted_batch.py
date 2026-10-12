@@ -12,7 +12,7 @@ from sharar.proposers.parallel import DraftState
 
 
 
-@pytest.fixture(scope='module', params=['dflash2', 'dspark'])
+@pytest.fixture(scope='module', params=['dflash2'])
 def runtime(request):
     from sharar import config
     from sharar.proposers.factory import draft_snapshot

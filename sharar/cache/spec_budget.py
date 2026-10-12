@@ -14,7 +14,7 @@ class SpecConfig:
     depth: int = 3
     state_strategy: str = 'snapshots'
     draft_precision: str = 'bf16'
-    draft_dir: str | None = None  # a trained DFlash2/DSpark checkpoint directory instead of the pinned snapshot
+    draft_dir: str | None = None  # a trained DFlash2 checkpoint directory instead of the pinned snapshot
 
     def __post_init__(self):
         from sharar.proposers.factory import MAX_DEPTHS
@@ -22,9 +22,9 @@ class SpecConfig:
             raise ValueError('unsupported proposer/depth')
         if self.state_strategy not in ('snapshots', 'reconstruct'):
             raise ValueError('unsupported verify state strategy')
-        if self.draft_dir is not None and self.name not in ('dspark', 'dflash2'):
+        if self.draft_dir is not None and self.name != 'dflash2':
             raise ValueError('a draft directory applies to parallel drafts only')
-        if self.draft_precision not in ('bf16', 'fp8') or (self.draft_precision == 'fp8' and self.name not in ('dspark', 'dflash2')):
+        if self.draft_precision not in ('bf16', 'fp8') or (self.draft_precision == 'fp8' and self.name != 'dflash2'):
             raise ValueError('FP8 draft precision requires a parallel draft')
 
 
@@ -60,7 +60,7 @@ def verify_bytes(batch, steps, strategy, target=None):
     return compact + conv
 
 
-def budget(spec, batch, context, *, cache_slots=96, target=None):
+def budget(spec, batch, *, cache_slots=96, target=None):
     """Return fixed future bytes and extra bytes per target KV page.
 
     Header-derived weights, exact persistent tensor shapes, plus explicit
@@ -76,13 +76,13 @@ def budget(spec, batch, context, *, cache_slots=96, target=None):
             weights, largest = weights // 2, 4 * 2**20
         fixed += weights + 2 * largest + 128 * 2**20
         page_bytes = 2 * t.num_kv_heads * t.head_dim * 2
-    elif spec.name in ('dspark', 'dflash2'):
+    elif spec.name == 'dflash2':
         from sharar.proposers.parallel import PINS
         name, revision = PINS[spec.name]
         snapshot = t.snapshot_dir().parents[2] / ('models--' + name.replace('/', '--')) / 'snapshots' / revision
         weights, largest = tensor_bytes(snapshot)
         cfg = json.loads((snapshot / 'config.json').read_text())
-        window = cfg['sliding_window'] or context
+        window = cfg['sliding_window']
         # Active rings (+dummy), one feature window per usable recurrent slot,
         # and two temporaries while gathering and replacing a retained window.
         # Automatic pool sizing caps recurrent slots at 96; explicit pools pass

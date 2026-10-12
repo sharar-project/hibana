@@ -11,7 +11,7 @@ from sharar.engine.profile import ServingProfile
 from sharar.engine.request import Request
 from sharar.engine.sampler import SamplingParams
 from sharar.engine.scheduler import Scheduler
-from sharar.proposers.ngram import NGramProposer
+from tests.ngram_proposer import NGramProposer
 from tests.unit.test_runtime_safety import tiny_executor
 
 
@@ -175,7 +175,7 @@ def test_profile_limits_and_load_budget(monkeypatch):
     # context, batch and scheduling limits.
     from sharar.cache.spec_budget import SpecConfig
     assert SpecConfig('dflash2', 15).depth == 15
-    for name, depth in [('dflash2', 16), ('dspark', 8), ('mtp', 9)]:
+    for name, depth in [('dflash2', 16), ('mtp', 9), ('dspark', 3), ('ngram', 3)]:  # past the depth, or not served
         with pytest.raises(ValueError, match='proposer/depth'):
             SpecConfig(name, depth)
     monkeypatch.setattr(ledger, 'mem_available_bytes', lambda: 63 * 2**30)
@@ -204,7 +204,7 @@ sys.meta_path.insert(0, NoGpuBackend())
 from sharar.engine.executor import Executor
 from sharar.engine.spec import SpecDecoder
 from sharar.engine.scheduler import Scheduler
-from sharar.proposers.ngram import NGramProposer
+from tests.ngram_proposer import NGramProposer
 from sharar.api.server import EngineLoop
 '''
     result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)

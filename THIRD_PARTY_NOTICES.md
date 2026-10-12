@@ -9,7 +9,7 @@ a new file, and add a row here in the same commit.
 | Origin | What Sharar takes from it | License |
 |---|---|---|
 | SGLang, <https://github.com/sgl-project/sglang>, snapshot `6d34a4d3ce1005593fdb89478651ded47c0d5277` | Qwen3.8 hybrid model math, ModelOpt NVFP4/FP8 weight layout handling, GDN backend structure, reasoning and tool-call parsers, GB10 benchmark harness | Apache License 2.0 |
-| SGLang, <https://github.com/sgl-project/sglang>, snapshot `6b36f9d0a214890ad458e21ae4f0982229368b1e` | DSpark/DFlash2 model equations, YaRN, selector/Markov and block-local convolution semantics in `sharar/model/parallel_draft.py`; license checked at this commit | Apache License 2.0 |
+| SGLang, <https://github.com/sgl-project/sglang>, snapshot `6b36f9d0a214890ad458e21ae4f0982229368b1e` | DFlash2 model equations, YaRN, selector and block-local convolution semantics in `sharar/model/parallel_draft.py`; license checked at this commit | Apache License 2.0 |
 | Z Lab DFlash, <https://github.com/z-lab/dflash>, snapshot `07ebd93db9f472af339b644bb70221ad8428328a` | DFlash2 reference convolution arithmetic order and selector semantics; independent test oracle, excluded from runtime dependencies | MIT, Copyright (c) 2026 Z Lab |
 | flash-linear-attention, <https://github.com/fla-org/flash-linear-attention> (Songlin Yang, Yu Zhang) | Gated DeltaNet Triton kernels: chunked prefill, fused recurrent decode, gated RMSNorm, L2 norm | MIT License |
 | causal-conv1d, <https://github.com/Dao-AILab/causal-conv1d> (Tri Dao) and vLLM, <https://github.com/vllm-project/vllm> | Triton causal Conv1D prefill and state-update kernels | BSD 3-Clause (causal-conv1d), Apache License 2.0 (vLLM) |

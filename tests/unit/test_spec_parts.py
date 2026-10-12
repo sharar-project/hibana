@@ -30,7 +30,7 @@ def test_declared_capabilities_need_their_methods():
 def test_the_served_proposers_declare_what_they_implement():
     from sharar.engine.contracts import DeviceFeedback, Reloadable, TraceFeatures
     from sharar.proposers.parallel import ParallelProposer
-    from sharar.proposers.ngram import NGramProposer
+    from tests.ngram_proposer import NGramProposer
     for protocol in (DeviceFeedback, Reloadable, TraceFeatures):
         assert all(callable(getattr(ParallelProposer, name, None)) for name in protocol.__dict__
                    if not name.startswith("_") and callable(getattr(protocol, name, None)))

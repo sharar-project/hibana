@@ -4,7 +4,7 @@ from sharar.engine.rejection import corrected_distribution, distribution, verify
 from sharar.engine.sampler import Sampler, SamplingParams
 from sharar.engine.contracts import ProposerContext, ProposerRequirements
 from sharar.engine.rejection import Proposal
-from sharar.proposers.ngram import NGramProposer
+from tests.ngram_proposer import NGramProposer
 from tests.unit.test_runtime_safety import tiny_executor
 
 

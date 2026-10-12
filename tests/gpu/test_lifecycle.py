@@ -298,7 +298,7 @@ def test_canaries_answer_exactly(setup, graphs):
 def test_ngram_real_target_cache_and_feature_lifetimes(runtime, graphs, features):
     from sharar.engine.contracts import FeatureRequest, ProposerContext, ProposerRequirements
     from sharar.engine.spec import SpecDecoder
-    from sharar.proposers.ngram import NGramProposer
+    from tests.ngram_proposer import NGramProposer
 
     ex, prompts = runtime
     previous, old_graphs = ex.spec, ex.use_graphs
