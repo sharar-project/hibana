@@ -99,8 +99,12 @@ class ParallelDraftModel:
         self.kind = cfg['architectures'][0]
         if self.kind not in ('DSparkDraftModel', 'DFlash2DraftModel'):
             raise ValueError('unsupported draft architecture')
-        if (cfg['hidden_size'], cfg['num_attention_heads'], cfg['num_key_value_heads'], cfg['head_dim']) != (5120, 32, 8, 128):
-            raise ValueError('unvalidated draft dimensions')
+        # The geometry is the checkpoint's (#49): hidden width, heads, KV heads, head size and layers.
+        self.hidden, self.heads, self.kv_heads, self.head_dim = (cfg['hidden_size'], cfg['num_attention_heads'],
+                                                                 cfg['num_key_value_heads'], cfg['head_dim'])
+        self.layers = cfg['num_hidden_layers']
+        if self.hidden != target.embed.shape[1]:
+            raise ValueError(f"the draft's hidden width {self.hidden} is not the target's embedding width {target.embed.shape[1]} (the draft reads the target's embeddings)")
         self.target, self.device = target, target.device
         from sharar.proposers.draft_head import TargetHead
         self.draft_head = TargetHead(lambda x: self.target.logits(x))  # the vocabulary projection the selector reads (#45); resolved per call
@@ -193,6 +197,11 @@ class ParallelDraftModel:
         return (sum(t.numel() * t.element_size() for t in (*self.weights.values(), self.cos, self.sin))
                 + sum(w.bytes for w in self.fp8_weights.values()))
 
+    @property
+    def feature_width(self) -> int:
+        """The width of each tapped target layer's rows: what `fc` projects, per tap."""
+        return self.weights['fc.weight'].shape[1] // len(self.features)
+
     def project_features(self, features):
         joined = torch.cat([features[i] for i in self.features], dim=-1)
         return rms(joined @ self.weights['fc.weight'].T, self.weights['hidden_norm.weight'])
@@ -201,13 +210,13 @@ class ParallelDraftModel:
         for layer, (keys, values) in enumerate(caches):
             p = f'layers.{layer}.self_attn.'
             k, v = (hidden @ self.weights[p + 'kv'].T).chunk(2, dim=-1)
-            k = rms(k.view(-1, 8, 128), self.weights[p + 'k_norm.weight'])
-            rotate_and_cache(k, v.view(-1, 8, 128), positions, self.cos, self.sin, (keys, values), pages)
+            k = rms(k.view(-1, self.kv_heads, self.head_dim), self.weights[p + 'k_norm.weight'])
+            rotate_and_cache(k, v.view(-1, self.kv_heads, self.head_dim), positions, self.cos, self.sin, (keys, values), pages)
 
     def _prepare_conv(self, hidden, name):
         if name + '.base_kernel' not in self.weights:
             return hidden, None
-        coefficients = (hidden @ self.weights[name + '.kernel_projection.weight'].T).view(*hidden.shape[:-1], 2, 2, 320)
+        coefficients = (hidden @ self.weights[name + '.kernel_projection.weight'].T).view(*hidden.shape[:-1], 2, 2, self.hidden // 16)
         return convolve(hidden, coefficients[:, :, 0], self.weights[name + '.base_kernel'][0]), coefficients[:, :, 1]
 
     def _finish_conv(self, hidden, coefficients, name):
@@ -217,18 +226,18 @@ class ParallelDraftModel:
         """Static noise-block forward. attention is a planned FlashInfer wrapper."""
         batch, steps = tokens.shape
         hidden = F.embedding(tokens, self.target.embed)
-        for layer in range(self.cfg['num_hidden_layers']):
+        for layer in range(self.layers):
             p = f'layers.{layer}.'
             residual = hidden
             x = rms(hidden, self.weights[p + 'input_layernorm.weight'])
             x, coefficients = self._prepare_conv(x, p + 'attention_conv')
-            flat = x.view(-1, 5120)
-            q = rms(self._linear(flat, p + 'self_attn.q_proj.weight').view(-1, 32, 128), self.weights[p + 'self_attn.q_norm.weight'])
+            flat = x.view(-1, self.hidden)
+            q = rms(self._linear(flat, p + 'self_attn.q_proj.weight').view(-1, self.heads, self.head_dim), self.weights[p + 'self_attn.q_norm.weight'])
             k, v = (flat @ self.weights[p + 'self_attn.kv'].T).chunk(2, dim=-1)
-            k = rms(k.view(-1, 8, 128), self.weights[p + 'self_attn.k_norm.weight'])
+            k = rms(k.view(-1, self.kv_heads, self.head_dim), self.weights[p + 'self_attn.k_norm.weight'])
             q = rotate(q, positions, self.cos, self.sin)
-            rotate_and_cache(k, v.view(-1, 8, 128), positions, self.cos, self.sin, caches[layer], pages)
-            attended = attention.run(q, caches[layer]).reshape(batch, steps, 4096)
+            rotate_and_cache(k, v.view(-1, self.kv_heads, self.head_dim), positions, self.cos, self.sin, caches[layer], pages)
+            attended = attention.run(q, caches[layer]).reshape(batch, steps, self.heads * self.head_dim)
             projected = self._linear(attended, p + 'self_attn.o_proj.weight')
             hidden = residual + self._finish_conv(projected, coefficients, p + 'attention_conv')
             residual = hidden
@@ -243,7 +252,7 @@ class ParallelDraftModel:
         """DFlash2's sparse conditional lattice, including predecessor effects."""
         # Keep the reference top-k until a deterministic fused kernel is gated.
         k = self.cfg['dflash_config']['selector_top_k']
-        values, candidates = self.draft_head.topk(hidden.reshape(-1, 5120), k)
+        values, candidates = self.draft_head.topk(hidden.reshape(-1, self.hidden), k)
         values, candidates = values.view(*hidden.shape[:2], k), candidates.view(*hidden.shape[:2], k)
         p = 'candidate_selector.'
         gate = hidden @ self.weights[p + 'hidden_projection.weight'].T

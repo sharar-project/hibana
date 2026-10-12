@@ -778,7 +778,8 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     if traces:
         from sharar.engine.traces import TraceSink
 
-        sink = TraceSink(traces, max_bytes=traces_max_mib * 2**20)
+        draft = getattr(ex.spec.proposer, "model", None) if ex.spec is not None else None  # projected rows: the draft's width
+        sink = TraceSink(traces, max_bytes=traces_max_mib * 2**20, **({"feature_dim": draft.hidden} if hasattr(draft, "hidden") else {}))
         sched.sink = sink
         log(f"recording opt-in request traces under {sink.directory} (cap {traces_max_mib} MiB)")
     from sharar.engine.config import current

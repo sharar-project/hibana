@@ -28,7 +28,6 @@ from sharar.model.parallel_draft import ParallelDraftModel, convolve_reference, 
 
 MASK_TOKEN = 248070
 FP4_VALUES = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0, -0.5, -1, -1.5, -2, -3, -4, -6], dtype=torch.float32)  # E2M1 codes
-HIDDEN, HEADS, KV_HEADS, HEAD_DIM = 5120, 32, 8, 128
 CONTEXT_KEYS = ("fc.weight", "hidden_norm.weight")
 
 
@@ -162,8 +161,8 @@ class TrainableDraft:
     def context_kv(self, layer: int, projected: torch.Tensor, positions: torch.Tensor):
         p = f"layers.{layer}.self_attn."
         k, v = self._linear(projected, p + "kv").chunk(2, dim=-1)
-        k = rms_reference(k.view(-1, KV_HEADS, HEAD_DIM), self.weight(p + "k_norm.weight"))
-        return rotate_reference(k, positions, self.model.cos, self.model.sin), v.view(-1, KV_HEADS, HEAD_DIM)
+        k = rms_reference(k.view(-1, self.model.kv_heads, self.model.head_dim), self.weight(p + "k_norm.weight"))
+        return rotate_reference(k, positions, self.model.cos, self.model.sin), v.view(-1, self.model.kv_heads, self.model.head_dim)
 
     def attention_mask(self, anchors: torch.Tensor, context_len: int) -> torch.Tensor:
         """[A*B, T + A*B] bool: context before the anchor inside the window, plus the own block."""
@@ -194,18 +193,18 @@ class TrainableDraft:
             residual = hidden
             x = rms_reference(hidden, self.weight(p + "input_layernorm.weight"))
             x, coefficients = self._prepare_conv(x, p + "attention_conv")
-            flat = x.reshape(-1, HIDDEN)
-            q = rms_reference(self._linear(flat, p + "self_attn.q_proj.weight").view(-1, HEADS, HEAD_DIM), self.weight(p + "self_attn.q_norm.weight"))
+            flat = x.reshape(-1, self.model.hidden)
+            q = rms_reference(self._linear(flat, p + "self_attn.q_proj.weight").view(-1, self.model.heads, self.model.head_dim), self.weight(p + "self_attn.q_norm.weight"))
             k, v = self._linear(flat, p + "self_attn.kv").chunk(2, dim=-1)
-            k = rms_reference(k.view(-1, KV_HEADS, HEAD_DIM), self.weight(p + "self_attn.k_norm.weight"))
+            k = rms_reference(k.view(-1, self.model.kv_heads, self.model.head_dim), self.weight(p + "self_attn.k_norm.weight"))
             q = rotate_reference(q, positions, cos, sin)
             k = rotate_reference(k, positions, cos, sin)
             k_ctx, v_ctx = self.context_kv(layer, projected, context_positions)
             keys = torch.cat([k_ctx, k], dim=0).transpose(0, 1)[None]  # [1, 8, N, D]
-            values = torch.cat([v_ctx, v.view(-1, KV_HEADS, HEAD_DIM)], dim=0).transpose(0, 1)[None]
+            values = torch.cat([v_ctx, v.view(-1, self.model.kv_heads, self.model.head_dim)], dim=0).transpose(0, 1)[None]
             attended = F.scaled_dot_product_attention(q.transpose(0, 1)[None], keys, values, attn_mask=mask,
-                                                      scale=HEAD_DIM ** -0.5, enable_gqa=True)
-            attended = attended[0].transpose(0, 1).reshape(rows, block, HEADS * HEAD_DIM)
+                                                      scale=self.model.head_dim ** -0.5, enable_gqa=True)
+            attended = attended[0].transpose(0, 1).reshape(rows, block, self.model.heads * self.model.head_dim)
             projected_out = self._linear(attended, p + "self_attn.o_proj.weight")
             hidden = residual + self._finish_conv(projected_out, coefficients, p + "attention_conv")
             residual = hidden
@@ -219,7 +218,7 @@ class TrainableDraft:
     def _prepare_conv(self, hidden: torch.Tensor, name: str):
         if name + ".base_kernel" not in self.model.weights:
             return hidden, None
-        coefficients = self._linear(hidden, name + ".kernel_projection.weight").view(*hidden.shape[:-1], 2, 2, HIDDEN // 16)
+        coefficients = self._linear(hidden, name + ".kernel_projection.weight").view(*hidden.shape[:-1], 2, 2, self.model.hidden // 16)
         base = self.weight(name + ".base_kernel")
         return convolve_reference(hidden, coefficients[:, :, 0], base[0]), coefficients[:, :, 1]
 

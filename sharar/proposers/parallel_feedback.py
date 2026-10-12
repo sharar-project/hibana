@@ -8,7 +8,7 @@ class FeedbackGraphs:
     def __init__(self, proposer):
         self.proposer = proposer
         self.pool = torch.cuda.graph_pool_handle()
-        self.features = {lid: torch.zeros((proposer.k + 1, 5120), dtype=torch.bfloat16,
+        self.features = {lid: torch.zeros((proposer.k + 1, proposer.model.feature_width), dtype=torch.bfloat16,
                                           device=proposer.context.device)
                          for lid in proposer.model.features}
         self.metadata = torch.zeros(2, dtype=torch.int64, device=proposer.context.device)
@@ -32,7 +32,7 @@ class FeedbackGraphs:
                 ring = positions % p.window
                 rows = self.metadata[1] * p.window + ring
                 pages = self.metadata[1] * p.pitch + ring
-                p.features.view(-1, 5120)[rows] = hidden
+                p.features.view(-1, p.model.hidden)[rows] = hidden
                 p.model.context_kv(hidden, positions, p.caches, pages)
 
             self.graphs[count] = graph_set.capture(self.pool, forward)

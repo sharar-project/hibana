@@ -196,7 +196,7 @@ def _record(req) -> dict:
 
 class TraceSink:
     def __init__(self, directory: str | Path, max_bytes: int = DEFAULT_MAX_BYTES,
-                 rotate_bytes: int = DEFAULT_ROTATE_BYTES, features: bool = True):
+                 rotate_bytes: int = DEFAULT_ROTATE_BYTES, features: bool = True, feature_dim: int = FEATURE_DIM):
         if type(max_bytes) is not int or max_bytes < 1 or type(rotate_bytes) is not int or rotate_bytes < 1:
             raise ValueError("trace byte limits must be positive integers")
         self.directory = Path(directory)
@@ -204,7 +204,7 @@ class TraceSink:
         self.max_bytes = max_bytes
         self.rotate_bytes = min(rotate_bytes, max_bytes)
         self.features = features
-        self.pool = PinnedPool()
+        self.pool = PinnedPool(dim=feature_dim)  # the projected context rows: the draft's hidden width
         self.topk_ids_pool = PinnedPool(rows=4096, dim=TOPK, dtype=torch.int32)
         self.topk_logits_pool = PinnedPool(rows=4096, dim=TOPK, dtype=torch.bfloat16)
         self._queue: queue.Queue = queue.Queue(maxsize=QUEUE_CAPACITY)

@@ -35,7 +35,7 @@ class ParallelGraphs:
                 if p.name == 'dflash2':
                     st['candidates'], st['scores'] = p.model.selector(st['hidden'], st['tokens'][:, 0])
                 else:
-                    st['logits'] = p.model.draft_head.logits(hidden.reshape(-1, 5120)).view(batch, p.k, -1)
+                    st['logits'] = p.model.draft_head.logits(hidden.reshape(-1, p.model.hidden)).view(batch, p.k, -1)
             self.graphs[batch] = graph_set.capture(self.pool, forward)
             if log:
                 log(f'  captured {p.name} backbone/projection graph for batch {batch}')
