@@ -64,11 +64,17 @@ class FlashNextGdn(GatedDeltaNet):
         return mixed_qkv, z, b, a
 
     def _window_norm(self, z):
-        """The window kernel's epilogue: the gated RMS norm with this model's gate, in BF16 (the out projection quantizes
-        its own input)."""
-        return (z.reshape(-1, self.value_dim), self.norm_weight, self.eps, None, self.gate_activation)
+        """The window kernel's epilogue: the gated RMS norm with this model's gate, then the input quantization of the out
+        projection's 3-bit copy when this call uses it (E4M3 per 32-group, `w3.quant_groups`), else BF16."""
+        z = z.reshape(-1, self.value_dim)
+        groups = self.out.scale is not None and self.out._uses_w3(z.shape[0])
+        return (z, self.norm_weight, self.eps, "groups" if groups else None, self.gate_activation)
 
     def _window_out(self, out, z, t, *, verify=False):
+        if isinstance(out, tuple):  # the 3-bit copy's quantized input and its group scales
+            from sharar.kernels import w3
+            x_q, x_scale = out
+            return w3.w3_linear(x_q, self.out.w3, x_scale)
         return self.out(out)
 
     def _finish(self, core: torch.Tensor, z: torch.Tensor, t: int, *, verify: bool = False) -> torch.Tensor:

@@ -183,6 +183,38 @@ def test_fused_sigmoid_norm_epilogue_matches_the_separate_kernel(steps):
     assert (got != want).float().mean() < 0.01
 
 
+@pytest.mark.parametrize("steps", [1, 5, 16])
+def test_fused_group_quantization_is_quant_groups_of_the_bf16_epilogue(steps):
+    """Flash-Next's 3-bit out projection input: E4M3 per (token, 32-group) and the group scales, as `w3.quant_groups`
+    of the epilogue's BF16 output (its arithmetic, silu_mul_quant_groups'). The two compiled epilogues may round a
+    rare normalized value one BF16 step apart, which moves that value by at most one E4M3 step."""
+    from sharar.kernels import w3
+    lay, raw, pool = _pool()
+    views = pool.layer[0]
+    batch = 3
+    slots = torch.tensor([2, 5, 1], dtype=torch.int32, device="cuda")
+    W.quantize(lay, views, _state(batch), slots)
+    ins = _inputs(batch * steps)
+    tokens = batch * steps
+    g = torch.Generator(device="cuda").manual_seed(6)
+    gate = torch.randn((tokens, lay.value_heads * lay.v), device="cuda", generator=g).to(torch.bfloat16)
+    weight = (1 + 0.1 * torch.randn(lay.v, device="cuda", generator=g)).to(torch.bfloat16)
+    rk, ru, rg = _ring(batch, 16)
+    bf16 = W.window_verify(lay, views, slots=slots, steps=steps, ring_k=rk, ring_u=ru, ring_g=rg,
+                           norm=(gate, weight, 1e-6, None, "sigmoid"), **ins)
+    want_q, want_s = w3.quant_groups(bf16)
+    rk2, ru2, rg2 = _ring(batch, 16)
+    got_q, got_s = W.window_verify(lay, views, slots=slots, steps=steps, ring_k=rk2, ring_u=ru2, ring_g=rg2,
+                                   norm=(gate, weight, 1e-6, "groups", "sigmoid"), **ins)
+    assert torch.equal(ru2, ru) and torch.equal(rk2, rk) and torch.equal(rg2, rg)
+    assert got_q.shape == want_q.shape and got_s.shape == want_s.shape
+    assert ((got_s - want_s).abs() <= want_s / 128).all() and (got_s != want_s).float().mean() < 1e-2
+    got, want = got_q.float(), want_q.float()
+    step = torch.maximum(want.abs(), got.abs()) / 8 + 2 ** -9
+    assert ((got - want).abs() <= step).all()
+    assert (got != want).float().mean() < 1e-3
+
+
 @pytest.mark.parametrize("window", [8, 16, 32])
 @pytest.mark.parametrize("bits", [8, 4])
 def test_commits_append_until_the_window_fills_then_fold(window, bits):
