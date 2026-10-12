@@ -37,10 +37,8 @@ class Capabilities:
     """What a proposer offers beyond the `Proposer` lifecycle (#45). The engine reads these flags
     instead of probing for methods; `check_capabilities` verifies each promised protocol."""
     device_feedback: bool = False   # DeviceFeedback: accepted_prepare / feedback_device / accepted_publish (device acceptance)
-    reloadable: bool = False        # Reloadable: reload(snapshot) -> served source, between rounds
     checkpoint_cache: bool = False  # CheckpointCache: bind_checkpoint_cache(pool) and a feature_cache with stats
     cold_payload: bool = False      # ColdPayload: auxiliary_codec() -> (identity, export, import) for parked sessions
-    trace_features: bool = False    # TraceFeatures: projected_rows(req, start, count) and a context `window`
     draft_head: bool = False        # DraftHeadChoice: set_draft_head(ids, fmt, rescore) on the head
     short_drafts: bool = False      # propose(..., depth=d) drafts only the d tokens a shallower round verifies (sequential drafts)
 
@@ -103,11 +101,6 @@ class DeviceFeedback(Protocol):
 
 
 @runtime_checkable
-class Reloadable(Protocol):
-    def reload(self, snapshot) -> str: ...
-
-
-@runtime_checkable
 class CheckpointCache(Protocol):
     feature_cache: object
     def bind_checkpoint_cache(self, pool) -> None: ...
@@ -118,14 +111,7 @@ class ColdPayload(Protocol):
     def auxiliary_codec(self): ...
 
 
-@runtime_checkable
-class TraceFeatures(Protocol):
-    window: int
-    def projected_rows(self, req: Request, start: int, count: int): ...
-
-
-PROTOCOLS = {"device_feedback": DeviceFeedback, "reloadable": Reloadable, "checkpoint_cache": CheckpointCache,
-             "cold_payload": ColdPayload, "trace_features": TraceFeatures}
+PROTOCOLS = {"device_feedback": DeviceFeedback, "checkpoint_cache": CheckpointCache, "cold_payload": ColdPayload}
 
 
 def check_capabilities(proposer) -> None:

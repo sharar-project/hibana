@@ -2,8 +2,7 @@
 
 Sharar specializes in local inference on one GB10. Keep the current Qwen
 target checkpoint, its vocabulary head and the numerical serving profile fixed
-unless a change explicitly validates a new one; the DFlash2 drafter is the one
-component trained on recorded traffic. Favor a small implementation with
+unless a change explicitly validates a new one. Favor a small implementation with
 explicit tensor ownership over a registry or framework. Read [the architecture](docs/architecture.md) and
 [the interfaces](docs/interfaces.md) first; open work is in the GitHub issues.
 
@@ -151,8 +150,8 @@ against a reference server, the CPU contracts, the GPU lifecycle suites and a
    CLI choices; scheduler, radix internals and HTTP request handling stay out
    of the change.
 3. Declare optional features in `ProposerRequirements.capabilities`
-   (`engine/contracts.py`): device acceptance feedback, reload, checkpoint
-   feature cache, cold-tier payload, trace features, a configurable draft head.
+   (`engine/contracts.py`): device acceptance feedback, checkpoint
+   feature cache, cold-tier payload, a configurable draft head.
    The engine reads the flags, never probes for methods, and
    `check_capabilities` rejects a flag without its protocol. End the draft in a
    draft head (`proposers/draft_head.py`: the target's head by default, or a
@@ -174,20 +173,15 @@ features through identity-keyed metadata without taking ownership of target
 pages. Both full snapshots and accepted-state reconstruction use the same
 StateManager commit and stop/continuation tests.
 
-## Change the drafter or its training
+## Change the drafter
 
-Training lives in `sharar/train/`: the differentiable forward must stay a
-function of the serving weight dictionary (`draft.py`), the objective must
-match the reference formulas the CPU tests carry (`tests/unit/test_train.py`),
-and any change to the forward, objective, selector or mask must pass
-`profiling/draft/dflash2_reference.py` on the GPU (serving proposer, the publisher's
-model and SpecForge as references) and `tests/gpu/test_train_forward.py`.
-Judge a drafter on held-out tokens per round and served throughput on the
-user's own newest traffic (`profiling/draft/draft_ab.py`), never on a public corpus.
-Keep the feature and K/V projections frozen unless the cache identity, the
-cold-tier payloads and the trace format are versioned with it. Trace format
-changes bump `FORMAT_VERSION` in `engine/traces.py` and keep the reader
-accepting older records.
+Sharar serves the publisher's drafters; `--draft DIR` serves another DFlash2
+checkpoint of the same architecture, trained elsewhere. Drafter training on
+recorded traffic was removed (it gained about 3% served throughput, #118); the
+trainer, its trace features and hot reload are at the tag
+`archive/draft-training`, to return only with a method that clearly pays for
+itself. Trace format changes bump `FORMAT_VERSION` in `engine/traces.py` and
+keep the reader accepting older records.
 
 ## Add a GB10 kernel
 

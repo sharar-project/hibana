@@ -24,7 +24,7 @@ def test_without_a_config_file_paths_default_to_the_user_caches(env, tmp_path, m
     assert s.hf_cache == s.model_cache == tmp_path / ".cache" / "huggingface"
     assert s.results == tmp_path / ".local" / "share" / "sharar"
     assert resolve(env, "27b").target == "qwen38" and resolve(env).target == "qwen38"
-    assert s.max_context == 262144 and s.traces == s.results / "traces" and s.sessions == s.results / "sessions"
+    assert s.max_context == 262144 and s.traces is None and s.sessions == s.results / "sessions"
     with pytest.raises(ValueError, match="unknown target"):
         resolve(env, "llama")
 
@@ -102,7 +102,7 @@ def test_throughput_flashnext_batch_passes_validation(env):
 
 
 def test_the_engine_gets_explicit_flags_and_its_environment(env, tmp_path):
-    s = resolve({**env, "SHARAR_DRAFT": "pinned"}, "27b", "fast")
+    s = resolve({**env, "SHARAR_DRAFT": "pinned"}, "27b", "fast", traces=True)
     args = s.engine_args()
     assert args[args.index("--port") + 1] == "30001" and args[args.index("--spec") + 1] == "15"
     assert args[args.index("--context-length") + 1] == "262144" and args[args.index("--draft-precision") + 1] == "fp8"
@@ -111,7 +111,7 @@ def test_the_engine_gets_explicit_flags_and_its_environment(env, tmp_path):
     e = s.engine_env(tmp_path / "w3")
     assert e["SHARAR_W3_CHECKPOINT"] == str(tmp_path / "w3") and e["SHARAR_SESSION_DIR"] == str(s.sessions)
     assert "SHARAR_DRAFT" not in e and "SHARAR_TRACES" not in e  # the flags carry them
-    assert resolve(env, "27b", traces=False).traces is None and "--traces" not in resolve(env, "27b", traces=False).engine_args()
+    assert resolve(env, "27b").traces is None and "--traces" not in resolve(env, "27b").engine_args()
     assert resolve(env, "27b", overrides={"SHARAR_SESSION_DIR": "off"}).sessions is None
     assert resolve(env, "27b", tp=2).sessions.name == "sessions-tp" and "--tp" in resolve(env, "27b", tp=2).engine_args(tp=2)
 
@@ -130,21 +130,23 @@ def test_gdn_prefill_backend_reaches_engine_through_new_launcher(env, policy):
     assert EngineConfig.from_env(engine_env).gdn_prefill == policy
 
 
-def test_a_promoted_draft_is_served_only_when_it_matches_the_proposer(env, tmp_path):
-    runs = tmp_path / "results" / "draft-runs"
-    best = runs / "run-1" / "best"
-    best.mkdir(parents=True)
-    (best / "model.safetensors").write_bytes(b"")
-    (best / "config.json").write_text('{"architectures": ["DFlash2DraftModel"]}')
-    (runs / "current").symlink_to("run-1/best")
+def test_traces_are_opt_in(env, tmp_path):
     env = {**env, "SHARAR_RESULTS": str(tmp_path / "results")}
-    assert resolve(env, "27b").draft_dir == best.resolve()
-    assert resolve(env, "27b", overrides={"SHARAR_DRAFT": "pinned"}).draft_dir is None
-    assert resolve(env, "27b", overrides={"SHARAR_PROPOSER": "mtp", "SHARAR_DRAFT_PRECISION": "bf16"}).draft_dir is None
-    assert resolve(env, "flashnext").draft_dir is None
-    assert resolve(env, "27b").follows_current and not resolve(env, "flashnext").follows_current
-    assert not resolve(env, "27b", overrides={"SHARAR_DRAFT": "pinned"}).follows_current
-    assert launch.promoted_draft(runs, "dflash2") == best.resolve() and launch.promoted_draft(runs, "mtp") is None
+    assert resolve(env, "27b").traces is None
+    assert resolve(env, "27b", traces=True).traces == tmp_path / "results" / "traces"
+    assert resolve({**env, "SHARAR_TRACES": str(tmp_path / "t")}, "27b").traces == tmp_path / "t"
+    assert resolve({**env, "SHARAR_TRACES": "off"}, "27b", traces=True).traces is None
+
+
+def test_a_draft_directory_is_served_only_by_dflash2(env, tmp_path):
+    draft = tmp_path / "draft"
+    draft.mkdir()
+    (draft / "model.safetensors").write_bytes(b"")
+    (draft / "config.json").write_text('{"architectures": ["DFlash2DraftModel"]}')
+    assert resolve(env, "27b").draft_dir is None  # the pinned publisher draft
+    assert resolve(env, "27b", overrides={"SHARAR_DRAFT": str(draft)}).draft_dir == draft.resolve()
+    with pytest.raises(ValueError, match="DFlash2"):
+        resolve(env, "flashnext", overrides={"SHARAR_DRAFT": str(draft)})
 
 
 def test_tensor_parallel_limits(env):

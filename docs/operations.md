@@ -51,13 +51,13 @@ same) and results, traces, sessions, drafter runs, 3-bit checkpoints and logs in
 | Serving profile | `fast` | `sharar serve --exact\|--fast\|--throughput` or `SHARAR_PROFILE` ([below](#serving-profiles)) |
 | Proposer / draft proposals | 27B: DFlash2, 15 (16 verify rows); Flash-Next: MTP, 4 | `SHARAR_PROPOSER`, `SHARAR_SPEC` (0 = plain decode) |
 | Draft precision | FP8 | `SHARAR_DRAFT_PRECISION=bf16` for the publisher's precision |
-| Draft checkpoint | `draft-runs/current` when promoted, else pinned | `sharar serve --draft DIR` or `--pinned`; `SHARAR_DRAFT=/dir\|pinned` |
+| Draft checkpoint | the publisher's pinned draft | `sharar serve --draft DIR` or `SHARAR_DRAFT=/dir`: a DFlash2 checkpoint of the same architecture (27B only) |
 | Accepted state | reconstruction | `SHARAR_VERIFY_STATE` |
 | Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
 | Requests decoded together | 4; `throughput`: 16 on the 27B, 128 on Flash-Next (64 with NVFP4 experts) | `SHARAR_MAX_BATCH` / `sharar serve --max-batch`, 1-128 (graph buckets 1, 2, 4, ... 128). Above four, the pool guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full context |
 | Verify depth per batch size | the proposer's depth at every batch; `throughput` on Flash-Next: `16:3` | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
 | Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext` | `sharar serve --port`, `SHARAR_PORT` / `SHARAR_SERVICE` |
-| Request traces | on, in `$SHARAR_RESULTS/traces` | `sharar serve --no-traces` or `SHARAR_TRACES=off`; `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
+| Request traces | off | `sharar serve --traces` (in `$SHARAR_RESULTS/traces`) or `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
 | Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
 | Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `SHARAR_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
 | GDN recurrent state | FP32 | `SHARAR_SSM_STATE=int8` or `int4` stores each GDN layer's state per window as in LeapQuant ([arXiv 2609.38166](https://arxiv.org/abs/2609.38166); `sharar/cache/ssm_format.py`, `sharar/kernels/ssm_window.py`): an integer residual with per-row scales and smoothed key columns, FP16 compensator terms (`SHARAR_SSM_COMPENSATORS`, unset: 4, or 8 for int4) and the committed tokens of the current window (`SHARAR_SSM_WINDOW`, 16), requantized once per window. The recurrent state per slot is 55 MiB (int8) or 41 MiB (int4) instead of 144 on the 27B, and 41 or 31 MiB instead of 108 on Flash-Next. Needs the reconstruct accepted state. Lossy and opt-in (measurements in [#129](https://github.com/abdelfattah-lab/sharar/pull/129)) |
@@ -86,7 +86,7 @@ argmax, so outputs are no longer the target's exact greedy continuation; a reque
 most 64 rows) cover the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resident) and Flash-Next's trunk; Flash-Next's
 3-bit routed experts replace the NVFP4 ones at every row count (17 GiB less resident). The lm_head keeps its
 original format. Speculative decoding itself, the Flash-Next 3-bit draft head, FP8/NVFP4
-weights and CUDA graphs are lossless and on in every profile. Benchmarks, training traces and gates use `exact`.
+weights and CUDA graphs are lossless and on in every profile. Benchmarks and gates use `exact`.
 A new lossy option enters `fast` (and so `throughput`) only through the lossy-change gate
 ([CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option)).
 
@@ -97,41 +97,18 @@ Every `SHARAR_*` variable the launcher forwards is read once into one
 line overrides it. `GET /get_server_info` returns the effective value under
 `config`, so a run records exactly what it served.
 
-## Training the drafter
-
-`sharar train` trains the 27B's DFlash2 drafter on the recorded traces in the foreground until Ctrl-C (or
-`--steps N`), then evaluates once more and promotes on improvement; it stops a detached 27B server first (training and
-serving do not share the GPU). `sharar train --detach` runs it as the service `sharar-train`, finished by `sharar
-train stop`. `sharar status` shows serving, training and the draft in use; `sharar draft list|use|pinned|reload`
-manages checkpoints and swaps them into a running server (`POST /reload_draft`). `sharar serve` follows
-`$SHARAR_RESULTS/draft-runs/current` whenever it resolves to a checkpoint; `--pinned` forces the publisher draft and
-`--draft DIR` serves any checkpoint saved by `sharar train`.
-`/get_server_info` reports the served directory under `speculative.draft`.
-See [draft adaptation](draft-adaptation.md) for how training works and its
-launcher variables.
-
 ## Request traces
 
-With traces on (the default; `SHARAR_TRACES` names another directory), each finished request is appended as one
-JSON line:
-prompt and output token IDs, sampling parameters, the cached prefix length and,
-for speculative requests, every verification round with the accepted count, the
-draft's proposals and the target's argmax rows (sampled rows keep only the
-correction token). DFlash2 requests also store the projected context features
-the drafter attended to, copied from the proposer's ring as they are written:
-the last 2,048 prompt positions and every committed output position, 10 KiB
-per row as raw BF16 under `features/<trace file>/<id>.bin`. No text or client
-metadata is stored. Files rotate at 64 MiB of JSON and feature data, and the oldest trace file is
-deleted together with its feature directory above the cap. The default cap
-is 32 GiB, about 1,300 requests of 2K-token traffic, and it is also the
-training window.
-Writing happens on a separate thread and never blocks the engine: feature rows
-go through pinned staging chunks with CUDA events; a full queue or disk counts
-as `dropped` in `/get_server_info` under `traces`. Any request can opt out with
-`"trace": false`; the benchmark, draft A/B, accuracy and corpus clients do, so
-the directory holds the user's own traffic. `sharar traces --dir DIR` summarizes a directory. The traces are the
-input for [draft adaptation](draft-adaptation.md); they are the user's prompts
-and stay on this machine unless the user copies them elsewhere.
+Traces are off unless asked for (`sharar serve --traces`, or `SHARAR_TRACES` naming a directory). Each finished
+request is then appended as one JSON line: prompt and output token IDs, sampling parameters, the cached prefix length
+and, for speculative requests, every verification round with the accepted count, the draft's proposals, the target's
+argmax rows (sampled rows keep only the correction token) and the offsets accepted under the relaxed rule (`rx`).
+They measure speculation on real traffic, such as acceptance by draft depth. No text or client metadata is stored.
+Files rotate at 64 MiB, and the oldest file is deleted above the cap (32 GiB by default). Writing happens on a
+separate thread and never blocks the engine; a full queue or disk counts as `dropped` in `/get_server_info` under
+`traces`. Any request can opt out with `"trace": false`; the benchmark and accuracy clients do, so the directory
+holds the user's own traffic. `sharar traces --dir DIR` summarizes a directory. The traces are the user's prompts and
+stay on this machine unless the user copies them elsewhere.
 
 **Draft confidence (MTP).** With `SHARAR_TRACE_CONFIDENCE=1` beside
 `SHARAR_TRACES` (the launcher forwards both), each round record also carries the

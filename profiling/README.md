@@ -29,18 +29,5 @@ The 3-bit calibration builders that produce the serving artifacts moved into the
 `python3 -m sharar.weights.w3_calibrate` (27B), `sharar.weights.flashnext_w3_calibrate` and
 `sharar.weights.w3_calibration_inputs` ([workflow](../docs/w3-calibration.md)).
 
-## Draft adaptation tools (`draft/`)
-
-- `draft/trace_corpus.py` generates traced traffic over HTTP against a server started with traces on
-  (`sharar serve 27b`): `--dataset` replays ShareGPT first turns, `--repo DIR` sends coding requests over a
-  repository's files; `--exclude LOG` keeps a test set's file/task pairs out of the traffic.
-- `draft/draft_ab.py` replays a trace directory's newest held-out prompts (or `--all`) at batch one against a
-  running server and reports throughput, tokens per round and output hashes, for A/B of drafts across windows.
-- `draft/dflash2_reference.py` runs on an exclusive GPU and checks the training
-  forward against the serving proposer and the publisher's reference model, and the objective against
-  SpecForge, then runs a short training smoke. `draft/target_features.py` recomputes raw target features for it.
-
-See [draft adaptation](../docs/draft-adaptation.md).
-
 Raw tensors, outputs and traces stay outside Git. Finished one-off studies are at the tags
 `archive/bench-pre-split-2026-10-04` and `archive/pre-cleanup-2026-09-26`.

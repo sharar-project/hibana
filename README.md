@@ -36,7 +36,6 @@ uv run sharar launch claude   # Claude Code on the model (also opencode, aider; 
 | `sharar serve 27b --tp 2` | Tensor-parallel on two Sparks linked by their ConnectX ports ([tensor parallel](docs/tensor-parallel.md)) |
 | `sharar status` | What is serving, with which settings |
 | `sharar chat`, `sharar launch claude\|opencode\|aider\|show` | Use the serving model |
-| `sharar train` | Train the 27B's drafter on your recorded traffic (Ctrl-C finishes and promotes; [draft adaptation](docs/draft-adaptation.md)) |
 
 `sharar <command> --help` lists the options. Settings (cache and results locations, profiles, ports) are flags, then
 `SHARAR_*` environment variables, then an optional `config/gb10.env` ([example](config/gb10.env.example),

@@ -30,7 +30,7 @@ TARGET_SETTINGS = {
 }
 
 # The serving profiles: the default of every speed/fidelity knob a setting does not fix.
-#   exact     the target's own distribution: exact acceptance, no lossy weight copies (benchmarks, training traces)
+#   exact     the target's own distribution: exact acceptance, no lossy weight copies (benchmarks)
 #   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy requests and
 #             Flash-Next's sampled ones, top-2 within 1.0 for the 27B's sampled ones (at 3:2.0 its sampled thinking looped
 #             in Claude Code sessions, #11), the calibrated 3-bit copies, device-resident acceptance on Flash-Next (#36)
@@ -108,18 +108,6 @@ def read_config_file(path: Path | None, env: dict | None = None) -> dict[str, st
     return values
 
 
-def promoted_draft(runs: Path, proposer: str) -> Path | None:
-    """The checkpoint runs/current resolves to, when it is `proposer`'s architecture; else None (the pinned draft)."""
-    current = runs / "current"
-    if not current.is_symlink():
-        return None
-    resolved = current.resolve()
-    config = resolved / "config.json"
-    if proposer == "dflash2" and config.is_file() and (resolved / "model.safetensors").is_file() and '"DFlash2DraftModel"' in config.read_text():
-        return resolved
-    return None
-
-
 @dataclass
 class Settings:
     """One target's resolved settings: what the launcher, the engine and the tools agree on."""
@@ -134,18 +122,12 @@ class Settings:
     model_cache: Path               # where this target's checkpoint lives (Flash-Next may have its own cache)
     max_context: int
     traces: Path | None
-    draft_dir: Path | None          # a trained draft to serve; None: the pinned publisher draft
+    draft_dir: Path | None          # a DFlash2 checkpoint to serve; None: the pinned publisher draft
     sessions: Path | None
     warnings: list[str] = field(default_factory=list)
 
     def get(self, key: str, default: str = "") -> str:
         return self.values.get(key) or default
-
-    @property
-    def follows_current(self) -> bool:
-        """Whether the draft is the promoted one (draft-runs/current), as nothing names another: what `sharar draft use`
-        swaps and what a restart reads again."""
-        return not self.get("SHARAR_DRAFT") and self.parallel_draft
 
     @property
     def proposer(self) -> str:
@@ -162,10 +144,6 @@ class Settings:
     @property
     def w3_root(self) -> Path:
         return self.results / "w3-checkpoints"
-
-    @property
-    def draft_runs(self) -> Path:
-        return Path(self.get("SHARAR_DRAFT_RUNS") or self.results / "draft-runs")
 
     @property
     def url(self) -> str:
@@ -223,8 +201,9 @@ def _check(cond: bool, message: str) -> None:
 
 
 def resolve(target: str | None = None, profile: str | None = None, overrides: dict[str, str] | None = None,
-            env: dict[str, str] | None = None, *, traces: bool = True, tp: int = 1) -> Settings:
-    """One target's settings. `overrides` are command-line choices (SHARAR_* names); `traces` False turns recording off."""
+            env: dict[str, str] | None = None, *, traces: bool = False, tp: int = 1) -> Settings:
+    """One target's settings. `overrides` are command-line choices (SHARAR_* names); `traces` turns recording on (as does
+    SHARAR_TRACES naming a directory)."""
     env = dict(os.environ if env is None else env)
     file_values = read_config_file(config_file(env), env)
     user = {**file_values, **{k: v for k, v in env.items() if k.startswith("SHARAR_")}}
@@ -274,20 +253,19 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
                "the 27B serves tensor-parallel with DFlash2, not MTP")
         _check(values.get("SHARAR_DRAFT_VOCAB", "0") == "0", "a reduced draft vocabulary (SHARAR_DRAFT_VOCAB) is not served tensor-parallel")
 
-    # the draft: pinned, a directory, or the promoted checkpoint when it is this proposer's architecture
+    # the draft: the pinned publisher draft, or a DFlash2 checkpoint directory
     draft_value = values.get("SHARAR_DRAFT", "")
     draft_dir = None
     if draft_value and draft_value != "pinned":
         draft_dir = path(draft_value).resolve()
         _check((draft_dir / "config.json").is_file() and (draft_dir / "model.safetensors").is_file(),
                f"SHARAR_DRAFT={draft_dir} needs config.json and model.safetensors")
-        _check(proposer == "dflash2" and spec > 0, "a trained draft requires enabled DFlash2 speculation")
-    elif not draft_value and proposer == "dflash2" and spec > 0:
-        draft_dir = promoted_draft(path(values.get("SHARAR_DRAFT_RUNS") or results / "draft-runs"), proposer)
+        _check(proposer == "dflash2" and spec > 0, "a draft checkpoint requires enabled DFlash2 speculation")
 
+    trace_value = values.get("SHARAR_TRACES", "")
     trace_dir = None
-    if traces and values.get("SHARAR_TRACES", "") != "off":
-        trace_dir = path(values.get("SHARAR_TRACES") or results / "traces")
+    if trace_value != "off" and (traces or trace_value):
+        trace_dir = path(trace_value or results / "traces")
     session_value = values.get("SHARAR_SESSION_DIR") or str(results / ("sessions-tp" if tp > 1 else "sessions"))
     sessions = None if session_value == "off" else path(session_value)
 

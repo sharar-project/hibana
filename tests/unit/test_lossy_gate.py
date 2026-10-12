@@ -78,7 +78,7 @@ def test_sampled_threshold_reaches_the_in_process_arm_as_serve_records_it(clean)
 
 def test_served_arms_are_sharar_serve_in_the_foreground(clean):
     cmd = gate.served_command("flashnext", "fast", 30100)
-    assert cmd[2:] == ["-m", "sharar", "serve", "flashnext", "--fast", "--port", "30100", "--no-traces", "--no-sessions", "--no-fetch"]
+    assert cmd[2:] == ["-m", "sharar", "serve", "flashnext", "--fast", "--port", "30100", "--no-sessions", "--no-fetch"]
     assert gate.served_env({})["SHARAR_COLD_TIER_GIB"] == "0"
     assert gate.served_env({"SHARAR_COLD_TIER_GIB": "8"})["SHARAR_COLD_TIER_GIB"] == "8"
     assert "SHARAR_CONFIG_FILE" in gate.served_env({})

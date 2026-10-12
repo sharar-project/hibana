@@ -1,10 +1,10 @@
-"""`sharar serve --detach` and `sharar train --detach`: the same command as a user systemd service.
+"""`sharar serve --detach`: the same command as a user systemd service.
 
 The service runs this checkout's `sharar` with the caller's SHARAR_* settings and config file; its output goes to
 $SHARAR_RESULTS/logs/<service>.log (the previous run's is .log.1); `systemctl --user stop` sends SIGTERM, so the server
-drains and stores its sessions and the trainer evaluates once more and promotes. SIGTERM reaches the main process
-only (KillMode=mixed): on two Sparks that is the supervisor, which passes it to rank 0 alone, and rank 1's ssh must
-stay up until rank 0's stop has ended rank 1 (launch/tp.py); whatever is left when the main process exits is killed.
+drains and stores its sessions. SIGTERM reaches the main process only (KillMode=mixed): on two Sparks that is the
+supervisor, which passes it to rank 0 alone, and rank 1's ssh must stay up until rank 0's stop has ended rank 1
+(launch/tp.py); whatever is left when the main process exits is killed.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def running(unit: str) -> bool:
     return subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit], capture_output=True).returncode == 0
 
 
-def start(unit: str, argv: list[str], log: Path, description: str, stop_seconds: int = 120) -> None:
+def start(unit: str, argv: list[str], log: Path, description: str) -> None:
     """Run `python -m sharar ARGV` as the user systemd service UNIT."""
     if not systemd_available():
         raise RuntimeError(f"--detach needs a user systemd session: log in with a full session, or sudo loginctl enable-linger {os.environ.get('USER', '$USER')}")
@@ -48,7 +48,7 @@ def start(unit: str, argv: list[str], log: Path, description: str, stop_seconds:
     setenv = [a for k, v in env.items() for a in ("--setenv", f"{k}={v}")]
     cmd = ["systemd-run", "--user", "--quiet", "--collect", "--unit", unit, "--description", description,
            "--working-directory", os.getcwd(), "--property", "KillSignal=SIGTERM", "--property", "KillMode=mixed",
-           "--property", f"TimeoutStopSec={stop_seconds}",
+           "--property", "TimeoutStopSec=120",
            "--property", f"StandardOutput=append:{log}", "--property", f"StandardError=append:{log}", *setenv,
            sys.executable, "-m", "sharar", *argv]
     subprocess.run(cmd, check=True)

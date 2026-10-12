@@ -96,7 +96,7 @@ class AcceptGraphs:
         if log:
             log(f"  captured device accept graphs: {len(self._graphs)}")
 
-    def round(self, batch, y: torch.Tensor, topk, t0: float, t1: float) -> None:
+    def round(self, batch, y: torch.Tensor, t0: float, t1: float) -> None:
         """Replace SpecDecoder._accept for an eligible batch: replay, one wait, publish."""
         spec, ex = self.spec, self.ex
         reqs = batch.requests
@@ -172,12 +172,6 @@ class AcceptGraphs:
             r.spec_accepted += a
             r.spec_emitted += count
         spec.proposer.accepted_publish(reqs, outputs)
-        for i, (r, emitted) in enumerate(zip(reqs, outputs)):
-            if r.trace_features is not None:
-                spec._trace_features(r, r.committed_len - len(emitted), r.committed_len)
-            if r.trace_topk is not None and topk is not None:
-                count = len(emitted)
-                r.trace_topk.append(topk[0][i, :count], topk[1][i, :count], r.committed_len - count)
         spec.rounds += 1
         t3 = time.perf_counter()
         spec.draft_seconds += t1 - t0

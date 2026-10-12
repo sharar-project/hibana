@@ -227,10 +227,8 @@ verified as point masses; a `greedy_only` proposer uses ordinary decode for posi
 ## Draft cache and memory
 
 Radix auxiliary metadata is keyed by target/draft revisions, feature schema,
-layout, window and the draft checkpoint source, so a trained checkpoint served
-with `--draft` never reuses another draft's payloads. Trained checkpoints keep
-the feature and K/V projections of the publisher's draft, so their projected
-rings are interchangeable; the identity is conservative anyway. Metadata follows the exact node endpoint and is never
+layout, window and the draft checkpoint source, so a checkpoint served
+with `--draft` never reuses another draft's payloads. Metadata follows the exact node endpoint and is never
 attached to another node's retained target pages during duplicate insertion.
 `prepare_release(req)` runs before target ownership transfers. `release(req)`
 releases the active draft ring slot. In a cached executor, parallel-draft

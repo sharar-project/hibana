@@ -1,23 +1,15 @@
-"""Opt-in request traces for draft adaptation.
+"""Opt-in request traces.
 
-A trace is the complete record of one served request: prompt and output token
-IDs, sampling parameters, every verification round (accepted count, the
-draft's proposals and the target's argmax rows) and, for DFlash2 requests, the
-projected context features the drafter actually attended to: the last window
-of the prompt and every committed response position, copied from the
-proposer's ring right after it was written. Those features are what training
-needs, and they can only be taken here: the target's prefill numerics depend
-on sequence length and chunking, so recomputing them later never reproduces
-what the drafter saw while serving.
+A trace is the token-level record of one served request: prompt and output
+token IDs, sampling parameters and every verification round (accepted count,
+the draft's proposals and the target's argmax rows). They are for measuring
+speculation on real traffic (acceptance per depth, the input of adaptive depth
+calibration, #43); `sharar traces` summarizes a directory.
 
-The sink never blocks the engine thread. Token records are a few lists handed
-to one writer thread; feature rows are copied asynchronously into pinned
-staging chunks and the writer waits on their CUDA events before writing raw
-BF16 files next to the trace file that references them. Files rotate, and the
-oldest trace file is pruned together with its feature directory above the
-byte cap. Traces are the user's prompts; the directory is only written when
-the server was started with one, and any request can opt out with
-``trace: false``.
+The sink never blocks the engine thread: records are a few lists handed to one
+writer thread. Files rotate, and the oldest file is pruned above the byte cap.
+Traces are the user's prompts; the directory is only written when the server
+was started with one, and any request can opt out with ``trace: false``.
 
 With ``SHARAR_TRACE_CONFIDENCE=1`` (sequential MTP drafts), each round record
 also carries the draft's top-1 probability ``p1`` and top-1 minus top-2
@@ -33,136 +25,12 @@ import threading
 import time
 from pathlib import Path
 
-import torch
-
-FORMAT_VERSION = 3  # 3: params carry the acceptance rule; rounds may carry the draft confidence ("p1", "m")
+FORMAT_VERSION = 4  # 3: params carry the acceptance rule; rounds may carry the draft confidence ("p1", "m"); 4: no feature files
 FILE_PREFIX = "traces-"
 FILE_SUFFIX = ".jsonl"
-FEATURE_DIM = 5120
-TOPK = 16
-CHUNK_ROWS = 512  # 5 MiB of BF16 features per pinned staging chunk
 DEFAULT_MAX_BYTES = 32768 * 2**20
 DEFAULT_ROTATE_BYTES = 64 * 2**20
 QUEUE_CAPACITY = 4096
-
-
-class PinnedPool:
-    """Reusable pinned host chunks for device-to-host row copies."""
-
-    def __init__(self, rows: int = CHUNK_ROWS, dim: int = FEATURE_DIM, dtype: torch.dtype = torch.bfloat16):
-        self.rows, self.dim, self.dtype = rows, dim, dtype
-        self._free: list[torch.Tensor] = []
-        self._lock = threading.Lock()
-        self.allocated = 0
-
-    def acquire(self) -> torch.Tensor:
-        with self._lock:
-            if self._free:
-                return self._free.pop()
-            self.allocated += 1
-        return torch.empty((self.rows, self.dim), dtype=self.dtype, pin_memory=torch.cuda.is_available())
-
-    def release(self, chunk: torch.Tensor) -> None:
-        with self._lock:
-            self._free.append(chunk)
-
-
-class FeatureRecorder:
-    """Contiguous projected feature rows of one request, staged on the host.
-
-    ``append`` copies device rows for positions ``[position, position + n)``
-    without synchronizing. Rows already recorded are skipped; a gap invalidates
-    the recording (the request then stores no features).
-    """
-
-    def __init__(self, pool: PinnedPool):
-        self.pool = pool
-        self.start: int | None = None
-        self.end: int | None = None
-        self.chunks: list[torch.Tensor] = []
-        self.used = 0  # rows used in the last chunk
-        self.events: list[torch.cuda.Event] = []
-        self.valid = True
-
-    @property
-    def rows(self) -> int:
-        return 0 if self.start is None else self.end - self.start
-
-    def append(self, rows: torch.Tensor, position: int) -> None:
-        if not self.valid or rows.shape[0] == 0:
-            return
-        if self.start is None:
-            self.start = self.end = position
-        if position < self.end:  # overlap with rows already recorded
-            rows = rows[self.end - position:]
-            position = self.end
-        if position != self.end:
-            self.valid = False
-            self._release()
-            return
-        offset = 0
-        while offset < rows.shape[0]:
-            if not self.chunks or self.used == self.pool.rows:
-                self.chunks.append(self.pool.acquire())
-                self.used = 0
-            n = min(rows.shape[0] - offset, self.pool.rows - self.used)
-            self.chunks[-1][self.used:self.used + n].copy_(rows[offset:offset + n], non_blocking=True)
-            self.used += n
-            offset += n
-        self.end += rows.shape[0]
-        if rows.is_cuda:
-            event = torch.cuda.Event()
-            event.record()
-            self.events.append(event)
-
-    def _release(self) -> None:
-        for chunk in self.chunks:
-            self.pool.release(chunk)
-        self.chunks, self.used = [], 0
-
-    def write(self, path: Path) -> dict | None:
-        """Writer thread: wait for the copies, write raw BF16 rows, free the chunks."""
-        try:
-            if not self.valid or self.start is None:
-                return None
-            for event in self.events:
-                event.synchronize()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "wb") as handle:
-                for i, chunk in enumerate(self.chunks):
-                    n = self.used if i == len(self.chunks) - 1 else self.pool.rows
-                    handle.write(chunk[:n].contiguous().view(torch.uint8).numpy().tobytes())
-            return {"start": self.start, "rows": self.rows, "dim": self.pool.dim, "dtype": str(self.pool.dtype).split(".")[-1]}
-        finally:
-            self._release()
-
-
-class TopkRecorder:
-    """The target's top-k ids and logits per verified row, staged like features.
-
-    Row ``p`` holds the target's distribution over the token at ``p + 1``.
-    """
-
-    def __init__(self, ids_pool: PinnedPool, logits_pool: PinnedPool):
-        self.ids = FeatureRecorder(ids_pool)
-        self.logits = FeatureRecorder(logits_pool)
-
-    def append(self, ids: torch.Tensor, logits: torch.Tensor, position: int) -> None:
-        self.ids.append(ids, position)
-        self.logits.append(logits, position)
-
-    def _release(self) -> None:
-        self.ids._release()
-        self.logits._release()
-
-    def write(self, ids_path: Path, logits_path: Path) -> dict | None:
-        a = self.ids.write(ids_path)
-        b = self.logits.write(logits_path)
-        if a is None or b is None or a["start"] != b["start"] or a["rows"] != b["rows"]:
-            for path in (ids_path, logits_path):
-                path.unlink(missing_ok=True)
-            return None
-        return {"start": a["start"], "rows": a["rows"], "k": a["dim"]}
 
 
 def _record(req) -> dict:
@@ -185,8 +53,6 @@ def _record(req) -> dict:
             "accept_top_k": params.accept_top_k, "accept_margin": params.accept_margin,
         },
         "spec": None,
-        "features": None,
-        "topk": None,
     }
     rounds = req.trace_rounds
     if rounds:
@@ -196,17 +62,13 @@ def _record(req) -> dict:
 
 class TraceSink:
     def __init__(self, directory: str | Path, max_bytes: int = DEFAULT_MAX_BYTES,
-                 rotate_bytes: int = DEFAULT_ROTATE_BYTES, features: bool = True, feature_dim: int = FEATURE_DIM):
+                 rotate_bytes: int = DEFAULT_ROTATE_BYTES):
         if type(max_bytes) is not int or max_bytes < 1 or type(rotate_bytes) is not int or rotate_bytes < 1:
             raise ValueError("trace byte limits must be positive integers")
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.max_bytes = max_bytes
         self.rotate_bytes = min(rotate_bytes, max_bytes)
-        self.features = features
-        self.pool = PinnedPool(dim=feature_dim)  # the projected context rows: the draft's hidden width
-        self.topk_ids_pool = PinnedPool(rows=4096, dim=TOPK, dtype=torch.int32)
-        self.topk_logits_pool = PinnedPool(rows=4096, dim=TOPK, dtype=torch.bfloat16)
         self._queue: queue.Queue = queue.Queue(maxsize=QUEUE_CAPACITY)
         self._current: Path | None = None
         self._current_size = 0
@@ -214,7 +76,6 @@ class TraceSink:
         self.records = 0
         self.dropped = 0
         self.bytes_written = 0
-        self.feature_bytes_written = 0
         self.closed = False
         # Scan once before serving starts. Only the writer mutates the inventory;
         # the engine reads an immutable snapshot without filesystem operations.
@@ -225,25 +86,14 @@ class TraceSink:
         self._thread.start()
 
     # ---- engine thread ----
-    def recorder(self) -> FeatureRecorder | None:
-        return FeatureRecorder(self.pool) if self.features else None
-
-    def topk_recorder(self) -> TopkRecorder | None:
-        return TopkRecorder(self.topk_ids_pool, self.topk_logits_pool) if self.features else None
-
     def record(self, req) -> bool:
         """Queue one finished request; returns False when the queue is full."""
-        recorders = [r for r in (getattr(req, "trace_features", None), getattr(req, "trace_topk", None)) if r is not None]
         if self.closed:
-            for r in recorders:
-                r._release()
             return False
         try:
-            self._queue.put_nowait((_record(req), getattr(req, "trace_features", None), getattr(req, "trace_topk", None)))
+            self._queue.put_nowait(_record(req))
         except queue.Full:
             self.dropped += 1
-            for r in recorders:
-                r._release()
             return False
         return True
 
@@ -251,9 +101,7 @@ class TraceSink:
         files, nbytes = self._disk_usage
         return {
             "dir": str(self.directory), "records": self.records, "dropped": self.dropped,
-            "bytes_written": self.bytes_written, "feature_bytes_written": self.feature_bytes_written,
-            "files": files, "bytes": nbytes, "max_bytes": self.max_bytes,
-            "features": self.features, "pinned_chunks": self.pool.allocated,
+            "bytes_written": self.bytes_written, "files": files, "bytes": nbytes, "max_bytes": self.max_bytes,
         }
 
     def close(self, timeout: float = 5.0) -> None:
@@ -269,6 +117,7 @@ class TraceSink:
 
     @staticmethod
     def _feature_dir(trace_file: Path) -> Path:
+        """Where traces recorded before format 4 kept their feature files: counted and pruned with their file."""
         return trace_file.parent / "features" / trace_file.stem
 
     def _size(self, trace_file: Path) -> int:
@@ -303,35 +152,16 @@ class TraceSink:
             self._stored_bytes -= self._sizes.pop(old)
         self._disk_usage = (len(self._sizes), self._stored_bytes)
 
-    def _write(self, doc: dict, recorder: FeatureRecorder | None, topk: TopkRecorder | None = None) -> None:
+    def _write(self, doc: dict) -> None:
         if self._current is None or self._current_size >= self.rotate_bytes:
             self._open()
-        blob_bytes = 0
-        if recorder is not None:
-            path = self._feature_dir(self._current) / f"{doc['id']}.bin"
-            info = recorder.write(path)
-            if info is not None:
-                info["file"] = str(path.relative_to(self.directory))
-                doc["features"] = info
-                blob_bytes += info["rows"] * info["dim"] * 2
-        if topk is not None:
-            ids_path = self._feature_dir(self._current) / f"{doc['id']}.topk-ids.bin"
-            logits_path = self._feature_dir(self._current) / f"{doc['id']}.topk-logits.bin"
-            info = topk.write(ids_path, logits_path)
-            if info is not None:
-                info["ids_file"] = str(ids_path.relative_to(self.directory))
-                info["logits_file"] = str(logits_path.relative_to(self.directory))
-                doc["topk"] = info
-                blob_bytes += info["rows"] * info["k"] * 6
-        line = json.dumps(doc, separators=(",", ":")) + "\n"
-        data = line.encode()
+        data = (json.dumps(doc, separators=(",", ":")) + "\n").encode()
         with open(self._current, "ab") as handle:
             handle.write(data)
-        self._current_size += len(data) + blob_bytes
+        self._current_size += len(data)
         self.bytes_written += len(data)
-        self.feature_bytes_written += blob_bytes
-        self._sizes[self._current] += len(data) + blob_bytes
-        self._stored_bytes += len(data) + blob_bytes
+        self._sizes[self._current] += len(data)
+        self._stored_bytes += len(data)
         self.records += 1
         self._prune()
 
@@ -340,17 +170,12 @@ class TraceSink:
             item = self._queue.get()
             if item is None:
                 return
-            doc, recorder, topk = item
             try:
-                self._write(doc, recorder, topk)
+                self._write(item)
             except Exception:  # noqa: BLE001 - a full disk must not stop serving
                 self.dropped += 1
-                for r in (recorder, topk):
-                    if r is not None:
-                        r._release()
                 logging.exception("trace write failed")
-                # A failed write can leave a partial blob or line on disk.
-                # Reconcile that file on the writer thread, including its blobs.
+                # A failed write can leave a partial line on disk. Reconcile that file on the writer thread.
                 try:
                     if self._current is not None:
                         size = self._size(self._current)
@@ -374,37 +199,13 @@ def iter_records(directory: str | Path):
                     doc = json.loads(raw)
                 except ValueError:
                     continue
-                if isinstance(doc, dict) and doc.get("v") in (1, 2, FORMAT_VERSION):
-                    doc.setdefault("features", None)
-                    doc.setdefault("topk", None)
-                    if doc["features"] is not None:
-                        doc["features"]["path"] = str(directory / doc["features"]["file"])
-                    if doc["topk"] is not None:
-                        doc["topk"]["ids_path"] = str(directory / doc["topk"]["ids_file"])
-                        doc["topk"]["logits_path"] = str(directory / doc["topk"]["logits_file"])
+                if isinstance(doc, dict) and doc.get("v") in (1, 2, 3, FORMAT_VERSION):
                     yield doc
 
 
-def load_features(info: dict) -> torch.Tensor:
-    """[rows, dim] BF16 CPU tensor from a trace's feature file."""
-    data = Path(info["path"]).read_bytes()
-    rows, dim = info["rows"], info["dim"]
-    if len(data) != rows * dim * 2:
-        raise ValueError(f"feature file {info['path']} has {len(data)} bytes, expected {rows * dim * 2}")
-    return torch.frombuffer(bytearray(data), dtype=torch.bfloat16).view(rows, dim)
-
-
-def load_topk(info: dict) -> tuple[torch.Tensor, torch.Tensor]:
-    """([rows, k] int32 ids, [rows, k] BF16 logits) from a trace's top-k files."""
-    rows, k = info["rows"], info["k"]
-    ids = torch.frombuffer(bytearray(Path(info["ids_path"]).read_bytes()), dtype=torch.int32).view(rows, k)
-    logits = torch.frombuffer(bytearray(Path(info["logits_path"]).read_bytes()), dtype=torch.bfloat16).view(rows, k)
-    return ids, logits
-
-
 def summarize(directory: str | Path) -> dict:
-    """Counts a trainer or operator wants before reading anything."""
-    requests = prompt_tokens = output_tokens = rounds = emitted = accepted = with_features = feature_rows = with_topk = 0
+    """Counts an operator wants before reading anything."""
+    requests = prompt_tokens = output_tokens = rounds = emitted = accepted = 0
     reasons: dict[str, int] = {}
     for doc in iter_records(directory):
         requests += 1
@@ -417,14 +218,8 @@ def summarize(directory: str | Path) -> dict:
                 rounds += 1
                 accepted += r["a"]
                 emitted += r["a"] + 1
-        if doc.get("features"):
-            with_features += 1
-            feature_rows += doc["features"]["rows"]
-        if doc.get("topk"):
-            with_topk += 1
     return {
         "requests": requests, "prompt_tokens": prompt_tokens, "output_tokens": output_tokens,
         "reasons": reasons, "spec_rounds": rounds, "accepted_tokens": accepted,
         "tokens_per_round": emitted / rounds if rounds else None,
-        "requests_with_features": with_features, "feature_rows": feature_rows, "requests_with_topk": with_topk,
     }

@@ -167,20 +167,6 @@ class SpecDecoder:
 
     def start(self, req, token) -> None:
         self.proposer.start(req, token)
-        window = self.proposer.window if self.proposer.requirements.capabilities.trace_features else 0
-        self._trace_features(req, req.committed_len - min(req.committed_len, window), req.committed_len)
-
-    def _trace_features(self, req, start: int, end: int) -> None:
-        """Copy the projected context rows the draft just received into the request's trace recorder."""
-        recorder = req.trace_features
-        if recorder is None or end <= start:
-            return
-        if not self.proposer.requirements.capabilities.trace_features or not self.proposer.ready(req) and not req.finished:
-            return
-        try:
-            recorder.append(self.proposer.projected_rows(req, start, end - start), start)
-        except ValueError:
-            recorder.valid = False
 
     def ready(self, req) -> bool:
         return self.proposer.ready(req)
@@ -274,14 +260,13 @@ class SpecDecoder:
             if accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests):
                 if self.timing:
                     torch.cuda.synchronize()
-                accept.round(batch, batch.proposal.tokens, self._target_topk(batch.requests, logits, b_sz, s_len),
-                             batch.started, batch.prepared)
+                accept.round(batch, batch.proposal.tokens, batch.started, batch.prepared)
                 return
             norm = norm_rows.view(b_sz, s_len, -1).clone() if self.proposer.requirements.features.final_norm else None
             layers = {lid: value.view(b_sz, s_len, -1).clone() for lid, value in layers.items()} if layers else None
             z = z_flat.view(b_sz, s_len, -1) if batch.sampled else z_flat.view(b_sz, s_len).clone()
             relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens, b_sz, s_len)
-            self._accept_batch(batch, z, VerifiedFeatures(norm, layers), topk=self._target_topk(batch.requests, logits, b_sz, s_len), relaxed=relaxed)
+            self._accept_batch(batch, z, VerifiedFeatures(norm, layers), relaxed=relaxed)
             return
         ctx = self.context(batch, self._eager_wrapper())
         self.finish(batch, self.ex.model.forward(batch.tokens, ctx))
@@ -343,15 +328,6 @@ class SpecDecoder:
         self.constrained_rounds = getattr(self, "constrained_rounds", 0) + 1
         return True
 
-    TOPK = 16
-
-    def _target_topk(self, reqs, logits, b_sz: int, s_len: int):
-        """Top-k target logits per verified row, only when a request in the batch records traces."""
-        if not any(r.trace_topk is not None for r in reqs):
-            return None
-        values, ids = logits.view(b_sz, s_len, -1).topk(self.TOPK, dim=-1)
-        return ids.to(torch.int32), values.to(torch.bfloat16)
-
     def context(self, batch: Verification, wrapper) -> ForwardContext:
         """Plan the eager verification attention wrapper."""
         b_sz, k = batch.proposal.tokens.shape
@@ -388,13 +364,13 @@ class SpecDecoder:
         self._constrain(batch, logits)
         z = logits.view(b_sz, s_len, -1) if batch.sampled else logits.argmax(-1).view(b_sz, s_len)
         relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens, b_sz, s_len)
-        self._accept_batch(batch, z, VerifiedFeatures(norm, layers), topk=self._target_topk(batch.requests, logits, b_sz, s_len), relaxed=relaxed)
+        self._accept_batch(batch, z, VerifiedFeatures(norm, layers), relaxed=relaxed)
 
-    def _accept_batch(self, batch, z, features, topk=None, relaxed=None):
+    def _accept_batch(self, batch, z, features, relaxed=None):
         self._accept(batch.requests, batch.proposal.tokens, z, features, batch.started, batch.prepared,
-                     proposal=batch.proposal if batch.sampled else None, topk=topk, relaxed=relaxed, confidence=batch.proposal.confidence)
+                     proposal=batch.proposal if batch.sampled else None, relaxed=relaxed, confidence=batch.proposal.confidence)
 
-    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, topk=None, relaxed=None, confidence=None) -> None:
+    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, relaxed=None, confidence=None) -> None:
         if self.timing:
             torch.cuda.synchronize()
         t2 = time.perf_counter()
@@ -466,7 +442,7 @@ class SpecDecoder:
                 # counts relaxed (non-argmax) accepts in the emitted prefix.
                 record = {"a": a, "y": y_l[i], "z": z_l[i] if proposal is None or r.params.greedy else None, "c": z_l[i][a]}
                 if used[i]:
-                    # block offsets (0 = first drafted token) emitted under the relaxed rule; the trainer masks them
+                    # block offsets (0 = first drafted token) emitted under the relaxed rule rather than as the argmax
                     record["rx"] = [j for j, f in enumerate(flags[i][:count]) if f]
                 if conf is not None:  # the draft's confidence per drafted position (SHARAR_TRACE_CONFIDENCE)
                     record["p1"] = [round(c[0], 5) for c in conf[i]]
@@ -510,12 +486,6 @@ class SpecDecoder:
         if self.timing:
             torch.cuda.synchronize()
             self.accept_feedback_seconds += time.perf_counter() - t_committed
-        for i, (r, emitted) in enumerate(zip(reqs, outputs)):
-            if r.trace_features is not None:
-                self._trace_features(r, r.committed_len - len(emitted), r.committed_len)
-            if r.trace_topk is not None and topk is not None:
-                count = len(emitted)
-                r.trace_topk.append(topk[0][i, :count], topk[1][i, :count], r.committed_len - count)
         self.rounds += 1
         if self.timing:
             torch.cuda.synchronize()

@@ -127,12 +127,6 @@ class EngineLoop:
         self._enqueue(("flush", fut, loop))
         await fut
 
-    async def reload_draft(self, draft_dir: str | None) -> str:
-        loop = asyncio.get_running_loop()
-        fut = loop.create_future()
-        self._enqueue(("reload_draft", draft_dir, fut, loop))
-        return await fut
-
     def stats(self) -> dict:
         # Called by the HTTP side. Sorting a bounded immutable snapshot never
         # stalls the engine or iterates its concurrently changing deque.
@@ -141,7 +135,7 @@ class EngineLoop:
     # ---- engine thread ----
     def _apply(self, cmd: tuple):
         """Apply one scheduler command, alike on every rank: ("submit", ids, params), ("cancel", request_id),
-        ("flush",), ("reload_draft", draft_dir) or ("stop",). The primary records it for the other ranks."""
+        ("flush",) or ("stop",). The primary records it for the other ranks."""
         kind, result = cmd[0], None
         if kind == "submit":
             result = self.sched.submit(cmd[1], cmd[2])
@@ -151,8 +145,6 @@ class EngineLoop:
                 self.sched.cancel(req)
         elif kind == "flush":
             self.sched.ex.flush_cache()
-        elif kind == "reload_draft":
-            result = self.sched.ex.reload_draft(cmd[1])
         elif kind == "stop":
             self.stop = True
             expect_peer_exit()
@@ -210,17 +202,6 @@ class EngineLoop:
                 _notify(loop, _resolve, fut, None, EngineUnavailable("engine unavailable"))
                 raise
             _notify(loop, _resolve, fut, True)
-        elif kind == "reload_draft":
-            _, draft_dir, fut, loop = cmd
-            try:
-                source = self._apply(("reload_draft", draft_dir))
-            except (ValueError, FileNotFoundError) as exc:
-                _notify(loop, _resolve, fut, None, InvalidRequest(str(exc)))
-                return
-            except Exception:
-                _notify(loop, _resolve, fut, None, EngineUnavailable("engine unavailable"))
-                raise
-            _notify(loop, _resolve, fut, source)
 
     def _run(self) -> None:
         # InferenceMode is thread-local. Pools/graphs may have been created

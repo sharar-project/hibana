@@ -105,8 +105,8 @@ class ParallelProposer:
         self.feature_cache = FeatureCache(context.max_batch * self.window * model.hidden * 2)
         self.requirements = ProposerRequirements(name, FeatureRequest(layers=model.features),
                                                 persistent_bytes=self.bytes, greedy_only=False, max_depth=15,
-                                                capabilities=Capabilities(device_feedback=True, reloadable=True, checkpoint_cache=True,
-                                                                          cold_payload=True, trace_features=True))
+                                                capabilities=Capabilities(device_feedback=True, checkpoint_cache=True,
+                                                                          cold_payload=True))
         self.workspace = torch.empty(128 * 2**20, dtype=torch.uint8, device=device)
         self.attention = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self.workspace, 'NHD')
         from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
@@ -114,11 +114,6 @@ class ParallelProposer:
                                                           window_left=self.window - 1))
         self.graphs = None
         self.cache_hits = self.cache_fallbacks = 0
-
-    def reload(self, snapshot):
-        """Copy a checkpoint into the serving draft between rounds (Reloadable); returns the served source."""
-        self.model.load_weights(snapshot)
-        return self.model.source
 
     def bind_checkpoint_cache(self, pool):
         if self.feature_cache.entries:
@@ -195,19 +190,6 @@ class ParallelProposer:
             if limit in req.checkpoints:
                 self._save(req, limit)
             offset = limit
-
-    def projected_rows(self, req, start, count):
-        """Projected context rows for positions [start, start + count) as the draft attends to them.
-
-        Only the last window of committed positions is retained in the ring.
-        """
-        state = req.proposer_state
-        if not isinstance(state, DraftState) or not state.valid:
-            raise ValueError('no draft context for this request')
-        if count < 0 or start < max(0, state.end - self.window) or start + count > state.end:
-            raise ValueError('positions outside the retained draft context')
-        positions = torch.arange(start, start + count, device=self.context.device)
-        return self.features[state.slot, positions % self.window]
 
     def start(self, req, token):
         state = self._state(req)

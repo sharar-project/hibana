@@ -1,4 +1,4 @@
-"""The client commands: chat, launch an agent, manage trained drafts. Standard library only (no torch)."""
+"""The client commands: chat, launch an agent, verify a server. Standard library only (no torch)."""
 from __future__ import annotations
 
 import json
@@ -18,49 +18,6 @@ def server_info(port: str) -> dict | None:
             return json.loads(r.read())
     except Exception:  # noqa: BLE001 - not serving
         return None
-
-
-def post_json(port: str, route: str, payload: dict, timeout: float = 120) -> dict:
-    request = urllib.request.Request(f"http://127.0.0.1:{port}{route}", data=json.dumps(payload).encode(),
-                                     headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as r:
-            return json.loads(r.read())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
-        try:
-            detail = json.loads(detail)["error"]["message"]
-        except Exception:  # noqa: BLE001 - not the engine's error shape
-            pass
-        sys.exit(f"{route} failed: {detail}")
-
-
-def reload_served_draft(s: Settings, run: str | None, dry: bool = False) -> bool:
-    """Swap the draft in the running server: a run name, or None for the pinned draft. On two Sparks the checkpoint is
-    copied to the peer first: every rank loads it from the same path, and a rank that cannot ends the pair.
-    Returns False when nothing is serving."""
-    port = str(s.port)
-    target = str((s.draft_runs / run / "best").resolve()) if run else "pinned"
-    if dry:
-        print(f"+ POST http://127.0.0.1:{port}/reload_draft {{\"draft\": \"{target}\"}}")
-        return True
-    info = server_info(port)
-    if info is None:
-        return False
-    if run and info.get("tp_size", 1) > 1:
-        from sharar.launch import tp
-        tp.copy(tp.peer(s), [Path(target)])
-    reply = post_json(port, "/reload_draft", {"draft": target})
-    print(f"serving now uses {reply.get('draft')} ({reply.get('seconds')}s)")
-    return True
-
-
-def current_draft(s: Settings) -> Path | None:
-    link = s.draft_runs / "current"
-    if not link.is_symlink():
-        return None
-    target = link.resolve()
-    return target if (target / "config.json").is_file() else None
 
 
 HARNESSES = ("claude", "opencode", "aider", "codex", "show")
@@ -135,57 +92,6 @@ def cmd_launch(args, s: Settings, dry: bool = False) -> int:
     if shutil.which(command[0]) is None:
         sys.exit(f"{command[0]} is not installed or not on PATH")
     os.execvpe(command[0], command, henv)  # in the caller's directory, replacing this process
-
-
-def cmd_draft(args, s: Settings, dry: bool = False) -> int:
-    runs = s.draft_runs
-    link = runs / "current"
-    if args.action == "list":
-        current = current_draft(s)
-        for run_dir in sorted(runs.glob("run-*")):
-            manifest = run_dir / "manifest.json"
-            best = run_dir / "best"
-            if not manifest.is_file():
-                continue
-            m = json.loads(manifest.read_text())
-            mark = " *" if current and best.resolve() == current else ""
-            base = m.get("base_eval", {}).get("tokens_per_round")
-            b = m.get("best", {})
-            print(f"{run_dir.name}: base {base:.3f} -> best {b.get('tokens_per_round', 0):.3f} at step {b.get('step')}{mark}")
-        print("current: " + (str(current) if current else "pinned publisher draft"))
-        return 0
-    if args.action == "use":
-        target = runs / args.run / "best"
-        if not (target / "config.json").is_file():
-            sys.exit(f"{target} is not a promoted checkpoint")
-        if dry:
-            print(f"+ ln -sfn {os.path.relpath(target, runs)} {link}")
-            return 0
-        tmp = runs / ".current.tmp"
-        if tmp.is_symlink() or tmp.exists():
-            tmp.unlink()
-        tmp.symlink_to(os.path.relpath(target, runs))
-        tmp.replace(link)
-        print(f"current -> {target}")
-        if not reload_served_draft(s, args.run, dry):
-            print("serving is down; it follows current at the next sharar serve")
-        return 0
-    if args.action == "pinned":
-        if link.is_symlink() and not dry:
-            link.unlink()
-        print("current draft removed")
-        if not reload_served_draft(s, None, dry):
-            print("serving is down; it uses the pinned publisher draft at the next sharar serve")
-        return 0
-    if args.action == "reload":
-        current = current_draft(s)
-        run = current.parent.name if current and current.parent.parent == runs.resolve() else None
-        if current and run is None:
-            sys.exit(f"current draft {current} is outside {runs}; serve it with sharar serve --draft")
-        if not reload_served_draft(s, run, dry):
-            sys.exit("serving is not up (sharar serve)")
-        return 0
-    return 2
 
 
 def cmd_chat(args, s: Settings) -> int:
