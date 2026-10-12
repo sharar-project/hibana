@@ -58,6 +58,17 @@ def test_serve_runs_the_engine_in_the_foreground(home, monkeypatch):
     assert args.traces == str(home / "results" / "traces") and (home / "results" / "traces").is_dir()
 
 
+def test_two_spark_serve_stays_the_user_for_ssh(home, monkeypatch):
+    """The CPU-list namespace makes the process root, and ssh would read root's keys: on two Sparks only the ranks
+    restart themselves in it, never the launcher that mirrors the checkout over ssh."""
+    from sharar.launch import lxcfs
+    wrapped = []
+    monkeypatch.setattr(lxcfs, "reexec_if_needed", lambda: wrapped.append(True))
+    monkeypatch.setattr(run, "serve", lambda args: 0)
+    assert cli.main(["serve", "27b", "--tp", "2"]) == 0 and wrapped == []
+    assert cli.main(["serve", "27b"]) == 0 and wrapped == [True]
+
+
 def test_serve_refuses_a_busy_port_and_bad_settings(home, monkeypatch):
     with pytest.raises(SystemExit, match="MAX_BATCH"):
         cli.main(["serve", "27b", "--max-batch", "500"])

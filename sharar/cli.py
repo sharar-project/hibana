@@ -231,8 +231,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     from sharar.launch import ctl, lxcfs, run
 
-    if args.command in ("serve", "engine", "dev"):
-        lxcfs.reexec_if_needed()  # before anything imports torch
+    if args.command in ("engine", "dev") or (args.command == "serve" and args.tp == 1):
+        # before anything imports torch. Two Sparks: each rank's `sharar engine` restarts itself, and the launcher stays
+        # the user (in the namespace it is root, and ssh would read root's keys)
+        lxcfs.reexec_if_needed()
     if args.command == "serve":
         return run.serve(args)
     if args.command == "engine":
