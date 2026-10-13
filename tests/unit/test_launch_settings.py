@@ -86,6 +86,24 @@ def test_throughput_decodes_more_requests(target, experts, batch, depths):
         assert launch.profile_defaults(profile, target)["SHARAR_MAX_BATCH"] == "4"
 
 
+@pytest.mark.parametrize("profile, target, state", [
+    ("exact", "qwen38", None), ("fast", "qwen38", None), ("throughput", "qwen38", "int8"),
+    ("exact", "flashnext", None), ("fast", "flashnext", None), ("throughput", "flashnext", "int8")])
+def test_the_8bit_state_under_throughput(profile, target, state):
+    # #161: +8-30% decode on the 27B at 4-16 requests, +13-25% on Flash-Next at 16-64; at one request nothing, and
+    # the 27B's prefill is slower, so `fast` and `exact` keep the FP32 state
+    assert launch.profile_defaults(profile, target).get("SHARAR_SSM_STATE") == state
+
+
+def test_the_8bit_state_default_yields(env):
+    assert resolve(env, "27b", "throughput").get("SHARAR_SSM_STATE") == "int8"
+    assert resolve({**env, "SHARAR_SSM_STATE": "fp32"}, "27b", "throughput").get("SHARAR_SSM_STATE") == "fp32"
+    assert resolve(env, "27b", "throughput", overrides={"SHARAR_SSM_STATE": "int4"}).get("SHARAR_SSM_STATE") == "int4"
+    assert resolve({**env, "SHARAR_SSM_STATE": "int8"}, "27b", "fast").get("SHARAR_SSM_STATE") == "int8"
+    # snapshot accepted states cannot commit a quantized state: the profile's int8 steps aside
+    assert resolve({**env, "SHARAR_VERIFY_STATE": "snapshots"}, "27b", "throughput").get("SHARAR_SSM_STATE", "fp32") == "fp32"
+
+
 @pytest.mark.parametrize("override, message", [
     ({"SHARAR_MAX_BATCH": "129"}, "MAX_BATCH"), ({"SHARAR_SPEC_DEPTHS": "8"}, "SPEC_DEPTHS"),
     ({"SHARAR_DRAFT_PRECISION": "fp4"}, "DRAFT_PRECISION"), ({"SHARAR_PROPOSER": "dspark"}, "SHARAR_PROPOSER"),
