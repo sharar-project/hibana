@@ -14,7 +14,7 @@ from sharar.kernels.fp8_gemv_cuda import fp8_gemv_cuda
 from sharar.kernels.fp8_quant import quant_fp8
 from sharar.kernels.nvfp4_quant import nvfp4_quantize
 from sharar.weights.modelopt import FP8_MAX, Fp8Linear, Nvfp4Linear
-from sharar.kernels import stable, verify_gemm, w3
+from sharar.kernels import prefill_gemm, stable, verify_gemm, w3
 
 # cuBLAS FP8 GEMM reaches ~60% of DRAM bandwidth at M<=4 on SM121; the streaming
 # GEMV is used up to this many rows.
@@ -66,6 +66,10 @@ def nvfp4_linear(x: torch.Tensor, lin: Nvfp4Linear, prequantized: tuple[torch.Te
     if (VERIFY_GEMM_ENABLED and FP4_GEMM_BACKEND == "cutlass" and out_dtype == torch.bfloat16
             and verify_gemm.is_mlp(m, lin.out_features, lin.in_features)):
         return verify_gemm.fp4_mlp(x_fp4, x_sf, lin)
+    if FP4_GEMM_BACKEND == "cutlass" and out_dtype == torch.bfloat16:
+        chosen = prefill_gemm.tactic(m, lin.out_features, lin.in_features)
+        if chosen is not None:
+            return prefill_gemm.fp4_gemm(x_fp4, x_sf, lin, chosen)
     out = _mm_fp4(
         x_fp4,
         lin.weight.T,
@@ -107,6 +111,8 @@ def fp8_linear(x: torch.Tensor | None, lin: Fp8Linear, x_q: torch.Tensor | None 
         out = flashinfer.bmm_fp8(x_q[None], lin.weight.t()[None], lin.input_scale,
                                 lin.weight_scale, torch.bfloat16, backend="cublas")[0]
     else:
+        out = prefill_gemm.fp8_gemm(x_q, lin)
+    if out is None:
         out = torch._scaled_mm(
             x_q,
             lin.weight.t(),

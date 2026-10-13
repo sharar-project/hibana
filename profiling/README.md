@@ -13,6 +13,7 @@ To measure a served build (quality suites, AIPerf speed, a lossy option) use the
 | `ab_identity.py` | Greedy outputs of the speculative engine on fixed prompts (batch one and four, exact and relaxed acceptance, each twice): run on two builds and compare for identity |
 | `flashnext_profile.py` | Kernel-level breakdown of eager Flash-Next decode steps (torch profiler) plus graph-replay step time |
 | `flashnext_quant.py` | Flash-Next trunk quantization error against the BF16 trunk on the serving path: argmax agreement, truncated KL and NLL, dense and sparse regions, with a rounding-noise control |
+| `prefill_gemm_tactics.py` | Every CUTLASS FP4 tactic for the 27B's MLP GEMMs at prefill row counts: bitwise equality with the default dispatch and time; the input to `sharar/kernels/prefill_gemm.py`'s table |
 | `tp_comm.py` | Two Sparks: the RDMA one-shot all-reduce against NCCL's ring per message size, bitwise check, inside a CUDA graph after GPU work and back to back (`sharar dev tp-comm` runs both ranks) |
 | `tp_draft_head.py` | Two Sparks: the vocabulary-parallel draft head against the whole-vocabulary one (`sharar dev tp-draft-head`) |
 | `tp_serve_bench.py` | Served speed over HTTP on one Spark or two: single-stream decode, 4 and 16 concurrent requests, long-prompt time to first token |

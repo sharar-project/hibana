@@ -149,7 +149,8 @@ class GatedDeltaNet:
         # Snapshot the last three pre-convolution inputs at each boundary.
         for slot, end, _ in plan.checkpoints:
             conv_states[slot] = mixed_qkv[end - CONV_STATE_LEN:end].transpose(0, 1)
-        mixed_qkv = causal_conv1d_fn(
+        # The convolution writes q, k and v as contiguous blocks: the delta rule reads them without copies.
+        packed = causal_conv1d_fn(
             mixed_qkv.transpose(0, 1),
             self.conv_weight,
             None,
@@ -159,8 +160,12 @@ class GatedDeltaNet:
             cache_indices=plan.cache_indices,
             query_start_loc=plan.query_start_loc,
             seq_lens_cpu=plan.seq_lens,
-        ).transpose(0, 1)[:t]
-        q, k, v = self._split_heads(mixed_qkv.unsqueeze(0))
+            key_dim=self.key_dim,
+        ).transpose(0, 1).view(-1)
+        qk = t * self.key_dim
+        q = packed[:qk].view(1, t, self.num_k_heads, self.head_k_dim)
+        k = packed[qk:2 * qk].view(1, t, self.num_k_heads, self.head_k_dim)
+        v = packed[2 * qk:].view(1, t, self.num_v_heads, self.head_v_dim)
         g, beta = fused_gdn_gating(self.A_log, a, b, self.dt_bias)
         if window is None:
             return gdn_prefill(
