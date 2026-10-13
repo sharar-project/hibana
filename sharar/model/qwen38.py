@@ -44,6 +44,11 @@ class DecoderLayer:
         else:
             self.mixer = GatedDeltaNet(w, f"{p}.linear_attn", index, device, target=target)
         self.mlp = Mlp(w, f"{p}.mlp", device, target.intermediate_size, fused_silu_quant=fused_silu_quant)
+        # The prefill norms with their quantization fused in (CuTe; CUDA only).
+        self.residual_norm = None
+        if torch.device(device).type == "cuda":
+            from sharar.kernels.cute import residual_norm
+            self.residual_norm = residual_norm
 
     def forward(self, hidden: torch.Tensor, residual: torch.Tensor | None, ctx: ForwardContext) -> tuple[torch.Tensor, torch.Tensor]:
         inplace = not ctx.capture
@@ -51,10 +56,22 @@ class DecoderLayer:
         # layer): the norm may overwrite it.
         consume = inplace and ctx.mode == "prefill"
         # Input norm also emits the FP8 input of the mixer's first projection.
-        hidden, hidden_q, residual = self.input_norm.fused_add_quant(hidden, residual, self.mixer.input_scale, inplace=inplace, verify=ctx.mode == "verify",
-                                                                  consume_input=consume)
+        fused = consume and self.residual_norm is not None
+        if fused and residual is not None and self.residual_norm.supported(hidden, residual):
+            # Prefill: one kernel normalizes in place and writes the FP8 copy (bitwise the two-pass path).
+            hidden_q = self.residual_norm.residual_norm_fp8(hidden, residual, self.input_norm.weight, self.input_norm.eps,
+                                                       self.mixer.input_scale)
+        else:
+            hidden, hidden_q, residual = self.input_norm.fused_add_quant(hidden, residual, self.mixer.input_scale, inplace=inplace,
+                                                                      verify=ctx.mode == "verify", consume_input=consume)
         # The mixer's and the MLP's last projections are row-parallel: sum the ranks' partial outputs.
         hidden = all_reduce(self.mixer.forward(hidden, ctx, hidden_q))
+        if (fused and self.mlp.fused_silu_quant and not ops.w3_decode(self.mlp.gate_up, hidden.shape[0])
+                and self.residual_norm.supported(hidden, residual)):
+            # Prefill: the post-attention norm writes the MLP's NVFP4 input directly (no BF16 output).
+            pre = self.residual_norm.residual_norm_nvfp4(hidden, residual, self.post_norm.weight, self.post_norm.eps,
+                                                    self.mlp.gate_up.input_scale_inv)
+            return all_reduce(self.mlp(None, prequantized=pre)), residual
         hidden, residual = self.post_norm.fused_add(hidden, residual, inplace=inplace, verify=ctx.mode == "verify",
                                                     consume_input=consume)
         hidden = all_reduce(self.mlp(hidden))
