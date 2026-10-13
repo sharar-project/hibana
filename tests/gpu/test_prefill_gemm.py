@@ -55,3 +55,29 @@ def test_consuming_norm_matches_the_copying_norm(rows):
     want, want_residual = norm.fused_add(x.clone(), residual.clone(), inplace=True)
     got, got_residual = norm.fused_add(x.clone(), residual.clone(), inplace=True, consume_input=True)
     assert torch.equal(got, want) and torch.equal(got_residual, want_residual)
+
+
+@pytest.mark.parametrize('names', [
+    ('model.language_model.layers.0.linear_attn.in_proj_qkv',),
+    ('model.language_model.layers.0.linear_attn.in_proj_z',),
+    ('model.language_model.layers.0.linear_attn.out_proj',),
+    ('model.language_model.layers.3.self_attn.o_proj',),
+])
+@pytest.mark.parametrize('rows', [2047, 2048])
+@torch.inference_mode()
+def test_fp8_algorithms_match_scaled_mm(names, rows, monkeypatch):
+    from sharar import config
+    from sharar.kernels import ops, prefill_gemm
+    from sharar.weights.modelopt import load_fp8_linear
+    from sharar.weights.safetensors import SnapshotWeights
+    w = SnapshotWeights(config.snapshot_dir())
+    try:
+        linear = load_fp8_linear(w, list(names), 'cuda')
+    finally:
+        w.close()
+    torch.manual_seed(rows)
+    x = torch.randn(rows, linear.weight.shape[1], device='cuda', dtype=torch.bfloat16)
+    out = ops.fp8_linear(x, linear)
+    monkeypatch.setattr(prefill_gemm, 'FP8_ALGOS', {})
+    reference = ops.fp8_linear(x, linear)
+    assert torch.equal(out.view(torch.int16), reference.view(torch.int16))

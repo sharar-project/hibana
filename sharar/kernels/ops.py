@@ -111,6 +111,8 @@ def fp8_linear(x: torch.Tensor | None, lin: Fp8Linear, x_q: torch.Tensor | None 
         out = flashinfer.bmm_fp8(x_q[None], lin.weight.t()[None], lin.input_scale,
                                 lin.weight_scale, torch.bfloat16, backend="cublas")[0]
     else:
+        out = prefill_gemm.fp8_gemm(x_q, lin)
+    if out is None:
         out = torch._scaled_mm(
             x_q,
             lin.weight.t(),
