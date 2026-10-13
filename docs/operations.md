@@ -60,7 +60,7 @@ same) and results, traces, sessions, drafter runs, 3-bit checkpoints and logs in
 | Request traces | off | `sharar serve --traces` (in `$SHARAR_RESULTS/traces`) or `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
 | Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
 | Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `SHARAR_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
-| GDN recurrent state | FP32 | `SHARAR_SSM_STATE=int8` or `int4` stores each GDN layer's state per window as in LeapQuant ([arXiv 2609.38166](https://arxiv.org/abs/2609.38166); `sharar/cache/ssm_format.py`, `sharar/kernels/ssm_window.py`): an integer residual with per-row scales and smoothed key columns, FP16 compensator terms (`SHARAR_SSM_COMPENSATORS`, unset: 4, or 8 for int4) and the committed tokens of the current window (`SHARAR_SSM_WINDOW`, 16), requantized once per window. The recurrent state per slot is 55 MiB (int8) or 41 MiB (int4) instead of 144 on the 27B, and 41 or 31 MiB instead of 108 on Flash-Next. Needs the reconstruct accepted state. Lossy and opt-in (measurements in [#129](https://github.com/abdelfattah-lab/sharar/pull/129)). Worth it on Flash-Next under `throughput`: 8.5% more decode throughput at 16 requests, and 2.6x the requests per GiB of state, so more requests fit (64 instead of 16 in the Spark container measured in [#161](https://github.com/abdelfattah-lab/sharar/issues/161), +91% decode throughput); at 1-4 requests the gain is within noise |
+| GDN recurrent state | 8-bit under `throughput` ([profiles](#serving-profiles)); FP32 otherwise | `SHARAR_SSM_STATE=fp32`, `int8` or `int4`. The quantized formats store each GDN layer's state per window as in LeapQuant ([arXiv 2609.38166](https://arxiv.org/abs/2609.38166); `sharar/cache/ssm_format.py`, `sharar/kernels/ssm_window.py`): an integer residual with per-row scales and smoothed key columns, FP16 compensator terms (`SHARAR_SSM_COMPENSATORS`, unset: 4, or 8 for int4) and the committed tokens of the current window (`SHARAR_SSM_WINDOW`, 16), requantized once per window. The recurrent state per slot is 55 MiB (int8) or 41 MiB (int4) instead of 144 on the 27B, and 41 or 31 MiB instead of 108 on Flash-Next. Needs the reconstruct accepted state. Lossy (measurements in [#129](https://github.com/abdelfattah-lab/sharar/pull/129) and [#161](https://github.com/abdelfattah-lab/sharar/issues/161)). It also lets more requests fit where memory is short (a Spark container: 64 Flash-Next requests instead of 16) |
 | Shape-stable prefill numerics | off | `SHARAR_STABLE_NUMERICS=1` (M-invariant kernels for the three row-count-dependent ops; see [limits](#numerical-limits)) |
 
 For MTP on the 27B, use `SHARAR_PROPOSER=mtp SHARAR_SPEC=3 SHARAR_DRAFT_PRECISION=bf16`. `SHARAR_PROPOSER` is `mtp`
@@ -79,6 +79,7 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 | Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next also its routed experts) | off | on | on |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next only | as fast |
 | Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
+| 8-bit GDN recurrent state (`SHARAR_SSM_STATE`) | off (FP32) | off (FP32) | on |
 
 Relaxed acceptance accepts a drafted token the target ranks within its top-k and within a logit margin of its
 argmax, so outputs are no longer the target's exact greedy continuation; a request can pin exact acceptance with
@@ -87,6 +88,13 @@ most 64 rows) cover the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resi
 3-bit routed experts replace the NVFP4 ones at every row count (17 GiB less resident). The lm_head keeps its
 original format. Speculative decoding itself, the Flash-Next 3-bit draft head, FP8/NVFP4
 weights and CUDA graphs are lossless and on in every profile. Benchmarks and gates use `exact`.
+
+The 8-bit GDN recurrent state (`int8:w16:r4`) shortens the verify round where the state is a large share of it, which
+grows with the requests decoded together. Measured on one Spark: the 27B decodes 8% faster at 4 requests, 24% at 8 and
+30% at 16; Flash-Next 13% faster at 16, 17% at 32 and 25% at 64 (9-13% on two Sparks). At one request neither gains,
+and the 27B's first token on a 10K-token prompt comes 14% later (3.08 to 3.51 s), so `fast` keeps FP32. A launch with
+`SHARAR_VERIFY_STATE=snapshots` keeps FP32, which that accepted state needs.
+
 A new lossy option enters `fast` (and so `throughput`) only through the lossy-change gate
 ([CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option)).
 

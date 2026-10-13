@@ -57,6 +57,9 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3") -
         p["SHARAR_MAX_BATCH"] = ("128" if flashnext_experts == "w3" else "64") if flashnext else "16"
         if flashnext:
             p["SHARAR_SPEC_DEPTHS"] = "16:3"
+    if profile == "throughput":
+        # the 8-bit GDN state pays with many requests (#129, #161); `fast` keeps FP32: no gain at one request, slower prefill
+        p["SHARAR_SSM_STATE"] = "int8"
     return p
 
 
@@ -215,6 +218,8 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     values["SHARAR_TARGET"] = name
     profile = profile or values.get("SHARAR_PROFILE") or "fast"
     for k, v in profile_defaults(profile, name, values.get("SHARAR_FLASHNEXT_EXPERTS", "w3")).items():
+        if k == "SHARAR_SSM_STATE" and values.get("SHARAR_VERIFY_STATE", "reconstruct") != "reconstruct":
+            continue  # the quantized state commits through the verify ring: other accepted states keep FP32
         values.setdefault(k, v)
     values["SHARAR_PROFILE"] = profile
 
