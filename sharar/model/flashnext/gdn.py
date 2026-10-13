@@ -13,8 +13,6 @@ from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 
 
 class FlashNextGdn(GatedDeltaNet):
-    fused_window_norm = False  # the window kernel's epilogue is the 27B's swish gate; `_finish` applies the sigmoid one
-
     def __init__(self, w, prefix: str, layer_id: int, device: torch.device, target, precision: str):  # noqa: D107
         self.layer_id = layer_id
         self.device = device
@@ -64,6 +62,20 @@ class FlashNextGdn(GatedDeltaNet):
             z = self.in_z(x)
         b, a = self._project_ba(x)
         return mixed_qkv, z, b, a
+
+    def _window_norm(self, z):
+        """The window kernel's epilogue: the gated RMS norm with this model's gate, then the input quantization of the out
+        projection's 3-bit copy when this call uses it (E4M3 per 32-group, `w3.quant_groups`), else BF16."""
+        z = z.reshape(-1, self.value_dim)
+        groups = self.out.scale is not None and self.out._uses_w3(z.shape[0])
+        return (z, self.norm_weight, self.eps, "groups" if groups else None, self.gate_activation)
+
+    def _window_out(self, out, z, t, *, verify=False):
+        if isinstance(out, tuple):  # the 3-bit copy's quantized input and its group scales
+            from sharar.kernels import w3
+            x_q, x_scale = out
+            return w3.w3_linear(x_q, self.out.w3, x_scale)
+        return self.out(out)
 
     def _finish(self, core: torch.Tensor, z: torch.Tensor, t: int, *, verify: bool = False) -> torch.Tensor:
         core = rms_norm_gated(
