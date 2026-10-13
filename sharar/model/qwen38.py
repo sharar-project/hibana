@@ -47,11 +47,16 @@ class DecoderLayer:
 
     def forward(self, hidden: torch.Tensor, residual: torch.Tensor | None, ctx: ForwardContext) -> tuple[torch.Tensor, torch.Tensor]:
         inplace = not ctx.capture
+        # Prefill hands each norm a block output nothing reads again (selected feature streams are copied after the
+        # layer): the norm may overwrite it.
+        consume = inplace and ctx.mode == "prefill"
         # Input norm also emits the FP8 input of the mixer's first projection.
-        hidden, hidden_q, residual = self.input_norm.fused_add_quant(hidden, residual, self.mixer.input_scale, inplace=inplace, verify=ctx.mode == "verify")
+        hidden, hidden_q, residual = self.input_norm.fused_add_quant(hidden, residual, self.mixer.input_scale, inplace=inplace, verify=ctx.mode == "verify",
+                                                                  consume_input=consume)
         # The mixer's and the MLP's last projections are row-parallel: sum the ranks' partial outputs.
         hidden = all_reduce(self.mixer.forward(hidden, ctx, hidden_q))
-        hidden, residual = self.post_norm.fused_add(hidden, residual, inplace=inplace, verify=ctx.mode == "verify")
+        hidden, residual = self.post_norm.fused_add(hidden, residual, inplace=inplace, verify=ctx.mode == "verify",
+                                                    consume_input=consume)
         hidden = all_reduce(self.mlp(hidden))
         return hidden, residual
 
