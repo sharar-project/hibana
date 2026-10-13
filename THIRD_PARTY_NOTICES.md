@@ -13,7 +13,7 @@ a new file, and add a row here in the same commit.
 | Z Lab DFlash, <https://github.com/z-lab/dflash>, snapshot `07ebd93db9f472af339b644bb70221ad8428328a` | DFlash2 reference convolution arithmetic order and selector semantics; independent test oracle, excluded from runtime dependencies | MIT, Copyright (c) 2026 Z Lab |
 | flash-linear-attention, <https://github.com/fla-org/flash-linear-attention> (Songlin Yang, Yu Zhang) | Gated DeltaNet Triton kernels: chunked prefill, fused recurrent decode, gated RMSNorm, L2 norm | MIT License |
 | causal-conv1d, <https://github.com/Dao-AILab/causal-conv1d> (Tri Dao) and vLLM, <https://github.com/vllm-project/vllm> | Triton causal Conv1D prefill and state-update kernels | BSD 3-Clause (causal-conv1d), Apache License 2.0 (vLLM) |
-| FlashInfer, <https://github.com/flashinfer-ai/flashinfer> | Used as a dependency, not vendored: paged attention, NVFP4/FP8 GEMM, activation quantization, sampling | Apache License 2.0 |
+| FlashInfer, <https://github.com/flashinfer-ai/flashinfer> | A dependency (paged attention, NVFP4/FP8 GEMM, activation quantization, sampling); `sharar/kernels/cute/residual_norm.py` vendors the body of 0.6.17's CuTe `FusedAddRMSNormKernel` with quantizing epilogues added | Apache License 2.0 |
 
 Sharar's early numerical parity was checked against a reference SGLang runtime, which was never
 distributed with Sharar; that tooling was removed on 2026-10-02.
