@@ -64,7 +64,6 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3") -
         p["SHARAR_MAX_BATCH"] = ("128" if flashnext_experts == "w3" else "64") if flashnext else "16"
         if flashnext:
             p["SHARAR_SPEC_DEPTHS"] = "16:3"
-    if profile == "throughput":
         # the 8-bit GDN state pays with many requests (#129, #161); `fast` keeps FP32: no gain at one request, slower prefill
         p["SHARAR_SSM_STATE"] = "int8"
     return p
