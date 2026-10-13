@@ -72,6 +72,25 @@ def test_without_rwf_nowait_the_maps_answer_and_keep_the_rows(table, monkeypatch
     assert (table.hits, table.misses) == (hits + rows.size, misses)
 
 
+def test_where_mincore_cannot_see_the_page_cache_every_row_goes_to_the_threads(table, monkeypatch):
+    """Files this process neither owns nor may write: mincore would call every page resident, so the maps answer
+    through the threads only, as before #166."""
+    import os
+    from pathlib import Path
+    from sharar.model.flashnext import ple
+    path = Path(table.maps[0].filename)
+    assert ple._residency_visible(path)  # the test's own file
+    monkeypatch.setattr(os, "geteuid", lambda: os.stat(path).st_uid + 1)
+    monkeypatch.setattr(os, "access", lambda *args, **kwargs: False)
+    assert not ple._residency_visible(path)
+    rows = np.random.default_rng(3).integers(0, table.rows, size=(4, 16))
+    reference = table.gather_mapped(rows)
+    table._nowait, table._mincore = False, False
+    hits, misses = table.hits, table.misses
+    assert (table.gather(rows) == reference).all()
+    assert (table.hits, table.misses) == (hits, misses + rows.size)
+
+
 class _Hash:
     ngram, heads_per_ngram, heads = 3, 2, 4
     multipliers = torch.tensor([1000003, 999983, 1000033], dtype=torch.int64)

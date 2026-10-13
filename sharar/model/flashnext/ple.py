@@ -30,6 +30,14 @@ _libc = ctypes.CDLL(None, use_errno=True)
 _libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_ubyte)]
 
 
+def _residency_visible(path: Path) -> bool:
+    """Whether `mincore` reports `path`'s page-cache residency. Linux (5.0+) reports it only for files the caller owns or
+    may open for writing; for others it says every page is resident (a root-owned file seen from a container's user, a
+    shared read-only model directory)."""
+    effective = os.access in os.supports_effective_ids
+    return os.stat(path).st_uid == os.geteuid() or os.access(path, os.W_OK, effective_ids=effective)
+
+
 class PleTable:
     """The FP8 shards on the host: memory maps for bulk gathers plus parallel `pread`s for the rows a
     decode step needs. A token's sixteen rows are scattered over the 51 GB table, so a serial gather
@@ -40,7 +48,8 @@ class PleTable:
     standalone CPython is; #166) the reads cannot say which rows they would find cached, and ZFS's own cache (the ARC,
     often a few GiB) holds few of them. Then the gather asks `mincore` which rows' pages the page cache holds under the
     memory maps, copies those from the maps, and reads the others through the maps from the threads, so the page
-    cache, which can grow into free memory, keeps the rows decoding reads again."""
+    cache, which can grow into free memory, keeps the rows decoding reads again. Where `mincore` cannot see the page
+    cache (files this process neither owns nor may write), every row goes to the threads."""
 
     THREADS = 32
 
@@ -83,6 +92,7 @@ class PleTable:
         for m in self.maps:
             m._mmap.madvise(mmap.MADV_RANDOM)  # a fault reads its own page, not a readahead window of neighbours
         self._vec = (ctypes.c_ubyte * 2)()
+        self._mincore = all(_residency_visible(snap / file) for file in opened)  # else every row through the threads
 
     def gather(self, rows: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
         """rows: int64 array of any shape -> uint8 [..., ROW_BYTES] (into `out` when given, contiguous).
@@ -116,7 +126,7 @@ class PleTable:
         mapped = not self._nowait
         if mapped:
             addrs = (self.bases[shard] + local * ROW_BYTES).tolist()
-            misses += self._from_maps(addrs, out, start)
+            misses += self._from_maps(addrs, out, start) if self._mincore else range(start, n)
         self.hits += n - len(misses)
         self.misses += len(misses)
 
