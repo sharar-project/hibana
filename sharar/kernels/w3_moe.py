@@ -25,6 +25,9 @@ from sharar.kernels import w3
 
 HIDDEN, INTER, TOPK, EXPERTS = 2560, 640, 10, 512
 ORDER_IN_KERNEL = 640  # up to this many (row, k) pairs the kernel sorts them itself
+# From this many rows each 64-pair pass of an expert runs in its own block, next to the expert's other passes, so its
+# weights stream from DRAM about once instead of once per pass (#144). The same bits either way.
+WIDE_ROWS = 1024
 RATIOS = tuple(round(0.5 + 0.025 * i, 3) for i in range(21))  # group scale = amax / max level * ratio, 0.5 .. 1.0
 
 
@@ -156,7 +159,7 @@ def w3_moe(experts: W3Experts, x: torch.Tensor, ids: torch.Tensor, weights: torc
         order = torch.sort(key, stable=True).indices.to(torch.int32)
     return w3._module().w3_moe(x.contiguous(), ids, weights.float().contiguous(), order,
                                experts.planes13, experts.scales13, experts.row13, experts.planes2, experts.scales2, experts.row2,
-                               experts.lut, experts.base)
+                               experts.lut, experts.base, WIDE_ROWS)
 
 
 def quant_e4m3(t: torch.Tensor, stage: str) -> torch.Tensor:

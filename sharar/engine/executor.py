@@ -48,7 +48,7 @@ class Executor:
     def __init__(self, model: Qwen38, num_pages: int | None = None, num_slots: int | None = None, max_batch: int = 4, use_cache: bool = True, log=None, max_context: int | None = None, spec_config=None):
         self.target: Target = model.target
         max_context = self.target.context_length if max_context is None else max_context
-        self.profile = ServingProfile(max_context=max_context, max_batch=max_batch)
+        self.profile = ServingProfile(max_context=max_context, max_batch=max_batch, chunk_size=self.target.prefill_chunk)
         import flashinfer
 
         self.max_context = max_context

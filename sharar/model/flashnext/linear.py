@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import torch
 
 from sharar.weights.sharding import REPLICATED, Shard
+from sharar.kernels import prefill_gemm
 
 FP8_MAX = 448.0
 GEMV_MAX_ROWS = 4
@@ -123,5 +124,7 @@ class TrunkLinear:
             else:
                 from sharar.kernels.draft_fp8 import quant_dynamic
                 x_q, x_scale = quant_dynamic(flat)
-            out = torch._scaled_mm(x_q, self.weight.T, scale_a=x_scale, scale_b=self.scale, out_dtype=torch.bfloat16)
+            out = prefill_gemm.fp8_gemm(x_q, self.weight, x_scale, self.scale)  # a full 2K chunk's chosen algorithm, or None
+            if out is None:
+                out = torch._scaled_mm(x_q, self.weight.T, scale_a=x_scale, scale_b=self.scale, out_dtype=torch.bfloat16)
         return out.reshape(*x.shape[:-1], self.out_features)

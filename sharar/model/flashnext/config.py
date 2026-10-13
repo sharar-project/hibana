@@ -50,3 +50,4 @@ MTP_LAYERS = 1
 # Resident weights: NVFP4 experts ~68 GB + FP8 trunk ~3.5 GB + BF16 embeddings 1.3 GB + FP8 head 0.6 GB,
 # plus the staging of one layer's expert shards during the load.
 WEIGHT_LOAD_PEAK_BYTES = 80 * 2**30
+PREFILL_CHUNK = 4096  # prompt tokens a request prefills per step (target.py)

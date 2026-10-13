@@ -23,9 +23,13 @@ import torch
 
 # (out_features, in_features) of an NVFP4 linear: (fewest rows, tactic). The 27B's MLP gate/up and down projections.
 TACTICS = {(34816, 5120): (1024, 24), (5120, 17408): (1536, 25)}
-# (out_features, in_features) of an FP8 linear at FP8_ROWS rows: index into FlashInfer's cuBLASLt enumeration.
+# (out_features, in_features) of an FP8 linear at FP8_ROWS rows: index into FlashInfer's cuBLASLt enumeration. The
+# 27B's projections (static activation scales), then Flash-Next's trunk (dynamic ones; with the GDN, attention and
+# hyper-connection mixer shapes, about 15 ms per 2K chunk).
 FP8_ROWS = 2048
-FP8_ALGOS = {(10240, 5120): 2, (6144, 5120): 2, (5120, 6144): 2, (14336, 5120): 0}
+FP8_ALGOS = {(10240, 5120): 2, (6144, 5120): 2, (5120, 6144): 2, (14336, 5120): 0,
+             (10240, 320): 3, (320, 10240): 0, (10240, 2560): 2, (6144, 2560): 3, (2560, 6144): 2, (13312, 2560): 2,
+             (2560, 640): 1}
 _fp8_checked: dict[tuple[int, int], bool] = {}
 
 
@@ -58,19 +62,20 @@ def _fp8_runner():
     return get_gemm_module().cublas_fp8_gemm_runner()
 
 
-def fp8_gemm(x_q: torch.Tensor, lin) -> torch.Tensor | None:
-    """The FP8 projection with its chosen cuBLASLt algorithm, or None for torch._scaled_mm."""
-    n, k = lin.out_features, lin.weight.shape[1]
+def fp8_gemm(x_q: torch.Tensor, weight: torch.Tensor, scale_a: torch.Tensor, scale_b: torch.Tensor) -> torch.Tensor | None:
+    """x_q [M, K] @ weight [N, K]^T in FP8 with per-tensor scales, BF16 out, through the chosen cuBLASLt algorithm;
+    None for torch._scaled_mm."""
+    n, k = weight.shape
     algo = FP8_ALGOS.get((n, k))
     if algo is None or x_q.shape[0] != FP8_ROWS or _fp8_checked.get((n, k)) is False:
         return None
     from flashinfer.gemm.gemm_base import DEFAULT_WORKSPACE_SIZE, _get_cache_buf
     out = torch.empty((1, FP8_ROWS, n), device=x_q.device, dtype=torch.bfloat16)
     workspace = _get_cache_buf("bmm_fp8_workspace", DEFAULT_WORKSPACE_SIZE, x_q.device)
-    _fp8_runner().forward([x_q[None], lin.weight.t()[None], lin.input_scale, lin.weight_scale, out, workspace], tactic=algo)
+    _fp8_runner().forward([x_q[None], weight.t()[None], scale_a.reshape(()), scale_b.reshape(()), out, workspace], tactic=algo)
     if (n, k) not in _fp8_checked:  # once per shape: the same bits as the default dispatch, or keep the default
-        reference = torch._scaled_mm(x_q, lin.weight.t(), scale_a=lin.input_scale.reshape(1, 1),
-                                     scale_b=lin.weight_scale.reshape(1, 1), out_dtype=torch.bfloat16)
+        reference = torch._scaled_mm(x_q, weight.t(), scale_a=scale_a.reshape(1, 1), scale_b=scale_b.reshape(1, 1),
+                                     out_dtype=torch.bfloat16)
         _fp8_checked[n, k] = torch.equal(out[0].view(torch.int16), reference.view(torch.int16))
         if not _fp8_checked[n, k]:
             return reference

@@ -58,6 +58,8 @@ class Target:
     cache_env: str = "SHARAR_HF_CACHE"
     # Gated DeltaNet output gate: "swish" (silu(z), the 27B) or "sigmoid" (Flash-Next).
     output_gate: str = "swish"
+    # Most prompt tokens one request prefills per step (`ServingProfile.chunk_size`).
+    prefill_chunk: int = 2048
     # Mixture of experts (0 = dense MLP of `intermediate_size`).
     num_experts: int = 0
     experts_per_token: int = 0
@@ -259,6 +261,10 @@ def _flashnext() -> Target:
         linear_conv_kernel=c.LINEAR_CONV_KERNEL, vocab_size=c.VOCAB_SIZE, rms_norm_eps=c.RMS_NORM_EPS,
         max_position_embeddings=c.MAX_POSITION_EMBEDDINGS, nvfp4_group_size=c.NVFP4_GROUP_SIZE,
         weight_load_peak_bytes=c.WEIGHT_LOAD_PEAK_BYTES, output_gate="sigmoid",
+        # Every 2K chunk streams all 512 experts' weights (47 GB over the 48 layers); 4K chunks halve that per token
+        # (with the MoE's pass-per-block kernel, 16K prompts prefill ~4% faster) for 1 GiB more activations and
+        # 2 s instead of 1 s that a step holds other requests' decode (the prefill budget is already 4,096 rows).
+        prefill_chunk=c.PREFILL_CHUNK,
         num_experts=c.NUM_EXPERTS, experts_per_token=c.EXPERTS_PER_TOKEN, moe_intermediate_size=c.MOE_INTERMEDIATE_SIZE,
         shared_expert_intermediate_size=c.SHARED_EXPERT_INTERMEDIATE_SIZE,
         hc_count=c.HC_COUNT, hc_lowrank=c.HC_LOWRANK,
