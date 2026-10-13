@@ -10,7 +10,10 @@ Values are packed two per byte (element 2i in the low nibble). Block scales are
 written in the 128x4 swizzled layout the CUTLASS SM120 GEMM reads:
   rows in tiles of 128 (4 groups of 32), columns in groups of 4:
   offset = tile_r*(128*Kp) + (r%32)*16 + (r//32 % 4)*4 + tile_c*512 + (c%4)
-FlashInfer's plain kernel streams at ~43 GB/s on GB10; this one is memory-bound.
+FlashInfer's plain kernel streams at ~43 GB/s on GB10; this one is memory-bound. The E2M1 rounding is the hardware
+conversion (cvt.rn.satfinite.e2m1x2), with the saturation and NaN rule of the comparison chain it replaced: equal
+for every FP32 input (tests/gpu/test_nvfp4_quant.py checks all 2^32). Prefill-sized calls (from PREFILL_ROWS rows) use
+wide column blocks, consecutive blocks along a row and streaming loads (#127).
 """
 
 from __future__ import annotations
@@ -27,28 +30,45 @@ def rcp_approx_ftz(x):
 
 
 @triton.jit
+def e2m1_pairs(v, N: tl.constexpr):
+    """The E2M1 codes of v [N] packed two per byte (element 2i in the low nibble): round to nearest even,
+    saturate at 6, NaN to 6, the sign kept (also of zero and of what underflows to zero)."""
+    a = tl.minimum(tl.abs(v), 6.0)
+    a = tl.where(a == a, a, 6.0)
+    signed = (a.to(tl.int32, bitcast=True) | (v.to(tl.int32, bitcast=True) & -2147483648)).to(tl.float32, bitcast=True)
+    lo, hi = tl.split(tl.reshape(signed, (N // 2, 2)))
+    return tl.inline_asm_elementwise(
+        "{ .reg .b8 e; cvt.rn.satfinite.e2m1x2.f32 e, $2, $1; cvt.u32.u8 $0, e; }",
+        constraints="=r,f,f", args=[lo, hi], dtype=tl.int32, is_pure=True, pack=1).to(tl.uint8)
+
+
+@triton.jit
 def _nvfp4_quant_kernel(
     x_ptr, gs_ptr, q_ptr, sf_ptr,
     M, K, K_PAD_GROUPS,
     stride_xm,
-    BLOCK_K: tl.constexpr, SILU_MUL: tl.constexpr,
+    BLOCK_K: tl.constexpr, SILU_MUL: tl.constexpr, COL_BLOCKS: tl.constexpr, STREAM: tl.constexpr,
 ):
+    # One program per (row, column block), consecutive programs along a row.
     # Widen BEFORE multiplying by strides. B32x2K's dense gate/up tensor
     # crosses 2^31 elements at row 61681; widening the product is too late.
     # Keep packed-output and swizzled-scale row offsets wide as well.
-    row = tl.program_id(0).to(tl.int64)
-    kb = tl.program_id(1)
+    pid = tl.program_id(0)
+    row = (pid // COL_BLOCKS).to(tl.int64)
+    kb = pid % COL_BLOCKS
     NB: tl.constexpr = BLOCK_K // 16
     cols = kb * BLOCK_K + tl.arange(0, BLOCK_K)
     mask = cols < K
+    # STREAM: prefill reads each activation once; do not keep it in L2.
+    policy: tl.constexpr = "evict_first" if STREAM else ""
     if SILU_MUL:
         # x holds [gate | up] with K values each; quantize silu(gate) * up.
-        g = tl.load(x_ptr + row * stride_xm + cols, mask=mask, other=0.0).to(tl.float32)
-        u = tl.load(x_ptr + row * stride_xm + K + cols, mask=mask, other=0.0).to(tl.float32)
+        g = tl.load(x_ptr + row * stride_xm + cols, mask=mask, other=0.0, eviction_policy=policy).to(tl.float32)
+        u = tl.load(x_ptr + row * stride_xm + K + cols, mask=mask, other=0.0, eviction_policy=policy).to(tl.float32)
         # The fused path preserves the BF16 activation boundary of the MLP.
         x = (tl.div_rn(g, 1.0 + libdevice.exp(-g)) * u).to(tl.bfloat16).to(tl.float32)
     else:
-        x = tl.load(x_ptr + row * stride_xm + cols, mask=mask, other=0.0).to(tl.float32)
+        x = tl.load(x_ptr + row * stride_xm + cols, mask=mask, other=0.0, eviction_policy=policy).to(tl.float32)
     xb = tl.reshape(x, (NB, 16))
     amax = tl.max(tl.abs(xb), axis=1)  # [NB]
     gs = tl.load(gs_ptr)
@@ -57,25 +77,7 @@ def _nvfp4_quant_kernel(
     # Algebraically gs/sf, but its floating-point rounding differs at FP4 ties.
     inv = tl.where(amax != 0.0, rcp_approx_ftz(sf_f * rcp_approx_ftz(gs)), 0.0)
     v = xb * inv[:, None]
-    # e2m1 round-to-nearest-even over magnitudes {0, .5, 1, 1.5, 2, 3, 4, 6}, saturate at 6
-    a = tl.minimum(tl.abs(v), 6.0)
-    # candidates by range; ties go to even mantissa
-    q = tl.where(a <= 0.25, 0.0,
-        tl.where(a < 0.75, 0.5,
-        tl.where(a <= 1.25, 1.0,  # 1.25 tie -> 1.0 (even)
-        tl.where(a < 1.75, 1.5,
-        tl.where(a <= 2.5, 2.0,   # 2.5 tie -> 2.0 (even)
-        tl.where(a < 3.5, 3.0,
-        tl.where(a <= 5.0, 4.0, 6.0)))))))  # 5.0 tie -> 4.0 (even)
-    # The inclusive first boundary rounds 0.25 to even zero. At 0.75 the
-    # strict second comparison falls through to even 1.0.
-    code = tl.where(q == 0.0, 0, tl.where(q == 0.5, 1, tl.where(q == 1.0, 2, tl.where(q == 1.5, 3,
-           tl.where(q == 2.0, 4, tl.where(q == 3.0, 5, tl.where(q == 4.0, 6, 7))))))).to(tl.int32)
-    # E2M1 preserves the sign of zero, including inputs that underflow to zero.
-    code = tl.where(v.to(tl.int32, bitcast=True) < 0, code | 8, code)
-    code = tl.reshape(code, (BLOCK_K,))
-    lo = tl.reshape(code, (BLOCK_K // 2, 2))
-    packed = (tl.sum(lo * tl.reshape(tl.where(tl.arange(0, BLOCK_K) % 2 == 0, 1, 16), (BLOCK_K // 2, 2)), axis=1)).to(tl.uint8)
+    packed = e2m1_pairs(tl.reshape(v, (BLOCK_K,)), BLOCK_K)
     pcols = kb * (BLOCK_K // 2) + tl.arange(0, BLOCK_K // 2)
     tl.store(q_ptr + row * (K // 2) + pcols, packed, mask=pcols < K // 2)
     # swizzled scale factors
@@ -105,6 +107,20 @@ def _scale_buffer(m: int, k: int, device: torch.device) -> torch.Tensor:
 
 _SCALE_BUFFERS: dict = {}
 
+# From this many rows a call is a prefill chunk: wide column blocks and streaming loads (measured on the 27B's
+# [2048, 5120] MLP input and [2048, 2 x 17408] gate/up output; decode and verification keep the narrow blocks).
+PREFILL_ROWS = 256
+
+
+def _launch(x, global_scale, q, sf, m, k, k_pad_groups, *, silu_mul):
+    prefill = m >= PREFILL_ROWS
+    block_k = min(4096 if prefill else 1024, triton.next_power_of_2(k))
+    col_blocks = triton.cdiv(k, block_k)
+    _nvfp4_quant_kernel[(m * col_blocks,)](
+        x, global_scale, q, sf, m, k, k_pad_groups, x.stride(0), BLOCK_K=block_k, SILU_MUL=silu_mul,
+        COL_BLOCKS=col_blocks, STREAM=prefill, num_warps=8 if prefill else 4,
+    )
+
 
 def nvfp4_quantize(x: torch.Tensor, global_scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """x: [M, K] bf16 (K % 16 == 0). Returns (packed [M, K/2] uint8, sf [M_pad128, (K/16)_pad4] fp8 swizzled).
@@ -115,10 +131,7 @@ def nvfp4_quantize(x: torch.Tensor, global_scale: torch.Tensor) -> tuple[torch.T
     k_pad_groups = (groups + 3) // 4 * 4
     q = torch.empty((m, k // 2), dtype=torch.uint8, device=x.device)
     sf = _scale_buffer(m, k, x.device)
-    block_k = min(1024, triton.next_power_of_2(k))
-    _nvfp4_quant_kernel[(m, triton.cdiv(k, block_k))](
-        x, global_scale, q, sf, m, k, k_pad_groups, x.stride(0), BLOCK_K=block_k, SILU_MUL=False, num_warps=4,
-    )
+    _launch(x, global_scale, q, sf, m, k, k_pad_groups, silu_mul=False)
     return q, sf
 
 
@@ -131,8 +144,5 @@ def silu_mul_nvfp4_quantize(gate_up: torch.Tensor, global_scale: torch.Tensor) -
     k_pad_groups = (groups + 3) // 4 * 4
     q = torch.empty((m, k // 2), dtype=torch.uint8, device=gate_up.device)
     sf = _scale_buffer(m, k, gate_up.device)
-    block_k = min(1024, triton.next_power_of_2(k))
-    _nvfp4_quant_kernel[(m, triton.cdiv(k, block_k))](
-        gate_up, global_scale, q, sf, m, k, k_pad_groups, gate_up.stride(0), BLOCK_K=block_k, SILU_MUL=True, num_warps=4,
-    )
+    _launch(gate_up, global_scale, q, sf, m, k, k_pad_groups, silu_mul=True)
     return q, sf
