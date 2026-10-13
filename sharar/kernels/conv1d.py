@@ -55,7 +55,9 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
     NP2_STATELEN: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
+    KEY_DIM: tl.constexpr = 0,  # sharar: > 0 writes the [q | k | v] features as three contiguous [seqlen, width] blocks
 ):
+    total_tokens = seqlen  # sharar: `seqlen` becomes this sequence's length below; the packed blocks span the batch
     conv_states_ptr = initial_states_ptr
     conv_state_indices_ptr = cache_indices_ptr
     stride_conv_state_seq = stride_istate_seq
@@ -375,12 +377,20 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
         mask_1d = (idx_token < segment_len) & (
             idx_feats < dim
         )  # token-index  # feature-index
-        o_ptrs = (
-            o_ptr
-            + (sequence_start_index + token_offset + idx_token).to(tl.int64)
-            * stride_o_token
-            + (idx_feats * stride_o_dim)
-        )
+        if KEY_DIM > 0:
+            # sharar: q (features [0, K)), k ([K, 2K)) and v ([2K, dim)) each in its own row-major block, so the
+            # delta rule reads them without copies; the values are the same.
+            section = tl.where(idx_feats < KEY_DIM, 0, tl.where(idx_feats < 2 * KEY_DIM, KEY_DIM, 2 * KEY_DIM))
+            width = tl.where(idx_feats < 2 * KEY_DIM, KEY_DIM, dim - 2 * KEY_DIM)
+            token = (sequence_start_index + token_offset + idx_token).to(tl.int64)
+            o_ptrs = o_ptr + section.to(tl.int64) * total_tokens + token * width + (idx_feats - section)
+        else:
+            o_ptrs = (
+                o_ptr
+                + (sequence_start_index + token_offset + idx_token).to(tl.int64)
+                * stride_o_token
+                + (idx_feats * stride_o_dim)
+            )
 
         tl.store(o_ptrs, acc, mask=mask_1d)
 
@@ -397,6 +407,7 @@ def causal_conv1d_fn(
     activation: Optional[str] = "silu",
     pad_slot_id: int = PAD_SLOT_ID,
     validate_data=False,
+    key_dim: int = 0,
     **kwargs,
 ):
     """support varlen + continuous batching when x is 2D tensor
@@ -415,6 +426,8 @@ def causal_conv1d_fn(
     query_start_loc: (batch + 1) int32
         The cumulative sequence lengths of the sequences in
         the batch, used to index into sequence. prepended by 0.
+    key_dim: sharar: when > 0, the output's storage holds q (features [0, key_dim)), k ([key_dim, 2 key_dim)) and
+        v (the rest) as three contiguous [cu_seq_len, width] blocks instead of the (dim, cu_seq_len) layout.
         if
         x = [5, 1, 1, 1] <- continuous batching (batch=4)
         then
@@ -558,6 +571,7 @@ def causal_conv1d_fn(
         BLOCK_M=8,
         BLOCK_N=256,
         num_stages=2,
+        KEY_DIM=key_dim,
     )
     return out
 
