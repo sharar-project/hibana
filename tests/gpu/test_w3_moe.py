@@ -65,3 +65,25 @@ def test_expert_parallel_halves_sum_to_the_whole(experts, m):
     assert float((parts - whole).norm() / whole.norm()) < 4e-3
     only = torch.full_like(ids, half)  # every pair on the second rank: the first rank's partial is zero
     assert not w3_moe.w3_moe(part(0), x, only, weights).any()
+
+
+@pytest.mark.parametrize("m", [17, 200, 1500])  # with 16 experts: 10, 125 and about 940 pairs an expert
+@pytest.mark.parametrize("expert_parallel", [False, True])
+def test_pass_per_block_gives_the_same_bits(experts, m, expert_parallel, monkeypatch):
+    """Wide calls run each 64-pair pass of an expert in its own block (`gemm_pass_kernel`): the same bits as one block
+    looping over the passes (`gemm_kernel`), for single passes, several passes, and one rank's expert range."""
+    from dataclasses import replace
+    torch.manual_seed(200 + m)
+    x = torch.randn(m, w3_moe.HIDDEN, device="cuda", dtype=torch.bfloat16)
+    ids = torch.stack([torch.randperm(E, device="cuda")[:w3_moe.TOPK] for _ in range(m)]).to(torch.int32)
+    weights = torch.softmax(torch.randn(m, w3_moe.TOPK, device="cuda"), -1)
+    ex = experts
+    if expert_parallel:
+        half = E // 2
+        ex = replace(experts, planes13=experts.planes13[half:], scales13=experts.scales13[half:], row13=experts.row13[half:],
+                     planes2=experts.planes2[half:], scales2=experts.scales2[half:], row2=experts.row2[half:], base=half)
+    monkeypatch.setattr(w3_moe, "WIDE_ROWS", 10**9)
+    looped = w3_moe.w3_moe(ex, x, ids, weights)
+    monkeypatch.setattr(w3_moe, "WIDE_ROWS", 1)
+    passes = w3_moe.w3_moe(ex, x, ids, weights)
+    assert torch.equal(passes.view(torch.int16), looped.view(torch.int16))

@@ -356,6 +356,9 @@ namespace moe {
 constexpr int kE = 512, kTopk = 10, kH = 2560, kI = 640, kPass = 64, kOrderInKernel = 640;
 // plan words: D, the expert of each slot, the slot starts (D + 1 of them)
 constexpr int kPlanExp = 1, kPlanStart = kPlanExp + kE, kPlanWords = kPlanStart + kE + 1;
+// Wide calls (`Params::work`): plan word kPlanWords holds W, and work[2 w], work[2 w + 1] the distinct slot and the
+// first pair of the w-th pass (kPass pairs at most), the passes of a slot adjacent and the slots in ascending order.
+constexpr int kPlanWork = kPlanWords;
 
 __device__ __forceinline__ float bf16r(float x) { return __bfloat162float(__float2bfloat16_rn(x)); }
 
@@ -366,6 +369,7 @@ struct Params {
   const uint4 *planes13, *scales13, *planes2, *scales2;
   const float *row13, *row2;
   int* plan;
+  int* work;    // wide calls: one (slot, first pair) per pass, else null
   int* order;   // [pairs] sorted by (expert, pair)
   uint8_t* xq;  // [M, kH] e4m3
   float* xs;    // [M, kH / 32]
@@ -425,6 +429,28 @@ __global__ void __launch_bounds__(512) prep_kernel(const Params p) {
     if (lane == 0) {
       p.plan[0] = base;
       p.plan[kPlanStart + base] = total;
+      start[base] = total;
+    }
+    if (p.work) {  // one entry per pass of kPass pairs, slot by slot
+      __syncwarp();
+      int written = 0;
+      for (int c = 0; c * 32 < base; ++c) {
+        const int d = c * 32 + lane;
+        const int passes = d < base ? (start[d + 1] - start[d] + kPass - 1) / kPass : 0;
+        int inclusive = passes;
+#pragma unroll
+        for (int o = 1; o < 32; o <<= 1) {
+          const int v = __shfl_up_sync(0xffffffffu, inclusive, o);
+          if (lane >= o) inclusive += v;
+        }
+        for (int q = 0; q < passes; ++q) {
+          const int w = written + inclusive - passes + q;
+          p.work[2 * w] = d;
+          p.work[2 * w + 1] = q * kPass;
+        }
+        written += __shfl_sync(0xffffffffu, inclusive, 31);
+      }
+      if (lane == 0) p.plan[kPlanWork] = written;
     }
   }
   __syncthreads();
@@ -718,6 +744,27 @@ __global__ void __launch_bounds__(kWarps * 32) gemm_kernel(const Params p) {
   }
 }
 
+// Wide calls: one pass per block, blockIdx.y the work entry, blockIdx.x the 128-row weight block. An expert's passes
+// are adjacent in launch order and run at the same time, so its weights mostly come from L2 after the first pass,
+// where `gemm_kernel` loops over them in one block and streams the weights from DRAM once per pass (#144). Each pass
+// is `gemm_kernel`'s, so the bits are the same. (Eight-warp blocks that run two passes on one set of weight loads give
+// the same bits too, but one block per SM loses more to latency than it saves.)
+template <bool FC1>
+__global__ void __launch_bounds__(kWarps * 32) gemm_pass_kernel(const Params p) {
+  const int w = blockIdx.y;
+  if (w >= __ldg(p.plan + kPlanWork)) return;
+  const int d = __ldg(p.work + 2 * w), base = __ldg(p.work + 2 * w + 1);
+  const int e = __ldg(p.plan + kPlanExp + d), s0 = __ldg(p.plan + kPlanStart + d), n = __ldg(p.plan + kPlanStart + d + 1) - s0;
+  const int rows = min(kPass, n - base);
+  const int* list = p.order + s0 + base;
+  __shared__ float hsm[FC1 ? kPass : 1][kPass + 1];
+  __shared__ Staged st;
+  if (rows <= 16) pass<FC1, 1, true>(p, hsm, &st, e, list, rows);
+  else if (rows <= 32) pass<FC1, 2, true>(p, hsm, &st, e, list, rows);
+  else if (rows <= 48) pass<FC1, 3, true>(p, hsm, &st, e, list, rows);
+  else pass<FC1, 4, true>(p, hsm, &st, e, list, rows);
+}
+
 __global__ void __launch_bounds__(256) combine_kernel(const Params p) {
   const int idx = blockIdx.x * 256 + threadIdx.x;
   if (idx >= p.M * kH) return;
@@ -789,11 +836,13 @@ std::vector<torch::Tensor> quant_groups(torch::Tensor x) {
 // Routed experts in the three-bit format for x [M, 2560] bf16, ids [M, 10] int32, weights [M, 10] fp32 -> bf16
 // [M, 2560] (the routed sum; no shared expert). The weights hold experts e_lo .. e_lo + E - 1 (all 512, or one
 // rank's range under expert parallelism): pairs routed elsewhere are skipped, and the result is this rank's partial
-// sum. `order`: when there are more than 640 pairs, this rank's pairs stably sorted by expert first (int32 [M * 10],
+// sum. `wide_rows`: from this many rows each pass of kPass pairs gets its own block (`gemm_pass_kernel`; the same bits).
+// `order`: when there are more than 640 pairs, this rank's pairs stably sorted by expert first (int32 [M * 10],
 // the others after them), else empty (the prep kernel sorts them). The ids must be below 512.
 torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, torch::Tensor order,
                      torch::Tensor planes13, torch::Tensor scales13, torch::Tensor row13,
-                     torch::Tensor planes2, torch::Tensor scales2, torch::Tensor row2, int64_t lut, int64_t e_lo) {
+                     torch::Tensor planes2, torch::Tensor scales2, torch::Tensor row2, int64_t lut, int64_t e_lo,
+                     int64_t wide_rows) {
   using namespace moe;
   const int M = x.size(0), P = M * kTopk;
   TORCH_CHECK(M >= 1, "w3_moe: no rows");
@@ -810,7 +859,11 @@ torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, 
   TORCH_CHECK(scales13.numel() == E * 2 * kI * kH / 32 && scales2.numel() == E * kH * kI / 32, "expert scales");
   TORCH_CHECK(row13.numel() == E * 2 * kI && row2.numel() == E * kH, "row scales");
   auto i32 = x.options().dtype(at::kInt), u8 = x.options().dtype(at::kByte), f32 = x.options().dtype(at::kFloat);
-  auto plan = torch::empty({kPlanWords}, i32);
+  auto plan = torch::empty({kPlanWords + 1}, i32);
+  const int slots = std::min<int64_t>(P, E);
+  const bool wide = M >= wide_rows;
+  const int work_cap = slots + (P + kPass - 1) / kPass;  // sum over slots of ceil(n / kPass) <= slots + P / kPass
+  auto work = wide ? torch::empty({2 * work_cap}, i32) : torch::Tensor();
   auto sorted = sort ? torch::empty({P}, i32) : order;
   auto xq = torch::empty({M, kH}, u8);
   auto xs = torch::empty({M, kH / 32}, f32);
@@ -820,17 +873,20 @@ torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, 
   auto out = torch::empty({M, kH}, x.options());
   Params p{(const __nv_bfloat16*)x.data_ptr(), (const int*)ids.data_ptr(), (const float*)weights.data_ptr(),
            (const uint4*)planes13.data_ptr(), (const uint4*)scales13.data_ptr(), (const uint4*)planes2.data_ptr(), (const uint4*)scales2.data_ptr(),
-           (const float*)row13.data_ptr(), (const float*)row2.data_ptr(), (int*)plan.data_ptr(), (int*)sorted.data_ptr(),
+           (const float*)row13.data_ptr(), (const float*)row2.data_ptr(), (int*)plan.data_ptr(),
+           wide ? (int*)work.data_ptr() : nullptr, (int*)sorted.data_ptr(),
            (uint8_t*)xq.data_ptr(), (float*)xs.data_ptr(), (uint8_t*)hq.data_ptr(), (float*)hs.data_ptr(), (float*)y.data_ptr(),
            (__nv_bfloat16*)out.data_ptr(),
            static_cast<uint32_t>(lut & 0xFFFFFFFFu), static_cast<uint32_t>(static_cast<uint64_t>(lut) >> 32), M,
            static_cast<int>(e_lo), static_cast<int>(E), sort};
-  const int slots = std::min<int64_t>(P, E);
   cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
   prep_kernel<<<M + 1, 512, 0, stream>>>(p);
   if (M <= 16) {
     gemm_kernel<true, 1><<<dim3(2 * kI / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
     gemm_kernel<false, 1><<<dim3(kH / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
+  } else if (wide) {
+    gemm_pass_kernel<true><<<dim3(2 * kI / kBlockRows, work_cap), kWarps * 32, 0, stream>>>(p);
+    gemm_pass_kernel<false><<<dim3(kH / kBlockRows, work_cap), kWarps * 32, 0, stream>>>(p);
   } else {
     gemm_kernel<true, 4><<<dim3(2 * kI / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
     gemm_kernel<false, 4><<<dim3(kH / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
