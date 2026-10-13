@@ -81,3 +81,20 @@ def test_fp8_algorithms_match_scaled_mm(names, rows, monkeypatch):
     monkeypatch.setattr(prefill_gemm, 'FP8_ALGOS', {})
     reference = ops.fp8_linear(x, linear)
     assert torch.equal(out.view(torch.int16), reference.view(torch.int16))
+
+
+@pytest.mark.parametrize('shape', [(10240, 320), (320, 10240), (10240, 2560), (6144, 2560), (2560, 6144), (13312, 2560),
+                                   (2560, 640)])
+@torch.inference_mode()
+def test_fp8_algorithms_with_dynamic_scales(shape):
+    """Flash-Next's trunk shapes, with a per-call activation scale as TrunkLinear passes it."""
+    from sharar.kernels import prefill_gemm
+    n, k = shape
+    torch.manual_seed(n + k)
+    weight = (torch.randn(n, k, device='cuda') * 0.05).to(torch.float8_e4m3fn)
+    x_q = (torch.randn(2048, k, device='cuda') * 3).to(torch.float8_e4m3fn)
+    scale_a, scale_b = torch.tensor([[0.013]], device='cuda'), torch.tensor([[0.002]], device='cuda')
+    out = prefill_gemm.fp8_gemm(x_q, weight, scale_a, scale_b)
+    reference = torch._scaled_mm(x_q, weight.t(), scale_a=scale_a, scale_b=scale_b, out_dtype=torch.bfloat16)
+    assert out is not None and prefill_gemm._fp8_checked[(n, k)]
+    assert torch.equal(out.view(torch.int16), reference.view(torch.int16))
