@@ -19,6 +19,7 @@ itself before this module existed.
 from __future__ import annotations
 
 import dataclasses
+import weakref
 from dataclasses import dataclass
 
 import torch
@@ -52,6 +53,7 @@ class FlashNextExtras:
         self.budget, self.ratio = t.indexer_budget, t.indexer_compress_ratio
         self.variants = ("dense", "selecting") if self.budget and current().qsa_sparse_graphs else ("dense",)
         self._staging: torch.Tensor | None = None  # pinned PLE rows of a streamed verification (`_stream_verify_rows`)
+        self._prefetched = weakref.WeakSet()  # requests whose prompt rows `_prefetch_prompts` has asked for (#178)
         self._staged = torch.cuda.Event() if self.device.type == "cuda" else None
 
     # ---- dense or selecting ----
@@ -119,9 +121,24 @@ class FlashNextExtras:
         side = FlashNextSideInputs()
         if self.ple is not None:
             side.ple_history = torch.tensor([self._history(req, start) for req, start, _, _ in chunks], dtype=torch.int64)
+            self._prefetch_prompts(chunks)
         if self.budget:
             side.qsa_seqs = [(start, n, pages) for _, start, n, pages in chunks]
         return side
+
+    def _prefetch_prompts(self, chunks) -> None:
+        """When a request's first prefill chunk runs, start reading the rows of the rest of its prompt from the NVMe
+        (#178), so its later chunks find them in the page cache while this one computes. Not with resident heads."""
+        if self.ple.resident is not None:
+            return
+        for req, start, n, _ in chunks:
+            end = start + n
+            if req in self._prefetched or end >= len(req.prompt_ids):
+                continue
+            self._prefetched.add(req)
+            ids = torch.tensor(req.prompt_ids[end:], dtype=torch.int64)
+            history = torch.tensor(self._history(req, end), dtype=torch.int64)
+            self.ple.table.prefetch(self.ple.ngram_ids(ids, history, self.eos).numpy())
 
     def for_decode(self, reqs, seqs) -> FlashNextSideInputs:
         return FlashNextSideInputs(ple_rows=self._decode_rows(reqs) if self.ple is not None else None,

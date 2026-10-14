@@ -167,3 +167,47 @@ def test_resident_shares_give_the_host_rows(table, monkeypatch):
     ple = _Hash()
     ple.resident = shares[0]
     assert torch.equal(ple.device_rows(ids), reference)
+
+
+def test_prefetch_asks_for_every_page_the_rows_touch(table, monkeypatch):
+    """#178: WILLNEED on each distinct page a row lies on (both pages of a row across a page boundary)."""
+    import os
+    from sharar.model.flashnext import ple as ple_module
+    calls = []
+    monkeypatch.setattr(os, "posix_fadvise", lambda fd, off, n, advice: calls.append((fd, off, n, advice)))
+    rows = np.array([[0, 1, 25], [25, 150, 291]])  # row 25 of shard 0 crosses its 4 KiB page; 150 and 291 lie in other shards
+    table.prefetch(rows)
+    table._prefetcher.shutdown(wait=True)
+    want = set()
+    for r in np.unique(rows):
+        s = int(np.searchsorted(table.starts, r, side="right") - 1)
+        first = table.offsets[s] + (int(r) - int(table.starts[s])) * ROW_BYTES
+        want |= {(table.fds[s], first & -ple_module._PAGE), (table.fds[s], (first + ROW_BYTES - 1) & -ple_module._PAGE)}
+    assert {(fd, off) for fd, off, _, _ in calls} == want and len(calls) == len(want)
+    assert all(n == ple_module._PAGE and advice == os.POSIX_FADV_WILLNEED for _, _, n, advice in calls)
+
+
+def test_a_prompt_prefetches_its_later_chunks_once(table):
+    """#178: the first chunk of a prompt asks for the rows of the rest of it, once; nothing with resident heads."""
+    ple = _Hash()
+    ple.table = table
+    asked = []
+    table.prefetch = lambda rows: asked.append(rows.copy())
+    extras = object.__new__(FlashNextExtras)
+    extras.ple, extras.eos, extras._prefetched = ple, EOS, __import__("weakref").WeakSet()
+
+    class Req:
+        def __init__(self, prompt):
+            self.prompt_ids, self.output_ids = prompt, []
+    prompt = [5, 9, EOS, 11, 3, 8, 2, 6, 4]
+    req = Req(prompt)
+    extras._prefetch_prompts([(req, 0, 4, None)])
+    extras._prefetch_prompts([(req, 4, 3, None)])  # a later chunk: already asked
+    assert len(asked) == 1
+    full = ple.ngram_ids(torch.tensor(prompt), None, EOS).numpy()
+    assert np.array_equal(asked[0], full[4:])  # the rows of tokens 4.. exactly as their own chunks will hash them
+    extras._prefetch_prompts([(Req([1, 2, 3]), 0, 3, None)])  # the whole prompt in one chunk: nothing to prefetch
+    assert len(asked) == 1
+    ple.resident = object()
+    extras._prefetch_prompts([(Req(prompt), 0, 4, None)])
+    assert len(asked) == 1

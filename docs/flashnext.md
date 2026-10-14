@@ -21,7 +21,10 @@ and prefill, and the only resident expert copy (46.1 GiB instead of 63.3; 53 GiB
 expert entries, with `SHARAR_FLASHNEXT_EXPERTS=nvfp4`, in `exact` and on two Sparks, the experts are the
 checkpoint's NVFP4 through FlashInfer's `cutlass_fused_moe` ([calibration](w3-calibration.md)). The PLE table
 stays on the NVMe as memory maps; on two Sparks each rank keeps its half of the heads in device memory
-([tensor parallel](tensor-parallel.md)).
+([tensor parallel](tensor-parallel.md)). On one Spark a prompt's first prefill chunk starts reading the rows of the rest
+of the prompt into the page cache in the background (`PleTable.prefetch`, #178), so its later chunks do not wait on
+the NVMe: three fresh 10K-token prompts reach their first token in 4.66 s on average with a cold page cache, against
+4.94 s without the prefetch and 4.74 s with every row already cached.
 
 ## Package
 
