@@ -115,7 +115,7 @@ def main(argv=None) -> int:
         raise SystemExit(f"{args.evals}: no sharar-eval checkout; clone abdelfattah-lab/sharar-eval there or set SHARAR_EVALS")
     python = args.python or str(args.evals / ".venv" / "bin" / "python")
     if not Path(python).is_file():
-        raise SystemExit(f"{python} not found: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt in {args.evals}")
+        raise SystemExit(f"{python} not found: run `uv sync` in {args.evals}")
     if args.baseline and not (args.baseline / "manifest.json").is_file():
         raise SystemExit(f"{args.baseline}: not an evaluate output directory")
 
