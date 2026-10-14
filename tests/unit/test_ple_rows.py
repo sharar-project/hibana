@@ -48,9 +48,47 @@ def test_gather_matches_the_memory_maps(table):
     assert table.hits + table.misses == rows.size
     out = np.zeros((9, 16, ROW_BYTES), dtype=np.uint8)
     assert table.gather(rows, out=out) is not None and (out == reference).all()
-    table._nowait = False  # every row through the threads
+    table._nowait = False  # the page cache under the memory maps answers
     assert (table.gather(rows) == reference).all()
     assert (table.gather(rows[:1, :1]) == reference[:1, :1]).all()
+
+
+def test_without_rwf_nowait_the_maps_answer_and_keep_the_rows(table, monkeypatch):
+    """ZFS (#166): preadv refuses RWF_NOWAIT. The gather switches to the memory maps mid-call; rows it reads through
+    them stay in the page cache, so the next gather copies them all without the threads."""
+    import os
+    rows = np.random.default_rng(2).integers(0, table.rows, size=(5, 16))
+    reference = table.gather_mapped(rows)
+
+    def refuse(*args):
+        raise OSError(95, "Operation not supported")
+    monkeypatch.setattr(os, "preadv", refuse)
+    monkeypatch.setattr(os, "RWF_NOWAIT", 8, raising=False)  # uv's standalone CPython has no preadv2
+    table._nowait = True
+    assert (table.gather(rows) == reference).all()
+    assert not table._nowait
+    hits, misses = table.hits, table.misses
+    assert (table.gather(rows) == reference).all()
+    assert (table.hits, table.misses) == (hits + rows.size, misses)
+
+
+def test_where_mincore_cannot_see_the_page_cache_every_row_goes_to_the_threads(table, monkeypatch):
+    """Files this process neither owns nor may write: mincore would call every page resident, so the maps answer
+    through the threads only, as before #166."""
+    import os
+    from pathlib import Path
+    from sharar.model.flashnext import ple
+    path = Path(table.maps[0].filename)
+    assert ple._residency_visible(path)  # the test's own file
+    monkeypatch.setattr(os, "geteuid", lambda: os.stat(path).st_uid + 1)
+    monkeypatch.setattr(os, "access", lambda *args, **kwargs: False)
+    assert not ple._residency_visible(path)
+    rows = np.random.default_rng(3).integers(0, table.rows, size=(4, 16))
+    reference = table.gather_mapped(rows)
+    table._nowait, table._mincore = False, False
+    hits, misses = table.hits, table.misses
+    assert (table.gather(rows) == reference).all()
+    assert (table.hits, table.misses) == (hits, misses + rows.size)
 
 
 class _Hash:

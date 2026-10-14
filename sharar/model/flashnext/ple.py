@@ -12,7 +12,9 @@ state next to the GDN states.
 
 from __future__ import annotations
 
+import ctypes
 import json
+import mmap
 import os
 import struct
 from pathlib import Path
@@ -23,13 +25,31 @@ import torch.nn.functional as F
 
 
 ROW_BYTES = 160
+_PAGE = mmap.PAGESIZE
+_libc = ctypes.CDLL(None, use_errno=True)
+_libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_ubyte)]
+
+
+def _residency_visible(path: Path) -> bool:
+    """Whether `mincore` reports `path`'s page-cache residency. Linux (5.0+) reports it only for files the caller owns or
+    may open for writing; for others it says every page is resident (a root-owned file seen from a container's user, a
+    shared read-only model directory)."""
+    effective = os.access in os.supports_effective_ids
+    return os.stat(path).st_uid == os.geteuid() or os.access(path, os.W_OK, effective_ids=effective)
 
 
 class PleTable:
     """The FP8 shards on the host: memory maps for bulk gathers plus parallel `pread`s for the rows a
     decode step needs. A token's sixteen rows are scattered over the 51 GB table, so a serial gather
     pays sixteen NVMe latencies when they are not in the page cache (several milliseconds per step);
-    reading them from threads overlaps the misses. Rows the page cache holds skip the threads."""
+    reading them from threads overlaps the misses. Rows the page cache holds skip the threads.
+
+    Without `RWF_NOWAIT` (a filesystem that refuses it, as ZFS does, or a Python built without `preadv2`, as uv's
+    standalone CPython is; #166) the reads cannot say which rows they would find cached, and ZFS's own cache (the ARC,
+    often a few GiB) holds few of them. Then the gather asks `mincore` which rows' pages the page cache holds under the
+    memory maps, copies those from the maps, and reads the others through the maps from the threads, so the page
+    cache, which can grow into free memory, keeps the rows decoding reads again. Where `mincore` cannot see the page
+    cache (files this process neither owns nor may write), every row goes to the threads."""
 
     THREADS = 32
 
@@ -68,13 +88,19 @@ class PleTable:
             rows += count
         self.starts = np.asarray(starts, dtype=np.int64)
         self.rows = rows
+        self.bases = np.asarray([m.ctypes.data for m in self.maps], dtype=np.int64)  # each shard's first row in memory
+        for m in self.maps:
+            m._mmap.madvise(mmap.MADV_RANDOM)  # a fault reads its own page, not a readahead window of neighbours
+        self._vec = (ctypes.c_ubyte * 2)()
+        self._mincore = all(_residency_visible(snap / file) for file in opened)  # else every row through the threads
 
     def gather(self, rows: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
         """rows: int64 array of any shape -> uint8 [..., ROW_BYTES] (into `out` when given, contiguous).
 
         Rows in the page cache are read serially without blocking (`RWF_NOWAIT`: a few microseconds
         each); only the misses go to the threads, where their NVMe latencies overlap. Handing every
-        row to the threads cost about 1.1 ms for a verification's 80 rows with all of them cached (#36)."""
+        row to the threads cost about 1.1 ms for a verification's 80 rows with all of them cached (#36).
+        Without `RWF_NOWAIT` the page cache under the memory maps answers instead (`_from_maps`)."""
         flat = rows.reshape(-1)
         n = flat.shape[0]
         out = np.empty((n, ROW_BYTES), dtype=np.uint8) if out is None else out.reshape(n, ROW_BYTES)
@@ -83,6 +109,7 @@ class PleTable:
         fds, offsets = self.fds, self.offsets
         pread = self._pread
         misses = []
+        start = 0
         if self._nowait:
             preadv, flag = os.preadv, os.RWF_NOWAIT
             for i in range(n):
@@ -92,16 +119,23 @@ class PleTable:
                         misses.append(i)  # a row across a page boundary, half cached
                 except BlockingIOError:
                     misses.append(i)
-                except OSError:  # the filesystem does not take RWF_NOWAIT: every row through the threads
+                except OSError:  # the filesystem does not take RWF_NOWAIT: the memory maps answer from here on
                     self._nowait = False
-                    misses.extend(range(i, n))
+                    start = i
                     break
-        else:
-            misses = range(n)
+        mapped = not self._nowait
+        if mapped:
+            addrs = (self.bases[shard] + local * ROW_BYTES).tolist()
+            misses += self._from_maps(addrs, out, start) if self._mincore else range(start, n)
         self.hits += n - len(misses)
         self.misses += len(misses)
 
         def read(part) -> None:
+            if mapped:  # a fault through the map fills the page cache; memmove runs without the GIL, so faults overlap
+                base = out.ctypes.data
+                for i in part:
+                    ctypes.memmove(base + i * ROW_BYTES, addrs[i], ROW_BYTES)
+                return
             for i in part:
                 s = int(shard[i])
                 out[i] = np.frombuffer(pread(fds[s], ROW_BYTES, offsets[s] + int(local[i]) * ROW_BYTES), dtype=np.uint8)
@@ -112,6 +146,21 @@ class PleTable:
             chunk = max(1, (len(misses) + self.THREADS - 1) // self.THREADS)
             list(self._pool.map(read, [misses[lo:lo + chunk] for lo in range(0, len(misses), chunk)]))
         return out.reshape(*rows.shape, ROW_BYTES)
+
+    def _from_maps(self, addrs: list[int], out: np.ndarray, start: int) -> list[int]:
+        """Copy rows start.. whose pages the page cache holds (`mincore` on the memory maps) from the maps into `out`;
+        returns the others."""
+        vec, mincore, memmove, base = self._vec, _libc.mincore, ctypes.memmove, out.ctypes.data
+        misses = []
+        for i in range(start, len(addrs)):
+            addr = addrs[i]
+            page = addr & -_PAGE
+            span = addr + ROW_BYTES - page  # a row may cross into the next page
+            if mincore(page, span, vec) == 0 and vec[0] & 1 and (span <= _PAGE or vec[1] & 1):
+                memmove(base + i * ROW_BYTES, addr, ROW_BYTES)
+            else:
+                misses.append(i)
+        return misses
 
     def gather_mapped(self, rows: np.ndarray) -> np.ndarray:
         """The memory-map gather (serial page faults); kept as the reference for tests."""
