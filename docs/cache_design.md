@@ -28,7 +28,7 @@ them, and the SSD tier below them (`SHARAR_SSD=1`). [Operations](operations.md) 
   ┌──────────────┴────────────────────────────────────────────────────┴─────────────────┐     │
   │ RadixCache (radix.py): one tree, the only record of what is cached where            │     │
   │   Node: key tokens · pages (None ⇒ SSD-only) · snapshot_slot · blocks{end: SsdRef}   │     │
-  │         · tail: SsdRef · lock / ssd_pins                                             │     │
+  │         · tail: SsdRef · lock                                                        │     │
   │   L1 eviction of a leaf with SSD copies ⇒ demote (free pages and slot, keep node)    │     │
   └──────────────┬─────────────────────────────────────────────────────▲────────────────┘     │
                  │ evicting(leaf)                                      │ insert restored path │
@@ -42,7 +42,8 @@ them, and the SSD tier below them (`SHARAR_SSD=1`). [Operations](operations.md) 
                  │  completions in submission order)                   │  + header and CRC32 check
   ┌──────────────▼─────────────────────────────────────────────────────┴────────────────┐
   │ SsdStore (ssd_store.py): content-addressed objects on the NVMe, nothing else          │
-  │   v2/e<epoch>/<hh>/<key>.kv    one block of 256 tokens: K, V of every layer, aux    │
+  │   v2/e<epoch>/<hh>/<key>.kv    one block of 256 tokens: K, V of every layer, aux,   │
+  │                                and a drafter's own KV (Flash-Next's MTP layer)      │
   │   v2/e<epoch>/<hh>/<key>.tail  partial block + GDN snapshot + slot aux + drafter    │
   │   file = 4 KiB header (key, parent hash, tokens, CRC32) + 256-byte-aligned segments │
   └──────────────────────────────────────────────────────────────────────────────────────┘
@@ -59,6 +60,11 @@ The split of responsibilities:
 
 Only the engine thread touches the tree or calls the tier. Writer threads report back through completions that
 `step()` drains, so the tree changes only on the engine thread.
+
+A drafter's state travels with a session, so a restored request keeps speculating: DFlash2's projected feature
+window and Flash-Next's MTP (position, last hidden row) go into the tail through the proposer's `auxiliary_codec`,
+and the MTP layer's own KV pages, indexed by the target's page ids, go into the KV blocks beside the target's
+(`stored_pages`).
 
 ## Keys
 

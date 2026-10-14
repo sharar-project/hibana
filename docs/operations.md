@@ -139,10 +139,13 @@ memory it would hold the same sessions in the same DRAM.
 **SSD tier (`SHARAR_SSD=1`, default off; capacity `SHARAR_SSD_GIB`, default 200).**
 It is the only tier below the GPU pools; without it the cache drops an evicted
 session and its next request prefills again. One radix tree indexes both tiers.
-The tier writes to `/tmp/sharar-ssd`, as SGLang's HiCache file backend writes to
-`/tmp/hicache` (`SHARAR_SSD_DIR` moves it, e.g. to another drive), so stored
-sessions last until a reboot clears `/tmp`. Where `/tmp` is a tmpfs, the tier
-refuses to open: it would sit in memory, which on a Spark is the GPU's. It
+The tier writes to `$SHARAR_RESULTS/ssd/<target>` (one store per target;
+`SHARAR_SSD_DIR` moves it, e.g. to another drive), so stored sessions survive
+restarts and reboots. The directory is private (0700), one server holds it at a
+time (a second one disables its tier rather than share it), and a store on a
+tmpfs or ramfs is refused: it would sit in memory, which on a Spark is the GPU's.
+The budget never fills the drive: at startup it is capped to what is stored plus
+the free space beyond a reserve (a tenth of the drive, at most 64 GiB). It
 stores KV as content-addressed blocks of 256 tokens, one copy per shared
 prefix, plus one tail per evicted session (its partial block and the recurrent
 snapshot). It skips sessions shorter than 4,096 tokens: each tail carries the
