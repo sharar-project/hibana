@@ -67,11 +67,12 @@ def test_expert_parallel_halves_sum_to_the_whole(experts, m):
     assert not w3_moe.w3_moe(part(0), x, only, weights).any()
 
 
-@pytest.mark.parametrize("m", [17, 200, 1500])  # with 16 experts: 10, 125 and about 940 pairs an expert
+# with 16 experts: about 10, 70, 90, 105, 125 and 940 pairs an expert (passes of one to seven row tiles, several passes)
+@pytest.mark.parametrize("m", [17, 112, 144, 168, 200, 1500])
 @pytest.mark.parametrize("expert_parallel", [False, True])
 def test_pass_per_block_gives_the_same_bits(experts, m, expert_parallel, monkeypatch):
-    """Wide calls run each 64-pair pass of an expert in its own block (`gemm_pass_kernel`): the same bits as one block
-    looping over the passes (`gemm_kernel`), for single passes, several passes, and one rank's expert range."""
+    """Wide calls run each pass of up to 112 pairs of an expert in its own block (`gemm_pass_kernel`): the same bits as
+    one block looping over 64-pair passes (`gemm_kernel`), for single passes, several passes, and one rank's experts."""
     from dataclasses import replace
     torch.manual_seed(200 + m)
     x = torch.randn(m, w3_moe.HIDDEN, device="cuda", dtype=torch.bfloat16)
