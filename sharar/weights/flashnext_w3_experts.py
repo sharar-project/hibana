@@ -55,11 +55,19 @@ def capture(args) -> None:
     out.mkdir(parents=True, exist_ok=True)
     samples = [s["input_ids"] for s in json.loads(args.inputs.read_text())["samples"]]
     samples = samples[:args.limit] if args.limit else samples
+    skip, done_rows = 0, 0
+    if args.resume:  # an interrupted capture: every layer file holds the same whole samples; continue after them
+        sizes = {p.stat().st_size for p in out.glob("layer*.bin")}
+        if len(sizes) != 1:
+            raise SystemExit(f"cannot resume: layer files differ in size {sorted(sizes)}")
+        done_rows = sizes.pop() // (2 * FLASHNEXT.hidden_size)
+        skip = resume_point([len(s) for s in samples], done_rows)
+        print(f"resuming after {skip} samples ({done_rows} rows)", flush=True)
     model = FlashNext(FLASHNEXT.snapshot_dir(), precision="fp8")
     ex = Executor(model, num_pages=args.pages, num_slots=4, max_context=8192, log=print)
     index = {id(layer.moe): layer.index for layer in model.layers}
-    files = {i: open(out / f"layer{i:02d}.bin", "wb") for i in index.values()}
-    rows = {i: 0 for i in index.values()}
+    files = {i: open(out / f"layer{i:02d}.bin", "ab" if skip else "wb") for i in index.values()}
+    rows = {i: done_rows for i in index.values()}
     original = MoeLayer.__call__
 
     def call(moe, x):
@@ -74,6 +82,8 @@ def capture(args) -> None:
     MoeLayer.__call__ = call
     try:
         for n, ids in enumerate(samples):
+            if n < skip:
+                continue
             req = ex.admit(list(ids), SamplingParams(max_new_tokens=1))
             try:
                 ex.prefill(req)
@@ -94,6 +104,17 @@ def capture(args) -> None:
     (out / "capture.json").write_text(json.dumps(meta, indent=1))
     print(f"captured {rows[0]} rows per layer from {len(samples)} samples -> {out}", flush=True)
     del np
+
+
+def resume_point(lengths: list[int], done_rows: int) -> int:
+    """How many whole samples (of these token lengths) `done_rows` captured rows hold; raises if they end mid-sample."""
+    skip, total = 0, 0
+    while skip < len(lengths) and total + lengths[skip] <= done_rows:
+        total += lengths[skip]
+        skip += 1
+    if total != done_rows:
+        raise SystemExit(f"cannot resume: {done_rows} rows are not a whole number of samples")
+    return skip
 
 
 def load_rows(directory: Path, layer: int, device) -> torch.Tensor:
@@ -401,7 +422,8 @@ def main():
     c.add_argument("--inputs", type=Path, required=True)
     c.add_argument("--activations", type=Path, required=True)
     c.add_argument("--limit", type=int, default=0)
-    c.add_argument("--pages", type=int, default=4096)
+    c.add_argument("--pages", type=int, default=16384, help="KV pool pages: a sample plus speculative scratch must fit")
+    c.add_argument("--resume", action="store_true", help="continue an interrupted capture after its whole samples")
     f = sub.add_parser("fit", help="write the checkpoint")
     f.add_argument("--method", choices=("cheap", "gptq"), default="gptq")
     f.add_argument("--source", type=Path, required=True, help="W3 checkpoint whose trunk entries are copied")

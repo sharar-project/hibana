@@ -105,6 +105,14 @@ knowledge questions (`sharar/weights/flashnext_expert_inputs.py`): MMLU's and MM
 anything overlapping MMLU-Pro test or GPQA removed, answered by the `fast` server itself (thinking off), rendered with
 the chat template.
 
+Reasoning traces make the samples look like real use (long thinking, other languages): `prompts-sharegpt` takes first
+user turns from ShareGPT (`--english`, `--other`), `generate --thinking --temperature 0.7` keeps each reply's
+`reasoning_content`, and `build --max-tokens 4096` renders it as the model writes it (`<think> ... </think>`, then the
+answer). In the 2-bit expert study (#143) adding 3.6M such tokens to the samples above took a 2-bit GPTQ fit from -4.8
+to -3.0 points on the lossy gate's screen (HumanEval -9.8 to -3.0); its effect on the 3-bit fit was not measured.
+Samples of 4,096 tokens need the capture's default `--pages 16384`; `capture --resume` continues an interrupted capture
+after its last whole sample.
+
 ```bash
 SHARAR_TARGET=flashnext python3 -m sharar.weights.flashnext_w3_experts capture --inputs expert-inputs.json --activations ACT
 SHARAR_TARGET=flashnext python3 -m sharar.weights.flashnext_w3_experts fit --method gptq --activations ACT \

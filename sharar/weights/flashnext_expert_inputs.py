@@ -70,15 +70,38 @@ def prompts(args) -> None:
     print(f"{len(items)} prompts ({dropped} MMLU questions dropped as overlapping the eval sets) -> {args.output}")
 
 
+def prompts_sharegpt(args) -> None:
+    """First user turns of ShareGPT conversations (the drafter study's train split): `--english` English ones and
+    `--other` in other languages (mostly non-ASCII text), 20-4000 characters, seeded; for reasoning traces (#143)."""
+    import random
+    rows = json.loads(args.sharegpt.read_text())
+    english, other = [], []
+    for r in rows:
+        turns = r.get("conversations") or []
+        if not turns or turns[0].get("from") != "human":
+            continue
+        q = turns[0]["value"].strip()
+        if not 20 <= len(q) <= 4000:
+            continue
+        ascii_share = sum(ch.isascii() for ch in q) / len(q)
+        (english if ascii_share > 0.97 else other).append({"source": f"sharegpt/{'en' if ascii_share > 0.97 else 'other'}", "id": r.get("id"), "prompt": q})
+    rng = random.Random(args.seed)
+    items = rng.sample(english, min(args.english, len(english))) + rng.sample(other, min(args.other, len(other)))
+    args.output.write_text(json.dumps({"version": "flashnext-expert-prompts-sharegpt-v1", "sharegpt": str(args.sharegpt),
+                                       "sharegpt_sha256": hashlib.sha256(args.sharegpt.read_bytes()).hexdigest(), "seed": args.seed, "items": items}))
+    print(f"{len(items)} prompts ({min(args.english, len(english))} English of {len(english)}, {min(args.other, len(other))} other of {len(other)}) -> {args.output}")
+
+
 def generate(args) -> None:
     items = json.loads(args.prompts.read_text())["items"]
 
     def ask(it):
-        body = {"model": "sharar", "messages": [{"role": "user", "content": it["prompt"]}], "temperature": 0.0,
-                "max_tokens": args.max_tokens, "chat_template_kwargs": {"enable_thinking": False}, "trace": False}
+        body = {"model": "sharar", "messages": [{"role": "user", "content": it["prompt"]}], "temperature": args.temperature,
+                "max_tokens": args.max_tokens, "chat_template_kwargs": {"enable_thinking": args.thinking}, "trace": False}
         req = urllib.request.Request(args.url.rstrip("/") + "/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=3600) as r:
-            return dict(it, answer=json.load(r)["choices"][0]["message"].get("content") or "")
+            message = json.load(r)["choices"][0]["message"]
+        return dict(it, answer=message.get("content") or "", reasoning=message.get("reasoning_content") or "")
 
     # Answers append to OUTPUT.partial.jsonl as they finish, so an interrupted run resumes where it stopped.
     import threading
@@ -112,10 +135,13 @@ def build(args) -> None:
     answers = json.loads(args.answers.read_text())["items"]
     samples, current, sources = [], [], []
     for it in answers:
-        if not it["answer"].strip():
+        if not (it["answer"].strip() or it.get("reasoning", "").strip()):
             continue
-        text = tok.apply_chat_template([{"role": "user", "content": it["prompt"]}, {"role": "assistant", "content": it["answer"]}],
-                                       tokenize=False, enable_thinking=False)
+        reply = {"role": "assistant", "content": it["answer"]}
+        if it.get("reasoning"):  # a thinking trace: rendered as the model writes it (<think> ... </think> then the answer)
+            reply["reasoning_content"] = it["reasoning"]
+        text = tok.apply_chat_template([{"role": "user", "content": it["prompt"]}, reply], tokenize=False,
+                                       enable_thinking=bool(it.get("reasoning")))
         ids = tok.encode(text, add_special_tokens=False)[:args.max_tokens]
         if current and len(current) + len(ids) > args.max_tokens:
             samples.append({"source": ",".join(sorted(set(sources))), "input_ids": current})
@@ -137,12 +163,20 @@ def main():
     p = sub.add_parser("prompts")
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--exclude-jsonl", nargs="*", help="further eval sets whose questions to drop (JSONL with 'question')")
+    sg = sub.add_parser("prompts-sharegpt", help="ShareGPT first turns, English and other languages, for reasoning traces")
+    sg.add_argument("--sharegpt", type=Path, required=True)
+    sg.add_argument("--english", type=int, default=1500)
+    sg.add_argument("--other", type=int, default=1500)
+    sg.add_argument("--seed", type=int, default=0)
+    sg.add_argument("--output", type=Path, required=True)
     g = sub.add_parser("generate")
     g.add_argument("--prompts", type=Path, required=True)
     g.add_argument("--url", default="http://127.0.0.1:30001")
     g.add_argument("--output", type=Path, required=True)
     g.add_argument("--max-tokens", type=int, default=1024)
     g.add_argument("--concurrency", type=int, default=16)
+    g.add_argument("--thinking", action="store_true", help="enable thinking and keep the trace (reasoning_content)")
+    g.add_argument("--temperature", type=float, default=0.0)
     b = sub.add_parser("build")
     b.add_argument("--answers", type=Path, required=True)
     b.add_argument("--base", type=Path, required=True, help="the frozen coding-proxy samples (w3_calibration_inputs)")
@@ -150,7 +184,7 @@ def main():
     b.add_argument("--output", type=Path, required=True)
     b.add_argument("--max-tokens", type=int, default=2048)
     args = ap.parse_args()
-    {"prompts": prompts, "generate": generate, "build": build}[args.command](args)
+    {"prompts": prompts, "prompts-sharegpt": prompts_sharegpt, "generate": generate, "build": build}[args.command](args)
 
 
 if __name__ == "__main__":
