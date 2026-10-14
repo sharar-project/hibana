@@ -101,7 +101,7 @@ def test_mtp_pools_are_clean_after_device_rounds(runtime):
 @pytest.mark.parametrize('batch', [1, 3])
 @pytest.mark.parametrize('rounds', [1, 8])
 def test_mtp_sampled_device_round_matches_host_round(runtime, batch, rounds):
-    """Sampled requests (#17): the device path (decision and commit graphs) and the host path decide with the same
+    """Sampled requests: the device path (decision and commit graphs) and the host path decide with the same
     kernel at the same Philox offsets, so the first round agrees exactly (tokens and committed state) and later
     rounds up to the first whose counts differ (the device pass's draft feedback rounds differently, as greedy)."""
     ex, prompts = runtime

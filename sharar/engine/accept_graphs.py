@@ -18,7 +18,7 @@ and with the proposer (`accepted_prepare` / `accepted_publish`).
 Padded rows of a bucket carry budget 0 and ring slot 0: they emit nothing,
 reconstruct nothing into the dummy recurrent slot and write the dummy ring.
 
-Sampled batches of point-mass drafts (MTP) replay two graphs per bucket (#17): a decision graph (the vocabulary
+Sampled batches of point-mass drafts (MTP) replay two graphs per bucket: a decision graph (the vocabulary
 top-k and kernels/sampled_verify.verify_candidates with Philox draws, which write the sampled target row: the drafts
 up to the accepted count, then the correction) and the commit graph above on that row, exact rule only. Between
 them the host reads whether every row's law fit its candidates; if one did not, nothing has been written yet and

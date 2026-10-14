@@ -1,4 +1,4 @@
-"""The fused sampled-speculation kernels (#17): DFlash2's sampled lattice walk (kernels/draft_selection.sampled_lattice)
+"""The fused sampled-speculation kernels: DFlash2's sampled lattice walk (kernels/draft_selection.sampled_lattice)
 and sampled verification (kernels/sampled_verify.verify_candidates) give `distribution`'s law and are distributed as
 the per-row reference walk and `rejection.verify_rows`, with Philox draws."""
 from collections import Counter

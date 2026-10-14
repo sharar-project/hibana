@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Speculative rejection sampling for a sampled batch in one kernel, on each row's candidates (#17).
+"""Speculative rejection sampling for a sampled batch in one kernel, on each row's candidates.
 
 After one top-k over the vocabulary (the candidates, sorted), one program per request computes `distribution`'s law
 at every verified position (temperature, top-k with ties, the nucleus in candidate order), accepts drafted token j
