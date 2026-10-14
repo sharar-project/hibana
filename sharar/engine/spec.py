@@ -15,7 +15,7 @@ from sharar.engine.context import ForwardContext
 from sharar.engine.request import Request
 from sharar.engine.contracts import Proposer, StepInputs, VerifiedFeatures
 from sharar.engine.debug import debug_sync
-from sharar.engine.rejection import Proposal, distribution, plausible, verify_rows
+from sharar.engine.rejection import Proposal, distribution, plausible, verify_batch, verify_rows
 from sharar.engine import accept_graphs
 from sharar.engine.accept_graphs import AcceptGraphs
 
@@ -399,10 +399,26 @@ class SpecDecoder:
             used = [sum(f) for f in flags]
         else:
             # Sampled batch: acceptance and the correction/bonus token are
-            # computed on the device per row (vectorized rejection sampling,
-            # `rejection.verify_rows`) and downloaded once with the drafts.
+            # computed on the device and downloaded once with the drafts. Point-mass
+            # drafts (MTP) and sparse draft laws (DFlash2) verify the whole batch on
+            # each row's candidates (`rejection.verify_batch`); dense draft laws, and
+            # laws wider than the candidates, verify row by row (`verify_rows`).
             acc_rows, corr_rows, target_rows, flag_rows = [], [], [], []
-            for i, req in enumerate(reqs):
+            batched = None
+            if (proposal.probabilities is None) == (proposal.support is None):  # point masses, or a sparse law on its support
+                batched = verify_batch(y, z, [r.params for r in reqs], [r.generator for r in reqs], proposal.probabilities, proposal.support)
+            if batched is not None:
+                acc_b, corr_b, flags_b, argmax_b = batched
+                for i, req in enumerate(reqs):
+                    acc_rows.append(acc_b[i])
+                    corr_rows.append(corr_b[i])
+                    flag_rows.append(flags_b[i].to(torch.int64))
+                    if req.params.greedy:
+                        target_rows.append(argmax_b[i])  # greedy rows keep every argmax for traces
+                    else:
+                        target_rows.append(torch.full((s_len,), -1, dtype=y.dtype, device=y.device).index_put_((acc_b[i].reshape(1),),
+                                                                                                             corr_b[i].reshape(1)))
+            for i, req in enumerate(reqs if batched is None else ()):
                 if req.params.greedy:
                     target_ids = z[i].argmax(-1)
                     match = (y[i] == target_ids[:k]).to(torch.int64)
