@@ -263,11 +263,12 @@ class SpecDecoder:
                 # (and the masked logits for the relaxed rule). Sampled batches read the masked logits themselves.
                 z_flat.copy_(logits.argmax(-1))
             accept = getattr(graphs, "accept", None)
-            if accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests):
+            if accept is not None and self.device_accept and (accept.eligible_sampled(batch.requests, batch.proposal) if batch.sampled
+                                                              else accept.eligible(batch.requests)):
                 if self.timing:
                     torch.cuda.synchronize()
-                accept.round(batch, batch.proposal.tokens, batch.started, batch.prepared)
-                return
+                if accept.round(batch, batch.proposal.tokens, batch.started, batch.prepared):
+                    return  # else a sampled law wider than its candidates: the host path below
             norm = norm_rows.view(b_sz, s_len, -1).clone() if self.proposer.requirements.features.final_norm else None
             layers = {lid: value.view(b_sz, s_len, -1).clone() for lid, value in layers.items()} if layers else None
             z = z_flat.view(b_sz, s_len, -1) if batch.sampled else z_flat.view(b_sz, s_len).clone()
