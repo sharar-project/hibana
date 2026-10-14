@@ -41,8 +41,12 @@ needs explaining. The rules are in [CONTRIBUTING](../CONTRIBUTING.md#run-checks)
 The HTTP speed and serving benchmarks live in sharar-eval (`evals/speed/`, moved 2026-10-02). They only talk
 to a running server, so the same commands measure Sharar, SGLang or Atlas:
 
+Run by hand, sharar-eval needs this configuration's results directory and model cache (`tools/evaluate.py` and
+`tools/lossy-gate.py` pass them):
+
 ```bash
 cd ../sharar-eval
+export SHARAR_RESULTS=<results directory> SHARAR_HF_CACHE=<27B model cache>   # as in config/gb10.env
 .venv/bin/python -m evals.speed --url http://127.0.0.1:30004            # AIPerf: frozen 10K/1K, cold prefix, BS1 (formerly `sharar benchmark`)
 .venv/bin/python -m evals.speed.sharegpt ...                            # ShareGPT buckets at several concurrencies
 .venv/bin/python -m evals.speed.competitive ...                         # engine-neutral native /generate cells

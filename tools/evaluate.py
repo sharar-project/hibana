@@ -127,6 +127,7 @@ def main(argv=None) -> int:
         raise SystemExit(f"evaluate: {exc}")
     results = settings.results
     gate.LOCK = results / ".gpu.lock"
+    env = gate.evals_env(results, settings.hf_cache)  # sharar-eval's datasets and tokenizer come from this configuration
     engine = gate.engine_identity()
     if "+dirty" in engine and not args.allow_dirty:
         raise SystemExit("the engine has uncommitted changes; commit them or pass --allow-dirty")
@@ -168,7 +169,7 @@ def main(argv=None) -> int:
                     cmd = evals_cmd(python, "evals.suite", "run", "--url", served.url, "--label", name, "--out", str(run_dir / "suite"),
                                     "--engine", engine, *suite_args)
                     log(f"evals.suite {' '.join(suite_args)}")
-                    proc = subprocess.Popen(cmd, cwd=args.evals, stdout=logf, stderr=subprocess.STDOUT)
+                    proc = subprocess.Popen(cmd, cwd=args.evals, stdout=logf, stderr=subprocess.STDOUT, env=env)
                     if gate.watch(proc, time.monotonic() + 3600 * args.hold_hours, None, "suite", proc.kill) != 0:
                         raise RuntimeError(f"evals.suite failed; see {served.dir / 'evals.log'} (rerun with --name {name} to resume)")
                 if args.speed and not speed_done:
@@ -179,7 +180,6 @@ def main(argv=None) -> int:
                     if args.baseline and (args.baseline / "speed" / "summary.json").is_file():
                         cmd += ["--inputs", str(args.baseline / "speed" / "frozen-inputs.json"), "--baseline", str(args.baseline / "speed")]
                     log(f"evals.speed --workload {args.workload}")
-                    env = {**os.environ, "SHARAR_HF_CACHE": str(settings.hf_cache)}
                     proc = subprocess.Popen(cmd, cwd=args.evals, stdout=logf, stderr=subprocess.STDOUT, env=env)
                     if gate.watch(proc, time.monotonic() + 3600 * args.hold_hours, None, "speed", proc.kill) != 0:
                         raise RuntimeError(f"evals.speed failed; see {served.dir / 'evals.log'}")
@@ -191,10 +191,10 @@ def main(argv=None) -> int:
     if suite_args:
         if args.baseline:
             out = subprocess.run(evals_cmd(python, "evals.suite", "compare", str(args.baseline / "suite"), str(run_dir / "suite"),
-                                           "--json", str(run_dir / "compare.json")), cwd=args.evals, capture_output=True, text=True)
+                                           "--json", str(run_dir / "compare.json")), cwd=args.evals, capture_output=True, text=True, env=env)
         else:
             out = subprocess.run(evals_cmd(python, "evals.suite", "show", str(run_dir / "suite"), "--json", str(run_dir / "scores.json")),
-                                 cwd=args.evals, capture_output=True, text=True)
+                                 cwd=args.evals, capture_output=True, text=True, env=env)
         lines += ["## Quality (sharar-eval `evals.suite`)", "", out.stdout.strip() or out.stderr.strip(), ""]
     if args.speed:
         summary = json.loads((speed_dir / "summary.json").read_text())
