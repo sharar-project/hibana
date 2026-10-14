@@ -64,6 +64,7 @@ class EngineConfig:
     # --- speculation
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
     spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
+    spec_step_cost: float = 0.0               # SHARAR_SPEC_STEP_COST: adaptive depth per request (#43, engine/depth.AcceptanceDepth): one more drafted token's cost relative to a depth-1 round; SHARAR_SPEC is the cap (0: the fixed depth)
     draft_dir: str | None = None              # SHARAR_DRAFT
     draft_vocab: int = 0                      # SHARAR_DRAFT_VOCAB: reduced MTP draft vocabulary rows (0: full)
     draft_head: str = "fp8"                   # SHARAR_DRAFT_HEAD: fp8 (the target's head) or w3
@@ -119,6 +120,7 @@ class EngineConfig:
             flashnext_experts=_str(e, "SHARAR_FLASHNEXT_EXPERTS", "w3"),
             spec=_str(e, "SHARAR_SPEC"),
             spec_depths=_str(e, "SHARAR_SPEC_DEPTHS"),
+            spec_step_cost=float(_str(e, "SHARAR_SPEC_STEP_COST") or 0.0),
             draft_dir=_str(e, "SHARAR_DRAFT"),
             draft_vocab=_int(e, "SHARAR_DRAFT_VOCAB", 0),
             draft_head=_str(e, "SHARAR_DRAFT_HEAD", "fp8"),

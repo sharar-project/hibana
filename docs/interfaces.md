@@ -161,7 +161,9 @@ allocating shared verify buffers. MTP supports k=1–8 and DFlash2 k=1–15. Tar
 `max_batch` (at most 128). Normal startup captures the
 selected verification depth; benchmarks can explicitly capture additional
 supported depths. `SHARAR_SPEC_DEPTHS` sets a depth per batch bucket
-(`engine/depth.py` `BatchDepth`): each depth's verify graphs cover only its
+(`engine/depth.py` `BatchDepth`), and `SHARAR_SPEC_STEP_COST` a depth per request
+under that cap (`AcceptanceDepth`, proposers with `short_drafts`; every depth up to
+the cap is captured): each depth's verify graphs cover only its
 buckets, and a bucket at depth 0 decodes plainly while the proposer still
 ingests every committed row, so speculation resumes when the batch shrinks. A
 proposer that declares `Capabilities.short_drafts` (MTP) receives

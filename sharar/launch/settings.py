@@ -24,7 +24,7 @@ TARGET_CHOICES = ("27b", "flashnext", "qwen38", "flash-next")
 TARGET_SETTINGS = {
     "qwen38": {"SHARAR_SERVICE": "sharar-qwen38", "SHARAR_PORT": "30001", "SHARAR_PROPOSER": "dflash2", "SHARAR_SPEC": "15",
                "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_PRECISION": "fp8"},
-    "flashnext": {"SHARAR_SERVICE": "sharar-flashnext", "SHARAR_PORT": "30004", "SHARAR_PROPOSER": "mtp", "SHARAR_SPEC": "4",
+    "flashnext": {"SHARAR_SERVICE": "sharar-flashnext", "SHARAR_PORT": "30004", "SHARAR_PROPOSER": "mtp",
                   "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_PRECISION": "bf16", "SHARAR_DRAFT": "pinned",
                   "SHARAR_DRAFT_HEAD": "w3", "SHARAR_FLASHNEXT_TRUNK": "fp8"},
 }
@@ -33,15 +33,18 @@ TARGET_SETTINGS = {
 #   exact     the target's own distribution: exact acceptance, no lossy weight copies (benchmarks)
 #   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy requests and
 #             Flash-Next's sampled ones, top-2 within 1.0 for the 27B's sampled ones (at 3:2.0 its sampled thinking looped
-#             in Claude Code sessions, #11), the calibrated 3-bit copies, device-resident acceptance on Flash-Next (#36)
+#             in Claude Code sessions, #11), the calibrated 3-bit copies, device-resident acceptance on Flash-Next (#36),
+#             and Flash-Next's draft depth per request (#43: up to 8 for one request, 4 for two or more; the others
+#             verify 4 drafts)
 #   throughput  fast with more requests decoded together: the 27B 16 (full depth; batches of five or more verify on
 #             the original weights, GSM8K x1.74), Flash-Next 128 with its 3-bit experts (64 with NVFP4 experts), three
-#             drafts above eight requests so verification stays within the 64 rows the 3-bit copies serve
+#             drafts at sixteen requests so their verification stays within the 64 rows the 3-bit copies serve (four
+#             above: wider batches exceed 64 rows at any depth, and three measured no faster there, 2026-10-12)
 PROFILE_NAMES = ("exact", "fast", "throughput")
 
 
-def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3") -> dict[str, str]:
-    """The profile's value for each knob it sets, as SHARAR_* settings."""
+def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", tp: int = 1) -> dict[str, str]:
+    """The profile's value for each knob it sets, as SHARAR_* settings, for one Spark or `tp` of them."""
     flashnext = target == "flashnext"
     if profile == "exact":
         p = {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "0", "SHARAR_DEVICE_ACCEPT": "0"}
@@ -53,11 +56,15 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3") -
     else:
         raise ValueError(f"unknown serving profile {profile!r} (choose from {', '.join(PROFILE_NAMES)})")
     p["SHARAR_MAX_BATCH"] = "4"
+    if flashnext:
+        p["SHARAR_SPEC"] = "4"
+        if profile == "fast":  # adaptive depth (#43): h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
+            # two Sparks: 0.14 drafted chat and prose too deep (-12%, -7% against depth 4); 0.2 keeps them within noise
+            p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14" if tp == 1 else "0.2", SHARAR_SPEC_DEPTHS="2:4,4:4")
     if profile == "throughput":
         p["SHARAR_MAX_BATCH"] = ("128" if flashnext_experts == "w3" else "64") if flashnext else "16"
         if flashnext:
             p["SHARAR_SPEC_DEPTHS"] = "16:3"
-    if profile == "throughput":
         # the 8-bit GDN state pays with many requests (#129, #161); `fast` keeps FP32: no gain at one request, slower prefill
         p["SHARAR_SSM_STATE"] = "int8"
     return p
@@ -217,10 +224,17 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     values.update({k: v for k, v in user.items() if v != "" and k not in (overrides or {})})
     values["SHARAR_TARGET"] = name
     profile = profile or values.get("SHARAR_PROFILE") or "fast"
-    for k, v in profile_defaults(profile, name, values.get("SHARAR_FLASHNEXT_EXPERTS", "w3")).items():
+    defaults = profile_defaults(profile, name, values.get("SHARAR_FLASHNEXT_EXPERTS", "w3"), tp)
+    for k, v in defaults.items():
         if k == "SHARAR_SSM_STATE" and values.get("SHARAR_VERIFY_STATE", "reconstruct") != "reconstruct":
             continue  # the quantized state commits through the verify ring: other accepted states keep FP32
         values.setdefault(k, v)
+    if defaults.get("SHARAR_SPEC_DEPTHS") and values.get("SHARAR_SPEC_DEPTHS") == defaults["SHARAR_SPEC_DEPTHS"] \
+            and values.get("SHARAR_SPEC", "").isdigit():
+        # the profile's depths per batch bucket stay within a depth the user chose
+        spec = int(values["SHARAR_SPEC"])
+        values["SHARAR_SPEC_DEPTHS"] = ",".join(f"{b}:{min(int(d), spec)}" for b, d in
+                                                (item.split(":") for item in values["SHARAR_SPEC_DEPTHS"].split(",")))
     values["SHARAR_PROFILE"] = profile
 
     home = Path(env.get("HOME") or Path.home())

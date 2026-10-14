@@ -67,8 +67,33 @@ rows past the budget eager.
 
 ## The MTP draft
 
-- **Depth.** k=4 (the target's settings, cap 8). Deeper drafts win on code and math and lose on
-  prose; adaptive depth is #43.
+- **Depth, per request (#43).** Deeper drafts win on code and math and lose on prose and multilingual text, so no
+  fixed depth suits both: on the h2h set (one Spark, `fast`, greedy) depth 8 beats 4 by 12-17% on code, math and
+  structured output and loses 9-13% on chat, prose and multilingual. `fast` sets the depth per request
+  (`engine/depth.AcceptanceDepth`, `SHARAR_SPEC_STEP_COST=0.14`, 0.2 on two Sparks): a moving average of the request's
+  accepted drafts per position tested, q, and the depth d up to 8 that maximizes the expected emitted tokens (1 -
+  q^(d+1)) / (1 - q) per round cost 1 + 0.14 (d - 1) (measured: 31.5 ms at depth 1, about 4.3 ms per token more). On
+  two Sparks a round costs 26.7 ms plus 2.9 ms per token (0.11), but drafted tokens deep in a round are accepted less
+  often than the model's single q assumes, and at 0.14 chat and prose drafted too deep there (-12% and -7% against
+  depth 4); the profile prices a token at 0.2 on two Sparks, which measured best of 0.14, 0.2 and 0.3. A batch
+  verifies the deepest depth its requests want, up to 4 for two or more requests (`SHARAR_SPEC_DEPTHS=2:4,4:4`: four
+  streams measured best at 4). The choice is made before drafting: stopping the draft on its own confidence step by
+  step (which the confidence predicts well, 95% accepted above 0.9 against 21% at 0.1-0.2) cost 17% in host waits
+  between steps. Measured 2026-10-14 against depth 4 on the h2h set, the means of two runs:
+
+  | | median | chat | code | math | multilingual | prose | structured | 4 streams |
+  |---|---:|---:|---:|---:|---:|---:|---:|---:|
+  | one Spark, greedy | 90.9 -> 105.3 | +6% | +17% | +11% | 0% | +1% | +19% | 158.5 -> 161.7 |
+  | one Spark, t=0.7 | 89.0 -> 92.3 | -1% | +9% | +7% | 0% | -2% | +14% | 147.5 -> 147.0 |
+  | two Sparks, greedy | 121.6 -> 131.3 | -5% | +17% | +11% | +4% | 0% | +15% | 226.6 -> 222.2 |
+  | two Sparks, t=0.7 | 118.4 -> 124.7 | -5% | +9% | +8% | -1% | -1% | +12% | 207.1 -> 204.9 |
+
+  The two-Spark rows use 0.2 (four streams: one run). Chat has two prompts, and depth 4's own two runs differed by 7%
+  on it. Under exact acceptance a different depth changes the rows each verification computes, so near-tie tokens can
+  round differently: main at a fixed depth 8 and at depth 4 diverge on 5 of 6 prompts (from token 6 to 106), as
+  adaptive depth does; each setting repeats its own outputs exactly. Under `fast`'s relaxed acceptance a deeper round
+  gives the rule more positions; GSM8K (first 300) and HumanEval stayed within run-to-run noise (pooled -0.2 points
+  against a repeat of depth 4, whose two runs themselves differed by 1.3). `exact` and `throughput` keep depth 4.
 - **Draft-only head.** `SHARAR_DRAFT_HEAD=w3` gives the draft steps a 3-bit copy of the lm_head; its top 8
   candidates (`SHARAR_DRAFT_HEAD_RESCORE`) are rescored with the target's FP8 rows, so the draft picks what the
   full head would except on near-ties. Exact acceptance is unaffected. `SHARAR_DRAFT_VOCAB` restricts the draft

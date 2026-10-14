@@ -49,13 +49,14 @@ same) and results, traces, sessions, drafter runs, 3-bit checkpoints and logs in
 |---|---|---|
 | Target | the one named on `serve` (`27b` or `flashnext`) | `SHARAR_TARGET`; Flash-Next reads its model from `SHARAR_FLASHNEXT_CACHE` and takes `SHARAR_FLASHNEXT_TRUNK=fp8\|bf16` |
 | Serving profile | `fast` | `sharar serve --exact\|--fast\|--throughput` or `SHARAR_PROFILE` ([below](#serving-profiles)) |
-| Proposer / draft proposals | 27B: DFlash2, 15 (16 verify rows); Flash-Next: MTP, 4 | `SHARAR_PROPOSER`, `SHARAR_SPEC` (0 = plain decode) |
+| Proposer / draft proposals | 27B: DFlash2, 15 (16 verify rows); Flash-Next: MTP, 4 (`fast`: up to 8, adaptive, below) | `SHARAR_PROPOSER`, `SHARAR_SPEC` (0 = plain decode; with adaptive depth, the cap) |
 | Draft precision | FP8 | `SHARAR_DRAFT_PRECISION=bf16` for the publisher's precision |
 | Draft checkpoint | the publisher's pinned draft | `sharar serve --draft DIR` or `SHARAR_DRAFT=/dir`: a DFlash2 checkpoint of the same architecture (27B only) |
 | Accepted state | reconstruction | `SHARAR_VERIFY_STATE` |
 | Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
 | Requests decoded together | 4; `throughput`: 16 on the 27B, 128 on Flash-Next (64 with NVFP4 experts) | `SHARAR_MAX_BATCH` / `sharar serve --max-batch`, 1-128 (graph buckets 1, 2, 4, ... 128). Above four, the pool guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full context |
-| Verify depth per batch size | the proposer's depth at every batch; `throughput` on Flash-Next: `16:3` | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
+| Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:4,4:4`, `throughput`: `16:3` | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC`). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
+| Adaptive draft depth (MTP) | Flash-Next `fast`: on, 0.14 (0.2 on two Sparks) | `SHARAR_SPEC_STEP_COST` (0 = the fixed depth): each request drafts as deep as its own recent acceptance pays for, up to the batch bucket's depth ([how](flashnext.md#the-mtp-draft)) |
 | Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext` | `sharar serve --port`, `SHARAR_PORT` / `SHARAR_SERVICE` |
 | Request traces | off | `sharar serve --traces` (in `$SHARAR_RESULTS/traces`) or `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
 | Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |

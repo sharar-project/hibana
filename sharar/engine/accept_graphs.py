@@ -104,6 +104,7 @@ class AcceptGraphs:
         size = self.vg.pick(b)
         st = self._st[size]
         k, s = self.k, self.s
+        observe = getattr(spec.depth_policy, "observe", None)  # adaptive depth learns each request's rate
         # Authorization and validation before any in-place write, as the host path does.
         ex.state.authorize_reconstruction(reqs, spec.replay, spec.conv_windows_all, verified_steps=s)
         starts, ring_slots = spec.proposer.accepted_prepare(reqs)
@@ -161,14 +162,16 @@ class AcceptGraphs:
                 r.trace_rounds.append(record)
             for tok in emitted:
                 r.push(int(tok))
-            spec.proposed += spec.k
+            spec.proposed += k
             spec.accepted += a
             spec.emitted += count
+            if observe is not None:
+                observe(r, k, a)
             relaxed_here = min(sum(flags), count)
             spec.relaxed_accepts += relaxed_here
             r.spec_relaxed += relaxed_here
             r.spec_rounds += 1
-            r.spec_proposed += spec.k
+            r.spec_proposed += k
             r.spec_accepted += a
             r.spec_emitted += count
         spec.proposer.accepted_publish(reqs, outputs)

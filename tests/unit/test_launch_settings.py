@@ -86,6 +86,15 @@ def test_throughput_decodes_more_requests(target, experts, batch, depths):
         assert launch.profile_defaults(profile, target)["SHARAR_MAX_BATCH"] == "4"
 
 
+def test_adaptive_depth_prices_a_drafted_token_per_spark_count(env):
+    # #146: on two Sparks the one-Spark price (0.14) drafted chat and prose too deep; 0.2 measured best
+    assert launch.profile_defaults("fast", "flashnext").get("SHARAR_SPEC_STEP_COST") == "0.14"
+    assert launch.profile_defaults("fast", "flashnext", tp=2).get("SHARAR_SPEC_STEP_COST") == "0.2"
+    assert resolve(env, "flashnext", "fast", tp=2).get("SHARAR_SPEC_STEP_COST") == "0.2"
+    assert resolve({**env, "SHARAR_SPEC_STEP_COST": "0.3"}, "flashnext", "fast", tp=2).get("SHARAR_SPEC_STEP_COST") == "0.3"
+    assert "SHARAR_SPEC_STEP_COST" not in launch.profile_defaults("throughput", "flashnext", tp=2)
+
+
 @pytest.mark.parametrize("profile, target, state", [
     ("exact", "qwen38", None), ("fast", "qwen38", None), ("throughput", "qwen38", "int8"),
     ("exact", "flashnext", None), ("fast", "flashnext", None), ("throughput", "flashnext", "int8")])
