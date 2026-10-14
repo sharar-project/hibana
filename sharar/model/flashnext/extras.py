@@ -6,7 +6,7 @@ it lives in one `FlashNextSideInputs` value on `ctx.extras`, built by
 
 - the two tokens before each sequence (the PLE's n-gram history) for prefill,
   and the gathered table rows of every decode or verify row (read on the host
-  from the NVMe table);
+  from the NVMe table, or on two Sparks from each rank's resident share, #178);
 - the indexer's per-sequence layout (eager), or its graph-safe key-maintenance
   rows (graphs), plus the page table a selecting graph reads past the budget.
 
@@ -85,6 +85,17 @@ class FlashNextExtras:
         so only the last column's read follows the drafts (#36). One upload from pinned memory."""
         from sharar.model.flashnext.ple import ROW_BYTES
         b, heads = len(reqs), self.ple.heads
+        if self.ple.resident is not None:  # the rows are in device memory (#178): row ids per column, then one gather
+            ids = torch.empty((b, k + 1, heads), dtype=torch.int64)
+            seqs = [self._history(r, r.context_len - 1) + [r.output_ids[-1]] for r in reqs]
+            for j in range(k + 1):
+                if j:
+                    for seq, token in zip(seqs, columns.column(j - 1)):
+                        seq.append(token)
+                tokens = torch.tensor([seq[-1] for seq in seqs], dtype=torch.int64)
+                ids[:, j] = self.ple.token_ids(tokens, torch.tensor([seq[-3:-1] for seq in seqs], dtype=torch.int64), self.eos)
+            out.copy_(self.ple.device_rows(ids.reshape(-1, heads)))
+            return
         if self._staging is None or self._staging.shape[0] < b * (k + 1):
             self._staging = torch.empty((b * (k + 1), heads, ROW_BYTES), dtype=torch.uint8, pin_memory=self._staged is not None)
         elif self._staged is not None:

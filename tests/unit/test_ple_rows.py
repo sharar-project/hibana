@@ -9,7 +9,7 @@ import torch
 
 from sharar.engine.rejection import DraftColumns
 from sharar.model.flashnext.extras import FlashNextExtras
-from sharar.model.flashnext.ple import ROW_BYTES, PleLayer, PleTable
+from sharar.model.flashnext.ple import ROW_BYTES, PleLayer, PleTable, ResidentRows
 
 EOS = 7
 NAME = "ple.ngram_embedding"
@@ -97,6 +97,7 @@ class _Hash:
     vocab_sizes = torch.tensor([53, 59, 61, 67], dtype=torch.int64)
     offsets = torch.tensor([0, 53, 112, 173], dtype=torch.int64)
     ngram_ids, token_ids, _hash, rows_for = PleLayer.ngram_ids, PleLayer.token_ids, PleLayer._hash, PleLayer.rows_for
+    device_rows, resident = PleLayer.device_rows, None
 
 
 def test_column_hash_matches_the_sequence_hash():
@@ -135,3 +136,34 @@ def test_streamed_verify_rows_match_the_block(table):
         out = torch.zeros_like(reference)
         extras._stream_verify_rows(out, reqs, columns, k)
         assert torch.equal(out, reference)
+
+    class Resident:  # two Sparks (#178): the ids column by column, then one device gather
+        def gather(self, ids):
+            return torch.from_numpy(table.gather(ids.numpy()))
+    ple.resident = Resident()
+    out = torch.zeros_like(reference)
+    extras._stream_verify_rows(out, reqs, columns, k)
+    assert torch.equal(out, reference)
+
+
+def test_resident_shares_give_the_host_rows(table, monkeypatch):
+    """Two Sparks (#178): each rank copies its heads' rows (here across shard boundaries) and gathers them; the
+    all-gather of both ranks' parts, in rank order, is the host gather's bytes."""
+    from sharar import distributed
+    h = _Hash()
+    shares = [ResidentRows(table, h.offsets, h.vocab_sizes, r, 2, torch.device("cpu"), log=lambda *_: None) for r in (0, 1)]
+    assert [(s.h0, s.base, s.rows.shape[0]) for s in shares] == [(0, 0, 112), (2, 112, 128)]
+    rng = np.random.default_rng(4)
+    ids = torch.stack([h.offsets[j] + torch.from_numpy(rng.integers(0, int(h.vocab_sizes[j]), 37)) for j in range(4)], 1)
+    reference = torch.from_numpy(table.gather(ids.numpy()))
+    parts = [s.rows.index_select(0, (ids[:, s.h0:s.h0 + s.per] - s.base).reshape(-1)).view(37, -1) for s in shares]
+
+    def all_gather(x):
+        assert any(torch.equal(x, p) for p in parts)  # each rank sends its own heads' rows
+        return torch.cat(parts, -1)
+    monkeypatch.setattr(distributed, "all_gather", all_gather)
+    for s in shares:
+        assert torch.equal(s.gather(ids), reference)
+    ple = _Hash()
+    ple.resident = shares[0]
+    assert torch.equal(ple.device_rows(ids), reference)
