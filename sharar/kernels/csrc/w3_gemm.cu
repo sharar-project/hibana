@@ -347,17 +347,22 @@ void launch(torch::Tensor y, torch::Tensor ws, torch::Tensor counters, torch::Te
 //            caller passes the stable sort. Blocks 1..M: x -> E4M3 per (row, 32-group), as `quant_groups`.
 //   fc1      grid (1280 / 128, min(pairs, 512)): one block per 128 rows of one selected expert (blocks past the
 //            distinct count exit). The W3 GEMM's streaming loop with the expert's rows gathered as the A operand,
-//            in passes of at most 64 rows (the weights stream once per pass). Epilogue: h = bf16(silu(bf16 gate)
+//            in passes of at most 64 rows (the weights stream once per pass; wide calls: one block per pass of at
+//            most kWide rows). Epilogue: h = bf16(silu(bf16 gate)
 //            * bf16 up) for the block's 64 intermediate columns, then E4M3 per (pair, 32-group) into hq / hs.
 //   fc2      grid (2560 / 128, min(pairs, 512)): the same loop over each pair's quantized h; FP32 y per pair.
 //   combine  out[r] = bf16(sum_k w[r, k] * y[r, k]) in selection order.
 namespace moe {
 
 constexpr int kE = 512, kTopk = 10, kH = 2560, kI = 640, kPass = 64, kOrderInKernel = 640;
+// Wide calls (`gemm_pass_kernel`) run passes of up to kWide pairs: one expansion of an expert's codes then feeds up to
+// seven row tiles, and an expert with 65-112 pairs (about 80 in a 4,096-row call) takes one pass instead of two. The
+// same bits as kPass passes. 112 against 96 and 128 on real experts (#144): 128 spills too many registers.
+constexpr int kWide = 112;
 // plan words: D, the expert of each slot, the slot starts (D + 1 of them)
 constexpr int kPlanExp = 1, kPlanStart = kPlanExp + kE, kPlanWords = kPlanStart + kE + 1;
 // Wide calls (`Params::work`): plan word kPlanWords holds W, and work[2 w], work[2 w + 1] the distinct slot and the
-// first pair of the w-th pass (kPass pairs at most), the passes of a slot adjacent and the slots in ascending order.
+// first pair of the w-th pass (kWide pairs at most), the passes of a slot adjacent and the slots in ascending order.
 constexpr int kPlanWork = kPlanWords;
 
 __device__ __forceinline__ float bf16r(float x) { return __bfloat162float(__float2bfloat16_rn(x)); }
@@ -431,12 +436,12 @@ __global__ void __launch_bounds__(512) prep_kernel(const Params p) {
       p.plan[kPlanStart + base] = total;
       start[base] = total;
     }
-    if (p.work) {  // one entry per pass of kPass pairs, slot by slot
+    if (p.work) {  // one entry per pass of kWide pairs, slot by slot
       __syncwarp();
       int written = 0;
       for (int c = 0; c * 32 < base; ++c) {
         const int d = c * 32 + lane;
-        const int passes = d < base ? (start[d + 1] - start[d] + kPass - 1) / kPass : 0;
+        const int passes = d < base ? (start[d + 1] - start[d] + kWide - 1) / kWide : 0;
         int inclusive = passes;
 #pragma unroll
         for (int o = 1; o < 32; o <<= 1) {
@@ -446,7 +451,7 @@ __global__ void __launch_bounds__(512) prep_kernel(const Params p) {
         for (int q = 0; q < passes; ++q) {
           const int w = written + inclusive - passes + q;
           p.work[2 * w] = d;
-          p.work[2 * w + 1] = q * kPass;
+          p.work[2 * w + 1] = q * kWide;
         }
         written += __shfl_sync(0xffffffffu, inclusive, 31);
       }
@@ -502,9 +507,10 @@ __device__ __forceinline__ void group_rows(float (&acc)[MT][4][4], const uint32_
 // double-buffered by cp.async, and read the A fragments with ldmatrix: the same bytes and scales as the
 // per-lane loads of `group_rows`, in the same order, so the result is bit-identical.
 constexpr int kAStride = kChunk + 16;  // bytes per staged row, padded: ldmatrix's eight rows hit distinct banks
+template <int R>  // rows a pass stages
 struct alignas(16) Staged {
-  uint8_t a[2][kPass][kAStride];
-  float s[2][kPass][4];
+  uint8_t a[2][R][kAStride];
+  float s[2][R][4];
 };
 
 __device__ __forceinline__ void cp_async16(void* dst, const void* src) {
@@ -521,6 +527,34 @@ template <int MT, int C>
 __device__ __forceinline__ void group_staged(float (&acc)[MT][4][4], const uint32_t* __restrict__ wd, const uint8_t* __restrict__ sb,
                                              const uint8_t (*a)[kAStride], const float (*sc)[4], int lane, uint32_t lut_lo, uint32_t lut_hi) {
   const int g = lane >> 2;
+  if constexpr (MT > 4) {  // the weight fragments first, then one row tile at a time: fewer live registers, the same bits
+    uint32_t b[4][2];
+    float s0[4], s1[4];
+#pragma unroll
+    for (int nt = 0; nt < 4; ++nt) {
+      const uint32_t p0 = wd[3 * nt], p1 = wd[3 * nt + 1], p2 = wd[3 * nt + 2];
+      b[nt][0] = expand<2 * C>(p0, p1, p2, lut_lo, lut_hi);
+      b[nt][1] = expand<2 * C + 1>(p0, p1, p2, lut_lo, lut_hi);
+      s0[nt] = e4m3_to_float(sb[(nt * 4 + C) * 2]);
+      s1[nt] = e4m3_to_float(sb[(nt * 4 + C) * 2 + 1]);
+    }
+#pragma unroll
+    for (int mt = 0; mt < MT; ++mt) {
+      uint32_t af[4];
+      ldmatrix_x4(af, &a[mt * 16 + (lane & 7) + 8 * ((lane >> 3) & 1)][C * 32 + 16 * (lane >> 4)]);
+      const float xa = sc[mt * 16 + g][C], xb = sc[mt * 16 + g + 8][C];
+#pragma unroll
+      for (int nt = 0; nt < 4; ++nt) {
+        float d[4];
+        mma_e4m3(d, af, b[nt][0], b[nt][1]);
+        acc[mt][nt][0] = fmaf(d[0], s0[nt] * xa, acc[mt][nt][0]);
+        acc[mt][nt][1] = fmaf(d[1], s1[nt] * xa, acc[mt][nt][1]);
+        acc[mt][nt][2] = fmaf(d[2], s0[nt] * xb, acc[mt][nt][2]);
+        acc[mt][nt][3] = fmaf(d[3], s1[nt] * xb, acc[mt][nt][3]);
+      }
+    }
+    return;
+  }
   uint32_t af[MT][4];
   float xa[MT], xb[MT];
 #pragma unroll
@@ -550,23 +584,28 @@ __device__ __forceinline__ void group_staged(float (&acc)[MT][4][4], const uint3
 
 // One pass: 128 weight rows (this block's) of expert e against `rows` <= 16 MT of its pairs, list[0 .. rows).
 // STAGED: the activations come through shared memory (`Staged`, wide calls), else per-lane loads (decode).
-template <bool FC1, int MT, bool STAGED>
-__device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], Staged* st, int e, const int* __restrict__ list, int rows) {
+// R: the rows `st` holds (kPass, or kWide in wide calls); hsm may share its memory, which the epilogue writes only
+// after every warp is done with the staged activations.
+template <bool FC1, int MT, bool STAGED, int R = kPass>
+__device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], Staged<R>* st, int e, const int* __restrict__ list, int rows) {
   constexpr int N = FC1 ? 2 * kI : kH, K = FC1 ? kH : kI, KC = K / kChunk, XT = STAGED ? 1 : MT;
+  static_assert(MT * 16 <= R && R <= kWarps * 32, "a pass stages at most one row per thread");
   const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3, tid = threadIdx.x;
   const uint8_t* xbase = FC1 ? p.xq : p.hq;
   const float* sbase = FC1 ? p.xs : p.hs;
   const uint8_t* xr[XT][2];
   const float* xg[XT][2];
-  const uint8_t* ar[4] = {nullptr, nullptr, nullptr, nullptr};  // staged: this thread's pieces, rows tid / 8 + 16 u
-  const float* as = nullptr;                                     // staged: this thread's row of scales (tid < rows)
+  constexpr uint32_t kNone = 0xFFFFFFFFu;
+  uint32_t ar[MT];            // staged: byte offsets in xbase of this thread's pieces, rows tid / 8 + 16 u (kNone past the pass)
+  const float* as = nullptr;  // staged: this thread's row of scales (tid < rows)
   if constexpr (STAGED) {
 #pragma unroll
-    for (int u = 0; u < 4; ++u) {
+    for (int u = 0; u < MT; ++u) {
+      ar[u] = kNone;
       const int m = tid / 8 + 16 * u;
       if (m < rows) {
         const int q = __ldg(list + m), r = FC1 ? q / kTopk : q;
-        ar[u] = xbase + static_cast<size_t>(r) * K + (tid % 8) * 16;
+        ar[u] = static_cast<uint32_t>(r) * K + (tid % 8) * 16;  // < 2^32: rows x 2560 or pairs x 640
       }
     }
     if (tid < rows) {
@@ -597,8 +636,8 @@ __device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], S
   auto stage = [&](int c, int b) {  // chunk c's activations into buffer b: one commit group, possibly empty
     if (c < KC) {
 #pragma unroll
-      for (int u = 0; u < 4; ++u)
-        if (ar[u]) cp_async16(&st->a[b][tid / 8 + 16 * u][(tid % 8) * 16], ar[u] + c * kChunk);
+      for (int u = 0; u < MT; ++u)
+        if (ar[u] != kNone) cp_async16(&st->a[b][tid / 8 + 16 * u][(tid % 8) * 16], xbase + ar[u] + c * kChunk);
       if (as) cp_async16(&st->s[b][tid][0], as + c * 4);
     }
     cp_async_commit();
@@ -625,6 +664,29 @@ __device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], S
     sd[0] = __ldcs(sp + static_cast<size_t>(c) * kScaleWords);
     sd[1] = __ldcs(sp + static_cast<size_t>(c) * kScaleWords + 1);
   };
+  if constexpr (STAGED && MT > 4) {
+    // Wide passes: a chunk's weights one chunk ahead in registers (a chunk takes twice as long as at four tiles, so
+    // one ahead covers about the latency two did, in fewer registers); the activations as below.
+    load(0, w[0], s[0]);
+    stage(0, 0);
+    stage(1, 1);
+    for (int cc = 0; cc < KC; ++cc) {
+      const int slot = cc & 1;
+      uint4 wl[3] = {w[0][0], w[0][1], w[0][2]};
+      const uint4 sl[2] = {s[0][0], s[0][1]};
+      if (cc + 1 < KC) load(cc + 1, w[0], s[0]);
+      const uint32_t* wd = reinterpret_cast<const uint32_t*>(wl);
+      const uint8_t* sb = reinterpret_cast<const uint8_t*>(sl);
+      cp_async_wait1();
+      __syncthreads();
+      group_staged<MT, 0>(acc, wd, sb, st->a[slot], st->s[slot], lane, p.lut_lo, p.lut_hi);
+      group_staged<MT, 1>(acc, wd, sb, st->a[slot], st->s[slot], lane, p.lut_lo, p.lut_hi);
+      group_staged<MT, 2>(acc, wd, sb, st->a[slot], st->s[slot], lane, p.lut_lo, p.lut_hi);
+      group_staged<MT, 3>(acc, wd, sb, st->a[slot], st->s[slot], lane, p.lut_lo, p.lut_hi);
+      __syncthreads();
+      stage(cc + 2, slot);
+    }
+  } else {
   load(0, w[0], s[0]);
   load(1, w[1], s[1]);
   if constexpr (STAGED) {
@@ -659,6 +721,7 @@ __device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], S
         }
       }
     }
+  }
   }
 
   const float* rs = (FC1 ? p.row13 : p.row2) + static_cast<size_t>(e) * N + nb * 32;
@@ -698,8 +761,8 @@ __device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], S
       }
     }
   __syncthreads();
-  if (tid < 2 * rows) {
-    const int m = tid >> 1, grp = tid & 1, q = __ldg(list + m);
+  for (int i = tid; i < 2 * rows; i += kWarps * 32) {
+    const int m = i >> 1, grp = i & 1, q = __ldg(list + m);
     float amax = 0.f;
 #pragma unroll
     for (int i = 0; i < 32; ++i) amax = fmaxf(amax, fabsf(hsm[m][grp * 32 + i]));
@@ -730,9 +793,9 @@ __global__ void __launch_bounds__(kWarps * 32) gemm_kernel(const Params p) {
   const int e = __ldg(p.plan + kPlanExp + d), s0 = __ldg(p.plan + kPlanStart + d), n = __ldg(p.plan + kPlanStart + d + 1) - s0;
   __shared__ float hsm[FC1 ? MTMAX * 16 : 1][kPass + 1];
   if constexpr (MTMAX == 1) {
-    pass<FC1, 1, false>(p, hsm, nullptr, e, p.order + s0, n);
+    pass<FC1, 1, false, kPass>(p, hsm, nullptr, e, p.order + s0, n);
   } else {
-    __shared__ Staged st;
+    __shared__ Staged<kPass> st;
     for (int base = 0; base < n; base += kPass) {
       const int rows = min(kPass, n - base);
       const int* list = p.order + s0 + base;
@@ -744,25 +807,34 @@ __global__ void __launch_bounds__(kWarps * 32) gemm_kernel(const Params p) {
   }
 }
 
-// Wide calls: one pass per block, blockIdx.y the work entry, blockIdx.x the 128-row weight block. An expert's passes
-// are adjacent in launch order and run at the same time, so its weights mostly come from L2 after the first pass,
-// where `gemm_kernel` loops over them in one block and streams the weights from DRAM once per pass (#144). Each pass
-// is `gemm_kernel`'s, so the bits are the same. (Eight-warp blocks that run two passes on one set of weight loads give
-// the same bits too, but one block per SM loses more to latency than it saves.)
+// Wide calls: one pass of up to kWide pairs per block, blockIdx.y the work entry, blockIdx.x the 128-row weight block.
+// An expert's passes are adjacent in launch order and run at the same time, so its weights mostly come from L2 after
+// the first pass, where `gemm_kernel` loops over them in one block and streams the weights from DRAM once per pass
+// (#144). Per pair the arithmetic is `gemm_kernel`'s, so the bits are the same. The epilogue's tile shares memory with
+// the staged activations (two blocks an SM, as with kPass passes). (Eight-warp blocks that run two passes on one set
+// of weight loads give the same bits too, but one block per SM loses more to latency than it saves.)
+template <bool FC1, int MT>
+__device__ __forceinline__ void wide_pass(const Params& p, float (*hsm)[kPass + 1], Staged<kWide>* st, int e, const int* list, int rows) {
+  if constexpr (MT * 16 < kWide) {
+    if (rows > MT * 16) return wide_pass<FC1, MT + 1>(p, hsm, st, e, list, rows);
+  }
+  pass<FC1, MT, true, kWide>(p, hsm, st, e, list, rows);
+}
+
 template <bool FC1>
 __global__ void __launch_bounds__(kWarps * 32) gemm_pass_kernel(const Params p) {
   const int w = blockIdx.y;
   if (w >= __ldg(p.plan + kPlanWork)) return;
   const int d = __ldg(p.work + 2 * w), base = __ldg(p.work + 2 * w + 1);
   const int e = __ldg(p.plan + kPlanExp + d), s0 = __ldg(p.plan + kPlanStart + d), n = __ldg(p.plan + kPlanStart + d + 1) - s0;
-  const int rows = min(kPass, n - base);
+  const int rows = min(kWide, n - base);
   const int* list = p.order + s0 + base;
-  __shared__ float hsm[FC1 ? kPass : 1][kPass + 1];
-  __shared__ Staged st;
-  if (rows <= 16) pass<FC1, 1, true>(p, hsm, &st, e, list, rows);
-  else if (rows <= 32) pass<FC1, 2, true>(p, hsm, &st, e, list, rows);
-  else if (rows <= 48) pass<FC1, 3, true>(p, hsm, &st, e, list, rows);
-  else pass<FC1, 4, true>(p, hsm, &st, e, list, rows);
+  __shared__ union Smem {
+    Staged<kWide> st;
+    float hsm[FC1 ? kWide : 1][kPass + 1];
+  } sm;
+  Staged<kWide>* st = &sm.st;
+  wide_pass<FC1, 1>(p, sm.hsm, st, e, list, rows);
 }
 
 __global__ void __launch_bounds__(256) combine_kernel(const Params p) {
@@ -836,7 +908,7 @@ std::vector<torch::Tensor> quant_groups(torch::Tensor x) {
 // Routed experts in the three-bit format for x [M, 2560] bf16, ids [M, 10] int32, weights [M, 10] fp32 -> bf16
 // [M, 2560] (the routed sum; no shared expert). The weights hold experts e_lo .. e_lo + E - 1 (all 512, or one
 // rank's range under expert parallelism): pairs routed elsewhere are skipped, and the result is this rank's partial
-// sum. `wide_rows`: from this many rows each pass of kPass pairs gets its own block (`gemm_pass_kernel`; the same bits).
+// sum. `wide_rows`: from this many rows each pass of up to kWide pairs gets its own block (`gemm_pass_kernel`; the same bits).
 // `order`: when there are more than 640 pairs, this rank's pairs stably sorted by expert first (int32 [M * 10],
 // the others after them), else empty (the prep kernel sorts them). The ids must be below 512.
 torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, torch::Tensor order,
@@ -862,7 +934,7 @@ torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, 
   auto plan = torch::empty({kPlanWords + 1}, i32);
   const int slots = std::min<int64_t>(P, E);
   const bool wide = M >= wide_rows;
-  const int work_cap = slots + (P + kPass - 1) / kPass;  // sum over slots of ceil(n / kPass) <= slots + P / kPass
+  const int work_cap = slots + (P + kWide - 1) / kWide;  // sum over slots of ceil(n / kWide) <= slots + P / kWide
   auto work = wide ? torch::empty({2 * work_cap}, i32) : torch::Tensor();
   auto sorted = sort ? torch::empty({P}, i32) : order;
   auto xq = torch::empty({M, kH}, u8);
