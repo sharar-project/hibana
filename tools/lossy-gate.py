@@ -670,7 +670,7 @@ def main(argv=None) -> int:
         raise SystemExit(f"{args.evals}: no sharar-eval with evals.suite; set --evals or SHARAR_EVALS")
     args.python = args.python or str(args.evals / ".venv" / "bin" / "python")
     if not Path(args.python).is_file():
-        raise SystemExit(f"{args.python} not found: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt in {args.evals}")
+        raise SystemExit(f"{args.python} not found: run `uv sync` in {args.evals}")
     evals_commit = git("rev-parse", "HEAD", cwd=args.evals)
     workload_sha = sha256(WORKLOAD.read_bytes())
     key_src = {"protocol": PROTOCOL, "target": args.target, "baseline": {"values": arms["baseline"].values, "plan": plans["baseline"]},
