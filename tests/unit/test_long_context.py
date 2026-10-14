@@ -21,14 +21,16 @@ def plan(monkeypatch, context_len, available_gib=90):
     return Ledger(start_available=available_gib * GIB).plan(max_running=4, context_len=context_len)
 
 
-def test_default_profile_plan_is_unchanged(monkeypatch):
-    # The 32K profile still guarantees four full requests, as before.
-    kv = DEFAULT_TARGET.kv_bytes_per_token
+def test_default_profile_plan(monkeypatch):
+    # The 32K profile guarantees four full requests; all spare memory but the
+    # 4 GiB margin goes to the pools, slots first (up to their cap), then pages.
+    kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
     got = plan(monkeypatch, 32768)
     budget = 90 * GIB - 16 * GIB - 8 * GIB
     must = 4 * 32768 * kv
-    spare = int((budget - must - 5 * DEFAULT_TARGET.state_bytes_per_slot) * 0.5)
-    assert got.kv_tokens == min(1 << 20, 4 * 32768 + int(spare * 0.4) // kv)
+    spare = budget - must - 5 * state - 4 * GIB
+    assert got.state_slots == min(96, 5 + int(spare * 0.6) // state)
+    assert got.kv_tokens == min(1 << 20, 4 * 32768 + (spare - (got.state_slots - 5) * state) // kv)
 
 
 def test_long_context_guarantees_one_request_not_four(monkeypatch):

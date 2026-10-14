@@ -163,8 +163,8 @@ def all_reduce_min(*values: int) -> list[int]:
 
 
 def common_values(values: list[int]) -> list[int]:
-    """The values every rank holds, in this rank's order: the session-store records whose background writes have
-    landed on every rank (a record one rank has not written yet is not restored on any)."""
+    """The values every rank holds, in this rank's order: the SSD tier's stored sessions after a restart (no rank
+    restores a session another rank lacks)."""
     if _TP_INFO.size == 1:
         return values
     held = [None] * _TP_INFO.size

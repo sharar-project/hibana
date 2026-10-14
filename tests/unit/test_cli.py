@@ -52,10 +52,37 @@ def test_serve_runs_the_engine_in_the_foreground(home, monkeypatch):
     assert args.traces is None and args.context_length == 262144  # traces are opt-in
     assert env["SHARAR_PROFILE"] == "exact" and env["SHARAR_W3_DECODE"] == "0" and env["HF_HUB_OFFLINE"] == "1"
     assert "SHARAR_DRAFT" not in env and "/usr/local/cuda/bin" in env["PATH"]
-    assert (home / "results" / "sessions").is_dir() and not (home / "results" / "traces").exists()
+    assert not (home / "results" / "traces").exists()
     assert cli.main(["serve", "flashnext", "--traces", "--port", "30500"]) == 0
     args, _ = started[-1]
     assert args.traces == str(home / "results" / "traces") and (home / "results" / "traces").is_dir()
+    assert "SHARAR_SSD_DIR" not in env  # the SSD tier is off unless SHARAR_SSD=1
+
+
+def test_cache_reports_the_gpu_cache_and_the_ssd_tier(home, monkeypatch, capsys):
+    ssd = {"sessions": 4, "used_gib": 1.5, "budget_gib": 200.0, "restores": 2, "restored_tokens": 9000}
+    info = {"kv_pages": 1000, "config": {"ssd": True, "ssd_dir": "/tmp/sharar-ssd"},
+            "scheduler": {"cache": {"cached_tokens": 600, "hits": 3, "misses": 1, "evictions": 2, "ssd": ssd}}}
+    monkeypatch.setattr(ctl, "server_info", lambda port: info if port == "30001" else None)
+    assert cli.main(["cache"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("qwen38: serving") and "600 of 1,000 KV tokens cached" in out
+    assert "4 sessions, 1.5 of 200 GiB in /tmp/sharar-ssd; 2 restores (9,000 tokens)" in out
+    del info["scheduler"]["cache"]["ssd"]
+    assert cli.main(["cache"]) == 0 and "on in the settings but not running" in capsys.readouterr().out
+
+
+def test_cache_without_a_server_counts_the_store_on_disk(home, monkeypatch, capsys, tmp_path):
+    epoch = tmp_path / "ssd" / "v2" / "e3"
+    (epoch / "ab").mkdir(parents=True)
+    (epoch.parent / "EPOCH").write_text("3")
+    (epoch.parent / "e2" / "cd").mkdir(parents=True)
+    for name in ("e3/ab/1.kv", "e3/ab/2.kv", "e3/ab/3.tail", "e3/ab/4.kv.tmp", "e2/cd/5.tail"):  # e2: a flushed epoch
+        (epoch.parent / name).write_bytes(b"\0" * 4096)
+    monkeypatch.setenv("SHARAR_SSD_DIR", str(tmp_path / "ssd"))
+    assert cli.main(["cache"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("nothing is serving; SSD tier off") and f"{tmp_path / 'ssd'}: 1 sessions, 2 blocks" in out
 
 
 def test_two_spark_serve_stays_the_user_for_ssh(home, monkeypatch):

@@ -135,8 +135,15 @@ class Scheduler:
         return d
 
     # ---- loop ----
+    def idle(self) -> None:
+        """The executor's background cache work, run by every step() and by the engine loop while idle."""
+        cache_step = getattr(self.ex, "cache_step", None)  # not in ExecutionBackend: test executors lack it
+        if cache_step is not None:
+            cache_step()
+
     def step(self) -> None:
         t0 = time.perf_counter()
+        self.idle()
         self._reap()
         self._admit()
         if self.prefilling:

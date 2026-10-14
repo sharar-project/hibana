@@ -75,7 +75,7 @@ class StateManager:
             return self.kv.free_count >= len(ids) + reserve and self.recurrent.free_count >= 1
         # Obtain a private slot before pinning a path that might otherwise own
         # every state slot. Budget only the uncached suffix and decode reserve.
-        self.cache.restore_parked(ids[:-1])  # a parked session comes back before it is matched
+        self.cache.restore(ids[:-1], reserve + 1)  # a session on the SSD comes back before it is matched
         self.cache.evict(need_slots=1)
         match = self.cache.match(ids[:-1], touch=False)
         self.cache.lock(match.node, 1)
@@ -98,7 +98,7 @@ class StateManager:
         match, slot, own = None, -1, None
         try:
             if self.cache is not None:
-                self.cache.restore_parked(ids[:-1])
+                self.cache.restore(ids[:-1])
                 self.cache.evict(need_slots=1)
                 match = self.cache.match(ids[:-1])  # last token must produce logits
                 if match.length:
@@ -377,6 +377,9 @@ class StateManager:
         if len(req.pages) > n:
             self.kv.free_ids(ids_full[n:])
         req.page_ids = []  # ownership moved to the cache
+        # With an SSD tier, back up its full KV blocks and its resume points: its end and, if snapshotted, its prompt's end.
+        prompt_end = req.prefill_len if req.prefill_len in snapshots else n
+        self.cache.backup(ids, (n, prompt_end))
         return True
 
     def flush(self) -> None:

@@ -20,6 +20,23 @@ def server_info(port: str) -> dict | None:
         return None
 
 
+def stored_on_disk(directory: Path) -> dict:
+    """The sessions, KV blocks and bytes in the SSD store at `directory`, counted from its current epoch's files
+    (`cache/ssd_store.py`: v2/e<epoch>/<hh>/<key>.<kind>); a server that starts on it still deletes what it cannot use."""
+    base = directory / "v2"
+    try:
+        epoch = int((base / "EPOCH").read_text())
+    except (OSError, ValueError):
+        epoch = 0
+    out = {"sessions": 0, "blocks": 0, "bytes": 0}
+    for f in (base / f"e{epoch}").glob("*/*"):
+        kind = {".tail": "sessions", ".kv": "blocks"}.get(f.suffix)
+        if kind is not None:
+            out[kind] += 1
+            out["bytes"] += f.stat().st_size
+    return out
+
+
 HARNESSES = ("claude", "opencode", "aider", "codex", "show")
 ALIASES = {"qwen38": ("qwen3.8-27b", "Qwen3.8-27B"), "flashnext": ("qwen3.8-flash-next", "Qwen3.8-Flash-Next")}
 OUTPUT_TOKENS = 32768  # reply budget the harness configs declare (thinking included); the context is the server's

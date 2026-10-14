@@ -38,7 +38,7 @@ class Capabilities:
     instead of probing for methods; `check_capabilities` verifies each promised protocol."""
     device_feedback: bool = False   # DeviceFeedback: accepted_prepare / feedback_device / accepted_publish (device acceptance)
     checkpoint_cache: bool = False  # CheckpointCache: bind_checkpoint_cache(pool) and a feature_cache with stats
-    cold_payload: bool = False      # ColdPayload: auxiliary_codec() -> (identity, export, import) for parked sessions
+    stored_payload: bool = False    # StoredPayload: auxiliary_codec() -> (identity, export, import) for sessions on the SSD tier
     draft_head: bool = False        # DraftHeadChoice: set_draft_head(ids, fmt, rescore) on the head
     short_drafts: bool = False      # propose(..., depth=d) drafts only the d tokens a shallower round verifies (sequential drafts)
 
@@ -107,11 +107,11 @@ class CheckpointCache(Protocol):
 
 
 @runtime_checkable
-class ColdPayload(Protocol):
+class StoredPayload(Protocol):
     def auxiliary_codec(self): ...
 
 
-PROTOCOLS = {"device_feedback": DeviceFeedback, "checkpoint_cache": CheckpointCache, "cold_payload": ColdPayload}
+PROTOCOLS = {"device_feedback": DeviceFeedback, "checkpoint_cache": CheckpointCache, "stored_payload": StoredPayload}
 
 
 def check_capabilities(proposer) -> None:

@@ -707,8 +707,8 @@ def _serve_http(app, host: str, port: int) -> None:
 
 
 def _persist_sessions(ex, engine, log) -> None:
-    """Cached sessions survive the restart in the session store, once the engine has stopped: on every
-    tensor-parallel rank or on none (parking grows the tiers through collectives)."""
+    """Once the engine has stopped, write the cached sessions to the SSD tier for the next run: on every
+    tensor-parallel rank or on none (the ranks first agree that every engine stopped)."""
     from sharar.distributed import all_reduce_min
     if all_reduce_min(int(not engine.thread.is_alive()))[0]:
         ex.persist_sessions(log)
@@ -744,10 +744,12 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     tmpl = ChatTemplate(snap)
     log(f"loading {served.name}: {served.model_id}@{served.model_revision[:8]}")
     model = targets.load_model(served, snap, log=log)
-    ex = Executor(model, log=log, spec_config=spec_config, max_context=max_context, max_batch=max_batch)
+    from sharar.engine.config import current
+    ex = Executor(model, log=log, spec_config=spec_config, max_context=max_context, max_batch=max_batch,
+                  num_pages=current().kv_pool_tokens)  # SHARAR_KV_POOL_TOKENS: a fixed pool, else planned
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
-    ex.enable_cold_tier(log=log)  # tensor-parallel ranks agree on every tier decision (cache/cold_tier.py)
+    ex.enable_ssd_tier(log=log)
     # a burst as wide as the batch must queue, not be refused: the queue holds at least two batches
     cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=max(ex.profile.max_queued, 2 * ex.profile.max_batch),
                           chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget)

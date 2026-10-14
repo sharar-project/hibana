@@ -161,6 +161,7 @@ def summary(s: Settings, host: dict[str, str], w3: Path | None, tp: int = 1) -> 
     else:
         draft = "none"
     sampled = s.get("SHARAR_ACCEPT_DEFAULT_SAMPLED", "0")
+    ssd = f"{s.ssd}, {s.get('SHARAR_SSD_GIB', '200')} GiB" if s.ssd else "off"
     lines = [f"Sharar {s.target} ({'two Sparks' if tp > 1 else 'one Spark'}) on {s.url}, profile {s.profile}",
              f"  GPU: {host.get('gpu', '?')}; memory: {host.get('memory', '?')}",
              f"  speculation: {s.proposer}, {s.spec} drafts, draft {draft}",
@@ -169,6 +170,6 @@ def summary(s: Settings, host: dict[str, str], w3: Path | None, tp: int = 1) -> 
              f"  3-bit copies: {on(s.get('SHARAR_W3_DECODE'))}{f' ({w3})' if w3 else ''}; device-resident acceptance: {on(s.get('SHARAR_DEVICE_ACCEPT'))}",
              f"  context {s.max_context} tokens, up to {s.get('SHARAR_MAX_BATCH')} requests"
              + (f", verify depth by batch {s.get('SHARAR_SPEC_DEPTHS')}" if s.get("SHARAR_SPEC_DEPTHS") else ""),
-             f"  traces: {s.traces or 'off'}; sessions: {s.sessions or 'off'}"]
+             f"  traces: {s.traces or 'off'}; SSD tier: {ssd}"]
     lines += [f"  WARNING: {w}" for w in s.warnings]
     return "\n".join(lines)

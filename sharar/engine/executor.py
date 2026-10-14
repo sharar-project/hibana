@@ -65,6 +65,10 @@ class Executor:
         if spec_config is not None:
             from sharar.cache.spec_budget import budget
             future, extra_page = budget(spec_config, max_batch, cache_slots=num_slots or 96, target=self.target)
+        cfg = current()
+        if cfg.ssd:  # the SSD tier pins its staging buffers in the DRAM the pools come from: plan around them
+            from sharar.cache.ssd import SsdTier
+            future += SsdTier.memory_bound(self.target, cfg.ssd_block_tokens, extra_page, **cfg.ssd_buffers)
         if num_pages is None or num_slots is None:
             plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future, extra_page_bytes=extra_page,
                                     state_bytes_per_slot=state_bytes)
@@ -247,82 +251,75 @@ class Executor:
                                        'fallbacks': self.spec.proposer.cache_fallbacks}
         return stats
 
-    def enable_cold_tier(self, budget_gib: float | None = None, log=None) -> None:
-        """Park evicted prefix-cache leaves in a unified-memory arena instead of
-        dropping them (`cache/cold_tier.py`). Budget: SHARAR_COLD_TIER_GIB, else
-        what is available now beyond the host floor, the prefill reserve and a
-        4 GiB margin, capped at 24 GiB. Call after the proposer exists so its
-        auxiliary state travels with parked sessions."""
-        from sharar.cache.cold_tier import ColdTier
-        from sharar.cache.ledger import GIB, mem_available_bytes
-
-        if self.cache is None or self.cache.tier is not None:
-            return
-        if budget_gib is None:
-            from sharar.engine.config import current
-            if current().cold_tier_gib is not None:
-                budget_gib = current().cold_tier_gib
-            else:
-                spare = mem_available_bytes() - self.ledger.floor_bytes - 8 * GIB - 4 * GIB
-                budget_gib = min(24.0, spare / GIB)
-        # Tensor-parallel ranks keep tiers of one budget (in MiB), so they park and drop the same sessions.
-        budget_gib = all_reduce_min(int(budget_gib * 1024))[0] / 1024
-        if budget_gib < 1.0:
-            if log:
-                log("  cold tier: disabled (less than 1 GiB spare)")
-            return
-        tier, failure = None, None
-        try:
-            tier = ColdTier(self.kv_pool, self.state_pool, int(budget_gib * GIB), self.device, log=log,
-                            disk=self._session_disk(log))
-        except (RuntimeError, MemoryError, OSError, ImportError) as exc:
-            failure = exc
-        if not all_reduce_min(int(tier is not None))[0]:  # a tier on every rank or on none
-            if log:
-                log(f"  cold tier: disabled ({failure or 'not available on another tensor-parallel rank'})")
-            return
-        self.cache.tier = tier
-        proposer = self.spec.proposer if self.spec is not None else None
-        if proposer is not None and proposer.requirements.capabilities.cold_payload:
-            self.cache.tier.register_codec(*proposer.auxiliary_codec())
-        self.ledger.record_cuda_allocated("cold_tier")
-
-    def _session_disk(self, log=None):
-        """The NVMe session store under SHARAR_SESSION_DIR (budget SHARAR_SESSION_GIB,
-        default 200; sessions shorter than SHARAR_SESSION_MIN_TOKENS, default 4096,
-        are not written), or None. Records are only shared between processes whose
-        cached bytes are interchangeable: same target revision, decode weights,
-        geometry and prefill numerics."""
+    def _cache_identity(self) -> dict:
+        """What makes stored cache bytes interchangeable between processes: the
+        same target revision, decode weights, geometry, recurrent-state format
+        and prefill numerics."""
         from sharar.engine.config import current
-        cfg = current()
-        directory = cfg.session_dir
-        if not directory:
-            return None
-        from sharar.cache.ledger import GIB
-        from sharar.cache.session_disk import SessionDisk
         t = self.target
         tp = get_tp_info()
         identity = {"target": t.name, "revision": t.model_revision, "w3": getattr(self.model, "w3_identity", None),
                     "kv_bytes_per_token": t.kv_bytes_per_token, "state_bytes_per_slot": self.state_pool.bytes_per_slot,
-                    "stable_numerics": "1" if cfg.stable_numerics else "0",
+                    "stable_numerics": "1" if current().stable_numerics else "0",
                     **({"tensor_parallel": f"{tp.rank}/{tp.size}"} if tp.size > 1 else {})}  # a rank's records hold its heads
         if self.state_pool.window is not None:  # FP32 records keep their identity
             identity["ssm_state"] = self.state_pool.ssm_format.describe()
-        return SessionDisk(directory, int(cfg.session_gib * GIB), identity, self.device, log=log,
-                           min_tokens=cfg.session_min_tokens)
+        return identity
+
+    def enable_ssd_tier(self, log=None) -> None:
+        """With SHARAR_SSD=1, put the SSD tier (`cache/ssd.py`) under the prefix
+        cache, up to SHARAR_SSD_GIB in SHARAR_SSD_DIR, and list the sessions it
+        already holds. Call after the proposer exists so its auxiliary state
+        travels with stored sessions. The tier runs on every tensor-parallel
+        rank or on none; without it, the cache drops evicted sessions and their
+        next requests prefill again."""
+        from sharar.cache.ledger import GIB
+        from sharar.cache.ssd import SsdTier
+        from sharar.cache.ssd_store import SsdStore
+        from sharar.engine.config import current
+
+        cfg = current()
+        if not cfg.ssd or self.cache is None:
+            return
+        tier, why = None, "another rank could not open its store"
+        try:
+            store = SsdStore(cfg.ssd_dir, self._cache_identity(), log=log, block=cfg.ssd_block_tokens,
+                             writers=cfg.ssd_writers)
+            tier = SsdTier(store, self.kv_pool, self.state_pool, self.device, int(cfg.ssd_gib * GIB), trace=cfg.ssd_trace,
+                           **cfg.ssd_buffers)
+        except (RuntimeError, MemoryError, OSError) as exc:
+            why = str(exc)
+        if not all_reduce_min(int(tier is not None))[0]:
+            if log:
+                log(f"  ssd tier: disabled ({why})")
+            return
+        proposer = self.spec.proposer if self.spec is not None else None
+        if proposer is not None and proposer.requirements.capabilities.stored_payload:
+            tier.register_codec(*proposer.auxiliary_codec())
+        self.cache.ssd = tier
+        listed = tier.rebuild(self.cache)
+        if log:
+            log(f"  ssd tier: {listed} stored sessions, {tier.used / GIB:.1f} of {cfg.ssd_gib:.0f} GiB, {tier.block}-token blocks")
+
+    def cache_step(self) -> None:
+        """Once per engine loop iteration: the prefix cache's background work
+        (finished SSD writes, the disk budget, queued backups)."""
+        if self.cache is not None:
+            self.cache.step()
 
     def persist_sessions(self, log=None) -> int:
-        """At shutdown, with the engine stopped: park every cached session so
-        the store holds it across the restart. Returns the number parked."""
-        tier = self.cache.tier if self.cache is not None else None
-        if tier is None or tier.disk is None:
-            return 0  # alike on every tensor-parallel rank (enable_cold_tier agrees on the tier)
-        before = tier.parks
-        self.cache.evict(need_pages=self.kv_pool.num_pages, need_slots=self.state_pool.num_slots)  # every unlocked leaf
-        tier.disk.drain()
+        """At shutdown, with the engine stopped: write every cached session to
+        the SSD tier so it survives the restart. Returns how many it wrote."""
+        if self.cache is None or self.cache.ssd is None:
+            return 0
+        ssd = self.cache.ssd
+        before = ssd.tails
+        self.cache.evict(need_pages=self.kv_pool.num_pages, need_slots=self.state_pool.num_slots)  # evicts every unlocked leaf
+        ssd.drain(self.cache)
         if log:
-            log(f"session store: persisted {tier.parks - before} cached sessions ({tier.disk.stats()['records']} stored)")
-        return tier.parks - before
+            log(f"ssd tier: persisted {ssd.tails - before} cached sessions ({ssd.used / 2**30:.1f} GiB stored, "
+                f"{ssd.store.write_errors} write errors)")
+        return ssd.tails - before
 
     def retract(self, req: Request) -> None:
         self.state.retract(req)

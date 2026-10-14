@@ -11,8 +11,8 @@ from sharar.proposers.draft_head import ShortlistHead, TargetHead
 
 def test_declared_capabilities_need_their_methods():
     class Bare:
-        requirements = ProposerRequirements("bare", capabilities=Capabilities(cold_payload=True))
-    with pytest.raises(TypeError, match="cold_payload"):
+        requirements = ProposerRequirements("bare", capabilities=Capabilities(stored_payload=True))
+    with pytest.raises(TypeError, match="stored_payload"):
         check_capabilities(Bare())
 
     class Cold(Bare):
@@ -28,10 +28,10 @@ def test_declared_capabilities_need_their_methods():
 
 
 def test_the_served_proposers_declare_what_they_implement():
-    from sharar.engine.contracts import CheckpointCache, ColdPayload, DeviceFeedback
+    from sharar.engine.contracts import CheckpointCache, StoredPayload, DeviceFeedback
     from sharar.proposers.parallel import ParallelProposer
     from tests.ngram_proposer import NGramProposer
-    for protocol in (DeviceFeedback, CheckpointCache, ColdPayload):
+    for protocol in (DeviceFeedback, CheckpointCache, StoredPayload):
         assert all(callable(getattr(ParallelProposer, name, None)) for name in protocol.__dict__
                    if not name.startswith("_") and callable(getattr(protocol, name, None)))
     assert NGramProposer.requirements.capabilities == Capabilities()

@@ -54,7 +54,7 @@ class StatePool:
         self.scratch = list(range(num_slots, total))
         self.on_free = []  # optional auxiliary owners tied to a committed slot
         # Extra per-slot state registered by a model (e.g. the PLE convolution window), [total, ...] each;
-        # cleared, copied and parked together with the recurrent states.
+        # cleared, copied and stored on the SSD tier together with the recurrent states.
         self.aux: dict[str, torch.Tensor] = {}
 
     @property

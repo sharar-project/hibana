@@ -148,7 +148,7 @@ stage_serve() {
   for target in 27b flashnext; do
     evict_models
     log="$OUT/serve-$target.log"
-    SHARAR_DRAFT=pinned SHARAR_TRACES=off uv run --frozen sharar serve "$target" --port "$SERVE_PORT" --context-length 32768 --no-sessions >"$log" 2>&1 8>&- &
+    SHARAR_SSD=0 SHARAR_DRAFT=pinned SHARAR_TRACES=off uv run --frozen sharar serve "$target" --port "$SERVE_PORT" --context-length 32768 >"$log" 2>&1 8>&- &
     pid=$!
     waited=0
     until curl -fs "http://127.0.0.1:$SERVE_PORT/health" >/dev/null 2>&1; do

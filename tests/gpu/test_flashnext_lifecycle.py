@@ -1,5 +1,5 @@
 """Flash-Next executor lifecycle on the pinned checkpoint (#54): prefill, MTP speculative rounds, release, the
-prefix cache and the cold tier, with every page and state slot back afterwards; repeat runs are identical."""
+prefix cache and the SSD tier, with every page and state slot back afterwards; repeat runs are identical."""
 import gc
 
 import pytest
@@ -23,7 +23,7 @@ def chat(tok, text: str) -> list[int]:
 
 
 @pytest.fixture(scope="module")
-def runtime():
+def runtime(tmp_path_factory):
     from sharar.cache.spec_budget import SpecConfig
     from sharar.engine.executor import Executor
     from sharar.tokenizer import SnapshotTokenizer
@@ -36,14 +36,18 @@ def runtime():
     gc.collect()
     torch.cuda.empty_cache()
     # The exact profile: the FP8 trunk without 3-bit copies (tests/conftest.py points the rest of the suite at the 27B's).
-    with config.using(config.current().replace(target="flashnext", w3_decode=False, w3_checkpoint=None)):
+    # The SSD tier stores every session in a scratch directory, however short.
+    ssd = dict(ssd=True, ssd_dir=str(tmp_path_factory.mktemp("ssd")), ssd_gib=2.0)
+    with config.using(config.current().replace(target="flashnext", w3_decode=False, w3_checkpoint=None, **ssd)):
         model = targets.load_model(target, snap)
         torch.cuda.empty_cache()
         # Batch 8 so batches of five to seven pad the batch-8 graphs with several rows (#94); batch 4 keeps its bucket.
         ex = Executor(model, log=print, max_batch=8, max_context=32768, spec_config=SpecConfig("mtp", 4, "reconstruct", "bf16", None))
         ex.capture_graphs(log=print)
         ex.warmup(log=print)
-        ex.enable_cold_tier(budget_gib=2, log=print)
+        ex.enable_ssd_tier(log=print)
+        # the test conversation is far shorter than the 4,096 tokens a backup needs and the 2,048 a restore must save
+        ex.cache.ssd.min_tokens = ex.cache.ssd.min_hit = 1
     yield ex, SnapshotTokenizer(snap)
     ex.flush_cache()
     del ex, model
@@ -94,9 +98,9 @@ def test_repeat_runs_in_one_process_are_identical(runtime, graphs, batch):
         ex.use_graphs = True
 
 
-def test_prefix_cache_and_cold_tier_continue_like_a_cold_prefill(runtime):
-    """A conversation: turn two reuses turn one's cached prefix; then everything is parked in the cold tier and
-    turn three restores the parked session before matching. Each continues exactly as a cold prefill does."""
+def test_prefix_cache_and_ssd_tier_continue_like_a_cold_prefill(runtime):
+    """A conversation: turn two reuses turn one's cached prefix; then everything is demoted to the SSD tier and
+    turn three restores the stored session before matching. Each continues exactly as a cold prefill does."""
     ex, tok = runtime
     ex.flush_cache()
     before = free(ex)
@@ -115,11 +119,11 @@ def test_prefix_cache_and_cold_tier_continue_like_a_cold_prefill(runtime):
     second = first.prompt_ids + first.output_ids + user("Now return the same JSON with one more key, continent.")
     hit = ex.generate(second, SamplingParams(max_new_tokens=1))
     assert hit.prefix_len > 0 and hit.output_ids == cold(second)
-    ex.cache.evict(need_pages=ex.kv_pool.num_pages)  # park every leaf in the cold tier
+    ex.cache.evict(need_pages=ex.kv_pool.num_pages)  # demote every leaf to the SSD tier
     third = second + hit.output_ids + user("Return only the value of the continent key.")
-    assert ex.cache.match(third[:-1], touch=False).length == 0 and ex.cache.tier.stats()["entries"] > 0
+    assert ex.cache.match(third[:-1], touch=False).length == 0 and ex.cache.ssd.tails > 0
     restored = ex.generate(third, SamplingParams(max_new_tokens=1))
-    assert restored.prefix_len > 0 and ex.cache.tier.stats()["restores"] > 0
+    assert restored.prefix_len > 0 and ex.cache.ssd.restores > 0
     assert restored.output_ids == cold(third)
     ex.flush_cache()
     assert free(ex) == before

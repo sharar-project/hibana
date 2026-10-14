@@ -157,8 +157,8 @@ def accept_rule(text: str) -> str:
 
 
 # Settings the in-process worker leaves out: what only the server uses (batching, sessions, traces, the context it plans).
-SERVER_ONLY = ("SHARAR_MAX_BATCH", "SHARAR_SPEC_DEPTHS", "SHARAR_SESSION_DIR", "SHARAR_SESSION_GIB", "SHARAR_SESSION_MIN_TOKENS",
-               "SHARAR_TRACES", "SHARAR_TRACES_MAX_MIB", "SHARAR_MAX_CONTEXT", "SHARAR_COLD_TIER_GIB")
+SERVER_ONLY = ("SHARAR_MAX_BATCH", "SHARAR_SPEC_DEPTHS", "SHARAR_TRACES", "SHARAR_TRACES_MAX_MIB", "SHARAR_MAX_CONTEXT",
+               "SHARAR_SSD", "SHARAR_SSD_GIB", "SHARAR_SSD_DIR", "SHARAR_SSD_BLOCK_TOKENS", "SHARAR_SSD_TRACE", "SHARAR_KV_POOL_TOKENS")
 
 
 def arm_plan(s: launch.Settings) -> dict:
@@ -185,13 +185,11 @@ def arm_plan(s: launch.Settings) -> dict:
 def served_command(target: str, profile: str, port: int) -> list[str]:
     """A served arm: `sharar serve` in the foreground, on our port, recording nothing."""
     return [str(VENV / "bin" / "python"), "-u", "-m", "sharar", "serve", target, f"--{profile}", "--port", str(port),
-            "--no-sessions", "--no-fetch"]
+            "--no-fetch"]
 
 
 def served_env(overrides: dict) -> dict:
-    env = {**gate_env(), **overrides, "SHARAR_TRACES": "off"}  # recording nothing, whatever the config file says
-    env.setdefault("SHARAR_COLD_TIER_GIB", "0")  # host memory for Terminal-Bench's task containers; caching only, same in every stage
-    return env
+    return {**gate_env(), **overrides, "SHARAR_TRACES": "off", "SHARAR_SSD": "0"}  # recording nothing and no SSD tier, the same in every stage
 
 
 def sha256(data: bytes) -> str:
