@@ -3,7 +3,8 @@
 
 Each token reads 16 rows of a 320M-row FP8 table (8 heads for bigrams, 8 for trigrams; 160 bytes
 per row): hash(token, previous tokens) mod the head's vocabulary plus the head's offset. The table
-stays on the host as memory maps of the checkpoint's shards; the page cache holds the hot rows.
+stays on the host as memory maps of the checkpoint's shards; the page cache holds the hot rows. On two Sparks
+each rank instead holds its half of the heads in device memory and the ranks all-gather the rows (#178).
 The rows project to a key per residual stream and one value; a per-stream gate from the key and
 the stream's own norm scales the value, and a depth-wise causal convolution over time (kernel 4,
 dilation 3) adds a short-range mix. The convolution's nine-row window per sequence is per-slot
@@ -17,6 +18,7 @@ import json
 import mmap
 import os
 import struct
+import time
 from pathlib import Path
 
 import numpy as np
@@ -162,6 +164,36 @@ class PleTable:
                 misses.append(i)
         return misses
 
+    def copy_rows(self, first: int, out: torch.Tensor, chunk_bytes: int = 256 << 20) -> None:
+        """Rows first .. first + len(out) into `out` (uint8 [n, ROW_BYTES], any device), shard by shard: large sequential
+        reads into a pinned buffer (the maps are MADV_RANDOM, which would fault one page at a time), and each range's
+        pages leave the page cache once copied."""
+        n = out.shape[0]
+        step = max(1, chunk_bytes // ROW_BYTES)
+        stage = torch.empty((step, ROW_BYTES), dtype=torch.uint8, pin_memory=out.is_cuda)
+        flat = memoryview(stage.numpy().reshape(-1))
+        done = 0
+        for s in range(len(self.maps)):
+            lo, count = int(self.starts[s]), self.maps[s].shape[0]
+            a, b = max(first, lo), min(first + n, lo + count)
+            if a >= b:
+                continue
+            fd, start = self.fds[s], self.offsets[s] + (a - lo) * ROW_BYTES
+            os.posix_fadvise(fd, start, (b - a) * ROW_BYTES, os.POSIX_FADV_SEQUENTIAL)
+            for i in range(a, b, step):
+                j = min(i + step, b)
+                want, got = (j - i) * ROW_BYTES, 0
+                while got < want:
+                    r = os.preadv(fd, [flat[got:want]], start + (i - a) * ROW_BYTES + got)
+                    if r <= 0:
+                        raise OSError(f"PLE shard {s}: short read at row {i}")
+                    got += r
+                out[i - first:j - first].copy_(stage[:j - i])
+                done += j - i
+            os.posix_fadvise(fd, start, (b - a) * ROW_BYTES, os.POSIX_FADV_DONTNEED)
+        if done != n:
+            raise ValueError(f"PLE rows {first}..{first + n} run past the table ({self.rows} rows)")
+
     def gather_mapped(self, rows: np.ndarray) -> np.ndarray:
         """The memory-map gather (serial page faults); kept as the reference for tests."""
         flat = rows.reshape(-1)
@@ -171,6 +203,38 @@ class PleTable:
             sel = np.nonzero(shard == s)[0]
             out[sel] = self.maps[s][flat[sel] - self.starts[s]]
         return out.reshape(*rows.shape, ROW_BYTES)
+
+
+class ResidentRows:
+    """A tensor-parallel rank's share of the PLE heads in device memory (#178). Rank r of n holds heads
+    [r * heads / n, (r + 1) * heads / n), whose rows are one contiguous region of the table (each head's vocabulary
+    follows the last's): 23.8 GiB of the 47.7 on each of two Sparks. A forward's rows gather on the device and the
+    ranks all-gather them, so every rank sees the bytes the host gather reads and nothing waits on the disk."""
+
+    def __init__(self, table: PleTable, offsets: torch.Tensor, vocab_sizes: torch.Tensor, rank: int, size: int,
+                 device: torch.device, log=print):
+        from sharar.distributed import div_even
+        heads = len(vocab_sizes)
+        per = div_even(heads, size)
+        self.heads, self.per, self.h0 = heads, per, rank * per
+        h1 = self.h0 + per
+        if any(int(offsets[h + 1]) != int(offsets[h] + vocab_sizes[h]) for h in range(self.h0, h1 - 1)):
+            raise ValueError("PLE heads of one rank must be contiguous in the table")
+        self.base = int(offsets[self.h0])
+        n = int(offsets[h1 - 1] + vocab_sizes[h1 - 1]) - self.base
+        started = time.perf_counter()
+        self.rows = torch.empty((n, ROW_BYTES), dtype=torch.uint8, device=device)
+        table.copy_rows(self.base, self.rows)
+        log(f"  PLE: heads {self.h0}-{h1 - 1} resident on this rank ({n * ROW_BYTES / 2**30:.1f} GiB, "
+            f"{time.perf_counter() - started:.0f}s)")
+
+    def gather(self, ids: torch.Tensor) -> torch.Tensor:
+        """ids int64 [N, heads] (table rows, host or device) -> device uint8 [N, heads, ROW_BYTES]: this rank's heads
+        from its rows, the others' through one all-gather."""
+        from sharar.distributed import all_gather
+        local = ids[:, self.h0:self.h0 + self.per].to(self.rows.device, non_blocking=True) - self.base
+        part = self.rows.index_select(0, local.reshape(-1)).view(ids.shape[0], self.per * ROW_BYTES)
+        return all_gather(part).view(ids.shape[0], self.heads, ROW_BYTES)
 
 
 class PleLayer:
@@ -192,6 +256,12 @@ class PleLayer:
         self.offsets = w.get(f"{e}.ngram_heads_offsets").to(torch.int64)
         self.scale = w.get(f"{e}.ngram_embedding.weight_scale").float().reshape(()).to(device)
         self.table = PleTable(snap, w._map, f"{e}.ngram_embedding", shards=128)
+        self.resident = None
+        from sharar.distributed import get_tp_info
+        from sharar.engine.config import current
+        tp = get_tp_info()
+        if tp.size > 1 and current().ple_resident != "0":
+            self.resident = ResidentRows(self.table, self.offsets, self.vocab_sizes, tp.rank, tp.size, device)
         self.state_len = (self.kernel - 1) * self.ngram  # conv window rows kept per sequence
         self._scratch: torch.Tensor | None = None  # stand-alone (no pool) window
 
@@ -236,8 +306,14 @@ class PleLayer:
         for i, (start, length) in enumerate(seqs):
             hist = None if histories is None else histories[i]
             parts.append(self.ngram_ids(ids[start:start + length], hist, eos))
-        rows = torch.cat(parts).numpy()
-        return torch.from_numpy(self.table.gather(rows)).to(self.device, non_blocking=False)
+        return self.device_rows(torch.cat(parts))
+
+    def device_rows(self, ids: torch.Tensor) -> torch.Tensor:
+        """Table rows ids (int64 [N, heads] on the host) -> device uint8 [N, heads, ROW_BYTES]: from the ranks'
+        resident shares when they hold the table (#178), else the host gather and an upload."""
+        if self.resident is not None:
+            return self.resident.gather(ids)
+        return torch.from_numpy(self.table.gather(ids.numpy())).to(self.device, non_blocking=False)
 
     # ---- state ----
     STATE_NAME = "ple_conv"

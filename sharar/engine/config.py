@@ -74,6 +74,7 @@ class EngineConfig:
     accept_default_sampled: bool = False      # SHARAR_ACCEPT_DEFAULT_SAMPLED
     accept_default_sampled_threshold: str | None = None  # SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD: K:M for sampled requests (unset: accept_default's)
     qsa_sparse_graphs: bool = True            # SHARAR_QSA_SPARSE_GRAPHS=0: rows past the indexer budget run eagerly
+    ple_resident: str = "auto"                 # SHARAR_PLE_RESIDENT: Flash-Next's PLE table in device memory, each tensor-parallel rank its share of the heads (#178); auto: on two Sparks, 0: off
     # --- cache tiers
     cold_tier_gib: float | None = None        # SHARAR_COLD_TIER_GIB (unset: from free memory, capped at 24)
     session_dir: str | None = None            # SHARAR_SESSION_DIR
@@ -130,6 +131,7 @@ class EngineConfig:
             accept_default_sampled=_flag(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED"),
             accept_default_sampled_threshold=_str(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"),
             qsa_sparse_graphs=e.get("SHARAR_QSA_SPARSE_GRAPHS", "1") != "0",
+            ple_resident=e.get("SHARAR_PLE_RESIDENT", "auto"),
             cold_tier_gib=float(cold) if cold is not None else None,
             session_dir=_str(e, "SHARAR_SESSION_DIR"),
             session_gib=float(e.get("SHARAR_SESSION_GIB", "200")),
