@@ -43,8 +43,8 @@ TARGET_SETTINGS = {
 PROFILE_NAMES = ("exact", "fast", "throughput")
 
 
-def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3") -> dict[str, str]:
-    """The profile's value for each knob it sets, as SHARAR_* settings."""
+def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", tp: int = 1) -> dict[str, str]:
+    """The profile's value for each knob it sets, as SHARAR_* settings, for one Spark or `tp` of them."""
     flashnext = target == "flashnext"
     if profile == "exact":
         p = {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "0", "SHARAR_DEVICE_ACCEPT": "0"}
@@ -59,7 +59,8 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3") -
     if flashnext:
         p["SHARAR_SPEC"] = "4"
         if profile == "fast":  # adaptive depth (#43): h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
-            p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14", SHARAR_SPEC_DEPTHS="2:4,4:4")
+            # two Sparks: 0.14 drafted chat and prose too deep (-12%, -7% against depth 4); 0.2 keeps them within noise
+            p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14" if tp == 1 else "0.2", SHARAR_SPEC_DEPTHS="2:4,4:4")
     if profile == "throughput":
         p["SHARAR_MAX_BATCH"] = ("128" if flashnext_experts == "w3" else "64") if flashnext else "16"
         if flashnext:
@@ -223,7 +224,7 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     values.update({k: v for k, v in user.items() if v != "" and k not in (overrides or {})})
     values["SHARAR_TARGET"] = name
     profile = profile or values.get("SHARAR_PROFILE") or "fast"
-    defaults = profile_defaults(profile, name, values.get("SHARAR_FLASHNEXT_EXPERTS", "w3"))
+    defaults = profile_defaults(profile, name, values.get("SHARAR_FLASHNEXT_EXPERTS", "w3"), tp)
     for k, v in defaults.items():
         if k == "SHARAR_SSM_STATE" and values.get("SHARAR_VERIFY_STATE", "reconstruct") != "reconstruct":
             continue  # the quantized state commits through the verify ring: other accepted states keep FP32
