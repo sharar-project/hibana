@@ -85,6 +85,7 @@ from sharar.launch import settings as launch  # noqa: E402
 WORKLOAD = REPO / "tools" / "gate" / "workloads" / "lossy_v1.json"
 WORKER = REPO / "tools" / "gate" / "lossy_gate.py"
 LOCK: Path | None = None  # $SHARAR_RESULTS/.gpu.lock, set by main()
+EVALS_ENV: dict | None = None  # sharar-eval's environment (evals_env), set by main()
 VENV = Path(os.environ.get("UV_PROJECT_ENVIRONMENT") or REPO / ".venv")  # the project's environment (uv sync)
 PROTOCOL = 3  # bump when a step's meaning changes (it keys the baseline cache); 3: arms resolved by sharar.launch
 CHUNK, FLOOR_CHUNK = 64, 32
@@ -380,7 +381,7 @@ def run_suite(label: str, served: Served, suite: str, l3: Path, skip: list[str],
                        "--out", str(l3), "--engine", engine, *[a for t in skip for a in ("--skip", t)]]
                 log(f"{label}: {suite} suite")
                 with (served.dir / "evals.log").open("a") as logf:
-                    proc = subprocess.Popen(cmd, cwd=served.evals, stdout=logf, stderr=subprocess.STDOUT)
+                    proc = subprocess.Popen(cmd, cwd=served.evals, stdout=logf, stderr=subprocess.STDOUT, env=EVALS_ENV)
                     rc = watch(proc, time.monotonic() + 60 * minutes, None, f"{label} {suite}", proc.kill)
             finally:
                 served.stop()
@@ -390,11 +391,17 @@ def run_suite(label: str, served: Served, suite: str, l3: Path, skip: list[str],
                 raise RuntimeError(f"{label}: {suite} suite failed (exit {rc}); see {served.dir / 'evals.log'}")
 
 
+def evals_env(results: Path, hf_cache) -> dict:
+    """The environment sharar-eval runs in: this configuration's results directory (its datasets) and model cache
+    (the pinned tokenizer), which sharar-eval does not guess."""
+    return {**os.environ, "SHARAR_RESULTS": str(results), "SHARAR_HF_CACHE": str(hf_cache)}
+
+
 def suite_compare(python: str, evals: Path, base: Path, cand: Path, tasks: list[str]) -> dict:
     """sharar-eval's paired scorecard over `tasks` (the needles count only when both arms ran them)."""
     out = cand / f"compare-{'-'.join(tasks)}.json"
     r = subprocess.run([python, "-m", "evals.suite", "compare", str(base), str(cand), "--tasks", ",".join(tasks),
-                        "--json", str(out)], cwd=evals, capture_output=True, text=True)
+                        "--json", str(out)], cwd=evals, capture_output=True, text=True, env=EVALS_ENV)
     if r.returncode:
         raise RuntimeError(f"evals.suite compare failed: {r.stderr.strip()[-500:]}")
     return json.loads(out.read_text())
@@ -655,14 +662,15 @@ def main(argv=None) -> int:
         raise SystemExit(f"lossy-gate: {exc}")
     plans = {k: arm_plan(v) for k, v in arms.items()}
     results, hf_cache = arms["baseline"].results, str(arms["baseline"].hf_cache)
-    global LOCK
+    global LOCK, EVALS_ENV
     LOCK = results / ".gpu.lock"  # the shared GPU lock every Sharar tool takes
+    EVALS_ENV = evals_env(results, hf_cache)
     engine = engine_identity()
     if not (args.evals / "evals" / "suite.py").is_file():
         raise SystemExit(f"{args.evals}: no sharar-eval with evals.suite; set --evals or SHARAR_EVALS")
     args.python = args.python or str(args.evals / ".venv" / "bin" / "python")
     if not Path(args.python).is_file():
-        raise SystemExit(f"{args.python} not found: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt in {args.evals}")
+        raise SystemExit(f"{args.python} not found: run `uv sync` in {args.evals}")
     evals_commit = git("rev-parse", "HEAD", cwd=args.evals)
     workload_sha = sha256(WORKLOAD.read_bytes())
     key_src = {"protocol": PROTOCOL, "target": args.target, "baseline": {"values": arms["baseline"].values, "plan": plans["baseline"]},

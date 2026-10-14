@@ -58,6 +58,19 @@ def test_qsa_prefill_backend_configuration(backend):
     assert "qsa_optimized_prefill" not in cfg.describe()
 
 
+@pytest.mark.parametrize("backend", ["original", "auto", "optimized"])
+@pytest.mark.parametrize("resident", ["auto", "0"])
+def test_qsa_backend_and_ple_residency_are_independent(backend, resident):
+    cfg = EngineConfig.from_env({"SHARAR_QSA_PREFILL_BACKEND": backend,
+                                "SHARAR_PLE_RESIDENT": resident})
+    assert cfg.qsa_prefill_backend == backend
+    assert cfg.ple_resident == resident
+    assert cfg.describe()["qsa_prefill_backend"] == backend
+    assert cfg.describe()["ple_resident"] == resident
+    assert cfg.replace(qsa_prefill_backend="original").ple_resident == resident
+    assert cfg.replace(ple_resident="auto").qsa_prefill_backend == backend
+
+
 @pytest.mark.parametrize("backend", ["eager", "fused", "AUTO", ""])
 def test_qsa_prefill_backend_rejects_invalid_values(backend):
     with pytest.raises(ValueError, match="SHARAR_QSA_PREFILL_BACKEND"):

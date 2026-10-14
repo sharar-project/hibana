@@ -135,3 +135,44 @@ def test_short_sessions_are_not_written(tmp_path):
     store.wait(long)
     assert not short.on_disk and long.on_disk
     assert store.stats()["too_short"] == 1 and store.stats()["records"] == 1
+
+
+def _round_trip(store, tmp_path):
+    e = entry(range(500, 537), [37])  # a 148-byte key: no segment starts on an O_DIRECT boundary
+    store.submit(e)
+    store.wait(e)
+    (record,) = store.find(list(range(500, 540)))
+    kv, state = pools(e, 64)
+    pages = torch.randperm(64)[:37]
+    assert store.restore_into(record, 0, pages, kv, state, []) is not None
+    whole = e.chunks[0][1]
+    assert all(same(pool[pages], whole[i // 2, i % 2]) for i, pool in enumerate(kv))
+    assert same(e.ssm, state["ssm"]) and same(e.conv, state["conv"])
+
+
+def test_reads_fall_back_to_plain_reads_without_o_direct(tmp_path):
+    store = SessionDisk(tmp_path, 2**30, IDENTITY, CPU)
+    store._direct = False  # as on a filesystem that refuses O_DIRECT opens
+    _round_trip(store, tmp_path)
+    assert store.stats()["errors"] == 0
+
+
+def test_reads_fall_back_when_direct_reads_are_refused(tmp_path, monkeypatch):
+    """A filesystem that opens with O_DIRECT but refuses the reads (EINVAL): the read is redone plainly, and later
+    reads skip O_DIRECT."""
+    import errno
+    import fcntl
+    import os
+    store = SessionDisk(tmp_path, 2**30, IDENTITY, CPU)
+    real, calls = os.preadv, {"direct": 0}
+
+    def preadv(fd, buffers, offset):
+        if fcntl.fcntl(fd, fcntl.F_GETFL) & getattr(os, "O_DIRECT", 0):
+            calls["direct"] += 1
+            raise OSError(errno.EINVAL, "refused")
+        return real(fd, buffers, offset)
+
+    monkeypatch.setattr(os, "preadv", preadv)
+    _round_trip(store, tmp_path)
+    assert store._direct is False and store.stats()["errors"] == 0
+    assert calls["direct"] == (1 if hasattr(os, "O_DIRECT") else 0)
