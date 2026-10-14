@@ -64,6 +64,7 @@ class PleTable:
         self._pread = os.pread
         self._nowait = hasattr(os, "preadv") and hasattr(os, "RWF_NOWAIT")  # page-cache reads that never block
         self.hits = self.misses = 0  # rows read from the page cache / through the threads
+        self._prefetcher = None  # one background thread for `prefetch`, started on first use
         starts = []
         rows = 0
         opened: dict[str, tuple[int, dict]] = {}
@@ -163,6 +164,29 @@ class PleTable:
             else:
                 misses.append(i)
         return misses
+
+    def prefetch(self, rows: np.ndarray) -> None:
+        """Start reading `rows` into the page cache without waiting (#178): `POSIX_FADV_WILLNEED` on each distinct page
+        they touch, from a background thread. The kernel queues the reads and returns, so a later gather of the
+        same rows finds them cached instead of waiting on the NVMe."""
+        rows = np.array(rows, dtype=np.int64).reshape(-1)  # a copy: the caller's array may change
+        if rows.size == 0:
+            return
+        if self._prefetcher is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self._prefetcher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ple-prefetch")
+        self._prefetcher.submit(self._advise, rows)
+
+    def _advise(self, rows: np.ndarray) -> None:
+        """The distinct pages of `rows` (both pages of a row across a page boundary), each advised once."""
+        flat = np.unique(rows)
+        shard = np.searchsorted(self.starts, flat, side="right") - 1
+        first = np.asarray(self.offsets, dtype=np.int64)[shard] + (flat - self.starts[shard]) * ROW_BYTES
+        pages = np.concatenate([first & -_PAGE, (first + ROW_BYTES - 1) & -_PAGE])
+        keys = np.unique(np.stack([np.concatenate([shard, shard]), pages], 1), axis=0)
+        fds, advise, page, need = self.fds, os.posix_fadvise, _PAGE, os.POSIX_FADV_WILLNEED
+        for s, offset in keys.tolist():
+            advise(fds[s], offset, page, need)
 
     def copy_rows(self, first: int, out: torch.Tensor, chunk_bytes: int = 256 << 20) -> None:
         """Rows first .. first + len(out) into `out` (uint8 [n, ROW_BYTES], any device), shard by shard: large sequential
