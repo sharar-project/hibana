@@ -222,7 +222,7 @@ def candidate_laws(logits, params):
     return law / law.sum(-1, keepdim=True), index
 
 
-def verify_batch(tokens, logits, params, generators, q=None, support=None):
+def verify_batch(tokens, logits, params, generators, q=None, support=None, rng=None):
     """Rejection sampling for a sampled batch on each row's candidates.
 
     tokens [B, k] drafts, logits [B, k + 1, V] (the verify output), one SamplingParams and generator per row, and
@@ -236,10 +236,18 @@ def verify_batch(tokens, logits, params, generators, q=None, support=None):
     on the batch; equal in distribution to `verify_rows`, not seed-for-seed. Greedy rows match the target's
     argmax as the greedy path does.
 
+    With `rng` ([seed, offset] per row, engine/sampling_rng.py) on CUDA, rows that set top_k run in one fused
+    kernel (kernels/sampled_verify.py) with Philox uniforms instead of the generators.
+
     Returns device tensors (accepted [B], correction [B], relaxed-only flags [B, k], argmax [B, k + 1] or
     None), or None when `candidate_laws` does: the caller then takes the per-row path."""
     b, k = tokens.shape
     dev = logits.device
+    v = logits.shape[-1]
+    if rng is not None and logits.is_cuda and all(p.greedy or 0 < p.top_k < v for p in params):
+        fused = _verify_fused(tokens, logits, params, rng, q, support)
+        if fused is not None:
+            return fused
     laws = candidate_laws(logits, params)
     if laws is None:
         return None
@@ -326,3 +334,31 @@ def sample_lattice(candidates, scores, params, generators):
         tokens.append(candidates[:, j].gather(1, local).squeeze(1))
         laws.append(law)
     return torch.stack(tokens, 1), torch.stack(laws, 1)
+
+
+def _verify_fused(tokens, logits, params, rng, q, support):
+    """verify_batch through kernels/sampled_verify.py: one vocabulary top-k, then one program per row. None when a
+    row's top-k ties run past its candidates (the caller takes the candidate-law path)."""
+    from sharar.engine import sampling_rng
+    from sharar.kernels.sampled_verify import verify_candidates
+    b, k = tokens.shape
+    dev = logits.device
+    c = min(logits.shape[-1], max((p.top_k for p in params if not p.greedy), default=1) + 64)
+    values, index = logits.topk(c, dim=-1)
+    row_params = sampling_rng.rows("verify-params", [[1.0, 1, 1.0, 0.0, 0.0, 0, 0, 0] if p.greedy else
+                                                     [max(p.temperature, 1e-6), p.top_k, p.top_p, float(p.accept_top_k if p.relaxed else 0),
+                                                      float(p.accept_margin), 0, 0, 0] for p in params], torch.float32, dev)
+    rng_t = sampling_rng.rows("verify-rng", rng, torch.int64, dev)
+    accepted, correction, flags, fit = verify_candidates(values, index, tokens, row_params, rng_t, q, support)
+    greedy = [p.greedy for p in params]
+    if not bool(fit.bool().logical_or(torch.tensor(greedy, device=dev) if any(greedy) else torch.zeros_like(fit, dtype=torch.bool)).all()):
+        return None
+    argmax = None
+    if any(greedy):  # greedy rows: the exact-match prefix and the argmax after it, as the greedy path
+        argmax = logits.argmax(-1)
+        g = _rows("greedy", [[float(x)] for x in greedy], dev).view(b) > 0
+        g_acc = torch.cumprod((tokens == argmax[:, :k]).to(torch.int64), dim=1).sum(1)
+        accepted = torch.where(g, g_acc, accepted)
+        correction = torch.where(g, argmax.gather(1, g_acc.view(b, 1)).squeeze(1), correction)
+        flags = flags * (~g).view(b, 1)
+    return accepted, correction, flags.bool(), argmax

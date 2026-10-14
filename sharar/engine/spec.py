@@ -15,6 +15,7 @@ from sharar.engine.context import ForwardContext
 from sharar.engine.request import Request
 from sharar.engine.contracts import Proposer, StepInputs, VerifiedFeatures
 from sharar.engine.debug import debug_sync
+from sharar.engine import sampling_rng
 from sharar.engine.rejection import Proposal, distribution, plausible, verify_batch, verify_rows
 from sharar.engine import accept_graphs
 from sharar.engine.accept_graphs import AcceptGraphs
@@ -406,18 +407,16 @@ class SpecDecoder:
             acc_rows, corr_rows, target_rows, flag_rows = [], [], [], []
             batched = None
             if (proposal.probabilities is None) == (proposal.support is None):  # point masses, or a sparse law on its support
-                batched = verify_batch(y, z, [r.params for r in reqs], [r.generator for r in reqs], proposal.probabilities, proposal.support)
+                batched = verify_batch(y, z, [r.params for r in reqs], [r.generator for r in reqs], proposal.probabilities, proposal.support,
+                                       rng=[[r.rng_seed, o] for r, o in zip(reqs, sampling_rng.offsets(reqs, sampling_rng.VERIFY))])
             if batched is not None:
                 acc_b, corr_b, flags_b, argmax_b = batched
-                for i, req in enumerate(reqs):
-                    acc_rows.append(acc_b[i])
-                    corr_rows.append(corr_b[i])
-                    flag_rows.append(flags_b[i].to(torch.int64))
-                    if req.params.greedy:
-                        target_rows.append(argmax_b[i])  # greedy rows keep every argmax for traces
-                    else:
-                        target_rows.append(torch.full((s_len,), -1, dtype=y.dtype, device=y.device).index_put_((acc_b[i].reshape(1),),
-                                                                                                             corr_b[i].reshape(1)))
+                # sampled rows carry only their correction at index a (-1 elsewhere); greedy rows every argmax, for traces
+                targets = torch.full((len(reqs), s_len), -1, dtype=y.dtype, device=y.device).scatter_(1, acc_b.view(-1, 1), corr_b.view(-1, 1))
+                if argmax_b is not None:
+                    greedy_rows = torch.tensor([r.params.greedy for r in reqs], device=y.device).view(-1, 1)
+                    targets = torch.where(greedy_rows, argmax_b.to(y.dtype), targets)
+                acc_rows, corr_rows, flag_rows, target_rows = list(acc_b), list(corr_b), list(flags_b.to(torch.int64)), list(targets)
             for i, req in enumerate(reqs if batched is None else ()):
                 if req.params.greedy:
                     target_ids = z[i].argmax(-1)

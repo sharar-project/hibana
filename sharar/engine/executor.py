@@ -16,6 +16,7 @@ from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import DecodeGraphs
 from sharar.engine.request import Request, State
 from sharar.engine.grammar import sample_masks
+from sharar.engine.sampling_rng import request_seed
 from sharar.engine.sampler import InvalidRequest, Sampler, SamplingParams
 from sharar.cache.kv_pool import KV_DTYPE, KvPool
 from sharar.cache.ledger import Ledger
@@ -215,6 +216,7 @@ class Executor:
             req = Request(prompt_ids=list(prompt_ids), params=params)
         if req.generator is None and not params.greedy:
             req.generator = self.sampler.generator(params.seed)
+            req.rng_seed = request_seed(params.seed)
         self.state.admit(req, req.prefill_ids)
         req.state = State.PREFILL
         req.t_admit = time.perf_counter()
@@ -583,6 +585,13 @@ class Executor:
                 self.decode_step(live)
             for r in live:
                 self.release(r)
+            # One sampled round per path, so the first sampled request does not compile the sampled-speculation
+            # kernels (kernels/sampled_verify.py, the sampled lattice walk).
+            sampled = SamplingParams(max_new_tokens=12, ignore_eos=True, temperature=1.0, top_k=20, top_p=0.95, seed=0)
+            f = self.admit(random_ids(50, 30), sampled)
+            self.prefill(f)
+            self.decode_step([f])
+            self.release(f)
             self.spec.reset_stats()
         self.flush_cache()
         torch.cuda.synchronize()

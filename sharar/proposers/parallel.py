@@ -249,7 +249,17 @@ class ParallelProposer:
             return Proposal(greedy_lattice(candidates, scores))
         # One batched walk of the lattice for every row (rejection.sample_lattice): each step draws from the
         # request's law over the candidates that follow its previous choice, with the request's own generator.
-        tokens_s, laws = sample_lattice(candidates, scores, [r.params for r in requests], [r.generator for r in requests])
+        if candidates.is_cuda:  # one fused kernel; Philox draws at each request's (seed, round offset)
+            from sharar.engine import sampling_rng
+            from sharar.kernels.draft_selection import sampled_lattice
+            w = candidates.shape[-1]
+            params = sampling_rng.rows("lattice-params", [[max(r.params.temperature, 1e-6), r.params.top_k if 0 < r.params.top_k < w else 0,
+                                                           r.params.top_p, float(r.params.greedy)] for r in requests], torch.float32, device)
+            rng = sampling_rng.rows("lattice-rng", [[r.rng_seed, o] for r, o in zip(requests, sampling_rng.offsets(requests, sampling_rng.DRAFT))],
+                                    torch.int64, device)
+            tokens_s, laws = sampled_lattice(candidates, scores, params, rng)
+        else:
+            tokens_s, laws = sample_lattice(candidates, scores, [r.params for r in requests], [r.generator for r in requests])
         return Proposal(tokens_s, laws, candidates)
 
     def accepted_batch(self, requests, emitted, features):
