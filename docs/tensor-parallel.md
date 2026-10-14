@@ -130,6 +130,25 @@ per rank) cannot be held in the 3-bit format's 128-column chunks and stays FP8. 
 router, the indexer and the PLE read the whole (replicated) stream and stay whole on every rank; the lm_head is
 vocabulary-parallel.
 
+The PLE table (47.7 GiB: 16 heads of 20M rows of 160 bytes) is split by head instead (#178,
+`model/flashnext/ple.py:ResidentRows`). Each head's rows are one contiguous region, so rank r keeps heads 8r to 8r + 7
+in device memory, 23.8 GiB read from the checkpoint at load in about 15 s. A forward's rows are gathered on the device
+and all-gathered (1,280 bytes per token from each rank), so every rank holds the bytes one Spark reads from its memory
+maps, and the outputs are the same. Nothing waits on the NVMe: one Spark decodes text it reads for the first time 11-14%
+slower than text whose rows are cached, and two Sparks now decode both at the cached speed. Measured 2026-10-14 against
+the host gather (#169), page cache dropped before each start, outputs identical:
+
+| | host gather | resident heads |
+|---|---:|---:|
+| `fast`, single-stream decode, median of seven prompts | 107.8 tok/s | 123.8 |
+| `fast`, four concurrent requests | 234.3 tok/s | 272.0 |
+| `fast`, time to first token, three 10K-token prompts | 3.86 / 3.75 / 3.68 s | 3.83 / 3.20 / 3.21 |
+| `throughput`, decode at 16 / 32 / 64 requests | 481 / 658 / 954 tok/s | 591 / 874 / 1,203 |
+
+- **Memory.** The KV pool sizes around the resident half: `throughput` keeps 590K tokens per rank against 982K, and
+  257 state slots. MemAvailable stayed at least 33 GiB under 64 requests, against the 16 GiB floor.
+- **Turning it off.** `SHARAR_PLE_RESIDENT=0` keeps the host gather on two Sparks.
+
 The MTP draft layer is replicated and drafts through the target's vocabulary-parallel lm_head
 (`proposers/draft_head.py:VocabParallelHead`): each rank scores its half of the vocabulary with its 3-bit copy,
 the ranks exchange their best eight, and the rank holding each candidate's FP8 row rescores it, so the pick is the

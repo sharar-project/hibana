@@ -20,7 +20,8 @@ them, as the pinned one does: GPTQ-calibrated on routed activations (#73), read 
 and prefill, and the only resident expert copy (46.1 GiB instead of 63.3; 53 GiB of weights in all). Without
 expert entries, with `SHARAR_FLASHNEXT_EXPERTS=nvfp4`, in `exact` and on two Sparks, the experts are the
 checkpoint's NVFP4 through FlashInfer's `cutlass_fused_moe` ([calibration](w3-calibration.md)). The PLE table
-stays on the NVMe as memory maps.
+stays on the NVMe as memory maps; on two Sparks each rank keeps its half of the heads in device memory
+([tensor parallel](tensor-parallel.md)).
 
 ## Package
 
