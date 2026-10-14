@@ -3,6 +3,7 @@ cached prefixes and state checkpoints, batched decode, CUDA graphs, generate."""
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -282,24 +283,34 @@ class Executor:
         if not cfg.ssd or self.cache is None:
             return
         tier, why = None, "another rank could not open its store"
+        proposer = self.spec.proposer if self.spec is not None else None
+        extra = proposer.stored_pages() if hasattr(proposer, "stored_pages") else ()
         try:
             store = SsdStore(cfg.ssd_dir, self._cache_identity(), log=log, block=cfg.ssd_block_tokens,
                              writers=cfg.ssd_writers)
             tier = SsdTier(store, self.kv_pool, self.state_pool, self.device, int(cfg.ssd_gib * GIB), trace=cfg.ssd_trace,
-                           **cfg.ssd_buffers)
+                           extra_pages=extra, **cfg.ssd_buffers)
         except (RuntimeError, MemoryError, OSError) as exc:
             why = str(exc)
         if not all_reduce_min(int(tier is not None))[0]:
             if log:
                 log(f"  ssd tier: disabled ({why})")
             return
-        proposer = self.spec.proposer if self.spec is not None else None
         if proposer is not None and proposer.requirements.capabilities.stored_payload:
             tier.register_codec(*proposer.auxiliary_codec())
         self.cache.ssd = tier
         listed = tier.rebuild(self.cache)
+        # never fill the drive: at most what is stored plus the free space beyond a reserve (a tenth of the drive, at
+        # most 64 GiB), the same on every rank (each trims its own copy of the same tree)
+        fs = os.statvfs(store.base)
+        reserve = min(fs.f_blocks * fs.f_frsize // 10, 64 * GIB)
+        room = tier.used + max(0, fs.f_bavail * fs.f_frsize - reserve)
+        budget = all_reduce_min(min(tier.budget, room) // 2**20)[0] * 2**20  # in MiB
+        if budget < tier.budget and log:
+            log(f"  ssd tier: budget {tier.budget / GIB:.0f} -> {budget / GIB:.0f} GiB, what the drive has free")
+        tier.budget = budget
         if log:
-            log(f"  ssd tier: {listed} stored sessions, {tier.used / GIB:.1f} of {cfg.ssd_gib:.0f} GiB, {tier.block}-token blocks")
+            log(f"  ssd tier: {listed} stored sessions, {tier.used / GIB:.1f} of {tier.budget / GIB:.0f} GiB, {tier.block}-token blocks")
 
     def cache_step(self) -> None:
         """Once per engine loop iteration: the prefix cache's background work

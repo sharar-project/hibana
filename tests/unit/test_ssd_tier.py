@@ -201,19 +201,22 @@ def test_a_budget_victim_still_being_written_leaves_nothing_behind(tmp_path):
     assert not cache.root.children and tier.used == 0 and list(tier.store.scan()) == []
 
 
-def test_a_dropped_leaf_deletes_its_tail_and_the_stats_stay_true(tmp_path):
+def test_a_leaf_whose_tail_is_stored_stays_restorable_without_its_snapshot(tmp_path):
     cache, tier, kv, sp, feats = engine(tmp_path)
-    release(cache, tier, kv, sp, feats, IDS, seed=1)
+    before = release(cache, tier, kv, sp, feats, IDS, seed=1)
     settle(cache, tier)
     evict_all(cache, kv)
     settle(cache, tier)
     assert cache.ssd_nodes == 1 and tier.restore(cache, IDS + [7]) == len(IDS) and cache.ssd_nodes == 0
     node = cache.root.children[IDS[0]]
-    sp.free(node.snapshot_slot)  # as snapshot-only eviction leaves it: no slot, so eviction cannot write a tail
+    sp.free(node.snapshot_slot)  # as snapshot-only eviction leaves it: no slot to write a tail from
     node.snapshot_slot = None
+    used, sessions = tier.used, tier.sessions
     evict_all(cache, kv)
     settle(cache, tier)
-    assert not cache.root.children and tier.used == 0 and list(tier.store.scan()) == []
+    # the tail it was restored from is still its state at that end: the leaf stays on the SSD, and restores again
+    assert cache.ssd_nodes == 1 and tier.used == used and tier.sessions == sessions
+    assert tier.restore(cache, IDS + [7]) == len(IDS) and same(restored(cache, kv, sp, IDS), before)
 
 
 def test_a_failed_tail_write_removes_the_unrestorable_leaf(tmp_path, monkeypatch):
@@ -241,9 +244,10 @@ def test_a_restore_streams_through_a_staging_buffer_smaller_than_it(tmp_path):
     settle(cache, tier)
     evict_all(cache, kv)
     settle(cache, tier)
+    size = tier._staging.nbytes
     assert tier.restore(cache, LONG + [7]) == len(LONG)
     assert same(restored(cache, kv, sp, LONG), before)
-    assert tier._staging.nbytes < tier.restore_bytes  # an object bounds the buffer, not the restore
+    assert tier._staging.nbytes == size  # sized at startup; a restore never grows it
 
 
 def test_a_corrupt_block_mid_restore_returns_every_page_and_slot(tmp_path):
@@ -536,22 +540,6 @@ def test_the_disk_budget_drops_gpu_resident_copies_and_eviction_can_back_them_up
     assert same(restored(cache, kv, sp, IDS), before)
 
 
-def test_the_disk_budget_keeps_a_resident_copy_pinned_by_a_restore(tmp_path):
-    cache, tier, kv, sp, feats = engine(tmp_path)
-    release(cache, tier, kv, sp, feats, IDS, seed=43)
-    tier.backup(cache, IDS, (len(IDS),))
-    settle(cache, tier)
-    node = cache.root.children[IDS[0]]
-    node.ssd_pins += 1
-    tier.budget = 1
-    tier.step(cache)
-    assert tier.used > tier.budget and node.tail.ready
-    node.ssd_pins -= 1
-    tier.step(cache)
-    tier.store.wait()
-    assert tier.used <= tier.budget and node.in_l1 and not list(tier.store.scan())
-
-
 @pytest.mark.parametrize("operation", ["step", "eviction", "drain", "restore"])
 @pytest.mark.parametrize("capacity", [0, 1, 1.5])
 def test_gathers_respect_the_staging_limit_including_when_forced(tmp_path, monkeypatch, operation, capacity):
@@ -683,3 +671,30 @@ def test_a_restore_reads_only_the_kv_past_what_l1_still_holds(tmp_path):
     (row,) = _rows(tier)
     assert row["objects"] == 1 and row["kv_tokens"] == n - prompt_end and kv.free_count == free - (n - prompt_end)
     assert same(restored(cache, kv, sp, IDS), at_end)
+
+
+def test_pages_beside_the_kv_travel_with_it(tmp_path):
+    """A drafter's own per-page KV (Flash-Next's MTP layer) is stored with the target's KV blocks and tails, and a
+    restore puts it back byte-exact into the pages the restored prefix gets."""
+    kv = CpuKvPool(4096, CPU, target=TINY)
+    kv.register_page_aux("index_keys", (3,), torch.bfloat16)
+    sp = StatePool(8, CPU, target=TINY)
+    sp.register_aux("ple_conv", (5,), torch.float32)
+    draft = torch.zeros((kv.k[kv.layer_ids[0]].shape[0], 2, 4), dtype=torch.bfloat16)  # one row per page, like a KvPool
+    cache = RadixCache(kv, sp, CPU)
+    tier = SsdTier(SsdStore(tmp_path, IDENTITY, block=BLOCK), kv, sp, CPU, 2**30, min_tokens=BLOCK, min_hit=BLOCK,
+                   extra_pages=[("draft.0.k", draft)])
+    cache.ssd = tier
+    pages, page_ids = kv.alloc_with_ids(len(IDS))
+    slot = sp.alloc()
+    fill(kv, sp, pages, slot, seed=21)
+    draft[pages.to(torch.int64)] = torch.randn((len(IDS), 2, 4), generator=torch.Generator().manual_seed(21)).to(torch.bfloat16)
+    want = draft[pages.to(torch.int64)].clone()
+    cache.insert(IDS, pages, {len(IDS): slot}, page_ids=page_ids)
+    tier.backup(cache, IDS)
+    settle(cache, tier)
+    evict_all(cache, kv)
+    settle(cache, tier)
+    draft.zero_()
+    assert tier.restore(cache, IDS + [7]) == len(IDS)
+    assert torch.equal(draft[cache.match(IDS).pages.to(torch.int64)].view(torch.uint8), want.view(torch.uint8))

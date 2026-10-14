@@ -48,7 +48,6 @@ class Node:
     last_access: float = field(default_factory=time.monotonic)
     blocks: dict[int, SsdRef] = field(default_factory=dict)  # KV blocks on the SSD whose last token is in this node, by absolute end
     tail: SsdRef | None = None  # a session tail on the SSD ending exactly at this node's end
-    ssd_pins: int = 0  # restores reading this path
 
     @property
     def in_l1(self) -> bool:
@@ -293,7 +292,7 @@ class RadixCache:
     def _split(self, node: Node, n: int) -> Node:
         """Split `node` so that its first n tokens become a new parent node."""
         head = Node(key=node.key[:n], pages=None if node.pages is None else node.pages[:n], parent=node.parent, lock=node.lock,
-                    last_access=node.last_access, ssd_pins=node.ssd_pins)
+                    last_access=node.last_access)
         if node.page_ids is not None:
             head.page_ids, node.page_ids = node.page_ids[:n], node.page_ids[n:]
         if node.blocks:
@@ -382,14 +381,12 @@ class RadixCache:
         self.evictions += 1
 
     def ssd_candidate(self, unusable: bool = False, resident: bool = False) -> Node | None:
-        """The least recently used node no restore is reading: an SSD-only
-        leaf (with `unusable`, only one whose tail is missing or failed), or
-        with `resident` an L1 node with a ready copy on the SSD, whose copies
-        the budget can delete while the node keeps its pages."""
+        """The least recently used node: an SSD-only leaf (with `unusable`, only
+        one whose tail is missing or failed), or with `resident` an L1 node with
+        a ready copy on the SSD, whose copies the budget can delete while the
+        node keeps its pages."""
         best = None
         for n in self._walk(l1_only=resident):
-            if n.ssd_pins:
-                continue
             if resident:
                 if not ((n.tail is not None and n.tail.ready) or any(r.ready for r in n.blocks.values())):
                     continue
@@ -406,7 +403,7 @@ class RadixCache:
         return sum(n.tail is not None and n.tail.ready for n in self._walk())
 
     def remove_ssd_leaf(self, node: Node) -> None:
-        assert not node.in_l1 and not node.children and not node.ssd_pins
+        assert not node.in_l1 and not node.children
         del node.parent.children[node.key[0]]
         self.ssd_nodes -= 1
         self.ssd_evictions += 1

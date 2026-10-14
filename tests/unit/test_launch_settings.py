@@ -142,21 +142,27 @@ def test_the_engine_gets_explicit_flags_and_its_environment(env, tmp_path):
     assert "--tp" in resolve(env, "27b", tp=2).engine_args(tp=2)
 
 
-def test_the_ssd_tier_settings_are_checked(env, tmp_path):
-    """The SSD tier stores in /tmp on every Spark, and the launcher refuses the removed cold-tier and session-store settings."""
+def test_the_ssd_tier_settings_are_checked(env, tmp_path, capsys):
+    """The SSD tier stores under the results directory, one store per target, on every Spark; the removed cold-tier
+    and session-store settings are ignored with a warning, so `sharar stop` still works with an old config file."""
     s = resolve(env, "27b", overrides={"SHARAR_SSD": "1", "SHARAR_SSD_GIB": "50", "SHARAR_SSD_BLOCK_TOKENS": "1024"})
     e = s.engine_env(None)
-    assert s.ssd == launch.Path("/tmp/sharar-ssd") and e["SHARAR_SSD_DIR"] == str(s.ssd)
+    assert s.ssd == s.results / "ssd" / "qwen38" and e["SHARAR_SSD_DIR"] == str(s.ssd)
+    assert resolve(env, "flashnext", overrides={"SHARAR_SSD": "1"}).ssd == s.results / "ssd" / "flashnext"
     assert e["SHARAR_SSD"] == "1" and e["SHARAR_SSD_GIB"] == "50" and e["SHARAR_SSD_BLOCK_TOKENS"] == "1024"
     assert resolve(env, "27b", overrides={"SHARAR_SSD": "1", "SHARAR_SSD_DIR": str(tmp_path / "nvme")}).ssd == tmp_path / "nvme"
     for override, message in (({"SHARAR_SSD": "2"}, "SHARAR_SSD must be"), ({"SHARAR_SSD_BLOCK_TOKENS": "300"}, "divide 2048"),
-                              ({"SHARAR_SSD_GIB": "lots"}, "number of GiB"), ({"SHARAR_COLD_TIER_GIB": "8"}, "was removed"),
-                              ({"SHARAR_SESSION_DIR": "off"}, "SHARAR_SESSION_DIR was removed"),
-                              ({"SHARAR_SESSION_GIB": "50"}, "SHARAR_SSD_GIB"), ({"SHARAR_SESSION_MIN_TOKENS": "1"}, "was removed")):
+                              ({"SHARAR_SSD_GIB": "lots"}, "number of GiB")):
         with pytest.raises(ValueError, match=message):
             resolve(env, "27b", overrides=override)
+    from sharar.launch import settings
+    settings._WARNED.clear()
+    for old in ("SHARAR_COLD_TIER_GIB", "SHARAR_SESSION_DIR", "SHARAR_SESSION_GIB", "SHARAR_SESSION_MIN_TOKENS"):
+        resolve(env, "27b", overrides={old: "8"})
+        resolve(env, "27b", overrides={old: "8"})
+        assert capsys.readouterr().err.count(f"{old} was removed and is ignored") == 1  # once per process
     two = resolve(env, "27b", overrides={"SHARAR_SSD": "1"}, tp=2)  # each rank stores on its own Spark, same path
-    assert two.engine_env(None)["SHARAR_SSD_DIR"] == "/tmp/sharar-ssd" and "--tp" in two.engine_args(tp=2)
+    assert two.engine_env(None)["SHARAR_SSD_DIR"] == str(s.ssd) and "--tp" in two.engine_args(tp=2)
 
 
 def test_flashnext_without_a_checkpoint_serves_its_fp8_trunk(env):

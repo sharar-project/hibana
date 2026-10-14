@@ -745,8 +745,11 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     log(f"loading {served.name}: {served.model_id}@{served.model_revision[:8]}")
     model = targets.load_model(served, snap, log=log)
     from sharar.engine.config import current
-    ex = Executor(model, log=log, spec_config=spec_config, max_context=max_context, max_batch=max_batch,
-                  num_pages=current().kv_pool_tokens)  # SHARAR_KV_POOL_TOKENS: a fixed pool, else planned
+    pool_tokens = current().kv_pool_tokens  # SHARAR_KV_POOL_TOKENS: a fixed pool, else planned
+    if pool_tokens and max_context and pool_tokens < max_context:  # a longer request could never be admitted
+        log(f"  context length {max_context} -> {pool_tokens}: SHARAR_KV_POOL_TOKENS fixes a smaller KV pool")
+        max_context = pool_tokens
+    ex = Executor(model, log=log, spec_config=spec_config, max_context=max_context, max_batch=max_batch, num_pages=pool_tokens)
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
     ex.enable_ssd_tier(log=log)
@@ -768,7 +771,6 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         sink = TraceSink(traces, max_bytes=traces_max_mib * 2**20)
         sched.sink = sink
         log(f"recording opt-in request traces under {sink.directory} (cap {traces_max_mib} MiB)")
-    from sharar.engine.config import current
     if current().w3_warning:
         log(f"WARNING: {current().w3_warning}")
     describe = {

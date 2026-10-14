@@ -45,7 +45,7 @@ target.py   Target value per checkpoint (geometry, optional family fields), regi
   `forward_extras()`; side inputs (Flash-Next's PLE rows and sparse-attention bookkeeping) travel on
   `ForwardContext.extras`, so `engine/` holds no model-specific code.
 - **Speculator parts.** A proposer declares its `Capabilities` (sampled, depth, graphs, device acceptance,
-  checkpoint cache, cold payload, ...); the engine reads the flags instead of probing methods. Draft heads
+  checkpoint cache, stored payload, ...); the engine reads the flags instead of probing methods. Draft heads
   (`proposers/draft_head.py`) and the depth policy (`engine/depth.py`) are shared.
 - **Kernels.** One `Linear` interface over every weight format (`weights/linear.py`), one `AttentionPlanner`
   per KV geometry (`kernels/attention_plan.py`), one graph-set helper (`engine/graph_set.py`).

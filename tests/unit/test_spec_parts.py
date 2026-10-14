@@ -15,10 +15,10 @@ def test_declared_capabilities_need_their_methods():
     with pytest.raises(TypeError, match="stored_payload"):
         check_capabilities(Bare())
 
-    class Cold(Bare):
+    class Stored(Bare):
         def auxiliary_codec(self):
             return None
-    check_capabilities(Cold())
+    check_capabilities(Stored())
 
     class Head:
         requirements = ProposerRequirements("mtp", capabilities=Capabilities(draft_head=True))

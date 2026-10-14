@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 
 from sharar.launch import ctl, guard, preflight, service
-from sharar.engine.config import SSD_DIR
 from sharar.launch.settings import Settings, resolve
 
 
@@ -150,7 +149,7 @@ def cache(args) -> int:
     info = ctl.server_info(str(s.port)) if s is not None else None
     if info is None:
         s = s or resolve("27b")
-        directory = s.ssd or Path(s.get("SHARAR_SSD_DIR") or SSD_DIR)
+        directory = s.ssd or Path(s.get("SHARAR_SSD_DIR") or s.results / "ssd" / s.target)
         d = ctl.stored_on_disk(directory)
         who = f"{s.target} is not serving" if args.target else "nothing is serving"
         print(f"{who}; SSD tier {'on' if s.ssd else 'off'} in the settings")

@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import fcntl
 import functools
 import hashlib
 import json
@@ -188,6 +189,23 @@ def memory_backed(path, mounts: str | None = None) -> str | None:
     return fstype if fstype in ("tmpfs", "ramfs") else None
 
 
+_LOCKED: dict[str, int] = {}  # stores this process holds: a store opened again here (a restart in tests) keeps the lock
+
+
+def _lock(base: Path, directory) -> None:
+    """One process per store, held until it exits: another would delete this one's files as stale."""
+    key = str(base.resolve())
+    if key in _LOCKED:
+        return
+    fd = os.open(base / "LOCK", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise OSError(f"{directory} is in use by another server (SHARAR_SSD_DIR gives this one its own)") from None
+    _LOCKED[key] = fd
+
+
 def _pad(n: int) -> int:
     return (n + ALIGN - 1) // ALIGN * ALIGN
 
@@ -210,7 +228,10 @@ class SsdStore:
             raise OSError(f"{directory} is on {fs}: the SSD tier would sit in memory (on unified memory, the GPU's); "
                           "set SHARAR_SSD_DIR to a directory on the NVMe")
         self.base = Path(directory) / "v2"
-        self.base.mkdir(parents=True, exist_ok=True)
+        self.base.mkdir(parents=True, exist_ok=True, mode=0o700)  # tails hold token ids: the user's own
+        if self.base.is_symlink() or self.base.stat().st_uid != os.getuid():
+            raise OSError(f"{self.base} is not this user's own directory")
+        _lock(self.base, directory)
         self.root = root_hash({**identity, "block": block})
         self.epoch = self._read_epoch()
         self.dir = self.base / f"e{self.epoch}"
@@ -220,7 +241,7 @@ class SsdStore:
             threading.Thread(target=lambda: [shutil.rmtree(p, ignore_errors=True) for p in stale], daemon=True).start()
         self.queues: list[queue.Queue] = [queue.Queue() for _ in range(writers)]  # one per writer, chosen by key
         self.done: deque = deque()  # per write, in submission order: a one-item list its writer fills with the completion
-        self._lock = threading.Lock()  # guards the writers' counters
+        self._lock = threading.Lock()  # guards the counters the writer and reader threads update
         self.writes = self.reads = self.read_errors = self.write_errors = self.deletes = 0
         self.write_bytes = self.read_bytes = 0
         self.write_seconds = self.read_seconds = 0.0
@@ -419,13 +440,15 @@ class SsdStore:
         except FileNotFoundError:
             return None
         except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
-            self.read_errors += 1
-            self.last_error = repr(exc)
+            with self._lock:  # restores read from several threads at once
+                self.read_errors += 1
+                self.last_error = repr(exc)
             self.delete(kind, key)
             return None
-        self.reads += 1
-        self.read_bytes += header.nbytes
-        self.read_seconds += time.perf_counter() - t0
+        with self._lock:
+            self.reads += 1
+            self.read_bytes += header.nbytes
+            self.read_seconds += time.perf_counter() - t0
         return header, offset
 
     @staticmethod

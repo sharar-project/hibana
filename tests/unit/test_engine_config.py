@@ -1,5 +1,6 @@
 """EngineConfig (#44): one value from the environment, installed once, read at construction."""
 import pytest
+from pathlib import Path
 
 from sharar.engine import config
 from sharar.engine.config import EngineConfig
@@ -72,7 +73,8 @@ def test_ssd_settings_parse_and_a_bad_block_size_fails_at_startup():
         EngineConfig.from_env({"SHARAR_SSD_WRITERS": "0"})
 
 
-def test_the_ssd_tier_stores_in_tmp_unless_moved():
-    assert EngineConfig.from_env({}).ssd_dir == EngineConfig().ssd_dir == "/tmp/sharar-ssd"
+def test_the_ssd_tier_stores_in_the_users_data_directory_unless_moved():
+    default = str(Path.home() / ".local" / "share" / "sharar" / "ssd")  # the launcher passes $SHARAR_RESULTS/ssd/<target>
+    assert EngineConfig.from_env({}).ssd_dir == EngineConfig().ssd_dir == default
     cfg = EngineConfig.from_env({"SHARAR_SSD_DIR": "/nvme/ssd", "SHARAR_SSD_GIB": "50"})
     assert cfg.ssd_dir == "/nvme/ssd" and cfg.ssd_gib == 50.0

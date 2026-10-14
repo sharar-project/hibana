@@ -41,7 +41,7 @@ class MtpProposer:
         self.requirements = ProposerRequirements("mtp", FeatureRequest(final_norm=True), persistent_bytes=head.bytes,
                                                  greedy_only=False, max_depth=8,
                                                  capabilities=Capabilities(device_feedback=True, draft_head=getattr(head, "DRAFT_HEADS", False),
-                                                                           short_drafts=True))
+                                                                           short_drafts=True, stored_payload=True))
         self.graphs = None
         # The draft's confidence per step for the trace round records (SHARAR_TRACE_CONFIDENCE); read once
         # here, the draft graphs capture the extra output.
@@ -59,6 +59,24 @@ class MtpProposer:
         self.target = target
         self.cache_identity = (target.model_id, target.model_revision, "native-mtp", "final_norm-v1", "bf16-kv-target-forced-v1")
         self.cache_hits = self.cache_fallbacks = 0
+
+    def auxiliary_codec(self):
+        """Export/import of this proposer's cache auxiliary, (position, last hidden row), for the SSD tier: a restored
+        request drafts from where the stored one stopped (with its draft KV, `stored_pages`) instead of never again."""
+        def export(value):
+            return value  # (position, hidden row on the device): the scalar first, as the tier stores them
+
+        def import_(payload, *, slot=None):
+            position, hidden = payload  # hidden is a view into the tier's staging buffer, which the next restore reuses
+            return (position, hidden.clone())
+
+        return self.cache_identity, export, import_
+
+    def stored_pages(self):
+        """The draft layer's KV, indexed by the target's page ids: stored with the target's KV blocks, so a restored
+        prefix keeps the draft's attention history too."""
+        kv = self.head.kv
+        return [(f"draft.{j}.{t}", pool) for j, lid in enumerate(kv.layer_ids) for t, pool in (("k", kv.k[lid]), ("v", kv.v[lid]))]
 
     def _state(self, req) -> MtpState:
         if req.proposer_state is None:

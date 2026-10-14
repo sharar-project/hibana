@@ -143,6 +143,11 @@ def _path(anchor: Node):
         n, e = n.parent, s
 
 
+def _pinned(nbytes: int) -> int:
+    """What a pinned host copy of `nbytes` holds: PyTorch's caching host allocator rounds it up to a power of two."""
+    return 1 << max(nbytes - 1, 0).bit_length()
+
+
 def _to_host(t: torch.Tensor, cuda: bool) -> torch.Tensor:
     host = torch.empty(t.shape, dtype=t.dtype, pin_memory=cuda)
     host.copy_(t, non_blocking=cuda)
@@ -152,7 +157,7 @@ def _to_host(t: torch.Tensor, cuda: bool) -> torch.Tensor:
 class SsdTier:
     def __init__(self, store: SsdStore, kv_pool, state_pool, device: torch.device, budget_bytes: int, min_tokens: int = 4096,
                  min_hit: int = 2048, step_bytes: int = 64 * MIB, staging_bytes: int = STAGING_BYTES,
-                 chunk_bytes: int = CHUNK_BYTES, trace: bool = False):
+                 chunk_bytes: int = CHUNK_BYTES, trace: bool = False, extra_pages=()):
         self.block = store.block  # tokens per stored KV block (part of the store's identity)
         self.trace = trace  # one line per restore in restores.jsonl beside the store (SHARAR_SSD_TRACE)
         self.store, self.kv_pool, self.state_pool, self.device = store, kv_pool, state_pool, device
@@ -174,8 +179,12 @@ class SsdTier:
         self.restore_seconds = 0.0
         self.evict_seconds = self.evict_max = self.settle_seconds = self.settle_max = 0.0  # the engine blocked on backups
         self._pool = ThreadPoolExecutor(8, thread_name_prefix="sharar-ssd-read")  # parallel O_DIRECT reads keep the drive's queue full
-        self._staging = Staging(2 * self.chunk_bytes, device)  # two halves of chunk_bytes (grown for a larger object), reused by every restore
-        self._row = kv_pool.row_bytes
+        self.extra_pages = list(extra_pages)  # (name, per-page tensor) beside the KV, e.g. the MTP draft layer's KV
+        self._row = kv_pool.row_bytes + sum(t[0].numel() * t.element_size() for _, t in self.extra_pages)
+        # two halves, each chunk_bytes or one whole tail (a block of KV, the slot's state and a drafter payload), reused by
+        # every restore; sized here, never grown mid-restore, where a failure on one rank would leave the other waiting
+        tail = self.block * self._row + state_pool.bytes_per_slot + 32 * MIB
+        self._staging = Staging(2 * max(self.chunk_bytes, _pad(tail)), device)
         self._layouts: dict = {}  # expected segment layouts by (kind, rows, aux counts); the pools' geometry is fixed
 
     @staticmethod
@@ -312,10 +321,11 @@ class SsdTier:
             ready = torch.cuda.Event(blocking=True)  # writers wait on it: sleep, don't spin a core each
             ready.record()
         spec = [[name, _dtype_name(t), list(t.shape), t.numel() * t.element_size()] for name, t in segs]
-        nbytes = sum(s[3] for s in spec)
+        # the pinned memory the copies hold: the caching host allocator rounds each up to a power of two
+        pinned = sum(_pinned(s[3]) for s in spec) if self.device.type == "cuda" else sum(s[3] for s in spec)
         header = Header(kind, key.hex(), parent.hex(), start, tokens, spec, scalars or {})
-        self.inflight[(kind, key.hex())] = (ref, nbytes)
-        self.staged += nbytes
+        self.inflight[(kind, key.hex())] = (ref, pinned)
+        self.staged += pinned
         self.store.write(header, [t for _, t in segs], ready)
 
     def _room(self, nbytes: int, wait: bool) -> bool:
@@ -377,7 +387,8 @@ class SsdTier:
         for item in pending:
             self._gather_block(item, wait=True)
             self.forced += 1
-        keep = leaf.snapshot_slot is not None and end >= self.min_tokens and self._write_tail(leaf, end, wait=True)
+        written = leaf.tail is not None and leaf.tail.nbytes >= 0  # written through already: its snapshot may be gone
+        keep = written or (leaf.snapshot_slot is not None and end >= self.min_tokens and self._write_tail(leaf, end, wait=True))
         if not keep and not leaf.children:
             self._discard_node(leaf)
         spent = time.perf_counter() - t0  # the gathers above, and waits for staging room behind the writers
@@ -598,8 +609,6 @@ class SsdTier:
         resident = [n for n in hit.path if n.in_l1]  # a prefix of the path
         held = resident[-1] if resident else None  # locked, with its ancestors: the eviction below keeps their pages
         cache.lock(held, 1)
-        for n in hit.path:
-            n.ssd_pins += 1
         pages = page_ids = slot = None
         try:
             need = len(ids) - l1 + reserve  # the restored KV, the rest of ids and the reserve
@@ -617,8 +626,7 @@ class SsdTier:
                 return 0
             prefix = [n.pages for n in resident]
             new_start = cache.insert(ids[:r], torch.cat([*prefix, pages]), {r: slot}, {r: aux}, page_ids=[-1] * l1 + page_ids)
-            if new_start > l1:  # an L1 node past l1 already held these tokens
-                self.kv_pool.free_ids(page_ids[:new_start - l1])
+            assert new_start == l1  # every path node past l1 is SSD-only, so the insert takes all the restored pages
             pages = slot = None  # owned by the cache now
         finally:
             if pages is not None:  # not inserted: failed or raised
@@ -626,8 +634,6 @@ class SsdTier:
             if slot is not None:
                 self.state_pool.free(slot)
             cache.lock(held, -1)
-            for n in hit.path:
-                n.ssd_pins -= 1
         total = time.perf_counter() - t0
         self.restores += 1
         self.restored_tokens += r - m.length
@@ -681,9 +687,8 @@ class SsdTier:
         agree before importing the tail's state, so no rank's drafter keeps
         features of a restore another rank failed."""
         sizes, stride, half, chunks = plan
-        if self._staging.nbytes < 2 * half:  # only an object larger than chunk_bytes grows it
-            self._staging.close()
-            self._staging = Staging(2 * half, self.device)
+        if 2 * half > self._staging.nbytes:  # an object larger than a half: every rank plans from the same sizes, so all skip
+            return None, 0, 0.0, 0.0
         st, cuda = self._staging, self.device.type == "cuda"
         half = st.nbytes // 2
         freed = [torch.cuda.Event(), torch.cuda.Event()] if cuda else None  # per half: its last scatter has read it
@@ -743,7 +748,7 @@ class SsdTier:
     def _kv_targets(self):
         kvp = self.kv_pool
         out = [(f"kv.{j}.{t}", pool) for j, lid in enumerate(kvp.layer_ids) for t, pool in (("k", kvp.k[lid]), ("v", kvp.v[lid]))]
-        return out + [(f"paux.{name}", pool) for name, pool in kvp.page_aux.items()]
+        return out + [(f"paux.{name}", pool) for name, pool in kvp.page_aux.items()] + self.extra_pages
 
     def _valid_layout(self, header: Header) -> bool:
         """The store checks that the segments add up; this checks them against
@@ -799,10 +804,10 @@ class SsdTier:
     def _put_state(self, got, slot: int) -> dict:
         header, tensors = got
         sp = self.state_pool
-        sp.conv_all[:, slot].copy_(tensors["conv"].to(self.device))
-        sp.ssm_all[:, slot].copy_(tensors["ssm"].to(self.device))
+        sp.conv_all[:, slot].copy_(tensors["conv"])
+        sp.ssm_all[:, slot].copy_(tensors["ssm"])
         for name, t in sp.aux.items():
-            t[slot].copy_(tensors[f"pool.{name}"].to(self.device))
+            t[slot].copy_(tensors[f"pool.{name}"])
         aux = {}
         for identity, (_, import_) in self.codecs.items():
             scalars = header.scalars.get(str(identity))

@@ -16,6 +16,7 @@ import dataclasses
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping
 
 
@@ -29,7 +30,7 @@ def _int(env: Mapping[str, str], name: str, default: int | None) -> int | None:
     return default if value in (None, "") else int(value)
 
 
-SSD_DIR = "/tmp/sharar-ssd"  # the SSD tier's directory unless SHARAR_SSD_DIR moves it (SGLang's HiCache file backend uses /tmp/hicache)
+SSD_DIR = str(Path.home() / ".local" / "share" / "sharar" / "ssd")  # the engine's default; the launcher passes $SHARAR_RESULTS/ssd/<target>
 
 
 def _ssd_block(tokens: int) -> int:
