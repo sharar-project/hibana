@@ -32,6 +32,26 @@ _libc = ctypes.CDLL(None, use_errno=True)
 _libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_ubyte)]
 
 
+_NATIVE_SRC = Path(__file__).resolve().parents[2] / "kernels" / "csrc" / "ple_gather.cpp"
+_native_module = False  # not yet tried
+
+
+def _native():
+    """The native gather (kernels/csrc/ple_gather.cpp), or None when it cannot be built here."""
+    global _native_module
+    if _native_module is False:
+        try:
+            import hashlib
+            from torch.utils.cpp_extension import load
+            revision = hashlib.sha256(_NATIVE_SRC.read_bytes()).hexdigest()[:16]
+            _native_module = load(name=f"sharar_ple_gather_{revision}", sources=[str(_NATIVE_SRC)], extra_cflags=["-O3"], verbose=False)
+        except Exception as exc:  # no compiler, no ninja: the Python gather below
+            import warnings
+            warnings.warn(f"PLE native gather unavailable ({exc}); using the Python gather")
+            _native_module = None
+    return _native_module
+
+
 def _residency_visible(path: Path) -> bool:
     """Whether `mincore` reports `path`'s page-cache residency. Linux (5.0+) reports it only for files the caller owns or
     may open for writing; for others it says every page is resident (a root-owned file seen from a container's user, a
@@ -54,6 +74,8 @@ class PleTable:
     cache (files this process neither owns nor may write), every row goes to the threads."""
 
     THREADS = 32
+    NATIVE_THREADS = 64  # the native gather's pool: enough reads in flight to overlap the misses' NVMe latency
+    native = True  # the native gather when it builds (tests switch it off to compare)
 
     def __init__(self, snap: Path, weight_map: dict[str, str], name: str, shards: int):
         from concurrent.futures import ThreadPoolExecutor
@@ -96,6 +118,8 @@ class PleTable:
             m._mmap.madvise(mmap.MADV_RANDOM)  # a fault reads its own page, not a readahead window of neighbours
         self._vec = (ctypes.c_ubyte * 2)()
         self._mincore = all(_residency_visible(snap / file) for file in opened)  # else every row through the threads
+        self._fds_t = torch.tensor(self.fds, dtype=torch.int32)
+        self._offsets_t = torch.tensor(self.offsets, dtype=torch.int64)
 
     def gather(self, rows: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
         """rows: int64 array of any shape -> uint8 [..., ROW_BYTES] (into `out` when given, contiguous).
@@ -109,6 +133,17 @@ class PleTable:
         out = np.empty((n, ROW_BYTES), dtype=np.uint8) if out is None else out.reshape(n, ROW_BYTES)
         shard = np.searchsorted(self.starts, flat, side="right") - 1
         local = flat - self.starts[shard]
+        native = _native() if self.native else None
+        if native is not None and n:
+            # every row from a native pool without the GIL: a non-blocking page-cache read, else a blocking one (#172)
+            hits, misses, errors = native.gather(self._fds_t, self._offsets_t, torch.from_numpy(np.ascontiguousarray(shard, dtype=np.int64)),
+                                                 torch.from_numpy(np.ascontiguousarray(local, dtype=np.int64)), torch.from_numpy(out),
+                                                 self.NATIVE_THREADS)
+            if errors:
+                raise OSError(f"PLE gather: {errors} of {n} rows could not be read")
+            self.hits += hits
+            self.misses += misses
+            return out.reshape(*rows.shape, ROW_BYTES)
         fds, offsets = self.fds, self.offsets
         pread = self._pread
         misses = []

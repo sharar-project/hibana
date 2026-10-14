@@ -107,9 +107,18 @@ rows past the budget eager.
   SiLU-mul and routed sum are fused. Every fusion is bitwise against the chain it replaced
   (`tests/gpu/test_flashnext_fused.py`). A step is now bandwidth-bound: the 3-bit draft head is about 1.1 of its
   1.9 ms.
-- **No host gaps.** The verify plan and indexer rows are prepared before the PLE read, cached PLE rows are read
-  without the thread pool (`RWF_NOWAIT`), and each drafted token's PLE rows are read while the next draft step
-  runs. Device-resident acceptance (on in `fast`) covers MTP too ([interfaces](interfaces.md#device-resident-acceptance)).
+- **No host gaps.** The verify plan and indexer rows are prepared before the PLE read, and each drafted token's PLE
+  rows are read while the next draft step runs. Device-resident acceptance (on in `fast`) covers MTP too
+  ([interfaces](interfaces.md#device-resident-acceptance)). At high batch two host costs had grown back (#172):
+  - The indexer rows were built per sequence (about eight small launches each). At 128 requests they filled the
+    launch queue behind the draft graphs and held the host about 39 ms, so the PLE rows were read only after the
+    drafts. `FlashNextIndexer.static_rows` now builds every row's page indices on the host and uploads them once.
+  - The PLE gather (`kernels/csrc/ple_gather.cpp`) reads every row from a native thread pool, outside the GIL:
+    `preadv2(RWF_NOWAIT)` for page-cache rows (callable whatever the Python build, #166), a blocking `pread` for the
+    others, one helper per 16 rows. The Python gather cost about 2.4 us of interpreter work per row, and its thread
+    pool's page faults queued on the GIL.
+  - One Spark, `throughput` settings, steady state: at 128 requests the GPU idled 54 ms per round before the verify
+    and now 4 (round 430 -> 380 ms); at one request 42.6 -> 40.2 ms, 16 requests 176.7 -> 170.3.
 - **Confidence.** `SHARAR_TRACE_CONFIDENCE=1` beside traces records the draft's top-1 probability and top-two
   margin per drafted position ([operations](operations.md#request-traces)).
 

@@ -39,7 +39,9 @@ def table(tmp_path):
     return PleTable(tmp_path, weight_map, NAME, shards=len(counts))
 
 
-def test_gather_matches_the_memory_maps(table):
+@pytest.mark.parametrize("native", [True, False])
+def test_gather_matches_the_memory_maps(table, native):
+    table.native = native
     rows = np.random.default_rng(1).integers(0, table.rows, size=(9, 16))
     reference = table.gather_mapped(rows)
     assert (table.gather(rows) == reference).all()
@@ -57,6 +59,7 @@ def test_without_rwf_nowait_the_maps_answer_and_keep_the_rows(table, monkeypatch
     """ZFS (#166): preadv refuses RWF_NOWAIT. The gather switches to the memory maps mid-call; rows it reads through
     them stay in the page cache, so the next gather copies them all without the threads."""
     import os
+    table.native = False  # the Python gather's own fallbacks
     rows = np.random.default_rng(2).integers(0, table.rows, size=(5, 16))
     reference = table.gather_mapped(rows)
 
@@ -85,10 +88,26 @@ def test_where_mincore_cannot_see_the_page_cache_every_row_goes_to_the_threads(t
     assert not ple._residency_visible(path)
     rows = np.random.default_rng(3).integers(0, table.rows, size=(4, 16))
     reference = table.gather_mapped(rows)
+    table.native = False
     table._nowait, table._mincore = False, False
     hits, misses = table.hits, table.misses
     assert (table.gather(rows) == reference).all()
     assert (table.hits, table.misses) == (hits, misses + rows.size)
+
+
+def test_native_gather_reads_every_row_once(table):
+    """#172: the native pool reads each row once (a page-cache read or a blocking one), in the caller's order, any
+    count of rows including across shard boundaries and repeats."""
+    from sharar.model.flashnext import ple
+    if ple._native() is None:
+        pytest.skip("no C++ toolchain for the native gather")
+    rng = np.random.default_rng(4)
+    for shape in [(1,), (17,), (3, 16), (1000,)]:
+        rows = rng.integers(0, table.rows, size=shape)
+        rows.reshape(-1)[:2] = [table.rows - 1, 0][:rows.size]  # the last row of the last shard, the first of the first
+        hits, misses = table.hits, table.misses
+        assert (table.gather(rows) == table.gather_mapped(rows)).all()
+        assert table.hits + table.misses - hits - misses == rows.size
 
 
 class _Hash:
