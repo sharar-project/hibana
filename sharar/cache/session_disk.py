@@ -6,7 +6,10 @@ next request whose prompt extends its key reads it straight into fresh pool
 pages and a state slot, and the radix cache resumes it like any parked leaf. Measured on this GB10 (2026-09-23): direct
 reads 9.7 GB/s and writes 7.0 GB/s, so a 262K-token session (8.2 GiB of FP8 KV
 plus a 144 MiB recurrent snapshot) comes back in about a second instead of a
-351-second prefill.
+351-second prefill. Reads bypass the page cache (O_DIRECT; aligned ranges around unaligned segments): through it, an
+830 MB record (20K tokens of the 27B) read at 2.4 GB/s cold and 5.6 GB/s cached, against about 10 GB/s direct
+(2026-10-14, #154), and cached record pages would also take memory the GPU allocates from. Filesystems that
+refuse O_DIRECT read buffered.
 
 A record is `<sha1 of the key>.bin` (segments, raw bytes) and `.json` (identity,
 key length, segment table, codec scalars), renamed into place in that order, so
@@ -20,6 +23,7 @@ write before it frees an entry's chunks.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -34,6 +38,7 @@ import torch
 GIB = 2**30
 FORMAT = 1
 STAGING = 128 * 2**20
+ALIGN = 4096  # O_DIRECT: file offsets, lengths and buffer addresses in these units
 
 
 @dataclass
@@ -95,7 +100,10 @@ class SessionDisk:
         self.last_error = None
         cuda = device.type == "cuda"
         self._write_staging = torch.empty(STAGING, dtype=torch.uint8, pin_memory=cuda)
-        self._read_staging = torch.empty(STAGING, dtype=torch.uint8, pin_memory=cuda)
+        # an aligned range around STAGING bytes, at an aligned address
+        raw = torch.empty(STAGING + 3 * ALIGN, dtype=torch.uint8, pin_memory=cuda)
+        self._read_staging = raw[-raw.data_ptr() % ALIGN:][:STAGING + 2 * ALIGN]
+        self._direct = hasattr(os, "O_DIRECT")  # off after a filesystem refuses it
         self._stream = torch.cuda.Stream(device) if cuda else None
         self._bounce = None  # device bounce buffer for reads, allocated on first use
         self._scan()
@@ -260,7 +268,7 @@ class SessionDisk:
         stored = {seg: (offset, n) for seg, offset, n in record.meta["segments"]}
         payloads = {}
         try:
-            with self.lock, open(record.stem.with_suffix(".bin"), "rb", buffering=0) as f:
+            with self.lock, _Reader(self, record.stem.with_suffix(".bin")) as f:
                 idx = pages.to(torch.int64)
                 per_page = [(f"kv.{i // 2}.{i % 2}", pool) for i, pool in enumerate(kv)]
                 per_page += [(f"paux.{name}", pool) for name, pool in (page_aux or {}).items()]
@@ -269,19 +277,18 @@ class SessionDisk:
                     row = rows.shape[1]
                     if seg not in stored or stored[seg][1] != record.own * row:
                         raise ValueError(f"segment {seg} missing or resized")
-                    f.seek(stored[seg][0] + start * row)
+                    pos = stored[seg][0] + start * row
                     per = max(1, STAGING // row)
                     for a in range(0, record.own - start, per):
                         n = min(per, record.own - start - a)
-                        chunk = self._read_chunk(f, n * row)
+                        chunk = self._read_chunk(f, pos + a * row, n * row)
                         rows.index_copy_(0, idx[a:a + n], chunk.view(n, row))
                 for seg, dst in state.items():
                     n = dst.numel() * dst.element_size()
                     if seg not in stored or stored[seg][1] != n:
                         raise ValueError(f"segment {seg} missing or resized")
-                    f.seek(stored[seg][0])
                     whole = torch.empty(dst.shape, dtype=dst.dtype, device=dst.device)  # dst may be strided (conv_all[:, slot])
-                    self._read_into(f, whole)
+                    self._read_into(f, stored[seg][0], whole)
                     dst.copy_(whole)
                 for identity, scalars, specs in aux_specs:
                     tensors = []
@@ -291,8 +298,7 @@ class SessionDisk:
                         n = t.numel() * t.element_size()
                         if seg not in stored or stored[seg][1] != n:
                             raise ValueError(f"segment {seg} missing or resized")
-                        f.seek(stored[seg][0])
-                        self._read_into(f, t)
+                        self._read_into(f, stored[seg][0], t)
                         tensors.append(t)
                     payloads[identity] = (tuple(scalars), tensors)
                 record.last_access = time.time()
@@ -305,22 +311,16 @@ class SessionDisk:
         self.read_seconds += time.perf_counter() - t0
         return payloads
 
-    def _read_into(self, f, t: torch.Tensor) -> None:
-        """Fill a contiguous tensor from the file position, STAGING bytes at a time."""
+    def _read_into(self, f, pos: int, t: torch.Tensor) -> None:
+        """Fill a contiguous tensor from file offset pos, STAGING bytes at a time."""
         flat = t.view(torch.uint8).reshape(-1)
         for a in range(0, flat.numel(), STAGING):
             n = min(STAGING, flat.numel() - a)
-            flat[a:a + n].copy_(self._read_chunk(f, n))
+            flat[a:a + n].copy_(self._read_chunk(f, pos + a, n))
 
-    def _read_chunk(self, f, n: int) -> torch.Tensor:
-        """n <= STAGING bytes from the file onto the device (a bounce through pinned staging)."""
-        view = self._read_staging[:n]
-        buf, got = memoryview(view.numpy()), 0
-        while got < n:  # an unbuffered read may return less than asked
-            k = f.readinto(buf[got:])
-            if not k:
-                raise ValueError("short read")
-            got += k
+    def _read_chunk(self, f: "_Reader", pos: int, n: int) -> torch.Tensor:
+        """n <= STAGING bytes at file offset pos onto the device (a bounce through pinned staging)."""
+        view = f.read(pos, n)
         if self.device.type != "cuda":
             return view.clone()
         if self._bounce is None:
@@ -334,3 +334,46 @@ class SessionDisk:
                 "pending": len(self.pending), "errors": self.errors, "last_error": self.last_error,
                 "write_ms_avg": round(1000 * self.write_seconds / max(1, self.writes), 1),
                 "read_ms_avg": round(1000 * self.read_seconds / max(1, self.reads), 1)}
+
+
+class _Reader:
+    """A record file read at explicit offsets: O_DIRECT reads of the aligned range around each request into the
+    store's aligned staging buffer, or plain reads where the filesystem refuses O_DIRECT (tmpfs; then for the rest
+    of the process)."""
+
+    def __init__(self, store: SessionDisk, path: Path):
+        self.store, self.path = store, path
+        self.direct = False
+        if store._direct:
+            try:
+                self.fd = os.open(path, os.O_RDONLY | os.O_DIRECT)
+                self.direct = True
+                return
+            except OSError:
+                store._direct = False
+        self.fd = os.open(path, os.O_RDONLY)
+
+    def __enter__(self) -> "_Reader":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        os.close(self.fd)
+
+    def read(self, pos: int, n: int) -> torch.Tensor:
+        """Bytes [pos, pos + n) of the file, n <= STAGING, as a view of the staging buffer."""
+        lo = pos - pos % ALIGN if self.direct else pos
+        end = -(-(pos + n) // ALIGN) * ALIGN if self.direct else pos + n
+        buf, need, got = memoryview(self.store._read_staging.numpy())[:end - lo], pos + n - lo, 0
+        while got < need:  # a read may return less than asked; direct ones stop short only at the end of the file
+            try:
+                k = os.preadv(self.fd, [buf[got:]], lo + got)
+            except OSError as exc:
+                if not self.direct or exc.errno != errno.EINVAL:
+                    raise
+                os.close(self.fd)  # the filesystem takes O_DIRECT opens but not these reads: plain reads from here
+                self.fd, self.direct, self.store._direct = os.open(self.path, os.O_RDONLY), False, False
+                return self.read(pos, n)
+            if not k:
+                raise ValueError("short read")
+            got += k
+        return self.store._read_staging[pos - lo:pos - lo + n]
