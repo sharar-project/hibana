@@ -142,7 +142,7 @@ sessions shorter than `SHARAR_SESSION_MIN_TOKENS`, default 4,096, are not
 written: every record carries the 144 MiB recurrent snapshot, and a short
 session re-prefills in about a second).
 When the arena drops a session, or after a restart, the next request whose
-prompt extends it reads it back (NVMe at 9.7 GB/s: about a second for a
+prompt extends it reads it back (direct reads past the page cache, NVMe at about 10 GB/s: about a second for a
 262K-token session, against a 351-second prefill) and resumes exactly where
 it was. Records are listed only by a process with the same target revision,
 decode weights, geometry and prefill numerics; `/flush_cache` deletes them.
