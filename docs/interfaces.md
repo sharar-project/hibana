@@ -33,7 +33,7 @@ the GDN output gate) are optional fields that default to "absent" for the 27B,
 and `Target.cache_env` names the model cache (`SHARAR_FLASHNEXT_CACHE`).
 Two small extensions carry its extra state through the existing contracts:
 `StatePool.register_aux` allocates per-slot tensors that are cleared, copied
-and parked with the recurrent states (the PLE's convolution window lives
+and stored with the recurrent states (the PLE's convolution window lives
 there), and the model's `forward_extras()` puts everything else a forward
 needs on `ForwardContext.extras`: the PLE history and table rows and the
 sparse-attention bookkeeping (`model/flashnext/extras.py`). The engine builds
@@ -249,7 +249,7 @@ payloads through the same slot lifetime. The standalone `FeatureCache` LRU remai
 a benchmark control and a fallback for adapters outside a cached executor.
 
 At release, endpoint features must belong to the committed slot being transferred,
-not the duplicate prompt-end checkpoint that `StateManager` frees. Cold-tier codecs
+not the duplicate prompt-end checkpoint that `StateManager` frees. SSD-tier codecs
 import with `slot=` naming the newly allocated target slot. Copies and frees remain
 on the engine stream. Prospective allocation checks include the feature-window cap
 and gather/replacement temporaries before sizing optional target pools; dropping
@@ -271,8 +271,8 @@ HTTP validation lives in `api/validation.py`; `engine/loop.py` owns the schedule
 thread and request tickets. Endpoint adapters in `api/server.py` consume their
 events; `api/messages.py` translates Anthropic Messages requests onto the chat
 adapter. A completed ticket is removed before its terminal notification crosses
-to the HTTP event loop. Proposer checkpoint-cache binding and cold-tier codecs
-are optional capabilities discovered once during executor setup; adapters
+to the HTTP event loop. Proposer checkpoint-cache binding and SSD-tier codecs
+(`stored_payload`) are optional capabilities discovered once during executor setup; adapters
 without them retain the base proposer contract.
 
 ## Device-resident acceptance
@@ -351,5 +351,5 @@ compression or managed-memory faults are introduced.
 | Failures | Outstanding tickets fail, HTTP returns 503 or an SSE error, health fails and new work is rejected; owned resources are released where safe, and a failed forward never publishes cache entries. |
 
 CPU lifecycle tests cover cancellation, failure, flush and retraction; checkpoint-feature tests cover auxiliary
-ownership; GPU lifecycle, draft-lifecycle and cold-tier tests cover the real model path. Exact state ownership
+ownership; GPU lifecycle (Flash-Next's with the SSD tier) and draft-lifecycle tests cover the real model path. Exact state ownership
 and numerical continuation are separate checks: floating-point partition changes can change greedy output IDs.

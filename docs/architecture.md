@@ -9,11 +9,11 @@ process. The contracts between the parts are in [interfaces](interfaces.md).
 api/        HTTP: OpenAI chat, Anthropic Messages, /generate; chat templates, detokenizer, validation,
             tool-call and reasoning parsers, the refusal guard
 engine/     loop (engine thread, request tickets) and scheduler (admission, chunked prefill, decode batches)
-            executor (pools, prefill/decode steps, attention plans, graphs, warmup, cold tier setup)
+            executor (pools, prefill/decode steps, attention plans, graphs, warmup, SSD tier setup)
             spec (draft -> verify -> accept), accept/rejection (acceptance rules), depth (draft depth per batch)
             graphs, spec_graphs, accept_graphs, graph_set (CUDA graphs); grammar (constrained output)
             config (EngineConfig), contracts, traces
-cache/      KV pool, state pool, radix prefix cache, request state, cold tier, NVMe session store, ledger,
+cache/      KV pool, state pool, radix prefix cache (GPU and SSD), request state, SSD tier and store, ledger,
             speculation memory budget
 model/      Qwen38 (the 27B) and its layers; flashnext/ (the second target); mtp.py (27B MTP head);
             parallel_draft.py (DFlash2 body); draft_linear.py
@@ -33,7 +33,7 @@ target.py   Target value per checkpoint (geometry, optional family fields), regi
 
 - **Ownership.** `StateManager` alone moves pages, slots and the committed prefix; the scheduler never touches
   tensors; proposers own their draft state ([interfaces](interfaces.md)).
-- **Memory.** Pools are sized from the `Target` and the ledger. The radix cache, cold tier and session store
+- **Memory.** The ledger sizes the pools from the `Target`. The radix cache and the SSD tier
   are model-agnostic and carry Flash-Next's extra state through `StatePool.register_aux` and
   `KvPool.register_page_aux`.
 - **One speculative round.** `SpecDecoder` drives every proposer: reserve, propose, verify (graph or eager),
@@ -64,7 +64,7 @@ target.py   Target value per checkpoint (geometry, optional family fields), regi
 | Constrained output (JSON schema, forced tool calls) | yes | yes |
 | Calibrated 3-bit weights | layers and draft (decode copies) | trunk (decode copies) and routed experts (the only copy) |
 | Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk; 3-bit routed experts (NVFP4 in `exact` and on two Sparks) |
-| Prefix cache, cold tier, NVMe sessions, 262K context | yes | yes (sparse attention past 2,048 tokens) |
+| Prefix cache, SSD tier (`SHARAR_SSD=1`), 262K context | yes | yes (sparse attention past 2,048 tokens) |
 | Tensor parallel on two Sparks | yes | yes |
 
 ## Repository boundaries

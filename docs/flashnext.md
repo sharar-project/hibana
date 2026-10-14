@@ -58,8 +58,8 @@ the NVMe: three fresh 10K-token prompts reach their first token in 4.66 s on ave
 ## Sparse attention past 2,048 tokens
 
 `indexer.py` implements Qwen Sparse Attention: every token's raw index key and each completed group's compressed
-key live in its KV page (`KvPool.page_aux`, so they follow pages through the prefix cache, the cold tier and the
-session store). A row past the budget scores the visible groups, keeps the top 512 plus its pending tail and
+key live in its KV page (`KvPool.page_aux`, so they follow pages through the prefix cache and the
+SSD tier). A row past the budget scores the visible groups, keeps the top 512 plus its pending tail and
 attends over those pages through the vendored sparse kernel (`kernels/qsa.py`). Below the budget the dense path
 runs unchanged.
 
