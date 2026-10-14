@@ -140,7 +140,7 @@ def test_graph_safe_maintenance_matches_the_eager_keys_under_replay():
 
 def _torch_select(q, aux, first, n, seq_pages, ratio, budget):
     """The indexer's former torch selection (scores every visible group, top budget // ratio,
-    the pending tail, valid entries first): the oracle for `kernels/qsa_select.py`."""
+    the pending tail, valid entries first): the oracle for `kernels/qsa/selection.py`."""
     r, d, device = ratio, q.shape[-1], q.device
     width = budget + r - 1
     positions = torch.arange(first, first + n, device=device)
@@ -164,7 +164,7 @@ def _torch_select(q, aux, first, n, seq_pages, ratio, budget):
 
 @pytest.mark.parametrize("budget,length,rows", [(2048, 3000, 1), (2048, 70000, 1), (2048, 70000, 4), (2048, 9000, 256), (64, 600, 40), (2048, 1500, 3)])
 def test_selection_kernel_matches_the_torch_selection(budget, length, rows):
-    from sharar.kernels.qsa_select import select_pages
+    from sharar.kernels.qsa.selection import select_pages
     g = torch.Generator(device="cuda").manual_seed(2)
     ratio, dev = 4, torch.device("cuda")
     pages = length + 500

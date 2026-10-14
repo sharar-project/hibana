@@ -40,6 +40,11 @@ def main():
         run([sys.executable, '-c', 'from setuptools.build_meta import build_wheel; build_wheel("../../artifacts")'], cwd=unpacked)
         wheel = next(artifacts.glob('*.whl'))
         required = ['sharar/kernels/csrc/fp8_gemv.cu', 'sharar/kernels/csrc/w3_gemm.cu',
+                    'sharar/kernels/qsa/csrc/query_prep.cu',
+                    'sharar/kernels/qsa/csrc/compression.cu',
+                    'sharar/kernels/qsa/csrc/topk_pages.cu',
+                    'sharar/kernels/qsa/csrc/LICENSE.sglang',
+                    'sharar/kernels/qsa/LICENSE.vllm',
                     'sharar/benchmark_data/request_state_7aebbe6.txt']
         with zipfile.ZipFile(wheel) as archive:
             for name in required:
@@ -49,6 +54,7 @@ def main():
         env = {**os.environ, 'PYTHONPATH': str(installed), 'CUDA_VISIBLE_DEVICES': ''}
         run([sys.executable, '-c',
              'from sharar.kernels.fp8_gemv_cuda import _SRC; assert _SRC.is_file(); '
+             'from sharar.kernels.qsa.prefill import PrefillKernels; '
              'from sharar.benchmark_workloads import materialize; '
              'assert len(materialize(lambda text: list(text.encode()), "code", 10000)) == 10000'], cwd=work, env=env)
         run([sys.executable, '-m', 'sharar', '--help'], cwd=work, env=env)

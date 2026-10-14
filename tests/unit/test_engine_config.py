@@ -46,6 +46,33 @@ def test_gdn_backend_configuration():
     assert EngineConfig.from_env({"SHARAR_GDN_PREFILL": "triton"}).gdn_prefill == "triton"
 
 
+def test_qsa_prefill_is_opt_in():
+    assert EngineConfig.from_env({}).qsa_prefill_backend == "original"
+
+
+@pytest.mark.parametrize("backend", ["original", "auto", "optimized"])
+def test_qsa_prefill_backend_configuration(backend):
+    cfg = EngineConfig.from_env({"SHARAR_QSA_PREFILL_BACKEND": backend})
+    assert cfg.qsa_prefill_backend == backend
+    assert cfg.describe()["qsa_prefill_backend"] == backend
+    assert "qsa_optimized_prefill" not in cfg.describe()
+
+
+@pytest.mark.parametrize("backend", ["eager", "fused", "AUTO", ""])
+def test_qsa_prefill_backend_rejects_invalid_values(backend):
+    with pytest.raises(ValueError, match="SHARAR_QSA_PREFILL_BACKEND"):
+        EngineConfig(qsa_prefill_backend=backend)
+    with pytest.raises(ValueError, match="SHARAR_QSA_PREFILL_BACKEND"):
+        EngineConfig().replace(qsa_prefill_backend=backend)
+    if backend:
+        with pytest.raises(ValueError, match="SHARAR_QSA_PREFILL_BACKEND"):
+            EngineConfig.from_env({"SHARAR_QSA_PREFILL_BACKEND": backend})
+
+
+def test_empty_qsa_prefill_environment_uses_default():
+    assert EngineConfig.from_env({"SHARAR_QSA_PREFILL_BACKEND": ""}).qsa_prefill_backend == "original"
+
+
 def test_no_module_reads_sharar_variables_at_import():
     import pathlib
     import re

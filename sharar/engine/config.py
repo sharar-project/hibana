@@ -74,6 +74,7 @@ class EngineConfig:
     accept_default_sampled: bool = False      # SHARAR_ACCEPT_DEFAULT_SAMPLED
     accept_default_sampled_threshold: str | None = None  # SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD: K:M for sampled requests (unset: accept_default's)
     qsa_sparse_graphs: bool = True            # SHARAR_QSA_SPARSE_GRAPHS=0: rows past the indexer budget run eagerly
+    qsa_prefill_backend: str = "original"    # SHARAR_QSA_PREFILL_BACKEND: original, auto, optimized (SM121 TP1/TP2, <=32K)
     # --- cache tiers
     cold_tier_gib: float | None = None        # SHARAR_COLD_TIER_GIB (unset: from free memory, capped at 24)
     session_dir: str | None = None            # SHARAR_SESSION_DIR
@@ -89,6 +90,11 @@ class EngineConfig:
     commit_profile: bool = False              # SHARAR_COMMIT_PROFILE
     bench_verify_state: str = "snapshots"     # SHARAR_BENCH_VERIFY_STATE
     bench_max_context: int = 0                # SHARAR_BENCH_MAX_CONTEXT
+
+    def __post_init__(self) -> None:
+        if self.qsa_prefill_backend not in ("original", "auto", "optimized"):
+            raise ValueError("SHARAR_QSA_PREFILL_BACKEND must be original, auto, or optimized; "
+                             f"got {self.qsa_prefill_backend!r}")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> EngineConfig:
@@ -130,6 +136,7 @@ class EngineConfig:
             accept_default_sampled=_flag(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED"),
             accept_default_sampled_threshold=_str(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"),
             qsa_sparse_graphs=e.get("SHARAR_QSA_SPARSE_GRAPHS", "1") != "0",
+            qsa_prefill_backend=_str(e, "SHARAR_QSA_PREFILL_BACKEND", "original"),
             cold_tier_gib=float(cold) if cold is not None else None,
             session_dir=_str(e, "SHARAR_SESSION_DIR"),
             session_gib=float(e.get("SHARAR_SESSION_GIB", "200")),
