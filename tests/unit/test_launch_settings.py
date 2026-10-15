@@ -77,9 +77,10 @@ def test_the_profile_alone_turns_the_3bit_copies_on(profile, target, w3):
 
 
 @pytest.mark.parametrize("target, experts, batch, depths", [
-    ("flashnext", "w3", "128", "16:3"), ("flashnext", "nvfp4", "64", "16:3"), ("qwen38", "w3", "16", None)])
+    ("flashnext", "w3", "128", "16:3,32:3,64:3,128:3"), ("flashnext", "nvfp4", "64", "16:3"), ("qwen38", "w3", "16", None)])
 def test_throughput_decodes_more_requests(target, experts, batch, depths):
-    # #59: Flash-Next verifies within the 64 rows its 3-bit copies serve; the 27B keeps its full depth (GSM8K x1.74)
+    # #59: Flash-Next verifies within the 64 rows its 3-bit copies serve; the 27B keeps its full depth (GSM8K x1.74);
+    # with 3-bit experts on one Spark, every bucket from 16 requests verifies 3 drafts
     knobs = launch.profile_defaults("throughput", target, experts)
     assert knobs["SHARAR_MAX_BATCH"] == batch and knobs.get("SHARAR_SPEC_DEPTHS") == depths
     for profile in ("exact", "fast"):
@@ -93,6 +94,7 @@ def test_adaptive_depth_prices_a_drafted_token_per_spark_count(env):
     assert resolve(env, "flashnext", "fast", tp=2).get("SHARAR_SPEC_STEP_COST") == "0.2"
     assert resolve({**env, "SHARAR_SPEC_STEP_COST": "0.3"}, "flashnext", "fast", tp=2).get("SHARAR_SPEC_STEP_COST") == "0.3"
     assert "SHARAR_SPEC_STEP_COST" not in launch.profile_defaults("throughput", "flashnext", tp=2)
+    assert launch.profile_defaults("throughput", "flashnext", tp=2)["SHARAR_SPEC_DEPTHS"] == "16:3"  # measured one Spark
 
 
 @pytest.mark.parametrize("profile, target, state", [
