@@ -35,7 +35,7 @@ uv run sharar launch claude   # Claude Code on the model (also opencode, aider; 
 | `sharar serve 27b --exact` | The model's own outputs, for benchmarks (the default `fast` profile is faster and slightly lossy; also `--throughput`) |
 | `sharar serve 27b --tp 2` | Tensor-parallel on two Sparks linked by their ConnectX ports ([tensor parallel](docs/tensor-parallel.md)) |
 | `sharar status` | What is serving, with which settings |
-| `sharar cache` | What is cached on the GPU and, with `SHARAR_SSD=1`, on the SSD tier (`$SHARAR_RESULTS/ssd/<target>`, up to `SHARAR_SSD_GIB`) |
+| `sharar cache` | What is cached on the GPU and on the SSD tier (`$SHARAR_RESULTS/ssd/<target>`, up to `SHARAR_SSD_GIB`) |
 | `sharar chat`, `sharar launch claude\|opencode\|aider\|show` | Use the serving model |
 
 `sharar <command> --help` lists the options. Settings (cache and results locations, profiles, ports) are flags, then

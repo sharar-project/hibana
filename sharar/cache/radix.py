@@ -318,6 +318,8 @@ class RadixCache:
                 # Recurrent capacity can run out while KV capacity is ample.
                 # Drop an optional interior snapshot, retaining the radix path
                 # and its newer resume points. Locked loans remain untouched.
+                if self.ssd is not None:
+                    self.ssd.fence()
                 self.state_pool.free(node.snapshot_slot)
                 node.snapshot_slot = None
                 node.auxiliary = {}
@@ -338,7 +340,11 @@ class RadixCache:
             yield n
 
     def _lru_candidate(self, snapshot_only: bool = False) -> Node | None:
-        best = None
+        """The least recently used unlocked leaf (with `snapshot_only`, an interior node holding a snapshot). With the
+        SSD tier, the least recently used leaf already stored (`SsdTier.clean`) comes first, so eviction does not wait
+        for a copy; the least recently used leaf of all only when none is."""
+        best = clean = None
+        tier = None if snapshot_only else self.ssd
         stack = [c for c in self.root.children.values() if c.in_l1]
         while stack:  # L1 nodes only: L1 is prefix-closed, so no SSD-only node has one below it
             n = stack.pop()
@@ -354,7 +360,9 @@ class RadixCache:
             if (best is None or n.last_access < best.last_access
                     or (snapshot_only and n.last_access == best.last_access and n.depth < best.depth)):
                 best = n
-        return best
+            if tier is not None and (clean is None or n.last_access < clean.last_access) and tier.clean(n):
+                clean = n
+        return clean or best
 
     def _remove_leaf(self, leaf: Node, demote: bool = True) -> None:
         if demote and self.ssd is not None and (self.ssd.evicting(self, leaf) or leaf.children):
@@ -371,6 +379,8 @@ class RadixCache:
         self.ssd_nodes += 1
 
     def _free_l1(self, node: Node) -> None:
+        if self.ssd is not None:
+            self.ssd.fence()
         if node.page_ids is not None:
             self.kv_pool.free_ids(node.page_ids)
         else:

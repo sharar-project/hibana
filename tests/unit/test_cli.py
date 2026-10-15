@@ -56,7 +56,7 @@ def test_serve_runs_the_engine_in_the_foreground(home, monkeypatch):
     assert cli.main(["serve", "flashnext", "--traces", "--port", "30500"]) == 0
     args, _ = started[-1]
     assert args.traces == str(home / "results" / "traces") and (home / "results" / "traces").is_dir()
-    assert "SHARAR_SSD_DIR" not in env  # the SSD tier is off unless SHARAR_SSD=1
+    assert env["SHARAR_SSD"] == "1" and env["SHARAR_SSD_DIR"] == str(home / "results" / "ssd" / "flashnext")  # on by default
 
 
 def test_cache_reports_the_gpu_cache_and_the_ssd_tier(home, monkeypatch, capsys):
@@ -82,7 +82,7 @@ def test_cache_without_a_server_counts_the_store_on_disk(home, monkeypatch, caps
     monkeypatch.setenv("SHARAR_SSD_DIR", str(tmp_path / "ssd"))
     assert cli.main(["cache"]) == 0
     out = capsys.readouterr().out
-    assert out.startswith("nothing is serving; SSD tier off") and f"{tmp_path / 'ssd'}: 1 sessions, 2 blocks" in out
+    assert out.startswith("nothing is serving; SSD tier on") and f"{tmp_path / 'ssd'}: 1 sessions, 2 blocks" in out
 
 
 def test_two_spark_serve_stays_the_user_for_ssh(home, monkeypatch):

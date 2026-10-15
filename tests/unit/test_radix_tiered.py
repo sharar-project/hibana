@@ -19,6 +19,12 @@ class FakeSsd:
     def evicting(self, cache, leaf):
         return self.keep
 
+    def clean(self, leaf):
+        return True
+
+    def fence(self):
+        pass
+
     def flush(self):
         self.flushes += 1
 
@@ -118,3 +124,20 @@ def test_flush_drops_ssd_only_nodes_and_flushes_the_tier():
     cached(cache, kv, st, [7, 8, 9])
     cache.flush()
     assert not cache.root.children and cache.ssd.flushes == 1 and cache.ssd_nodes == 0
+
+
+def test_eviction_takes_a_stored_leaf_before_an_older_unstored_one():
+    """With the SSD tier the least recently used leaf already stored goes first, so eviction does not wait for a copy;
+    the least recently used of all goes only when no stored one is left."""
+    cache, kv, st = make()
+    cached(cache, kv, st, [1, 2, 3])  # older, its copy still queued
+    cached(cache, kv, st, [5, 6, 7])  # newer, already stored
+    older, newer = cache.root.children[1], cache.root.children[5]
+    newer.last_access = older.last_access + 1
+    cache.ssd.clean = lambda leaf: leaf is newer
+    evicted = []
+    cache.ssd.evicting = lambda c, leaf: evicted.append(leaf) or True
+    cache.evict(need_pages=kv.free_count + 1)
+    assert evicted == [newer]
+    cache.evict(need_pages=kv.free_count + 1)
+    assert evicted == [newer, older]  # nothing stored left: the least recently used, dirty or not

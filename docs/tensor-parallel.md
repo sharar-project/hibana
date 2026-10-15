@@ -31,7 +31,7 @@ vanishes). When a rank ends, however it ends, the others end within a second ins
 collective for NCCL's 10-minute timeout, and `sharar serve` restarts the pair (up to 5 times in 10 minutes; then it
 stops and says so). Measured on the 27B: rank 1 or rank 0 SIGKILLed, serving again 26 s later.
 
-**Sessions.** With `SHARAR_SSD=1` the SSD tier ([operations](operations.md)) runs on both ranks: each stores its
+**Sessions.** The SSD tier ([operations](operations.md)) runs on both ranks: each stores its
 own heads of every session under `$SHARAR_RESULTS/ssd/<target>` on its own Spark (`SHARAR_SSD_GIB` is per Spark). Both ranks
 decide alike, as their schedulers do: a write counts once it completed on both ranks (failed if it failed on
 either), a restore goes ahead only if both read every object intact, and a restart lists only the sessions both

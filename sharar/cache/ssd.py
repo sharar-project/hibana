@@ -50,6 +50,7 @@ each agreement returns that rank's own answer.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import time
 from array import array
@@ -179,6 +180,9 @@ class SsdTier:
         self.restore_seconds = 0.0
         self.evict_seconds = self.evict_max = self.settle_seconds = self.settle_max = 0.0  # the engine blocked on backups
         self._pool = ThreadPoolExecutor(8, thread_name_prefix="sharar-ssd-read")  # parallel O_DIRECT reads keep the drive's queue full
+        # backup copies run on their own stream, so they overlap the model's kernels instead of sitting between them;
+        # every free of pages or a slot first makes the main stream wait for them (`fence`)
+        self._copies = torch.cuda.Stream(device) if device.type == "cuda" else None
         self.extra_pages = list(extra_pages)  # (name, per-page tensor) beside the KV, e.g. the MTP draft layer's KV
         self._row = kv_pool.row_bytes + sum(t[0].numel() * t.element_size() for _, t in self.extra_pages)
         # two halves, each chunk_bytes or one whole tail (a block of KV, the slot's state and a drafter payload), reused by
@@ -198,6 +202,22 @@ class SsdTier:
         chunk."""
         tail = block * (target.kv_bytes_per_token + extra_page_bytes) + target.state_bytes_per_slot + 32 * MIB  # + header, draft state
         return 2 * max(chunk_bytes, tail) + max(staging_bytes, tail) + target.state_bytes_per_slot
+
+    @contextlib.contextmanager
+    def _copying(self):
+        """Run backup copies on the copy stream, after the work that wrote their pages."""
+        if self._copies is None:
+            yield
+            return
+        self._copies.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(self._copies):
+            yield
+
+    def fence(self) -> None:
+        """Before the tree frees pages or a slot: the main stream waits (on the device) for the backup copies that
+        may read them."""
+        if self._copies is not None:
+            torch.cuda.current_stream().wait_stream(self._copies)
 
     def register_codec(self, identity, export, import_) -> None:
         self.codecs[identity] = (export, import_)
@@ -234,11 +254,12 @@ class SsdTier:
 
     # ---- backup ----
     def backup(self, cache: RadixCache, ids: list[int], resume_points: tuple[int, ...] = ()) -> None:
-        """Queue the full blocks of a sequence that just entered the tree, and the tails at `resume_points`
-        (lengths where the tree holds a snapshot of it: its end, its prompt's end) for a write-through. The tree
-        drops an interior snapshot when state slots run out while pages remain, which eviction never sees; a
-        write-through keeps it restorable. Only these two: every chunk checkpoint would cost a snapshot each.
-        Queued, not copied now: a snapshot is large, and `step()` keeps the copies within the staging limit."""
+        """Queue the full blocks of a sequence that just entered the tree, and the tail at the last of
+        `resume_points` (lengths where the tree holds a snapshot of it: its end, its prompt's end) for a
+        write-through. A conversation's next turn extends its end, so that tail is the one restores use; the
+        prompt end's snapshot (about 144 MiB on the 27B in FP32) is written only if eviction meets it as a leaf,
+        so a request that regenerates from the same prompt may prefill its last turn again. Queued, not copied
+        now: a snapshot is large, and `step()` keeps the copies within the staging limit."""
         if len(ids) < self.min_tokens or cache.flushing:
             return
         anchor, pos = cache.root, 0
@@ -250,7 +271,7 @@ class SsdTier:
         if pos != len(ids):
             return
         self._queue_blocks(anchor, ids)
-        for end in sorted(set(resume_points)):
+        for end in sorted(set(resume_points))[-1:]:
             node = self._ending_at(anchor, end)
             if (end >= self.min_tokens and node is not None and node.snapshot_slot is not None
                     and (node.tail is None or node.tail.nbytes < 0)):
@@ -348,12 +369,13 @@ class SsdTier:
             return True
         if not self._room(self.block * self._row, wait):
             return False
-        got = self._gather(anchor, end - self.block, end)
-        if got is None:  # part of the block left L1 while it sat in the queue: drop its ref
-            del owner.blocks[end]
-            return True
-        tokens, segs = got
-        self._submit("kv", h, parent, end - self.block, tokens, segs, ref)
+        with self._copying():
+            got = self._gather(anchor, end - self.block, end)
+            if got is None:  # part of the block left L1 while it sat in the queue: drop its ref
+                del owner.blocks[end]
+                return True
+            tokens, segs = got
+            self._submit("kv", h, parent, end - self.block, tokens, segs, ref)
         self.backed_blocks += 1
         return True
 
@@ -396,6 +418,22 @@ class SsdTier:
         self.evict_max = max(self.evict_max, spent)
         return keep
 
+    def clean(self, leaf: Node) -> bool:
+        """Whether evicting `leaf` needs no copy now: its full blocks are on the SSD or already copied out, and so is
+        its tail if it holds a snapshot worth one. The tree evicts clean leaves first (least recently used among
+        them), so eviction rarely waits for the writers; a dirty leaf goes only when no clean one is left."""
+        end = leaf.depth
+        if end < self.min_tokens:
+            return True  # never stored: dropping it costs nothing
+        if leaf.snapshot_slot is not None and (leaf.tail is None or leaf.tail.nbytes < 0):
+            return False
+        start = end - len(leaf.key)
+        for e in range((start // self.block + 1) * self.block, end + 1, self.block):
+            ref = leaf.blocks.get(e)
+            if ref is None or ref.nbytes < 0 or (not ref.ready and ("kv", ref.key) not in self.inflight):
+                return False
+        return True
+
     def _write_tail(self, leaf: Node, end: int, wait: bool = False) -> bool:
         if leaf.tail is not None and leaf.tail.nbytes >= 0:
             return True  # already written (or on its way)
@@ -425,13 +463,14 @@ class SsdTier:
         if not self._room(nbytes, wait):
             return False
         # `_queue_blocks` queues the full blocks; gather the partial block only once the whole tail has room.
-        got = self._gather(leaf, whole, end) if end > whole else (tokens, [])
-        if got is None:
-            return False
-        tokens, segs = got
-        segs += [(name, _to_host(t, cuda)) for name, t in state]
-        leaf.tail = SsdRef(key.hex())
-        self._submit("tail", key, last, whole, tokens, segs, leaf.tail, scalars)
+        with self._copying():
+            got = self._gather(leaf, whole, end) if end > whole else (tokens, [])
+            if got is None:
+                return False
+            tokens, segs = got
+            segs += [(name, _to_host(t, cuda)) for name, t in state]
+            leaf.tail = SsdRef(key.hex())
+            self._submit("tail", key, last, whole, tokens, segs, leaf.tail, scalars)
         self.tails += 1
         return True
 
@@ -490,8 +529,9 @@ class SsdTier:
             return []
         n = self._min_over_ranks("landed", [len(self.landed)])[0]
         got = [self.landed.popleft() for _ in range(n)]
-        written = self._min_over_ranks("written", [int(ok) for _, _, ok, _ in got])
-        sizes = self._largest([nbytes for *_, nbytes in got])
+        # one agreement for both: written on every rank (min of 0/1) and the largest size (min of the negated sizes)
+        both = self._min_over_ranks("outcomes", [int(ok) for _, _, ok, _ in got] + [-nbytes for *_, nbytes in got])
+        written, sizes = both[:n], [-v for v in both[n:]]
         out = []
         for (kind, key, ok, _), everywhere, size in zip(got, written, sizes):
             if ok and not everywhere:

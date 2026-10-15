@@ -136,7 +136,7 @@ KV. The pools take what is available at startup beyond the floor, the prefill
 reserve and a 4 GiB margin. No host-memory tier sits below them: on unified
 memory it would hold the same sessions in the same DRAM.
 
-**SSD tier (`SHARAR_SSD=1`, default off; capacity `SHARAR_SSD_GIB`, default 200).**
+**SSD tier (on in every profile, `SHARAR_SSD=0` turns it off; capacity `SHARAR_SSD_GIB`, default 200).**
 It is the only tier below the GPU pools; without it the cache drops an evicted
 session and its next request prefills again. One radix tree indexes both tiers.
 The tier writes to `$SHARAR_RESULTS/ssd/<target>` (one store per target;
@@ -157,11 +157,16 @@ only. The next request that extends it reads back what the GPU no longer holds
 CUDA-registered staging buffer of two 256 MiB halves: the readers fill one half
 while the GPU scatters the previous chunk from the other in place, so the
 buffer (and the 1.1 GiB the pool plan reserves for the tier) does not grow with
-the context. Backup copies share a 512 MiB staging limit; a single larger
-object runs alone. Writer threads write them with O_DIRECT through a 16 MiB
+the context. Backup copies run on their own CUDA stream, beside the model's
+kernels, and share a 512 MiB staging limit; a single larger object runs alone.
+A finished request's recurrent snapshot is written through at its end (where its
+conversation's next turn resumes), not at its prompt's end; a request that
+regenerates from the same prompt may prefill its last turn again. Writer threads write them with O_DIRECT through a 16 MiB
 buffer each (where the filesystem refuses O_DIRECT, through the page cache,
 dropped after each file; `direct_writes` in `cache.ssd.store` says which).
-Eviction and shutdown wait for staging room before copying more. When the
+Eviction takes the least recently used session already on the SSD first, so it
+rarely waits for a copy; only when none is left does it copy one and wait for
+staging room, as shutdown does. When the
 completed copies exceed the disk budget, the tier drops SSD-only leaves first,
 then the disk copies of nodes still on the GPU, which keep their GPU pages and
 snapshots. At shutdown the server writes every cached session to the SSD. After

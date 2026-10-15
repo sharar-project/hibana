@@ -69,6 +69,9 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
             p["SHARAR_SPEC_DEPTHS"] = "16:3"
         # the 8-bit GDN state pays with many requests (#129, #161); `fast` keeps FP32: no gain at one request, slower prefill
         p["SHARAR_SSM_STATE"] = "int8"
+    # the SSD tier in every profile: a restore gives back the state the GPU held, and an evicted or restarted session
+    # resumes in a fraction of a second instead of a full prefill (SHARAR_SSD=0 turns it off)
+    p["SHARAR_SSD"] = "1"
     return p
 
 

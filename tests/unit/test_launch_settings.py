@@ -24,7 +24,8 @@ def test_without_a_config_file_paths_default_to_the_user_caches(env, tmp_path, m
     assert s.hf_cache == s.model_cache == tmp_path / ".cache" / "huggingface"
     assert s.results == tmp_path / ".local" / "share" / "sharar"
     assert resolve(env, "27b").target == "qwen38" and resolve(env).target == "qwen38"
-    assert s.max_context == 262144 and s.traces is None and s.ssd is None
+    assert s.max_context == 262144 and s.traces is None and s.ssd == s.results / "ssd" / "flashnext"  # the SSD tier is on
+    assert resolve({**env, "SHARAR_SSD": "0"}, "flashnext").ssd is None
     with pytest.raises(ValueError, match="unknown target"):
         resolve(env, "llama")
 
@@ -136,7 +137,7 @@ def test_the_engine_gets_explicit_flags_and_its_environment(env, tmp_path):
     assert args[args.index("--accept-default") + 1] == "3:2.0" and args[args.index("--accept-default-sampled-threshold") + 1] == "2:1.0"
     assert "--draft" not in args and args[args.index("--traces") + 1] == str(s.traces)
     e = s.engine_env(tmp_path / "w3")
-    assert e["SHARAR_W3_CHECKPOINT"] == str(tmp_path / "w3") and "SHARAR_SSD_DIR" not in e
+    assert e["SHARAR_W3_CHECKPOINT"] == str(tmp_path / "w3") and e["SHARAR_SSD_DIR"] == str(s.ssd)
     assert "SHARAR_DRAFT" not in e and "SHARAR_TRACES" not in e  # the flags carry them
     assert resolve(env, "27b").traces is None and "--traces" not in resolve(env, "27b").engine_args()
     assert "--tp" in resolve(env, "27b", tp=2).engine_args(tp=2)

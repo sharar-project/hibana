@@ -317,8 +317,11 @@ class Peer:
             n = min(values[0], self.landed - self.applied)
             self.applied += n
             return [n]
-        if question == "written":
-            return [0 if first + i in self.failed else v for i, v in enumerate(values)]
+        if question == "outcomes":  # written (0/1) for each released write, then their negated sizes
+            n = len(values) // 2
+            first = self.applied - n
+            return ([0 if first + i in self.failed else v for i, v in enumerate(values[:n])]
+                    + [v - 4096 if first + i in self.longer else v for i, v in enumerate(values[n:])])
         if question == "sizes":
             return [v - 4096 if first + i in self.longer else v for i, v in enumerate(values)]  # minus the negated size
         if question == "read":
@@ -403,9 +406,10 @@ def test_tensor_parallel_a_restart_lists_only_sessions_every_rank_stored(tmp_pat
     assert sum(1 for h, _ in tier2.store.scan() if h.kind == "tail") == 1  # rebuild deleted `other`'s tail and blocks
 
 
-def test_write_through_keeps_a_prompt_end_snapshot_the_gpu_cache_drops(tmp_path):
-    """The tree drops an interior snapshot when state slots run out while pages remain: it demotes no leaf, so
-    eviction never writes it. Written through when the request finished, its tail restores it byte-exact."""
+def test_only_the_answer_end_is_written_through(tmp_path):
+    """A finished request writes through the tail at its end, which its conversation's next turn extends, and not
+    the one at its prompt's end (about 144 MiB more per request on the 27B). The trade-off: when the tree drops that
+    interior snapshot for want of state slots, a request ending at the prompt prefills again."""
     cache, tier, kv, sp, feats = engine(tmp_path)
     prompt_end, n = 2 * BLOCK + 10, len(IDS)
     pages, page_ids = kv.alloc_with_ids(n)
@@ -422,15 +426,16 @@ def test_write_through_keeps_a_prompt_end_snapshot_the_gpu_cache_drops(tmp_path)
     settle(cache, tier)
     (head,) = cache.root.children.values()
     (leaf,) = head.children.values()
-    assert tier.tails_through == 2 and head.tail.ready and leaf.tail.ready and head.depth == prompt_end
+    assert tier.tails_through == 1 and head.tail is None and leaf.tail.ready and head.depth == prompt_end
     cache.evict(need_slots=sp.free_count + 1)  # slots short, pages ample: only the interior snapshot goes
     assert head.snapshot_slot is None and head.in_l1 and leaf.in_l1 and cache.snapshot_evictions == 1
     assert cache.match(IDS[:prompt_end] + [7]).length == 0
-    assert tier.restore(cache, IDS[:prompt_end] + [7]) == prompt_end
-    assert same(restored(cache, kv, sp, IDS[:prompt_end]), before)
+    assert tier.restore(cache, IDS[:prompt_end] + [7]) == 0  # no tail there: the request prefills
+    assert tier.restore(cache, IDS + [7]) == 0 and cache.match(IDS + [7]).length == len(IDS)  # the end is still in L1
+    del before
     evict_all(cache, kv)
     settle(cache, tier)
-    assert tier.tails == 2  # eviction found both tails written: nothing written twice
+    assert tier.tails == 1  # the end's tail, written through: nothing twice, and none for the snapshot-less prompt end
 
 
 def test_write_through_stays_within_the_staging_limit_and_skips_a_snapshot_dropped_meanwhile(tmp_path):
@@ -638,11 +643,12 @@ def test_a_snapshot_dropped_while_its_pages_stay_restores_from_its_tail_alone(tm
     prompt_end = 2 * BLOCK + 10
     tier.staging_bytes = 1  # one object in flight: the tails go first and the blocks wait
     at_prompt, _ = _two_resume_points(cache, tier, kv, sp, feats, prompt_end)
-    tier.step(cache)
+    (head,) = cache.root.children.values()
+    tier.through.clear()  # as if eviction had met the prompt end as a leaf and written its tail
+    assert tier._write_tail(head, prompt_end, wait=True)
     tier.store.wait()
     tier.step(cache)
-    (head,) = cache.root.children.values()
-    assert head.tail.ready and tier.backed_blocks == 0  # the prompt-end tail is on the SSD, no block is
+    assert head.tail.ready  # the prompt-end tail is on the SSD
     cache.evict(need_slots=sp.free_count + 1)
     assert head.snapshot_slot is None and head.in_l1
     free = kv.free_count

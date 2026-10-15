@@ -1,7 +1,7 @@
 # Cache design
 
 How the engine keeps a request's prefix and brings it back: the GPU pools (L1), the radix prefix cache that indexes
-them, and the SSD tier below them (`SHARAR_SSD=1`). [Operations](operations.md) lists the settings; the code is in
+them, and the SSD tier below them (on in every profile; `SHARAR_SSD=0` turns it off). [Operations](operations.md) lists the settings; the code is in
 `sharar/cache/`.
 
 ## Architecture
@@ -148,7 +148,7 @@ the NVMe itself (a loop device or a file-backed pool serves reads from the host 
 **1. Serve with the SSD tier on.**
 
 ```bash
-SHARAR_SSD=1 uv run sharar serve 27b --detach
+uv run sharar serve 27b --detach
 ```
 
 **2. Save this client** (standard library only) as `ttft.py`. Each request asks for one output token, so its
@@ -188,7 +188,7 @@ shutdown writes them, the startup lists them again), so the `restore` step reads
 
 ```bash
 python3 ttft.py prefill 131072
-uv run sharar stop && SHARAR_SSD=1 uv run sharar serve 27b --detach   # returns once the server is ready
+uv run sharar stop && uv run sharar serve 27b --detach   # returns once the server is ready
 python3 ttft.py restore 131072
 ```
 

@@ -64,7 +64,7 @@ target.py   Target value per checkpoint (geometry, optional family fields), regi
 | Constrained output (JSON schema, forced tool calls) | yes | yes |
 | Calibrated 3-bit weights | layers and draft (decode copies) | trunk (decode copies) and routed experts (the only copy) |
 | Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk; 3-bit routed experts (NVFP4 in `exact` and on two Sparks) |
-| Prefix cache, SSD tier (`SHARAR_SSD=1`), 262K context | yes | yes (sparse attention past 2,048 tokens) |
+| Prefix cache, SSD tier, 262K context | yes | yes (sparse attention past 2,048 tokens) |
 | Tensor parallel on two Sparks | yes | yes |
 
 ## Repository boundaries
