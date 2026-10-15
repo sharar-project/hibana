@@ -1,6 +1,5 @@
 """The M-invariant b/a kernel matches an FP32 reference and does not depend on M; the FP8 pad is exact."""
 
-import pytest
 import torch
 
 
@@ -22,7 +21,7 @@ def test_ba_project_is_row_invariant_and_close_to_fp32():
 @torch.inference_mode()
 def test_fp8_window_pad_reproduces_the_wide_algorithm(monkeypatch):
     from sharar import config
-    from sharar.kernels import ops, stable
+    from sharar.kernels import ops
     from sharar.weights.modelopt import load_fp8_linear
     from sharar.weights.safetensors import SnapshotWeights
     w = SnapshotWeights(config.snapshot_dir())

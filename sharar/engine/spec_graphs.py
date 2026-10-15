@@ -73,7 +73,6 @@ class VerifyGraphs:
 
     def _plan(self, st: dict, kv_all: list[torch.Tensor]) -> None:
         check_context_capacity([p.shape[0] for p in kv_all], self.max_context)
-        d = self.device
         b, s = len(kv_all), self.s_len
         # Host index pointers: plan() reads them on the CPU (a device tensor would sync).
         indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_all]).cumsum(0).tolist()), dtype=torch.int32)

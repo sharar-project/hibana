@@ -98,7 +98,7 @@ class AcceptGraphs:
         """Sampled rows: the decision on the candidates, written as the target row the commit graph accepts on."""
         from sharar.kernels.sampled_verify import verify_candidates
         vst = self.vg._st[b]
-        k, s = self.k, self.s
+        s = self.s
         logits = vst["logits"][:b * s].view(b, s, -1)
         values, index = logits.topk(SAMPLED_CANDIDATES, dim=-1)
         y = st["y"]

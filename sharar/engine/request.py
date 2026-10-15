@@ -37,7 +37,6 @@ class Request(RequestState):
     finish_reason: str = ""
     cancel_requested: bool = False
     t_arrival: float = field(default_factory=time.perf_counter)
-    t_admit: float = 0.0
     t_first_token: float = 0.0
     t_finish: float = 0.0
     prefill_seconds: float = 0.0

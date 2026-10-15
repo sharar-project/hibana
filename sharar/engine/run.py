@@ -1,8 +1,7 @@
-"""CLI drivers for generation and the decode-path canary check."""
+"""CLI drivers for generation and profiling (`sharar dev generate`, `sharar dev profile`) and the loader the profilers share."""
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
@@ -11,20 +10,10 @@ import torch
 from sharar.engine.executor import Executor
 from sharar.engine.sampler import SamplingParams
 from sharar.model.qwen38 import Qwen38
-from sharar.engine.prompts import NEEDLE, read_prompts
+from sharar.engine.prompts import read_prompts
 from sharar.tokenizer import SnapshotTokenizer
 
-def _canary_checks():
-    return {
-        "canary_exact": lambda text: text.strip() == "SHARAR_OK",
-        "canary_arith": lambda text: text.strip() == "42",
-        "canary_json": lambda text: json.loads(text.strip()) == {"device": "GB10", "model": "Qwen3.8-27B"},
-        "canary_needle": lambda text: text.strip() == NEEDLE,
-    }
-
-
 def _load(graphs: bool = True, spec: int = 0) -> tuple[Qwen38, Executor, SnapshotTokenizer]:
-    import os
     from sharar import target as targets
     from sharar.engine.config import current
     cfg = current()

@@ -101,13 +101,6 @@ and the 27B's first token on a 10K-token prompt comes 14% later (3.08 to 3.51 s)
 A new lossy option enters `fast` (and so `throughput`) only through the lossy-change gate
 ([CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option)).
 
-### Settings
-
-Every `SHARAR_*` variable the launcher forwards is read once into one
-`EngineConfig` (`sharar/engine/config.py`) when the server starts; the command
-line overrides it. `GET /get_server_info` returns the effective value under
-`config`, so a run records exactly what it served.
-
 ## Request traces
 
 Traces are off unless asked for (`sharar serve --traces`, or `SHARAR_TRACES` naming a directory). Each finished

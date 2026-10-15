@@ -18,6 +18,7 @@ To measure a served build (quality suites, AIPerf speed, a lossy option) use the
 | `tp_draft_head.py` | Two Sparks: the vocabulary-parallel draft head against the whole-vocabulary one (`sharar dev tp-draft-head`) |
 | `tp_serve_bench.py` | Served speed over HTTP on one Spark or two: single-stream decode, 4 and 16 concurrent requests, long-prompt time to first token |
 | `decode_curve.py` | Decode speed against concurrency at a populated 10K-token context, prefill excluded (the benchmark prompts of `sharar.benchmark_workloads`, request index varied): steady-state ms per round, tokens per round and output tokens/s per batch size, served `throughput`-profile settings by default. The common curve for comparing a change (run control and candidate alternately) |
+| `flashnext_moe_w3.py` | Flash-Next's 3-bit routed experts against FlashInfer's CUTLASS fused MoE on real expert weights: time, distinct experts and effective bandwidth per layer at each verify row count, inside CUDA graphs |
 | `w3_bench.py` | 3-bit decode GEMM: correctness against the dequantized reference and DRAM bandwidth per decode shape at 16, 32 and 64 rows, split-K sweep |
 | `inputs.py`, `workloads/family_v1.json` | The frozen long prompts the profilers read: 18 synthetic task families and the three benchmark prompts, 10,000 tokens each, built from source with any tokenizer |
 

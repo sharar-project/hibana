@@ -114,7 +114,6 @@ class Executor:
         self.graphs: DecodeGraphs | None = None
         self.use_graphs = False
         self.spec = None
-        self.feature_request = None  # explicit target features when no proposer is installed (draft training)
         if log:
             log(f"  pools: {num_pages} KV pages ({self.kv_pool.bytes / 2**30:.2f} GiB), {num_slots} state slots ({num_slots * self.state_pool.bytes_per_slot / 2**30:.2f} GiB, {self.ssm_format.describe()} recurrent state)")
         if spec_config is not None:
@@ -139,11 +138,9 @@ class Executor:
         self.state.cache = value
 
     def _features_wanted(self):
-        """Target features to compute: the proposer's, or an explicit request
-        (draft training extracts features without a proposer)."""
-        if self.spec is not None:
-            return self.spec.proposer.requirements.features
-        return getattr(self, "feature_request", None)  # test doubles bypass __init__
+        """Target features to compute: the installed proposer's, else none."""
+        spec = getattr(self, "spec", None)  # test doubles bypass __init__
+        return spec.proposer.requirements.features if spec is not None else None
 
     def enable_spec(self, k: int = 3, log=None, *, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
                     draft_dir: str | None = None) -> None:
@@ -224,7 +221,6 @@ class Executor:
             req.rng_seed = request_seed(params.seed)
         self.state.admit(req, req.prefill_ids)
         req.state = State.PREFILL
-        req.t_admit = time.perf_counter()
         return req
 
     def can_admit(self, prompt_ids: list[int], reserve_tokens: int = 0) -> bool:

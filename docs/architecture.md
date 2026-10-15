@@ -27,6 +27,10 @@ cli.py      the `sharar` command (serve, chat, launch, status, ...; `engine` is 
 launch/     what `sharar serve` does before the engine: settings and profiles, preflight and downloads, the memory
             guard, --detach services, two Sparks (tp.py), the client commands
 target.py   Target value per checkpoint (geometry, optional family fields), registry, loader
+config.py   the 27B's constants and paths for kernels, tools and tests; check(), the preflight
+hardware/   GB10 facts (compute capability, driver floor, memory budget)
+tokenizer.py  the pinned snapshot's tokenizer (`tokenizers`, no transformers)
+benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) the profilers read
 ```
 
 ## What holds it together
@@ -63,7 +67,7 @@ target.py   Target value per checkpoint (geometry, optional family fields), regi
 | Exact / relaxed / sampled acceptance | yes | yes |
 | Constrained output (JSON schema, forced tool calls) | yes | yes |
 | Calibrated 3-bit weights | layers and draft (decode copies) | trunk (decode copies) and routed experts (the only copy) |
-| Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk; 3-bit routed experts (NVFP4 in `exact` and on two Sparks) |
+| Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk; 3-bit routed experts (NVFP4 in `exact`; split by expert on two Sparks) |
 | Prefix cache, SSD tier, 262K context | yes | yes (sparse attention past 2,048 tokens) |
 | Tensor parallel on two Sparks | yes | yes |
 
