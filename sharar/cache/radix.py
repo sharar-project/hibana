@@ -178,6 +178,20 @@ class RadixCache:
         fit too; returns the tokens restored."""
         return self.ssd.restore(self, ids, reserve) if self.ssd is not None else 0
 
+    def restore_async(self, ids: list[int], reserve: int = 0) -> bool:
+        """Admission's form of `restore`: False while a restore for ids (or one ahead of it) is still reading, True
+        when ids can be matched now. A restore that landed keeps its path locked until `release(ids)`."""
+        if self.ssd is None:
+            return True
+        if not self.ssd.async_restore:
+            self.ssd.restore(self, ids, reserve)
+            return True
+        return self.ssd.restore_async(self, ids, reserve)
+
+    def release(self, ids: list[int]) -> None:
+        if self.ssd is not None:
+            self.ssd.release(self, ids)
+
     def backup(self, ids: list[int], resume_points: tuple[int, ...] = ()) -> None:
         if self.ssd is not None:
             self.ssd.backup(self, ids, resume_points)
@@ -400,7 +414,7 @@ class RadixCache:
             if resident:
                 if not ((n.tail is not None and n.tail.ready) or any(r.ready for r in n.blocks.values())):
                     continue
-            elif n.in_l1 or n.children:
+            elif n.in_l1 or n.children or n.lock:  # locked: a restore is reading it
                 continue
             if unusable and n.tail is not None and n.tail.nbytes >= 0:
                 continue
@@ -439,6 +453,7 @@ class RadixCache:
         # until their final reader releases them. Admission bypasses the cache
         # while that drain is pending.
         if self.ssd is not None and not self.flushing:  # once per flush, not again each time a reader releases its lock
+            self.ssd.abort(self)  # a restore still reading: its pages and slot go back, and its path is no longer held
             self._drop_ssd_only()
             self.ssd.flush()  # a new epoch, so every ref left on the L1 nodes is stale
         while (leaf := self._lru_candidate()) is not None:

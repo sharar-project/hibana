@@ -307,11 +307,14 @@ class Peer:
     it has completed, which of them failed there or are a 4 KiB page longer there, and which objects of a restore it
     could not read."""
 
-    def __init__(self, landed=10**9, failed=(), longer=(), unreadable=()):
+    def __init__(self, landed=10**9, failed=(), longer=(), unreadable=(), restore_done=True):
         self.landed, self.failed, self.longer, self.unreadable = landed, set(failed), set(longer), set(unreadable)
+        self.restore_done = restore_done  # whether its asynchronous restore's reads have landed
         self.applied = 0
 
     def min_over_ranks(self, question, values):
+        if question == "restore":
+            return [min(values[0], int(self.restore_done))]
         first = self.applied - len(values)  # the writes the last "landed" answer released
         if question == "landed":
             n = min(values[0], self.landed - self.applied)
@@ -734,3 +737,151 @@ def test_eviction_writes_no_tail_for_a_node_whose_descendants_are_stored(tmp_pat
     settle(cache, tier)
     assert tier.tails == 1 and head.tail is None and not head.in_l1  # demoted with its blocks, no tail written
     assert tier.restore(cache, IDS + [7]) == len(IDS) and same(restored(cache, kv, sp, IDS), at_end)
+
+
+# ---- asynchronous restores (admission keeps serving while the reads land) ----
+
+def land(cache, tier, ids, reserve=0, limit=200):
+    """Admission's loop for one request: ask, and step the engine until its restore has landed. Returns the steps."""
+    for steps in range(limit):
+        if cache.restore_async(ids, reserve):
+            return steps
+        if tier._job is not None:
+            tier._drive(tier._job)  # the engine scatters each chunk as it lands; it would keep serving meanwhile
+        tier.step(cache)
+    raise AssertionError("the restore never landed")
+
+
+def locks(cache):
+    out, stack = [], list(cache.root.children.values())
+    while stack:
+        n = stack.pop()
+        out.append(n.lock)
+        stack.extend(n.children.values())
+    return out
+
+
+def stored(tmp_path, ids=IDS, seed=1):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    before = release(cache, tier, kv, sp, feats, ids, seed=seed)
+    settle(cache, tier)
+    evict_all(cache, kv)
+    settle(cache, tier)
+    return cache, tier, kv, sp, feats, before
+
+
+@pytest.mark.parametrize("ids", [IDS, LONG])
+def test_an_asynchronous_restore_lands_byte_exact_and_holds_its_path_until_admission(tmp_path, ids):
+    cache, tier, kv, sp, feats, before = stored(tmp_path, ids)
+    if ids is LONG:
+        tier._staging.close()
+        tier._staging = ssd.Staging(2 * 4 * tier.block * tier._row, CPU)  # several chunks through two small halves
+        tier.chunk_bytes = 2 * tier.block * tier._row
+    assert not cache.restore_async(ids + [7]) and tier._job is not None and tier.async_restores == 1
+    assert land(cache, tier, ids + [7]) >= 1 and tier.restores == 1 and tier._job is None
+    assert same(restored(cache, kv, sp, ids), before)
+    evict_all(cache, kv)  # held for its request: eviction cannot take it before admission
+    assert cache.match(ids + [7]).length == len(ids)
+    cache.release(ids + [7])  # admitted (the request's match holds it now) or gone
+    assert not any(locks(cache))
+    evict_all(cache, kv)
+    assert cache.match(ids + [7]).length == 0
+
+
+def test_while_a_restore_reads_others_are_served_and_its_path_survives_the_budget(tmp_path):
+    cache, tier, kv, sp, feats, before = stored(tmp_path)
+    tier._min_over_ranks = Peer(restore_done=False).min_over_ranks  # the other rank is still reading
+    assert not cache.restore_async(IDS + [7])
+    tier._drive(tier._job)
+    other = list(range(9000, 9100))
+    assert cache.restore_async(other + [1])  # nothing to restore: admitted at once
+    tier.budget = 0  # the disk budget would drop every SSD-only leaf
+    for _ in range(3):
+        tier.step(cache)
+    assert tier._job is not None and not cache.restore_async(IDS + [7]) and tier.restore_wait_steps >= 1
+    tier._min_over_ranks = Peer().min_over_ranks  # now it landed there too
+    tier.step(cache)
+    assert cache.restore_async(IDS + [7]) and same(restored(cache, kv, sp, IDS), before)
+    cache.release(IDS + [7])
+    assert not any(locks(cache))
+
+
+def test_a_second_session_waits_for_the_staging_buffer(tmp_path):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    second = [t + 20000 for t in IDS]
+    one = release(cache, tier, kv, sp, feats, IDS, seed=5)
+    two = release(cache, tier, kv, sp, feats, second, seed=6)
+    settle(cache, tier)
+    evict_all(cache, kv)
+    settle(cache, tier)
+    assert not cache.restore_async(IDS + [7])
+    assert not cache.restore_async(second + [7]) and tier.async_restores == 1  # waits: one restore at a time
+    land(cache, tier, IDS + [7])
+    land(cache, tier, second + [7])
+    assert same(restored(cache, kv, sp, IDS), one) and same(restored(cache, kv, sp, second), two)
+    cache.release(IDS + [7])
+    cache.release(second + [7])
+    assert not any(locks(cache))
+
+
+def test_a_request_cancelled_mid_read_leaves_its_restore_in_the_cache_unheld(tmp_path):
+    cache, tier, kv, sp, feats, before = stored(tmp_path)
+    assert not cache.restore_async(IDS + [7])
+    cache.release(IDS + [7])  # cancelled while its reads are landing
+    tier._drive(tier._job)
+    tier.step(cache)
+    assert tier._job is None and not tier._held and not any(locks(cache))
+    assert same(restored(cache, kv, sp, IDS), before)  # still a cache hit for whoever comes next
+
+
+def test_a_held_path_whose_request_never_comes_is_let_go(tmp_path, monkeypatch):
+    monkeypatch.setattr(ssd, "HOLD_STEPS", 3)
+    cache, tier, kv, sp, feats, _ = stored(tmp_path)
+    land(cache, tier, IDS + [7])
+    assert tier._held and any(locks(cache))
+    for _ in range(5):
+        tier.step(cache)
+    assert not tier._held and not any(locks(cache))
+
+
+def test_a_flush_during_a_restore_returns_its_pages_and_slot(tmp_path):
+    cache, tier, kv, sp, feats, _ = stored(tmp_path)
+    free = kv.free_count, sp.free_count
+    assert not cache.restore_async(IDS + [7])
+    cache.flush()
+    assert tier._job is None and (kv.free_count, sp.free_count) == free and not cache.flushing
+    assert cache.restore_async(IDS + [7]) and cache.match(IDS + [7]).length == 0  # flushed: nothing to restore
+
+
+def test_an_asynchronous_restore_another_rank_could_not_read_fails_cleanly(tmp_path):
+    cache, tier, kv, sp, feats, _ = stored(tmp_path)
+    tier._min_over_ranks = Peer(unreadable={2}).min_over_ranks
+    free = kv.free_count, sp.free_count
+    assert not cache.restore_async(IDS + [7])
+    tier._drive(tier._job)
+    tier.step(cache)
+    assert tier._job is None and tier.restore_fails == 1 and (kv.free_count, sp.free_count) == free
+    assert not any(locks(cache)) and not [k for k in feats if isinstance(k, tuple)]
+    assert cache.restore_async(IDS + [7]) and cache.match(IDS + [7]).length == 0  # the tail is lost: prefill instead
+
+
+def test_a_synchronous_restore_finishes_the_one_in_flight_first(tmp_path):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    second = [t + 20000 for t in IDS]
+    one = release(cache, tier, kv, sp, feats, IDS, seed=7)
+    two = release(cache, tier, kv, sp, feats, second, seed=8)
+    settle(cache, tier)
+    evict_all(cache, kv)
+    settle(cache, tier)
+    assert not cache.restore_async(IDS + [7])
+    assert tier.restore(cache, second + [7]) == len(second)  # shares the staging buffer: the first lands first
+    assert tier._job is None and same(restored(cache, kv, sp, IDS), one) and same(restored(cache, kv, sp, second), two)
+    cache.release(IDS + [7])
+    assert not any(locks(cache))
+
+
+def test_admission_with_the_restore_off_restores_in_line(tmp_path):
+    cache, tier, kv, sp, feats, before = stored(tmp_path)
+    tier.async_restore = False
+    assert cache.restore_async(IDS + [7]) and tier.async_restores == 0 and tier.restores == 1
+    assert same(restored(cache, kv, sp, IDS), before) and not any(locks(cache))

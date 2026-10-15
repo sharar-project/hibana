@@ -20,14 +20,20 @@ The tiered radix tree (`radix.py`) is the only record of what is on disk;
   the GDN snapshot at its end, the pool's per-slot aux and the drafter
   payload) unless a write-through already did. The tree then keeps the leaf
   SSD-only instead of deleting it.
-- Restore. At admission `restore()` finds the deepest ready tail past the L1
+- Restore. At admission the tier finds the deepest ready tail past the L1
   prefix (first finishing its writes if it was evicted moments ago) and
   streams the blocks past the KV still in L1, then the tail, through a host
   buffer the GPU reads in place, in two halves of `chunk_bytes`: a small
   thread pool reads one chunk with O_DIRECT into one half while the GPU
   scatters the previous chunk from the other straight into fresh pages and a
-  slot. The engine waits for the restore: other requests do not run
-  meanwhile. `restore()` then inserts the path back into L1. When the GPU
+  slot. Admission's path, `restore_async()`, does not wait for it: it takes
+  the pages and a slot, locks the path, and a worker thread reads while the
+  engine keeps serving everyone else, scattering each chunk as it lands (a
+  few milliseconds of kernel launches) and the request waiting in the queue.
+  Once the reads landed on every rank, `step()` imports the tail's state and
+  inserts the path back into L1, held until the request is admitted.
+  `restore()` does the same with the engine waiting (SHARAR_SSD_ASYNC=0, or a
+  caller outside admission). When the GPU
   cache dropped only a snapshot and kept its pages, the restore reads only the
   tail: its state goes into a slot and the pages stay where they are. The
   chunk size, not the restore, bounds the buffer, so the pool plan reserves a
@@ -56,6 +62,9 @@ import time
 from array import array
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+import queue
+import threading
 
 import torch
 
@@ -67,6 +76,32 @@ MIB = 2**20
 GIB = 2**30
 STAGING_BYTES = 512 * MIB  # host copies of backups in flight to the writers
 CHUNK_BYTES = 256 * MIB  # each half of the restore staging buffer
+HOLD_STEPS = 1000  # a landed asynchronous restore keeps its path locked this many engine steps at most for its request
+
+
+@dataclass(eq=False)
+class _Restore:
+    """One restore from `_begin` to `_finish`: what it reads, and the pages and slot it fills."""
+    ids: list[int]
+    matched: int  # the L1 match before it
+    l1: int  # the KV before this is still in L1
+    r: int  # the resume point it restores to
+    node: Node  # the path's last node, locked with its ancestors until the restore is done (or its request admitted)
+    resident: list  # the pages of the path's L1 prefix
+    parts: list
+    plan: tuple
+    pages: torch.Tensor
+    page_ids: list[int]
+    slot: int
+    dst: torch.Tensor  # the pages as int64 indices, for the scatter
+    t0: float
+    future: object = None
+    result: tuple | None = None
+    orphan: bool = False  # its request is gone: it lands in the cache, held by nobody
+    landed: queue.Queue = field(default_factory=queue.Queue)  # chunks read and checked: (index, objects, parts, cursor, rows)
+    issued: list = field(default_factory=list)  # per chunk, set once its scatter is queued on the GPU
+    freed: dict = field(default_factory=dict)  # chunk -> CUDA event: its scatter has read its half
+    t_put: float = 0.0  # the engine thread's time issuing the scatter
 
 
 class Staging:
@@ -193,6 +228,15 @@ class SsdTier:
         tail = self.block * self._row + state_pool.bytes_per_slot + 32 * MIB
         self._staging = Staging(2 * max(self.chunk_bytes, _pad(tail)), device)
         self._layouts: dict = {}  # expected segment layouts by (kind, rows, aux counts); the pools' geometry is fixed
+        # asynchronous restores (`restore_async`): one at a time; a worker thread reads, the engine thread scatters
+        self._worker = ThreadPoolExecutor(1, thread_name_prefix="sharar-ssd-restore")
+        self._job: _Restore | None = None  # the restore in flight
+        self._held: list = []  # (ids, node, since) of landed restores, their paths locked until their requests are admitted
+        self._staging_free = None  # an event: the last restore's state import has read the staging buffer
+        self._steps = 0  # engine steps (`step` calls), the same count on every rank
+        self.async_restore = True  # admission restores in the background (`restore_async`); SHARAR_SSD_ASYNC=0: in line
+        self.async_restores = self.restore_wait_steps = 0
+        self.restore_blocked_seconds = 0.0  # the engine thread inside restores: all of a synchronous one, the start and finish of an asynchronous one
 
     @staticmethod
     def memory_bound(target, block: int, extra_page_bytes: int = 0, staging_bytes: int = STAGING_BYTES,
@@ -670,6 +714,8 @@ class SsdTier:
 
     def step(self, cache: RadixCache) -> None:
         t0 = time.perf_counter()
+        self._steps += 1
+        self._poll(cache)
         self._finish_writes()
         self._trim(cache)
         self._gather_queued()
@@ -713,57 +759,288 @@ class SsdTier:
         return cache.ssd_match(ids, l1, self.block)
 
     def restore(self, cache: RadixCache, ids: list[int], reserve: int = 0) -> int:
-        """Bring the deepest SSD resume point for ids back into L1, if the pool can also hold the rest of ids and
+        """Bring the deepest SSD resume point for ids back into L1 now, if the pool can also hold the rest of ids and
         `reserve` more pages: otherwise the cache would only evict what it restored and read it again. Returns the
-        tokens restored (0 when there is nothing worth restoring)."""
+        tokens restored (0 when there is nothing worth restoring). The engine waits: nothing else runs meanwhile
+        (`restore_async` lets it run)."""
+        if self._landed(ids) is not None:
+            return 0  # an asynchronous restore already brought it back
+        if self._job is not None and self._worth(cache, ids):
+            self._join(cache)  # the staging buffer is the in-flight restore's until it lands
+        t0 = time.perf_counter()
+        job = self._begin(cache, ids, reserve)
+        if job is None:
+            return 0
+        job.future = self._worker.submit(self._read, job)
+        self._drive(job)
+        job.result = job.future.result()
+        restored = self._finish(cache, job, hold=False)
+        self.restore_blocked_seconds += time.perf_counter() - t0
+        return restored
+
+    def restore_async(self, cache: RadixCache, ids: list[int], reserve: int = 0) -> bool:
+        """Admission's question for the request with ids: True when it can go ahead (nothing worth restoring, or its
+        restore has landed and holds the path in L1 until `release`), False while a restore is in flight: its own,
+        started here if it needs one, or another one holding the staging buffer. The reads and the KV scatter run on
+        a worker thread while the engine keeps serving everyone else; `step()` finishes the restore once it landed
+        on every rank. Every rank asks alike (the trees are the same), so every rank starts the same restores."""
+        if self._landed(ids) is not None:
+            return True
+        job = self._job
+        if job is not None and job.ids == ids:
+            self.restore_wait_steps += 1
+            return False
+        if not self._worth(cache, ids):
+            return True
+        if job is not None:
+            self.restore_wait_steps += 1
+            return False  # one restore at a time: they share the staging buffer and the drive
+        t0 = time.perf_counter()
+        job = self._begin(cache, ids, reserve)
+        if job is not None:
+            job.future = self._worker.submit(self._read, job)
+            self._job = job
+            self.async_restores += 1
+        self.restore_blocked_seconds += time.perf_counter() - t0
+        return job is None
+
+    def release(self, cache: RadixCache, ids: list[int]) -> None:
+        """The request a landed restore held its path for was admitted (it holds the path itself now) or is gone."""
+        for i, (held, node, _) in enumerate(self._held):
+            if held == ids:
+                del self._held[i]
+                cache.lock(node, -1)
+                return
+        if self._job is not None and self._job.ids == ids:
+            self._job.orphan = True  # it still lands in the cache, held by nobody
+
+    def wait(self, timeout: float) -> None:
+        """Nothing else to run: scatter what landed and wait up to `timeout` seconds for the in-flight restore's next
+        chunk (no-op without one)."""
+        job = self._job
+        if job is not None:
+            self._scatter_landed(job)
+            try:
+                job.landed.put(job.landed.get(timeout=timeout))  # put back for the scatter (each chunk carries its offsets)
+            except queue.Empty:
+                pass
+
+    def _landed(self, ids: list[int]):
+        return next((node for held, node, _ in self._held if held == ids), None)
+
+    def _worth(self, cache: RadixCache, ids: list[int]) -> bool:
+        """Whether ids has an SSD resume point worth reading (counting writes still in flight)."""
+        m = cache.match(ids, touch=False)
+        hit = cache.ssd_match(ids, m.length, self.block, pending=True)
+        return hit is not None and hit.length - m.length >= self.min_hit
+
+    def _begin(self, cache: RadixCache, ids: list[int], reserve: int) -> "_Restore | None":
+        """Plan a restore and take what it needs: the path, locked (its L1 prefix stays resident; eviction, the disk
+        budget and flush leave its stored nodes alone), and fresh pages and a slot. None when there is nothing worth
+        restoring or no room."""
         m = cache.match(ids, touch=False)
         hit = self._settle_for(cache, ids, m.length)
         if hit is None or hit.length - m.length < self.min_hit:
-            return 0
-        t0 = time.perf_counter()
+            return None
         l1, r = hit.l1_end, hit.length  # L1 still holds the KV before l1 (at least the matched prefix): read only [l1, r)
         whole = r // self.block * self.block
-        resident = [n for n in hit.path if n.in_l1]  # a prefix of the path
-        held = resident[-1] if resident else None  # locked, with its ancestors: the eviction below keeps their pages
-        cache.lock(held, 1)
-        pages = page_ids = slot = None
+        node = hit.path[-1]
+        cache.lock(node, 1)
+        pages = page_ids = None
         try:
             need = len(ids) - l1 + reserve  # the restored KV, the rest of ids and the reserve
             cache.evict(need_pages=need, need_slots=2)  # one slot for the restored path, one spare for the request itself
             if self.kv_pool.free_count < need or self.state_pool.free_count < 2:
-                return 0
+                cache.lock(node, -1)
+                return None
             parts = [("kv", ref, end - self.block, max(end - self.block, l1), min(end, whole)) for end, ref in hit.blocks]
             parts = [p for p in parts if p[3] < p[4]] + [("tail", hit.tail, whole, max(whole, l1), r)]
             plan = self._plan_chunks(parts)
+            if 2 * plan[2] > self._staging.nbytes:  # an object larger than a half: every rank plans from the same sizes
+                self.restore_fails += 1
+                cache.lock(node, -1)
+                return None
             pages, page_ids = self.kv_pool.alloc_with_ids(r - l1)
             slot = self.state_pool.alloc()
-            aux, nbytes, t_read, t_put = self._read_and_put(parts, plan, ids, pages.to(torch.int64), slot)
-            if aux is None:  # an object turned out missing, corrupt or a collision: insert nothing
-                self.restore_fails += 1
-                return 0
-            prefix = [n.pages for n in resident]
-            new_start = cache.insert(ids[:r], torch.cat([*prefix, pages]), {r: slot}, {r: aux}, page_ids=[-1] * l1 + page_ids)
-            assert new_start == l1  # every path node past l1 is SSD-only, so the insert takes all the restored pages
-            pages = slot = None  # owned by the cache now
-        finally:
-            if pages is not None:  # not inserted: failed or raised
+        except BaseException:
+            if pages is not None:
                 self.kv_pool.free_ids(page_ids)
-            if slot is not None:
-                self.state_pool.free(slot)
-            cache.lock(held, -1)
-        total = time.perf_counter() - t0
+            cache.lock(node, -1)
+            raise
+        resident = [n.pages for n in hit.path if n.in_l1]  # a prefix of the path
+        return _Restore(ids=ids, matched=m.length, l1=l1, r=r, node=node, resident=resident, parts=parts, plan=plan,
+                        pages=pages, page_ids=page_ids, slot=slot, dst=pages.to(torch.int64), t0=time.perf_counter(),
+                        issued=[threading.Event() for _ in plan[3]])
+
+    def _read(self, job: "_Restore"):
+        """The worker thread: read the restore's objects chunk by chunk with O_DIRECT into the two halves of the
+        staging buffer (in parallel within a chunk), check each, and hand it to the engine thread (`landed`), which
+        scatters it: a chunk goes into a half only once the scatter of the one before it there has read it. Returns
+        (the tail's header and offset, the parts this rank found missing, corrupt or a collision, bytes read, seconds
+        waiting on reads). The scatter runs on the engine thread because there it is a few milliseconds of kernel
+        launches; on this thread, sharing the GIL with a busy engine thread, the same launches took hundreds."""
+        sizes, stride, _, chunks = job.plan
+        st = self._staging
+        half = st.nbytes // 2
+        if self._staging_free is not None:
+            self._staging_free.synchronize()  # the last restore's state import has read the buffer these reads refill
+
+        def submit(chunk, h):
+            def one(i, off):
+                kind, ref, *_ = job.parts[i]
+                got = self.store.read_into(kind, ref.key, st.view[off:off + _pad(sizes[i])])
+                return None if got is None else (got[0], off + got[1])
+            return [(i, self._pool.submit(one, i, h * half + rel)) for i, rel in chunk]
+
+        parts, ids = job.parts, job.ids
+        tail, lost, cursor, t_read = None, set(), 0, 0.0
+        inflight = {0: submit(chunks[0], 0)}
+        for k in range(len(chunks)):
+            h = k % 2
+            if k + 1 < len(chunks):  # keep the drive busy: the next chunk reads into the other half as soon as
+                if k >= 1:  # the chunk before it there has been scattered, before waiting on this one
+                    job.issued[k - 1].wait()
+                    if (ev := job.freed.get(k - 1)) is not None:
+                        ev.synchronize()
+                inflight[k + 1] = submit(chunks[k + 1], 1 - h)
+            t = time.perf_counter()
+            got = [(i, f.result()) for i, f in inflight.pop(k)]
+            t_read += time.perf_counter() - t
+            lost = {i for i, g in got if g is None or not self._valid_layout(g[0]) or g[0].start != parts[i][2]
+                    or g[0].end != (parts[i][2] + self.block if parts[i][0] == "kv" else parts[i][4])
+                    or g[0].tokens != ids[parts[i][2]:parts[i][2] + len(g[0].tokens)]}
+            if lost:
+                for later in inflight.values():  # let the reads into the other half land: the next restore reuses it
+                    for _, f in later:
+                        f.result()
+                break
+            chunk_parts = [parts[i] for i, _ in got]
+            rows = sum(hi - lo for _, _, _, lo, hi in chunk_parts)
+            job.landed.put((k, [g for _, g in got], chunk_parts, cursor, rows))
+            cursor += rows
+            if got[-1][0] == len(parts) - 1:  # the tail, the last object: its state goes in once every rank has it all
+                tail = got[-1][1]
+        return tail, lost, sum(sizes) if not lost else 0, t_read
+
+    def _scatter_landed(self, job: "_Restore", scatter: bool = True) -> None:
+        """The engine thread: scatter every chunk that landed into the restore's pages, on the main stream (ahead of
+        any kernel that reads them), and let the reader reuse its half once the scatter has read it. Without
+        `scatter` (an abort), only let the reader go on."""
+        t = time.perf_counter()
+        cuda = self.device.type == "cuda"
+        while True:
+            try:
+                k, got, chunk_parts, cursor, rows = job.landed.get_nowait()
+            except queue.Empty:
+                break
+            if scatter:
+                self._put_rows(got, chunk_parts, job.dst[cursor:cursor + rows], job.plan[1])
+                if cuda:
+                    job.freed[k] = torch.cuda.Event()
+                    job.freed[k].record()
+            job.issued[k].set()
+        job.t_put += time.perf_counter() - t
+
+    def _drive(self, job: "_Restore", scatter: bool = True) -> None:
+        """Scatter as chunks land until the reader is done (a synchronous restore, a join, an abort)."""
+        while True:
+            done = job.future.done()
+            self._scatter_landed(job, scatter)
+            if done:
+                return
+            try:
+                job.landed.put(job.landed.get(timeout=0.05))  # wake when a chunk lands; put back for the scatter
+            except queue.Empty:
+                pass
+
+    def _finish(self, cache: RadixCache, job: "_Restore", hold: bool) -> int:
+        """On every rank at the same point, once the reads landed everywhere: import the tail's state if every rank
+        read every object intact, insert the path into L1 and, with `hold`, keep it locked for its request. Returns
+        the tokens restored."""
+        t0 = time.perf_counter()
+        tail, lost, nbytes, t_read = job.result
+        t_put = job.t_put
+        intact = self._min_over_ranks("read", [int(i not in lost) for i in range(len(job.parts))])
+        inserted = False
+        try:
+            if all(intact):
+                st = self._staging
+                aux = self._put_state((tail[0], self.store.segments(tail[0], st.base, tail[1])), job.slot)
+                if self.device.type == "cuda":
+                    self._staging_free = torch.cuda.Event()
+                    self._staging_free.record()  # the next restore's reads wait for this import before refilling it
+                ids, l1, r = job.ids, job.l1, job.r
+                new_start = cache.insert(ids[:r], torch.cat([*job.resident, job.pages]), {r: job.slot}, {r: aux},
+                                         page_ids=[-1] * l1 + job.page_ids)
+                if new_start > l1:  # another request brought part of the path back meanwhile: those pages are duplicates
+                    self.kv_pool.free_ids(job.page_ids[:new_start - l1])
+                inserted = True
+            else:
+                for (kind, ref, *_), ok in zip(job.parts, intact):
+                    if not ok:
+                        self._lost(kind, ref)
+                self.restore_fails += 1
+        finally:
+            if not inserted:
+                self.kv_pool.free_ids(job.page_ids)
+                self.state_pool.free(job.slot)
+            if inserted and hold and not job.orphan:
+                self._held.append((job.ids, job.node, self._steps))
+            else:
+                cache.lock(job.node, -1)
+        if not inserted:
+            return 0
+        total = time.perf_counter() - job.t0
         self.restores += 1
-        self.restored_tokens += r - m.length
-        self.restored_kv_tokens += r - l1
+        self.restored_tokens += job.r - job.matched
+        self.restored_kv_tokens += job.r - job.l1
         self.restore_seconds += total
         self.restore_bytes += nbytes
         self.restore_read_seconds += t_read
         self.restore_put_seconds += t_put
+        if hold:
+            self.restore_blocked_seconds += time.perf_counter() - t0 + job.t_put
         if self.trace:
-            self._trace({"tokens": r - m.length, "kv_tokens": r - l1, "bytes": nbytes, "objects": len(parts), "read_ms": round(1000 * t_read, 1),
-                         "read_gbps": round(nbytes / max(t_read, 1e-9) / 1e9, 2), "scatter_ms": round(1000 * t_put, 1),
-                         "total_ms": round(1000 * total, 1), "e2e_gbps": round(nbytes / max(total, 1e-9) / 1e9, 2)})
-        return r - m.length
+            self._trace({"tokens": job.r - job.matched, "kv_tokens": job.r - job.l1, "bytes": nbytes, "objects": len(job.parts),
+                         "read_ms": round(1000 * t_read, 1), "read_gbps": round(nbytes / max(t_read, 1e-9) / 1e9, 2),
+                         "scatter_ms": round(1000 * t_put, 1), "total_ms": round(1000 * total, 1),
+                         "e2e_gbps": round(nbytes / max(total, 1e-9) / 1e9, 2), "async": hold})
+        return job.r - job.matched
+
+    def _poll(self, cache: RadixCache) -> None:
+        """Each engine step while a restore is in flight: finish it once its reads landed on every rank."""
+        job = self._job
+        if job is not None:
+            done = job.future.done()  # before scattering: whatever it read by then gets scattered now
+            self._scatter_landed(job)
+            if self._min_over_ranks("restore", [int(done)])[0]:
+                self._job = None
+                job.result = job.future.result()
+                self._finish(cache, job, hold=True)
+        while self._held and self._steps - self._held[0][2] > HOLD_STEPS:  # its request never came for it (counted in
+            _, node, _ = self._held.pop(0)  # steps, which every rank takes alike, so every rank lets go at the same one)
+            cache.lock(node, -1)
+
+    def _join(self, cache: RadixCache) -> None:
+        """Wait for the in-flight restore and finish it (every rank calls this at the same point)."""
+        job, self._job = self._job, None
+        self._drive(job)
+        job.result = job.future.result()
+        self._finish(cache, job, hold=True)
+
+    def abort(self, cache: RadixCache) -> None:
+        """Before a flush or at shutdown: wait for the in-flight restore's reads, return its pages and slot without
+        inserting anything, and let go of every held path. Every rank does the same, with no agreement needed."""
+        job, self._job = self._job, None
+        if job is not None:
+            self._drive(job, scatter=False)
+            job.future.result()
+            self.kv_pool.free_ids(job.page_ids)
+            self.state_pool.free(job.slot)
+            cache.lock(job.node, -1)
+        while self._held:
+            _, node, _ = self._held.pop()
+            cache.lock(node, -1)
 
     def _trace(self, row: dict) -> None:
         import json
@@ -793,74 +1070,6 @@ class SsdTier:
             off += w
         chunks.append(cur)
         return sizes, stride, half, chunks
-
-    def _read_and_put(self, parts, plan, ids: list[int], dst: torch.Tensor, slot: int):
-        """Read the restore's objects chunk by chunk with O_DIRECT into the two
-        halves of the staging buffer, in parallel within a chunk, and scatter
-        each chunk into pages dst (the tail's state into slot) while the next
-        chunk reads into the other half. Returns (auxiliary dict, bytes read,
-        seconds waiting on reads, seconds scattering), or a None auxiliary if
-        an object is missing, corrupt or a collision on any rank: the ranks
-        agree before importing the tail's state, so no rank's drafter keeps
-        features of a restore another rank failed."""
-        sizes, stride, half, chunks = plan
-        if 2 * half > self._staging.nbytes:  # an object larger than a half: every rank plans from the same sizes, so all skip
-            return None, 0, 0.0, 0.0
-        st, cuda = self._staging, self.device.type == "cuda"
-        half = st.nbytes // 2
-        freed = [torch.cuda.Event(), torch.cuda.Event()] if cuda else None  # per half: its last scatter has read it
-
-        def submit(chunk, h):
-            def one(i, off):
-                kind, ref, *_ = parts[i]
-                got = self.store.read_into(kind, ref.key, st.view[off:off + _pad(sizes[i])])
-                return None if got is None else (got[0], off + got[1])
-            return [(i, self._pool.submit(one, i, h * half + rel)) for i, rel in chunk]
-
-        tail, lost, cursor, t_read, t_put = None, set(), 0, 0.0, 0.0
-        inflight = {0: submit(chunks[0], 0)}
-        for k in range(len(chunks)):
-            h = k % 2
-            if k + 1 < len(chunks):  # keep the drive busy: the next chunk reads into the other half as soon as
-                if cuda:  # that half's last scatter is done, before waiting on this chunk
-                    freed[1 - h].synchronize()
-                inflight[k + 1] = submit(chunks[k + 1], 1 - h)
-            t = time.perf_counter()
-            got = [(i, f.result()) for i, f in inflight.pop(k)]
-            t_read += time.perf_counter() - t
-            lost = {i for i, g in got if g is None or not self._valid_layout(g[0]) or g[0].start != parts[i][2]
-                    or g[0].end != (parts[i][2] + self.block if parts[i][0] == "kv" else parts[i][4])
-                    or g[0].tokens != ids[parts[i][2]:parts[i][2] + len(g[0].tokens)]}
-            if lost:
-                for later in inflight.values():  # let the reads into the other half land: the next restore reuses it
-                    for _, f in later:
-                        f.result()
-                break
-            t = time.perf_counter()
-            chunk_parts = [parts[i] for i, _ in got]
-            rows = sum(hi - lo for _, _, _, lo, hi in chunk_parts)
-            self._put_rows([g for _, g in got], chunk_parts, dst[cursor:cursor + rows], stride)
-            cursor += rows
-            if got[-1][0] == len(parts) - 1:  # the tail, the last object: its state goes in once every rank has it all
-                tail = got[-1][1]
-            if cuda:
-                freed[h].record()
-            t_put += time.perf_counter() - t
-        intact = self._min_over_ranks("read", [int(i not in lost) for i in range(len(parts))])
-        aux = None
-        if all(intact):
-            t = time.perf_counter()
-            aux = self._put_state((tail[0], self.store.segments(tail[0], st.base, tail[1])), slot)
-            t_put += time.perf_counter() - t
-        else:
-            for (kind, ref, *_), ok in zip(parts, intact):
-                if not ok:
-                    self._lost(kind, ref)
-        if cuda:
-            t = time.perf_counter()
-            torch.cuda.current_stream().synchronize()  # the kernels read the staging buffer, which the next restore refills
-            t_put += time.perf_counter() - t
-        return aux, sum(sizes) if aux is not None else 0, t_read, t_put
 
     def _kv_targets(self):
         kvp = self.kv_pool
@@ -1009,6 +1218,8 @@ class SsdTier:
                 "settle_ms_max": round(1000 * self.settle_max, 1),
                 "step_ms_total": round(1000 * self.step_seconds, 1), "step_ms_max": round(1000 * self.step_max, 1),
                 "restore_ms_avg": round(1000 * self.restore_seconds / max(1, self.restores), 1),
+                "async_restores": self.async_restores, "restore_wait_steps": self.restore_wait_steps,
+                "restore_blocked_ms_total": round(1000 * self.restore_blocked_seconds, 1),
                 "restore_gib": round(self.restore_bytes / GIB, 2),
                 "restore_read_gbps": round(self.restore_bytes / max(self.restore_read_seconds, 1e-9) / 1e9, 2),
                 "restore_scatter_ms_avg": round(1000 * self.restore_put_seconds / max(1, self.restores), 1),

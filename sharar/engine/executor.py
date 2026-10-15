@@ -296,6 +296,7 @@ class Executor:
             return
         if proposer is not None and proposer.requirements.capabilities.stored_payload:
             tier.register_codec(*proposer.auxiliary_codec())
+        tier.async_restore = cfg.ssd_async
         self.cache.ssd = tier
         listed = tier.rebuild(self.cache)
         # never fill the drive: at most what is stored plus the free space beyond a reserve (a tenth of the drive, at
@@ -323,6 +324,7 @@ class Executor:
             return 0
         ssd = self.cache.ssd
         before = ssd.tails
+        ssd.abort(self.cache)  # a restore still reading lands nowhere: the engine has stopped
         ssd.patient = True  # the engine has stopped: wait for staging room rather than drop a session
         self.cache.evict(need_pages=self.kv_pool.num_pages, need_slots=self.state_pool.num_slots)  # evicts every unlocked leaf
         ssd.drain(self.cache)
@@ -349,6 +351,17 @@ class Executor:
 
     def flush_cache(self) -> None:
         self.state.flush()
+
+    def await_restore(self, timeout: float = 0.01) -> None:
+        """Nothing runs but a restore's reads: wait for them a little rather than spin (a local wait; when the
+        restore counts as landed every rank agrees in `cache_step`)."""
+        ssd = self.cache.ssd if self.cache is not None else None
+        if ssd is not None:
+            ssd.wait(timeout)
+
+    def forget(self, req: Request) -> None:
+        """A queued request was cancelled: anything held for its admission goes."""
+        self.state.forget(req.prefill_ids)
 
     # ---- steps ----
     def _plan_paged_prefill(self, prefix_pages: torch.Tensor, new_tokens: int) -> None:

@@ -101,6 +101,7 @@ class EngineConfig:
     ssd_writers: int = 4                      # SHARAR_SSD_WRITERS: the store's writer threads (at least 1)
     ssd_staging_mib: int = 512                # SHARAR_SSD_STAGING_MIB: backup copies in flight to the writers
     ssd_chunk_mib: int = 256                  # SHARAR_SSD_CHUNK_MIB: each half of the restore staging buffer
+    ssd_async: bool = True                    # SHARAR_SSD_ASYNC=0: a restore pauses the engine until it lands (the old way)
     kv_pool_tokens: int | None = None         # SHARAR_KV_POOL_TOKENS: a fixed KV pool size, e.g. to compare the SSD tier on and off; unset: planned
     # --- traces
     traces: str | None = None                 # SHARAR_TRACES
@@ -165,6 +166,7 @@ class EngineConfig:
             ssd_writers=_positive(e, "SHARAR_SSD_WRITERS", 4),
             ssd_staging_mib=_positive(e, "SHARAR_SSD_STAGING_MIB", 512),
             ssd_chunk_mib=_positive(e, "SHARAR_SSD_CHUNK_MIB", 256),
+            ssd_async=_flag(e, "SHARAR_SSD_ASYNC", True),
             kv_pool_tokens=_int(e, "SHARAR_KV_POOL_TOKENS", 0) or None,
             traces=_str(e, "SHARAR_TRACES"),
             traces_max_mib=_int(e, "SHARAR_TRACES_MAX_MIB", 32768),

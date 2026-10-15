@@ -150,7 +150,10 @@ only. The next request that extends it reads back what the GPU no longer holds
 CUDA-registered staging buffer of two 256 MiB halves: the readers fill one half
 while the GPU scatters the previous chunk from the other in place, so the
 buffer (and the 1.1 GiB the pool plan reserves for the tier) does not grow with
-the context. Backup copies run on their own CUDA stream, beside the model's
+the context. The engine keeps serving other requests while a restore reads:
+the returning request waits in the queue, and the engine scatters each chunk
+as it lands (`SHARAR_SSD_ASYNC=0` makes it wait for the whole restore, as
+before). Backup copies run on their own CUDA stream, beside the model's
 kernels, and share a 512 MiB staging limit; a single larger object runs alone.
 A finished request's recurrent snapshot is written through at its end (where its
 conversation's next turn resumes), not at its prompt's end; a request that
