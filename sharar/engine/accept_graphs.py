@@ -17,6 +17,12 @@ and with the proposer (`accepted_prepare` / `accepted_publish`).
 
 Padded rows of a bucket carry budget 0 and ring slot 0: they emit nothing,
 reconstruct nothing into the dummy recurrent slot and write the dummy ring.
+
+Sampled batches of point-mass drafts (MTP) replay two graphs per bucket: a decision graph (the vocabulary
+top-k and kernels/sampled_verify.verify_candidates with Philox draws, which write the sampled target row: the drafts
+up to the accepted count, then the correction) and the commit graph above on that row, exact rule only. Between
+them the host reads whether every row's law fit its candidates; if one did not, nothing has been written yet and
+the round takes the host path.
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ def enabled() -> bool:
     from sharar.engine.config import current
     return current().device_accept  # opt-in: exact, +2% at batch one, no serving gain at batch four yet (roadmap item 3)
 META = 3 + MAX_STOPS  # budget, start, ring slot, stop ids
+SAMPLED_CANDIDATES, SAMPLED_TOP_K = 128, 64  # sampled rows: the vocabulary top-k the decision graph keeps, the top_k it serves
 
 
 class AcceptGraphs:
@@ -45,6 +52,9 @@ class AcceptGraphs:
         self._pool = torch.cuda.graph_pool_handle()
         self._st: dict[int, dict] = {}
         self._graphs: dict[int, torch.cuda.CUDAGraph] = {}
+        self._decide: dict[int, torch.cuda.CUDAGraph] = {}  # sampled batches: the decision, then the commit graph
+        self._commit: dict[int, torch.cuda.CUDAGraph] = {}
+        self.sampled = spec.device.type == "cuda" and spec.proposer.requirements.name == "mtp"  # point-mass drafts
 
     @staticmethod
     def supported(spec) -> bool:
@@ -53,6 +63,11 @@ class AcceptGraphs:
 
     def eligible(self, requests) -> bool:
         return all(r.params.greedy and (r.params.ignore_eos or len(r.params.stop_token_ids) <= MAX_STOPS) for r in requests)
+
+    def eligible_sampled(self, requests, proposal) -> bool:
+        return (self.sampled and proposal.probabilities is None and proposal.support is None
+                and all(not r.params.greedy and 0 < r.params.top_k <= SAMPLED_TOP_K and r.params.constraint is None
+                        and (r.params.ignore_eos or len(r.params.stop_token_ids) <= MAX_STOPS) for r in requests))
 
     def _static(self, b: int) -> dict:
         d, k, s = self.device, self.k, self.s
@@ -67,15 +82,45 @@ class AcceptGraphs:
             "packet": torch.zeros((b, 2 * k + s + 2), dtype=torch.int64, device=d),
             "host_packet": torch.zeros((b, 2 * k + s + 2), dtype=torch.int64, pin_memory=pin),
             "event": torch.cuda.Event(),
+            # sampled batches: per-row sampling parameters and Philox (seed, offset), the decision's outputs
+            "params": torch.zeros((b, 8), dtype=torch.float32, device=d),
+            "rng": torch.zeros((b, 2), dtype=torch.int64, device=d),
+            "host_params": torch.zeros((b, 8), dtype=torch.float32, pin_memory=pin),
+            "host_rng": torch.zeros((b, 2), dtype=torch.int64, pin_memory=pin),
+            "z_s": torch.zeros((b, s), dtype=torch.int64, device=d),
+            "flags_s": torch.zeros((b, k), dtype=torch.int64, device=d),
+            "fit": torch.zeros(b, dtype=torch.int32, device=d),
+            "host_fit": torch.zeros(b, dtype=torch.int32, pin_memory=pin),
+            "fit_event": torch.cuda.Event(),
         }
 
-    def _body(self, b: int, st: dict) -> None:
+    def _decide_body(self, b: int, st: dict) -> None:
+        """Sampled rows: the decision on the candidates, written as the target row the commit graph accepts on."""
+        from sharar.kernels.sampled_verify import verify_candidates
         vst = self.vg._st[b]
         k, s = self.k, self.s
-        z = vst["argmax"][:b * s].view(b, s)
-        logits = vst["logits"][:b * s].view(b, s, -1)[:, :k]
+        logits = vst["logits"][:b * s].view(b, s, -1)
+        values, index = logits.topk(SAMPLED_CANDIDATES, dim=-1)
+        y = st["y"]
+        accepted, correction, flags, fit = verify_candidates(values, index, y, st["params"], st["rng"])
+        offsets = torch.arange(s, device=self.device).unsqueeze(0)
+        drafted = torch.cat([y, y[:, -1:]], dim=1)
+        st["z_s"].copy_(torch.where(offsets < accepted.unsqueeze(1), drafted, correction.unsqueeze(1)))
+        st["flags_s"].copy_(flags)
+        st["fit"].copy_(fit)
+
+    def _body(self, b: int, st: dict, sampled: bool = False) -> None:
+        vst = self.vg._st[b]
+        k, s = self.k, self.s
         meta = st["meta"]
-        accepted, counts, flags = accept_block(st["y"], z, logits, st["relax"], meta[:, 0], meta[:, 3:])
+        if sampled:  # the decision graph's target row: the exact rule recovers its accepted count
+            z = st["z_s"]
+            accepted, counts, _ = accept_block(st["y"], z, None, st["relax"], meta[:, 0], meta[:, 3:])
+            flags = st["flags_s"].bool()
+        else:
+            z = vst["argmax"][:b * s].view(b, s)
+            logits = vst["logits"][:b * s].view(b, s, -1)[:, :k]
+            accepted, counts, flags = accept_block(st["y"], z, logits, st["relax"], meta[:, 0], meta[:, 3:])
         pool = self.ex.state_pool
         slots = vst["slots"][:b]
         self.spec.replay.run(pool, slots, counts.to(torch.int32))
@@ -93,22 +138,52 @@ class AcceptGraphs:
             st = self._static(b)
             self._st[b] = st
             self._graphs[b] = graph_set.capture(self._pool, lambda: self._body(b, st))
+            if self.sampled:
+                st["params"][:, :3] = 1.0  # a valid law for every row while capturing (temperature, top_k, top_p)
+                self._decide[b] = graph_set.capture(self._pool, lambda: self._decide_body(b, st))
+                self._commit[b] = graph_set.capture(self._pool, lambda: self._body(b, st, sampled=True))
         if log:
-            log(f"  captured device accept graphs: {len(self._graphs)}")
+            log(f"  captured device accept graphs: {len(self._graphs)}" + (f" (+{len(self._decide)} sampled)" if self.sampled else ""))
 
-    def round(self, batch, y: torch.Tensor, t0: float, t1: float) -> None:
-        """Replace SpecDecoder._accept for an eligible batch: replay, one wait, publish."""
+    def round(self, batch, y: torch.Tensor, t0: float, t1: float) -> bool:
+        """Replace SpecDecoder._accept for an eligible batch: replay, one wait, publish. A sampled batch first
+        replays its decision graph and reads whether every row fit its candidates; False (nothing written yet)
+        sends the round to the host path."""
         spec, ex = self.spec, self.ex
         reqs = batch.requests
         b = len(reqs)
         size = self.vg.pick(b)
         st = self._st[size]
         k, s = self.k, self.s
+        sampled = batch.sampled
+        if sampled:
+            from sharar.engine import sampling_rng
+            hp, hr = st["host_params"], st["host_rng"]
+            hp.zero_()
+            hp[:, :3] = 1.0  # padded rows: a valid law, never read
+            hr.zero_()
+            for i, (r, o) in enumerate(zip(reqs, sampling_rng.offsets(reqs, sampling_rng.VERIFY))):
+                p = r.params
+                hp[i, 0], hp[i, 1], hp[i, 2] = max(p.temperature, 1e-6), float(p.top_k), p.top_p
+                if p.relaxed:
+                    hp[i, 3], hp[i, 4] = float(p.accept_top_k), float(p.accept_margin)
+                hr[i, 0], hr[i, 1] = r.rng_seed, o
+            st["params"].copy_(hp, non_blocking=True)
+            st["rng"].copy_(hr, non_blocking=True)
+            st["y"][:b].copy_(y[:, :k])
+            if size > b:
+                st["y"][b:].zero_()
+            self._decide[size].replay()
+            st["host_fit"].copy_(st["fit"], non_blocking=True)
+            st["fit_event"].record()
+            st["fit_event"].synchronize()
+            if not bool(st["host_fit"][:b].all()):
+                return False  # a law wider than the candidates: the host path, nothing written
         observe = getattr(spec.depth_policy, "observe", None)  # adaptive depth learns each request's rate
         # Authorization and validation before any in-place write, as the host path does.
         ex.state.authorize_reconstruction(reqs, spec.replay, spec.conv_windows_all, verified_steps=s)
         starts, ring_slots = spec.proposer.accepted_prepare(reqs)
-        any_relaxed = any(r.params.relaxed for r in reqs)
+        any_relaxed = not sampled and any(r.params.relaxed for r in reqs)
         host_meta, host_relax = st["host_meta"], st["host_relax"]
         host_meta.fill_(-1)
         host_relax.zero_()
@@ -127,11 +202,12 @@ class AcceptGraphs:
             host_meta[b:, :3] = 0
         st["meta"].copy_(host_meta, non_blocking=True)
         st["relax"].copy_(host_relax, non_blocking=True)
-        st["y"][:b].copy_(y[:, :k])
-        if size > b:
-            st["y"][b:].zero_()
+        if not sampled:
+            st["y"][:b].copy_(y[:, :k])
+            if size > b:
+                st["y"][b:].zero_()
         try:
-            self._graphs[size].replay()
+            (self._commit if sampled else self._graphs)[size].replay()
             st["host_packet"].copy_(st["packet"], non_blocking=True)
             st["event"].record()
             t2 = time.perf_counter()
@@ -180,3 +256,4 @@ class AcceptGraphs:
         spec.draft_seconds += t1 - t0
         spec.verify_seconds += t2 - t1
         spec.accept_seconds += t3 - t2
+        return True

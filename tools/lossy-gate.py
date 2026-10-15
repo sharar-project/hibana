@@ -128,9 +128,33 @@ def engine_identity() -> str:
 
 
 def ensure_venv() -> None:
-    """The project's Python environment, as uv.lock pins it (`uv sync --frozen`; quick when it is current)."""
+    """The project's Python environment, as uv.lock pins it, with sharar-eval (`uv sync --frozen --extra eval`; quick
+    when it is current; without the extra, a sync would remove sharar-eval again)."""
     uv = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
-    subprocess.run([uv, "sync", "--frozen", "--quiet"], cwd=REPO, env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(VENV)}, check=True)
+    subprocess.run([uv, "sync", "--frozen", "--quiet", "--extra", "eval"], cwd=REPO, env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(VENV)},
+                   check=True)
+
+
+def sharar_eval(evals: Path | None, python: str | None) -> dict:
+    """Where sharar-eval runs: the `eval` extra in this project's environment (default), or a checkout given with
+    --evals / SHARAR_EVALS, run from its own .venv (unreleased sharar-eval changes). Returns its Python, working
+    directory, a label, its commit and the hash of its evals code (part of the baseline key)."""
+    if evals is None:
+        ensure_venv()
+        python = python or str(VENV / "bin" / "python")
+        probe = "import json; from evals import suite; print(json.dumps([suite.installed_commit(), suite.evals_tree()]))"
+        out = subprocess.run([python, "-c", probe], capture_output=True, text=True)
+        if out.returncode:
+            raise SystemExit(f"sharar-eval is not installed in {VENV}: `uv sync --extra eval` ({out.stderr.strip()[-300:]})")
+        commit, tree = json.loads(out.stdout)
+        return {"python": python, "cwd": REPO, "label": "eval extra", "commit": commit, "tree": tree}
+    if not (evals / "evals" / "suite.py").is_file():
+        raise SystemExit(f"{evals}: no sharar-eval checkout (or drop --evals / SHARAR_EVALS to use the eval extra)")
+    python = python or str(evals / ".venv" / "bin" / "python")
+    if not Path(python).is_file():
+        raise SystemExit(f"{python} not found: run `uv sync` in {evals}")
+    return {"python": python, "cwd": evals, "label": str(evals), "commit": git("rev-parse", "HEAD", cwd=evals),
+            "tree": git("rev-parse", "HEAD:evals", cwd=evals)}
 
 
 def gate_env() -> dict:
@@ -638,10 +662,10 @@ def main(argv=None) -> int:
     ap.add_argument("--battery", choices=sorted(BATTERIES), default="quick",
                     help="quick: the screen, then the full sets when close; hard / long / all: also sharar-eval's hard suite "
                          "(4-6 h per arm), long suite (RULER v2, ~3 h per arm) or both; agentic: Terminal-Bench 2.1 (~18 h per arm)")
-    ap.add_argument("--evals", type=Path, default=Path(os.environ.get("SHARAR_EVALS") or REPO.parent / "sharar-eval"),
-                    help="sharar-eval checkout (default: SHARAR_EVALS, else beside this one)")
+    ap.add_argument("--evals", type=Path, default=Path(os.environ["SHARAR_EVALS"]) if os.environ.get("SHARAR_EVALS") else None,
+                    help="a sharar-eval checkout to run instead of the eval extra (default: SHARAR_EVALS, else the extra)")
     ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
-                    help="host Python for sharar-eval (default: its .venv)")
+                    help="sharar-eval's Python (default: this environment's, or the checkout's .venv)")
     ap.add_argument("--hold-minutes", type=float, default=45, help="longest GPU hold per phase")
     ap.add_argument("--no-needles", action="store_true")
     ap.add_argument("--report", action="store_true", help="only rebuild the scorecard from what exists")
@@ -664,16 +688,12 @@ def main(argv=None) -> int:
     LOCK = results / ".gpu.lock"  # the shared GPU lock every Sharar tool takes
     EVALS_ENV = evals_env(results, hf_cache)
     engine = engine_identity()
-    if not (args.evals / "evals" / "suite.py").is_file():
-        raise SystemExit(f"{args.evals}: no sharar-eval with evals.suite; set --evals or SHARAR_EVALS")
-    args.python = args.python or str(args.evals / ".venv" / "bin" / "python")
-    if not Path(args.python).is_file():
-        raise SystemExit(f"{args.python} not found: run `uv sync` in {args.evals}")
-    evals_commit = git("rev-parse", "HEAD", cwd=args.evals)
+    ev = sharar_eval(args.evals, args.python)
+    args.python, args.evals, evals_commit = ev["python"], ev["cwd"], ev["commit"]
     workload_sha = sha256(WORKLOAD.read_bytes())
     key_src = {"protocol": PROTOCOL, "target": args.target, "baseline": {"values": arms["baseline"].values, "plan": plans["baseline"]},
                "engine": engine, "workload": workload_sha, "worker": sha256(WORKER.read_bytes()),
-               "evals": git("rev-parse", "HEAD:evals", cwd=args.evals)}
+               "evals": ev["tree"]}
     key = sha256(json.dumps(key_src, sort_keys=True).encode())[:12]
     base_dir = results / "reviews" / "lossy-gate-baselines" / f"{args.target}-{args.baseline_profile}-{key}"
     spec = {"target": args.target, "candidate": {"profile": args.profile, "env": cand_over}, "baseline": {"profile": args.baseline_profile, "env": base_over},
@@ -691,7 +711,7 @@ def main(argv=None) -> int:
         run_dir = results / "reviews" / f"{dt.date.today().isoformat()}-lossy-gate-{args.name}"
     manifest = {**spec, "name": args.name, "config_file": str(conf_path) if conf_path else None, "through": args.through, "battery": args.battery,
                 "source": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--", "tools")),
-                "evals": str(args.evals), "evals_commit": evals_commit, "workload": json.loads(WORKLOAD.read_text())["version"],
+                "evals": ev["label"], "evals_commit": evals_commit, "workload": json.loads(WORKLOAD.read_text())["version"],
                 "workload_sha256": workload_sha, "baseline_dir": str(base_dir), "port": args.port,
                 "arms": {k: {"settings": v.values, "plan": plans[k]} for k, v in arms.items()}}
     if args.dry_run:

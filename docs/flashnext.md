@@ -97,7 +97,8 @@ rows past the budget eager.
   round differently: main at a fixed depth 8 and at depth 4 diverge on 5 of 6 prompts (from token 6 to 106), as
   adaptive depth does; each setting repeats its own outputs exactly. Under `fast`'s relaxed acceptance a deeper round
   gives the rule more positions; GSM8K (first 300) and HumanEval stayed within run-to-run noise (pooled -0.2 points
-  against a repeat of depth 4, whose two runs themselves differed by 1.3). `exact` and `throughput` keep depth 4.
+  against a repeat of depth 4, whose two runs themselves differed by 1.3). `exact` keeps depth 4; `throughput` verifies 3 drafts from 16 requests up (with 3-bit experts on one Spark; #172: at
+  32-128 requests a verified row costs about 0.5 ms and depth 3 was the best fixed depth in steady state).
 - **Draft-only head.** `SHARAR_DRAFT_HEAD=w3` gives the draft steps a 3-bit copy of the lm_head; its top 8
   candidates (`SHARAR_DRAFT_HEAD_RESCORE`) are rescored with the target's FP8 rows, so the draft picks what the
   full head would except on near-ties. Exact acceptance is unaffected. `SHARAR_DRAFT_VOCAB` restricts the draft

@@ -6,7 +6,7 @@
 #   Cleanup:  tools/ci/gb10.sh --cleanup
 #
 # Stages (each needs the one before it to pass, so old code is never tested):
-#   venv      the Python environment for this checkout: `uv sync --frozen` into UV_PROJECT_ENVIRONMENT (default
+#   venv      the Python environment for this checkout: `uv sync --frozen --extra eval` into UV_PROJECT_ENVIRONMENT (default
 #             ~/sharar-ci/venv, kept between runs; uv.lock decides what it holds)
 #   gpu       tests/unit and tests/gpu from it (`uv run pytest`, SHARAR_RUN_GPU=1, under the memory guard)
 #   serve     serve each target from it (`sharar serve <target>` in the foreground on port 30011, 32K context) and
@@ -24,7 +24,7 @@
 # "gave way" (exit 0). A skipped or interrupted nightly run is not recorded as tested.
 #
 # Settings come from ~/sharar-ci/gb10.env (SHARAR_CONFIG_FILE): SHARAR_HF_CACHE, SHARAR_RESULTS, SHARAR_AIPERF,
-# optionally SHARAR_FLASHNEXT_CACHE and SHARAR_EVALS (the sharar-eval checkout, default ~/sharar-eval).
+# optionally SHARAR_FLASHNEXT_CACHE. sharar-eval is the `eval` extra of the environment the venv stage syncs.
 set -Euo pipefail
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 cd "$(dirname "$SELF")/../.."
@@ -42,7 +42,6 @@ export SHARAR_CONFIG_FILE="${SHARAR_CONFIG_FILE:-$HOME/sharar-ci/gb10.env}"
 set -a; source "$SHARAR_CONFIG_FILE"; set +a
 : "${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in $SHARAR_CONFIG_FILE}"
 : "${SHARAR_RESULTS:?set SHARAR_RESULTS in $SHARAR_CONFIG_FILE}"
-EVALS="${SHARAR_EVALS:-$HOME/sharar-eval}"
 export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$HOME/sharar-ci/venv}"
 export PATH="$HOME/.local/bin:$PATH"   # uv
 LOCK="$SHARAR_RESULTS/.gpu.lock"
@@ -124,7 +123,7 @@ for root in filter(None, sys.argv[1:]):
 
 # ---- stages (each runs in its own session: `gb10.sh --stage NAME`) ----
 stage_venv() {
-  uv sync --frozen --quiet
+  uv sync --frozen --quiet --extra eval
 }
 
 # tests/unit too: some unit tests need the model or the GPU and only run here. Test temp files go in ci-out/ on
@@ -181,7 +180,7 @@ stage_evaluate() {
     paired=(); [[ -e "$base" ]] && paired=(--baseline "$(realpath "$base")")
     evict_models
     python3 tools/evaluate.py --target "$target" --profile fast --tasks gsm8k,humaneval --limit 300 --speed --workload all \
-      --name "$name" --evals "$EVALS" "${paired[@]}" || { echo "$target: evaluate did not complete"; rc=1; continue; }
+      --name "$name" "${paired[@]}" || { echo "$target: evaluate did not complete"; rc=1; continue; }
     dir="$(ls -d "$SHARAR_RESULTS"/reviews/*-evaluate-"$name" | tail -1)"
     echo "$dir" >>"$OUT/evaluate-dirs"
     verdict="$(python3 - "$dir" "$MIN_QUALITY_DROP" "$MAX_P" "$MAX_SPEED_DROP" <<'EOF'

@@ -31,6 +31,7 @@ class Request(RequestState):
     prefill_pos: int = 0  # prompt tokens whose state/KV exist (cached + chunks done)
     replay_len: int = 0  # emitted outputs included in prefill after retraction
     generator: torch.Generator | None = None  # request-owned, survives retraction
+    rng_seed: int = 0  # Philox seed of the speculative draws (engine/sampling_rng.py), set with the generator
     # progress and timing
     finished: bool = False
     finish_reason: str = ""

@@ -24,6 +24,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest==9.1.1", "httpx==0.28.1"]
+eval = ["sharar-eval @ git+https://github.com/abdelfattah-lab/sharar-eval@080cd5d5d2c38dfd8566418650fc59b6155707aa"]
 
 # The GB10 environment: `uv sync` installs it (uv.lock pins every package; CPU CI uses pip and constraints/cpu.txt).
 [dependency-groups]

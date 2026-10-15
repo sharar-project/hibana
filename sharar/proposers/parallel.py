@@ -12,7 +12,7 @@ import torch
 
 from sharar.target import DEFAULT_TARGET
 from sharar.engine.contracts import Capabilities, FeatureRequest, ProposerRequirements
-from sharar.engine.rejection import Proposal, distribution
+from sharar.engine.rejection import Proposal, sample_lattice
 
 from sharar.model.qwen38_config import DRAFT_PINS as PINS  # the pinned parallel drafts
 
@@ -247,26 +247,20 @@ class ParallelProposer:
         if not sampled:
             from sharar.kernels.draft_selection import greedy_lattice
             return Proposal(greedy_lattice(candidates, scores))
-        all_tokens, all_q = [], []
-        for row, req in enumerate(requests):
-            # The lattice walk is sequential, but every step stays on the
-            # device: indices are 1-element tensors used with index_select, so
-            # no step converts a CUDA scalar to a Python int (a host sync).
-            local = torch.zeros(1, dtype=torch.int64, device=device)
-            chosen, laws = [], []
-            for j in range(self.k):
-                law = distribution(scores[row, j].index_select(0, local)[0], req.params)
-                index = law.argmax().reshape(1) if req.params.greedy else torch.multinomial(law, 1, generator=req.generator)
-                token = candidates[row, j].index_select(0, index)[0]
-                local = index
-                chosen.append(token)
-                if sampled:
-                    laws.append(law)
-            all_tokens.append(torch.stack(chosen))
-            if sampled:
-                all_q.append(torch.stack(laws))
-        return Proposal(torch.stack(all_tokens), torch.stack(all_q) if sampled else None,
-                        candidates if sampled else None)
+        # One batched walk of the lattice for every row (rejection.sample_lattice): each step draws from the
+        # request's law over the candidates that follow its previous choice, with the request's own generator.
+        if candidates.is_cuda:  # one fused kernel; Philox draws at each request's (seed, round offset)
+            from sharar.engine import sampling_rng
+            from sharar.kernels.draft_selection import sampled_lattice
+            w = candidates.shape[-1]
+            params = sampling_rng.rows("lattice-params", [[max(r.params.temperature, 1e-6), r.params.top_k if 0 < r.params.top_k < w else 0,
+                                                           r.params.top_p, float(r.params.greedy)] for r in requests], torch.float32, device)
+            rng = sampling_rng.rows("lattice-rng", [[r.rng_seed, o] for r, o in zip(requests, sampling_rng.offsets(requests, sampling_rng.DRAFT))],
+                                    torch.int64, device)
+            tokens_s, laws = sampled_lattice(candidates, scores, params, rng)
+        else:
+            tokens_s, laws = sample_lattice(candidates, scores, [r.params for r in requests], [r.generator for r in requests])
+        return Proposal(tokens_s, laws, candidates)
 
     def accepted_batch(self, requests, emitted, features):
         """Project committed rows together, then scatter into private rings.

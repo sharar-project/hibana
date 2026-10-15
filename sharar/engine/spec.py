@@ -15,7 +15,8 @@ from sharar.engine.context import ForwardContext
 from sharar.engine.request import Request
 from sharar.engine.contracts import Proposer, StepInputs, VerifiedFeatures
 from sharar.engine.debug import debug_sync
-from sharar.engine.rejection import Proposal, distribution, plausible, verify_rows
+from sharar.engine import sampling_rng
+from sharar.engine.rejection import Proposal, distribution, plausible, verify_batch, verify_rows
 from sharar.engine import accept_graphs
 from sharar.engine.accept_graphs import AcceptGraphs
 
@@ -262,11 +263,12 @@ class SpecDecoder:
                 # (and the masked logits for the relaxed rule). Sampled batches read the masked logits themselves.
                 z_flat.copy_(logits.argmax(-1))
             accept = getattr(graphs, "accept", None)
-            if accept is not None and not batch.sampled and self.device_accept and accept.eligible(batch.requests):
+            if accept is not None and self.device_accept and (accept.eligible_sampled(batch.requests, batch.proposal) if batch.sampled
+                                                              else accept.eligible(batch.requests)):
                 if self.timing:
                     torch.cuda.synchronize()
-                accept.round(batch, batch.proposal.tokens, batch.started, batch.prepared)
-                return
+                if accept.round(batch, batch.proposal.tokens, batch.started, batch.prepared):
+                    return  # else a sampled law wider than its candidates: the host path below
             norm = norm_rows.view(b_sz, s_len, -1).clone() if self.proposer.requirements.features.final_norm else None
             layers = {lid: value.view(b_sz, s_len, -1).clone() for lid, value in layers.items()} if layers else None
             z = z_flat.view(b_sz, s_len, -1) if batch.sampled else z_flat.view(b_sz, s_len).clone()
@@ -399,10 +401,24 @@ class SpecDecoder:
             used = [sum(f) for f in flags]
         else:
             # Sampled batch: acceptance and the correction/bonus token are
-            # computed on the device per row (vectorized rejection sampling,
-            # `rejection.verify_rows`) and downloaded once with the drafts.
+            # computed on the device and downloaded once with the drafts. Point-mass
+            # drafts (MTP) and sparse draft laws (DFlash2) verify the whole batch on
+            # each row's candidates (`rejection.verify_batch`); dense draft laws, and
+            # laws wider than the candidates, verify row by row (`verify_rows`).
             acc_rows, corr_rows, target_rows, flag_rows = [], [], [], []
-            for i, req in enumerate(reqs):
+            batched = None
+            if (proposal.probabilities is None) == (proposal.support is None):  # point masses, or a sparse law on its support
+                batched = verify_batch(y, z, [r.params for r in reqs], [r.generator for r in reqs], proposal.probabilities, proposal.support,
+                                       rng=[[r.rng_seed, o] for r, o in zip(reqs, sampling_rng.offsets(reqs, sampling_rng.VERIFY))])
+            if batched is not None:
+                acc_b, corr_b, flags_b, argmax_b = batched
+                # sampled rows carry only their correction at index a (-1 elsewhere); greedy rows every argmax, for traces
+                targets = torch.full((len(reqs), s_len), -1, dtype=y.dtype, device=y.device).scatter_(1, acc_b.view(-1, 1), corr_b.view(-1, 1))
+                if argmax_b is not None:
+                    greedy_rows = torch.tensor([r.params.greedy for r in reqs], device=y.device).view(-1, 1)
+                    targets = torch.where(greedy_rows, argmax_b.to(y.dtype), targets)
+                acc_rows, corr_rows, flag_rows, target_rows = list(acc_b), list(corr_b), list(flags_b.to(torch.int64)), list(targets)
+            for i, req in enumerate(reqs if batched is None else ()):
                 if req.params.greedy:
                     target_ids = z[i].argmax(-1)
                     match = (y[i] == target_ids[:k]).to(torch.int64)

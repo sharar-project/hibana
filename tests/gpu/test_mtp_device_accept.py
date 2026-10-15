@@ -96,3 +96,31 @@ def test_mtp_pools_are_clean_after_device_rounds(runtime):
     ex, prompts = runtime
     run_rounds(ex, prompts[:4], [SamplingParams(max_new_tokens=20, ignore_eos=True)] * 4, rounds=6, device_accept=True)
     assert ex.kv_pool.free_count == 35000 - 1 and ex.state_pool.free_count == 12 - 1
+
+
+@pytest.mark.parametrize('batch', [1, 3])
+@pytest.mark.parametrize('rounds', [1, 8])
+def test_mtp_sampled_device_round_matches_host_round(runtime, batch, rounds):
+    """Sampled requests: the device path (decision and commit graphs) and the host path decide with the same
+    kernel at the same Philox offsets, so the first round agrees exactly (tokens and committed state) and later
+    rounds up to the first whose counts differ (the device pass's draft feedback rounds differently, as greedy)."""
+    ex, prompts = runtime
+    params = [SamplingParams(max_new_tokens=40, ignore_eos=True, temperature=1.0, top_k=20, top_p=0.95, seed=100 + i) for i in range(batch)]
+    host = run_rounds(ex, prompts[:batch], params, rounds, device_accept=False)
+    device = run_rounds(ex, prompts[:batch], params, rounds, device_accept=True)
+    agree = next((j for j, (a, b) in enumerate(zip(device[3], host[3])) if a != b), min(len(device[3]), len(host[3])))
+    assert agree >= 1, (device[3], host[3])
+    for i, (out_d, out_h) in enumerate(zip(device[0], host[0])):
+        n = 1 + sum(c[i] for c in host[3][:agree])
+        assert out_d[:n] == out_h[:n], (batch, rounds, i, agree)
+    if rounds == 1:
+        for (ssm_d, conv_d), (ssm_h, conv_h) in zip(device[1], host[1]):
+            assert torch.equal(ssm_d, ssm_h) and torch.equal(conv_d, conv_h)
+
+
+def test_mtp_sampled_rows_wider_than_the_candidates_take_the_host_path(runtime):
+    """top_k above SAMPLED_TOP_K is not eligible for the device path, and the round still completes on the host."""
+    ex, prompts = runtime
+    params = [SamplingParams(max_new_tokens=12, ignore_eos=True, temperature=1.0, top_k=200, top_p=0.95, seed=7)]
+    out = run_rounds(ex, prompts[:1], params, rounds=3, device_accept=True)
+    assert len(out[0][0]) > 1
