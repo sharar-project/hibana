@@ -28,6 +28,9 @@ class FakeSsd:
     def flush(self):
         self.flushes += 1
 
+    def abort(self, cache):
+        pass
+
 
 def make(keep=True):
     kv, st = FakePool(1000), FakePool(20)

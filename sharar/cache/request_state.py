@@ -75,7 +75,8 @@ class StateManager:
             return self.kv.free_count >= len(ids) + reserve and self.recurrent.free_count >= 1
         # Obtain a private slot before pinning a path that might otherwise own
         # every state slot. Budget only the uncached suffix and decode reserve.
-        self.cache.restore(ids[:-1], reserve + 1)  # a session on the SSD comes back before it is matched
+        if not self.cache.restore_async(ids[:-1], reserve + 1):  # a session on the SSD comes back before it is matched
+            return False  # its reads are still landing; the engine serves everyone else meanwhile
         self.cache.evict(need_slots=1)
         match = self.cache.match(ids[:-1], touch=False)
         self.cache.lock(match.node, 1)
@@ -85,6 +86,11 @@ class StateManager:
             return self.kv.free_count >= need and self.recurrent.free_count >= 1
         finally:
             self.cache.lock(match.node, -1)
+
+    def forget(self, ids: list[int]) -> None:
+        """A queued request is gone: a restore holding its path lets go."""
+        if self.cache is not None:
+            self.cache.release(ids[:-1])
 
     def ensure_pages(self, count: int) -> None:
         if self.kv.free_count < count and self.cache is not None:
@@ -105,6 +111,7 @@ class StateManager:
                     self.cache.lock(match.node, 1)
                 else:
                     match = None
+                self.cache.release(ids[:-1])  # a restore that held this path for the request: the match holds it now
             prefix = match.length if match is not None else 0
             if self.cache is not None:
                 self.cache.evict(need_pages=len(ids) - prefix, need_slots=1)

@@ -10,7 +10,7 @@ them, and the SSD tier below them (on in every profile; `SHARAR_SSD=0` turns it 
                          ┌──────────────────────────── engine thread ────────────────────────────┐
   request ──► admission ─┤ RadixCache.match(ids)                                                 │
                          │   │  deepest L1 prefix with a GDN snapshot                              │
-                         │   │  deeper resume point on the SSD? ──► SsdTier.restore()  ────────┐   │
+                         │   │  deeper resume point on the SSD? ──► SsdTier.restore_async() ───┐   │
                          │   ▼                                                                 │   │
                          │ prefill the rest ─► decode ─► finish ─► RadixCache.insert()         │   │
                          │                                          │                          │   │
@@ -89,8 +89,10 @@ flipped byte or a torn write is a miss, never wrong KV. Startup also drops a fil
                                    ──► demote: pages and slot freed, node stays (SSD-only)
                                    ▼
  next turn ──► match(): L1 prefix ends at depth d, a ready tail at depth D > d
-           ──► restore(): read blocks (d, D] and the tail, scatter, insert back into L1
-           ──► prefill only the new tokens
+           ──► restore_async(): take pages and a slot, lock the path; a worker reads blocks (d, D] and the tail
+               while the engine serves everyone else and scatters each chunk as it lands; the request waits
+           ──► step(): once every rank read it all, import the tail's state, insert back into L1, hold it
+           ──► admission: match, prefill only the new tokens
                                    ▼
  disk over budget ──► drop SSD-only leaves (LRU), then disk copies of GPU-resident nodes
  shutdown ──► demote every session; a restart with the same identity lists them again
@@ -115,7 +117,17 @@ prefills from the L1 prefix as if the SSD copy never existed.
 ```
 
 On GB10 the tier registers the staging buffer with CUDA, and its device pointer is its host address, so the
-scatter kernels read it in place: no host memcpy and no host-to-device copy. The chunk size, not the context,
+scatter kernels read it in place: no host memcpy and no host-to-device copy.
+
+The engine does not wait for the reads (`restore_async`). A worker thread reads and checks each chunk; the engine
+thread scatters it on the main stream at its next step, a few milliseconds of kernel launches, and the reader
+refills that half once the scatter has read it. The scatter stays on the engine thread on purpose: issued from the
+worker, the same launches waited on the GIL behind the busy engine thread and took 170-270 ms per 500 MB restore
+instead of 2-5 ms. One restore runs at a time (they share the buffer and the drive); the next request that needs one
+waits for it. A restore that landed keeps its path locked until its request is admitted, so eviction cannot take it
+first. On two Sparks each rank reads its own heads, and the ranks agree each step whether every rank's reads have
+landed before either imports the state (one integer all-reduce per step while a restore is in flight).
+`SHARAR_SSD_ASYNC=0` restores with the engine waiting, as before. The chunk size, not the context,
 bounds the buffer, so the pool plan reserves a constant for it (`SsdTier.memory_bound`).
 
 ## What a restore costs

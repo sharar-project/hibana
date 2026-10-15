@@ -115,6 +115,9 @@ class Scheduler:
         req.cancel()
         if req in self.queue:
             self.queue.remove(req)
+            forget = getattr(self.ex, "forget", None)  # not in ExecutionBackend: test executors lack it
+            if forget is not None:
+                forget(req)  # a restore may hold its path
             req._finish("cancelled")
             req.released = True  # queued requests own no resources
             self.metrics.cancelled += 1
@@ -162,6 +165,10 @@ class Scheduler:
         if self.on_progress:
             self.on_progress()
         self._reap()
+        if self.queue and not self.prefilling and not self.running:
+            wait = getattr(self.ex, "await_restore", None)  # not in ExecutionBackend: test executors lack it
+            if wait is not None:
+                wait()  # the head waits for an SSD restore and nothing else runs: no busy loop meanwhile
         self.metrics.steps += 1
         self.metrics.step_seconds += time.perf_counter() - t0
 
