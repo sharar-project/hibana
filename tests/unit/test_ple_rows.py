@@ -96,7 +96,7 @@ def test_where_mincore_cannot_see_the_page_cache_every_row_goes_to_the_threads(t
 
 
 def test_native_gather_reads_every_row_once(table):
-    """#172: the native pool reads each row once (a page-cache read or a blocking one), in the caller's order, any
+    """the native pool reads each row once (a page-cache read or a blocking one), in the caller's order, any
     count of rows including across shard boundaries and repeats."""
     from sharar.model.flashnext import ple
     if ple._native() is None:

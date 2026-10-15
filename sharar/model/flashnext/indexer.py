@@ -102,7 +102,7 @@ class FlashNextIndexer:
         One gather from the sequences' concatenated pages, its indices computed on the host and uploaded from a pinned
         buffer: a handful of launches whatever the batch. The loop per sequence it replaces queued ~8 small kernels per
         sequence behind the draft graphs; at 128 requests the host blocked ~39 ms on the full launch queue, so the
-        verification's PLE rows were read only after the drafts finished (#172)."""
+        verification's PLE rows were read only after the drafts finished."""
         import numpy as np
         firsts = np.fromiter((first for first, _, _ in seqs), dtype=np.int64, count=len(seqs))
         counts = np.fromiter((n for _, n, _ in seqs), dtype=np.int64, count=len(seqs))

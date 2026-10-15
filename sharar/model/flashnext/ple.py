@@ -135,7 +135,7 @@ class PleTable:
         local = flat - self.starts[shard]
         native = _native() if self.native else None
         if native is not None and n:
-            # every row from a native pool without the GIL: a non-blocking page-cache read, else a blocking one (#172)
+            # every row from a native pool without the GIL: a non-blocking page-cache read, else a blocking one
             hits, misses, errors = native.gather(self._fds_t, self._offsets_t, torch.from_numpy(np.ascontiguousarray(shard, dtype=np.int64)),
                                                  torch.from_numpy(np.ascontiguousarray(local, dtype=np.int64)), torch.from_numpy(out),
                                                  self.NATIVE_THREADS)

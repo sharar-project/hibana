@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// PLE table rows from the host shards in one call (#172): every row is read by a pool of native threads with
+// PLE table rows from the host shards in one call: every row is read by a pool of native threads with
 // preadv2(RWF_NOWAIT) first (a page-cache read that never blocks) and a blocking pread when the page is not cached,
 // so cached rows cost a syscall and the misses' NVMe latencies overlap across the pool, all without the GIL. The
 // Python gather paid ~2.4 us of interpreter work per row (mincore + memmove through ctypes) and serialized its

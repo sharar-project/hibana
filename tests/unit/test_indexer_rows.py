@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""FlashNextIndexer.static_rows (#172): the batched index build equals the per-sequence rule it replaced."""
+"""FlashNextIndexer.static_rows: the batched index build equals the per-sequence rule it replaced."""
 import random
 
 import pytest
