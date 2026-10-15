@@ -92,7 +92,6 @@ class FakeExecutor:
         req.pages = self.kv_pool.alloc(len(ids))
         req.prefill_pos = 0
         req.state = State.PREFILL
-        req.t_admit = self.clock
         return req
 
     def prefill(self, req, max_tokens=None):
@@ -245,7 +244,7 @@ def test_decode_never_waits_more_than_two_prefill_steps():
     while a.state != State.RUNNING:
         sched.step()
         run_steps += 1
-    b = submit(sched, ex, 8192, 8)  # a long prompt arrives while a decodes
+    submit(sched, ex, 8192, 8)  # a long prompt arrives while a decodes
     gaps = []
     last = ex.clock
     while not a.finished:

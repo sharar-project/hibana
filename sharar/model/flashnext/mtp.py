@@ -33,7 +33,7 @@ class FlashNextMtpHead(MtpLayer):
         # drafts through the target's vocabulary-parallel lm_head (`VocabParallelHead`: each rank reads its rows).
         t = self.target = getattr(model, "full_target", model.target)
         self.tensor_parallel = t is not model.target
-        self.embed, self.lm_head, self.mixer_target = model.embed, model.lm_head, model.mixer
+        self.embed, self.lm_head = model.embed, model.lm_head
         from sharar.proposers.draft_head import TargetHead, VocabParallelHead
         # replaced by set_draft_head (#35)
         self.draft_head = VocabParallelHead(self.lm_head) if self.tensor_parallel else TargetHead(self.lm_head)

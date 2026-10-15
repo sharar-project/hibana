@@ -13,7 +13,7 @@ from flashinfer import fp4_quantize as _fp4_quantize, mm_fp4 as _mm_fp4
 from sharar.kernels.fp8_gemv_cuda import fp8_gemv_cuda
 from sharar.kernels.fp8_quant import quant_fp8
 from sharar.kernels.nvfp4_quant import nvfp4_quantize
-from sharar.weights.modelopt import FP8_MAX, Fp8Linear, Nvfp4Linear
+from sharar.weights.modelopt import Fp8Linear, Nvfp4Linear
 from sharar.kernels import prefill_gemm, stable, verify_gemm, w3
 
 # cuBLAS FP8 GEMM reaches ~60% of DRAM bandwidth at M<=4 on SM121; the streaming

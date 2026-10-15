@@ -14,7 +14,6 @@ from sharar.api.server import create_app
 from sharar.engine.depth import FixedDepth
 from sharar.engine.executor import Executor
 from sharar.engine.graphs import capture_sizes, check_context_capacity
-from sharar.engine.request import Request
 from sharar.engine.sampler import InvalidRequest, Sampler, SamplingParams
 from sharar.engine.scheduler import Scheduler, SchedulerConfig
 from sharar.engine.spec import SpecDecoder

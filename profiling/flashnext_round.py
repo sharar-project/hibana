@@ -459,7 +459,7 @@ def phase_kernels(ex, tok, out, tokens: int, batch: int = 1, accept: str | None 
     for e in events:
         if e.get("ph") == "X" and e.get("cat") in ("kernel", "gpu_memcpy", "gpu_memset"):
             acts[e["args"].get("correlation")].append(e)
-    kinds, replays, graph_corr = {}, defaultdict(int), set()
+    kinds, replays = {}, defaultdict(int)
     li = 0
     for start, end, kind in ranges:
         while li < len(launches) and launches[li][0] < start:

@@ -18,8 +18,6 @@ class Mlp:
                                                        ColumnParallel((intermediate_size, intermediate_size)))
         self.down: Nvfp4Linear = load_nvfp4_linear(w, [f"{prefix}.down_proj"], device, ROW_PARALLEL)
         self.fused_silu_quant = fused_silu_quant
-        self._down_scale_inv_1d = self.down.input_scale_inv.reshape(1)
-        self._masked_m: dict[int, torch.Tensor] = {}
 
     def __call__(self, x: torch.Tensor | None, prequantized: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:
         """x [rows, H] BF16, or None with `prequantized`: x already quantized for gate_up (the fused prefill norm)."""

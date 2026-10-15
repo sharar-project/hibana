@@ -41,7 +41,7 @@ the command line (`sharar serve --help`), the environment, the config file (`SHA
 `config/gb10.env` in the checkout, else `~/.config/sharar/sharar.env`; [example](../config/gb10.env.example)), the
 target's settings (port, service, drafter), the profile's defaults, then the built-in defaults: models in
 `SHARAR_HF_CACHE` (default `$HF_HOME`, else `~/.cache/huggingface`; Flash-Next in `SHARAR_FLASHNEXT_CACHE`, default the
-same) and results, traces, sessions, drafter runs, 3-bit checkpoints and logs in `SHARAR_RESULTS` (default
+same) and results, traces, sessions, 3-bit checkpoints and logs in `SHARAR_RESULTS` (default
 `~/.local/share/sharar`). The server reads the resolved settings once into `EngineConfig`
 ([engine/config.py](../sharar/engine/config.py)); `/get_server_info` reports them under `config`.
 
@@ -99,13 +99,6 @@ and the 27B's first token on a 10K-token prompt comes 14% later (3.08 to 3.51 s)
 
 A new lossy option enters `fast` (and so `throughput`) only through the lossy-change gate
 ([CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option)).
-
-### Settings
-
-Every `SHARAR_*` variable the launcher forwards is read once into one
-`EngineConfig` (`sharar/engine/config.py`) when the server starts; the command
-line overrides it. `GET /get_server_info` returns the effective value under
-`config`, so a run records exactly what it served.
 
 ## Request traces
 
