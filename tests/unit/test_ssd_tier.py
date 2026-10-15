@@ -704,3 +704,18 @@ def test_pages_beside_the_kv_travel_with_it(tmp_path):
     draft.zero_()
     assert tier.restore(cache, IDS + [7]) == len(IDS)
     assert torch.equal(draft[cache.match(IDS).pages.to(torch.int64)].view(torch.uint8), want.view(torch.uint8))
+
+
+def test_eviction_writes_no_tail_for_a_node_whose_descendants_are_stored(tmp_path):
+    """Once a conversation's end is on the SSD, the snapshot at its prompt's end (or at a chunk checkpoint) is not
+    worth a copy when eviction reaches that node: the conversation resumes from the end's tail."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    prompt_end = 2 * BLOCK + 10
+    _, at_end = _two_resume_points(cache, tier, kv, sp, feats, prompt_end)
+    settle(cache, tier)
+    (head,) = cache.root.children.values()
+    assert head.snapshot_slot is not None and head.tail is None and tier.tails == 1  # only the end's, written through
+    evict_all(cache, kv)
+    settle(cache, tier)
+    assert tier.tails == 1 and head.tail is None and not head.in_l1  # demoted with its blocks, no tail written
+    assert tier.restore(cache, IDS + [7]) == len(IDS) and same(restored(cache, kv, sp, IDS), at_end)

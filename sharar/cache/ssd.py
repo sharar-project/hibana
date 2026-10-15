@@ -393,7 +393,10 @@ class SsdTier:
     def evicting(self, cache: RadixCache, leaf: Node) -> bool:
         """The tree calls this before it frees an L1 leaf's pages. Gathers the
         queued blocks with a token in the leaf while its pages exist, and writes
-        its tail; True keeps the leaf SSD-only."""
+        its tail unless the leaf has descendants on the SSD: those carry their own
+        tails, and the conversation resumes from them, so an interior snapshot
+        (a prompt's end, a chunk checkpoint) is not worth its copy. True keeps the
+        leaf SSD-only."""
         t0 = time.perf_counter()
         end = leaf.depth
         missing, node = end // self.block, leaf
@@ -410,7 +413,8 @@ class SsdTier:
             self._gather_block(item, wait=True)
             self.forced += 1
         written = leaf.tail is not None and leaf.tail.nbytes >= 0  # written through already: its snapshot may be gone
-        keep = written or (leaf.snapshot_slot is not None and end >= self.min_tokens and self._write_tail(leaf, end, wait=True))
+        keep = written or (not leaf.children and leaf.snapshot_slot is not None and end >= self.min_tokens
+                           and self._write_tail(leaf, end, wait=True))
         if not keep and not leaf.children:
             self._discard_node(leaf)
         spent = time.perf_counter() - t0  # the gathers above, and waits for staging room behind the writers
@@ -425,8 +429,8 @@ class SsdTier:
         end = leaf.depth
         if end < self.min_tokens:
             return True  # never stored: dropping it costs nothing
-        if leaf.snapshot_slot is not None and (leaf.tail is None or leaf.tail.nbytes < 0):
-            return False
+        if not leaf.children and leaf.snapshot_slot is not None and (leaf.tail is None or leaf.tail.nbytes < 0):
+            return False  # a true leaf's tail is due; one with SSD-only descendants needs none (`evicting`)
         start = end - len(leaf.key)
         for e in range((start // self.block + 1) * self.block, end + 1, self.block):
             ref = leaf.blocks.get(e)
