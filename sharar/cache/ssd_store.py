@@ -11,11 +11,12 @@ stores and returns objects. Two kinds:
   snapshot at its exact length, the state pool's per-slot aux and the drafter
   payload. Keyed by the last full block's hash and the partial tokens.
 
-A file is a header (magic, JSON, padded to 4 KiB) and the payload segments,
-each 256-byte aligned. The header names its own key, its parent hash, the
-tokens it covers and a CRC32 of the payload. A read recomputes the key from
-the parent and tokens and checks the segment sizes and the CRC, so a
-collision, a stale file, a flipped header byte or a torn write is a miss. A
+A file is a header (magic, the JSON's size and CRC32, the JSON, padded to
+4 KiB) and the payload segments, each 256-byte aligned. The header names its
+own key, its parent hash, the tokens it covers and a CRC32 of the payload. A
+read checks both CRCs, recomputes the key from the parent and tokens and checks
+the segment sizes, so a collision, a stale file, a flipped byte anywhere or a
+torn write is a miss. A
 writer writes each file to `.tmp`, fdatasyncs it and renames it into place: a
 crash loses only in-flight writes. The root hash folds in the serving identity
 (target, revision, decode weights, geometry), the block size and the format,
@@ -68,11 +69,12 @@ from pathlib import Path
 
 import torch
 
-FORMAT = 2
+FORMAT = 3
 BLOCK = 256  # tokens per KV block; divides the 2048-token prefill chunk
 WRITERS = 4  # writer threads: each object's fdatasync waits on the drive, so one thread would leave it mostly idle
 WRITE_BUFFER = 16 * 2**20  # each writer's O_DIRECT buffer: an object goes out in writes this large
 MAGIC = b"SHARSSD\n"
+FIXED = len(MAGIC) + 12  # the magic, then the JSON header's size (u64) and CRC32 (u32)
 ALIGN = 4096
 SEG_ALIGN = 256
 GIB = 2**30
@@ -326,7 +328,7 @@ class SsdStore:
             n += chunk.numel()
         header.crc, header.nbytes = crc, n
         head = json.dumps(header.__dict__).encode()
-        prefix = MAGIC + struct.pack("<Q", len(head)) + head
+        prefix = MAGIC + struct.pack("<QI", len(head), zlib.crc32(head)) + head
         path = self.path(header.kind, header.key)
         path.parent.mkdir(exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
@@ -393,18 +395,24 @@ class SsdStore:
 
     # ---- read ----
     def _read_header(self, f) -> tuple[Header, int]:
-        fixed = f.read(len(MAGIC) + 8)
-        size = self._header_size(fixed)
-        return Header(**json.loads(f.read(size))), _pad(len(MAGIC) + 8 + size)
+        size, crc = self._header_size(f.read(FIXED))
+        return self._parse_header(f.read(size), crc), _pad(FIXED + size)
 
     @staticmethod
-    def _header_size(fixed: bytes) -> int:
-        if len(fixed) != len(MAGIC) + 8 or fixed[: len(MAGIC)] != MAGIC:
+    def _header_size(fixed: bytes) -> tuple[int, int]:
+        """The JSON header's size and CRC32 from the bytes before it."""
+        if len(fixed) != FIXED or fixed[: len(MAGIC)] != MAGIC:
             raise ValueError("bad magic")
-        (size,) = struct.unpack("<Q", fixed[len(MAGIC):])
+        size, crc = struct.unpack("<QI", fixed[len(MAGIC):])
         if size > 16 * 2**20:
             raise ValueError("bad header size")
-        return size
+        return size, crc
+
+    @staticmethod
+    def _parse_header(head: bytes, crc: int) -> Header:
+        if zlib.crc32(head) != crc:
+            raise ValueError("header crc mismatch")
+        return Header(**json.loads(head))
 
     def size(self, kind: str, key: str) -> int | None:
         try:
@@ -429,9 +437,9 @@ class SsdStore:
         path = self.path(kind, key)
         try:
             size = self._read_file(path, view)
-            hsize = self._header_size(bytes(view[:len(MAGIC) + 8]))
-            header = Header(**json.loads(bytes(view[len(MAGIC) + 8:len(MAGIC) + 8 + hsize])))
-            offset = _pad(len(MAGIC) + 8 + hsize)
+            hsize, hcrc = self._header_size(bytes(view[:FIXED]))
+            header = self._parse_header(bytes(view[FIXED:FIXED + hsize]), hcrc)
+            offset = _pad(FIXED + hsize)
             if header.kind != kind or header.key != key or offset + header.nbytes > size:
                 raise ValueError("header does not match its name")
             header.check()
@@ -485,7 +493,7 @@ class SsdStore:
     def scan(self):
         """Every stored object's header and file size (payloads unread), for
         rebuilding the tree at startup. Deletes leftover `.tmp` files and any
-        file it cannot use."""
+        file it cannot use, a truncated one included."""
         for sub in sorted(self.dir.iterdir()) if self.dir.exists() else []:
             if not sub.is_dir():
                 continue
@@ -496,10 +504,13 @@ class SsdStore:
                 try:
                     with open(path, "rb") as f:
                         header, offset = self._read_header(f)
+                        size = os.fstat(f.fileno()).st_size
                     if path.name != f"{header.key}.{header.kind}":
                         raise ValueError("misnamed")
                     header.check()
-                    yield header, offset + _pad(header.nbytes)
+                    if size != offset + _pad(header.nbytes):
+                        raise ValueError("file size does not match its header")
+                    yield header, size
                 except (OSError, ValueError, TypeError, KeyError, RuntimeError):
                     self._unlink(path)
 

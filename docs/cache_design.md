@@ -72,8 +72,8 @@ A KV block's key chains a hash over every token from the start of the sequence; 
 the serving identity (target, revision, decode weights, geometry, block size, format). The store therefore keeps
 one copy of a shared prefix, whichever session wrote it, and another build never matches it. A tail's key hashes
 its last full block's hash with its partial tokens. A read recomputes the key from the header's parent hash and
-tokens and checks the segment sizes and the CRC, so a collision, a stale file or a torn write is a miss, never
-wrong KV.
+tokens and checks the segment sizes and two CRC32s, the header's and the payload's, so a collision, a stale file, a
+flipped byte or a torn write is a miss, never wrong KV. Startup also drops a file shorter or longer than its header says.
 
 ## Lifecycle of a session
 

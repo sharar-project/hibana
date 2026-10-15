@@ -221,6 +221,34 @@ def test_a_flipped_header_byte_is_a_miss(tmp_path):
 
 
 @pytest.mark.parametrize("entry", ["read", "scan"])
+def test_a_flipped_drafter_scalar_is_a_miss(tmp_path, entry):
+    """The scalars are in no key and no payload CRC: the header's own CRC covers them."""
+    store = SsdStore(tmp_path, IDENTITY)
+    segs = segments(n=5)
+    key = tail_hash(store.root, range(5))
+    put(store, header("tail", key, store.root, 0, range(5), segs, {"draft": [11, 42]}), segs)
+    path = store.path("tail", key.hex())
+    path.write_bytes(path.read_bytes().replace(b"[11, 42]", b"[11, 43]", 1))
+    if entry == "read":
+        assert read(store, "tail", key.hex()) is None and store.read_errors == 1
+        store.wait()
+    else:
+        assert list(store.scan()) == []
+    assert not path.exists()
+
+
+def test_scan_drops_a_truncated_file(tmp_path):
+    store = SsdStore(tmp_path, IDENTITY)
+    segs = segments(n=5)
+    key = tail_hash(store.root, range(5))
+    put(store, header("tail", key, store.root, 0, range(5), segs), segs)
+    path = store.path("tail", key.hex())
+    data = path.read_bytes()
+    path.write_bytes(data[:len(data) - 4096])  # the header intact, the last page gone
+    assert list(store.scan()) == [] and not path.exists()
+
+
+@pytest.mark.parametrize("entry", ["read", "scan"])
 @pytest.mark.parametrize("damage", ["unknown_dtype", "not_a_dtype", "duplicate_name", "negative_shape", "bad_start", "bad_scalars"])
 def test_malformed_metadata_is_a_miss_on_read_and_restart(tmp_path, entry, damage):
     store = SsdStore(tmp_path, IDENTITY)
