@@ -29,7 +29,7 @@ class MtpHead(MtpLayer):
         self.embed, self.lm_head = model.embed, model.lm_head
         self.hidden_width = t.hidden_size  # the hidden row the proposer carries
         from sharar.proposers.draft_head import TargetHead
-        self.draft_head = TargetHead(self.logits)  # the target's NVFP4 head (#45)
+        self.draft_head = TargetHead(self.logits)  # the target's NVFP4 head
         precision = precision or current().mtp_precision
         eps = t.rms_norm_eps
         g = lambda name: w.get(f"{PREFIX}.{name}").to(device)  # noqa: E731

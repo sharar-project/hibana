@@ -1,4 +1,4 @@
-"""Flash-Next PLE rows on the host (#36): the page-cache-first gather, the per-column hash and the
+"""Flash-Next PLE rows on the host: the page-cache-first gather, the per-column hash and the
 verification rows read column by column as the draft steps end, each against the reference path."""
 
 import json
@@ -54,7 +54,7 @@ def test_gather_matches_the_memory_maps(table):
 
 
 def test_without_rwf_nowait_the_maps_answer_and_keep_the_rows(table, monkeypatch):
-    """ZFS (#166): preadv refuses RWF_NOWAIT. The gather switches to the memory maps mid-call; rows it reads through
+    """ZFS: preadv refuses RWF_NOWAIT. The gather switches to the memory maps mid-call; rows it reads through
     them stay in the page cache, so the next gather copies them all without the threads."""
     import os
     rows = np.random.default_rng(2).integers(0, table.rows, size=(5, 16))
@@ -74,7 +74,7 @@ def test_without_rwf_nowait_the_maps_answer_and_keep_the_rows(table, monkeypatch
 
 def test_where_mincore_cannot_see_the_page_cache_every_row_goes_to_the_threads(table, monkeypatch):
     """Files this process neither owns nor may write: mincore would call every page resident, so the maps answer
-    through the threads only, as before #166."""
+    through the threads only."""
     import os
     from pathlib import Path
     from sharar.model.flashnext import ple
@@ -137,7 +137,7 @@ def test_streamed_verify_rows_match_the_block(table):
         extras._stream_verify_rows(out, reqs, columns, k)
         assert torch.equal(out, reference)
 
-    class Resident:  # two Sparks (#178): the ids column by column, then one device gather
+    class Resident:  # two Sparks: the ids column by column, then one device gather
         def gather(self, ids):
             return torch.from_numpy(table.gather(ids.numpy()))
     ple.resident = Resident()
@@ -147,7 +147,7 @@ def test_streamed_verify_rows_match_the_block(table):
 
 
 def test_resident_shares_give_the_host_rows(table, monkeypatch):
-    """Two Sparks (#178): each rank copies its heads' rows (here across shard boundaries) and gathers them; the
+    """Two Sparks: each rank copies its heads' rows (here across shard boundaries) and gathers them; the
     all-gather of both ranks' parts, in rank order, is the host gather's bytes."""
     from sharar import distributed
     h = _Hash()
@@ -170,7 +170,7 @@ def test_resident_shares_give_the_host_rows(table, monkeypatch):
 
 
 def test_prefetch_asks_for_every_page_the_rows_touch(table, monkeypatch):
-    """#178: WILLNEED on each distinct page a row lies on (both pages of a row across a page boundary)."""
+    """WILLNEED on each distinct page a row lies on (both pages of a row across a page boundary)."""
     import os
     from sharar.model.flashnext import ple as ple_module
     calls = []
@@ -188,7 +188,7 @@ def test_prefetch_asks_for_every_page_the_rows_touch(table, monkeypatch):
 
 
 def test_a_prompt_prefetches_its_later_chunks_once(table):
-    """#178: the first chunk of a prompt asks for the rows of the rest of it, once; nothing with resident heads."""
+    """The first chunk of a prompt asks for the rows of the rest of it, once; nothing with resident heads."""
     ple = _Hash()
     ple.table = table
     asked = []

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Calibrated 3-bit decode copies for the Flash-Next trunk (#6).
+"""Calibrated 3-bit decode copies for the Flash-Next trunk.
 
 GPTQ (sharar/weights/w3_calibration.py, the pass that took the 27B's 3-bit copies
 from GSM8K 92.0 to 94.5%) fitted from the checkpoint's BF16 trunk. Inputs are the

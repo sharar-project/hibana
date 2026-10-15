@@ -1,4 +1,4 @@
-"""Fetching a target's published calibrated 3-bit copies on first serve (#72, weights/w3_checkpoint.fetch)."""
+"""Fetching a target's published calibrated 3-bit copies on first serve (weights/w3_checkpoint.fetch)."""
 import json
 import sys
 import types
@@ -62,7 +62,7 @@ def test_fetch_keeps_a_local_calibration_and_says_how_to_switch(tmp_path, hub):
 
 
 def test_fetch_moves_current_off_an_earlier_fetched_revision(tmp_path, hub):
-    """#130 pinned a new Flash-Next checkpoint; machines with the old one linked must follow the pin."""
+    """A new pinned Flash-Next checkpoint: machines with the old one linked must follow the pin."""
     calls, _ = hub
     old = tmp_path / w3_checkpoint.fetched_name(FLASHNEXT, "970cbfc0cbc174d2f59d902eb4af0af07ece1564")
     publish(old, FLASHNEXT)

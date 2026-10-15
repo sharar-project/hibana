@@ -1,4 +1,4 @@
-"""Stop an agent from retrying a tool call its harness keeps refusing (#108).
+"""Stop an agent from retrying a tool call its harness keeps refusing.
 
 When a harness refuses a call (Claude Code without permission: "This command requires approval"), a frontier model
 reports it and stops. Qwen3.8 sometimes retries with small variations instead: 352 calls in five minutes on the 27B

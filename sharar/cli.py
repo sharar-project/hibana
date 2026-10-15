@@ -108,7 +108,7 @@ def run_engine(args, parser) -> int:
             parser.error("tensor parallel serves the 27B and Flash-Next")
         if family == "qwen38" and args.spec and args.proposer == "mtp":
             parser.error("the 27B serves tensor-parallel with DFlash2, not MTP")
-    # One configuration for the process: the environment with the command line applied (#44).
+    # One configuration for the process: the environment with the command line applied.
     engine_config.install(cfg.replace(spec=str(args.spec), traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
                                       target=target, max_context=max_context, accept_default=f"{accept_default[0]}:{accept_default[1]}",
                                       accept_default_sampled=bool(accept_default_sampled), max_batch=max_batch,

@@ -56,9 +56,9 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     started = time.time()
     # Messages API requests this server declines or reduces, to see what harnesses send.
     messages_stats = {"forced_tool_choice_rejected": 0, "server_tools_ignored": 0}
-    # Requests with constrained output (#16), by kind.
+    # Requests with constrained output, by kind.
     constrained_stats = {"json_schema": 0, "json_object": 0, "tool_call": 0}
-    # Turns the refusal guard changed (#108): a reminder added after repeated refusals, or the turn ended by the server.
+    # Turns the refusal guard changed: a reminder added after repeated refusals, or the turn ended by the server.
     guard_stats = {"refusal_reminders": 0, "refusal_stops": 0}
 
     def _guard(messages: list[dict], body: dict) -> tuple[list[dict], refusal_guard.Refusals | None]:
@@ -376,7 +376,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         limit = describe.get("context_length", targets.DEFAULT_TARGET.context_length)
         if "temperature" not in body and "temperature" not in (body.get("sampling_params") or {}):
             # OpenAI's default temperature, and both targets' generation_config (top_p 0.95 and top_k 20 are the
-            # defaults). OpenCode sends no sampling fields; greedy thinking looped to max_tokens in its runs (#28).
+            # defaults). OpenCode sends no sampling fields; greedy thinking looped to max_tokens in its runs.
             body = {**body, "temperature": 1.0}
         params = _sampling_from(body, max_default=max(1, limit - len(ids)))
         if spec is not None:
@@ -545,7 +545,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             max_tokens = min(max_tokens, limit - len(ids))  # clients size max_tokens for a larger window
         sampling = {k: body[k] for k in ("temperature", "top_p", "top_k", "trace", "accept_top_k", "accept_margin") if k in body}
         # Anthropic's default temperature, and both targets' generation_config (top_p 0.95 and top_k 20 are the
-        # chat defaults). Claude Code sends no sampling fields; greedy thinking looped to max_tokens in its sessions (#11).
+        # chat defaults). Claude Code sends no sampling fields; greedy thinking looped to max_tokens in its sessions.
         sampling.setdefault("temperature", 1.0)
         params = _sampling_from({**sampling, "max_tokens": max_tokens})
         if forced is not None:
@@ -787,7 +787,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "ledger_gib": {k: round(v / 2**30, 2) for k, v in ex.ledger.entries.items()},
         "speculative": {"algorithm": ex.spec.proposer.requirements.name, "num_draft_tokens": spec,
                         "depths_by_batch": ex.spec.depth_policy.depths,
-                        "adaptive_step_cost": getattr(ex.spec.depth_policy, "step_cost", None),  # #43; None: fixed depth
+                        "adaptive_step_cost": getattr(ex.spec.depth_policy, "step_cost", None),  # None: fixed depth
                         "draft_precision": draft_precision, "draft": getattr(ex.spec.proposer.model, "source", None)
                         if hasattr(ex.spec.proposer, "model") else None,
                         "accept_default": {"accept_top_k": accept_default[0], "accept_margin": accept_default[1],

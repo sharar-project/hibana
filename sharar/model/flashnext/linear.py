@@ -5,7 +5,7 @@ matrix itself for parity runs. A 3-bit decode copy can be attached later like th
 
 SHARAR_TRUNK_KEEP_BF16=<regex> keeps the matching projections in BF16 (a diagnostic: which
 module's quantization moves the logits, `profiling/flashnext_quant.py`). Finer FP8 scales (per
-row, per output channel) were measured and do not beat numerical noise (#5)."""
+row, per output channel) were measured and do not beat numerical noise."""
 
 from __future__ import annotations
 

@@ -138,7 +138,7 @@ class VerifyGraphs:
             st["slots"][b:].zero_()
         pad_kv = [torch.zeros(s + 1, dtype=torch.int32, device=self.device) for _ in range(size - b)]
         # Plan before the side inputs: they may wait for the drafted tokens, the plan needs only the pages,
-        # so the host plans while the draft graphs still run (#36).
+        # so the host plans while the draft graphs still run.
         self._plan(st, list(kv_all) + pad_kv)
         if st["side"] is not None:
             self.ex.extras.fill(st["side"], side[0], side[1], side[2], n, columns=side[3])

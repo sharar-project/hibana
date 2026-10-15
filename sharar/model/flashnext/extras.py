@@ -1,4 +1,4 @@
-"""Flash-Next's side inputs for a forward (#47): the PLE table rows and the sparse-attention bookkeeping.
+"""Flash-Next's side inputs for a forward: the PLE table rows and the sparse-attention bookkeeping.
 
 The engine hands every forward a `ForwardContext`; what Flash-Next needs beyond
 it lives in one `FlashNextSideInputs` value on `ctx.extras`, built by
@@ -6,7 +6,7 @@ it lives in one `FlashNextSideInputs` value on `ctx.extras`, built by
 
 - the two tokens before each sequence (the PLE's n-gram history) for prefill,
   and the gathered table rows of every decode or verify row (read on the host
-  from the NVMe table, or on two Sparks from each rank's resident share, #178);
+  from the NVMe table, or on two Sparks from each rank's resident share);
 - the indexer's per-sequence layout (eager), or its graph-safe key-maintenance
   rows (graphs), plus the page table a selecting graph reads past the budget.
 
@@ -53,7 +53,7 @@ class FlashNextExtras:
         self.budget, self.ratio = t.indexer_budget, t.indexer_compress_ratio
         self.variants = ("dense", "selecting") if self.budget and current().qsa_sparse_graphs else ("dense",)
         self._staging: torch.Tensor | None = None  # pinned PLE rows of a streamed verification (`_stream_verify_rows`)
-        self._prefetched = weakref.WeakSet()  # requests whose prompt rows `_prefetch_prompts` has asked for (#178)
+        self._prefetched = weakref.WeakSet()  # requests whose prompt rows `_prefetch_prompts` has asked for
         self._staged = torch.cuda.Event() if self.device.type == "cuda" else None
 
     # ---- dense or selecting ----
@@ -84,10 +84,10 @@ class FlashNextExtras:
     def _stream_verify_rows(self, out: torch.Tensor, reqs, columns, k: int) -> None:
         """`_verify_rows` column by column into `out` (device uint8 [B*(k+1), heads, row_bytes]): the pending
         tokens' rows while the first draft step runs, drafted token j's while step j+1 runs (`DraftColumns`),
-        so only the last column's read follows the drafts (#36). One upload from pinned memory."""
+        so only the last column's read follows the drafts. One upload from pinned memory."""
         from sharar.model.flashnext.ple import ROW_BYTES
         b, heads = len(reqs), self.ple.heads
-        if self.ple.resident is not None:  # the rows are in device memory (#178): row ids per column, then one gather
+        if self.ple.resident is not None:  # the rows are in device memory: row ids per column, then one gather
             ids = torch.empty((b, k + 1, heads), dtype=torch.int64)
             seqs = [self._history(r, r.context_len - 1) + [r.output_ids[-1]] for r in reqs]
             for j in range(k + 1):
@@ -127,8 +127,8 @@ class FlashNextExtras:
         return side
 
     def _prefetch_prompts(self, chunks) -> None:
-        """When a request's first prefill chunk runs, start reading the rows of the rest of its prompt from the NVMe
-        (#178), so its later chunks find them in the page cache while this one computes. Not with resident heads."""
+        """When a request's first prefill chunk runs, start reading the rows of the rest of its prompt from the NVMe,
+        so its later chunks find them in the page cache while this one computes. Not with resident heads."""
         if self.ple.resident is not None:
             return
         for req, start, n, _ in chunks:
@@ -164,7 +164,7 @@ class FlashNextExtras:
     def fill(self, side: FlashNextSideInputs, reqs, drafts: torch.Tensor | None, seqs, rows: int, columns=None) -> None:
         """Copy one step's values into a graph's static side inputs: `rows` real rows (padded rows keep page 0).
         The indexer rows come first: they need only positions and pages, while a verification's PLE rows
-        wait for the drafted tokens, so the host launches them while the draft graphs still run (#36).
+        wait for the drafted tokens, so the host launches them while the draft graphs still run.
         `columns` (`DraftColumns`, sequential drafts) lets the PLE rows follow the draft step by step."""
         if side.qsa_members is not None:
             from sharar.model.flashnext.indexer import FlashNextIndexer

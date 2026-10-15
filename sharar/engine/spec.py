@@ -65,11 +65,11 @@ class SpecDecoder:
         from sharar.engine.depth import parse_depths
         from sharar.engine.graphs import capture_sizes
         policy = parse_depths(current().spec_depths, capture_sizes(executor.max_batch), self.k)
-        if policy is not None:  # depth per batch bucket (#59): verify graphs only where a bucket uses the depth
+        if policy is not None:  # depth per batch bucket: verify graphs only where a bucket uses the depth
             self.depth_policy = policy
             self.verify_depths = policy.verify_depths
         if current().spec_step_cost and proposer.requirements.capabilities.short_drafts:
-            # Adaptive depth per request (#43): the depth above is the cap, and every depth below it verifies.
+            # Adaptive depth per request: the depth above is the cap, and every depth below it verifies.
             from sharar.engine.depth import AcceptanceDepth
             self.depth_policy = AcceptanceDepth(self.depth_policy, current().spec_step_cost)
             self.verify_depths = self.depth_policy.verify_depths

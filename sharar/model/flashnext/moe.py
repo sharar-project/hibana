@@ -5,7 +5,7 @@ Two expert formats, never both resident:
 - NVFP4 W4A4 (the checkpoint's ModelOpt packing) through FlashInfer's CUTLASS fused MoE, with w13 = [up rows;
   gate rows] per expert, block scales swizzled per expert, activations quantized once per layer with the
   loudest expert's calibrated scale.
-- 3-bit (#73) when the 3-bit copies are on and the W3 checkpoint carries this layer's experts: the layer then
+- 3-bit when the 3-bit copies are on and the W3 checkpoint carries this layer's experts: the layer then
   never reads the NVFP4 experts, and every call, decode to prefill, runs `kernels/w3_moe.py` (W3 format per
   expert, E4M3 activations). Under tensor parallelism each rank holds a range of whole experts (expert parallel)
   and sums the pairs routed to them: a partial sum, as the split NVFP4 experts give.

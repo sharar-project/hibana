@@ -33,8 +33,8 @@ TARGET_SETTINGS = {
 #   exact     the target's own distribution: exact acceptance, no lossy weight copies (benchmarks)
 #   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy requests and
 #             Flash-Next's sampled ones, top-2 within 1.0 for the 27B's sampled ones (at 3:2.0 its sampled thinking looped
-#             in Claude Code sessions, #11), the calibrated 3-bit copies, device-resident acceptance on Flash-Next (#36),
-#             and Flash-Next's draft depth per request (#43: up to 8 for one request, 4 for two or more; the others
+#             in Claude Code sessions), the calibrated 3-bit copies, device-resident acceptance on Flash-Next,
+#             and Flash-Next's draft depth per request (up to 8 for one request, 4 for two or more; the others
 #             verify 4 drafts)
 #   throughput  fast with more requests decoded together: the 27B 16 (full depth; batches of five or more verify on
 #             the original weights, GSM8K x1.74), Flash-Next 128 with its 3-bit experts (64 with NVFP4 experts), three
@@ -58,7 +58,7 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
     p["SHARAR_MAX_BATCH"] = "4"
     if flashnext:
         p["SHARAR_SPEC"] = "4"
-        if profile == "fast":  # adaptive depth (#43): h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
+        if profile == "fast":  # adaptive depth: h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
             # two Sparks: 0.14 drafted chat and prose too deep (-12%, -7% against depth 4); 0.2 keeps them within noise
             p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14" if tp == 1 else "0.2", SHARAR_SPEC_DEPTHS="2:4,4:4")
     if profile == "throughput":
@@ -67,7 +67,7 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
             # at 32-128 requests a verified row costs ~0.5 ms (one Spark, 3-bit experts) and depth 3 beat 4 in steady
             # state (32: 523 vs 516 tok/s, 64: 795 vs 783, 128: 1003 vs 974); NVFP4 experts and two Sparks are unmeasured
             p["SHARAR_SPEC_DEPTHS"] = "16:3,32:3,64:3,128:3" if flashnext_experts == "w3" and tp == 1 else "16:3"
-        # the 8-bit GDN state pays with many requests (#129, #161); `fast` keeps FP32: no gain at one request, slower prefill
+        # the 8-bit GDN state pays with many requests; `fast` keeps FP32: no gain at one request, slower prefill
         p["SHARAR_SSM_STATE"] = "int8"
     return p
 

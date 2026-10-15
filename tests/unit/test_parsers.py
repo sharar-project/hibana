@@ -48,7 +48,7 @@ def feed_all(p, text, size):
 
 @pytest.mark.parametrize("size", [1, 3, 1000])
 def test_tool_call_in_unclosed_reasoning_is_content(size):
-    """#120: the turn ends inside reasoning with a complete call; the call is content, the rest stays reasoning."""
+    """The turn ends inside reasoning with a complete call; the call is content, the rest stays reasoning."""
     p = ReasoningParser(in_reasoning=True, tools=True)
     assert feed_all(p, "Check the files.\n\n" + CALL, size) == ("Check the files.\n\n", CALL)
     assert (p.reasoning, p.content) == ("Check the files.\n\n", CALL)

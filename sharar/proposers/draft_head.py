@@ -1,4 +1,4 @@
-"""Draft heads: how a draft body turns its hidden rows into token choices (#45).
+"""Draft heads: how a draft body turns its hidden rows into token choices.
 
 Every speculator ends in a vocabulary projection: the MTP heads take the argmax,
 DFlash2's selector takes the top-k with values. The

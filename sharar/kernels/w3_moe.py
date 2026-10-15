@@ -1,4 +1,4 @@
-"""Three-bit routed experts for Flash-Next (#73): the W3 format of `kernels/w3.py` per expert, and a grouped
+"""Three-bit routed experts for Flash-Next: the W3 format of `kernels/w3.py` per expert, and a grouped
 kernel for any row count (`csrc/w3_gemm.cu`, namespace `moe`).
 
 Format: each expert is two W3 matrices, fc1 [1280, 2560] and fc2 [2560, 640]: 3-bit codes into an eight-level
@@ -26,7 +26,7 @@ from sharar.kernels import w3
 HIDDEN, INTER, TOPK, EXPERTS = 2560, 640, 10, 512
 ORDER_IN_KERNEL = 640  # up to this many (row, k) pairs the kernel sorts them itself
 # From this many rows each pass of an expert (up to 112 pairs) runs in its own block, next to the expert's other passes,
-# so its weights stream from DRAM about once instead of once per pass (#144). The same bits either way.
+# so its weights stream from DRAM about once instead of once per pass. The same bits either way.
 WIDE_ROWS = 1024
 RATIOS = tuple(round(0.5 + 0.025 * i, 3) for i in range(21))  # group scale = amax / max level * ratio, 0.5 .. 1.0
 

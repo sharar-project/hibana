@@ -336,7 +336,7 @@ def fp8_gemv_any(x_q: torch.Tensor, w: torch.Tensor, alpha: torch.Tensor) -> tor
     return y
 
 
-# ---- draft-step fusions (#9): the arithmetic of the unfused chains above, fewer launches ----
+# ---- draft-step fusions: the arithmetic of the unfused chains above, fewer launches ----
 # Each kernel below reproduces, bit for bit, a chain the MTP draft step (and the trunk's small-row calls) ran as
 # separate launches; tests/gpu/test_flashnext_fused.py compares them bitwise with the unfused chains.
 

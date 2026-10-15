@@ -1,4 +1,4 @@
-"""Draft-only 3-bit lm_head (#35): picks map to global ids through padded rows, and the 3-bit
+"""Draft-only 3-bit lm_head: picks map to global ids through padded rows, and the 3-bit
 copy picks what the FP8 head picks when the winner is clear."""
 import pytest
 import torch

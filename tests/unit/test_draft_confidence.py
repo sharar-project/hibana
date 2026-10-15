@@ -1,5 +1,5 @@
-"""The MTP draft's confidence per drafted position (#32): the draft head's top-1 probability and margin,
-and the trace round records that carry it (SHARAR_TRACE_CONFIDENCE, the input for adaptive depth #43)."""
+"""The MTP draft's confidence per drafted position: the draft head's top-1 probability and margin,
+and the trace round records that carry it (SHARAR_TRACE_CONFIDENCE, the input for adaptive depth)."""
 import torch
 
 from sharar.engine.config import EngineConfig

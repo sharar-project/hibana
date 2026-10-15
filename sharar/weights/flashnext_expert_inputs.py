@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Knowledge-heavy calibration samples for Flash-Next's 3-bit routed experts (#73).
+"""Knowledge-heavy calibration samples for Flash-Next's 3-bit routed experts.
 
 The coding-proxy set (`w3_calibration_inputs`) routes little law, business or history through the experts, and the
 weight-error calibration lost exactly that recall (MMLU-Pro law -13 pp). This adds multiple-choice knowledge
@@ -71,7 +71,7 @@ def prompts(args) -> None:
 
 def prompts_sharegpt(args) -> None:
     """First user turns of ShareGPT conversations (the drafter study's train split): `--english` English ones and
-    `--other` in other languages (mostly non-ASCII text), 20-4000 characters, seeded; for reasoning traces (#143)."""
+    `--other` in other languages (mostly non-ASCII text), 20-4000 characters, seeded; for reasoning traces."""
     import random
     rows = json.loads(args.sharegpt.read_text())
     english, other = [], []

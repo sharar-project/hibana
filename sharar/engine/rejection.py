@@ -15,7 +15,7 @@ class DraftColumns:
     """Host copies of a sequential draft's columns, each readable once the step that drafted it ends.
 
     A consumer that needs the drafted tokens on the host (Flash-Next's PLE rows) reads column j while
-    step j + 1 still runs, instead of waiting for the whole block (#36). `host` is pinned int64
+    step j + 1 still runs, instead of waiting for the whole block. `host` is pinned int64
     [k, max_batch], written by a non-blocking copy behind each step, then `events[j]` is recorded."""
 
     def __init__(self, host: torch.Tensor, events: list, batch: int):

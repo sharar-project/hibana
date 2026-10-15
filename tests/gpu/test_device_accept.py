@@ -75,7 +75,7 @@ def test_device_round_matches_host_round(runtime, batch, relaxed, rounds):
     (docs/operations.md#numerical-limits) can change later tokens (seen at 12 rounds,
     batch 3), so outputs are compared up to the first round whose counts differ.
     The first round depends only on the shared prefill and always agrees; the drift
-    can start from the second (batch 3 since the CuTe GDN prefill of #133: one
+    can start from the second (batch 3 since the CuTe GDN prefill: one
     request accepts 15 drafts on the device, 14 on the host)."""
     ex, prompts = runtime
     assert hasattr(ex.spec.verify_graphs, 'accept'), 'device accept graphs were not captured'

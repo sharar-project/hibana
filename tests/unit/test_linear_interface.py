@@ -1,4 +1,4 @@
-"""One linear interface over every weight format (#48)."""
+"""One linear interface over every weight format."""
 import torch
 
 from sharar.weights.linear import Linear

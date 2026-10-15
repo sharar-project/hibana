@@ -43,7 +43,7 @@ _gpu_environment()
 
 @pytest.fixture(autouse=True)
 def _engine_config():
-    """Each test starts from the environment (#44): a value one test installs never leaks into the next."""
+    """Each test starts from the environment: a value one test installs never leaks into the next."""
     from sharar.engine import config
     config.reset()
     yield

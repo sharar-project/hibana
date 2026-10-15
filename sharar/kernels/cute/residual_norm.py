@@ -4,7 +4,7 @@
 # distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
 # Modified by Sharar: quantizing epilogues.
 """The 27B's prefill residual norms with their quantization fused in (from FlashInfer 0.6.17's CuTe
-`FusedAddRMSNormKernel`, `flashinfer/norm/kernels/fused_add_rmsnorm.py`; the epilogues were found in #127).
+`FusedAddRMSNormKernel`, `flashinfer/norm/kernels/fused_add_rmsnorm.py`; the epilogues come from the FlashPrefill V2 work).
 
 The residual add, the reduction and the BF16 rounding are FlashInfer's, line for line: CuTe layouts are explicit, so
 the added stores leave the arithmetic alone. Two epilogues read the BF16-rounded output in registers instead of

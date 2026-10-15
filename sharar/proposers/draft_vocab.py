@@ -9,7 +9,7 @@ merge order, a frequency ranking over its training corpus).
 
 The head that reads those rows is `proposers/draft_head.py` (`ShortlistHead`);
 `SHARAR_DRAFT_HEAD=w3` gives it a 3-bit copy (0.26 GB instead of the FP8 head's
-0.63 GB per draft step, #35).
+0.63 GB per draft step).
 """
 from __future__ import annotations
 

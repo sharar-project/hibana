@@ -4,7 +4,7 @@ A trace is the token-level record of one served request: prompt and output
 token IDs, sampling parameters and every verification round (accepted count,
 the draft's proposals and the target's argmax rows). They are for measuring
 speculation on real traffic (acceptance per depth, the input of adaptive depth
-calibration, #43); `sharar traces` summarizes a directory.
+calibration); `sharar traces` summarizes a directory.
 
 The sink never blocks the engine thread: records are a few lists handed to one
 writer thread. Files rotate, and the oldest file is pruned above the byte cap.
@@ -13,7 +13,7 @@ was started with one, and any request can opt out with ``trace: false``.
 
 With ``SHARAR_TRACE_CONFIDENCE=1`` (sequential MTP drafts), each round record
 also carries the draft's top-1 probability ``p1`` and top-1 minus top-2
-margin ``m`` per drafted position (#32; the input for adaptive depth, #43).
+margin ``m`` per drafted position (the input for adaptive depth).
 """
 
 from __future__ import annotations

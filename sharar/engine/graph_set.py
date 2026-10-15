@@ -1,4 +1,4 @@
-"""Shared CUDA-graph bookkeeping (#46): the batch bucket a batch pads to, and warm-up-then-capture.
+"""Shared CUDA-graph bookkeeping: the batch bucket a batch pads to, and warm-up-then-capture.
 
 Decode, verification, device acceptance and both draft bodies keep their own
 static buffers and bodies; this module holds the parts they all repeated.

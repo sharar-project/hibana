@@ -4,7 +4,7 @@
 Each token reads 16 rows of a 320M-row FP8 table (8 heads for bigrams, 8 for trigrams; 160 bytes
 per row): hash(token, previous tokens) mod the head's vocabulary plus the head's offset. The table
 stays on the host as memory maps of the checkpoint's shards; the page cache holds the hot rows. On two Sparks
-each rank instead holds its half of the heads in device memory and the ranks all-gather the rows (#178).
+each rank instead holds its half of the heads in device memory and the ranks all-gather the rows.
 The rows project to a key per residual stream and one value; a per-stream gate from the key and
 the stream's own norm scales the value, and a depth-wise causal convolution over time (kernel 4,
 dilation 3) adds a short-range mix. The convolution's nine-row window per sequence is per-slot
@@ -47,7 +47,7 @@ class PleTable:
     reading them from threads overlaps the misses. Rows the page cache holds skip the threads.
 
     Without `RWF_NOWAIT` (a filesystem that refuses it, as ZFS does, or a Python built without `preadv2`, as uv's
-    standalone CPython is; #166) the reads cannot say which rows they would find cached, and ZFS's own cache (the ARC,
+    standalone CPython is) the reads cannot say which rows they would find cached, and ZFS's own cache (the ARC,
     often a few GiB) holds few of them. Then the gather asks `mincore` which rows' pages the page cache holds under the
     memory maps, copies those from the maps, and reads the others through the maps from the threads, so the page
     cache, which can grow into free memory, keeps the rows decoding reads again. Where `mincore` cannot see the page
@@ -102,7 +102,7 @@ class PleTable:
 
         Rows in the page cache are read serially without blocking (`RWF_NOWAIT`: a few microseconds
         each); only the misses go to the threads, where their NVMe latencies overlap. Handing every
-        row to the threads cost about 1.1 ms for a verification's 80 rows with all of them cached (#36).
+        row to the threads cost about 1.1 ms for a verification's 80 rows with all of them cached.
         Without `RWF_NOWAIT` the page cache under the memory maps answers instead (`_from_maps`)."""
         flat = rows.reshape(-1)
         n = flat.shape[0]
@@ -166,7 +166,7 @@ class PleTable:
         return misses
 
     def prefetch(self, rows: np.ndarray) -> None:
-        """Start reading `rows` into the page cache without waiting (#178): `POSIX_FADV_WILLNEED` on each distinct page
+        """Start reading `rows` into the page cache without waiting: `POSIX_FADV_WILLNEED` on each distinct page
         they touch, from a background thread. The kernel queues the reads and returns, so a later gather of the
         same rows finds them cached instead of waiting on the NVMe."""
         rows = np.array(rows, dtype=np.int64).reshape(-1)  # a copy: the caller's array may change
@@ -230,7 +230,7 @@ class PleTable:
 
 
 class ResidentRows:
-    """A tensor-parallel rank's share of the PLE heads in device memory (#178). Rank r of n holds heads
+    """A tensor-parallel rank's share of the PLE heads in device memory. Rank r of n holds heads
     [r * heads / n, (r + 1) * heads / n), whose rows are one contiguous region of the table (each head's vocabulary
     follows the last's): 23.8 GiB of the 47.7 on each of two Sparks. A forward's rows gather on the device and the
     ranks all-gather them, so every rank sees the bytes the host gather reads and nothing waits on the disk."""
@@ -334,7 +334,7 @@ class PleLayer:
 
     def device_rows(self, ids: torch.Tensor) -> torch.Tensor:
         """Table rows ids (int64 [N, heads] on the host) -> device uint8 [N, heads, ROW_BYTES]: from the ranks'
-        resident shares when they hold the table (#178), else the host gather and an upload."""
+        resident shares when they hold the table, else the host gather and an upload."""
         if self.resident is not None:
             return self.resident.gather(ids)
         return torch.from_numpy(self.table.gather(ids.numpy())).to(self.device, non_blocking=False)

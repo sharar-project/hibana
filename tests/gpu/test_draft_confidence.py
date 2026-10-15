@@ -1,4 +1,4 @@
-"""The MTP draft's confidence in trace round records (SHARAR_TRACE_CONFIDENCE, #32): the captured draft graphs
+"""The MTP draft's confidence in trace round records (SHARAR_TRACE_CONFIDENCE): the captured draft graphs
 report each drafted position's top-1 probability and margin, and turning it on does not change the outputs."""
 import gc
 
@@ -66,6 +66,6 @@ def test_round_records_carry_each_drafted_positions_confidence(runs):
     for rec in records:
         assert len(rec["p1"]) == len(rec["m"]) == len(rec["y"]) == K
         assert all(0.0 <= m <= p1 <= 1.0 for p1, m in zip(rec["p1"], rec["m"]))
-    # a confident first draft is accepted far more often than an unsure one (the #43 premise), on average
+    # a confident first draft is accepted far more often than an unsure one (the premise of adaptive depth), on average
     first = [(rec["p1"][0], rec["a"] > 0) for rec in records]
     assert any(p > 0.5 for p, _ in first)
