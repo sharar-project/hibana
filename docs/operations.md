@@ -166,7 +166,9 @@ buffer each (where the filesystem refuses O_DIRECT, through the page cache,
 dropped after each file; `direct_writes` in `cache.ssd.store` says which).
 Eviction takes the least recently used session already on the SSD first, so it
 rarely waits for a copy; only when none is left does it copy one and wait for
-staging room, as shutdown does. When the
+staging room, as shutdown does. A node whose descendants are already stored (a
+prompt's end, a chunk checkpoint) is demoted with its KV blocks and no snapshot:
+the conversation resumes from its descendants. When the
 completed copies exceed the disk budget, the tier drops SSD-only leaves first,
 then the disk copies of nodes still on the GPU, which keep their GPU pages and
 snapshots. At shutdown the server writes every cached session to the SSD. After
