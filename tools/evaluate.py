@@ -10,7 +10,7 @@
   environment (and the user's config file), from this checkout's engine and Python environment (`uv sync --frozen`).
   The run records the commit; uncommitted engine changes are refused unless --allow-dirty (and then recorded as a
   hash). To evaluate another revision, run this tool from a worktree of it.
-- **What runs.** sharar-eval (`--evals`, default ../sharar-eval, with its .venv) against the server:
+- **What runs.** sharar-eval (the `eval` extra of this environment, or a checkout with `--evals`) against the server:
   - `--suite quick|full|hard|long|agentic|all`, or `--tasks a,b` with `--limit N` (`evals.suite`);
   - `--speed` adds the AIPerf benchmark (`evals.speed`, `--workload code|design|reasoning|all`).
     Speed requests carry no acceptance fields, so both measure the served profile as a client sees it.
@@ -99,8 +99,10 @@ def main(argv=None) -> int:
     ap.add_argument("--name", default=None, help="output name (<date>-evaluate-<name>; default: target-profile)")
     ap.add_argument("--baseline", type=Path, default=None, help="an earlier evaluate output directory to pair with")
     ap.add_argument("--port", type=int, default=30200, help="30200-30299")
-    ap.add_argument("--evals", type=Path, default=Path(os.environ.get("SHARAR_EVALS") or REPO.parent / "sharar-eval"))
-    ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"), help="sharar-eval's Python (default: its .venv)")
+    ap.add_argument("--evals", type=Path, default=Path(os.environ["SHARAR_EVALS"]) if os.environ.get("SHARAR_EVALS") else None,
+                    help="a sharar-eval checkout to run instead of the eval extra (default: SHARAR_EVALS, else the extra)")
+    ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
+                    help="sharar-eval's Python (default: this environment's, or the checkout's .venv)")
     ap.add_argument("--hold-hours", type=float, default=48, help="longest GPU window")
     ap.add_argument("--dry-run", action="store_true", help="print the resolved run and exit")
     args = ap.parse_args(argv)
@@ -111,11 +113,8 @@ def main(argv=None) -> int:
     name = args.name or f"{args.target}-{args.profile}"
     if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
         ap.error("--name: letters, digits, . _ -")
-    if not (args.evals / "evals" / "suite.py").is_file():
-        raise SystemExit(f"{args.evals}: no sharar-eval checkout; clone abdelfattah-lab/sharar-eval there or set SHARAR_EVALS")
-    python = args.python or str(args.evals / ".venv" / "bin" / "python")
-    if not Path(python).is_file():
-        raise SystemExit(f"{python} not found: run `uv sync` in {args.evals}")
+    ev = gate.sharar_eval(args.evals, args.python)
+    python, args.evals = ev["python"], ev["cwd"]
     if args.baseline and not (args.baseline / "manifest.json").is_file():
         raise SystemExit(f"{args.baseline}: not an evaluate output directory")
 
@@ -147,7 +146,7 @@ def main(argv=None) -> int:
                   *(["--limit", str(args.limit)] if args.limit else []), *[a for t in args.skip for a in ("--skip", t)]]
     manifest = {**spec, "name": name, "config_file": str(conf_path) if conf_path else None, "port": args.port,
                 "launcher_source": gate.git("rev-parse", "HEAD"), "dirty": bool(gate.git("status", "--porcelain", "--", "sharar", "tools")),
-                "evals": str(args.evals), "evals_commit": gate.git("rev-parse", "HEAD", cwd=args.evals),
+                "evals": ev["label"], "evals_commit": ev["commit"],
                 "suite": suite_args, "speed": args.workload if args.speed else None,
                 "baseline": str(args.baseline) if args.baseline else None}
     if args.dry_run:
