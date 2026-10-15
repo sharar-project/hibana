@@ -327,6 +327,7 @@ class Executor:
             return 0
         ssd = self.cache.ssd
         before = ssd.tails
+        ssd.patient = True  # the engine has stopped: wait for staging room rather than drop a session
         self.cache.evict(need_pages=self.kv_pool.num_pages, need_slots=self.state_pool.num_slots)  # evicts every unlocked leaf
         ssd.drain(self.cache)
         if log:

@@ -569,6 +569,7 @@ def test_gathers_respect_the_staging_limit_including_when_forced(tmp_path, monke
         assert not tier.queue and not tier.through and not tier.inflight and tier.staged == 0
         evict_all(cache, kv)
     else:
+        tier.patient = True  # as at shutdown: serving eviction drops what does not fit (below)
         evict_all(cache, kv)
         if operation == "restore":
             other = [t + 20000 for t in LONG]
@@ -580,6 +581,20 @@ def test_gathers_respect_the_staging_limit_including_when_forced(tmp_path, monke
     if operation != "restore":
         assert tier.restore(cache, LONG + [7]) == len(LONG)
     assert same(restored(cache, kv, sp, LONG), before)
+
+
+def test_serving_eviction_drops_a_leaf_it_cannot_copy_instead_of_waiting_for_the_writers(tmp_path, monkeypatch):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    release(cache, tier, kv, sp, feats, LONG, seed=44)
+    tier.staging_bytes = 1
+    tier.staged = 1  # another copy holds the staging buffer
+    monkeypatch.setattr(tier.store, "wait", lambda: pytest.fail("eviction waited for the writers"))
+    evict_all(cache, kv)
+    assert tier.evict_dropped == 1 and not tier.inflight and cache.ssd_sessions() == 0
+    tier.staged = 0
+    monkeypatch.undo()
+    settle(cache, tier)
+    assert tier.restore(cache, LONG + [7]) == 0 and tier.used == 0
 
 
 @pytest.mark.parametrize("entry", ["restore", "rebuild"])
