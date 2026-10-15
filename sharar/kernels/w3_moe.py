@@ -145,10 +145,11 @@ def calibrate(w13, s13, scale2_13, w2, s2, scale2_2, codebook="lloyd", ratios=RA
 # ------------------------------------------------------------------ the kernel
 
 def w3_moe(experts: W3Experts, x: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-    """Routed experts for x [M, 2560] bf16 with the router's ids [M, 10] int32 and weights [M, 10] fp32 -> bf16
+    """Routed experts for x [M, 2560] bf16 with the router's ids [M, k] int32 and weights [M, k] fp32 (k <= 10) -> bf16
     [M, 2560], the weighted sum in selection order (no shared expert). Graph-capturable and deterministic. When
     `experts` holds one rank's range (expert parallel), pairs routed to another rank's experts are skipped: the result
-    is this rank's partial sum, which the decoder layer all-reduces."""
+    is this rank's partial sum, which the decoder layer all-reduces. An id of EXPERTS (512) names no expert and adds
+    nothing (an unfilled slot, `flashnext_fused.route_subst` without the fallback)."""
     ids = ids.to(torch.int32).contiguous()
     order = ids.new_empty(0)
     if ids.numel() > ORDER_IN_KERNEL:  # a stable sort keeps each expert's pairs in row order

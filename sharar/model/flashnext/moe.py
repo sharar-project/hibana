@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import torch
 
+from sharar.engine.config import current
 from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 
 
@@ -72,6 +73,24 @@ class MoeLayer:
         self.shared_gate_up = linear_cls.load(w, [f"{prefix}.shared_expert.gate_proj.weight", f"{prefix}.shared_expert.up_proj.weight"], device, precision,
                                               ColumnParallel((shared_inter, shared_inter)))
         self.shared_down = linear_cls.load(w, [f"{prefix}.shared_expert.down_proj.weight"], device, precision, ROW_PARALLEL)
+        cfg = current()
+        # Expert selection in decode and verify forwards: each token keeps its own top `keep` experts, then reuses up
+        # to `reuse` more from those the call's other real tokens keep (route_subst), and with `fallback` fills the
+        # reuse slots nothing fills from its own next ranks; without it they name no expert (id = experts), which the
+        # w3 kernel skips. Keeping topk or more is the served route.
+        for name, v in (("SHARAR_MOE_KEEP", cfg.moe_keep), ("SHARAR_MOE_REUSE", cfg.moe_reuse)):
+            if v < 0:
+                raise ValueError(f"{name}={v}: a count of experts, or 0 (off)")
+        if cfg.moe_reuse and not cfg.moe_keep:
+            raise ValueError("SHARAR_MOE_REUSE: the reuse slots after SHARAR_MOE_KEEP's own experts")
+        keep = cfg.moe_keep if cfg.moe_keep < self.topk else 0
+        reuse = cfg.moe_reuse if keep else 0
+        if keep + reuse > self.topk:
+            raise ValueError(f"SHARAR_MOE_KEEP + SHARAR_MOE_REUSE = {keep + reuse}: at most {self.topk} experts a token")
+        self.keep, self.reuse, self.fallback, self.keep_rows = keep, reuse, cfg.moe_reuse_fallback, cfg.moe_keep_rows
+        if reuse and not self.fallback and w3 is None:
+            raise ValueError("SHARAR_MOE_REUSE without SHARAR_MOE_REUSE_FALLBACK needs the 3-bit experts (SHARAR_W3_DECODE=1, "
+                             "a W3 checkpoint that carries them, not SHARAR_FLASHNEXT_EXPERTS=nvfp4): only they skip an empty slot")
         self.w3 = w3
         if w3 is not None:
             if w3.base + w3.experts > self.experts:
@@ -79,8 +98,7 @@ class MoeLayer:
             return
         nv = load_nvfp4_experts(w, prefix, self.experts, device, ColumnParallel((self.inter,)).rows, ROW_PARALLEL.cols)
         self.sim3_error = None
-        from sharar.engine.config import current
-        group = current().flashnext_experts_sim3
+        group = cfg.flashnext_experts_sim3
         if group:  # simulated low-bit experts (weights/expert_sim3.py): the same kernel, the format's values (a screen)
             from sharar.weights.expert_sim3 import requantize
             nv["w13"], nv["s13"], e13 = requantize(nv["w13"], nv["s13"], group)
@@ -109,8 +127,20 @@ class MoeLayer:
     def bytes(self) -> int:
         return self.expert_bytes + self.router.numel() * 2 + self.shared_gate_up.bytes + self.shared_down.bytes
 
-    def route(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def route(self, x: torch.Tensor, ctx) -> tuple[torch.Tensor, torch.Tensor]:
         logits = x @ self.router.T
+        if self.keep and x.shape[0] <= self.keep_rows and ctx.mode in ("decode", "verify"):
+            from sharar.kernels.flashnext_fused import route_subst, route_topk
+            if not self.reuse:
+                return route_topk(logits, self.keep)  # ids and weights [rows, keep]: the routed experts take any k <= 10
+            # A graph pads with requests on the dummy state slot 0, which route_subst leaves out of the core. A
+            # verify forward's rows are request-major, verify_steps per request, and every request drafts the
+            # call's depth (adaptive depth verifies the deepest any request wants), so every row of a real request
+            # is real.
+            width = self.keep + self.reuse
+            if ctx.mode == "decode":
+                return route_subst(logits, width, self.keep, ctx.slots, fallback=self.fallback)
+            return route_subst(logits, width, self.keep, ctx.seq_slots, ctx.verify_steps, fallback=self.fallback)
         if x.shape[0] <= 64:
             from sharar.kernels.flashnext_fused import route_topk
             return route_topk(logits, self.topk)
@@ -136,9 +166,9 @@ class MoeLayer:
         )
         return routed[0] if isinstance(routed, (list, tuple)) else routed  # flashinfer 0.6 returns [output]
 
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+    def __call__(self, x: torch.Tensor, ctx) -> torch.Tensor:
         x = x.contiguous()
-        ids, weights = self.route(x)
+        ids, weights = self.route(x, ctx)
         routed = self.routed(x, ids, weights)
         from sharar.kernels.flashnext_fused import ACT_SILU_MUL, moe_combine
         shared = self.shared_down(self.shared_gate_up(x), act=ACT_SILU_MUL)  # SiLU-mul inside the down projection's quantization

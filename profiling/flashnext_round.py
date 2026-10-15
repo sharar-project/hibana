@@ -113,8 +113,8 @@ def m_curve(ex, model, tok, out, context: int):
     originals = [m.route for m in moe_layers]
 
     def hooked(m, orig):
-        def route(x):
-            ids, w = orig(x)
+        def route(x, ctx):
+            ids, w = orig(x, ctx)
             seen.append(int(torch.unique(ids).numel()))
             return ids, w
         return route

@@ -167,6 +167,128 @@ def route_topk(logits: torch.Tensor, k: int):
     return ids, w
 
 
+# ---- batch-aware routing (SHARAR_MOE_KEEP / SHARAR_MOE_REUSE): each row's top `keep`, the rest drawn toward the call's core ----
+SUBST_CANDIDATES = 20  # a row fills its other slots from its router ranks keep+1..20
+
+
+@triton.jit
+def _or(a, b):
+    return a | b
+
+
+@triton.jit
+def _subst_rank_kernel(L, Slots, Cand, P, Bits, stride_l, E: tl.constexpr, BLOCK: tl.constexpr, KEEP: tl.constexpr,
+                       C: tl.constexpr, CP: tl.constexpr, STEPS: tl.constexpr, HAS_SLOTS: tl.constexpr):
+    t = tl.program_id(0)
+    cols = tl.arange(0, BLOCK)
+    mask = cols < E
+    logits = tl.load(L + t * stride_l + cols, mask=mask, other=float("-inf")).to(tl.float32)
+    m = tl.max(logits, 0)
+    s = tl.sum(tl.exp(logits - m), 0)
+    # rank key, distinct per column: the bf16 bits as an order-preserving int (-0.0 as +0.0) above BLOCK - 1 - column,
+    # so the int32 maximum is the largest logit and, among equal logits, the lowest expert
+    hi = logits.to(tl.int32, bitcast=True) >> 16
+    hi = tl.where(hi == -32768, 0, hi)
+    key = tl.where(mask, (hi ^ ((hi >> 15) & 0x7FFF)) * 65536 + (BLOCK - 1 - cols), -2147483648)
+    j = tl.arange(0, CP)
+    ids = tl.zeros([CP], dtype=tl.int32)
+    vals = tl.full([CP], float("-inf"), tl.float32)
+    w = tl.arange(0, BLOCK // 32)
+    bits = tl.zeros([BLOCK // 32], dtype=tl.int32)
+    for c in tl.static_range(C):  # rank c: the largest key left
+        top = tl.max(key, 0)
+        e = BLOCK - 1 - (top & 0xFFFF)
+        o = top >> 16
+        v = ((o ^ ((o >> 15) & 0x7FFF)) << 16).to(tl.float32, bitcast=True)  # its logit, exactly
+        ids = tl.where(j == c, e, ids)
+        vals = tl.where(j == c, v, vals)
+        if c < KEEP:
+            bits = tl.where(w == e // 32, bits | (1 << (e % 32)), bits)
+        key = tl.where(cols == e, -2147483648, key)
+    tl.store(Cand + t * CP + j, ids)
+    tl.store(P + t * CP + j, tl.exp(vals - m) / s)  # route_topk's p of each candidate (0 past rank C)
+    if HAS_SLOTS:  # a padded row (dummy slot 0) adds nothing to the core
+        bits = tl.where(tl.load(Slots + t // STEPS) != 0, bits, 0)
+    tl.store(Bits + t * (BLOCK // 32) + w, bits)
+
+
+@triton.jit
+def _subst_pick_kernel(Slots, Cand, P, Bits, Ids, W, R, K: tl.constexpr, KEEP: tl.constexpr, C: tl.constexpr,
+                       CP: tl.constexpr, NW: tl.constexpr, RB: tl.constexpr, STEPS: tl.constexpr,
+                       HAS_SLOTS: tl.constexpr, FALLBACK: tl.constexpr, KP: tl.constexpr, NONE: tl.constexpr):
+    rr = tl.arange(0, RB)
+    w = tl.arange(0, NW)
+    core = tl.zeros([NW], dtype=tl.int32)
+    for r0 in range(0, R, RB):  # the core: the OR of every row's top-KEEP bit set
+        b = tl.load(Bits + (r0 + rr)[:, None] * NW + w[None, :], mask=(r0 + rr)[:, None] < R, other=0)
+        core = core | tl.reduce(b, 0, _or)
+    rows = tl.program_id(0) * RB + rr
+    live = rows < R
+    j = tl.arange(0, CP)[None, :]
+    cand = tl.load(Cand + rows[:, None] * CP + j, mask=live[:, None], other=0)
+    p = tl.load(P + rows[:, None] * CP + j, mask=live[:, None], other=1.0)  # rows past R: no 0 / 0
+    word = tl.reshape(tl.gather(core, tl.reshape(cand // 32, [RB * CP]), 0), [RB, CP])
+    fill = (j >= KEEP) & (j < C)
+    pull = fill & (((word >> (cand % 32)) & 1) != 0)  # a fill candidate the core already reads
+    if HAS_SLOTS:  # a padded row takes its own top K
+        pull = pull & (tl.load(Slots + rows // STEPS, mask=live, other=0) != 0)[:, None]
+    a = pull.to(tl.int32)
+    b = (fill & ~pull).to(tl.int32)
+    # output slot of each rank: the top KEEP, then the pulled ranks, then the other fill ranks, each in rank order
+    slot = tl.where(j < KEEP, j,
+                    KEEP + tl.where(pull, tl.cumsum(a, 1) - 1, tl.sum(a, 1)[:, None] + tl.cumsum(b, 1) - 1))
+    if FALLBACK:
+        chosen = (j < C) & (slot < K)
+        used = tl.zeros([RB], dtype=tl.int32) + K
+    else:  # no rank outside the core fills a slot, and a padded row takes none
+        real = tl.full([RB], 1, tl.int1)
+        if HAS_SLOTS:
+            real = tl.load(Slots + rows // STEPS, mask=live, other=0) != 0
+        chosen = ((j < KEEP) | pull) & (slot < K) & real[:, None]
+        used = tl.where(real, KEEP + tl.minimum(tl.sum(a, 1), K - KEEP), 0)
+    total = tl.sum(tl.where(chosen, p, 0.0), 1)
+    smask = live[:, None] & chosen
+    tl.store(Ids + rows[:, None] * K + slot, cand, mask=smask)
+    tl.store(W + rows[:, None] * K + slot, p / total[:, None], mask=smask)
+    if not FALLBACK:  # the slots left over name expert NONE (= E) at weight 0: the w3 kernel reads nothing for them
+        q = tl.arange(0, KP)[None, :]
+        hole = live[:, None] & (q >= used[:, None]) & (q < K)
+        tl.store(Ids + rows[:, None] * K + q, tl.full([RB, KP], NONE, tl.int32), mask=hole)
+        tl.store(W + rows[:, None] * K + q, tl.zeros([RB, KP], dtype=tl.float32), mask=hole)
+
+
+def route_subst(logits: torch.Tensor, k: int, keep: int, slots: torch.Tensor | None = None, steps: int = 1,
+                fallback: bool = True):
+    """Batch-aware top-k: logits bf16 [R, E] contiguous, 1 <= keep < k <= SUBST_CANDIDATES -> (int32 ids [R, k], fp32
+    weights [R, k]). A row's candidates are its SUBST_CANDIDATES largest logits, largest first, an exact logit tie
+    to the lower expert (route_topk's order, except where two different logits give the same fp32 probability); the
+    core is the union of every real row's top `keep`. A real row takes its top `keep`, then its other candidates in
+    the core, then (`fallback`) the rest, each in rank order, and keeps the first k; a padded row takes its top k.
+    Without `fallback` the k - keep reuse slots take core experts alone, the slots left over (all of a padded
+    row's) hold expert id E, past the last expert, at weight 0, and the call reads only the core: the 3-bit routed
+    experts (kernels/w3_moe.py) skip ids outside their range. Row r is real iff
+    slots[r // steps] != 0 (slots int32 [R // steps], slot 0 is the dummy that padded graph rows use); without
+    `slots` every row is real. Weights: route_topk's fp32 softmax over E, renormalized over the chosen experts, in the
+    ids' order. Two launches (one program per row, then one per tile of up to 64 rows), no host sync:
+    graph-capturable."""
+    r, e = logits.shape
+    block, cp = triton.next_power_of_2(e), triton.next_power_of_2(SUBST_CANDIDATES)
+    dev = logits.device
+    cand = torch.empty((r, cp), dtype=torch.int32, device=dev)
+    p = torch.empty((r, cp), dtype=torch.float32, device=dev)
+    bits = torch.empty((r, block // 32), dtype=torch.int32, device=dev)
+    ids = torch.empty((r, k), dtype=torch.int32, device=dev)
+    w = torch.empty((r, k), dtype=torch.float32, device=dev)
+    sl = cand if slots is None else slots  # not read without slots
+    common = dict(KEEP=keep, C=SUBST_CANDIDATES, CP=cp, STEPS=steps, HAS_SLOTS=slots is not None)
+    # one warp per row: each of the SUBST_CANDIDATES rank passes reduces with warp shuffles alone
+    _subst_rank_kernel[(r,)](logits, sl, cand, p, bits, logits.stride(0), e, BLOCK=block, num_warps=1, **common)
+    rb = min(64, max(16, triton.next_power_of_2(r)))
+    _subst_pick_kernel[(triton.cdiv(r, rb),)](sl, cand, p, bits, ids, w, r, k, NW=block // 32, RB=rb, num_warps=4,
+                                              FALLBACK=fallback, KP=triton.next_power_of_2(k), NONE=e, **common)
+    return ids, w
+
+
 # ---- MoE combine: out = routed + sigmoid(x . g) * shared ----
 @triton.jit
 def _moe_combine_kernel(R, S, X, G, Y, stride_r, stride_s, stride_x, stride_y, H: tl.constexpr, BLOCK: tl.constexpr, DBLOCK: tl.constexpr):
