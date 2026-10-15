@@ -1,7 +1,6 @@
 """Exercise graph reuse, changing accepted lengths, private slots and ring wrap."""
 from types import SimpleNamespace
 import torch
-import pytest
 
 from sharar.proposers.parallel_feedback import FeedbackGraphs
 

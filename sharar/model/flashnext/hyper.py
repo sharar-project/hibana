@@ -25,7 +25,7 @@ def grouped_gemma_rms(x: torch.Tensor, weight: torch.Tensor, eps: float, group: 
 
 class HyperConnection:
     """The three mixer matrices are `TrunkLinear`s: the checkpoint's BF16, or FP8 at load with a
-    dynamic activation scale (`precision="fp8"`, opt-in via SHARAR_FLASHNEXT_MIXERS)."""
+    dynamic activation scale (`precision="fp8"`, the default; SHARAR_FLASHNEXT_MIXERS=bf16 keeps the checkpoint's)."""
 
     def __init__(self, norm: torch.Tensor, down: torch.Tensor, up: torch.Tensor, inject: torch.Tensor | None, hc: int, hidden: int, eps: float,
                  precision: str = "bf16", fused: bool = True):

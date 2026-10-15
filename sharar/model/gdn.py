@@ -61,12 +61,10 @@ class GatedDeltaNet:
         # two GEMMs so both outputs are contiguous with no copy.
         fused = load_fp8_linear(w, [f"{prefix}.in_proj_qkv", f"{prefix}.in_proj_z"], device,
                                 ColumnParallel((self.key_dim, self.key_dim, self.value_dim, self.value_dim)))
-        self.in_qkvz = fused
         self.in_qkv = Fp8Linear(fused.weight[: self.conv_dim].contiguous(), fused.weight_scale, fused.input_scale, shard=qkv_heads)
         self.in_z = Fp8Linear(fused.weight[self.conv_dim :].contiguous(), fused.weight_scale, fused.input_scale,
                               shard=ColumnParallel((self.value_dim,)))
         del fused.weight
-        self.in_qkvz = None
         self.in_ba = torch.cat([v_heads(w.get(f"{prefix}.in_proj_b.weight")), v_heads(w.get(f"{prefix}.in_proj_a.weight"))], dim=0).to(device)
         self.conv_weight = qkv_heads(w.get(f"{prefix}.conv1d.weight").view(-1, target.linear_conv_kernel)).contiguous().to(device)
         self.A_log = v_heads(w.get(f"{prefix}.A_log")).to(device).float().contiguous()
