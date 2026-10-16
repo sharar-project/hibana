@@ -97,6 +97,10 @@ class FlashNext:
         expert_layers = calibrated.expert_layers() if calibrated and current().flashnext_experts != "nvfp4" else set()
         if expert_layers and expert_layers != set(range(target.num_layers)):
             raise ValueError(f"the W3 checkpoint carries routed experts for {len(expert_layers)} of {target.num_layers} layers")
+        moe = current()
+        if not expert_layers and 0 < moe.moe_keep < target.experts_per_token and moe.moe_reuse and not moe.moe_reuse_fallback:
+            log("SHARAR_MOE_KEEP / SHARAR_MOE_REUSE: the routed experts are not 3-bit (only they skip an unfilled slot); "
+                "serving each token's top 10")
         # the experts dominate, and each rank loads its half
         check_load_headroom((target.weight_load_peak_bytes - (_w3_expert_saving(target) if expert_layers else 0)) // tp.size)
         self.device = torch.device(device)

@@ -87,10 +87,11 @@ class MoeLayer:
         reuse = cfg.moe_reuse if keep else 0
         if keep + reuse > self.topk:
             raise ValueError(f"SHARAR_MOE_KEEP + SHARAR_MOE_REUSE = {keep + reuse}: at most {self.topk} experts a token")
+        if reuse and not cfg.moe_reuse_fallback and w3 is None:
+            # Unfilled reuse slots name no expert, which only the 3-bit experts skip. Without them (NVFP4 experts, the
+            # 3-bit copies off, or a W3 checkpoint without experts) the layer serves the top 10; the model logs it.
+            keep = reuse = 0
         self.keep, self.reuse, self.fallback, self.keep_rows = keep, reuse, cfg.moe_reuse_fallback, cfg.moe_keep_rows
-        if reuse and not self.fallback and w3 is None:
-            raise ValueError("SHARAR_MOE_REUSE without SHARAR_MOE_REUSE_FALLBACK needs the 3-bit experts (SHARAR_W3_DECODE=1, "
-                             "a W3 checkpoint that carries them, not SHARAR_FLASHNEXT_EXPERTS=nvfp4): only they skip an empty slot")
         self.w3 = w3
         if w3 is not None:
             if w3.base + w3.experts > self.experts:

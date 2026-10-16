@@ -160,9 +160,19 @@ def _built(w3=SimpleNamespace(base=0, experts=E), **changes):
     target = SimpleNamespace(num_experts=E, experts_per_token=K, hidden_size=4, moe_intermediate_size=8,
                              shared_expert_intermediate_size=8)
     linear = SimpleNamespace(load=lambda *args: None)
-    with config.using(config.current().replace(**changes)):
-        layer = MoeLayer(w, "mlp", torch.device("cpu"), target, linear, "fp8", w3=w3)
+    layer = MoeLayer.__new__(MoeLayer)
+    with config.using(config.current().replace(**changes)), pytest.MonkeyPatch.context() as mp:
+        if w3 is None:  # the routing state is set before the NVFP4 experts would load: stop there
+            mp.setattr("sharar.model.flashnext.moe.load_nvfp4_experts", lambda *args: (_ for _ in ()).throw(_Loading()))
+            with pytest.raises(_Loading):
+                layer.__init__(w, "mlp", torch.device("cpu"), target, linear, "fp8", w3=None)
+        else:
+            layer.__init__(w, "mlp", torch.device("cpu"), target, linear, "fp8", w3=w3)
     return layer.keep, layer.reuse, layer.fallback
+
+
+class _Loading(Exception):
+    pass
 
 
 def test_settings_resolve_to_keep_reuse_and_fallback():
@@ -175,8 +185,11 @@ def test_settings_resolve_to_keep_reuse_and_fallback():
                              ({"moe_reuse": 3}, "SHARAR_MOE_REUSE: the reuse slots"), ({"moe_keep": 6, "moe_reuse": 5}, "at most 10")]:
         with pytest.raises(ValueError, match=message):
             _built(**changes)
-    with pytest.raises(ValueError, match="3-bit experts"):  # unfilled slots name no expert, which only the w3 kernel skips
-        _built(w3=None, moe_keep=5, moe_reuse=5)
+    # unfilled reuse slots name no expert, which only the 3-bit experts skip: without them the layer serves the top 10
+    # (the profiles turn the selection on, so NVFP4 experts or missing 3-bit copies must still serve)
+    assert _built(w3=None, moe_keep=5, moe_reuse=5)[:2] == (0, 0)
+    assert _built(w3=None, moe_keep=5, moe_reuse=5, moe_reuse_fallback=True)[:2] == (5, 5)
+    assert _built(w3=None, moe_keep=5)[:2] == (5, 0)
 
 
 def test_keep_alone_routes_decode_and_verify_forwards_to_route_topk(kernels):
