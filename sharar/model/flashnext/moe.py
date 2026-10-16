@@ -76,21 +76,17 @@ class MoeLayer:
         cfg = current()
         # Expert selection in decode and verify forwards: each token keeps its own top `keep` experts, then reuses up
         # to `reuse` more from those the call's other real tokens keep (route_subst), and with `fallback` fills the
-        # reuse slots nothing fills from its own next ranks; without it they name no expert (id = experts), which the
-        # w3 kernel skips. Keeping topk or more is the served route.
+        # reuse slots nothing fills from its own next ranks. Without it they name no expert (id = experts), which the
+        # w3 kernel skips, or for the NVFP4 experts, which need an expert in every slot, the token's own top 1 at
+        # weight 0 (the same bits as leaving the slot out). Keeping topk or more is the served route.
         for name, v in (("SHARAR_MOE_KEEP", cfg.moe_keep), ("SHARAR_MOE_REUSE", cfg.moe_reuse)):
             if v < 0:
                 raise ValueError(f"{name}={v}: a count of experts, or 0 (off)")
-        if cfg.moe_reuse and not cfg.moe_keep:
-            raise ValueError("SHARAR_MOE_REUSE: the reuse slots after SHARAR_MOE_KEEP's own experts")
         keep = cfg.moe_keep if cfg.moe_keep < self.topk else 0
-        reuse = cfg.moe_reuse if keep else 0
+        reuse = cfg.moe_reuse if keep else 0  # SHARAR_MOE_KEEP=0 turns the selection off, whatever the reuse
         if keep + reuse > self.topk:
             raise ValueError(f"SHARAR_MOE_KEEP + SHARAR_MOE_REUSE = {keep + reuse}: at most {self.topk} experts a token")
         self.keep, self.reuse, self.fallback, self.keep_rows = keep, reuse, cfg.moe_reuse_fallback, cfg.moe_keep_rows
-        if reuse and not self.fallback and w3 is None:
-            raise ValueError("SHARAR_MOE_REUSE without SHARAR_MOE_REUSE_FALLBACK needs the 3-bit experts (SHARAR_W3_DECODE=1, "
-                             "a W3 checkpoint that carries them, not SHARAR_FLASHNEXT_EXPERTS=nvfp4): only they skip an empty slot")
         self.w3 = w3
         if w3 is not None:
             if w3.base + w3.experts > self.experts:
@@ -139,8 +135,9 @@ class MoeLayer:
             # is real.
             width = self.keep + self.reuse
             if ctx.mode == "decode":
-                return route_subst(logits, width, self.keep, ctx.slots, fallback=self.fallback)
-            return route_subst(logits, width, self.keep, ctx.seq_slots, ctx.verify_steps, fallback=self.fallback)
+                return route_subst(logits, width, self.keep, ctx.slots, fallback=self.fallback, repeat=self.w3 is None)
+            return route_subst(logits, width, self.keep, ctx.seq_slots, ctx.verify_steps, fallback=self.fallback,
+                               repeat=self.w3 is None)
         if x.shape[0] <= 64:
             from sharar.kernels.flashnext_fused import route_topk
             return route_topk(logits, self.topk)

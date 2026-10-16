@@ -215,7 +215,8 @@ def _subst_rank_kernel(L, Slots, Cand, P, Bits, stride_l, E: tl.constexpr, BLOCK
 @triton.jit
 def _subst_pick_kernel(Slots, Cand, P, Bits, Ids, W, R, K: tl.constexpr, KEEP: tl.constexpr, C: tl.constexpr,
                        CP: tl.constexpr, NW: tl.constexpr, RB: tl.constexpr, STEPS: tl.constexpr,
-                       HAS_SLOTS: tl.constexpr, FALLBACK: tl.constexpr, KP: tl.constexpr, NONE: tl.constexpr):
+                       HAS_SLOTS: tl.constexpr, FALLBACK: tl.constexpr, KP: tl.constexpr, NONE: tl.constexpr,
+                       REPEAT: tl.constexpr):
     rr = tl.arange(0, RB)
     w = tl.arange(0, NW)
     core = tl.zeros([NW], dtype=tl.int32)
@@ -253,12 +254,17 @@ def _subst_pick_kernel(Slots, Cand, P, Bits, Ids, W, R, K: tl.constexpr, KEEP: t
     if not FALLBACK:  # the slots left over name expert NONE (= E) at weight 0: the w3 kernel reads nothing for them
         q = tl.arange(0, KP)[None, :]
         hole = live[:, None] & (q >= used[:, None]) & (q < K)
-        tl.store(Ids + rows[:, None] * K + q, tl.full([RB, KP], NONE, tl.int32), mask=hole)
+        if REPEAT:  # an expert the call already reads, at weight 0: the row's top 1, a padded row row 0's
+            first = tl.where(real, tl.load(Cand + rows * CP, mask=live, other=0), tl.load(Cand))
+            fill_id = tl.broadcast_to(first[:, None], [RB, KP])
+        else:
+            fill_id = tl.full([RB, KP], NONE, tl.int32)
+        tl.store(Ids + rows[:, None] * K + q, fill_id, mask=hole)
         tl.store(W + rows[:, None] * K + q, tl.zeros([RB, KP], dtype=tl.float32), mask=hole)
 
 
 def route_subst(logits: torch.Tensor, k: int, keep: int, slots: torch.Tensor | None = None, steps: int = 1,
-                fallback: bool = True):
+                fallback: bool = True, repeat: bool = False):
     """Batch-aware top-k: logits bf16 [R, E] contiguous, 1 <= keep < k <= SUBST_CANDIDATES -> (int32 ids [R, k], fp32
     weights [R, k]). A row's candidates are its SUBST_CANDIDATES largest logits, largest first, an exact logit tie
     to the lower expert (route_topk's order, except where two different logits give the same fp32 probability); the
@@ -266,7 +272,9 @@ def route_subst(logits: torch.Tensor, k: int, keep: int, slots: torch.Tensor | N
     the core, then (`fallback`) the rest, each in rank order, and keeps the first k; a padded row takes its top k.
     Without `fallback` the k - keep reuse slots take core experts alone, the slots left over (all of a padded
     row's) hold expert id E, past the last expert, at weight 0, and the call reads only the core: the 3-bit routed
-    experts (kernels/w3_moe.py) skip ids outside their range. Row r is real iff
+    experts (kernels/w3_moe.py) skip ids outside their range. With `repeat` those slots instead name an expert the
+    call already reads, at weight 0 (the row's top 1; a padded row, row 0's): kernels that need a real expert in every
+    slot (FlashInfer's NVFP4 MoE) add exactly nothing for them and load no further expert. Row r is real iff
     slots[r // steps] != 0 (slots int32 [R // steps], slot 0 is the dummy that padded graph rows use); without
     `slots` every row is real. Weights: route_topk's fp32 softmax over E, renormalized over the chosen experts, in the
     ids' order. Two launches (one program per row, then one per tile of up to 64 rows), no host sync:
@@ -285,7 +293,8 @@ def route_subst(logits: torch.Tensor, k: int, keep: int, slots: torch.Tensor | N
     _subst_rank_kernel[(r,)](logits, sl, cand, p, bits, logits.stride(0), e, BLOCK=block, num_warps=1, **common)
     rb = min(64, max(16, triton.next_power_of_2(r)))
     _subst_pick_kernel[(triton.cdiv(r, rb),)](sl, cand, p, bits, ids, w, r, k, NW=block // 32, RB=rb, num_warps=4,
-                                              FALLBACK=fallback, KP=triton.next_power_of_2(k), NONE=e, **common)
+                                              FALLBACK=fallback, KP=triton.next_power_of_2(k), NONE=e, REPEAT=repeat,
+                                              **common)
     return ids, w
 
 

@@ -45,12 +45,12 @@ def coarse(rows: int, seed: int) -> torch.Tensor:
 
 
 def check(logits: torch.Tensor, keep: int, slots: torch.Tensor | None = None, steps: int = 1, k: int = K,
-          fallback: bool = True):
+          fallback: bool = True, repeat: bool = False):
     lg = logits.to(DEV).contiguous()
     sl = None if slots is None else slots.to(DEV)
-    ids, w = fk.route_subst(lg, k, keep, sl, steps, fallback=fallback)
+    ids, w = fk.route_subst(lg, k, keep, sl, steps, fallback=fallback, repeat=repeat)
     assert ids.dtype == torch.int32 and w.dtype == torch.float32 and ids.is_contiguous() and w.is_contiguous()
-    rids, rw = rule(logits, k, keep, slots, steps, fallback)
+    rids, rw = rule(logits, k, keep, slots, steps, fallback, repeat)
     assert torch.equal(ids.cpu(), rids)
     torch.testing.assert_close(w.cpu(), rw, rtol=1e-5, atol=0)
     return ids
@@ -92,21 +92,22 @@ def test_padded_requests(rows, keep, steps):
                 assert torch.equal(ids[real.to(DEV)], alone)
 
 
-@pytest.mark.parametrize("fallback", [True, False])
+@pytest.mark.parametrize("fallback,repeat", [(True, False), (False, False), (False, True)])
 @pytest.mark.parametrize("keep,k", [(2, 10), (5, 10), (5, 7), (8, 9)])
 @pytest.mark.parametrize("rows", [1, 5, 20, 64, 65, 320])
-def test_reuse_width_and_fallback(rows, keep, k, fallback):
-    """k - keep reuse slots (SHARAR_MOE_KEEP / _REUSE), with and without the fallback: ids bitwise, weights to
-    rtol 1e-5, padded requests included; without the fallback the call reads only its core."""
+def test_reuse_width_and_fallback(rows, keep, k, fallback, repeat):
+    """k - keep reuse slots (SHARAR_MOE_KEEP / _REUSE), with and without the fallback, unfilled slots empty or
+    repeating the row's top 1: ids bitwise, weights to rtol 1e-5, padded requests included; without the fallback the
+    call reads only its core."""
     seed = rows * 100 + keep * 10 + k
     steps = 5 if rows % 5 == 0 else 1
     for lg in (router_logits(rows, seed), tied(router_logits(rows, seed + 1), keep), coarse(rows, seed)):
-        ids = check(lg, keep, k=k, fallback=fallback)
+        ids = check(lg, keep, k=k, fallback=fallback, repeat=repeat)
         if not fallback:
             core = {e for c in candidates(lg) for e in c[:keep]}
-            assert set(ids.reshape(-1).tolist()) <= core | {E}
+            assert set(ids.reshape(-1).tolist()) <= (core if repeat else core | {E})
         for slots in request_slots(rows // steps, seed):
-            check(lg, keep, slots, steps, k=k, fallback=fallback)
+            check(lg, keep, slots, steps, k=k, fallback=fallback, repeat=repeat)
 
 
 @pytest.mark.skipif(DEV != "cuda", reason="CUDA graphs")
@@ -149,6 +150,7 @@ def test_moe_layer_route():
     layer = MoeLayer.__new__(MoeLayer)  # the routing state alone, no experts
     layer.router = torch.randn(E, 64, generator=g).bfloat16().to(DEV)
     layer.topk, layer.keep_rows, layer.keep, layer.reuse, layer.fallback = K, 64, 5, K - 5, True  # keep 5 + reuse 5, the fallback
+    layer.w3 = object()  # the 3-bit experts: unfilled slots name no expert
     x = torch.randn(20, 64, generator=g).bfloat16().to(DEV)
     logits = x @ layer.router.T
     pos = torch.zeros(20, dtype=torch.int64, device=DEV)
@@ -194,3 +196,32 @@ def test_graph_replay(rows, steps):
         first = ids.clone(), w.clone()
         graph.replay()
         assert torch.equal(ids, first[0]) and torch.equal(w.view(torch.int32), first[1].view(torch.int32))
+
+
+@pytest.mark.skipif(DEV != "cuda", reason="FlashInfer's NVFP4 MoE")
+def test_nvfp4_experts_take_the_selection_through_repeated_slots():
+    """FlashInfer's NVFP4 MoE needs an expert in every slot: a slot repeating the row's top 1 at weight 0 gives the
+    bits of leaving the slot out, so the NVFP4 experts serve the selection unchanged and read only the core."""
+    from sharar import target as targets
+    from sharar.model.flashnext.linear import TrunkLinear
+    from sharar.model.flashnext.moe import MoeLayer
+    from sharar.weights.safetensors import SnapshotWeights
+    target = targets.get("flashnext")
+    try:
+        snap = target.snapshot_dir()
+    except FileNotFoundError as exc:
+        pytest.skip(str(exc))
+    weights = SnapshotWeights(snap)
+    moe = MoeLayer(weights, "model.language_model.layers.3.mlp", torch.device("cuda"), target, TrunkLinear, "fp8")
+    weights.close()
+    g = torch.Generator(device="cuda").manual_seed(0)
+    for rows in (1, 5, 16, 64):
+        lg = router_logits(rows, rows).cuda()
+        x = (torch.randn(rows, moe.hidden, device="cuda", generator=g) * 0.5).bfloat16()
+        ids, w = fk.route_subst(lg, K, 5, fallback=False, repeat=True)
+        used = (fk.route_subst(lg, K, 5, fallback=False)[0] < E).sum(1)
+        for n in used.unique().tolist():  # the filled slots come first: compare with only them
+            sel = used == n
+            full = moe.routed(x[sel].contiguous(), ids[sel].contiguous(), w[sel].contiguous())
+            kept = moe.routed(x[sel].contiguous(), ids[sel][:, :n].contiguous(), w[sel][:, :n].contiguous())
+            assert torch.equal(full, kept), (rows, n)

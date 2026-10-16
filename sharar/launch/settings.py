@@ -35,7 +35,9 @@ TARGET_SETTINGS = {
 #             Flash-Next's sampled ones, top-2 within 1.0 for the 27B's sampled ones (at 3:2.0 its sampled thinking looped
 #             in Claude Code sessions, #11), the calibrated 3-bit copies, device-resident acceptance on Flash-Next (#36),
 #             and Flash-Next's draft depth per request (#43: up to 8 for one request, 4 for two or more; the others
-#             verify 4 drafts)
+#             verify 4 drafts), and on one Spark Flash-Next's batch-aware expert selection
+#             (keep 5 + reuse 5: each token's own top 5, then up to 5 the forward's other tokens already read; decode
+#             +20% at one request, +27-41% at sixteen, the quick suite within noise at both)
 #   throughput  fast with more requests decoded together: the 27B 16 (full depth; batches of five or more verify on
 #             the original weights, GSM8K x1.74), Flash-Next 128 with its 3-bit experts (64 with NVFP4 experts), three
 #             drafts at sixteen requests so their verification stays within the 64 rows the 3-bit copies serve (four
@@ -56,6 +58,9 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
     else:
         raise ValueError(f"unknown serving profile {profile!r} (choose from {', '.join(PROFILE_NAMES)})")
     p["SHARAR_MAX_BATCH"] = "4"
+    if flashnext and profile != "exact" and tp == 1:
+        # batch-aware expert selection acts in forwards of up to 64 rows: in `throughput` up to sixteen requests
+        p.update(SHARAR_MOE_KEEP="5", SHARAR_MOE_REUSE="5")
     if flashnext:
         p["SHARAR_SPEC"] = "4"
         if profile == "fast":  # adaptive depth (#43): h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
