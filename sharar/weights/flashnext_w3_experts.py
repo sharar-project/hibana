@@ -70,13 +70,13 @@ def capture(args) -> None:
     rows = {i: done_rows for i in index.values()}
     original = MoeLayer.__call__
 
-    def call(moe, x):
+    def call(moe, x, ctx):
         i = index.get(id(moe))
         if i is not None:
             flat = x.reshape(-1, x.shape[-1])
             files[i].write(flat.contiguous().view(torch.int16).cpu().numpy().tobytes())
             rows[i] += flat.shape[0]
-        return original(moe, x)
+        return original(moe, x, ctx)
 
     started = time.perf_counter()
     MoeLayer.__call__ = call

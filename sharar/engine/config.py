@@ -89,6 +89,8 @@ class EngineConfig:
     commit_profile: bool = False              # SHARAR_COMMIT_PROFILE
     bench_verify_state: str = "snapshots"     # SHARAR_BENCH_VERIFY_STATE
     bench_max_context: int = 0                # SHARAR_BENCH_MAX_CONTEXT
+    moe_keep: int = 0                         # SHARAR_MOE_KEEP=k: Flash-Next, each token keeps its own top k experts in decode and verify forwards (model/flashnext/moe.py); 0, or k of 10 and above: the served top-10
+    moe_reuse: int = 0                        # SHARAR_MOE_REUSE=r: up to r more experts a token from its ranks k+1..20, only ones the call's other tokens keep (k + r <= 10), so the call reads no expert beyond the tokens' top k
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> EngineConfig:
@@ -142,6 +144,8 @@ class EngineConfig:
             commit_profile=_flag(e, "SHARAR_COMMIT_PROFILE"),
             bench_verify_state=e.get("SHARAR_BENCH_VERIFY_STATE", "snapshots"),
             bench_max_context=_int(e, "SHARAR_BENCH_MAX_CONTEXT", 0),
+            moe_keep=_int(e, "SHARAR_MOE_KEEP", 0),
+            moe_reuse=_int(e, "SHARAR_MOE_REUSE", 0),
         )
 
     def replace(self, **changes) -> EngineConfig:
