@@ -149,7 +149,7 @@ def test_moe_layer_route():
     g = torch.Generator().manual_seed(4)
     layer = MoeLayer.__new__(MoeLayer)  # the routing state alone, no experts
     layer.router = torch.randn(E, 64, generator=g).bfloat16().to(DEV)
-    layer.topk, layer.keep_rows, layer.keep, layer.reuse, layer.fallback = K, 64, 5, K - 5, True  # keep 5 + reuse 5, the fallback
+    layer.topk, layer.keep, layer.reuse, layer.fallback = K, 5, K - 5, True  # keep 5 + reuse 5, the fallback
     layer.w3 = object()  # the 3-bit experts: unfilled slots name no expert
     x = torch.randn(20, 64, generator=g).bfloat16().to(DEV)
     logits = x @ layer.router.T

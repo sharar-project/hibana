@@ -1,6 +1,6 @@
 """Batch-aware routing (SHARAR_MOE_KEEP / SHARAR_MOE_REUSE): `rule`, the rule's one reference
 (tests/gpu/test_route_subst.py checks the fused kernel `flashnext_fused.route_subst` against it), and which MoE calls
-take the kernel (decode and verify forwards of at most SHARAR_MOE_KEEP_ROWS rows, with their slots)."""
+take the kernel (decode and verify forwards, with their slots)."""
 import sys
 from types import SimpleNamespace
 
@@ -128,11 +128,11 @@ def test_padded_requests_change_nothing_and_take_their_top_k():
 # ------------------------------------------------------------------ which calls substitute
 
 
-def _layer(keep=6, reuse=4, fallback=True, limit=64):
+def _layer(keep=6, reuse=4, fallback=True):
     """The routing state alone, no experts: by default keep 6, reuse 4 with the fallback."""
     layer = MoeLayer.__new__(MoeLayer)
     layer.router = torch.randn(E, 32, generator=torch.Generator().manual_seed(1)).bfloat16()
-    layer.topk, layer.keep_rows = K, limit
+    layer.topk = K
     layer.keep, layer.reuse, layer.fallback, layer.w3 = keep, reuse, fallback, SimpleNamespace()
     return layer
 
@@ -203,8 +203,6 @@ def test_keep_alone_routes_decode_and_verify_forwards_to_route_topk(kernels):
     assert layer.route(x, _ctx("verify", 20, slots, 5)) == "top5"
     assert layer.route(x, _ctx("decode", 20, torch.ones(20, dtype=torch.int32))) == "top5"
     assert layer.route(x, _ctx("prefill", 20)) == "served"
-    layer.keep_rows = 16
-    assert layer.route(x, _ctx("decode", 20, torch.ones(20, dtype=torch.int32))) == "served"
     assert kernels == []
 
 
@@ -231,8 +229,9 @@ def test_decode_and_verify_forwards_take_route_subst_with_their_slots(kernels):
     assert kernels[0].slots is verify_slots and kernels[1].slots is decode_slots
 
 
-def test_prefill_and_wide_calls_take_the_served_route(kernels):
+def test_prefill_takes_the_served_route_and_wide_calls_substitute(kernels):
     x = torch.randn(20, 32, generator=torch.Generator().manual_seed(3)).bfloat16()
     assert _layer().route(x, _ctx("prefill", 20)) == "served"
-    assert _layer(limit=16).route(x, _ctx("decode", 20, torch.ones(20, dtype=torch.int32))) == "served"
     assert kernels == []
+    wide = torch.randn(640, 32, generator=torch.Generator().manual_seed(4)).bfloat16()  # 128 requests x 5 rows
+    assert _layer().route(wide, _ctx("verify", 640, torch.ones(128, dtype=torch.int32), 5)) == "subst"

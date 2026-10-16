@@ -86,7 +86,7 @@ class MoeLayer:
         reuse = cfg.moe_reuse if keep else 0  # SHARAR_MOE_KEEP=0 turns the selection off, whatever the reuse
         if keep + reuse > self.topk:
             raise ValueError(f"SHARAR_MOE_KEEP + SHARAR_MOE_REUSE = {keep + reuse}: at most {self.topk} experts a token")
-        self.keep, self.reuse, self.fallback, self.keep_rows = keep, reuse, cfg.moe_reuse_fallback, cfg.moe_keep_rows
+        self.keep, self.reuse, self.fallback = keep, reuse, cfg.moe_reuse_fallback
         self.w3 = w3
         if w3 is not None:
             if w3.base + w3.experts > self.experts:
@@ -125,7 +125,7 @@ class MoeLayer:
 
     def route(self, x: torch.Tensor, ctx) -> tuple[torch.Tensor, torch.Tensor]:
         logits = x @ self.router.T
-        if self.keep and x.shape[0] <= self.keep_rows and ctx.mode in ("decode", "verify"):
+        if self.keep and ctx.mode in ("decode", "verify"):
             from sharar.kernels.flashnext_fused import route_subst, route_topk
             if not self.reuse:
                 return route_topk(logits, self.keep)  # ids and weights [rows, keep]: the routed experts take any k <= 10
