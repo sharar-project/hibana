@@ -8,7 +8,7 @@ case "$mode" in
   setup-cpu)
     python3 -m venv .venv-cpu
     .venv-cpu/bin/python -m pip install -c constraints/cpu.txt torch --index-url https://download.pytorch.org/whl/cpu
-    .venv-cpu/bin/python -m pip install -c constraints/cpu.txt -e '.[test]'
+    .venv-cpu/bin/python -m pip install -c constraints/cpu.txt -e '.[test]' ninja  # ninja: the native PLE gather's build
     exec env CUDA_VISIBLE_DEVICES= SHARAR_RUN_GPU=0 OMP_NUM_THREADS=1 .venv-cpu/bin/python -m pytest tests/unit -q -p no:cacheprovider "$@"
     ;;
   cpu)

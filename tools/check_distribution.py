@@ -39,7 +39,7 @@ def main():
         unpacked = next((work / 'unpacked').iterdir())
         run([sys.executable, '-c', 'from setuptools.build_meta import build_wheel; build_wheel("../../artifacts")'], cwd=unpacked)
         wheel = next(artifacts.glob('*.whl'))
-        required = ['sharar/kernels/csrc/fp8_gemv.cu', 'sharar/kernels/csrc/w3_gemm.cu',
+        required = ['sharar/kernels/csrc/fp8_gemv.cu', 'sharar/kernels/csrc/w3_gemm.cu', 'sharar/kernels/csrc/ple_gather.cpp',
                     'sharar/benchmark_data/request_state_7aebbe6.txt']
         with zipfile.ZipFile(wheel) as archive:
             for name in required:

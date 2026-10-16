@@ -113,12 +113,13 @@ rows past the budget eager.
   - The indexer rows were built per sequence (about eight small launches each). At 128 requests they filled the
     launch queue behind the draft graphs and held the host about 39 ms, so the PLE rows were read only after the
     drafts. `FlashNextIndexer.static_rows` now builds every row's page indices on the host and uploads them once.
-  - The PLE gather (`kernels/csrc/ple_gather.cpp`) reads every row from a native thread pool, outside the GIL:
-    `preadv2(RWF_NOWAIT)` for page-cache rows (callable whatever the Python build, #166), a blocking `pread` for the
-    others, one helper per 16 rows. The Python gather cost about 2.4 us of interpreter work per row, and its thread
-    pool's page faults queued on the GIL.
-  - One Spark, `throughput` settings, steady state: at 128 requests the GPU idled 54 ms per round before the verify
-    and now 4 (round 430 -> 380 ms); at one request 42.6 -> 40.2 ms, 16 requests 176.7 -> 170.3.
+  - The PLE gather (`kernels/csrc/ple_gather.cpp`) reads the rows from a native thread pool, outside the GIL, in two
+    passes: `preadv2(RWF_NOWAIT)` copies the rows the page cache holds (callable whatever the Python build, #166),
+    then the others are read blocking, one per pool thread, so their NVMe latencies overlap however few rows a call
+    has. The Python gather it replaced cost about 2.4 us of interpreter work per row, and its thread pool's page
+    faults queued on the GIL.
+  - At 128 requests the GPU idled 54 ms per round before the verify and now 4. Served, one Spark, `throughput`:
+    1 / 32 / 64 / 128 requests 102 -> 108, 551 -> 643, 731 -> 899, 912 -> 1076 tok/s.
 - **Confidence.** `SHARAR_TRACE_CONFIDENCE=1` beside traces records the draft's top-1 probability and top-two
   margin per drafted position ([operations](operations.md#request-traces)).
 
