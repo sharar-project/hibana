@@ -1,4 +1,4 @@
-"""Flash-Next PLE rows on the host (#36): the page-cache-first gather, the per-column hash and the
+"""Flash-Next PLE rows on the host (#36): the native gather, the per-column hash and the
 verification rows read column by column as the draft steps end, each against the reference path."""
 
 import json
@@ -43,52 +43,35 @@ def test_gather_matches_the_memory_maps(table):
     rows = np.random.default_rng(1).integers(0, table.rows, size=(9, 16))
     reference = table.gather_mapped(rows)
     assert (table.gather(rows) == reference).all()
-    # Each row is read once, from the page cache or through the threads. How many hit the cache depends on the
-    # filesystem (one without RWF_NOWAIT, like some container mounts, sends every row through the threads).
-    assert table.hits + table.misses == rows.size
+    assert table.hits + table.misses == rows.size  # each row read once, from the page cache or blocking
     out = np.zeros((9, 16, ROW_BYTES), dtype=np.uint8)
     assert table.gather(rows, out=out) is not None and (out == reference).all()
-    table._nowait = False  # the page cache under the memory maps answers
-    assert (table.gather(rows) == reference).all()
     assert (table.gather(rows[:1, :1]) == reference[:1, :1]).all()
 
 
-def test_without_rwf_nowait_the_maps_answer_and_keep_the_rows(table, monkeypatch):
-    """ZFS (#166): preadv refuses RWF_NOWAIT. The gather switches to the memory maps mid-call; rows it reads through
-    them stay in the page cache, so the next gather copies them all without the threads."""
+def test_gather_reads_every_row_once(table):
+    """Each row read once, in the caller's order, any count of rows including across shard boundaries and repeats."""
+    rng = np.random.default_rng(4)
+    for shape in [(1,), (17,), (3, 16), (1000,)]:
+        rows = rng.integers(0, table.rows, size=shape)
+        rows.reshape(-1)[:2] = [table.rows - 1, 0][:rows.size]  # the last row of the last shard, the first of the first
+        hits, misses = table.hits, table.misses
+        assert (table.gather(rows) == table.gather_mapped(rows)).all()
+        assert table.hits + table.misses - hits - misses == rows.size
+
+
+def test_gather_reads_rows_out_of_the_page_cache(table):
+    """Rows the page cache does not hold take the blocking pass (one pool thread each) and come back the same."""
     import os
-    rows = np.random.default_rng(2).integers(0, table.rows, size=(5, 16))
-    reference = table.gather_mapped(rows)
-
-    def refuse(*args):
-        raise OSError(95, "Operation not supported")
-    monkeypatch.setattr(os, "preadv", refuse)
-    monkeypatch.setattr(os, "RWF_NOWAIT", 8, raising=False)  # uv's standalone CPython has no preadv2
-    table._nowait = True
-    assert (table.gather(rows) == reference).all()
-    assert not table._nowait
-    hits, misses = table.hits, table.misses
-    assert (table.gather(rows) == reference).all()
-    assert (table.hits, table.misses) == (hits + rows.size, misses)
-
-
-def test_where_mincore_cannot_see_the_page_cache_every_row_goes_to_the_threads(table, monkeypatch):
-    """Files this process neither owns nor may write: mincore would call every page resident, so the maps answer
-    through the threads only, as before #166."""
-    import os
-    from pathlib import Path
-    from sharar.model.flashnext import ple
-    path = Path(table.maps[0].filename)
-    assert ple._residency_visible(path)  # the test's own file
-    monkeypatch.setattr(os, "geteuid", lambda: os.stat(path).st_uid + 1)
-    monkeypatch.setattr(os, "access", lambda *args, **kwargs: False)
-    assert not ple._residency_visible(path)
-    rows = np.random.default_rng(3).integers(0, table.rows, size=(4, 16))
-    reference = table.gather_mapped(rows)
-    table._nowait, table._mincore = False, False
-    hits, misses = table.hits, table.misses
-    assert (table.gather(rows) == reference).all()
-    assert (table.hits, table.misses) == (hits, misses + rows.size)
+    rows = np.random.default_rng(5).integers(0, table.rows, size=(5, 16))
+    for fd in table.fds:  # before the maps touch them: mapped pages stay cached
+        os.fsync(fd)
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    misses = table.misses
+    got = table.gather(rows)
+    if table.misses == misses:
+        pytest.skip("this filesystem kept the rows cached")
+    assert (got == table.gather_mapped(rows)).all()
 
 
 class _Hash:
