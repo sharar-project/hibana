@@ -7,7 +7,7 @@ output is plain content. Both cases, and an explicit "<think>" at the start of
 the output, are handled.
 
 With tools offered, a model can also write its tool call inside a reasoning
-block it never closes, and end the turn there (#120: Flash-Next, twice in
+block it never closes, and end the turn there (Flash-Next, twice in
 308 Claude Code turns). Reasoning from a "<tool_call>" on is held back: a later
 "</think>" releases it as reasoning (a call drafted while thinking), and if the
 output ends first while it holds a complete call, it becomes content, where

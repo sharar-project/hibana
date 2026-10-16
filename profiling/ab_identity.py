@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Greedy identity of the speculative engine across two builds (#9).
+"""Greedy identity of the speculative engine across two builds.
 
 Generates the round profiler's prompts plus JSON, chat, multilingual and a needle (passkey) prompt at batch one, and
 the first four together at batch four, with exact and relaxed (3:2.0) acceptance, each twice in one process (the

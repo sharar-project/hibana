@@ -73,7 +73,6 @@ class VerifyGraphs:
 
     def _plan(self, st: dict, kv_all: list[torch.Tensor]) -> None:
         check_context_capacity([p.shape[0] for p in kv_all], self.max_context)
-        d = self.device
         b, s = len(kv_all), self.s_len
         # Host index pointers: plan() reads them on the CPU (a device tensor would sync).
         indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_all]).cumsum(0).tolist()), dtype=torch.int32)
@@ -139,7 +138,7 @@ class VerifyGraphs:
             st["slots"][b:].zero_()
         pad_kv = [torch.zeros(s + 1, dtype=torch.int32, device=self.device) for _ in range(size - b)]
         # Plan before the side inputs: they may wait for the drafted tokens, the plan needs only the pages,
-        # so the host plans while the draft graphs still run (#36).
+        # so the host plans while the draft graphs still run.
         self._plan(st, list(kv_all) + pad_kv)
         if st["side"] is not None:
             self.ex.extras.fill(st["side"], side[0], side[1], side[2], n, columns=side[3])

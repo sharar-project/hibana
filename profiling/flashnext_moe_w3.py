@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""3-bit routed experts (#73) against FlashInfer's cutlass_fused_moe on real Flash-Next expert weights: the go/no-go
+"""3-bit routed experts against FlashInfer's cutlass_fused_moe on real Flash-Next expert weights: the go/no-go
 microbenchmark (go only if the 3-bit path is faster at M = 5, the MTP k = 4 verify).
 
 Loads `--layers` MoE layers of the checkpoint (NVFP4, the CUTLASS arm) and fits each layer's experts into the 3-bit
 format from them (kernels/w3_moe.calibrate, as sharar/weights/flashnext_w3_experts.py writes the checkpoint).
 
 Routing is synthetic, matched to the distinct experts per layer that recorded traffic touched in the small-M study
-(#37: 10.0, 16.4, 25.1, 28.3, 40.1 at M = 1, 2, 4, 5, 8; M = 16 extrapolated at 3.9 new experts a row): row 0 takes
+(10.0, 16.4, 25.1, 28.3, 40.1 at M = 1, 2, 4, 5, 8; M = 16 extrapolated at 3.9 new experts a row): row 0 takes
 ten random experts, every further row a share of new ones and the rest from experts earlier rows already chose.
 `--routing uniform` draws every row's ten experts independently instead (the most distinct experts, no overlap);
 calls of more than 16 rows (prefill chunks, wide verification) always do.
@@ -35,7 +35,7 @@ import torch
 from sharar.kernels import w3_moe
 
 NVFP4_BYTES = 2 * 640 * 1280 + 2560 * 320 + 2 * 640 * 160 + 2560 * 40  # w13 + w2 and their E4M3 block scales
-DISTINCT = {1: 10.0, 2: 16.4, 4: 25.1, 5: 28.3, 8: 40.1}  # recorded traffic, #37 (docs/flashnext.md on feat/moe-small-m)
+DISTINCT = {1: 10.0, 2: 16.4, 4: 25.1, 5: 28.3, 8: 40.1}  # distinct experts per layer in recorded traffic (the small-M router study)
 NEW_PER_ROW_PAST_8 = 3.9
 
 

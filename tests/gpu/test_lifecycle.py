@@ -4,7 +4,7 @@ Run with SHARAR_RUN_GPU=1 (and `python -m sharar.launch.guard --pid PID` watchin
 Pools are deliberately bounded so the test does not size itself to all RAM.
 """
 
-import os
+import json
 
 import pytest
 import torch
@@ -14,7 +14,7 @@ from sharar.engine.executor import Executor
 from sharar.engine.sampler import InvalidRequest, SamplingParams
 from sharar.engine.scheduler import Scheduler
 from sharar.cache.radix import RadixCache
-from sharar.engine.prompts import build_prompts, random_ids
+from sharar.engine.prompts import NEEDLE, build_prompts, random_ids
 from sharar.tokenizer import SnapshotTokenizer
 
 
@@ -280,14 +280,20 @@ def test_unaligned_prefill_checkpoint_and_draft_cache_restore(setup, batched):
     assert ex.spec.proposer.cache_fallbacks == before
 
 
+CANARIES = {
+    "canary_exact": lambda text: text.strip() == "SHARAR_OK",
+    "canary_arith": lambda text: text.strip() == "42",
+    "canary_json": lambda text: json.loads(text.strip()) == {"device": "GB10", "model": "Qwen3.8-27B"},
+    "canary_needle": lambda text: text.strip() == NEEDLE,
+}
+
+
 @pytest.mark.parametrize('graphs', [False, True])
 def test_canaries_answer_exactly(setup, graphs):
-    from sharar.engine.run import _canary_checks
-
     configure, _ = setup
     ex, prompts = configure(graphs)
     tok = SnapshotTokenizer(config.snapshot_dir())
-    for name, check in _canary_checks().items():
+    for name, check in CANARIES.items():
         r = ex.generate(prompts[name], SamplingParams(max_new_tokens=64))
         text = tok.decode(r.output_ids, skip_special_tokens=True)
         assert check(text), (name, text)
@@ -375,7 +381,7 @@ def test_selected_features_are_post_block_residual_streams(runtime):
 
 
 def test_dense_path_is_repeatable_and_graphs_match_eager(setup):
-    """In-suite identity (#54): two eager runs of a fixed batch are bit-identical, and CUDA graphs reproduce them."""
+    """In-suite identity: two eager runs of a fixed batch are bit-identical, and CUDA graphs reproduce them."""
     configure, _ = setup
     ex, prompts = configure(False)
     items = [(prompts[name], SamplingParams(max_new_tokens=32)) for name in ('canary_json', 'canary_arith', 'canary_needle', 'canary_exact')]

@@ -97,7 +97,8 @@ rows past the budget eager.
   round differently: main at a fixed depth 8 and at depth 4 diverge on 5 of 6 prompts (from token 6 to 106), as
   adaptive depth does; each setting repeats its own outputs exactly. Under `fast`'s relaxed acceptance a deeper round
   gives the rule more positions; GSM8K (first 300) and HumanEval stayed within run-to-run noise (pooled -0.2 points
-  against a repeat of depth 4, whose two runs themselves differed by 1.3). `exact` and `throughput` keep depth 4.
+  against a repeat of depth 4, whose two runs themselves differed by 1.3). `exact` keeps depth 4; `throughput` verifies 3 drafts from 16 requests up (with 3-bit experts on one Spark; #172: at
+  32-128 requests a verified row costs about 0.5 ms and depth 3 was the best fixed depth in steady state).
 - **Draft-only head.** `SHARAR_DRAFT_HEAD=w3` gives the draft steps a 3-bit copy of the lm_head; its top 8
   candidates (`SHARAR_DRAFT_HEAD_RESCORE`) are rescored with the target's FP8 rows, so the draft picks what the
   full head would except on near-ties. Exact acceptance is unaffected. `SHARAR_DRAFT_VOCAB` restricts the draft
@@ -107,9 +108,19 @@ rows past the budget eager.
   SiLU-mul and routed sum are fused. Every fusion is bitwise against the chain it replaced
   (`tests/gpu/test_flashnext_fused.py`). A step is now bandwidth-bound: the 3-bit draft head is about 1.1 of its
   1.9 ms.
-- **No host gaps.** The verify plan and indexer rows are prepared before the PLE read, cached PLE rows are read
-  without the thread pool (`RWF_NOWAIT`), and each drafted token's PLE rows are read while the next draft step
-  runs. Device-resident acceptance (on in `fast`) covers MTP too ([interfaces](interfaces.md#device-resident-acceptance)).
+- **No host gaps.** The verify plan and indexer rows are prepared before the PLE read, and each drafted token's PLE
+  rows are read while the next draft step runs. Device-resident acceptance (on in `fast`) covers MTP too
+  ([interfaces](interfaces.md#device-resident-acceptance)). At high batch two host costs had grown back (#172):
+  - The indexer rows were built per sequence (about eight small launches each). At 128 requests they filled the
+    launch queue behind the draft graphs and held the host about 39 ms, so the PLE rows were read only after the
+    drafts. `FlashNextIndexer.static_rows` now builds every row's page indices on the host and uploads them once.
+  - The PLE gather (`kernels/csrc/ple_gather.cpp`) reads the rows from a native thread pool, outside the GIL, in two
+    passes: `preadv2(RWF_NOWAIT)` copies the rows the page cache holds (callable whatever the Python build, #166),
+    then the others are read blocking, one per pool thread, so their NVMe latencies overlap however few rows a call
+    has. The Python gather it replaced cost about 2.4 us of interpreter work per row, and its thread pool's page
+    faults queued on the GIL.
+  - At 128 requests the GPU idled 54 ms per round before the verify and now 4. Served, one Spark, `throughput`:
+    1 / 32 / 64 / 128 requests 102 -> 108, 551 -> 643, 731 -> 899, 912 -> 1076 tok/s.
 - **Confidence.** `SHARAR_TRACE_CONFIDENCE=1` beside traces records the draft's top-1 probability and top-two
   margin per drafted position ([operations](operations.md#request-traces)).
 

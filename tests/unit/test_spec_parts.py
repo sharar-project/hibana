@@ -1,4 +1,4 @@
-"""Speculator parts (#45): declared capabilities, shared draft heads, the depth policy."""
+"""Speculator parts: declared capabilities, shared draft heads, the depth policy."""
 from types import SimpleNamespace
 
 import pytest

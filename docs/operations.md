@@ -41,7 +41,7 @@ the command line (`sharar serve --help`), the environment, the config file (`SHA
 `config/gb10.env` in the checkout, else `~/.config/sharar/sharar.env`; [example](../config/gb10.env.example)), the
 target's settings (port, service, drafter), the profile's defaults, then the built-in defaults: models in
 `SHARAR_HF_CACHE` (default `$HF_HOME`, else `~/.cache/huggingface`; Flash-Next in `SHARAR_FLASHNEXT_CACHE`, default the
-same) and results, traces, sessions, drafter runs, 3-bit checkpoints and logs in `SHARAR_RESULTS` (default
+same) and results, traces, sessions, 3-bit checkpoints and logs in `SHARAR_RESULTS` (default
 `~/.local/share/sharar`). The server reads the resolved settings once into `EngineConfig`
 ([engine/config.py](../sharar/engine/config.py)); `/get_server_info` reports them under `config`.
 
@@ -55,12 +55,13 @@ same) and results, traces, sessions, drafter runs, 3-bit checkpoints and logs in
 | Accepted state | reconstruction | `SHARAR_VERIFY_STATE` |
 | Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
 | Requests decoded together | 4; `throughput`: 16 on the 27B, 128 on Flash-Next (64 with NVFP4 experts) | `SHARAR_MAX_BATCH` / `sharar serve --max-batch`, 1-128 (graph buckets 1, 2, 4, ... 128). Above four, the pool guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full context |
-| Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:4,4:4`, `throughput`: `16:3` | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC`). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
+| Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:4,4:4`, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark, [#172](https://github.com/abdelfattah-lab/sharar/issues/172)), else `16:3` | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC`). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
 | Adaptive draft depth (MTP) | Flash-Next `fast`: on, 0.14 (0.2 on two Sparks) | `SHARAR_SPEC_STEP_COST` (0 = the fixed depth): each request drafts as deep as its own recent acceptance pays for, up to the batch bucket's depth ([how](flashnext.md#the-mtp-draft)) |
 | Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext` | `sharar serve --port`, `SHARAR_PORT` / `SHARAR_SERVICE` |
 | Request traces | off | `sharar serve --traces` (in `$SHARAR_RESULTS/traces`) or `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
 | Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
 | Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `SHARAR_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
+| Flash-Next expert selection (lossy) | `fast` and `throughput`, on one or two Sparks: keep 5 + reuse 5 ([profiles](#serving-profiles)); otherwise each token's top 10 | `SHARAR_MOE_KEEP=k` keeps each token's own top k in decode and verify forwards, at any number of requests; `SHARAR_MOE_REUSE=r` (k + r <= 10) adds up to r more, only experts another token of the forward keeps, so the forward loads no more experts. Slots nothing fills stay empty for the 3-bit experts, which skip them; the NVFP4 experts need an expert in every slot, so there they repeat the token's top expert at weight 0 (the same bits as leaving the slot out). Prefill keeps the top 10, so the lossy gate's layer 1, which scores prefill, does not see it: judge it on layers 2 and 3. A token's experts depend on the other tokens of its forward (other requests and the drafts), so a greedy reply can change with what else the server runs. `SHARAR_MOE_KEEP=0` turns it off |
 | GDN recurrent state | 8-bit under `throughput` ([profiles](#serving-profiles)); FP32 otherwise | `SHARAR_SSM_STATE=fp32`, `int8` or `int4`. The quantized formats store each GDN layer's state per window as in LeapQuant ([arXiv 2609.38166](https://arxiv.org/abs/2609.38166); `sharar/cache/ssm_format.py`, `sharar/kernels/ssm_window.py`): an integer residual with per-row scales and smoothed key columns, FP16 compensator terms (`SHARAR_SSM_COMPENSATORS`, unset: 4, or 8 for int4) and the committed tokens of the current window (`SHARAR_SSM_WINDOW`, 16), requantized once per window. The recurrent state per slot is 55 MiB (int8) or 41 MiB (int4) instead of 144 on the 27B, and 41 or 31 MiB instead of 108 on Flash-Next. Needs the reconstruct accepted state. Lossy (measurements in [#129](https://github.com/abdelfattah-lab/sharar/pull/129) and [#161](https://github.com/abdelfattah-lab/sharar/issues/161)). It also lets more requests fit where memory is short (a Spark container: 64 Flash-Next requests instead of 16) |
 | Flash-Next PLE table on two Sparks | each rank's half of the heads in device memory (23.8 GiB per rank; [tensor parallel](tensor-parallel.md)) | `SHARAR_PLE_RESIDENT=0` reads it from the memory maps on the host, as one Spark does (which prefetches a prompt's later chunks into the page cache) |
 | Shape-stable prefill numerics | off | `SHARAR_STABLE_NUMERICS=1` (M-invariant kernels for the three row-count-dependent ops; see [limits](#numerical-limits)) |
@@ -81,6 +82,7 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 | Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | Flash-Next top-3 within 2.0; the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
 | Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next also its routed experts) | off | on | on |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next only | as fast |
+| Batch-aware expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_REUSE`) | off | Flash-Next on one or two Sparks: keep 5 + reuse 5 | as fast |
 | Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
 | 8-bit GDN recurrent state (`SHARAR_SSM_STATE`) | off (FP32) | off (FP32) | on |
 
@@ -100,13 +102,6 @@ and the 27B's first token on a 10K-token prompt comes 14% later (3.08 to 3.51 s)
 
 A new lossy option enters `fast` (and so `throughput`) only through the lossy-change gate
 ([CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option)).
-
-### Settings
-
-Every `SHARAR_*` variable the launcher forwards is read once into one
-`EngineConfig` (`sharar/engine/config.py`) when the server starts; the command
-line overrides it. `GET /get_server_info` returns the effective value under
-`config`, so a run records exactly what it served.
 
 ## Request traces
 

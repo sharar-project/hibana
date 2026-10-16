@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""3-bit routed experts for Flash-Next's W3 checkpoint (#73): a new checkpoint directory with the source
+"""3-bit routed experts for Flash-Next's W3 checkpoint: a new checkpoint directory with the source
 checkpoint's trunk entries and every layer's experts as `layers.N.experts.w13` / `.w2`.
 
 The source is the checkpoint's NVFP4 experts, dequantized (there is no BF16 expert source). Each expert matrix is
@@ -70,13 +70,13 @@ def capture(args) -> None:
     rows = {i: done_rows for i in index.values()}
     original = MoeLayer.__call__
 
-    def call(moe, x):
+    def call(moe, x, ctx):
         i = index.get(id(moe))
         if i is not None:
             flat = x.reshape(-1, x.shape[-1])
             files[i].write(flat.contiguous().view(torch.int16).cpu().numpy().tobytes())
             rows[i] += flat.shape[0]
-        return original(moe, x)
+        return original(moe, x, ctx)
 
     started = time.perf_counter()
     MoeLayer.__call__ = call

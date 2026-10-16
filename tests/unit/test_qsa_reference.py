@@ -32,7 +32,6 @@ def qsa_fast_topk_cpu(logits, row_starts, row_ends, topk):
 
 def torch_expand_qsa_block_indices(block_indices, query_positions, sequence_lengths, compress_ratio, token_topk):
     block_topk = (token_topk + compress_ratio - 1) // compress_ratio
-    final_topk = token_topk + compress_ratio - 1
     rows = block_indices.shape[0]
     blocks = block_indices.long()
     offsets = torch.arange(compress_ratio, dtype=torch.long)

@@ -6,6 +6,10 @@ unless a change explicitly validates a new one. Favor a small implementation wit
 explicit tensor ownership over a registry or framework. Read [the architecture](docs/architecture.md) and
 [the interfaces](docs/interfaces.md) first; open work is in the GitHub issues.
 
+Code, comments and tests carry no issue or pull-request numbers. Say what the code does and why, with the
+measurement when it decides a choice; the history (which issue asked for it, which pull request changed it) belongs
+in the commit message, the pull request and the docs.
+
 ## Run checks
 
 On the GB10, `uv sync` builds the environment from `uv.lock` and `uv run pytest tests/unit` runs the control,
@@ -52,6 +56,16 @@ the row count, so outputs drift whenever shapes move.
 speed change needs explaining. A lossy option (one that changes what the model
 emits on purpose) is judged by the lossy-change gate below instead.
 When a change alters a default or adds a setting, update [operations](docs/operations.md) in the same change.
+
+A change meant to make serving faster posts `tools/h2h-pr.py`'s table in its pull request, so changes compare on one
+workload and their gains stack:
+
+    tools/h2h-pr.py --target flashnext --pr <branch>      # and --target 27b when the change touches the 27B
+
+It serves main and the branch in turn (same environment, the user's config file) and runs sharar-eval's h2h:
+`fast` at 1 request (the 22 h2h prompts one at a time, median decode tok/s) and 4, `throughput` at 8, 16, 32, 64
+and 128 closed-loop streams (aggregate tok/s in a window, the server held at that many requests), greedy and T 0.7.
+About 1.5 hours a target; `--repeats 2` when the difference is within a few percent.
 
 ## Judge a lossy option
 

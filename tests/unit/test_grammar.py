@@ -1,12 +1,11 @@
-"""Constrained output (#16): grammar masks for sampling and for a verify block of drafted tokens, and acceptance on
+"""Constrained output: grammar masks for sampling and for a verify block of drafted tokens, and acceptance on
 masked logits. A small plain-text vocabulary stands in for Qwen's."""
-import json
 from types import SimpleNamespace
 
 import pytest
 import torch
 
-from sharar.engine.grammar import GrammarState, Grammars, apply_bitmask, host_bitmask, sample_masks, verify_masks
+from sharar.engine.grammar import GrammarState, Grammars, apply_bitmask, host_bitmask, sample_masks
 from sharar.engine.request import Request
 from sharar.engine.sampler import Sampler, SamplingParams
 from sharar.engine.spec import SpecDecoder

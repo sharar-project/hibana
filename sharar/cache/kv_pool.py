@@ -63,7 +63,7 @@ class KvPool:
         """Distinct pages for the K/V of n padded graph rows. Padded rows still attend to page 0, but they must
         not write it together: a duplicate-index write keeps an arbitrary row's values, so page 0 and the
         padded rows would differ from replay to replay, and Flash-Next's per-tensor activation scale carries
-        that into the real rows (#94)."""
+        that into the real rows."""
         if n > self.padding_rows:
             raise ValueError(f"{n} padded rows need more than the pool's {self.padding_rows} padding pages")
         return self.padding_pages[:n]

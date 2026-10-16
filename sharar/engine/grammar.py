@@ -1,4 +1,4 @@
-"""Constrained output: a request's grammar as token masks, with speculative decoding (#16).
+"""Constrained output: a request's grammar as token masks, with speculative decoding.
 
 A request may carry a `Constraint` (SamplingParams.constraint): a compiled xgrammar grammar for a JSON schema, any
 JSON, or forced tool calls. Its `Request` owns a `GrammarState`, which advances on every emitted token (`push`) and

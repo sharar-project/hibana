@@ -1,4 +1,4 @@
-"""EngineConfig (#44): one value from the environment, installed once, read at construction."""
+"""EngineConfig: one value from the environment, installed once, read at construction."""
 import pytest
 
 from sharar.engine import config
@@ -60,14 +60,19 @@ def test_qsa_prefill_backend_configuration(backend):
 
 @pytest.mark.parametrize("backend", ["original", "auto", "optimized"])
 @pytest.mark.parametrize("resident", ["auto", "0"])
-def test_qsa_backend_and_ple_residency_are_independent(backend, resident):
+def test_qsa_backend_preserves_ple_and_moe_settings(backend, resident):
     cfg = EngineConfig.from_env({"SHARAR_QSA_PREFILL_BACKEND": backend,
-                                "SHARAR_PLE_RESIDENT": resident})
+                                "SHARAR_PLE_RESIDENT": resident,
+                                "SHARAR_MOE_KEEP": "5", "SHARAR_MOE_REUSE": "5"})
     assert cfg.qsa_prefill_backend == backend
     assert cfg.ple_resident == resident
     assert cfg.describe()["qsa_prefill_backend"] == backend
     assert cfg.describe()["ple_resident"] == resident
+    assert (cfg.moe_keep, cfg.moe_reuse) == (5, 5)
+    assert (cfg.describe()["moe_keep"], cfg.describe()["moe_reuse"]) == (5, 5)
     assert cfg.replace(qsa_prefill_backend="original").ple_resident == resident
+    assert (cfg.replace(qsa_prefill_backend="original").moe_keep,
+            cfg.replace(qsa_prefill_backend="original").moe_reuse) == (5, 5)
     assert cfg.replace(ple_resident="auto").qsa_prefill_backend == backend
 
 

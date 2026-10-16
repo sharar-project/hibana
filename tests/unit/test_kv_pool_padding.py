@@ -1,4 +1,4 @@
-"""Padded CUDA-graph rows write their K/V to pages of their own, never to an allocatable page or to page 0 (#94)."""
+"""Padded CUDA-graph rows write their K/V to pages of their own, never to an allocatable page or to page 0."""
 
 import pytest
 import torch

@@ -26,16 +26,16 @@ PREFIX = "mtp"
 
 
 class FlashNextMtpHead(MtpLayer):
-    DRAFT_HEADS = True  # set_draft_head: reduced vocabulary and/or 3-bit shortlist (#35)
+    DRAFT_HEADS = True  # set_draft_head: reduced vocabulary and/or 3-bit shortlist
 
     def __init__(self, w, device: torch.device, model, num_pages: int, precision: str | None = None, padding_rows: int = 0):
         # Tensor parallel: the draft layer is replicated, whole on every rank (built from the whole geometry), and
         # drafts through the target's vocabulary-parallel lm_head (`VocabParallelHead`: each rank reads its rows).
         t = self.target = getattr(model, "full_target", model.target)
         self.tensor_parallel = t is not model.target
-        self.embed, self.lm_head, self.mixer_target = model.embed, model.lm_head, model.mixer
+        self.embed, self.lm_head = model.embed, model.lm_head
         from sharar.proposers.draft_head import TargetHead, VocabParallelHead
-        # replaced by set_draft_head (#35)
+        # replaced by set_draft_head
         self.draft_head = VocabParallelHead(self.lm_head) if self.tensor_parallel else TargetHead(self.lm_head)
         self.hidden_size, self.hc = t.hidden_size, t.hc_count
         self.hidden_width = self.hc * self.hidden_size  # the "hidden" the proposer carries per row

@@ -45,7 +45,6 @@ class DraftGraphs:
 
     def _plan(self, st: dict, kv_all: list[torch.Tensor]) -> None:
         check_context_capacity([p.shape[0] for p in kv_all], self.max_context)
-        d = self.device
         b = len(kv_all)
         indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_all]).cumsum(0).tolist()), dtype=torch.int32)  # host: no sync in plan()
         self.mtp.attention.paged_prefill(st["wrapper"], torch.arange(0, b + 1, dtype=torch.int32), indptr, torch.cat(kv_all),
@@ -87,7 +86,7 @@ class DraftGraphs:
         if size > b:
             st["tokens"][b:].zero_()
             st["positions"][b:].zero_()
-            st["pages"][b:].copy_(self.mtp.kv.pad_pages(size - b))  # distinct pages: rows writing one page race (#94)
+            st["pages"][b:].copy_(self.mtp.kv.pad_pages(size - b))  # distinct pages: rows writing one page race
         pad = [torch.zeros(2, dtype=torch.int32, device=self.device) for _ in range(size - b)]
         self._plan(st, list(kv_all) + pad)
         self._graphs[size].replay()

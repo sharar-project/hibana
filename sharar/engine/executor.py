@@ -16,6 +16,7 @@ from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import DecodeGraphs
 from sharar.engine.request import Request, State
 from sharar.engine.grammar import sample_masks
+from sharar.engine.sampling_rng import request_seed
 from sharar.engine.sampler import InvalidRequest, Sampler, SamplingParams
 from sharar.cache.kv_pool import KV_DTYPE, KvPool
 from sharar.cache.ledger import Ledger
@@ -108,7 +109,6 @@ class Executor:
         self.graphs: DecodeGraphs | None = None
         self.use_graphs = False
         self.spec = None
-        self.feature_request = None  # explicit target features when no proposer is installed (draft training)
         if log:
             log(f"  pools: {num_pages} KV pages ({self.kv_pool.bytes / 2**30:.2f} GiB), {num_slots} state slots ({num_slots * self.state_pool.bytes_per_slot / 2**30:.2f} GiB, {self.ssm_format.describe()} recurrent state)")
         if spec_config is not None:
@@ -117,7 +117,7 @@ class Executor:
 
     @property
     def attention(self):
-        """The planner for every target attention call (#46): prefill, decode and verification, eager and graph-bound."""
+        """The planner for every target attention call: prefill, decode and verification, eager and graph-bound."""
         planner = self.__dict__.get("_attention")
         if planner is None:  # built on first use (test executors skip __init__)
             from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
@@ -133,11 +133,9 @@ class Executor:
         self.state.cache = value
 
     def _features_wanted(self):
-        """Target features to compute: the proposer's, or an explicit request
-        (draft training extracts features without a proposer)."""
-        if self.spec is not None:
-            return self.spec.proposer.requirements.features
-        return getattr(self, "feature_request", None)  # test doubles bypass __init__
+        """Target features to compute: the installed proposer's, else none."""
+        spec = getattr(self, "spec", None)  # test doubles bypass __init__
+        return spec.proposer.requirements.features if spec is not None else None
 
     def enable_spec(self, k: int = 3, log=None, *, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
                     draft_dir: str | None = None) -> None:
@@ -215,9 +213,9 @@ class Executor:
             req = Request(prompt_ids=list(prompt_ids), params=params)
         if req.generator is None and not params.greedy:
             req.generator = self.sampler.generator(params.seed)
+            req.rng_seed = request_seed(params.seed)
         self.state.admit(req, req.prefill_ids)
         req.state = State.PREFILL
-        req.t_admit = time.perf_counter()
         return req
 
     def can_admit(self, prompt_ids: list[int], reserve_tokens: int = 0) -> bool:
@@ -583,6 +581,13 @@ class Executor:
                 self.decode_step(live)
             for r in live:
                 self.release(r)
+            # One sampled round per path, so the first sampled request does not compile the sampled-speculation
+            # kernels (kernels/sampled_verify.py, the sampled lattice walk).
+            sampled = SamplingParams(max_new_tokens=12, ignore_eos=True, temperature=1.0, top_k=20, top_p=0.95, seed=0)
+            f = self.admit(random_ids(50, 30), sampled)
+            self.prefill(f)
+            self.decode_step([f])
+            self.release(f)
             self.spec.reset_stats()
         self.flush_cache()
         torch.cuda.synchronize()
@@ -604,7 +609,7 @@ class Executor:
         spec_reqs = [r for r in reqs if self.spec is not None and self.spec.ready(r)
                      and (r.params.greedy or not self.spec.proposer.requirements.greedy_only)]
         if spec_reqs and self.spec.depth_policy.choose(reqs) == 0:
-            spec_reqs = []  # a wide batch at depth 0 (the throughput profile, #59): plain decode; the proposer still follows
+            spec_reqs = []  # a wide batch at depth 0 (the throughput profile): plain decode; the proposer still follows
         plain = [r for r in reqs if r not in spec_reqs]
         need = len(plain) + (len(spec_reqs) * self.spec.steps if spec_reqs else 0)
         # Retraction retries the entire batch. Reserve both paths before either

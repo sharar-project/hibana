@@ -1,7 +1,6 @@
 """Cold tier: an evicted prefix leaf is parked in unified memory and restored
 bit-exactly (pages, GDN snapshot, draft auxiliary) when its session returns."""
 
-import pytest
 import torch
 
 

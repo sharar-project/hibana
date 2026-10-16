@@ -1,4 +1,4 @@
-"""The linear-layer interface every weight format implements (#48).
+"""The linear-layer interface every weight format implements.
 
 Formats: `Fp8Linear` (static activation scale) and `Nvfp4Linear` from the
 ModelOpt release (the 27B), `TrunkLinear` (FP8 at load with a dynamic

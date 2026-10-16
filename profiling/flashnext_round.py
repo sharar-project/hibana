@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Where a Flash-Next speculative round spends its time (#25, #7, #9).
+"""Where a Flash-Next speculative round spends its time.
 
   1. Graphed MTP generation per prompt: tokens/round and the synchronized phase split
      (draft, verify, accept) from the spec decoder's timers.
@@ -113,8 +113,8 @@ def m_curve(ex, model, tok, out, context: int):
     originals = [m.route for m in moe_layers]
 
     def hooked(m, orig):
-        def route(x):
-            ids, w = orig(x)
+        def route(x, ctx):
+            ids, w = orig(x, ctx)
             seen.append(int(torch.unique(ids).numel()))
             return ids, w
         return route
@@ -421,7 +421,7 @@ def kernel_gaps(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = 
 
 
 def phase_kernels(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = None, top: int = 25):
-    """Kernels by round phase (#9): every activity of a draft, verify, accept or decode replay, tied to its graph
+    """Kernels by round phase: every activity of a draft, verify, accept or decode replay, tied to its graph
     launch by correlation id, and the eager GPU work between replays, by kernel name: count and device ms per replay
     (eager: per round). Batch `batch`, one generation of `tokens` under the torch profiler."""
     from torch.profiler import record_function
@@ -459,7 +459,7 @@ def phase_kernels(ex, tok, out, tokens: int, batch: int = 1, accept: str | None 
     for e in events:
         if e.get("ph") == "X" and e.get("cat") in ("kernel", "gpu_memcpy", "gpu_memset"):
             acts[e["args"].get("correlation")].append(e)
-    kinds, replays, graph_corr = {}, defaultdict(int), set()
+    kinds, replays = {}, defaultdict(int)
     li = 0
     for start, end, kind in ranges:
         while li < len(launches) and launches[li][0] < start:

@@ -14,7 +14,6 @@ from sharar.api.server import create_app
 from sharar.engine.depth import FixedDepth
 from sharar.engine.executor import Executor
 from sharar.engine.graphs import capture_sizes, check_context_capacity
-from sharar.engine.request import Request
 from sharar.engine.sampler import InvalidRequest, Sampler, SamplingParams
 from sharar.engine.scheduler import Scheduler, SchedulerConfig
 from sharar.engine.spec import SpecDecoder
@@ -372,7 +371,7 @@ def test_http_error_finishes_stream_or_returns_503(monkeypatch, stream, endpoint
 @pytest.mark.parametrize("reserve", [0, 8])
 def test_wide_batch_snapshots_leave_admission_slots(monkeypatch, reserve):
     # A short prompt keeps its own slot plus two prefill snapshots (the last 64-token boundary and
-    # the prompt end). At batch four the spare slots cover them; a wide batch (#59) reserves the
+    # the prompt end). At batch four the spare slots cover them; a wide batch reserves the
     # slots its next admissions need, so snapshots degrade instead of exhausting the pool.
     ex = tiny_executor(monkeypatch, cache=True)
     ex.max_batch = 8

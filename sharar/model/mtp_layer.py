@@ -1,4 +1,4 @@
-"""The checkpoint's MTP layer as the speculative draft: what every target's MTP layer shares (#50).
+"""The checkpoint's MTP layer as the speculative draft: what every target's MTP layer shares.
 
 For token x_i and the target's hidden h_{i-1} of the previous position, a layer fuses u from the embedding of x_i and
 h_{i-1}, runs one decoder layer over its own BF16 paged KV (addressed by the same page ids as the target's pages for

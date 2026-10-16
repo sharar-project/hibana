@@ -40,6 +40,7 @@ def main():
         run([sys.executable, '-c', 'from setuptools.build_meta import build_wheel; build_wheel("../../artifacts")'], cwd=unpacked)
         wheel = next(artifacts.glob('*.whl'))
         required = ['sharar/kernels/csrc/fp8_gemv.cu', 'sharar/kernels/csrc/w3_gemm.cu',
+                    'sharar/kernels/csrc/ple_gather.cpp',
                     'sharar/kernels/qsa/csrc/query_prep.cu',
                     'sharar/kernels/qsa/csrc/compression.cu',
                     'sharar/kernels/qsa/csrc/topk_pages.cu',

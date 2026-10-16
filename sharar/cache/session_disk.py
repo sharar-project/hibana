@@ -8,7 +8,7 @@ reads 9.7 GB/s and writes 7.0 GB/s, so a 262K-token session (8.2 GiB of FP8 KV
 plus a 144 MiB recurrent snapshot) comes back in about a second instead of a
 351-second prefill. Reads bypass the page cache (O_DIRECT; aligned ranges around unaligned segments): through it, an
 830 MB record (20K tokens of the 27B) read at 2.4 GB/s cold and 5.6 GB/s cached, against about 10 GB/s direct
-(2026-10-14, #154), and cached record pages would also take memory the GPU allocates from. Filesystems that
+(2026-10-14), and cached record pages would also take memory the GPU allocates from. Filesystems that
 refuse O_DIRECT read buffered.
 
 A record is `<sha1 of the key>.bin` (segments, raw bytes) and `.json` (identity,
