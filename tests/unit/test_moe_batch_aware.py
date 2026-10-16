@@ -19,11 +19,12 @@ def candidates(logits):
     return [sorted(range(len(row)), key=lambda e: (-row[e], e))[:C] for row in logits.float().cpu().tolist()]
 
 
-def rule(logits, k, keep, slots=None, steps=1, fallback=True):
+def rule(logits, k, keep, slots=None, steps=1, fallback=True, repeat=False):
     """The rule, literally, one row at a time: the core is the union of every real row's top `keep` candidates; a real
     row takes its top `keep`, then its ranks keep+1..C in the core, then (`fallback`) its other ranks, each in rank
     order, the first k; a padded row (slots[r // steps] == 0: a graph's dummy request) its top k. Without `fallback`
-    the slots left over, and all of a padded row's, hold id E (no expert) at weight 0. Weights: the fp32 softmax over
+    the slots left over, and all of a padded row's, hold id E (no expert) at weight 0, or with `repeat` the row's top 1
+    (a padded row: row 0's) at weight 0. Weights: the fp32 softmax over
     all E at the chosen experts, renormalized over them. bf16 logits [R, E] -> (int32 ids [R, k], fp32 weights [R, k])
     on CPU."""
     cand = candidates(logits)
@@ -38,8 +39,12 @@ def rule(logits, k, keep, slots=None, steps=1, fallback=True):
         row = row[:k]
         rows.append(row + [E] * (k - len(row)))
     ids = torch.tensor(rows)
-    p = torch.softmax(logits.float().cpu(), dim=-1).gather(1, ids.clamp(max=E - 1)) * (ids < E)
+    hole = ids == E
+    p = torch.softmax(logits.float().cpu(), dim=-1).gather(1, ids.clamp(max=E - 1)) * ~hole
     total = p.sum(-1, keepdim=True)
+    if repeat:
+        fill = torch.tensor([c[0] if r else cand[0][0] for c, r in zip(cand, real)])
+        ids = torch.where(hole, fill[:, None], ids)
     return ids.to(torch.int32), p / torch.where(total > 0, total, 1.0)
 
 
@@ -128,7 +133,7 @@ def _layer(keep=6, reuse=4, fallback=True, limit=64):
     layer = MoeLayer.__new__(MoeLayer)
     layer.router = torch.randn(E, 32, generator=torch.Generator().manual_seed(1)).bfloat16()
     layer.topk, layer.keep_rows = K, limit
-    layer.keep, layer.reuse, layer.fallback = keep, reuse, fallback
+    layer.keep, layer.reuse, layer.fallback, layer.w3 = keep, reuse, fallback, SimpleNamespace()
     return layer
 
 
@@ -145,9 +150,9 @@ def kernels(monkeypatch):
     route at K and "top<k>" below it."""
     calls = []
 
-    def route_subst(logits, k, keep, slots=None, steps=1, fallback=True):
+    def route_subst(logits, k, keep, slots=None, steps=1, fallback=True, repeat=False):
         assert logits.shape[1] == E
-        calls.append(SimpleNamespace(k=k, keep=keep, slots=slots, steps=steps, fallback=fallback))
+        calls.append(SimpleNamespace(k=k, keep=keep, slots=slots, steps=steps, fallback=fallback, repeat=repeat))
         return "subst"
 
     stub = SimpleNamespace(route_subst=route_subst, route_topk=lambda logits, k: "served" if k == K else f"top{k}")
@@ -181,14 +186,13 @@ def test_settings_resolve_to_keep_reuse_and_fallback():
     assert _built(moe_keep=5, moe_reuse=5) == (5, 5, False)
     assert _built(moe_keep=5, moe_reuse=2, moe_reuse_fallback=True) == (5, 2, True)
     assert _built(moe_keep=10, moe_reuse=3)[:2] == (0, 0)
+    assert _built(moe_keep=0, moe_reuse=5)[:2] == (0, 0)  # SHARAR_MOE_KEEP=0 turns off the profiles' keep 5 + reuse 5
     for changes, message in [({"moe_keep": -1}, "SHARAR_MOE_KEEP=-1"), ({"moe_keep": 5, "moe_reuse": -1}, "SHARAR_MOE_REUSE=-1"),
-                             ({"moe_reuse": 3}, "SHARAR_MOE_REUSE: the reuse slots"), ({"moe_keep": 6, "moe_reuse": 5}, "at most 10")]:
+                             ({"moe_keep": 6, "moe_reuse": 5}, "at most 10")]:
         with pytest.raises(ValueError, match=message):
             _built(**changes)
-    # unfilled reuse slots name no expert, which only the 3-bit experts skip: without them the layer serves the top 10
-    # (the profiles turn the selection on, so NVFP4 experts or missing 3-bit copies must still serve)
-    assert _built(w3=None, moe_keep=5, moe_reuse=5)[:2] == (0, 0)
-    assert _built(w3=None, moe_keep=5, moe_reuse=5, moe_reuse_fallback=True)[:2] == (5, 5)
+    # the NVFP4 experts take the same selection (an unfilled slot repeats the token's top 1 at weight 0)
+    assert _built(w3=None, moe_keep=5, moe_reuse=5) == (5, 5, False)
     assert _built(w3=None, moe_keep=5)[:2] == (5, 0)
 
 
@@ -209,7 +213,11 @@ def test_reuse_slots_set_the_width_and_the_fallback(kernels):
     slots = torch.ones(20, dtype=torch.int32)
     assert _layer(keep=5, reuse=5, fallback=False).route(x, _ctx("decode", 20, slots)) == "subst"
     assert _layer(keep=5, reuse=2, fallback=True).route(x, _ctx("decode", 20, slots)) == "subst"
-    assert [(c.k, c.keep, c.fallback) for c in kernels] == [(10, 5, False), (7, 5, True)]
+    assert [(c.k, c.keep, c.fallback, c.repeat) for c in kernels] == [(10, 5, False, False), (7, 5, True, False)]
+    nvfp4 = _layer(keep=5, reuse=5, fallback=False)
+    nvfp4.w3 = None  # the NVFP4 experts need an expert in every slot: unfilled ones repeat the token's top 1
+    nvfp4.route(x, _ctx("decode", 20, slots))
+    assert (kernels[-1].fallback, kernels[-1].repeat) == (False, True)
 
 
 def test_decode_and_verify_forwards_take_route_subst_with_their_slots(kernels):
