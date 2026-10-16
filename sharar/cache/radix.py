@@ -384,6 +384,7 @@ class RadixCache:
             return
         del leaf.parent.children[leaf.key[0]]
         self._free_l1(leaf)
+        leaf.pages = leaf.page_ids = leaf.snapshot_slot = None  # gone: a write-through still queued for it finds nothing to copy
 
     def _demote(self, node: Node) -> None:
         """Free a node's L1 pages and slot; it stays in the tree, SSD-only."""

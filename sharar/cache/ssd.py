@@ -519,6 +519,9 @@ class SsdTier:
         done = self._gather_blocks(pending, wait=wait)
         self.forced += done
         copied = done == len(pending)  # else no staging room: its pages are about to go, so its blocks cannot be stored
+        if not copied:  # the ancestors keep their pages: their blocks stay queued, or their refs would look pending forever
+            start = end - len(leaf.key)
+            self.queue.extendleft(reversed([(leaf.parent, e, h, p) for _, e, h, p in pending[done:] if e <= start]))
         written = leaf.tail is not None and leaf.tail.nbytes >= 0  # written through already: its snapshot may be gone
         due = not leaf.children and leaf.snapshot_slot is not None and end >= self.min_tokens
         keep = copied and (written or (due and self._write_tail(leaf, end, wait=wait)))

@@ -739,6 +739,28 @@ def test_eviction_writes_no_tail_for_a_node_whose_descendants_are_stored(tmp_pat
     assert tier.restore(cache, IDS + [7]) == len(IDS) and same(restored(cache, kv, sp, IDS), at_end)
 
 
+def test_serving_eviction_that_drops_a_leaf_keeps_its_ancestors_blocks_queued(tmp_path):
+    """Eviction drops a leaf it cannot copy for want of staging room. The blocks of the path above it stay queued
+    for their own node, which keeps its pages, and the write-through queued for the leaf finds it gone: nothing is
+    copied from the pages and slot the leaf gave back."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    prompt_end = 2 * BLOCK + 10
+    at_prompt, _ = _two_resume_points(cache, tier, kv, sp, feats, prompt_end)
+    tier.staging_bytes = 1
+    tier.staged = 1  # another copy holds the staging buffer
+    cache.evict(need_pages=kv.free_count + 1)  # the leaf past the prompt end goes
+    (head,) = cache.root.children.values()
+    assert tier.evict_dropped == 1 and not head.children and head.in_l1
+    assert len(tier.queue) == 2 and all(item[0] is head for item in tier.queue)
+    tier.staged = 0
+    settle(cache, tier)
+    assert all(r.ready for r in head.blocks.values()) and tier.through_dropped == 1 and tier.tails == 0
+    evict_all(cache, kv)  # the head is the leaf now: its tail goes out and it stays on the SSD
+    settle(cache, tier)
+    assert tier.restore(cache, IDS[:prompt_end] + [7]) == prompt_end
+    assert same(restored(cache, kv, sp, IDS[:prompt_end]), at_prompt)
+
+
 # ---- asynchronous restores (admission keeps serving while the reads land) ----
 
 def land(cache, tier, ids, reserve=0, limit=200):
