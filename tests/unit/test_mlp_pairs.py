@@ -1,8 +1,8 @@
-"""An MLP's gate|up interleaved in blocks (`modelopt.interleave_pairs`): the NVFP4 rows, their 3-bit copy and SiLU-mul
-agree with the concatenated layout."""
+"""An MLP's gate|up interleaved in blocks (`modelopt.interleave_pairs`): the NVFP4 rows and their 3-bit copy agree with
+the concatenated layout (SiLU-mul over the pairs: tests/gpu/test_mlp_fusion.py)."""
 import torch
 
-from sharar.kernels import ops, w3
+from sharar.kernels import w3
 from sharar.weights.modelopt import Nvfp4Linear, interleave_pairs, pair_order, swizzle_block_scales
 
 BLOCK = 64
@@ -22,7 +22,7 @@ def test_pair_order_alternates_gate_and_up_blocks():
     assert sorted(order) == list(range(512))
 
 
-def test_interleaved_weights_rows_copy_and_silu_mul():
+def test_interleaved_weights_and_their_3bit_copy():
     natural = linear(512, 256)
     reference = natural.dequantize()
     paired = interleave_pairs(linear(512, 256), BLOCK)
@@ -31,5 +31,3 @@ def test_interleaved_weights_rows_copy_and_silu_mul():
     # a calibrated copy is stored concatenated and interleaved at load; a nearest-level one packs the interleaved rows
     moved, packed = w3.interleave_rows(w3.pack(reference), BLOCK), w3.pack(paired.dequantize())
     assert all(torch.equal(getattr(moved, f), getattr(packed, f)) for f in ("planes", "scales", "row_scale"))
-    x = torch.randn(3, 512)
-    assert torch.equal(ops.silu_and_mul(x[:, order], BLOCK), ops.silu_and_mul(x))
