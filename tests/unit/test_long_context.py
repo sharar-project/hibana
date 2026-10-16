@@ -64,7 +64,17 @@ def test_a_tight_budget_keeps_at_least_half_of_what_is_left_for_the_caches(monke
     """Little left after the guarantees (Flash-Next `exact`: NVFP4 experts and the SSD staging): the 4 GiB margin
     alone would leave the pools only the guaranteed slots; they get half of what is left, as before the margin."""
     kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
-    must = 4 * 32768 * kv + 5 * state
+    must = 4 * 32768 * kv + 9 * state
     available = 16 * GIB + 8 * GIB + must + 3 * GIB  # 3 GiB left after the guarantees, less than the margin
     got = plan(monkeypatch, 32768, available_gib=available / GIB)
-    assert got.state_slots == min(96, 5 + int((3 * GIB // 2) * 0.6) // state) > 5
+    assert got.state_slots == min(96, 9 + int((3 * GIB // 2) * 0.6) // state) > 9
+
+
+def test_the_guaranteed_slots_cover_each_request_and_its_prompt_end_snapshot(monkeypatch):
+    """Nothing left after the guarantees: still two slots per running request and the dummy (warmup runs four
+    requests with a snapshot each), so a start that fits works, and one that does not fails at planning."""
+    kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
+    must = 4 * 32768 * kv + 9 * state
+    assert plan(monkeypatch, 32768, available_gib=(16 * GIB + 8 * GIB + must) / GIB).state_slots == 9
+    with pytest.raises(MemoryError):
+        plan(monkeypatch, 32768, available_gib=(16 * GIB + 8 * GIB + must - 2 * state) / GIB)
