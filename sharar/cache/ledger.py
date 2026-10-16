@@ -91,8 +91,8 @@ class Ledger:
         same total split between them), whichever is more, and committed state
         slots for `max_running` requests, plus the prefill activation reserve
         and the floor; the remainder, less `margin_bytes` for what the engine
-        allocates after the plan (CUDA graphs, workspaces), goes to prefix-cache
-        capacity. Admission budgets each request's actual tokens,
+        allocates after the plan (CUDA graphs, workspaces) but never less than
+        half of it, goes to prefix-cache capacity. Admission budgets each request's actual tokens,
         so a long request and shorter ones share the pool and a request that
         does not fit waits. A cached request costs about three state snapshots
         (441 MiB) against 256 MiB of KV for an 8K prompt, and a soak test
@@ -114,7 +114,10 @@ class Ledger:
             raise MemoryError(
                 f"only {available / GIB:.1f} GiB available; need {(must_kv + must_state + prefill_reserve_bytes + future_bytes + self.floor_bytes) / GIB:.1f} GiB"
             )
-        spare = max(0, budget - must_kv - must_state - margin_bytes)
+        leftover = max(0, budget - must_kv - must_state)
+        # never less than half of it (the split before the margin): where little is left (Flash-Next `exact`, its
+        # NVFP4 experts and the SSD staging), the margin alone would leave the pools a handful of slots
+        spare = max(leftover - margin_bytes, leftover // 2)
         # the target never cuts the guaranteed slots: a batch of 128 needs 129, and room for cached sessions besides
         state_slots = min(max(state_slot_target, 2 * max_running + 1), max_running + 1 + int(spare * 0.6) // state_bytes_per_slot)
         spare -= (state_slots - max_running - 1) * state_bytes_per_slot  # what the slot cap leaves goes to pages
