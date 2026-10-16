@@ -24,5 +24,5 @@ def test_rejects_before_serving(argv, message, capsys):
 
 def test_serves_this_checkout_as_a_user_would():
     served = evaluate.Served("evaluate", Path("/tmp/sharar-evaluate-test"), "flashnext", "fast", {}, 30200, "python", Path("."), {})
-    assert served.command[3:10] == ["sharar", "serve", "flashnext", "--fast", "--port", "30200", "--no-sessions"]
+    assert served.command[3:] == ["sharar", "serve", "flashnext", "--fast", "--port", "30200"]
     assert "--no-fetch" not in served.command  # the build as served: the 3-bit checkpoint follows the pin

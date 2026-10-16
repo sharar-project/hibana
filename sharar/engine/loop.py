@@ -223,6 +223,8 @@ class EngineLoop:
                     break  # a rank above 0 received the primary's ("stop",)
                 if self.sched.active:
                     self.sched.step()
+                else:
+                    self.sched.idle()
                 self._publish()
                 self.last_stats = self.sched.stats(include_latencies=False)
                 if self.sched.metrics.finished != self._latency_finished:

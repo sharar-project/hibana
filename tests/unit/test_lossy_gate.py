@@ -44,7 +44,7 @@ def test_arms_resolve_as_sharar_serve_does(clean):
 def test_batch_settings_stay_out_of_the_in_process_arm(clean):
     plan = gate.arm_plan(gate.resolve("flashnext", "throughput", {}))
     assert plan["env"]["SHARAR_DEVICE_ACCEPT"] == "1"
-    assert "SHARAR_MAX_BATCH" not in plan["env"] and "SHARAR_SPEC_DEPTHS" not in plan["env"] and "SHARAR_SESSION_DIR" not in plan["env"]
+    assert "SHARAR_MAX_BATCH" not in plan["env"] and "SHARAR_SPEC_DEPTHS" not in plan["env"] and "SHARAR_SSD_DIR" not in plan["env"]
 
 
 def test_the_3bit_checkpoint_is_what_current_holds(clean):
@@ -78,10 +78,9 @@ def test_sampled_threshold_reaches_the_in_process_arm_as_serve_records_it(clean)
 
 def test_served_arms_are_sharar_serve_in_the_foreground(clean):
     cmd = gate.served_command("flashnext", "fast", 30100)
-    assert cmd[2:] == ["-m", "sharar", "serve", "flashnext", "--fast", "--port", "30100", "--no-sessions", "--no-fetch"]
-    assert gate.served_env({})["SHARAR_COLD_TIER_GIB"] == "0"
-    assert gate.served_env({"SHARAR_COLD_TIER_GIB": "8"})["SHARAR_COLD_TIER_GIB"] == "8"
-    assert "SHARAR_CONFIG_FILE" in gate.served_env({})
+    assert cmd[2:] == ["-m", "sharar", "serve", "flashnext", "--fast", "--port", "30100", "--no-fetch"]
+    assert "SHARAR_CONFIG_FILE" in gate.served_env({}) and gate.served_env({"SHARAR_SSD": "1"})["SHARAR_SSD"] == "0"
+    assert gate.served_env({"SHARAR_TRACES": "/x"})["SHARAR_TRACES"] == "off"
 
 
 def test_accept_rule_matches_serve():

@@ -21,14 +21,16 @@ def plan(monkeypatch, context_len, available_gib=90):
     return Ledger(start_available=available_gib * GIB).plan(max_running=4, context_len=context_len)
 
 
-def test_default_profile_plan_is_unchanged(monkeypatch):
-    # The 32K profile still guarantees four full requests, as before.
-    kv = DEFAULT_TARGET.kv_bytes_per_token
+def test_default_profile_plan(monkeypatch):
+    # The 32K profile guarantees four full requests; all spare memory but the
+    # 4 GiB margin goes to the pools, slots first (up to their cap), then pages.
+    kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
     got = plan(monkeypatch, 32768)
     budget = 90 * GIB - 16 * GIB - 8 * GIB
     must = 4 * 32768 * kv
-    spare = int((budget - must - 5 * DEFAULT_TARGET.state_bytes_per_slot) * 0.5)
-    assert got.kv_tokens == min(1 << 20, 4 * 32768 + int(spare * 0.4) // kv)
+    spare = budget - must - 5 * state - 4 * GIB
+    assert got.state_slots == min(96, 5 + int(spare * 0.6) // state)
+    assert got.kv_tokens == min(1 << 20, 4 * 32768 + (spare - (got.state_slots - 5) * state) // kv)
 
 
 def test_long_context_guarantees_one_request_not_four(monkeypatch):
@@ -55,3 +57,24 @@ def test_wide_batches_split_the_shared_guarantee(monkeypatch):
     wide = Ledger(start_available=90 * GIB).plan(max_running=16, context_len=32768)
     assert 4 * SHARED_CONTEXT <= wide.kv_tokens <= four.kv_tokens and wide.state_slots >= 17
     assert Ledger(start_available=90 * GIB).plan(max_running=16, context_len=MAX_CONTEXT).kv_tokens >= MAX_CONTEXT
+
+
+
+def test_a_tight_budget_keeps_at_least_half_of_what_is_left_for_the_caches(monkeypatch):
+    """Little left after the guarantees (Flash-Next `exact`: NVFP4 experts and the SSD staging): the 4 GiB margin
+    alone would leave the pools only the guaranteed slots; they get half of what is left, as before the margin."""
+    kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
+    must = 4 * 32768 * kv + 9 * state
+    available = 16 * GIB + 8 * GIB + must + 3 * GIB  # 3 GiB left after the guarantees, less than the margin
+    got = plan(monkeypatch, 32768, available_gib=available / GIB)
+    assert got.state_slots == min(96, 9 + int((3 * GIB // 2) * 0.6) // state) > 9
+
+
+def test_the_guaranteed_slots_cover_each_request_and_its_prompt_end_snapshot(monkeypatch):
+    """Nothing left after the guarantees: still two slots per running request and the dummy (warmup runs four
+    requests with a snapshot each), so a start that fits works, and one that does not fails at planning."""
+    kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
+    must = 4 * 32768 * kv + 9 * state
+    assert plan(monkeypatch, 32768, available_gib=(16 * GIB + 8 * GIB + must) / GIB).state_slots == 9
+    with pytest.raises(MemoryError):
+        plan(monkeypatch, 32768, available_gib=(16 * GIB + 8 * GIB + must - 2 * state) / GIB)

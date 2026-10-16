@@ -106,7 +106,7 @@ class ParallelProposer:
         self.requirements = ProposerRequirements(name, FeatureRequest(layers=model.features),
                                                 persistent_bytes=self.bytes, greedy_only=False, max_depth=15,
                                                 capabilities=Capabilities(device_feedback=True, checkpoint_cache=True,
-                                                                          cold_payload=True))
+                                                                          stored_payload=True))
         self.workspace = torch.empty(128 * 2**20, dtype=torch.uint8, device=device)
         self.attention = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self.workspace, 'NHD')
         from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
@@ -202,14 +202,14 @@ class ParallelProposer:
 
     def auxiliary_codec(self):
         """Export/import of this adapter's cache auxiliary (a feature-cache
-        handle) for the cold tier: the projected feature window travels with
-        the parked session so a restored request keeps speculating."""
+        handle) for the SSD tier: the projected feature window travels with
+        the stored prefix so a restored request keeps speculating."""
         def export(handle):
             value = self.feature_cache.get(handle)  # (start, end, features on the device); the tier copies the tensor
             return None if value is None else (value[0], value[1], value[2])
 
         def import_(payload, *, slot=None):
-            start, end, features = payload  # features is a view into the tier's arena; put() clones it
+            start, end, features = payload  # features is a view into the tier's staging buffer; put() clones it
             return self.feature_cache.put(start, end, features, slot=slot)
 
         return self.cache_identity, export, import_

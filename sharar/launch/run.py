@@ -26,7 +26,7 @@ def engine_runtime_env() -> dict[str, str]:
 
 def install_env(env: dict[str, str]) -> None:
     """This process's environment for the engine: the resolved settings, and none of the caller's that they replace."""
-    for key in ("SHARAR_DRAFT", "SHARAR_TRACES", "SHARAR_W3_CHECKPOINT", "SHARAR_SESSION_DIR", "SHARAR_W3_WARNING"):
+    for key in ("SHARAR_DRAFT", "SHARAR_TRACES", "SHARAR_W3_CHECKPOINT", "SHARAR_SSD_DIR", "SHARAR_W3_WARNING"):
         if key not in env:
             os.environ.pop(key, None)
     os.environ.update(env)
@@ -44,8 +44,6 @@ def serve_overrides(args) -> dict[str, str]:
             o[key] = str(value)
     if getattr(args, "draft", None):
         o["SHARAR_DRAFT"] = str(Path(args.draft).expanduser().resolve())
-    if getattr(args, "no_sessions", False):
-        o["SHARAR_SESSION_DIR"] = "off"
     return o
 
 
@@ -80,7 +78,7 @@ def serve(args) -> int:
     except preflight.PreflightError as exc:
         sys.exit(f"sharar serve: {exc}")
     print(preflight.summary(s, host, w3, args.tp), flush=True)
-    for d in (s.traces, s.sessions):
+    for d in (s.traces, s.ssd):
         if d is not None:
             d.mkdir(parents=True, exist_ok=True)
     if args.tp > 1:
@@ -142,6 +140,34 @@ def status(args) -> int:
         print(f"  traces: {traces['records']} recorded, {traces['bytes'] / 2**20:.0f} MiB" if traces else "  traces: off")
     if not any_up:
         print("nothing is serving (sharar serve 27b, or flashnext)")
+    return 0
+
+
+def cache(args) -> int:
+    """`sharar cache`: the serving engine's GPU prefix cache and SSD tier; with nothing serving, the SSD store on disk."""
+    s = serving(args.target)
+    info = ctl.server_info(str(s.port)) if s is not None else None
+    if info is None:
+        s = s or resolve("27b")
+        directory = s.ssd or Path(s.get("SHARAR_SSD_DIR") or s.results / "ssd" / s.target)
+        d = ctl.stored_on_disk(directory)
+        who = f"{s.target} is not serving" if args.target else "nothing is serving"
+        print(f"{who}; SSD tier {'on' if s.ssd else 'off'} in the settings")
+        print(f"  SSD store {directory}: {d['prefixes']:,} prefixes, {d['blocks']:,} blocks, {d['bytes'] / 2**30:.1f} GiB")
+        return 0
+    cfg, cache = info.get("config") or {}, (info.get("scheduler") or {}).get("cache")
+    print(f"{s.target}: serving on {s.url}")
+    if cache is None:
+        print("  no prefix cache")
+        return 0
+    print(f"  GPU: {cache['cached_tokens']:,} of {info.get('kv_pages', 0):,} KV tokens cached; "
+          f"{cache['hits']:,} hits, {cache['misses']:,} misses, {cache['evictions']:,} evictions")
+    ssd = cache.get("ssd")
+    if ssd is None:
+        print("  SSD: " + ("on in the settings but not running (the server log says why)" if cfg.get("ssd") else "off (SHARAR_SSD=1 turns it on)"))
+        return 0
+    print(f"  SSD: {ssd['prefixes']:,} prefixes, {ssd['used_gib']:.1f} of {ssd['budget_gib']:.0f} GiB in {cfg.get('ssd_dir')}; "
+          f"{ssd['restores']:,} restores ({ssd['restored_tokens']:,} tokens)")
     return 0
 
 

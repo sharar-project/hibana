@@ -691,7 +691,7 @@ def _split_chat(text: str, in_reasoning: bool, tools: list | None) -> tuple[str,
 def _serve_http(app, host: str, port: int) -> None:
     """uvicorn.run, except that a handled SIGTERM ends here instead of being raised again once the server stops: in
     a container the server is PID 1 and ignores it, but run directly (from the venv, as the launchers do) it would end
-    the process before the engine drains and its sessions persist."""
+    the process before the engine drains and its cached prefixes persist."""
     import contextlib
 
     import uvicorn
@@ -706,12 +706,12 @@ def _serve_http(app, host: str, port: int) -> None:
     Server(uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=30)).run()
 
 
-def _persist_sessions(ex, engine, log) -> None:
-    """Cached sessions survive the restart in the session store, once the engine has stopped: on every
-    tensor-parallel rank or on none (parking grows the tiers through collectives)."""
+def _persist_prefixes(ex, engine, log) -> None:
+    """Once the engine has stopped, write the cached prefixes to the SSD tier for the next run: on every
+    tensor-parallel rank or on none (the ranks first agree that every engine stopped)."""
     from sharar.distributed import all_reduce_min
     if all_reduce_min(int(not engine.thread.is_alive()))[0]:
-        ex.persist_sessions(log)
+        ex.persist_prefixes(log)
 
 
 def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
@@ -744,10 +744,15 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     tmpl = ChatTemplate(snap)
     log(f"loading {served.name}: {served.model_id}@{served.model_revision[:8]}")
     model = targets.load_model(served, snap, log=log)
-    ex = Executor(model, log=log, spec_config=spec_config, max_context=max_context, max_batch=max_batch)
+    from sharar.engine.config import current
+    pool_tokens = current().kv_pool_tokens  # SHARAR_KV_POOL_TOKENS: a fixed pool, else planned
+    if pool_tokens and max_context and pool_tokens < max_context:  # a longer request could never be admitted
+        log(f"  context length {max_context} -> {pool_tokens}: SHARAR_KV_POOL_TOKENS fixes a smaller KV pool")
+        max_context = pool_tokens
+    ex = Executor(model, log=log, spec_config=spec_config, max_context=max_context, max_batch=max_batch, num_pages=pool_tokens)
     ex.capture_graphs(log=log)
     ex.warmup(log=log)
-    ex.enable_cold_tier(log=log)  # tensor-parallel ranks agree on every tier decision (cache/cold_tier.py)
+    ex.enable_ssd_tier(log=log)
     # a burst as wide as the batch must queue, not be refused: the queue holds at least two batches
     cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=max(ex.profile.max_queued, 2 * ex.profile.max_batch),
                           chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget)
@@ -757,7 +762,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         engine = EngineLoop(sched, Grammars.from_tokenizer(tok._tok, served.vocab_size, SamplingParams().stop_token_ids))
         engine.start()
         engine.thread.join()
-        _persist_sessions(ex, engine, log)
+        _persist_prefixes(ex, engine, log)
         return
     sink = None
     if traces:
@@ -766,7 +771,6 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         sink = TraceSink(traces, max_bytes=traces_max_mib * 2**20)
         sched.sink = sink
         log(f"recording opt-in request traces under {sink.directory} (cap {traces_max_mib} MiB)")
-    from sharar.engine.config import current
     if current().w3_warning:
         log(f"WARNING: {current().w3_warning}")
     describe = {
@@ -808,6 +812,6 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     finally:
         engine.drain(timeout=5)
         engine.thread.join(timeout=6)
-        _persist_sessions(ex, engine, log)
+        _persist_prefixes(ex, engine, log)
         if sink is not None:
             sink.close()

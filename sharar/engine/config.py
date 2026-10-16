@@ -16,6 +16,7 @@ import dataclasses
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping
 
 
@@ -27,6 +28,22 @@ def _flag(env: Mapping[str, str], name: str, default: bool = False) -> bool:
 def _int(env: Mapping[str, str], name: str, default: int | None) -> int | None:
     value = env.get(name)
     return default if value in (None, "") else int(value)
+
+
+SSD_DIR = str(Path.home() / ".local" / "share" / "sharar" / "ssd")  # the engine's default; the launcher passes $SHARAR_RESULTS/ssd/<target>
+
+
+def _ssd_block(tokens: int) -> int:
+    if tokens < 1 or 2048 % tokens:
+        raise ValueError(f"SHARAR_SSD_BLOCK_TOKENS must divide 2048, got {tokens}")
+    return tokens
+
+
+def _positive(env: Mapping[str, str], name: str, default: int) -> int:
+    n = _int(env, name, default)
+    if n < 1:
+        raise ValueError(f"{name} must be at least 1, got {n}")
+    return n
 
 
 def _str(env: Mapping[str, str], name: str, default: str | None = None) -> str | None:
@@ -74,11 +91,18 @@ class EngineConfig:
     accept_default_sampled_threshold: str | None = None  # SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD: K:M for sampled requests (unset: accept_default's)
     qsa_sparse_graphs: bool = True            # SHARAR_QSA_SPARSE_GRAPHS=0: rows past the indexer budget run eagerly
     ple_resident: str = "auto"                 # SHARAR_PLE_RESIDENT: Flash-Next's PLE table in device memory, each tensor-parallel rank its share of the heads; auto: on two Sparks, 0: off
-    # --- cache tiers
-    cold_tier_gib: float | None = None        # SHARAR_COLD_TIER_GIB (unset: from free memory, capped at 24)
-    session_dir: str | None = None            # SHARAR_SESSION_DIR
-    session_gib: float = 200.0                # SHARAR_SESSION_GIB
-    session_min_tokens: int = 4096            # SHARAR_SESSION_MIN_TOKENS
+    # --- the SSD tier (cache/ssd.py) under the GPU prefix cache
+    ssd: bool = False                         # SHARAR_SSD
+    ssd_gib: float = 200.0                    # SHARAR_SSD_GIB: its capacity
+    ssd_dir: str = SSD_DIR                    # SHARAR_SSD_DIR: where it stores
+    # the SSD tier's tuning
+    ssd_block_tokens: int = 256               # SHARAR_SSD_BLOCK_TOKENS: tokens per SSD KV block (divides the 2048-token prefill chunk)
+    ssd_trace: bool = False                   # SHARAR_SSD_TRACE: one line per restore in <ssd dir>/v2/restores.jsonl
+    ssd_writers: int = 4                      # SHARAR_SSD_WRITERS: the store's writer threads (at least 1)
+    ssd_staging_mib: int = 512                # SHARAR_SSD_STAGING_MIB: backup copies in flight to the writers
+    ssd_chunk_mib: int = 256                  # SHARAR_SSD_CHUNK_MIB: each half of the restore staging buffer
+    ssd_async: bool = True                    # SHARAR_SSD_ASYNC=0: a restore pauses the engine until it lands (the old way)
+    kv_pool_tokens: int | None = None         # SHARAR_KV_POOL_TOKENS: a fixed KV pool size, e.g. to compare the SSD tier on and off; unset: planned
     # --- traces
     traces: str | None = None                 # SHARAR_TRACES
     traces_max_mib: int = 32768               # SHARAR_TRACES_MAX_MIB
@@ -92,10 +116,14 @@ class EngineConfig:
     moe_keep: int = 0                         # SHARAR_MOE_KEEP=k: Flash-Next, each token keeps its own top k experts in decode and verify forwards (model/flashnext/moe.py); 0, or k of 10 and above: the served top-10
     moe_reuse: int = 0                        # SHARAR_MOE_REUSE=r: up to r more experts a token from its ranks k+1..20, only ones the call's other tokens keep (k + r <= 10), so the call reads no expert beyond the tokens' top k
 
+    @property
+    def ssd_buffers(self) -> dict[str, int]:
+        """The SSD tier's staging sizes in bytes: the pool plan reserves exactly what the tier pins."""
+        return {"staging_bytes": self.ssd_staging_mib << 20, "chunk_bytes": self.ssd_chunk_mib << 20}
+
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> EngineConfig:
         e = os.environ if env is None else env
-        cold = _str(e, "SHARAR_COLD_TIER_GIB")
         return cls(
             profile=_str(e, "SHARAR_PROFILE", "fast"),
             target=_str(e, "SHARAR_TARGET"),
@@ -132,10 +160,16 @@ class EngineConfig:
             accept_default_sampled_threshold=_str(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"),
             qsa_sparse_graphs=e.get("SHARAR_QSA_SPARSE_GRAPHS", "1") != "0",
             ple_resident=e.get("SHARAR_PLE_RESIDENT", "auto"),
-            cold_tier_gib=float(cold) if cold is not None else None,
-            session_dir=_str(e, "SHARAR_SESSION_DIR"),
-            session_gib=float(e.get("SHARAR_SESSION_GIB", "200")),
-            session_min_tokens=int(e.get("SHARAR_SESSION_MIN_TOKENS", "4096")),
+            ssd=_flag(e, "SHARAR_SSD"),
+            ssd_gib=float(e.get("SHARAR_SSD_GIB") or "200"),
+            ssd_dir=_str(e, "SHARAR_SSD_DIR", SSD_DIR),
+            ssd_block_tokens=_ssd_block(_int(e, "SHARAR_SSD_BLOCK_TOKENS", 256)),
+            ssd_trace=_flag(e, "SHARAR_SSD_TRACE"),
+            ssd_writers=_positive(e, "SHARAR_SSD_WRITERS", 4),
+            ssd_staging_mib=_positive(e, "SHARAR_SSD_STAGING_MIB", 512),
+            ssd_chunk_mib=_positive(e, "SHARAR_SSD_CHUNK_MIB", 256),
+            ssd_async=_flag(e, "SHARAR_SSD_ASYNC", True),
+            kv_pool_tokens=_int(e, "SHARAR_KV_POOL_TOKENS", 0) or None,
             traces=_str(e, "SHARAR_TRACES"),
             traces_max_mib=_int(e, "SHARAR_TRACES_MAX_MIB", 32768),
             trace_confidence=_flag(e, "SHARAR_TRACE_CONFIDENCE"),
