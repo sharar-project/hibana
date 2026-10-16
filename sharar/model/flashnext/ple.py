@@ -287,7 +287,7 @@ class PleLayer:
         return pool.register_aux(self.STATE_NAME, (self.hc * self.hidden, self.state_len), torch.bfloat16)
 
     def _states(self, ctx) -> torch.Tensor:
-        """[total_slots, hc*H, state_len] bf16: the pool's auxiliary tensor (cleared, copied and parked with the GDN states)."""
+        """[total_slots, hc*H, state_len] bf16: the pool's auxiliary tensor (cleared, copied and stored with the GDN states)."""
         if ctx is not None and ctx.state_pool is not None:
             return self.register(ctx.state_pool)
         if self._scratch is None:

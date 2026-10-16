@@ -12,6 +12,8 @@ token-granular cache stays.
 
 from __future__ import annotations
 
+from array import array
+
 import torch
 
 from sharar.target import DEFAULT_TARGET, Target
@@ -36,7 +38,7 @@ class KvPool:
         self.k = {i: torch.zeros(shape, dtype=dtype, device=device) for i in self.layer_ids}
         self.v = {i: torch.zeros(shape, dtype=dtype, device=device) for i in self.layer_ids}
         # Per-page rows that belong to a token like its K/V and travel with the page
-        # through the prefix cache, the cold tier and the session store (Flash-Next's
+        # through the prefix cache and the SSD tier (Flash-Next's
         # sparse-attention index keys). Registered by the model before pools are shared.
         self.page_aux: dict[str, torch.Tensor] = {}
         # Simple free list; page 0 is reserved as the dummy page for padded batch rows.
@@ -47,10 +49,14 @@ class KvPool:
         return len(self._free)
 
     @property
+    def row_bytes(self) -> int:
+        """Bytes one token holds: K and V of every layer plus its page aux rows."""
+        kv = 2 * len(self.layer_ids) * self.num_kv_heads * self.head_dim * self.k[self.layer_ids[0]].element_size()
+        return kv + sum(t[0].numel() * t.element_size() for t in self.page_aux.values())
+
+    @property
     def bytes(self) -> int:
-        n = (self.num_pages + self.padding_rows) * self.page_size * self.num_kv_heads * self.head_dim
-        kv = n * 2 * len(self.layer_ids) * self.k[self.layer_ids[0]].element_size()
-        return kv + sum(t.numel() * t.element_size() for t in self.page_aux.values())
+        return (self.num_pages + self.padding_rows) * self.page_size * self.row_bytes
 
     def register_page_aux(self, name: str, row_shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
         """A [num_pages, *row_shape] tensor indexed by page id like K/V."""
@@ -79,12 +85,14 @@ class KvPool:
             raise ValueError("allocation size cannot be negative")
         if n > len(self._free):
             raise MemoryError(f"KV pool exhausted: need {n} pages, {len(self._free)} free")
-        pages = [self._free.pop() for _ in range(n)]
-        host = torch.tensor(pages, dtype=torch.int32).pin_memory()
+        cut = len(self._free) - n
+        pages = self._free[cut:][::-1]  # the most recently freed page first
+        del self._free[cut:]
+        host = torch.frombuffer(array("i", pages), dtype=torch.int32).pin_memory() if n else torch.empty(0, dtype=torch.int32)
         return host.to(self.device, non_blocking=True), pages
 
     def free(self, pages: torch.Tensor) -> None:
-        self._free.extend(int(p) for p in pages.tolist())
+        self._free.extend(pages.tolist())
 
     def free_ids(self, pages: list[int]) -> None:
         self._free.extend(pages)

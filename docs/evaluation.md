@@ -76,8 +76,7 @@ builds the executor; layer 3 serves each arm with `sharar serve <target> --<prof
 `/get_server_info` reports the in-process arm's configuration, and runs sharar-eval's `evals.suite`
 (`--evals`, beside this checkout by default, with its `.venv`): `quick` as the screen, `full` when the screen
 is close, and `hard` / `long` (RULER v2) / both / `agentic` (Terminal-Bench 2.1) with
-`--battery hard|long|all|agentic`. Served arms run with the cold tier off (`SHARAR_COLD_TIER_GIB=0`) so
-Terminal-Bench's task containers have host memory. The baseline arm is cached in
+`--battery hard|long|all|agentic`. Served arms run with `SHARAR_SSD=0` (no SSD tier), the same in every stage. The baseline arm is cached in
 `$SHARAR_RESULTS/reviews/lossy-gate-baselines/` (keyed by engine commit, baseline settings, prompts, worker and eval
 code) and reused by every candidate. A rerun with the same `--name` resumes; `--through` stops after
 `inprocess` or `screen`, or forces `full`.

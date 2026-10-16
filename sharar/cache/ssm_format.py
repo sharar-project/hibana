@@ -21,7 +21,7 @@ Verification reads the state through this expansion and never writes it. A commi
 records; when the window fills, it folds them into a new boundary state, refits the compensators and quantizes
 once. Quantization error therefore enters once per `window` committed tokens, not once per token.
 
-One byte row per (layer, slot) holds the whole record, so code that clears, copies, parks or stores a slot
+One byte row per (layer, slot) holds the whole record, so code that clears, copies, stores or restores a slot
 needs no format knowledge, and a zeroed row is the zero state. The kernels live in `sharar/kernels/ssm_window.py`.
 """
 

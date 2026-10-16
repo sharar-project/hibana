@@ -2,7 +2,7 @@
 
 Sharar is a local inference engine for the NVIDIA GB10 (DGX Spark). It serves **Qwen3.8-27B** and
 **Qwen3.8-Flash-Next** (125B MoE) through OpenAI- and Anthropic-compatible APIs, with speculative decoding, prefix
-caching, a 262K context and an NVMe session store, on one Spark or two.
+caching (with an optional NVMe tier for evicted prefixes), a 262K context, on one Spark or two.
 
 ## Quick start
 
@@ -35,6 +35,7 @@ uv run sharar launch claude   # Claude Code on the model (also opencode, aider; 
 | `sharar serve 27b --exact` | The model's own outputs, for benchmarks (the default `fast` profile is faster and slightly lossy; also `--throughput`) |
 | `sharar serve 27b --tp 2` | Tensor-parallel on two Sparks linked by their ConnectX ports ([tensor parallel](docs/tensor-parallel.md)) |
 | `sharar status` | What is serving, with which settings |
+| `sharar cache` | What is cached on the GPU and on the SSD tier (`$SHARAR_RESULTS/ssd/<target>`, up to `SHARAR_SSD_GIB`) |
 | `sharar chat`, `sharar launch claude\|opencode\|aider\|show` | Use the serving model |
 
 `sharar <command> --help` lists the options. Settings (cache and results locations, profiles, ports) are flags, then

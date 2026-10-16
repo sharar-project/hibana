@@ -5,9 +5,10 @@ change's pull request; history is in git (older studies are at the tag `archive/
 
 | Page | Contents |
 |---|---|
-| [Operations](operations.md) | Prerequisites, launcher settings, serving profiles, traces, cold tier and session store |
+| [Operations](operations.md) | Prerequisites, launcher settings, serving profiles, traces, the SSD tier |
 | [API](api.md) | Endpoints, request controls, tool calls, constrained output, Anthropic Messages |
 | [Architecture](architecture.md) | Package layout, the seams both targets share, capability matrix, what lives in which repository |
+| [Cache design](cache_design.md) | GPU pools, the radix prefix cache and the SSD tier: architecture, lifecycle of a cached prefix, restore cost |
 | [Interfaces](interfaces.md) | Request ownership, proposer lifecycle, feature lifetimes, device-resident acceptance, failure handling |
 | [Flash-Next](flashnext.md) | The second target: model, package, checkpoint conventions, sparse attention, its MTP draft |
 | [Tensor parallel](tensor-parallel.md) | Two Sparks: setup, sharding, the RDMA all-reduce, limits |

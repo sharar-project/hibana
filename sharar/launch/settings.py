@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
 
 CHECKOUT = Path(__file__).resolve().parents[2]  # the repository root when sharar is installed editable
 
@@ -75,6 +77,9 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
             p["SHARAR_SPEC_DEPTHS"] = "16:3,32:3,64:3,128:3" if flashnext_experts == "w3" and tp == 1 else "16:3"
         # the 8-bit GDN state pays with many requests; `fast` keeps FP32: no gain at one request, slower prefill
         p["SHARAR_SSM_STATE"] = "int8"
+    # the SSD tier in every profile: a restore gives back the state the GPU held, and an evicted or restarted prefix
+    # resumes in a fraction of a second instead of a full prefill (SHARAR_SSD=0 turns it off)
+    p["SHARAR_SSD"] = "1"
     return p
 
 
@@ -141,7 +146,7 @@ class Settings:
     max_context: int
     traces: Path | None
     draft_dir: Path | None          # a DFlash2 checkpoint to serve; None: the pinned publisher draft
-    sessions: Path | None
+    ssd: Path | None                # the SSD tier's directory when SHARAR_SSD=1
     warnings: list[str] = field(default_factory=list)
 
     def get(self, key: str, default: str = "") -> str:
@@ -173,7 +178,7 @@ class Settings:
     def engine_env(self, w3_checkpoint: Path | None) -> dict[str, str]:
         """The engine's SHARAR_* environment: every resolved setting, with the launcher's own choices applied."""
         env = {k: v for k, v in self.values.items() if k.startswith("SHARAR_") and v != ""}
-        for k in ("SHARAR_DRAFT", "SHARAR_TRACES", "SHARAR_W3_CHECKPOINT", "SHARAR_SESSION_DIR", "SHARAR_CONFIG_FILE"):
+        for k in ("SHARAR_DRAFT", "SHARAR_TRACES", "SHARAR_W3_CHECKPOINT", "SHARAR_SSD_DIR", "SHARAR_CONFIG_FILE"):
             env.pop(k, None)
         env.update(SHARAR_TARGET=self.target, SHARAR_PROFILE=self.profile, SHARAR_HF_CACHE=str(self.hf_cache),
                    SHARAR_RESULTS=str(self.results), SHARAR_MAX_CONTEXT=str(self.max_context))
@@ -185,9 +190,8 @@ class Settings:
             env["SHARAR_W3_DECODE"] = "0"  # Flash-Next's 3-bit copies are calibrated only
         if self.warnings:
             env["SHARAR_W3_WARNING"] = "; ".join(self.warnings)
-        if self.sessions is not None:
-            env.update(SHARAR_SESSION_DIR=str(self.sessions), SHARAR_SESSION_GIB=self.get("SHARAR_SESSION_GIB", "200"),
-                       SHARAR_SESSION_MIN_TOKENS=self.get("SHARAR_SESSION_MIN_TOKENS", "4096"))
+        if self.ssd is not None:
+            env["SHARAR_SSD_DIR"] = str(self.ssd)
         return env
 
     def engine_args(self, tp: int = 1) -> list[str]:
@@ -211,6 +215,9 @@ class Settings:
         if tp > 1:
             args += ["--tp", str(tp)]
         return args
+
+
+_WARNED: set[str] = set()  # removed settings already warned about in this process
 
 
 def _check(cond: bool, message: str) -> None:
@@ -265,9 +272,17 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(values.get("SHARAR_PLE_RESIDENT", "auto") in ("auto", "0"), "SHARAR_PLE_RESIDENT must be auto or 0")
     _check(values.get("SHARAR_SSM_STATE", "fp32") in ("fp32", "int8", "int4"), "SHARAR_SSM_STATE must be fp32, int8 or int4")
     _check(values.get("SHARAR_DRAFT_VOCAB", "0").isdigit(), "SHARAR_DRAFT_VOCAB must be a row count (0 = the full lm_head)")
-    _check(re.fullmatch(r"[0-9]+(\.[0-9]+)?", values.get("SHARAR_COLD_TIER_GIB", "0")) is not None,
-           "SHARAR_COLD_TIER_GIB must be a non-negative number of GiB")
-    _check(re.fullmatch(r"[0-9]+(\.[0-9]+)?", values.get("SHARAR_SESSION_GIB", "200")) is not None, "SHARAR_SESSION_GIB must be a number of GiB")
+    for old, why in (("SHARAR_COLD_TIER_GIB", "the GPU pools take that memory; SHARAR_SSD=1 keeps evicted prefixes on the NVMe"),
+                     ("SHARAR_SESSION_DIR", "SHARAR_SSD=1 turns the SSD tier on, in $SHARAR_RESULTS/ssd (SHARAR_SSD_DIR moves it)"),
+                     ("SHARAR_SESSION_GIB", "the SSD tier's capacity is SHARAR_SSD_GIB"),
+                     ("SHARAR_SESSION_MIN_TOKENS", "the SSD tier stores prefixes of 4,096 tokens or more")):
+        if values.get(old) and old not in _WARNED:  # a warning, not an error: `sharar stop` must work with an old config
+            _WARNED.add(old)
+            print(f"sharar: {old} was removed and is ignored ({why})", file=sys.stderr)
+    _check(values.get("SHARAR_SSD", "0") in ("0", "1"), "SHARAR_SSD must be 0 or 1")
+    block = values.get("SHARAR_SSD_BLOCK_TOKENS", "256")
+    _check(block.isdigit() and int(block) > 0 and 2048 % int(block) == 0, "SHARAR_SSD_BLOCK_TOKENS must divide 2048")
+    _check(re.fullmatch(r"[0-9]+(\.[0-9]+)?", values.get("SHARAR_SSD_GIB", "200")) is not None, "SHARAR_SSD_GIB must be a number of GiB")
     _check(values.get("SHARAR_TRACES_MAX_MIB", "32768").isdigit() and int(values.get("SHARAR_TRACES_MAX_MIB", "32768")) > 0,
            "SHARAR_TRACES_MAX_MIB must be a positive integer")
     precision, proposer, spec = values.get("SHARAR_DRAFT_PRECISION"), values["SHARAR_PROPOSER"], int(values.get("SHARAR_SPEC", "15"))
@@ -294,10 +309,10 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     trace_dir = None
     if trace_value != "off" and (traces or trace_value):
         trace_dir = path(trace_value or results / "traces")
-    session_value = values.get("SHARAR_SESSION_DIR") or str(results / ("sessions-tp" if tp > 1 else "sessions"))
-    sessions = None if session_value == "off" else path(session_value)
+    ssd = (path(values.get("SHARAR_SSD_DIR") or results / "ssd" / name)  # the same path on each Spark; one store per target
+           if values.get("SHARAR_SSD") == "1" else None)
 
     return Settings(target=name, profile=profile, values=values, port=int(values["SHARAR_PORT"]),
                     host=values.get("SHARAR_HOST", "127.0.0.1"), service=values["SHARAR_SERVICE"], results=results,
                     hf_cache=hf_cache, model_cache=model_cache, max_context=max_context, traces=trace_dir,
-                    draft_dir=draft_dir, sessions=sessions)
+                    draft_dir=draft_dir, ssd=ssd)
