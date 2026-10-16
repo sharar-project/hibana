@@ -1,2 +1,3 @@
 -c common.txt
 torch==2.13.0+cpu
+ninja==1.13.2

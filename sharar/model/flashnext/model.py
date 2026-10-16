@@ -62,7 +62,7 @@ class DecoderLayer:
         h = all_reduce(self.mixer.forward(h, ctx))
         hyper = self.attn_hc.combine(h, res)
         h, res = self.mlp_hc.mix(hyper)
-        h = all_reduce(self.moe(h))
+        h = all_reduce(self.moe(h, ctx))
         return self.mlp_hc.combine(h, res)
 
 

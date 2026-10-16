@@ -92,17 +92,45 @@ class FlashNextIndexer:
         aux[side.qsa_writes.long(), 1] = rope_neox(keys, first, self.rotary_dim, self.theta)[:, 0]
         return qk
 
+    _staging: dict = {}  # device -> (pinned int64 index buffer, event of its last upload): `static_rows`
+
     @staticmethod
     def static_rows(seqs, ratio: int, device) -> tuple[torch.Tensor, torch.Tensor]:
         """(members [rows, ratio], writes [rows]) int32 for `maintain` from qsa_seqs-style
-        (first position, new tokens, pages) per sequence."""
-        members, writes = [], []
-        back = torch.arange(ratio - 1, -1, -1, device=device)
-        for first, n, pages in seqs:
-            pos = torch.arange(first, first + n, device=device)
-            members.append(pages[(pos[:, None] - back).clamp_min(0)])
-            writes.append(torch.where(pos % ratio == ratio - 1, pages[pos], torch.zeros_like(pages[pos])))
-        return torch.cat(members).to(torch.int32), torch.cat(writes).to(torch.int32)
+        (first position, new tokens, pages) per sequence.
+
+        One gather from the sequences' concatenated pages, its indices computed on the host and uploaded from a pinned
+        buffer: a handful of launches whatever the batch. The loop per sequence it replaces queued ~8 small kernels per
+        sequence behind the draft graphs; at 128 requests the host blocked ~39 ms on the full launch queue, so the
+        verification's PLE rows were read only after the drafts finished."""
+        import numpy as np
+        firsts = np.fromiter((first for first, _, _ in seqs), dtype=np.int64, count=len(seqs))
+        counts = np.fromiter((n for _, n, _ in seqs), dtype=np.int64, count=len(seqs))
+        lengths = np.fromiter((pages.shape[0] for _, _, pages in seqs), dtype=np.int64, count=len(seqs))
+        base = np.repeat(np.concatenate([[0], np.cumsum(lengths)[:-1]]), counts)  # each row's sequence in the concatenation
+        pos = np.repeat(firsts, counts) + (np.arange(counts.sum()) - np.repeat(np.cumsum(counts) - counts, counts))
+        rows = pos.shape[0]
+        members = base[:, None] + np.maximum(pos[:, None] - np.arange(ratio - 1, -1, -1)[None, :], 0)  # [rows, ratio]
+        written = pos % ratio == ratio - 1
+        index = np.empty((rows, ratio + 2), dtype=np.int64)
+        index[:, :ratio], index[:, ratio], index[:, ratio + 1] = members, base + pos, written
+        pages = torch.cat([p for _, _, p in seqs])
+        if pages.device.type != "cuda":
+            flat = torch.from_numpy(index).to(pages.device)
+        else:
+            buf, event = FlashNextIndexer._staging.get(pages.device, (None, None))
+            if buf is None or buf.numel() < index.size:
+                buf, event = torch.empty(max(index.size, 1 << 16), dtype=torch.int64, pin_memory=True), torch.cuda.Event()
+                FlashNextIndexer._staging[pages.device] = (buf, event)
+            else:
+                event.synchronize()  # the previous upload has read the buffer
+            buf[:index.size].numpy()[:] = index.reshape(-1)
+            flat = buf[:index.size].to(pages.device, non_blocking=True)
+            event.record()
+        flat = flat.view(rows, ratio + 2)
+        selected = pages[flat[:, :ratio + 1]]  # members, then each row's own page
+        writes = torch.where(flat[:, ratio + 1] != 0, selected[:, ratio], torch.zeros_like(selected[:, ratio]))
+        return selected[:, :ratio].to(torch.int32), writes.to(torch.int32)
 
     def _compress(self, aux, seqs, device, dtype) -> None:
         r = self.ratio

@@ -354,7 +354,7 @@ void launch(torch::Tensor y, torch::Tensor ws, torch::Tensor counters, torch::Te
 //   combine  out[r] = bf16(sum_k w[r, k] * y[r, k]) in selection order.
 namespace moe {
 
-constexpr int kE = 512, kTopk = 10, kH = 2560, kI = 640, kPass = 64, kOrderInKernel = 640;
+constexpr int kE = 512, kMaxTopk = 10, kH = 2560, kI = 640, kPass = 64, kOrderInKernel = 640;
 // Wide calls (`gemm_pass_kernel`) run passes of up to kWide pairs: one expansion of an expert's codes then feeds up to
 // seven row tiles, and an expert with 65-112 pairs (about 80 in a 4,096-row call) takes one pass instead of two. The
 // same bits as kPass passes. 112 against 96 and 128 on real experts: 128 spills too many registers.
@@ -384,11 +384,18 @@ struct Params {
   __nv_bfloat16* out;
   uint32_t lut_lo, lut_hi;
   int M;
+  int topk;       // experts per row: ids and weights are [M, topk], 1 <= topk <= kMaxTopk
+  uint32_t row_magic;  // pair q's row is q / topk = __umulhi(q, row_magic) (row_of): no runtime division in the passes
   int e_lo, e_n;  // this rank's experts: ids e_lo .. e_lo + e_n - 1, stored from index 0 (expert parallel; else 0, 512)
   bool sort;      // block 0 sorts the pairs (else `order` is given)
 };
 
-// A pair's expert as an index into this rank's experts, or -1 when another rank holds it.
+// Pair q's row. row_magic = 2^32 / topk rounded up (0 for topk 1): exact for q * topk < 2^32, far past any call's pairs.
+__device__ __forceinline__ int row_of(const Params& p, int q) {
+  return p.row_magic ? static_cast<int>(__umulhi(static_cast<uint32_t>(q), p.row_magic)) : q;
+}
+
+// A pair's expert as an index into this rank's experts, or -1 when another rank holds it or the id names none (512).
 __device__ __forceinline__ int local_expert(const Params& p, int id) {
   const int e = id - p.e_lo;
   return e >= 0 && e < p.e_n ? e : -1;
@@ -401,7 +408,7 @@ __global__ void __launch_bounds__(512) prep_kernel(const Params p) {
   }
   __shared__ int count[kE], slot[kE], start[kE + 1];
   __shared__ int ids[kOrderInKernel];
-  const int tid = threadIdx.x, lane = tid & 31, P = p.M * kTopk;
+  const int tid = threadIdx.x, lane = tid & 31, P = p.M * p.topk;
   count[tid] = 0;  // 512 threads, one expert each
   __syncthreads();
   for (int i = tid; i < P; i += 512) {
@@ -604,12 +611,12 @@ __device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], S
       ar[u] = kNone;
       const int m = tid / 8 + 16 * u;
       if (m < rows) {
-        const int q = __ldg(list + m), r = FC1 ? q / kTopk : q;
+        const int q = __ldg(list + m), r = FC1 ? row_of(p, q) : q;
         ar[u] = static_cast<uint32_t>(r) * K + (tid % 8) * 16;  // < 2^32: rows x 2560 or pairs x 640
       }
     }
     if (tid < rows) {
-      const int q = __ldg(list + tid), r = FC1 ? q / kTopk : q;
+      const int q = __ldg(list + tid), r = FC1 ? row_of(p, q) : q;
       as = sbase + static_cast<size_t>(r) * (K / 32);
     }
     const int nz = MT * 16 - rows;  // rows of the last tile past the pass: zero bytes and zero scales
@@ -627,7 +634,7 @@ __device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], S
         xr[mt][half] = nullptr;
         xg[mt][half] = nullptr;
         if (m < rows) {
-          const int q = __ldg(list + m), r = FC1 ? q / kTopk : q;
+          const int q = __ldg(list + m), r = FC1 ? row_of(p, q) : q;
           xr[mt][half] = xbase + static_cast<size_t>(r) * K;
           xg[mt][half] = sbase + static_cast<size_t>(r) * (K / 32);
         }
@@ -842,10 +849,13 @@ __global__ void __launch_bounds__(256) combine_kernel(const Params p) {
   if (idx >= p.M * kH) return;
   const int r = idx / kH, col = idx - r * kH;
   float v = 0.f;
+  int e[kMaxTopk];  // every id loaded first, so the weight and y loads below overlap
 #pragma unroll
-  for (int k = 0; k < kTopk; ++k)
-    if (local_expert(p, __ldg(p.ids + r * kTopk + k)) >= 0)  // another rank's pairs: its partial sum has them
-      v += __ldg(p.weights + r * kTopk + k) * p.y[static_cast<size_t>(r * kTopk + k) * kH + col];
+  for (int k = 0; k < kMaxTopk; ++k) e[k] = k < p.topk ? local_expert(p, __ldg(p.ids + r * p.topk + k)) : -1;
+#pragma unroll
+  for (int k = 0; k < kMaxTopk; ++k)
+    if (e[k] >= 0)  // another rank's pairs (its partial sum has them) and empty slots add nothing
+      v += __ldg(p.weights + r * p.topk + k) * p.y[static_cast<size_t>(r * p.topk + k) * kH + col];
   p.out[idx] = __float2bfloat16_rn(v);
 }
 
@@ -905,22 +915,24 @@ std::vector<torch::Tensor> quant_groups(torch::Tensor x) {
   return {out, scale};
 }
 
-// Routed experts in the three-bit format for x [M, 2560] bf16, ids [M, 10] int32, weights [M, 10] fp32 -> bf16
+// Routed experts in the three-bit format for x [M, 2560] bf16, ids [M, k] int32, weights [M, k] fp32 (k <= 10) -> bf16
 // [M, 2560] (the routed sum; no shared expert). The weights hold experts e_lo .. e_lo + E - 1 (all 512, or one
 // rank's range under expert parallelism): pairs routed elsewhere are skipped, and the result is this rank's partial
 // sum. `wide_rows`: from this many rows each pass of up to kWide pairs gets its own block (`gemm_pass_kernel`; the same bits).
-// `order`: when there are more than 640 pairs, this rank's pairs stably sorted by expert first (int32 [M * 10],
-// the others after them), else empty (the prep kernel sorts them). The ids must be below 512.
+// `order`: when there are more than 640 pairs, this rank's pairs stably sorted by expert first (int32 [M * k],
+// the others after them), else empty (the prep kernel sorts them). An id outside e_lo .. e_lo + E - 1 (another rank's
+// expert, or 512 and above: none) adds no pair, whatever its weight.
 torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, torch::Tensor order,
                      torch::Tensor planes13, torch::Tensor scales13, torch::Tensor row13,
                      torch::Tensor planes2, torch::Tensor scales2, torch::Tensor row2, int64_t lut, int64_t e_lo,
                      int64_t wide_rows) {
   using namespace moe;
-  const int M = x.size(0), P = M * kTopk;
+  const int M = x.size(0), topk = ids.dim() == 2 ? ids.size(1) : 0, P = M * topk;
   TORCH_CHECK(M >= 1, "w3_moe: no rows");
   TORCH_CHECK(x.is_cuda() && x.dtype() == at::kBFloat16 && x.is_contiguous() && x.size(1) == kH, "x must be contiguous bf16 [M, 2560]");
-  TORCH_CHECK(ids.dtype() == at::kInt && ids.is_contiguous() && ids.numel() == P, "ids must be int32 [M, 10]");
-  TORCH_CHECK(weights.dtype() == at::kFloat && weights.is_contiguous() && weights.numel() == P, "weights must be fp32 [M, 10]");
+  TORCH_CHECK(ids.dim() == 2 && ids.dtype() == at::kInt && ids.is_contiguous() && ids.size(0) == M && topk >= 1 && topk <= kMaxTopk,
+              "ids must be int32 [M, k] with 1 <= k <= 10");
+  TORCH_CHECK(weights.dtype() == at::kFloat && weights.is_contiguous() && weights.sizes() == ids.sizes(), "weights must be fp32 [M, k] like ids");
   const bool sort = P <= kOrderInKernel;
   TORCH_CHECK(sort ? order.numel() == 0 : (order.dtype() == at::kInt && order.is_contiguous() && order.numel() == P),
               "order: empty up to 640 pairs, else the int32 stable sort of the ids");
@@ -949,8 +961,8 @@ torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, 
            wide ? (int*)work.data_ptr() : nullptr, (int*)sorted.data_ptr(),
            (uint8_t*)xq.data_ptr(), (float*)xs.data_ptr(), (uint8_t*)hq.data_ptr(), (float*)hs.data_ptr(), (float*)y.data_ptr(),
            (__nv_bfloat16*)out.data_ptr(),
-           static_cast<uint32_t>(lut & 0xFFFFFFFFu), static_cast<uint32_t>(static_cast<uint64_t>(lut) >> 32), M,
-           static_cast<int>(e_lo), static_cast<int>(E), sort};
+           static_cast<uint32_t>(lut & 0xFFFFFFFFu), static_cast<uint32_t>(static_cast<uint64_t>(lut) >> 32), M, topk,
+           topk == 1 ? 0u : static_cast<uint32_t>(0xFFFFFFFFu / topk + 1), static_cast<int>(e_lo), static_cast<int>(E), sort};
   cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
   prep_kernel<<<M + 1, 512, 0, stream>>>(p);
   if (M <= 16) {
