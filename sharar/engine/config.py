@@ -90,8 +90,7 @@ class EngineConfig:
     bench_verify_state: str = "snapshots"     # SHARAR_BENCH_VERIFY_STATE
     bench_max_context: int = 0                # SHARAR_BENCH_MAX_CONTEXT
     moe_keep: int = 0                         # SHARAR_MOE_KEEP=k: Flash-Next, each token keeps its own top k experts in decode and verify forwards (model/flashnext/moe.py); 0, or k of 10 and above: the served top-10
-    moe_reuse: int = 0                        # SHARAR_MOE_REUSE=r: up to r more experts a token from its ranks k+1..20, only ones the call's other tokens keep (k + r <= 10); without the fallback the call reads no expert beyond the tokens' top k
-    moe_reuse_fallback: bool = False          # SHARAR_MOE_REUSE_FALLBACK=1: reuse slots nothing fills take the token's own next ranks; else they name no expert
+    moe_reuse: int = 0                        # SHARAR_MOE_REUSE=r: up to r more experts a token from its ranks k+1..20, only ones the call's other tokens keep (k + r <= 10), so the call reads no expert beyond the tokens' top k
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> EngineConfig:
@@ -147,7 +146,6 @@ class EngineConfig:
             bench_max_context=_int(e, "SHARAR_BENCH_MAX_CONTEXT", 0),
             moe_keep=_int(e, "SHARAR_MOE_KEEP", 0),
             moe_reuse=_int(e, "SHARAR_MOE_REUSE", 0),
-            moe_reuse_fallback=_flag(e, "SHARAR_MOE_REUSE_FALLBACK"),
         )
 
     def replace(self, **changes) -> EngineConfig:

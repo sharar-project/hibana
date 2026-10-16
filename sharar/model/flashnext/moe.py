@@ -75,10 +75,10 @@ class MoeLayer:
         self.shared_down = linear_cls.load(w, [f"{prefix}.shared_expert.down_proj.weight"], device, precision, ROW_PARALLEL)
         cfg = current()
         # Expert selection in decode and verify forwards: each token keeps its own top `keep` experts, then reuses up
-        # to `reuse` more from those the call's other real tokens keep (route_subst), and with `fallback` fills the
-        # reuse slots nothing fills from its own next ranks. Without it they name no expert (id = experts), which the
-        # w3 kernel skips, or for the NVFP4 experts, which need an expert in every slot, the token's own top 1 at
-        # weight 0 (the same bits as leaving the slot out). Keeping topk or more is the served route.
+        # to `reuse` more from those the call's other real tokens keep (route_subst). Reuse slots nothing fills name no
+        # expert (id = experts), which the w3 kernel skips, or for the NVFP4 experts, which need an expert in every
+        # slot, the token's own top 1 at weight 0 (the same bits as leaving the slot out). Keeping topk or more is the
+        # served route.
         for name, v in (("SHARAR_MOE_KEEP", cfg.moe_keep), ("SHARAR_MOE_REUSE", cfg.moe_reuse)):
             if v < 0:
                 raise ValueError(f"{name}={v}: a count of experts, or 0 (off)")
@@ -86,7 +86,7 @@ class MoeLayer:
         reuse = cfg.moe_reuse if keep else 0  # SHARAR_MOE_KEEP=0 turns the selection off, whatever the reuse
         if keep + reuse > self.topk:
             raise ValueError(f"SHARAR_MOE_KEEP + SHARAR_MOE_REUSE = {keep + reuse}: at most {self.topk} experts a token")
-        self.keep, self.reuse, self.fallback = keep, reuse, cfg.moe_reuse_fallback
+        self.keep, self.reuse = keep, reuse
         self.w3 = w3
         if w3 is not None:
             if w3.base + w3.experts > self.experts:
@@ -135,9 +135,8 @@ class MoeLayer:
             # is real.
             width = self.keep + self.reuse
             if ctx.mode == "decode":
-                return route_subst(logits, width, self.keep, ctx.slots, fallback=self.fallback, repeat=self.w3 is None)
-            return route_subst(logits, width, self.keep, ctx.seq_slots, ctx.verify_steps, fallback=self.fallback,
-                               repeat=self.w3 is None)
+                return route_subst(logits, width, self.keep, ctx.slots, repeat=self.w3 is None)
+            return route_subst(logits, width, self.keep, ctx.seq_slots, ctx.verify_steps, repeat=self.w3 is None)
         if x.shape[0] <= 64:
             from sharar.kernels.flashnext_fused import route_topk
             return route_topk(logits, self.topk)

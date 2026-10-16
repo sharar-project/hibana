@@ -45,12 +45,12 @@ def coarse(rows: int, seed: int) -> torch.Tensor:
 
 
 def check(logits: torch.Tensor, keep: int, slots: torch.Tensor | None = None, steps: int = 1, k: int = K,
-          fallback: bool = True, repeat: bool = False):
+          repeat: bool = False):
     lg = logits.to(DEV).contiguous()
     sl = None if slots is None else slots.to(DEV)
-    ids, w = fk.route_subst(lg, k, keep, sl, steps, fallback=fallback, repeat=repeat)
+    ids, w = fk.route_subst(lg, k, keep, sl, steps, repeat=repeat)
     assert ids.dtype == torch.int32 and w.dtype == torch.float32 and ids.is_contiguous() and w.is_contiguous()
-    rids, rw = rule(logits, k, keep, slots, steps, fallback, repeat)
+    rids, rw = rule(logits, k, keep, slots, steps, repeat)
     assert torch.equal(ids.cpu(), rids)
     torch.testing.assert_close(w.cpu(), rw, rtol=1e-5, atol=0)
     return ids
@@ -92,52 +92,20 @@ def test_padded_requests(rows, keep, steps):
                 assert torch.equal(ids[real.to(DEV)], alone)
 
 
-@pytest.mark.parametrize("fallback,repeat", [(True, False), (False, False), (False, True)])
+@pytest.mark.parametrize("repeat", [False, True])
 @pytest.mark.parametrize("keep,k", [(2, 10), (5, 10), (5, 7), (8, 9)])
 @pytest.mark.parametrize("rows", [1, 5, 20, 64, 65, 320])
-def test_reuse_width_and_fallback(rows, keep, k, fallback, repeat):
-    """k - keep reuse slots (SHARAR_MOE_KEEP / _REUSE), with and without the fallback, unfilled slots empty or
-    repeating the row's top 1: ids bitwise, weights to rtol 1e-5, padded requests included; without the fallback the
-    call reads only its core."""
+def test_reuse_width(rows, keep, k, repeat):
+    """k - keep reuse slots (SHARAR_MOE_KEEP / _REUSE), unfilled slots empty or repeating the row's top 1: ids
+    bitwise, weights to rtol 1e-5, padded requests included; the call reads only its core."""
     seed = rows * 100 + keep * 10 + k
     steps = 5 if rows % 5 == 0 else 1
     for lg in (router_logits(rows, seed), tied(router_logits(rows, seed + 1), keep), coarse(rows, seed)):
-        ids = check(lg, keep, k=k, fallback=fallback, repeat=repeat)
-        if not fallback:
-            core = {e for c in candidates(lg) for e in c[:keep]}
-            assert set(ids.reshape(-1).tolist()) <= (core if repeat else core | {E})
+        ids = check(lg, keep, k=k, repeat=repeat)
+        core = {e for c in candidates(lg) for e in c[:keep]}
+        assert set(ids.reshape(-1).tolist()) <= (core if repeat else core | {E})
         for slots in request_slots(rows // steps, seed):
-            check(lg, keep, slots, steps, k=k, fallback=fallback, repeat=repeat)
-
-
-@pytest.mark.skipif(DEV != "cuda", reason="CUDA graphs")
-def test_graph_replay_without_fallback():
-    rows, steps, keep, k = 64, 4, 5, 10
-    lg = router_logits(rows, 3).cuda()
-    slots = torch.arange(1, rows // steps + 1, dtype=torch.int32, device="cuda")
-    fk.route_subst(lg, k, keep, slots, steps, fallback=False)
-    graph = torch.cuda.CUDAGraph(keep_graph=True)
-    with torch.cuda.graph(graph):
-        ids, w = fk.route_subst(lg, k, keep, slots, steps, fallback=False)
-    assert graph_nodes(graph) == 2
-    for seed in (4, 5):
-        logits = router_logits(rows, seed)
-        lg.copy_(logits)
-        graph.replay()
-        rids, rw = rule(logits, k, keep, slots.cpu(), steps, False)
-        assert torch.equal(ids.cpu(), rids)
-        torch.testing.assert_close(w.cpu(), rw, rtol=1e-5, atol=0)
-
-
-@pytest.mark.parametrize("rows", [5, 64, 320])
-def test_padded_rows_take_route_topk(rows):
-    """A padded row's experts are what the served route gives it (route_topk orders by fp32 probability, so two
-    different logits of equal probability could order differently; these logits have none)."""
-    lg = tied(router_logits(rows, 7, top=8.0), K).to(DEV)
-    ids, w = fk.route_subst(lg, K, 4, torch.zeros(rows, dtype=torch.int32, device=DEV))
-    sids, sw = fk.route_topk(lg, K)
-    assert torch.equal(ids, sids)
-    torch.testing.assert_close(w, sw, rtol=1e-5, atol=0)
+            check(lg, keep, slots, steps, k=k, repeat=repeat)
 
 
 def test_moe_layer_route():
@@ -149,7 +117,7 @@ def test_moe_layer_route():
     g = torch.Generator().manual_seed(4)
     layer = MoeLayer.__new__(MoeLayer)  # the routing state alone, no experts
     layer.router = torch.randn(E, 64, generator=g).bfloat16().to(DEV)
-    layer.topk, layer.keep, layer.reuse, layer.fallback = K, 5, K - 5, True  # keep 5 + reuse 5, the fallback
+    layer.topk, layer.keep, layer.reuse = K, 5, K - 5  # keep 5 + reuse 5
     layer.w3 = object()  # the 3-bit experts: unfilled slots name no expert
     x = torch.randn(20, 64, generator=g).bfloat16().to(DEV)
     logits = x @ layer.router.T
@@ -218,8 +186,8 @@ def test_nvfp4_experts_take_the_selection_through_repeated_slots():
     for rows in (1, 5, 16, 64):
         lg = router_logits(rows, rows).cuda()
         x = (torch.randn(rows, moe.hidden, device="cuda", generator=g) * 0.5).bfloat16()
-        ids, w = fk.route_subst(lg, K, 5, fallback=False, repeat=True)
-        used = (fk.route_subst(lg, K, 5, fallback=False)[0] < E).sum(1)
+        ids, w = fk.route_subst(lg, K, 5, repeat=True)
+        used = (fk.route_subst(lg, K, 5)[0] < E).sum(1)
         for n in used.unique().tolist():  # the filled slots come first: compare with only them
             sel = used == n
             full = moe.routed(x[sel].contiguous(), ids[sel].contiguous(), w[sel].contiguous())

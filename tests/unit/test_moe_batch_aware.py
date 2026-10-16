@@ -19,12 +19,11 @@ def candidates(logits):
     return [sorted(range(len(row)), key=lambda e: (-row[e], e))[:C] for row in logits.float().cpu().tolist()]
 
 
-def rule(logits, k, keep, slots=None, steps=1, fallback=True, repeat=False):
+def rule(logits, k, keep, slots=None, steps=1, repeat=False):
     """The rule, literally, one row at a time: the core is the union of every real row's top `keep` candidates; a real
-    row takes its top `keep`, then its ranks keep+1..C in the core, then (`fallback`) its other ranks, each in rank
-    order, the first k; a padded row (slots[r // steps] == 0: a graph's dummy request) its top k. Without `fallback`
-    the slots left over, and all of a padded row's, hold id E (no expert) at weight 0, or with `repeat` the row's top 1
-    (a padded row: row 0's) at weight 0. Weights: the fp32 softmax over
+    row takes its top `keep`, then its ranks keep+1..C in the core, in rank order, the first k. The slots left over,
+    and all of a padded row's (slots[r // steps] == 0: a graph's dummy request), hold id E (no expert) at weight 0, or
+    with `repeat` the row's top 1 (a padded row: row 0's) at weight 0. Weights: the fp32 softmax over
     all E at the chosen experts, renormalized over them. bf16 logits [R, E] -> (int32 ids [R, k], fp32 weights [R, k])
     on CPU."""
     cand = candidates(logits)
@@ -32,11 +31,7 @@ def rule(logits, k, keep, slots=None, steps=1, fallback=True, repeat=False):
     core = {e for c, r in zip(cand, real) if r for e in c[:keep]}
     rows = []
     for c, r in zip(cand, real):
-        if not r:
-            row = c[:k] if fallback else []
-        else:
-            row = c[:keep] + [e for e in c[keep:] if e in core] + ([e for e in c[keep:] if e not in core] if fallback else [])
-        row = row[:k]
+        row = (c[:keep] + [e for e in c[keep:] if e in core])[:k] if r else []
         rows.append(row + [E] * (k - len(row)))
     ids = torch.tensor(rows)
     hole = ids == E
@@ -54,38 +49,23 @@ def _logits(rows=12, seed=0, scale=1.2):
     return (torch.randn(rows, E, generator=g) * scale).bfloat16()
 
 
-def test_rule_invariants():
-    """Every row keeps its top `keep` in order and picks within its top 20; the call reads no expert outside its rows'
-    served top-k sets; weights are a distribution."""
-    for seed, keep in [(0, 2), (1, 4), (2, 6), (3, 8)]:
-        logits = _logits(16, seed)
-        ids, w = rule(logits, K, keep)
-        cands = candidates(logits)
-        assert ids.dtype == torch.int32 and w.dtype == torch.float32 and ids.shape == w.shape == (16, K)
-        for row, c in zip(ids.tolist(), cands):
-            assert row[:keep] == c[:keep] and len(set(row)) == K and set(row) <= set(c)
-        assert set(ids.reshape(-1).tolist()) <= {e for c in cands for e in c[:K]}
-        torch.testing.assert_close(w.sum(-1), torch.ones(16))
-        assert (w > 0).all()
-
-
-def test_without_fallback_the_call_reads_only_the_core():
-    """Compensation from the core alone: every row's experts lie in the core; slots no core candidate fills hold id E
-    (no expert) at weight 0; with as many slots as the fallback rule fills, the in-core picks are the same; a padded
-    row names no expert."""
+def test_the_call_reads_only_the_core():
+    """Every row keeps its top `keep` in order, then picks only core experts within its top 20, each once; slots no
+    core candidate fills hold id E (no expert) at weight 0; the weights are a distribution; a padded row names no
+    expert."""
     for seed, keep, k in [(0, 2, 10), (1, 5, 10), (2, 5, 7), (3, 8, 9)]:
         logits = _logits(16, seed)
-        ids, w = rule(logits, k, keep, fallback=False)
+        ids, w = rule(logits, k, keep)
         cands = candidates(logits)
         core = {e for c in cands for e in c[:keep]}
-        assert set(ids.reshape(-1).tolist()) <= core | {E} and ids.shape == w.shape == (16, k)
+        assert ids.dtype == torch.int32 and w.dtype == torch.float32 and ids.shape == w.shape == (16, k)
+        assert set(ids.reshape(-1).tolist()) <= core | {E}
         torch.testing.assert_close(w.sum(-1), torch.ones(16))
-        with_fb, _ = rule(logits, k, keep)
-        for row, wr, fb, c in zip(ids.tolist(), w.tolist(), with_fb.tolist(), cands):
+        for row, wr, c in zip(ids.tolist(), w.tolist(), cands):
             n = sum(x > 0 for x in wr)
-            assert row[:keep] == c[:keep] and row[n:] == [E] * (k - n) and row[:n] == fb[:n]
-            assert all(x > 0 for x in wr[:n]) and all(x == 0 for x in wr[n:])
-    ids, w = rule(_logits(6, 9), 10, 5, torch.tensor([3, 0], dtype=torch.int32), steps=3, fallback=False)
+            assert row[:keep] == c[:keep] and set(row[:n]) <= set(c) and len(set(row[:n])) == n
+            assert row[n:] == [E] * (k - n) and all(x == 0 for x in wr[n:])
+    ids, w = rule(_logits(6, 9), 10, 5, torch.tensor([3, 0], dtype=torch.int32), steps=3)
     assert ids[3:].tolist() == [[E] * 10] * 3 and not w[3:].any()
 
 
@@ -106,14 +86,15 @@ def test_exact_ties_go_to_the_lower_index():
     a[150], a[200] = -0.0, 0.0     # ranks 12-13: 150, 200 (-0.0 ties +0.0)
     b = torch.full((E,), -4.0)
     b[[150, 200, 90, 1, 2, 3]] = torch.tensor([5.0, 4.0, 3.0, 2.0, 1.5, 1.25])
+    assert candidates(a[None].bfloat16())[0][:14] == [20, 250, 400, 0, 5, 77, 300, 511, 10, 30, 60, 90, 150, 200]
     alone, _ = rule(a[None].bfloat16(), K, 6)
-    assert alone.tolist() == [[20, 250, 400, 0, 5, 77, 300, 511, 10, 30]]  # the served top-10: 10 and 30 over 60 and 90
+    assert alone.tolist() == [[20, 250, 400, 0, 5, 77] + [E] * 4]  # alone, its core is its own top 6
     ids, _ = rule(torch.stack([a, b]).bfloat16(), K, 6)
     assert ids.tolist() == [[20, 250, 400, 0, 5, 77, 90, 150, 200, 1],  # in-core ranks 11-14, -0.0 (150) before +0.0 (200)
-                            [150, 200, 90, 1, 2, 3, 0, 5, 4, 6]]      # in-core ranks 6 and 8, then ranks 7 and 9
+                            [150, 200, 90, 1, 2, 3, 0, 5, E, E]]      # in-core ranks 6 and 8; no more in the core
 
 
-def test_padded_requests_change_nothing_and_take_their_top_k():
+def test_padded_requests_change_nothing_and_name_no_expert():
     """Requests of 3 rows each, the second and fourth padded (dummy slot 0)."""
     logits = _logits(12, 0)
     slots = torch.tensor([5, 0, 9, 0], dtype=torch.int32)
@@ -121,19 +102,19 @@ def test_padded_requests_change_nothing_and_take_their_top_k():
     ids, w = rule(logits, K, 4, slots, steps=3)
     alone = rule(logits[real], K, 4)
     assert torch.equal(ids[real], alone[0]) and torch.equal(w[real], alone[1])
-    assert ids[~real].tolist() == [c[:K] for c in candidates(logits[~real])]
+    assert ids[~real].tolist() == [[E] * K] * 6 and not w[~real].any()
     assert not torch.equal(rule(logits, K, 4)[0][real], alone[0])  # unmasked, the padding moves real rows' picks
 
 
 # ------------------------------------------------------------------ which calls substitute
 
 
-def _layer(keep=6, reuse=4, fallback=True):
-    """The routing state alone, no experts: by default keep 6, reuse 4 with the fallback."""
+def _layer(keep=6, reuse=4):
+    """The routing state alone, no experts: by default keep 6, reuse 4."""
     layer = MoeLayer.__new__(MoeLayer)
     layer.router = torch.randn(E, 32, generator=torch.Generator().manual_seed(1)).bfloat16()
     layer.topk = K
-    layer.keep, layer.reuse, layer.fallback, layer.w3 = keep, reuse, fallback, SimpleNamespace()
+    layer.keep, layer.reuse, layer.w3 = keep, reuse, SimpleNamespace()
     return layer
 
 
@@ -150,9 +131,9 @@ def kernels(monkeypatch):
     route at K and "top<k>" below it."""
     calls = []
 
-    def route_subst(logits, k, keep, slots=None, steps=1, fallback=True, repeat=False):
+    def route_subst(logits, k, keep, slots=None, steps=1, repeat=False):
         assert logits.shape[1] == E
-        calls.append(SimpleNamespace(k=k, keep=keep, slots=slots, steps=steps, fallback=fallback, repeat=repeat))
+        calls.append(SimpleNamespace(k=k, keep=keep, slots=slots, steps=steps, repeat=repeat))
         return "subst"
 
     stub = SimpleNamespace(route_subst=route_subst, route_topk=lambda logits, k: "served" if k == K else f"top{k}")
@@ -173,27 +154,26 @@ def _built(w3=SimpleNamespace(base=0, experts=E), **changes):
                 layer.__init__(w, "mlp", torch.device("cpu"), target, linear, "fp8", w3=None)
         else:
             layer.__init__(w, "mlp", torch.device("cpu"), target, linear, "fp8", w3=w3)
-    return layer.keep, layer.reuse, layer.fallback
+    return layer.keep, layer.reuse
 
 
 class _Loading(Exception):
     pass
 
 
-def test_settings_resolve_to_keep_reuse_and_fallback():
-    """SHARAR_MOE_KEEP / _REUSE / _REUSE_FALLBACK; keeping topk or more is the served route."""
-    assert [_built(moe_keep=k)[:2] for k in (0, 1, 5, 9, 10, 12)] == [(0, 0), (1, 0), (5, 0), (9, 0), (0, 0), (0, 0)]
-    assert _built(moe_keep=5, moe_reuse=5) == (5, 5, False)
-    assert _built(moe_keep=5, moe_reuse=2, moe_reuse_fallback=True) == (5, 2, True)
-    assert _built(moe_keep=10, moe_reuse=3)[:2] == (0, 0)
-    assert _built(moe_keep=0, moe_reuse=5)[:2] == (0, 0)  # SHARAR_MOE_KEEP=0 turns off the profiles' keep 5 + reuse 5
+def test_settings_resolve_to_keep_and_reuse():
+    """SHARAR_MOE_KEEP / _REUSE; keeping topk or more is the served route."""
+    assert [_built(moe_keep=k) for k in (0, 1, 5, 9, 10, 12)] == [(0, 0), (1, 0), (5, 0), (9, 0), (0, 0), (0, 0)]
+    assert _built(moe_keep=5, moe_reuse=5) == (5, 5)
+    assert _built(moe_keep=10, moe_reuse=3) == (0, 0)
+    assert _built(moe_keep=0, moe_reuse=5) == (0, 0)  # SHARAR_MOE_KEEP=0 turns off the profiles' keep 5 + reuse 5
     for changes, message in [({"moe_keep": -1}, "SHARAR_MOE_KEEP=-1"), ({"moe_keep": 5, "moe_reuse": -1}, "SHARAR_MOE_REUSE=-1"),
                              ({"moe_keep": 6, "moe_reuse": 5}, "at most 10")]:
         with pytest.raises(ValueError, match=message):
             _built(**changes)
     # the NVFP4 experts take the same selection (an unfilled slot repeats the token's top 1 at weight 0)
-    assert _built(w3=None, moe_keep=5, moe_reuse=5) == (5, 5, False)
-    assert _built(w3=None, moe_keep=5)[:2] == (5, 0)
+    assert _built(w3=None, moe_keep=5, moe_reuse=5) == (5, 5)
+    assert _built(w3=None, moe_keep=5) == (5, 0)
 
 
 def test_keep_alone_routes_decode_and_verify_forwards_to_route_topk(kernels):
@@ -206,16 +186,16 @@ def test_keep_alone_routes_decode_and_verify_forwards_to_route_topk(kernels):
     assert kernels == []
 
 
-def test_reuse_slots_set_the_width_and_the_fallback(kernels):
+def test_reuse_slots_set_the_width(kernels):
     x = torch.randn(20, 32, generator=torch.Generator().manual_seed(6)).bfloat16()
     slots = torch.ones(20, dtype=torch.int32)
-    assert _layer(keep=5, reuse=5, fallback=False).route(x, _ctx("decode", 20, slots)) == "subst"
-    assert _layer(keep=5, reuse=2, fallback=True).route(x, _ctx("decode", 20, slots)) == "subst"
-    assert [(c.k, c.keep, c.fallback, c.repeat) for c in kernels] == [(10, 5, False, False), (7, 5, True, False)]
-    nvfp4 = _layer(keep=5, reuse=5, fallback=False)
+    assert _layer(keep=5, reuse=5).route(x, _ctx("decode", 20, slots)) == "subst"
+    assert _layer(keep=5, reuse=2).route(x, _ctx("decode", 20, slots)) == "subst"
+    assert [(c.k, c.keep, c.repeat) for c in kernels] == [(10, 5, False), (7, 5, False)]
+    nvfp4 = _layer(keep=5, reuse=5)
     nvfp4.w3 = None  # the NVFP4 experts need an expert in every slot: unfilled ones repeat the token's top 1
     nvfp4.route(x, _ctx("decode", 20, slots))
-    assert (kernels[-1].fallback, kernels[-1].repeat) == (False, True)
+    assert kernels[-1].repeat
 
 
 def test_decode_and_verify_forwards_take_route_subst_with_their_slots(kernels):
