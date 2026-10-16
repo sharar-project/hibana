@@ -53,24 +53,69 @@ def score_groups(q: torch.Tensor, aux: torch.Tensor, table: torch.Tensor, base: 
     return out
 
 
+@triton.jit
+def _assemble_kernel(Values, Idx, Pos, Base, Table, Pages, Counts, stride_v, stride_p, top, width,
+                     RATIO: tl.constexpr, TOPP: tl.constexpr, WIDTHP: tl.constexpr):
+    """One row's selection from its top-k: the chosen groups' tokens (finite scores, in top-k order, each group's
+    tokens ascending), then its pending tail (the tokens of the incomplete group through itself), as pages through the
+    table, valid entries first and -1 after them; and their count."""
+    row = tl.program_id(0)
+    pos = tl.load(Pos + row).to(tl.int64)
+    base = tl.load(Base + row).to(tl.int64)
+    j = tl.arange(0, TOPP)
+    live = j < top
+    v = tl.load(Values + row * stride_v + j, mask=live, other=float("-inf"))
+    g = tl.load(Idx + row * stride_v + j, mask=live, other=0)
+    chosen = live & (v > float("-inf")) & (v < float("inf"))  # torch.isfinite (scores are never NaN)
+    m = tl.arange(0, RATIO)
+    tok = g[:, None] * RATIO + m[None, :]  # [TOPP, RATIO]
+    ok = chosen[:, None] & (m[None, :] >= 0)
+    flat_ok = tl.reshape(ok, (TOPP * RATIO,))
+    flat_tok = tl.reshape(tok, (TOPP * RATIO,))
+    slot = tl.cumsum(flat_ok.to(tl.int32), 0) - 1
+    n_members = tl.sum(flat_ok.to(tl.int32), 0)
+    page = tl.load(Table + base + flat_tok, mask=flat_ok, other=0)
+    tl.store(Pages + row * stride_p + slot, page, mask=flat_ok)
+    i = tl.arange(0, RATIO)
+    tail = ((pos + 1) // RATIO) * RATIO + i
+    tail_ok = (i < RATIO - 1) & (tail <= pos)
+    tail_slot = n_members + tl.cumsum(tail_ok.to(tl.int32), 0) - 1
+    tl.store(Pages + row * stride_p + tail_slot, tl.load(Table + base + tail, mask=tail_ok, other=0), mask=tail_ok)
+    count = n_members + tl.sum(tail_ok.to(tl.int32), 0)
+    k = tl.arange(0, WIDTHP)
+    tl.store(Pages + row * stride_p + k, tl.full((WIDTHP,), -1, tl.int32), mask=(k >= count) & (k < width))
+    tl.store(Counts + row, count)
+
+
 def select_pages(q: torch.Tensor, aux: torch.Tensor, table: torch.Tensor, base: torch.Tensor, positions: torch.Tensor,
-                 ratio: int, budget: int, gcap: int, scale: float) -> tuple[torch.Tensor, torch.Tensor]:
+                 ratio: int, budget: int, gcap: int, scale: float, chunk: int | None = None) -> tuple[torch.Tensor, torch.Tensor]:
     """(pages [R, budget + ratio - 1] int32, valid first then -1; counts [R] int32). No host syncs:
-    every shape depends on R and the static `gcap` (groups the widest row may see)."""
+    every shape depends on R and the static `gcap` (groups the widest row may see). The top-k in torch, the rest in one
+kernel (`_assemble_kernel`). `chunk`: rows scored and ranked per
+    top-k call (bounding the score buffer; the result is that of calling this per `chunk` rows, since only the top-k's
+    tie order depends on the call's shape and everything after it is exact selection arithmetic)."""
     rows, device = q.shape[0], q.device
     width = budget + ratio - 1
     top = min(budget // ratio, gcap)
     positions = positions.long()
-    sel = torch.full((rows, width), -1, dtype=torch.int64, device=device)
     if top:
-        values, idx = score_groups(q, aux, table, base, positions, ratio, gcap, scale).topk(top, dim=-1)
-        chosen = torch.where(torch.isfinite(values), idx, torch.full_like(idx, -1))
-        members = chosen.unsqueeze(-1) * ratio + torch.arange(ratio, device=device)
-        sel[:, : top * ratio] = torch.where(chosen.unsqueeze(-1) >= 0, members, torch.full_like(members, -1)).reshape(rows, top * ratio)
-    visible = (positions + 1) // ratio
-    tail = (visible * ratio).unsqueeze(1) + torch.arange(ratio - 1, device=device)  # the pending group, itself included
-    sel[:, width - (ratio - 1):] = torch.where(tail <= positions.unsqueeze(1), tail, torch.full_like(tail, -1))
-    order = torch.argsort((sel < 0).to(torch.int8), dim=1, stable=True)  # valid entries first, in order
-    sel = sel.gather(1, order)
-    pages = torch.where(sel >= 0, table[(base.long().unsqueeze(1) + sel.clamp_min(0))].long(), torch.full_like(sel, -1)).to(torch.int32)
-    return pages, (pages >= 0).sum(1, dtype=torch.int32)
+        step = rows if chunk is None else chunk
+        if step >= rows:
+            values, idx = score_groups(q, aux, table, base, positions, ratio, gcap, scale).topk(top, dim=-1)
+        else:
+            values = torch.empty((rows, top), dtype=torch.float32, device=device)
+            idx = torch.empty((rows, top), dtype=torch.int64, device=device)
+            for a in range(0, rows, step):
+                b = min(rows, a + step)
+                torch.topk(score_groups(q[a:b], aux, table, base[a:b], positions[a:b], ratio, gcap, scale), top, dim=-1,
+                           out=(values[a:b], idx[a:b]))
+    else:
+        values = torch.empty((rows, 0), dtype=torch.float32, device=device)
+        idx = torch.empty((rows, 0), dtype=torch.int64, device=device)
+    pages = torch.empty((rows, width), dtype=torch.int32, device=device)
+    counts = torch.empty((rows,), dtype=torch.int32, device=device)
+    if rows:
+        tp = max(1, triton.next_power_of_2(top))
+        _assemble_kernel[(rows,)](values, idx, positions, base, table, pages, counts, values.stride(0), pages.stride(0), top, width,
+                                  RATIO=ratio, TOPP=tp, WIDTHP=triton.next_power_of_2(width), num_warps=4)
+    return pages, counts
