@@ -2,7 +2,7 @@
 
 One graph per batch size in CAPTURE_SIZES (two for a sparse-attention target: the
 dense one, used while every row is inside the indexer budget, and one that selects
-on the device, `kernels/qsa_select.py`). A decode batch of b rows is padded
+on the device, `kernels/qsa/selection.py`). A decode batch of b rows is padded
 to the smallest captured size with dummy rows that use state slot 0 and KV
 page 0, both reserved for that purpose. FlashInfer's decode wrapper is built
 with use_cuda_graph=True and fixed index buffers; plan() runs before every

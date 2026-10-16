@@ -197,6 +197,15 @@ def test_gdn_prefill_backend_reaches_engine_through_new_launcher(env, policy):
     assert EngineConfig.from_env(engine_env).gdn_prefill == policy
 
 
+@pytest.mark.parametrize("policy", ["original", "auto", "optimized"])
+def test_qsa_prefill_backend_reaches_engine(env, policy):
+    from sharar.engine.config import EngineConfig
+    resolved = resolve({**env, "SHARAR_QSA_PREFILL_BACKEND": policy}, "flashnext")
+    engine_env = resolved.engine_env(None)
+    assert engine_env["SHARAR_QSA_PREFILL_BACKEND"] == policy
+    assert EngineConfig.from_env(engine_env).qsa_prefill_backend == policy
+
+
 def test_traces_are_opt_in(env, tmp_path):
     env = {**env, "SHARAR_RESULTS": str(tmp_path / "results")}
     assert resolve(env, "27b").traces is None

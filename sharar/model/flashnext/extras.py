@@ -43,6 +43,9 @@ class FlashNextSideInputs:
     qsa_indptr: torch.Tensor | None = None
     qsa_row_seq: torch.Tensor | None = None
     qsa_gcap: int = 0
+    # Opt-in eager-prefill plan shared by attention layers within this forward only.
+    qsa_prefill_plan: object | None = None
+    qsa_optimized_prefill: bool = False
 
 
 class FlashNextExtras:

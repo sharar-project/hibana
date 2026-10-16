@@ -2,7 +2,7 @@
 # The sparse attention kernel is sglang's `_sparse_gqa_chunk_prefill`
 # (sglang v0.5.20, srt/layers/attention/qsa/sparse_attn.py, Apache-2.0),
 # unchanged except for the wrapper below.
-"""Qwen Sparse Attention (Flash-Next) kernels: attention of each query row over
+"""Qwen Sparse Attention (Flash-Next): attention of each query row over
 its own list of KV pages.
 
 Every row is a query token with up to W selected pages of the FP8 KV pool
@@ -80,7 +80,7 @@ def _sparse_gqa_chunk_prefill(
 
 
 def sparse_attention(q: torch.Tensor, k_pool: torch.Tensor, v_pool: torch.Tensor, pages: torch.Tensor, counts: torch.Tensor,
-                     scale: float) -> torch.Tensor:
+                     scale: float, *, optimized_prefill: bool = False) -> torch.Tensor:
     """q [R, Hq, D] (bf16); k_pool/v_pool [num_pages, Hkv, D] (the FP8 pool, page size 1);
     pages [R, W] int32 page ids, valid entries first, -1 after; counts [R] int32 valid
     entries per row. Returns [R, Hq, D] in q's dtype. Every row is its own sequence
@@ -94,6 +94,8 @@ def sparse_attention(q: torch.Tensor, k_pool: torch.Tensor, v_pool: torch.Tensor
     cu_q = torch.arange(rows + 1, dtype=torch.int32, device=q.device)
     cu_k = torch.zeros(rows + 1, dtype=torch.int32, device=q.device)
     block_n, warps, stages = next(cfg for limit, cfg in _CONFIGS if rows <= limit)
+    if optimized_prefill and rows > 512 and (heads,kv_heads,dim) in ((24,2,256), (12,1,256)):
+        block_n,warps,stages=16,1,1
     _sparse_gqa_chunk_prefill[(1, rows * kv_heads)](
         q, k_pool, v_pool, out, pages, cu_q, cu_k, counts, scale, pages.shape[-1],
         q.stride(0), q.stride(1), q.stride(2), k_pool.stride(0), k_pool.stride(1), k_pool.stride(2),

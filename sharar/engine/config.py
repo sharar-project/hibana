@@ -90,6 +90,7 @@ class EngineConfig:
     accept_default_sampled: bool = False      # SHARAR_ACCEPT_DEFAULT_SAMPLED
     accept_default_sampled_threshold: str | None = None  # SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD: K:M for sampled requests (unset: accept_default's)
     qsa_sparse_graphs: bool = True            # SHARAR_QSA_SPARSE_GRAPHS=0: rows past the indexer budget run eagerly
+    qsa_prefill_backend: str = "original"    # SHARAR_QSA_PREFILL_BACKEND: original, auto, optimized (SM121 TP1/TP2, <=32K)
     ple_resident: str = "auto"                 # SHARAR_PLE_RESIDENT: Flash-Next's PLE table in device memory, each tensor-parallel rank its share of the heads; auto: on two Sparks, 0: off
     # --- the SSD tier (cache/ssd.py) under the GPU prefix cache
     ssd: bool = False                         # SHARAR_SSD
@@ -115,6 +116,11 @@ class EngineConfig:
     bench_max_context: int = 0                # SHARAR_BENCH_MAX_CONTEXT
     moe_keep: int = 0                         # SHARAR_MOE_KEEP=k: Flash-Next, each token keeps its own top k experts in decode and verify forwards (model/flashnext/moe.py); 0, or k of 10 and above: the served top-10
     moe_reuse: int = 0                        # SHARAR_MOE_REUSE=r: up to r more experts a token from its ranks k+1..20, only ones the call's other tokens keep (k + r <= 10), so the call reads no expert beyond the tokens' top k
+
+    def __post_init__(self) -> None:
+        if self.qsa_prefill_backend not in ("original", "auto", "optimized"):
+            raise ValueError("SHARAR_QSA_PREFILL_BACKEND must be original, auto, or optimized; "
+                             f"got {self.qsa_prefill_backend!r}")
 
     @property
     def ssd_buffers(self) -> dict[str, int]:
@@ -159,6 +165,7 @@ class EngineConfig:
             accept_default_sampled=_flag(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED"),
             accept_default_sampled_threshold=_str(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"),
             qsa_sparse_graphs=e.get("SHARAR_QSA_SPARSE_GRAPHS", "1") != "0",
+            qsa_prefill_backend=_str(e, "SHARAR_QSA_PREFILL_BACKEND", "original"),
             ple_resident=e.get("SHARAR_PLE_RESIDENT", "auto"),
             ssd=_flag(e, "SHARAR_SSD"),
             ssd_gib=float(e.get("SHARAR_SSD_GIB") or "200"),

@@ -47,6 +47,51 @@ def test_gdn_backend_configuration():
     assert EngineConfig.from_env({"SHARAR_GDN_PREFILL": "triton"}).gdn_prefill == "triton"
 
 
+def test_qsa_prefill_is_opt_in():
+    assert EngineConfig.from_env({}).qsa_prefill_backend == "original"
+
+
+@pytest.mark.parametrize("backend", ["original", "auto", "optimized"])
+def test_qsa_prefill_backend_configuration(backend):
+    cfg = EngineConfig.from_env({"SHARAR_QSA_PREFILL_BACKEND": backend})
+    assert cfg.qsa_prefill_backend == backend
+    assert cfg.describe()["qsa_prefill_backend"] == backend
+    assert "qsa_optimized_prefill" not in cfg.describe()
+
+
+@pytest.mark.parametrize("backend", ["original", "auto", "optimized"])
+@pytest.mark.parametrize("resident", ["auto", "0"])
+def test_qsa_backend_preserves_ple_and_moe_settings(backend, resident):
+    cfg = EngineConfig.from_env({"SHARAR_QSA_PREFILL_BACKEND": backend,
+                                "SHARAR_PLE_RESIDENT": resident,
+                                "SHARAR_MOE_KEEP": "5", "SHARAR_MOE_REUSE": "5"})
+    assert cfg.qsa_prefill_backend == backend
+    assert cfg.ple_resident == resident
+    assert cfg.describe()["qsa_prefill_backend"] == backend
+    assert cfg.describe()["ple_resident"] == resident
+    assert (cfg.moe_keep, cfg.moe_reuse) == (5, 5)
+    assert (cfg.describe()["moe_keep"], cfg.describe()["moe_reuse"]) == (5, 5)
+    assert cfg.replace(qsa_prefill_backend="original").ple_resident == resident
+    assert (cfg.replace(qsa_prefill_backend="original").moe_keep,
+            cfg.replace(qsa_prefill_backend="original").moe_reuse) == (5, 5)
+    assert cfg.replace(ple_resident="auto").qsa_prefill_backend == backend
+
+
+@pytest.mark.parametrize("backend", ["eager", "fused", "AUTO", ""])
+def test_qsa_prefill_backend_rejects_invalid_values(backend):
+    with pytest.raises(ValueError, match="SHARAR_QSA_PREFILL_BACKEND"):
+        EngineConfig(qsa_prefill_backend=backend)
+    with pytest.raises(ValueError, match="SHARAR_QSA_PREFILL_BACKEND"):
+        EngineConfig().replace(qsa_prefill_backend=backend)
+    if backend:
+        with pytest.raises(ValueError, match="SHARAR_QSA_PREFILL_BACKEND"):
+            EngineConfig.from_env({"SHARAR_QSA_PREFILL_BACKEND": backend})
+
+
+def test_empty_qsa_prefill_environment_uses_default():
+    assert EngineConfig.from_env({"SHARAR_QSA_PREFILL_BACKEND": ""}).qsa_prefill_backend == "original"
+
+
 def test_no_module_reads_sharar_variables_at_import():
     import pathlib
     import re
