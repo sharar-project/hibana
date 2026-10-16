@@ -6,6 +6,7 @@ headers alone, a corrupt object is a miss, and the budget deletes least
 recently used SSD-only leaves."""
 import dataclasses
 import json
+import threading
 
 import pytest
 import torch
@@ -825,6 +826,32 @@ def test_while_a_restore_reads_others_are_served_and_its_path_survives_the_budge
     tier.step(cache)
     assert cache.restore_async(IDS + [7]) and same(restored(cache, kv, sp, IDS), before)
     cache.release(IDS + [7])
+    assert not any(locks(cache))
+
+
+def test_the_disk_budget_keeps_the_tail_a_restore_reads_alone(tmp_path, monkeypatch):
+    """The pages stayed and only the snapshot went, so the restore reads one tail: a copy of a node still in L1, the
+    kind the budget's second pass deletes. The budget keeps it while the read is in flight, and the restore lands."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    prompt_end = 2 * BLOCK + 10
+    at_prompt, _ = _two_resume_points(cache, tier, kv, sp, feats, prompt_end)
+    (head,) = cache.root.children.values()
+    tier.through.clear()  # as if eviction had met the prompt end as a leaf and written its tail
+    assert tier._write_tail(head, prompt_end, wait=True)
+    settle(cache, tier)
+    cache.evict(need_slots=sp.free_count + 1)
+    assert head.snapshot_slot is None and head.in_l1 and head.tail.ready
+    gate, read = threading.Event(), tier.store.read_into
+    monkeypatch.setattr(tier.store, "read_into", lambda *a: (gate.wait(10), read(*a))[1])
+    assert not cache.restore_async(IDS[:prompt_end] + [7])
+    tier.budget = 0  # over budget, and no SSD-only leaf to drop: only the copies of L1 nodes are left
+    tier.step(cache)
+    tier.store.wait()  # any delete the budget queued has run
+    assert head.tail is not None and head.tail.ready
+    gate.set()
+    land(cache, tier, IDS[:prompt_end] + [7])
+    assert tier.restore_fails == 0 and same(restored(cache, kv, sp, IDS[:prompt_end]), at_prompt)
+    cache.release(IDS[:prompt_end] + [7])
     assert not any(locks(cache))
 
 

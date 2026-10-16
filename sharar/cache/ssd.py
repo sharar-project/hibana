@@ -680,7 +680,8 @@ class SsdTier:
             self._failed_tail = False
         while self.used > self.budget and (victim := cache.ssd_candidate()) is not None:
             self._drop_leaf(cache, victim)
-        while self.used > self.budget and (victim := cache.ssd_candidate(resident=True)) is not None:
+        reading = self._job.node if self._job is not None else None  # a restore of a resident path reads its tail alone
+        while self.used > self.budget and (victim := cache.ssd_candidate(resident=True, skip=reading)) is not None:
             self._discard_node(victim)
             victim.blocks.clear()
             victim.tail = None

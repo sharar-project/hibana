@@ -405,13 +405,15 @@ class RadixCache:
         self.cached_tokens -= len(node.key)
         self.evictions += 1
 
-    def ssd_candidate(self, unusable: bool = False, resident: bool = False) -> Node | None:
+    def ssd_candidate(self, unusable: bool = False, resident: bool = False, skip: Node | None = None) -> Node | None:
         """The least recently used node: an SSD-only leaf (with `unusable`, only
         one whose tail is missing or failed), or with `resident` an L1 node with
         a ready copy on the SSD, whose copies the budget can delete while the
-        node keeps its pages."""
+        node keeps its pages. Never `skip` (the node a restore is reading)."""
         best = None
         for n in self._walk(l1_only=resident):
+            if n is skip:
+                continue
             if resident:
                 if not ((n.tail is not None and n.tail.ready) or any(r.ready for r in n.blocks.values())):
                     continue
