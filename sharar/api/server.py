@@ -691,7 +691,7 @@ def _split_chat(text: str, in_reasoning: bool, tools: list | None) -> tuple[str,
 def _serve_http(app, host: str, port: int) -> None:
     """uvicorn.run, except that a handled SIGTERM ends here instead of being raised again once the server stops: in
     a container the server is PID 1 and ignores it, but run directly (from the venv, as the launchers do) it would end
-    the process before the engine drains and its sessions persist."""
+    the process before the engine drains and its cached prefixes persist."""
     import contextlib
 
     import uvicorn
@@ -706,12 +706,12 @@ def _serve_http(app, host: str, port: int) -> None:
     Server(uvicorn.Config(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=30)).run()
 
 
-def _persist_sessions(ex, engine, log) -> None:
-    """Once the engine has stopped, write the cached sessions to the SSD tier for the next run: on every
+def _persist_prefixes(ex, engine, log) -> None:
+    """Once the engine has stopped, write the cached prefixes to the SSD tier for the next run: on every
     tensor-parallel rank or on none (the ranks first agree that every engine stopped)."""
     from sharar.distributed import all_reduce_min
     if all_reduce_min(int(not engine.thread.is_alive()))[0]:
-        ex.persist_sessions(log)
+        ex.persist_prefixes(log)
 
 
 def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
@@ -762,7 +762,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         engine = EngineLoop(sched, Grammars.from_tokenizer(tok._tok, served.vocab_size, SamplingParams().stop_token_ids))
         engine.start()
         engine.thread.join()
-        _persist_sessions(ex, engine, log)
+        _persist_prefixes(ex, engine, log)
         return
     sink = None
     if traces:
@@ -812,6 +812,6 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     finally:
         engine.drain(timeout=5)
         engine.thread.join(timeout=6)
-        _persist_sessions(ex, engine, log)
+        _persist_prefixes(ex, engine, log)
         if sink is not None:
             sink.close()

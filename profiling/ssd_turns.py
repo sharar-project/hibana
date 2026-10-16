@@ -1,13 +1,13 @@
 """Concurrent multi-turn conversations against a server, the workload an SSD-tier restore stalls.
 
-    SHARAR_KV_POOL_TOKENS=49152 uv run sharar serve 27b --fast --port 30000      # small pool: sessions get evicted
+    SHARAR_KV_POOL_TOKENS=49152 uv run sharar serve 27b --fast --port 30000      # small pool: conversations get evicted
     uv run python profiling/ssd_turns.py --url http://127.0.0.1:30000 --label async
 
 `--convs` conversations (the frozen 10K-token prompts of `profiling/inputs.py`) run at once, each in its own thread.
 Phase 1, not measured: every conversation's first turn (its 10K-token prefill). Phase 2, measured: `--turns` - 1 more
 turns each; a turn appends the previous answer and a new question and generates `--new` tokens greedily, then the
 conversation "thinks" `--think` seconds (a tool call) before the next. With a small KV pool the others push a
-thinking conversation's session out of the GPU cache, so its next turn restores it from the SSD (or re-prefills
+thinking conversation's cached prefix out of the GPU cache, so its next turn restores it from the SSD (or re-prefills
 without the tier).
 
 Prints one JSON line: phase 2's wall time and output tokens/s, time to first token of the later turns, and the gaps
@@ -97,7 +97,7 @@ def main() -> int:
     def phase2(c):
         time.sleep(0.3 * c)
         for k in range(1, args.turns):
-            time.sleep(args.think)  # a tool call: meanwhile the others push this session out of the GPU cache
+            time.sleep(args.think)  # a tool call: meanwhile the others push this conversation out of the GPU cache
             turn(c, k, True)
 
     def run(target):

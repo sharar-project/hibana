@@ -203,7 +203,7 @@ class ParallelProposer:
     def auxiliary_codec(self):
         """Export/import of this adapter's cache auxiliary (a feature-cache
         handle) for the SSD tier: the projected feature window travels with
-        the stored session so a restored request keeps speculating."""
+        the stored prefix so a restored request keeps speculating."""
         def export(handle):
             value = self.feature_cache.get(handle)  # (start, end, features on the device); the tier copies the tensor
             return None if value is None else (value[0], value[1], value[2])

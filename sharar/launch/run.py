@@ -153,7 +153,7 @@ def cache(args) -> int:
         d = ctl.stored_on_disk(directory)
         who = f"{s.target} is not serving" if args.target else "nothing is serving"
         print(f"{who}; SSD tier {'on' if s.ssd else 'off'} in the settings")
-        print(f"  SSD store {directory}: {d['sessions']:,} sessions, {d['blocks']:,} blocks, {d['bytes'] / 2**30:.1f} GiB")
+        print(f"  SSD store {directory}: {d['prefixes']:,} prefixes, {d['blocks']:,} blocks, {d['bytes'] / 2**30:.1f} GiB")
         return 0
     cfg, cache = info.get("config") or {}, (info.get("scheduler") or {}).get("cache")
     print(f"{s.target}: serving on {s.url}")
@@ -166,7 +166,7 @@ def cache(args) -> int:
     if ssd is None:
         print("  SSD: " + ("on in the settings but not running (the server log says why)" if cfg.get("ssd") else "off (SHARAR_SSD=1 turns it on)"))
         return 0
-    print(f"  SSD: {ssd['sessions']:,} sessions, {ssd['used_gib']:.1f} of {ssd['budget_gib']:.0f} GiB in {cfg.get('ssd_dir')}; "
+    print(f"  SSD: {ssd['prefixes']:,} prefixes, {ssd['used_gib']:.1f} of {ssd['budget_gib']:.0f} GiB in {cfg.get('ssd_dir')}; "
           f"{ssd['restores']:,} restores ({ssd['restored_tokens']:,} tokens)")
     return 0
 

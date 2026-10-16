@@ -36,7 +36,7 @@ def runtime(tmp_path_factory):
     gc.collect()
     torch.cuda.empty_cache()
     # The exact profile: the FP8 trunk without 3-bit copies (tests/conftest.py points the rest of the suite at the 27B's).
-    # The SSD tier stores every session in a scratch directory, however short.
+    # The SSD tier stores every prefix in a scratch directory, however short.
     ssd = dict(ssd=True, ssd_dir=str(tmp_path_factory.mktemp("ssd")), ssd_gib=2.0)
     with config.using(config.current().replace(target="flashnext", w3_decode=False, w3_checkpoint=None, **ssd)):
         model = targets.load_model(target, snap)
@@ -100,7 +100,7 @@ def test_repeat_runs_in_one_process_are_identical(runtime, graphs, batch):
 
 def test_prefix_cache_and_ssd_tier_continue_like_a_cold_prefill(runtime):
     """A conversation: turn two reuses turn one's cached prefix; then everything is demoted to the SSD tier and
-    turn three restores the stored session before matching. Each continues exactly as a cold prefill does."""
+    turn three restores the stored prefix before matching. Each continues exactly as a cold prefill does."""
     ex, tok = runtime
     ex.flush_cache()
     before = free(ex)

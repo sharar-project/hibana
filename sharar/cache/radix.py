@@ -11,7 +11,7 @@ The cache owns the pages and slots it references. Nodes on a matched path are
 locked while a request uses them; eviction is LRU over unlocked leaves.
 
 With an SSD tier attached (`ssd.py`), a node also records which of its KV
-blocks and which session tail are on the SSD. Evicting such a leaf from L1
+blocks are on the SSD, and whether its tail is. Evicting such a leaf from L1
 demotes it instead of deleting it: its pages and slot go back to the pools
 and the node stays, SSD-only, so a later match can find a resume point on the
 SSD past the L1 prefix. L1 stays prefix-closed: a node with pages always has
@@ -47,7 +47,7 @@ class Node:
     lock: int = 0
     last_access: float = field(default_factory=time.monotonic)
     blocks: dict[int, SsdRef] = field(default_factory=dict)  # KV blocks on the SSD whose last token is in this node, by absolute end
-    tail: SsdRef | None = None  # a session tail on the SSD ending exactly at this node's end
+    tail: SsdRef | None = None  # the tail of a prefix stored on the SSD, ending exactly at this node's end
 
     @property
     def in_l1(self) -> bool:
@@ -174,7 +174,7 @@ class RadixCache:
 
     # ---- SSD tier (no-ops without one) ----
     def restore(self, ids: list[int], reserve: int = 0) -> int:
-        """Bring a session on the SSD back into L1 before it is matched, if the rest of ids and `reserve` more pages
+        """Bring a stored prefix back into L1 before it is matched, if the rest of ids and `reserve` more pages
         fit too; returns the tokens restored."""
         return self.ssd.restore(self, ids, reserve) if self.ssd is not None else 0
 
@@ -276,7 +276,7 @@ class RadixCache:
         return new_start
 
     def insert_ssd_path(self, ids: list[int], blocks: dict[int, SsdRef], tail: SsdRef) -> None:
-        """Record a stored session at startup: add the path for ids (new nodes
+        """Record a stored prefix at startup: add the path for ids (new nodes
         SSD-only), put each block ref on the node holding the block's last
         token and the tail on the node ending at len(ids)."""
         node, pos, path = self.root, 0, []
@@ -425,8 +425,8 @@ class RadixCache:
                 best = n
         return best
 
-    def ssd_sessions(self) -> int:
-        """Sessions a request can resume from the SSD: nodes whose tail is written."""
+    def ssd_prefixes(self) -> int:
+        """Prefixes a request can resume from the SSD: nodes whose tail is written."""
         return sum(n.tail is not None and n.tail.ready for n in self._walk())
 
     def remove_ssd_leaf(self, node: Node) -> None:

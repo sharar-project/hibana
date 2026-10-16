@@ -122,7 +122,7 @@ class Ledger:
         # never less than half of it (the split before the margin): where little is left (Flash-Next `exact`, its
         # NVFP4 experts and the SSD staging), the margin alone would leave the pools a handful of slots
         spare = max(leftover - margin_bytes, leftover // 2)
-        # the target never cuts the guaranteed slots: a batch of 128 needs 129, and room for cached sessions besides
+        # the target never cuts the guaranteed slots: a batch of 128 needs 129, and room for cached prefixes besides
         state_slots = min(max(state_slot_target, must_slots), must_slots + int(spare * 0.6) // state_bytes_per_slot)
         spare -= (state_slots - must_slots) * state_bytes_per_slot  # what the slot cap leaves goes to pages
         kv_tokens = min(kv_token_target, must_tokens + spare // page_bytes)

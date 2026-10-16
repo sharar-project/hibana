@@ -2,7 +2,7 @@
 
 Sharar is a local inference engine for the NVIDIA GB10 (DGX Spark). It serves **Qwen3.8-27B** and
 **Qwen3.8-Flash-Next** (125B MoE) through OpenAI- and Anthropic-compatible APIs, with speculative decoding, prefix
-caching (with an optional NVMe tier for evicted sessions), a 262K context, on one Spark or two.
+caching (with an optional NVMe tier for evicted prefixes), a 262K context, on one Spark or two.
 
 ## Quick start
 

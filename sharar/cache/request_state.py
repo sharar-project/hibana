@@ -75,7 +75,7 @@ class StateManager:
             return self.kv.free_count >= len(ids) + reserve and self.recurrent.free_count >= 1
         # Obtain a private slot before pinning a path that might otherwise own
         # every state slot. Budget only the uncached suffix and decode reserve.
-        if not self.cache.restore_async(ids[:-1], reserve + 1):  # a session on the SSD comes back before it is matched
+        if not self.cache.restore_async(ids[:-1], reserve + 1):  # a stored prefix comes back before it is matched
             return False  # its reads are still landing; the engine serves everyone else meanwhile
         self.cache.evict(need_slots=1)
         match = self.cache.match(ids[:-1], touch=False)

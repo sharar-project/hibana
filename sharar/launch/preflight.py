@@ -15,7 +15,7 @@ from pathlib import Path
 
 from sharar.launch.settings import Settings
 
-HEADROOM = 10 * 2**30  # left free after a download: logs, JIT caches, sessions
+HEADROOM = 10 * 2**30  # left free after a download: logs, JIT caches, stored prefixes
 MIN_AVAILABLE_KIB = 40 * 2**20  # the measured streaming-load peak plus the 16 GiB host floor
 
 

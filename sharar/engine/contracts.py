@@ -38,7 +38,7 @@ class Capabilities:
     instead of probing for methods; `check_capabilities` verifies each promised protocol."""
     device_feedback: bool = False   # DeviceFeedback: accepted_prepare / feedback_device / accepted_publish (device acceptance)
     checkpoint_cache: bool = False  # CheckpointCache: bind_checkpoint_cache(pool) and a feature_cache with stats
-    stored_payload: bool = False    # StoredPayload: auxiliary_codec() -> (identity, export, import) for sessions on the SSD tier
+    stored_payload: bool = False    # StoredPayload: auxiliary_codec() -> (identity, export, import) for stored prefixes
     draft_head: bool = False        # DraftHeadChoice: set_draft_head(ids, fmt, rescore) on the head
     short_drafts: bool = False      # propose(..., depth=d) drafts only the d tokens a shallower round verifies (sequential drafts)
 

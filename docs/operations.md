@@ -32,7 +32,7 @@ in its own process with the memory guard as a thread: when `MemAvailable` stays 
 the server (SIGTERM, then SIGKILL after 15 s), before unified memory pages the weights. The scheduler already holds
 new admissions under that floor. `--detach` runs the same command as the user systemd service `sharar-qwen38` or
 `sharar-flashnext`, logging to `$SHARAR_RESULTS/logs/<service>.log` (the previous run's is `.log.1`); `sharar stop`
-sends it SIGTERM, so it drains and, with the SSD tier on, stores its cached sessions. Automatic KV capacity depends
+sends it SIGTERM, so it drains and, with the SSD tier on, stores its cached prefixes. Automatic KV capacity depends
 on available memory.
 
 ## Settings
@@ -129,24 +129,24 @@ cache statistics. `cache.draft_features` reports retained features and fallbacks
 At 96 slots, DFlash2 feature retention reserves up to 1,900 MiB before planning
 KV. The pools take what is available at startup beyond the floor, the prefill
 reserve and a 4 GiB margin. No host-memory tier sits below them: on unified
-memory it would hold the same sessions in the same DRAM.
+memory it would hold the same prefixes in the same DRAM.
 
 **SSD tier (on in every profile, `SHARAR_SSD=0` turns it off; capacity `SHARAR_SSD_GIB`, default 200).**
 It is the only tier below the GPU pools; without it the cache drops an evicted
-session and its next request prefills again. One radix tree indexes both tiers.
+prefix and its next request prefills again. One radix tree indexes both tiers.
 The tier writes to `$SHARAR_RESULTS/ssd/<target>` (one store per target;
-`SHARAR_SSD_DIR` moves it, e.g. to another drive), so stored sessions survive
+`SHARAR_SSD_DIR` moves it, e.g. to another drive), so stored prefixes survive
 restarts and reboots. The directory is private (0700), one server holds it at a
 time (a second one disables its tier rather than share it), and a store on a
 tmpfs or ramfs is refused: it would sit in memory, which on a Spark is the GPU's.
 The budget never fills the drive: at startup it is capped to what is stored plus
 the free space beyond a reserve (a tenth of the drive, at most 64 GiB). It
 stores KV as content-addressed blocks of 256 tokens, one copy per shared
-prefix, plus one tail per evicted session (its partial block and the recurrent
-snapshot). It skips sessions shorter than 4,096 tokens: each tail carries the
-recurrent snapshot (147 MiB per 27B session in FP32, 58 MiB with
-`SHARAR_SSM_STATE=int8`), and a short session re-prefills in about a second.
-Evicting a session from the GPU pools keeps its node in the tree, on the SSD
+prefix, plus one tail per evicted prefix (its partial block and the recurrent
+snapshot). It skips prefixes shorter than 4,096 tokens: each tail carries the
+recurrent snapshot (147 MiB per 27B prefix in FP32, 58 MiB with
+`SHARAR_SSM_STATE=int8`), and a short prefix re-prefills in about a second.
+Evicting a prefix from the GPU pools keeps its node in the tree, on the SSD
 only. The next request that extends it reads back what the GPU no longer holds
 (from where the path's GPU pages end) with O_DIRECT reads into a
 CUDA-registered staging buffer of two 256 MiB halves: the readers fill one half
@@ -162,19 +162,19 @@ conversation's next turn resumes), not at its prompt's end; a request that
 regenerates from the same prompt may prefill its last turn again. Writer threads write them with O_DIRECT through a 16 MiB
 buffer each (where the filesystem refuses O_DIRECT, through the page cache,
 dropped after each file; `direct_writes` in `cache.ssd.store` says which).
-Eviction takes the least recently used session already on the SSD first, so it
-rarely needs a copy. When none is left it copies the session's unwritten blocks
-and tail at once if the staging limit has room, and otherwise drops the session
+Eviction takes the least recently used prefix already on the SSD first, so it
+rarely needs a copy. When none is left it copies the prefix's unwritten blocks
+and tail at once if the staging limit has room, and otherwise drops the prefix
 as it would without the tier (`evict_dropped` in `cache.ssd`): waiting for the
 writers would stall every running request. Shutdown waits instead. A node whose descendants are already stored (a
 prompt's end, a chunk checkpoint) is demoted with its KV blocks and no snapshot:
 the conversation resumes from its descendants. When the
 completed copies exceed the disk budget, the tier drops SSD-only leaves first,
 then the disk copies of nodes still on the GPU, which keep their GPU pages and
-snapshots. At shutdown the server writes every cached session to the SSD. After
+snapshots. At shutdown the server writes every cached prefix to the SSD. After
 a restart, a process with the same target revision, decode weights, geometry,
 recurrent-state format and prefill numerics lists them again; it deletes
-another format's sessions at startup. On two Sparks each rank stores its own
+another format's prefixes at startup. On two Sparks each rank stores its own
 heads on its own Spark, and the ranks agree on every write, restore and listing
 ([tensor parallel](tensor-parallel.md)). If a store cannot open, the server
 logs why and runs without the tier. `cache.ssd` in `/get_server_info` reports

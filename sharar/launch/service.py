@@ -2,7 +2,7 @@
 
 The service runs this checkout's `sharar` with the caller's SHARAR_* settings and config file; its output goes to
 $SHARAR_RESULTS/logs/<service>.log (the previous run's is .log.1); `systemctl --user stop` sends SIGTERM, so the server
-drains (and with the SSD tier on, stores its cached sessions). SIGTERM reaches the main process only (KillMode=mixed):
+drains (and with the SSD tier on, stores its cached prefixes). SIGTERM reaches the main process only (KillMode=mixed):
 on two Sparks that is the supervisor, which passes it to rank 0 alone, and rank 1's ssh must stay up until rank 0's
 stop has ended rank 1 (launch/tp.py); whatever is left when the main process exits is killed.
 """

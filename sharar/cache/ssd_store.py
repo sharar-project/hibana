@@ -1,13 +1,13 @@
-"""SSD store: content-addressed KV blocks and session tails on the local NVMe.
+"""SSD store: content-addressed KV blocks and prefix tails on the local NVMe.
 
 The tiered radix tree (`radix.py`) records what is on disk; this module only
 stores and returns objects. Two kinds:
 
 - `kv`: one block of `block` tokens (default `BLOCK`), keyed by a chained hash
   of every token from the root, so a shared prefix is stored once whatever
-  session wrote it. Segments: K and V of every attention layer, then the KV
+  request wrote it. Segments: K and V of every attention layer, then the KV
   pool's page aux rows.
-- `tail`: the end of a session: the KV of its last partial block, the GDN
+- `tail`: the end of a stored prefix: the KV of its last partial block, the GDN
   snapshot at its exact length, the state pool's per-slot aux and the drafter
   payload. Keyed by the last full block's hash and the partial tokens.
 
@@ -304,7 +304,7 @@ class SsdStore:
                     if buf is None and self.direct:
                         buf = mmap.mmap(-1, WRITE_BUFFER)  # anonymous, so page-aligned
                     slot[0] = self._write(a, b, c, buf)
-                except Exception as exc:  # a full disk or an I/O error loses the stored copy, never the served session
+                except Exception as exc:  # a full disk or an I/O error loses the stored copy, never the served request
                     with self._lock:
                         self.write_errors += 1
                         self.last_error = repr(exc)

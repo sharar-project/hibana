@@ -59,7 +59,7 @@ def test_eviction_demotes_and_the_ssd_match_finds_the_tail():
     cache.evict(need_pages=kv.free_count + 10)
     assert not node.in_l1 and node.snapshot_slot is None and cache.root.children  # demoted, still in the tree
     assert kv.free_count == free_before + 10 and cache.cached_tokens == 0 and cache.demotions == 1
-    assert cache.ssd_sessions() == 1
+    assert cache.ssd_prefixes() == 1
     assert cache.match(ids + [99]).length == 0  # L1 cannot use it
     hit = cache.ssd_match(ids + [99], 0, B)
     assert hit.length == 10 and [e for e, _ in hit.blocks] == [4, 8] and hit.path == [node]

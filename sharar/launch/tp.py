@@ -9,7 +9,7 @@ settings and the paths in them must exist on both Sparks.
 
 A rank that ends, however it ends, ends the other within a second (the ranks' TCP link to the primary), and the
 pair restarts, up to 5 times in 10 minutes. SIGTERM or Ctrl-C reaches rank 0 alone: it drains its requests, and the
-stop it broadcasts ends rank 1; with the SSD tier on, both store their sessions first. SHARAR_TP_PREFIX is a command
+stop it broadcasts ends rank 1; with the SSD tier on, both store their caches first. SHARAR_TP_PREFIX is a command
 both ranks run under, e.g. "nsys profile -o /path/tp2_%h ..." (%h: each host's name).
 """
 from __future__ import annotations
@@ -139,7 +139,7 @@ class Pair:
         remote = f"cd {shlex.quote(str(CHECKOUT))} && env {exports} {shlex.join(self.command(1))}"
         # Ctrl-C signals the terminal's whole process group. Both ranks start with SIGINT ignored (an ignored signal
         # stays ignored across exec, and Python and ssh keep it so), so only this process acts on it and passes SIGTERM
-        # to rank 0 alone: rank 1's ssh must stay up until rank 0's stop has ended rank 1 (after both stored their sessions).
+        # to rank 0 alone: rank 1's ssh must stay up until rank 0's stop has ended rank 1 (after both stored their caches).
         previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
             # A terminal for rank 1 (-tt): it gets SIGHUP and exits when its ssh ends, which ends with this process.
@@ -161,7 +161,7 @@ class Pair:
 
     def wait(self) -> int:
         """Rank 0's exit status, once rank 1 is gone too: rank 1 ends by itself when rank 0's stop reaches it, else
-        wait() terminates it after 30 s. With the SSD tier on, both ranks store their sessions in lockstep first."""
+        wait() terminates it after 30 s. With the SSD tier on, both ranks store their caches in lockstep first."""
         code = self.rank0.wait()
         if self.rank1.poll() is None:
             try:

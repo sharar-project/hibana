@@ -267,10 +267,10 @@ class Executor:
 
     def enable_ssd_tier(self, log=None) -> None:
         """With SHARAR_SSD=1, put the SSD tier (`cache/ssd.py`) under the prefix
-        cache, up to SHARAR_SSD_GIB in SHARAR_SSD_DIR, and list the sessions it
+        cache, up to SHARAR_SSD_GIB in SHARAR_SSD_DIR, and list the prefixes it
         already holds. Call after the proposer exists so its auxiliary state
-        travels with stored sessions. The tier runs on every tensor-parallel
-        rank or on none; without it, the cache drops evicted sessions and their
+        travels with stored prefixes. The tier runs on every tensor-parallel
+        rank or on none; without it, the cache drops evicted prefixes and their
         next requests prefill again."""
         from sharar.cache.ledger import GIB
         from sharar.cache.ssd import SsdTier
@@ -309,7 +309,7 @@ class Executor:
             log(f"  ssd tier: budget {tier.budget / GIB:.0f} -> {budget / GIB:.0f} GiB, what the drive has free")
         tier.budget = budget
         if log:
-            log(f"  ssd tier: {listed} stored sessions, {tier.used / GIB:.1f} of {tier.budget / GIB:.0f} GiB, {tier.block}-token blocks")
+            log(f"  ssd tier: {listed} stored prefixes, {tier.used / GIB:.1f} of {tier.budget / GIB:.0f} GiB, {tier.block}-token blocks")
 
     def cache_step(self) -> None:
         """Once per engine loop iteration: the prefix cache's background work
@@ -317,19 +317,19 @@ class Executor:
         if self.cache is not None:
             self.cache.step()
 
-    def persist_sessions(self, log=None) -> int:
-        """At shutdown, with the engine stopped: write every cached session to
+    def persist_prefixes(self, log=None) -> int:
+        """At shutdown, with the engine stopped: write every cached prefix to
         the SSD tier so it survives the restart. Returns how many it wrote."""
         if self.cache is None or self.cache.ssd is None:
             return 0
         ssd = self.cache.ssd
         before = ssd.tails
         ssd.abort(self.cache)  # a restore still reading lands nowhere: the engine has stopped
-        ssd.patient = True  # the engine has stopped: wait for staging room rather than drop a session
+        ssd.patient = True  # the engine has stopped: wait for staging room rather than drop a prefix
         self.cache.evict(need_pages=self.kv_pool.num_pages, need_slots=self.state_pool.num_slots)  # evicts every unlocked leaf
         ssd.drain(self.cache)
         if log:
-            log(f"ssd tier: persisted {ssd.tails - before} cached sessions ({ssd.used / 2**30:.1f} GiB stored, "
+            log(f"ssd tier: persisted {ssd.tails - before} cached prefixes ({ssd.used / 2**30:.1f} GiB stored, "
                 f"{ssd.store.write_errors} write errors)")
         return ssd.tails - before
 

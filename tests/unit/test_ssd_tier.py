@@ -162,12 +162,12 @@ def test_the_budget_deletes_least_recently_used_ssd_only_leaves(tmp_path):
     settle(cache, tier)
     evict_all(cache, kv)
     settle(cache, tier)
-    per_session = tier.used // 2
-    tier.budget = per_session + per_session // 2  # room for one
+    per_prefix = tier.used // 2
+    tier.budget = per_prefix + per_prefix // 2  # room for one
     tier.step(cache)
     assert tier.used <= tier.budget and tier.deleted >= 2 and len(cache.root.children) == 1
     tier.store.wait()
-    assert sum(1 for _ in tier.store.scan()) == 2  # one session left: its block and its tail
+    assert sum(1 for _ in tier.store.scan()) == 2  # one prefix left: its block and its tail
 
 
 def test_a_restore_right_after_eviction_waits_for_the_tail_instead_of_missing(tmp_path):
@@ -212,11 +212,11 @@ def test_a_leaf_whose_tail_is_stored_stays_restorable_without_its_snapshot(tmp_p
     node = cache.root.children[IDS[0]]
     sp.free(node.snapshot_slot)  # as snapshot-only eviction leaves it: no slot to write a tail from
     node.snapshot_slot = None
-    used, sessions = tier.used, tier.sessions
+    used, prefixes = tier.used, tier.prefixes
     evict_all(cache, kv)
     settle(cache, tier)
     # the tail it was restored from is still its state at that end: the leaf stays on the SSD, and restores again
-    assert cache.ssd_nodes == 1 and tier.used == used and tier.sessions == sessions
+    assert cache.ssd_nodes == 1 and tier.used == used and tier.prefixes == prefixes
     assert tier.restore(cache, IDS + [7]) == len(IDS) and same(restored(cache, kv, sp, IDS), before)
 
 
@@ -393,7 +393,7 @@ def test_tensor_parallel_a_restore_another_rank_could_not_read_fails_on_every_ra
     assert tier.restore(cache, IDS + [7]) == 0  # the tail is lost on every rank: nothing left to resume from
 
 
-def test_tensor_parallel_a_restart_lists_only_sessions_every_rank_stored(tmp_path):
+def test_tensor_parallel_a_restart_lists_only_prefixes_every_rank_stored(tmp_path):
     cache, tier, kv, sp, feats = engine(tmp_path)
     other = list(range(5000, 5000 + 2 * BLOCK + 11))
     before = release(cache, tier, kv, sp, feats, IDS, seed=4)
@@ -448,9 +448,9 @@ def test_write_through_stays_within_the_staging_limit_and_skips_a_snapshot_dropp
     while it waits, rather than write it from a slot it no longer owns."""
     cache, tier, kv, sp, feats = engine(tmp_path)
     tier.staging_bytes = 1  # one object in flight at a time
-    sessions = [[s] + list(range(1000, 1000 + 2 * BLOCK + 9)) for s in (1, 2, 3)]
+    prefixes = [[s] + list(range(1000, 1000 + 2 * BLOCK + 9)) for s in (1, 2, 3)]
     befores = []
-    for i, ids in enumerate(sessions):
+    for i, ids in enumerate(prefixes):
         pages, page_ids = kv.alloc_with_ids(len(ids))
         slot = sp.alloc()
         fill(kv, sp, pages, slot, seed=30 + i)
@@ -461,7 +461,7 @@ def test_write_through_stays_within_the_staging_limit_and_skips_a_snapshot_dropp
     assert tier.staged == 0 and tier.tails_through == 0  # backup copies nothing as the requests finish
     tier.step(cache)
     assert tier.tails_through == 1 and len(tier.inflight) == 1
-    third = cache.root.children[sessions[2][0]]
+    third = cache.root.children[prefixes[2][0]]
     sp.free(third.snapshot_slot)  # as snapshot-only eviction leaves it, while its write waits for room
     third.snapshot_slot = None
     for _ in range(100):
@@ -474,15 +474,15 @@ def test_write_through_stays_within_the_staging_limit_and_skips_a_snapshot_dropp
     evict_all(cache, kv)
     settle(cache, tier)
     assert tier.tails == 2  # eviction found both written tails, and the third had nothing to write
-    assert tier.restore(cache, sessions[2] + [7]) == 0
-    for ids, before in zip(sessions[:2], befores):
+    assert tier.restore(cache, prefixes[2] + [7]) == 0
+    for ids, before in zip(prefixes[:2], befores):
         assert tier.restore(cache, ids + [7]) == len(ids)
         assert same(restored(cache, kv, sp, ids), before)
 
 
 def test_a_flush_forgets_the_deletions_the_old_epoch_owed(tmp_path, monkeypatch):
     """The tier owes a budget victim's writes still in flight a deletion when they land; a flush forgets those with
-    the old epoch. Written again in the new epoch, the same session has the same keys, which must stay."""
+    the old epoch. Written again in the new epoch, the same prefix has the same keys, which must stay."""
     cache, tier, kv, sp, feats = engine(tmp_path)
     release(cache, tier, kv, sp, feats, IDS, seed=7)
     evict_all(cache, kv)  # gathers its blocks and tail: in flight
@@ -502,7 +502,7 @@ def test_a_flush_forgets_the_deletions_the_old_epoch_owed(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("write_through", [False, True])
-def test_a_session_reinserted_before_its_discarded_writes_finish_reuses_them(tmp_path, monkeypatch, write_through):
+def test_a_prefix_reinserted_before_its_discarded_writes_finish_reuses_them(tmp_path, monkeypatch, write_through):
     cache, tier, kv, sp, feats = engine(tmp_path)
     before = release(cache, tier, kv, sp, feats, IDS, seed=41)
     evict_all(cache, kv)
@@ -594,7 +594,7 @@ def test_serving_eviction_drops_a_leaf_it_cannot_copy_instead_of_waiting_for_the
     tier.staged = 1  # another copy holds the staging buffer
     monkeypatch.setattr(tier.store, "wait", lambda: pytest.fail("eviction waited for the writers"))
     evict_all(cache, kv)
-    assert tier.evict_dropped == 1 and not tier.inflight and cache.ssd_sessions() == 0
+    assert tier.evict_dropped == 1 and not tier.inflight and cache.ssd_prefixes() == 0
     tier.staged = 0
     monkeypatch.undo()
     settle(cache, tier)
@@ -855,7 +855,7 @@ def test_the_disk_budget_keeps_the_tail_a_restore_reads_alone(tmp_path, monkeypa
     assert not any(locks(cache))
 
 
-def test_a_second_session_waits_for_the_staging_buffer(tmp_path):
+def test_a_second_restore_waits_for_the_staging_buffer(tmp_path):
     cache, tier, kv, sp, feats = engine(tmp_path)
     second = [t + 20000 for t in IDS]
     one = release(cache, tier, kv, sp, feats, IDS, seed=5)

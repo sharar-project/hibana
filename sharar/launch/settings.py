@@ -77,7 +77,7 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
             p["SHARAR_SPEC_DEPTHS"] = "16:3,32:3,64:3,128:3" if flashnext_experts == "w3" and tp == 1 else "16:3"
         # the 8-bit GDN state pays with many requests; `fast` keeps FP32: no gain at one request, slower prefill
         p["SHARAR_SSM_STATE"] = "int8"
-    # the SSD tier in every profile: a restore gives back the state the GPU held, and an evicted or restarted session
+    # the SSD tier in every profile: a restore gives back the state the GPU held, and an evicted or restarted prefix
     # resumes in a fraction of a second instead of a full prefill (SHARAR_SSD=0 turns it off)
     p["SHARAR_SSD"] = "1"
     return p
@@ -272,10 +272,10 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(values.get("SHARAR_PLE_RESIDENT", "auto") in ("auto", "0"), "SHARAR_PLE_RESIDENT must be auto or 0")
     _check(values.get("SHARAR_SSM_STATE", "fp32") in ("fp32", "int8", "int4"), "SHARAR_SSM_STATE must be fp32, int8 or int4")
     _check(values.get("SHARAR_DRAFT_VOCAB", "0").isdigit(), "SHARAR_DRAFT_VOCAB must be a row count (0 = the full lm_head)")
-    for old, why in (("SHARAR_COLD_TIER_GIB", "the GPU pools take that memory; SHARAR_SSD=1 keeps evicted sessions on the NVMe"),
+    for old, why in (("SHARAR_COLD_TIER_GIB", "the GPU pools take that memory; SHARAR_SSD=1 keeps evicted prefixes on the NVMe"),
                      ("SHARAR_SESSION_DIR", "SHARAR_SSD=1 turns the SSD tier on, in $SHARAR_RESULTS/ssd (SHARAR_SSD_DIR moves it)"),
                      ("SHARAR_SESSION_GIB", "the SSD tier's capacity is SHARAR_SSD_GIB"),
-                     ("SHARAR_SESSION_MIN_TOKENS", "the SSD tier stores sessions of 4,096 tokens or more")):
+                     ("SHARAR_SESSION_MIN_TOKENS", "the SSD tier stores prefixes of 4,096 tokens or more")):
         if values.get(old) and old not in _WARNED:  # a warning, not an error: `sharar stop` must work with an old config
             _WARNED.add(old)
             print(f"sharar: {old} was removed and is ignored ({why})", file=sys.stderr)

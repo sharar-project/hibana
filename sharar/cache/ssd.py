@@ -45,12 +45,12 @@ The tiered radix tree (`radix.py`) is the only record of what is on disk;
 Only the engine thread calls this module or touches the tree; the store's
 writers report back through completions that `step()` drains.
 
-Tensor parallel: each rank stores its own heads of every session on its own
+Tensor parallel: each rank stores its own heads of every stored prefix on its own
 Spark, and every rank's tree must take the same steps (the schedulers do).
 The ranks settle what one rank cannot decide alone with a minimum over ranks:
 a write counts as complete once it completed on every rank (and as failed if
 it failed on any), a restore goes ahead only if every rank read every object
-intact, and a restart lists only the sessions every rank stored. On one rank,
+intact, and a restart lists only the prefixes every rank stored. On one rank,
 each agreement returns that rank's own answer.
 """
 
@@ -166,7 +166,7 @@ def _dtype_name(t: torch.Tensor) -> str:
 
 
 def _digest(ids: list[int]) -> int:
-    """A stored session's tokens as one number every rank computes alike (stored keys are per rank)."""
+    """A stored prefix's tokens as one number every rank computes alike (stored keys are per rank)."""
     return int.from_bytes(hashlib.sha256(array("q", ids).tobytes()).digest()[:16], "little")
 
 
@@ -207,7 +207,7 @@ class SsdTier:
         self.landed: deque = deque()  # completed writes, in order, not yet complete on every rank
         self.staged = 0
         self.used = 0
-        self.sessions = 0  # written tails: sessions a request can resume from the SSD
+        self.prefixes = 0  # written tails: prefixes a request can resume from the SSD
         self._failed_tail = False
         self.backed_blocks = self.tails = self.tails_through = self.through_dropped = self.restores = self.restore_fails = self.forced = self.deleted = 0
         self.restored_tokens = self.restored_kv_tokens = self.waited = self.restore_bytes = 0
@@ -325,8 +325,8 @@ class SsdTier:
                 self.through.append((node, end))
 
     def _pending_ref(self, kind: str, key: str) -> SsdRef | None:
-        """Reattach a write a removed session left in flight. One key has one
-        write and one staging allocation, even if the session comes back
+        """Reattach a write a removed prefix left in flight. One key has one
+        write and one staging allocation, even if the prefix comes back
         before that write completes."""
         pending = self.inflight.get((kind, key))
         if pending is None:
@@ -339,7 +339,7 @@ class SsdTier:
     def _queue_blocks(self, anchor: Node, ids: list[int]) -> None:
         """Record a ref for every full block of ids (the tokens of anchor's path) and queue those not yet stored.
         One walk of the path finds each block's node, and the ref of a block the tree already records holds its hash
-        (keys are content-addressed), so a later turn of a session hashes only its new blocks."""
+        (keys are content-addressed), so a later turn of a conversation hashes only its new blocks."""
         spans = list(_path(anchor))[::-1]  # (node, start, end), root side first; the last ends at len(ids)
         h, j = self.store.root, 0
         for end in range(self.block, len(ids) + 1, self.block):
@@ -501,8 +501,8 @@ class SsdTier:
         buffer cannot take the leaf's copies now, the leaf is dropped as it would
         be without the tier (counted in `evict_dropped`). Waiting there stalls
         every running request behind fdatasyncs, which costs more than the
-        session is worth when the cache is under that much pressure. Shutdown
-        (`patient`) waits instead, so every session is persisted."""
+        prefix is worth when the cache is under that much pressure. Shutdown
+        (`patient`) waits instead, so every cached prefix is persisted."""
         t0 = time.perf_counter()
         end = leaf.depth
         missing, node = end // self.block, leaf
@@ -593,7 +593,7 @@ class SsdTier:
     def _delete(self, kind: str, ref: SsdRef) -> None:
         self.store.delete(kind, ref.key)
         self.used -= ref.nbytes
-        self.sessions -= kind == "tail" and ref.ready
+        self.prefixes -= kind == "tail" and ref.ready
         ref.ready, ref.nbytes = False, -1
         self.deleted += 1
 
@@ -670,7 +670,7 @@ class SsdTier:
                 continue
             ref.ready, ref.nbytes = ok, (nbytes if ok else -1)
             self.used += nbytes if ok else 0
-            self.sessions += kind == "tail" and ok
+            self.prefixes += kind == "tail" and ok
             self._failed_tail |= kind == "tail" and not ok
 
     def _trim(self, cache: RadixCache) -> None:
@@ -1156,7 +1156,7 @@ class SsdTier:
     def rebuild(self, cache: RadixCache) -> int:
         """Rebuild SSD-only paths from the stored headers: list every tail
         whose chain of blocks is complete as a resumable path, and delete the
-        blocks no tail reaches. Tensor parallel: list only the sessions every
+        blocks no tail reaches. Tensor parallel: list only the prefixes every
         rank stored, in the same order on every rank. Returns the number of
         tails listed."""
         blocks, tails = {}, []
@@ -1197,7 +1197,7 @@ class SsdTier:
         self.used += sum(kept.values())
         for key in blocks.keys() - kept.keys():
             self.store.delete("kv", key)
-        self.sessions = cache.ssd_sessions()
+        self.prefixes = cache.ssd_prefixes()
         return len(listing)
 
     def flush(self) -> None:
@@ -1208,11 +1208,11 @@ class SsdTier:
         self.doomed.clear()  # their files went with the old epoch; the same keys written again must stay
         self.store.completions()  # store.flush waited for the writers: every rank drops the same completions
         self.landed.clear()
-        self.staged = self.used = self.sessions = 0
+        self.staged = self.used = self.prefixes = 0
         self._failed_tail = False
 
     def stats(self) -> dict:
-        return {"sessions": self.sessions, "used_gib": round(self.used / GIB, 3), "budget_gib": round(self.budget / GIB, 1), "block_tokens": self.block, "queued_blocks": len(self.queue),
+        return {"prefixes": self.prefixes, "used_gib": round(self.used / GIB, 3), "budget_gib": round(self.budget / GIB, 1), "block_tokens": self.block, "queued_blocks": len(self.queue),
                 "staged_mib": round(self.staged / MIB, 1), "backed_blocks": self.backed_blocks, "tails": self.tails, "tails_written_through": self.tails_through,
                 "tails_through_dropped": self.through_dropped, "queued_tails": len(self.through),
                 "forced_gathers": self.forced, "evict_dropped": self.evict_dropped, "restores": self.restores, "restore_fails": self.restore_fails,

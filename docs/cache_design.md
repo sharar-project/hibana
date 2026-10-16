@@ -61,7 +61,7 @@ The split of responsibilities:
 Only the engine thread touches the tree or calls the tier. Writer threads report back through completions that
 `step()` drains, so the tree changes only on the engine thread.
 
-A drafter's state travels with a session, so a restored request keeps speculating: DFlash2's projected feature
+A drafter's state travels with a stored prefix, so a restored request keeps speculating: DFlash2's projected feature
 window and Flash-Next's MTP (position, last hidden row) go into the tail through the proposer's `auxiliary_codec`,
 and the MTP layer's own KV pages, indexed by the target's page ids, go into the KV blocks beside the target's
 (`stored_pages`).
@@ -70,12 +70,12 @@ and the MTP layer's own KV pages, indexed by the target's page ids, go into the 
 
 A KV block's key chains a hash over every token from the start of the sequence; the chain starts from a hash of
 the serving identity (target, revision, decode weights, geometry, block size, format). The store therefore keeps
-one copy of a shared prefix, whichever session wrote it, and another build never matches it. A tail's key hashes
+one copy of a shared prefix, whichever request wrote it, and another build never matches it. A tail's key hashes
 its last full block's hash with its partial tokens. A read recomputes the key from the header's parent hash and
 tokens and checks the segment sizes and two CRC32s, the header's and the payload's, so a collision, a stale file, a
 flipped byte or a torn write is a miss, never wrong KV. Startup also drops a file shorter or longer than its header says.
 
-## Lifecycle of a session
+## Lifecycle of a cached prefix
 
 ```
  finish ──► insert into L1 ──► backup(): queue full blocks not yet on disk + tails at resume points
@@ -95,7 +95,7 @@ flipped byte or a torn write is a miss, never wrong KV. Startup also drops a fil
            ──► admission: match, prefill only the new tokens
                                    ▼
  disk over budget ──► drop SSD-only leaves (LRU), then disk copies of GPU-resident nodes
- shutdown ──► demote every session; a restart with the same identity lists them again
+ shutdown ──► demote every cached prefix; a restart with the same identity lists them again
 ```
 
 A restore runs only when the pool can also hold the rest of the request and its decode reserve: otherwise the cache
@@ -132,7 +132,7 @@ bounds the buffer, so the pool plan reserves a constant for it (`SsdTier.memory_
 
 ## What a restore costs
 
-Measured on one GB10 with the 27B (FP8 KV, about 32 KB per token; a 258K-token session is 8.6 GB in 1,009
+Measured on one GB10 with the 27B (FP8 KV, about 32 KB per token; a 258K-token prefix is 8.6 GB in 1,009
 objects plus a 147 MiB tail):
 
 | Context | Re-prefill | GPU hit | SSD restore | SSD vs. re-prefill |
@@ -196,7 +196,7 @@ else:                                   # after a restart the context is only on
     print("restores %d, %.1f GB/s read" % (ssd["restores"], ssd["restore_read_gbps"]))
 ```
 
-**3. Measure.** The `prefill` step caches the context. The restart moves every cached session to the SSD (the
+**3. Measure.** The `prefill` step caches the context. The restart moves every cached prefix to the SSD (the
 shutdown writes them, the startup lists them again), so the `restore` step reads the context back from the SSD.
 
 ```bash
@@ -211,7 +211,7 @@ scatter times, to `<SHARAR_SSD_DIR>/v2/restores.jsonl`. `uv run sharar cache` sh
 
 ## Tensor parallel
 
-Each rank stores its own heads of every session on its own Spark, and every rank's tree takes the same steps.
+Each rank stores its own heads of every stored prefix on its own Spark, and every rank's tree takes the same steps.
 What one rank cannot decide alone, the ranks settle with a minimum over all of them: a write is complete once it
 completed on every rank, a restore goes ahead only if every rank read every object intact, and a restart lists
-only the sessions every rank stored ([tensor parallel](tensor-parallel.md)).
+only the prefixes every rank stored ([tensor parallel](tensor-parallel.md)).

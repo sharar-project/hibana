@@ -21,16 +21,16 @@ def server_info(port: str) -> dict | None:
 
 
 def stored_on_disk(directory: Path) -> dict:
-    """The sessions, KV blocks and bytes in the SSD store at `directory`, counted from its current epoch's files
+    """The prefixes, KV blocks and bytes in the SSD store at `directory`, counted from its current epoch's files
     (`cache/ssd_store.py`: v2/e<epoch>/<hh>/<key>.<kind>); a server that starts on it still deletes what it cannot use."""
     base = directory / "v2"
     try:
         epoch = int((base / "EPOCH").read_text())
     except (OSError, ValueError):
         epoch = 0
-    out = {"sessions": 0, "blocks": 0, "bytes": 0}
+    out = {"prefixes": 0, "blocks": 0, "bytes": 0}
     for f in (base / f"e{epoch}").glob("*/*"):
-        kind = {".tail": "sessions", ".kv": "blocks"}.get(f.suffix)
+        kind = {".tail": "prefixes", ".kv": "blocks"}.get(f.suffix)
         if kind is not None:
             out[kind] += 1
             out["bytes"] += f.stat().st_size

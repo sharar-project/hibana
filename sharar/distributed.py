@@ -109,7 +109,7 @@ def expect_peer_exit() -> None:
 
 
 def close_distributed() -> None:
-    """End this rank once its engine has stopped and its sessions persisted. NCCL's destroy_process_group can wait
+    """End this rank once its engine has stopped and its cache persisted. NCCL's destroy_process_group can wait
     forever on two Sparks (measured: both ranks blocked in it after a clean stop), and nothing is left to tear down
     that the process exit does not release, so the rank exits here."""
     expect_peer_exit()
@@ -163,8 +163,8 @@ def all_reduce_min(*values: int) -> list[int]:
 
 
 def common_values(values: list[int]) -> list[int]:
-    """The values every rank holds, in this rank's order: the SSD tier's stored sessions after a restart (no rank
-    restores a session another rank lacks)."""
+    """The values every rank holds, in this rank's order: the SSD tier's stored prefixes after a restart (no rank
+    restores a prefix another rank lacks)."""
     if _TP_INFO.size == 1:
         return values
     held = [None] * _TP_INFO.size
