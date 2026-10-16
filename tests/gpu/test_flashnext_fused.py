@@ -253,6 +253,20 @@ def test_grouped_norm_amax_and_parallel_quant_bitwise(t):
     assert torch.equal(q.view(torch.uint8), q2.view(torch.uint8)) and torch.equal(scale, scale2)
 
 
+@pytest.mark.parametrize("t", [1, 5, 300, 4096])
+@pytest.mark.parametrize("scale", [0.05, 1.0, 400.0])
+def test_inject_combine_norm_bitwise(t, scale):
+    """The combine and the next hyper-connection's norm in one pass: the two kernels' bits, maxima included."""
+    hyper = (torch.randn(t, HC * H, device="cuda") * scale).to(torch.bfloat16)
+    block = (torch.randn(t, H, device="cuda") * scale).to(torch.bfloat16)
+    inj = torch.randn(t, HC, device="cuda").to(torch.bfloat16)
+    w = (torch.randn(HC * H, device="cuda") * 0.5).to(torch.bfloat16)
+    y_ref = fk.inject_combine(hyper, block, inj, HC, H)
+    n_ref, parts_ref = fk.grouped_gemma_rms(y_ref, w, 1e-6, H, amax=True)
+    y, n, parts = fk.inject_combine_norm(hyper, block, inj, HC, H, w, 1e-6)
+    assert torch.equal(_bits(y), _bits(y_ref)) and torch.equal(_bits(n), _bits(n_ref)) and torch.equal(parts, parts_ref)
+
+
 @pytest.mark.parametrize("rows", [1, 3, 4, 5, 16])
 @pytest.mark.parametrize("shape,act", [((320, 10240), fk.ACT_NONE), ((10240, 320), fk.ACT_SILU), ((2560, 640), fk.ACT_SILU_MUL), ((13312, 2560), fk.ACT_NONE),
                                        ((2560, 2560), fk.ACT_SILU)])

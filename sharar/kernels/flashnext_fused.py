@@ -103,6 +103,41 @@ def inject_combine(hyper: torch.Tensor, block: torch.Tensor, inj: torch.Tensor, 
     return y
 
 
+# ---- residual injection, then the next hyper-connection's grouped norm of its result (one pass) ----
+@triton.jit
+def _inject_norm_kernel(R, B, I, Y, W, N, Amax, stride_r, stride_b, stride_i, stride_y, stride_n, H: tl.constexpr, eps,
+                        BLOCK: tl.constexpr):
+    t = tl.program_id(0)
+    s = tl.program_id(1)
+    cols = tl.arange(0, BLOCK)
+    mask = cols < H
+    off = s * H + cols
+    g = 2.0 * _sigmoid(tl.load(I + t * stride_i + s).to(tl.float32))
+    r = tl.load(R + t * stride_r + off, mask=mask, other=0.0).to(tl.float32)
+    b = tl.load(B + t * stride_b + cols, mask=mask, other=0.0).to(tl.float32)
+    hb = (r + b * g).to(tl.bfloat16)
+    tl.store(Y + t * stride_y + off, hb, mask=mask)
+    # `_grouped_norm_kernel` on the stored values: the same block, warps and reduction, so the same bits
+    x = hb.to(tl.float32)
+    var = tl.sum(x * x, 0) / H
+    w = tl.load(W + off, mask=mask, other=0.0).to(tl.float32)
+    yb = (x * tl.rsqrt(var + eps) * (1.0 + w)).to(tl.bfloat16)
+    tl.store(N + t * stride_n + off, yb, mask=mask)
+    tl.store(Amax + t * tl.num_programs(1) + s, tl.max(tl.where(mask, tl.abs(yb.to(tl.float32)), 0.0), 0))
+
+
+def inject_combine_norm(hyper: torch.Tensor, block: torch.Tensor, inj: torch.Tensor, hc: int, hidden: int, weight: torch.Tensor, eps: float):
+    """`inject_combine`, then `grouped_gemma_rms(..., amax=True)` of its result with `weight`, in one pass (the
+    result is not read back): -> (hyper', normed, block maxima), each bitwise the two kernels'."""
+    t = hyper.shape[0]
+    y = torch.empty_like(hyper)
+    normed = torch.empty_like(hyper)
+    parts = torch.empty((t * hc,), dtype=torch.float32, device=hyper.device)
+    _inject_norm_kernel[(t, hc)](hyper, block, inj, y, weight, normed, parts, hyper.stride(0), block.stride(0), inj.stride(0),
+                                 y.stride(0), normed.stride(0), hidden, eps, BLOCK=triton.next_power_of_2(hidden), num_warps=8)
+    return y, normed, parts
+
+
 # ---- per-tensor dynamic FP8 for a few rows: one program, two passes; also alpha = scale * wscale ----
 @triton.jit
 def _quant_small_kernel(X, Y, Scale, Alpha, WScale, N: tl.constexpr, BLOCK: tl.constexpr):

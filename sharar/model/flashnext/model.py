@@ -54,16 +54,22 @@ class DecoderLayer:
     def bytes(self) -> int:
         return (self.attn_hc.bytes + self.mlp_hc.bytes + self.mixer.bytes + self.moe.bytes + (self.ple.bytes if self.ple else 0))
 
-    def forward(self, hyper: torch.Tensor, input_ids: torch.Tensor, ctx: ForwardContext, eos: int) -> torch.Tensor:
+    def forward(self, hyper: torch.Tensor, input_ids: torch.Tensor, ctx: ForwardContext, eos: int, normed=None,
+                then: "DecoderLayer | None" = None):
+        """-> (hyper', its norm under the next layer's attention hyper-connection or None). `normed` is this layer's
+        from the previous layer; `then` the next layer, whose norm the last combine computes when no PLE comes between."""
         if self.ple is not None:
             hyper = hyper + self.ple.forward(hyper, input_ids, ctx, eos)
-        h, res = self.attn_hc.mix(hyper)
+            normed = None
+        h, res = self.attn_hc.mix(hyper, normed)
         # The mixer's and the experts' last projections are row-parallel: sum the ranks' partial outputs.
         h = all_reduce(self.mixer.forward(h, ctx))
-        hyper = self.attn_hc.combine(h, res)
-        h, res = self.mlp_hc.mix(hyper)
+        hyper, normed = self.attn_hc.combine(h, res, then=self.mlp_hc)
+        h, res = self.mlp_hc.mix(hyper, normed)
         h = all_reduce(self.moe(h, ctx))
-        return self.mlp_hc.combine(h, res)
+        if then is None or then.ple is not None:
+            return self.mlp_hc.combine(h, res), None
+        return self.mlp_hc.combine(h, res, then=then.attn_hc)
 
 
 def _w3_expert_saving(target: Target) -> int:
@@ -223,8 +229,10 @@ class FlashNext:
         if capture:
             out["embed"] = x
             out["layers"] = []
-        for layer in self.layers:
-            hyper = layer.forward(hyper, input_ids, ctx, self.eos)
+        normed = None
+        for i, layer in enumerate(self.layers):
+            then = self.layers[i + 1] if i + 1 < len(self.layers) else None
+            hyper, normed = layer.forward(hyper, input_ids, ctx, self.eos, normed, then)
             if capture:
                 out["layers"].append((hyper, None))
         # `norm` is the stream the head reads: the hyper-connected residual before the global

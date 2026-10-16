@@ -50,12 +50,13 @@ class HyperConnection:
     def bytes(self) -> int:
         return self.norm.numel() * 2 + self.down.bytes + self.up.bytes + (self.inject.bytes if self.inject is not None else 0)
 
-    def mix(self, hyper: torch.Tensor):
+    def mix(self, hyper: torch.Tensor, normed=None):
+        """`normed`: (normed, block maxima) of `hyper` under this norm, when the previous `combine` computed them."""
         if self.fused:
             from sharar.kernels import flashnext_fused as fk
             # The norm writes its block maxima, so the down projection's FP8 quantization is one parallel launch (many
             # rows) or none (the GEMV's own, few rows): the unfused chain's bits, faster.
-            normed, parts = fk.grouped_gemma_rms(hyper, self.norm, self.eps, self.hidden, amax=True)
+            normed, parts = normed if normed is not None else fk.grouped_gemma_rms(hyper, self.norm, self.eps, self.hidden, amax=True)
             mixed = fk.gate_mean(self.up(self.down(normed, amax_parts=parts), act=fk.ACT_SILU), normed, self.hc, self.hidden)
             return mixed, (hyper, normed)
         normed = grouped_gemma_rms(hyper, self.norm, self.eps, self.hidden)
@@ -63,11 +64,18 @@ class HyperConnection:
         mixed = (gate.unflatten(-1, (self.hc, self.hidden)) * normed.unflatten(-1, (self.hc, self.hidden))).mean(-2)
         return mixed.to(hyper.dtype), (hyper, normed)
 
-    def combine(self, block_output: torch.Tensor, residuals) -> torch.Tensor:
+    def combine(self, block_output: torch.Tensor, residuals, then: "HyperConnection | None" = None):
+        """hyper'. With `then` (the next hyper-connection, fused), (hyper', (normed, block maxima)) for `then.mix`:
+        its norm runs on the combined values in the same pass, so hyper' is not read back."""
         hyper, normed = residuals
         if self.fused:
             from sharar.kernels import flashnext_fused as fk
-            return fk.inject_combine(hyper, block_output, self.inject(normed), self.hc, self.hidden)
+            if then is not None and then.fused:
+                y, n, parts = fk.inject_combine_norm(hyper, block_output, self.inject(normed), self.hc, self.hidden, then.norm, then.eps)
+                return y, (n, parts)
+            out = fk.inject_combine(hyper, block_output, self.inject(normed), self.hc, self.hidden)
+            return (out, None) if then is not None else out
         inject = 2 * torch.sigmoid(self.inject(normed) / self.hc)  # [T, hc]
         r = hyper.unflatten(-1, (self.hc, self.hidden))
-        return (r + block_output.unsqueeze(-2) * inject.unsqueeze(-1)).flatten(-2).to(hyper.dtype)
+        out = (r + block_output.unsqueeze(-2) * inject.unsqueeze(-1)).flatten(-2).to(hyper.dtype)
+        return (out, None) if then is not None else out
