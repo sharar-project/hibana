@@ -110,6 +110,23 @@ def test_native_gather_reads_every_row_once(table):
         assert table.hits + table.misses - hits - misses == rows.size
 
 
+def test_native_gather_reads_rows_out_of_the_page_cache(table):
+    """Rows the page cache does not hold take the blocking pass (one pool thread each) and come back the same."""
+    import os
+    from sharar.model.flashnext import ple
+    if ple._native() is None:
+        pytest.skip("no C++ toolchain for the native gather")
+    rows = np.random.default_rng(5).integers(0, table.rows, size=(5, 16))
+    for fd in table.fds:  # before the maps touch them: mapped pages stay cached
+        os.fsync(fd)
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    misses = table.misses
+    got = table.gather(rows)
+    if table.misses == misses:
+        pytest.skip("this filesystem kept the rows cached")
+    assert (got == table.gather_mapped(rows)).all()
+
+
 class _Hash:
     ngram, heads_per_ngram, heads = 3, 2, 4
     multipliers = torch.tensor([1000003, 999983, 1000033], dtype=torch.int64)

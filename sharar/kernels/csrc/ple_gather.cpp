@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// PLE table rows from the host shards in one call: every row is read by a pool of native threads with
-// preadv2(RWF_NOWAIT) first (a page-cache read that never blocks) and a blocking pread when the page is not cached,
-// so cached rows cost a syscall and the misses' NVMe latencies overlap across the pool, all without the GIL. The
+// PLE table rows from the host shards in one call, without the GIL, in two passes: preadv2(RWF_NOWAIT) copies every
+// cached row (a syscall that never blocks), then the rows it left are read blocking, one per pool thread, so the
+// misses' NVMe latencies overlap however few rows the call has. The
 // Python gather paid ~2.4 us of interpreter work per row (mincore + memmove through ctypes) and serialized its
 // thread pool's page faults on the GIL: ~50 ms per round for 8K rows at 128 requests.
 #include <torch/extension.h>
@@ -22,8 +22,8 @@
 
 namespace {
 
-constexpr int64_t kChunk = 4;  // rows a worker claims at a time
-constexpr int64_t kRowsPerHelper = 16;  // rows per woken helper thread
+constexpr int64_t kChunk = 4;  // rows a worker claims at a time in the non-blocking pass
+constexpr int64_t kRowsPerHelper = 16;  // rows per woken helper thread in the non-blocking pass
 
 struct Job {
   const int32_t* fds;
@@ -33,6 +33,9 @@ struct Job {
   uint8_t* out;
   int64_t n;
   int64_t row_bytes;
+  int64_t* missed;  // rows the non-blocking pass left, read blocking in the second pass
+  bool blocking = false;  // the second pass: next indexes `missed`
+  std::atomic<int64_t> nmissed{0};
   std::atomic<int64_t> next{0};
   std::atomic<int64_t> hits{0};
   std::atomic<int64_t> misses{0};
@@ -55,29 +58,33 @@ bool read_full(int fd, uint8_t* dst, int64_t size, int64_t off) {
 void work(Job* job) {
   const int64_t rb = job->row_bytes;
   int64_t hits = 0, misses = 0, errors = 0;
-  for (;;) {
-    int64_t lo = job->next.fetch_add(kChunk);
-    if (lo >= job->n) break;
-    int64_t hi = std::min(lo + kChunk, job->n);
-    for (int64_t i = lo; i < hi; ++i) {
-      int64_t s = job->shard[i];
-      int fd = job->fds[s];
-      int64_t off = job->offsets[s] + job->local[i] * rb;
-      uint8_t* dst = job->out + i * rb;
-      if (g_nowait.load(std::memory_order_relaxed)) {
-        struct iovec iov = {dst, static_cast<size_t>(rb)};
-        ssize_t r = preadv2(fd, &iov, 1, off, RWF_NOWAIT);
+  if (job->blocking) {  // one row at a time: each is an NVMe read
+    const int64_t m = job->nmissed.load();
+    for (int64_t k; (k = job->next.fetch_add(1)) < m;) {
+      const int64_t i = job->missed[k], s = job->shard[i];
+      if (read_full(job->fds[s], job->out + i * rb, rb, job->offsets[s] + job->local[i] * rb)) {
+        ++misses;
+      } else {
+        ++errors;
+      }
+    }
+  } else {
+    for (;;) {
+      int64_t lo = job->next.fetch_add(kChunk);
+      if (lo >= job->n) break;
+      int64_t hi = std::min(lo + kChunk, job->n);
+      for (int64_t i = lo; i < hi; ++i) {
+        const int64_t s = job->shard[i];
+        struct iovec iov = {job->out + i * rb, static_cast<size_t>(rb)};
+        ssize_t r = g_nowait.load(std::memory_order_relaxed)
+                        ? preadv2(job->fds[s], &iov, 1, job->offsets[s] + job->local[i] * rb, RWF_NOWAIT) : -1;
         if (r == rb) {
           ++hits;
           continue;
         }
         if (r < 0 && errno == EOPNOTSUPP) g_nowait.store(false);
-        // EAGAIN (not cached), a short read (a row across a page boundary, half cached): read it blocking
-      }
-      if (read_full(fd, dst, rb, off)) {
-        ++misses;
-      } else {
-        ++errors;
+        // EAGAIN (not cached), a short read (a row across a page boundary, half cached): the blocking pass reads it
+        job->missed[job->nmissed.fetch_add(1)] = i;
       }
     }
   }
@@ -93,8 +100,9 @@ class Pool {
   }
 
   // Runs `job` on `helpers` workers (at most the pool's) and the calling thread; returns when all rows are read.
-  // Only the helpers wake: a decode step's 16 rows need none of the others' context switches.
+  // Only the helpers wake. One call at a time: concurrent callers wait their turn.
   void run(Job* job, int helpers) {
+    std::lock_guard<std::mutex> call(call_mu_);
     helpers = std::min(helpers, static_cast<int>(workers_.size()));
     if (helpers > 0) {
       std::unique_lock<std::mutex> lock(mu_);
@@ -128,7 +136,7 @@ class Pool {
   }
 
   std::vector<std::thread> workers_;
-  std::mutex mu_;
+  std::mutex call_mu_, mu_;
   std::condition_variable cv_, done_;
   Job* job_ = nullptr;
   int tickets_ = 0;
@@ -157,11 +165,19 @@ std::vector<int64_t> gather(torch::Tensor fds, torch::Tensor offsets, torch::Ten
   job.out = out.data_ptr<uint8_t>();
   job.n = out.size(0);
   job.row_bytes = out.size(1);
+  std::vector<int64_t> missed(job.n);
+  job.missed = missed.data();
   if (job.n > 0) {
     pybind11::gil_scoped_release release;
-    // one helper per kRowsPerHelper rows: enough reads in flight for the misses, no idle wake-ups for a few rows
-    int64_t helpers = (job.n + kRowsPerHelper - 1) / kRowsPerHelper - 1;
-    pool(static_cast<int>(threads))->run(&job, static_cast<int>(std::min<int64_t>(helpers, threads)));
+    Pool* p = pool(static_cast<int>(threads));
+    // the non-blocking pass: one helper per kRowsPerHelper rows, so a few cached rows wake no thread
+    p->run(&job, static_cast<int>(std::min<int64_t>((job.n + kRowsPerHelper - 1) / kRowsPerHelper - 1, threads)));
+    const int64_t m = job.nmissed.load();
+    if (m > 0) {  // the blocking pass: one thread per missed row, the caller included
+      job.blocking = true;
+      job.next = 0;
+      p->run(&job, static_cast<int>(std::min<int64_t>(m - 1, threads)));
+    }
   }
   return {job.hits.load(), job.misses.load(), job.errors.load()};
 }
