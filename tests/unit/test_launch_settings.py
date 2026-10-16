@@ -87,17 +87,19 @@ def test_throughput_decodes_more_requests(target, experts, batch, depths):
         assert launch.profile_defaults(profile, target)["SHARAR_MAX_BATCH"] == "4"
 
 
-def test_expert_selection_is_on_in_fast_and_throughput_on_one_spark(env):
+def test_expert_selection_is_on_in_fast_and_throughput(env):
     on = {"SHARAR_MOE_KEEP": "5", "SHARAR_MOE_REUSE": "5"}
     pick = lambda *args, **kw: {k: launch.profile_defaults(*args, **kw).get(k) for k in on}  # noqa: E731
     for profile in ("fast", "throughput"):
         assert pick(profile, "flashnext") == on
         assert pick(profile, "flashnext", "nvfp4") == on  # the NVFP4 experts repeat a kept expert at weight 0
-        assert pick(profile, "flashnext", tp=2) == {k: None for k in on}  # two Sparks: not measured
+        assert pick(profile, "flashnext", tp=2) == on
+        assert pick(profile, "flashnext", "nvfp4", tp=2) == on
         assert pick(profile, "qwen38") == {k: None for k in on}  # the 27B has no routed experts
     assert pick("exact", "flashnext") == {k: None for k in on}
     assert resolve(env, "flashnext", "fast").get("SHARAR_MOE_KEEP") == "5"
     assert resolve({**env, "SHARAR_MOE_KEEP": "0"}, "flashnext", "fast").get("SHARAR_MOE_KEEP") == "0"
+    assert resolve(env, "flashnext", "throughput", tp=2).get("SHARAR_MOE_KEEP") == "5"
 
 
 def test_adaptive_depth_prices_a_drafted_token_per_spark_count(env):
