@@ -33,7 +33,7 @@ from __future__ import annotations
 import hashlib
 import os
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -81,6 +81,17 @@ class W3Weight:
     @property
     def bits(self) -> int:
         return self.planes.shape[2]
+
+
+def interleave_rows(weight: W3Weight, block: int) -> W3Weight:
+    """`weight`'s rows in `modelopt.pair_order` (an MLP's gate|up interleaved in blocks of `block`, a multiple of 32):
+    the planes and scales move in whole 32-row tiles."""
+    from sharar.weights.modelopt import pair_order
+    tiles = pair_order(weight.out_features // 32, block // 32).to(weight.planes.device)
+    rows = pair_order(weight.out_features, block).to(weight.row_scale.device)
+    planes = weight.planes.view(torch.int32)[tiles].view(torch.uint32)  # CUDA indexing takes no uint32
+    return replace(weight, planes=planes.contiguous(), scales=weight.scales[tiles].contiguous(),
+                   row_scale=weight.row_scale[rows].contiguous())
 
 
 def lut_of(codebook: tuple[float, ...]) -> int:

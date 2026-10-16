@@ -82,8 +82,12 @@ def nvfp4_linear(x: torch.Tensor, lin: Nvfp4Linear, prequantized: tuple[torch.Te
     return out.view(m, lin.out_features)
 
 
-def silu_and_mul(gate_up: torch.Tensor) -> torch.Tensor:
+def silu_and_mul(gate_up: torch.Tensor, pairs: int = 0) -> torch.Tensor:
+    """silu(gate) * up of [..., gate | up], or (`pairs`) of gate and up alternating in blocks of `pairs` columns."""
     half = gate_up.shape[-1] // 2
+    if pairs:
+        blocks = gate_up.unflatten(-1, (half // pairs, 2, pairs))
+        return (torch.nn.functional.silu(blocks[..., 0, :]) * blocks[..., 1, :]).flatten(-2)
     return torch.nn.functional.silu(gate_up[..., :half]) * gate_up[..., half:]
 
 

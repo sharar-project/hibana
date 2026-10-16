@@ -47,7 +47,7 @@ def _nvfp4_quant_kernel(
     x_ptr, gs_ptr, q_ptr, sf_ptr,
     M, K, K_PAD_GROUPS,
     stride_xm,
-    BLOCK_K: tl.constexpr, SILU_MUL: tl.constexpr, COL_BLOCKS: tl.constexpr, STREAM: tl.constexpr,
+    BLOCK_K: tl.constexpr, SILU_MUL: tl.constexpr, COL_BLOCKS: tl.constexpr, STREAM: tl.constexpr, PAIRS: tl.constexpr,
 ):
     # One program per (row, column block), consecutive programs along a row.
     # Widen BEFORE multiplying by strides. B32x2K's dense gate/up tensor
@@ -62,9 +62,16 @@ def _nvfp4_quant_kernel(
     # STREAM: prefill reads each activation once; do not keep it in L2.
     policy: tl.constexpr = "evict_first" if STREAM else ""
     if SILU_MUL:
-        # x holds [gate | up] with K values each; quantize silu(gate) * up.
-        g = tl.load(x_ptr + row * stride_xm + cols, mask=mask, other=0.0, eviction_policy=policy).to(tl.float32)
-        u = tl.load(x_ptr + row * stride_xm + K + cols, mask=mask, other=0.0, eviction_policy=policy).to(tl.float32)
+        # x holds [gate | up] with K values each, or (PAIRS) gate and up alternating in blocks of PAIRS columns;
+        # quantize silu(gate) * up.
+        if PAIRS:
+            gate_cols = (cols // PAIRS) * (2 * PAIRS) + cols % PAIRS
+            up_cols = gate_cols + PAIRS
+        else:
+            gate_cols = cols
+            up_cols = K + cols
+        g = tl.load(x_ptr + row * stride_xm + gate_cols, mask=mask, other=0.0, eviction_policy=policy).to(tl.float32)
+        u = tl.load(x_ptr + row * stride_xm + up_cols, mask=mask, other=0.0, eviction_policy=policy).to(tl.float32)
         # The fused path preserves the BF16 activation boundary of the MLP.
         x = (tl.div_rn(g, 1.0 + libdevice.exp(-g)) * u).to(tl.bfloat16).to(tl.float32)
     else:
@@ -112,13 +119,13 @@ _SCALE_BUFFERS: dict = {}
 PREFILL_ROWS = 256
 
 
-def _launch(x, global_scale, q, sf, m, k, k_pad_groups, *, silu_mul):
+def _launch(x, global_scale, q, sf, m, k, k_pad_groups, *, silu_mul, pairs=0):
     prefill = m >= PREFILL_ROWS
     block_k = min(4096 if prefill else 1024, triton.next_power_of_2(k))
     col_blocks = triton.cdiv(k, block_k)
     _nvfp4_quant_kernel[(m * col_blocks,)](
         x, global_scale, q, sf, m, k, k_pad_groups, x.stride(0), BLOCK_K=block_k, SILU_MUL=silu_mul,
-        COL_BLOCKS=col_blocks, STREAM=prefill, num_warps=8 if prefill else 4,
+        COL_BLOCKS=col_blocks, STREAM=prefill, PAIRS=pairs, num_warps=8 if prefill else 4,
     )
 
 
@@ -135,8 +142,9 @@ def nvfp4_quantize(x: torch.Tensor, global_scale: torch.Tensor) -> tuple[torch.T
     return q, sf
 
 
-def silu_mul_nvfp4_quantize(gate_up: torch.Tensor, global_scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """gate_up: [M, 2*I] bf16 -> quantized silu(gate) * up as ([M, I/2] uint8, swizzled sf)."""
+def silu_mul_nvfp4_quantize(gate_up: torch.Tensor, global_scale: torch.Tensor, pairs: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+    """gate_up: [M, 2*I] bf16, [gate | up] or (`pairs`) alternating blocks of `pairs` columns -> quantized
+    silu(gate) * up as ([M, I/2] uint8, swizzled sf)."""
     m, two_i = gate_up.shape
     k = two_i // 2
     assert k % 16 == 0 and gate_up.stride(1) == 1
@@ -144,5 +152,5 @@ def silu_mul_nvfp4_quantize(gate_up: torch.Tensor, global_scale: torch.Tensor) -
     k_pad_groups = (groups + 3) // 4 * 4
     q = torch.empty((m, k // 2), dtype=torch.uint8, device=gate_up.device)
     sf = _scale_buffer(m, k, gate_up.device)
-    _launch(gate_up, global_scale, q, sf, m, k, k_pad_groups, silu_mul=True)
+    _launch(gate_up, global_scale, q, sf, m, k, k_pad_groups, silu_mul=True, pairs=pairs)
     return q, sf

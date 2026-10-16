@@ -78,8 +78,13 @@ class CalibratedWeights:
         return [f"layers.{layer}.experts.w13", f"layers.{layer}.experts.w2"]
 
     def load(self, name: str, linear, shard: Shard = REPLICATED):
-        """`linear`'s copy: its tensor-parallel part `shard` of the checkpoint's whole matrix."""
-        return self._load(name, linear.out_features, linear.in_features, linear.weight.device, shard)
+        """`linear`'s copy: its tensor-parallel part `shard` of the checkpoint's whole matrix, in `linear`'s row order
+        (an MLP's gate|up interleaved, `modelopt.interleave_pairs`)."""
+        weight = self._load(name, linear.out_features, linear.in_features, linear.weight.device, shard)
+        if getattr(linear, "pairs", 0):
+            from sharar.kernels.w3 import interleave_rows
+            weight = interleave_rows(weight, linear.pairs)
+        return weight
 
     def load_many(self, items, window: int = 8):
         """`load` for each (name, linear, shard) in order, reading `window` files ahead."""
