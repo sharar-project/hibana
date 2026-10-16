@@ -335,7 +335,7 @@ void launch(torch::Tensor y, torch::Tensor ws, torch::Tensor counters, torch::Te
       static_cast<const float*>(row_scale.data_ptr()), lut_lo, lut_hi, M, N, K, (K / kChunk) / splits);
 }
 
-// ------------------------------------------------------------------ three-bit routed experts (Flash-Next, #73)
+// ------------------------------------------------------------------ three-bit routed experts (Flash-Next)
 //
 // The experts in this format (sharar/kernels/w3_moe.py): per expert one W3 matrix for fc1 (1280 x 2560, rows
 // reordered so each 32-row block is sixteen up rows then the sixteen matching gate rows) and one for fc2
@@ -357,7 +357,7 @@ namespace moe {
 constexpr int kE = 512, kMaxTopk = 10, kH = 2560, kI = 640, kPass = 64, kOrderInKernel = 640;
 // Wide calls (`gemm_pass_kernel`) run passes of up to kWide pairs: one expansion of an expert's codes then feeds up to
 // seven row tiles, and an expert with 65-112 pairs (about 80 in a 4,096-row call) takes one pass instead of two. The
-// same bits as kPass passes. 112 against 96 and 128 on real experts (#144): 128 spills too many registers.
+// same bits as kPass passes. 112 against 96 and 128 on real experts: 128 spills too many registers.
 constexpr int kWide = 112;
 // plan words: D, the expert of each slot, the slot starts (D + 1 of them)
 constexpr int kPlanExp = 1, kPlanStart = kPlanExp + kE, kPlanWords = kPlanStart + kE + 1;
@@ -816,8 +816,8 @@ __global__ void __launch_bounds__(kWarps * 32) gemm_kernel(const Params p) {
 
 // Wide calls: one pass of up to kWide pairs per block, blockIdx.y the work entry, blockIdx.x the 128-row weight block.
 // An expert's passes are adjacent in launch order and run at the same time, so its weights mostly come from L2 after
-// the first pass, where `gemm_kernel` loops over them in one block and streams the weights from DRAM once per pass
-// (#144). Per pair the arithmetic is `gemm_kernel`'s, so the bits are the same. The epilogue's tile shares memory with
+// the first pass, where `gemm_kernel` loops over them in one block and streams the weights from DRAM once per pass.
+// Per pair the arithmetic is `gemm_kernel`'s, so the bits are the same. The epilogue's tile shares memory with
 // the staged activations (two blocks an SM, as with kPass passes). (Eight-warp blocks that run two passes on one set
 // of weight loads give the same bits too, but one block per SM loses more to latency than it saves.)
 template <bool FC1, int MT>

@@ -7,7 +7,7 @@ object as arguments, ``thinking`` blocks become ``reasoning_content``, and
 ``tool_result`` blocks become ``tool`` messages in their original order.
 Images and documents are rejected (a text-only model), except inside a
 ``tool_result``: there the agent fetched them, not the user, so each becomes a
-short text note and the turn goes on (#121: Claude Code read a PNG and quit on
+short text note and the turn goes on (Claude Code read a PNG and quit on
 the 400).
 Custom tools become OpenAI function schemas; typed Anthropic tools (server
 tools such as web search) have no rendering and are dropped. Unknown
@@ -43,7 +43,7 @@ class MessagesRequest:
     # boundaries.
     cache_breakpoints: list[tuple] = field(default_factory=list)
     ignored_tools: int = 0  # typed (server) tools dropped from the schema list
-    stopped: object = None  # refusal_guard.Refusals when the server ends this turn itself (#108)
+    stopped: object = None  # refusal_guard.Refusals when the server ends this turn itself
 
 
 def parse_request(body: dict) -> MessagesRequest:

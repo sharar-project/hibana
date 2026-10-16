@@ -13,7 +13,7 @@ written in the 128x4 swizzled layout the CUTLASS SM120 GEMM reads:
 FlashInfer's plain kernel streams at ~43 GB/s on GB10; this one is memory-bound. The E2M1 rounding is the hardware
 conversion (cvt.rn.satfinite.e2m1x2), with the saturation and NaN rule of the comparison chain it replaced: equal
 for every FP32 input (tests/gpu/test_nvfp4_quant.py checks all 2^32). Prefill-sized calls (from PREFILL_ROWS rows) use
-wide column blocks, consecutive blocks along a row and streaming loads (#127).
+wide column blocks, consecutive blocks along a row and streaming loads.
 """
 
 from __future__ import annotations

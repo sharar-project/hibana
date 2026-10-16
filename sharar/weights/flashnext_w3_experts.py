@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""3-bit routed experts for Flash-Next's W3 checkpoint (#73): a new checkpoint directory with the source
+"""3-bit routed experts for Flash-Next's W3 checkpoint: a new checkpoint directory with the source
 checkpoint's trunk entries and every layer's experts as `layers.N.experts.w13` / `.w2`.
 
 The source is the checkpoint's NVFP4 experts, dequantized (there is no BF16 expert source). Each expert matrix is

@@ -381,7 +381,7 @@ def test_selected_features_are_post_block_residual_streams(runtime):
 
 
 def test_dense_path_is_repeatable_and_graphs_match_eager(setup):
-    """In-suite identity (#54): two eager runs of a fixed batch are bit-identical, and CUDA graphs reproduce them."""
+    """In-suite identity: two eager runs of a fixed batch are bit-identical, and CUDA graphs reproduce them."""
     configure, _ = setup
     ex, prompts = configure(False)
     items = [(prompts[name], SamplingParams(max_new_tokens=32)) for name in ('canary_json', 'canary_arith', 'canary_needle', 'canary_exact')]

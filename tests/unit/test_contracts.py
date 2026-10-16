@@ -46,7 +46,7 @@ def test_feature_free_proposer_uses_real_verify_commit_and_scheduler(monkeypatch
 
 
 def test_depth_per_batch_bucket_decodes_wide_batches_plainly(monkeypatch):
-    # The throughput profile (#59): above four requests a round decodes plainly (depth 0) while
+    # The throughput profile: above four requests a round decodes plainly (depth 0) while
     # the proposer keeps following every row, so speculation resumes once the batch shrinks;
     # a shorter depth reaches a proposer that drafts short blocks (short_drafts).
     from dataclasses import replace

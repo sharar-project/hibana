@@ -19,6 +19,9 @@ Prompts: chat, code, math, multilingual, prose, structured (22, in turn by categ
 sampling (greedy, t07 = T 0.7, t10 = T 1.0, both top-p 0.95, top-k 20), each with the profile's acceptance default.
 Order: base then PR, `--repeats` times; the table averages the repeats. Results, logs and the table (report.md) go
 to $SHARAR_RESULTS/reviews/<date>-h2h-<name>/; a rerun with the same --name skips what exists.
+
+sharar-eval runs from this environment's `eval` extra (pinned in uv.lock), or from a checkout given with --evals /
+SHARAR_EVALS for unreleased sharar-eval changes, as `tools/evaluate.py` does.
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ import argparse
 import contextlib
 import datetime as dt
 import fcntl
+import importlib.util
 import json
 import os
 import signal
@@ -34,6 +38,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -41,8 +46,15 @@ VENV = Path(os.environ.get("UV_PROJECT_ENVIRONMENT") or REPO / ".venv")
 sys.path.insert(0, str(REPO))
 
 
-def log(msg: str) -> None:
-    print(f"[{dt.datetime.now():%H:%M:%S}] {msg}", flush=True)
+def load_gate():
+    loader = SourceFileLoader("lossy_gate", str(REPO / "tools" / "lossy-gate.py"))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader("lossy_gate", loader))
+    loader.exec_module(module)
+    return module
+
+
+gate = load_gate()
+log, available_gib, health = gate.log, gate.available_gib, gate.health
 
 
 def git(*args, cwd=REPO) -> str:
@@ -50,21 +62,6 @@ def git(*args, cwd=REPO) -> str:
     if r.returncode:
         raise SystemExit(f"git {' '.join(args)}: {r.stderr.strip()}")
     return r.stdout.strip()
-
-
-def available_gib() -> float:
-    for line in Path("/proc/meminfo").read_text().splitlines():
-        if line.startswith("MemAvailable:"):
-            return int(line.split()[1]) / 2**20
-    raise RuntimeError("MemAvailable not found")
-
-
-def health(url: str) -> bool:
-    try:
-        with urllib.request.urlopen(url + "/v1/models", timeout=5) as r:
-            return r.status == 200
-    except OSError:
-        return False
 
 
 @contextlib.contextmanager
@@ -119,10 +116,10 @@ class Server:
             time.sleep(2)
 
 
-def h2h(evals: Path, python: str, engine: str, out: Path, args: list[str], logfile: Path, env: dict) -> None:
-    cmd = [python, "-m", "evals.h2h", "--url", URL, "--engine", engine, "--out", str(out), *args]
+def h2h(ev: dict, engine: str, out: Path, args: list[str], logfile: Path, env: dict) -> None:
+    cmd = [ev["python"], "-m", "evals.h2h", "--url", URL, "--engine", engine, "--out", str(out), *args]
     with logfile.open("a") as f:
-        r = subprocess.run(cmd, cwd=evals, env=env, stdout=f, stderr=subprocess.STDOUT)
+        r = subprocess.run(cmd, cwd=ev["cwd"], env=env, stdout=f, stderr=subprocess.STDOUT)
     if r.returncode:
         raise RuntimeError(f"h2h failed ({' '.join(args)}); see {logfile}")
 
@@ -172,17 +169,18 @@ def main() -> int:
     ap.add_argument("--warmup-s", type=float, default=30.0)
     ap.add_argument("--duration-s", type=float, default=60.0)
     ap.add_argument("--port", type=int, default=30100)
-    ap.add_argument("--evals", type=Path, default=Path(os.environ.get("SHARAR_EVALS") or REPO.parent / "sharar-eval"))
-    ap.add_argument("--python", default=None, help="sharar-eval's Python (default: its .venv)")
+    ap.add_argument("--evals", type=Path, default=Path(os.environ["SHARAR_EVALS"]) if os.environ.get("SHARAR_EVALS") else None,
+                    help="a sharar-eval checkout to run instead of the eval extra (default: SHARAR_EVALS, else the extra)")
+    ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
+                    help="sharar-eval's Python (default: this environment's, or the checkout's .venv)")
     args = ap.parse_args()
-    from sharar.launch import settings as launch
+    launch = gate.launch
     target = launch.target_name(args.target)
     URL = f"http://127.0.0.1:{args.port}"
-    python = args.python or str(args.evals / ".venv" / "bin" / "python")
-    if not Path(python).is_file() or not (args.evals / "evals" / "h2h.py").is_file():
-        raise SystemExit(f"no sharar-eval at {args.evals} ({python}); set --evals / SHARAR_EVALS and run `uv sync` there")
-    if "--streams" not in (args.evals / "evals" / "h2h.py").read_text():
-        raise SystemExit(f"{args.evals}: this sharar-eval's h2h has no --streams; update it")
+    ev = gate.sharar_eval(args.evals, args.python)
+    usage = subprocess.run([ev["python"], "-m", "evals.h2h", "--help"], cwd=ev["cwd"], capture_output=True, text=True).stdout
+    if "--streams" not in usage:
+        raise SystemExit(f"sharar-eval ({ev['label']}, {ev['commit'][:12]}): its h2h has no --streams; update it")
     refs = {"base": git("rev-parse", args.base), "pr": git("rev-parse", args.pr)}
     if git("show", f"{refs['base']}:uv.lock") != git("show", f"{refs['pr']}:uv.lock"):
         raise SystemExit("the two refs pin different dependencies (uv.lock); both arms run this checkout's environment")
@@ -203,7 +201,7 @@ def main() -> int:
     plan = {p: c for p, c in plan.items() if c}
     (run / "manifest.json").write_text(json.dumps({"target": target, "refs": refs, "labels": labels, "plan": plan, "modes": args.modes,
                                                   "repeats": args.repeats, "warmup_s": args.warmup_s, "duration_s": args.duration_s,
-                                                  "evals_commit": git("rev-parse", "HEAD", cwd=args.evals)}, indent=1) + "\n")
+                                                  "evals": ev["label"], "evals_commit": ev["commit"]}, indent=1) + "\n")
     evals_env = {**os.environ, "SHARAR_RESULTS": str(results)}
     lock = results / ".gpu.lock"
     for rep in range(args.repeats):
@@ -220,10 +218,10 @@ def main() -> int:
                     hlog = run / f"{arm}-{profile}-r{rep}.h2h.log"
                     common = ["--modes", args.modes, "--thinking", "off"]
                     if 1 in counts:
-                        h2h(args.evals, python, arm, out, ["--workloads", "decode", *common], hlog, evals_env)
+                        h2h(ev, arm, out, ["--workloads", "decode", *common], hlog, evals_env)
                     streams = [n for n in counts if n > 1]
                     if streams:
-                        h2h(args.evals, python, arm, out, ["--workloads", "conc", "--streams", ",".join(map(str, streams)),
+                        h2h(ev, arm, out, ["--workloads", "conc", "--streams", ",".join(map(str, streams)),
                                                            "--warmup-s", str(args.warmup_s), "--duration-s", str(args.duration_s), *common], hlog, evals_env)
                 done.touch()
                 log(f"{arm} {profile} r{rep}: done")

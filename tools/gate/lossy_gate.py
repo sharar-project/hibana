@@ -1,4 +1,4 @@
-"""In-process layers of the lossy-change gate (`tools/lossy-gate.py`, #31) for one arm, one model load.
+"""In-process layers of the lossy-change gate (`tools/lossy-gate.py`) for one arm, one model load.
 
 tools/lossy-gate.py runs this from the Python environment with the arm's settings in the environment (the
 serving profile resolved as `sharar serve` resolves it), on the same checkout's engine as the served arm, so the

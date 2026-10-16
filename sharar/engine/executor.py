@@ -117,7 +117,7 @@ class Executor:
 
     @property
     def attention(self):
-        """The planner for every target attention call (#46): prefill, decode and verification, eager and graph-bound."""
+        """The planner for every target attention call: prefill, decode and verification, eager and graph-bound."""
         planner = self.__dict__.get("_attention")
         if planner is None:  # built on first use (test executors skip __init__)
             from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
@@ -609,7 +609,7 @@ class Executor:
         spec_reqs = [r for r in reqs if self.spec is not None and self.spec.ready(r)
                      and (r.params.greedy or not self.spec.proposer.requirements.greedy_only)]
         if spec_reqs and self.spec.depth_policy.choose(reqs) == 0:
-            spec_reqs = []  # a wide batch at depth 0 (the throughput profile, #59): plain decode; the proposer still follows
+            spec_reqs = []  # a wide batch at depth 0 (the throughput profile): plain decode; the proposer still follows
         plain = [r for r in reqs if r not in spec_reqs]
         need = len(plain) + (len(spec_reqs) * self.spec.steps if spec_reqs else 0)
         # Retraction retries the entire batch. Reserve both paths before either

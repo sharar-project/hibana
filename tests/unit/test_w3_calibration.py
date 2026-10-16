@@ -36,7 +36,7 @@ def test_gptq_reduces_error_on_correlated_inputs():
 
 
 def test_unbias_restores_the_row_gain_without_changing_codes():
-    """The MSE-optimal codes shrink each row; `unbias` scales it back through the row scale only (#61)."""
+    """The MSE-optimal codes shrink each row; `unbias` scales it back through the row scale only."""
     generator = torch.Generator().manual_seed(23)
     x = torch.randn(1024, 256, generator=generator)
     x[:, 1::2] = x[:, ::2] * .9 + x[:, 1::2] * .1

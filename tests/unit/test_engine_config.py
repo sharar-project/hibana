@@ -1,4 +1,4 @@
-"""EngineConfig (#44): one value from the environment, installed once, read at construction."""
+"""EngineConfig: one value from the environment, installed once, read at construction."""
 import pytest
 
 from sharar.engine import config

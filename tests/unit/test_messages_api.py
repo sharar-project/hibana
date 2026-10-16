@@ -132,7 +132,7 @@ def test_tool_history_translates_in_order():
 
 @pytest.mark.parametrize('stream', [False, True])
 def test_media_in_a_tool_result_becomes_a_note(stream):
-    """#121: an image a tool returned (Claude Code reading a PNG) is a text note, not a 400 that ends the session.
+    """An image a tool returned (Claude Code reading a PNG) is a text note, not a 400 that ends the session.
     Media the user sends is still rejected (test_invalid_requests_return_anthropic_errors)."""
     turns = [{'role': 'user', 'content': 'what is on the board?'},
              {'role': 'assistant', 'content': [{'type': 'tool_use', 'id': 'toolu_1', 'name': 'Read', 'input': {'path': 'board.png'}}]},
@@ -673,7 +673,7 @@ def test_effort_reaches_the_rendered_prompt(snapshot):
 
 @pytest.mark.parametrize('stream', [False, True])
 def test_tool_call_in_unclosed_thinking_is_a_tool_use(stream):
-    """#120: the model ends its turn inside thinking with a complete call in it; the client still gets the call."""
+    """The model ends its turn inside thinking with a complete call in it; the client still gets the call."""
     output = '\nLet me check.\n\n' + CALL
     response, _, _ = post(body(stream=stream, tools=TOOLS, thinking={'type': 'enabled', 'budget_tokens': 1024}), output, chunk=2)
     if stream:

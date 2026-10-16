@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 
 # Contexts up to the target's native 262,144 positions are served; batches of up to
-# four requests (sixteen in the throughput profile, #59) share the KV pool, and
+# four requests (sixteen in the throughput profile) share the KV pool, and
 # admission budgets each request's actual tokens.
 MAX_CONTEXT = 262144
 MAX_BATCH = 128

@@ -1,4 +1,4 @@
-"""Device-resident acceptance with the MTP proposer (#36): the captured pass commits the target state
+"""Device-resident acceptance with the MTP proposer: the captured pass commits the target state
 bitwise like the host round and the draft KV to rounding of the whole-bucket projection."""
 import gc
 

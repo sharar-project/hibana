@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Where a Flash-Next speculative round spends its time (#25, #7, #9).
+"""Where a Flash-Next speculative round spends its time.
 
   1. Graphed MTP generation per prompt: tokens/round and the synchronized phase split
      (draft, verify, accept) from the spec decoder's timers.
@@ -421,7 +421,7 @@ def kernel_gaps(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = 
 
 
 def phase_kernels(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = None, top: int = 25):
-    """Kernels by round phase (#9): every activity of a draft, verify, accept or decode replay, tied to its graph
+    """Kernels by round phase: every activity of a draft, verify, accept or decode replay, tied to its graph
     launch by correlation id, and the eager GPU work between replays, by kernel name: count and device ms per replay
     (eager: per round). Batch `batch`, one generation of `tokens` under the torch profiler."""
     from torch.profiler import record_function

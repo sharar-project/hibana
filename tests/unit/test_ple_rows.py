@@ -1,4 +1,4 @@
-"""Flash-Next PLE rows on the host (#36): the native gather, the per-column hash and the
+"""Flash-Next PLE rows on the host: the native gather, the per-column hash and the
 verification rows read column by column as the draft steps end, each against the reference path."""
 
 import json
@@ -120,7 +120,7 @@ def test_streamed_verify_rows_match_the_block(table):
         extras._stream_verify_rows(out, reqs, columns, k)
         assert torch.equal(out, reference)
 
-    class Resident:  # two Sparks (#178): the ids column by column, then one device gather
+    class Resident:  # two Sparks: the ids column by column, then one device gather
         def gather(self, ids):
             return torch.from_numpy(table.gather(ids.numpy()))
     ple.resident = Resident()
@@ -130,7 +130,7 @@ def test_streamed_verify_rows_match_the_block(table):
 
 
 def test_resident_shares_give_the_host_rows(table, monkeypatch):
-    """Two Sparks (#178): each rank copies its heads' rows (here across shard boundaries) and gathers them; the
+    """Two Sparks: each rank copies its heads' rows (here across shard boundaries) and gathers them; the
     all-gather of both ranks' parts, in rank order, is the host gather's bytes."""
     from sharar import distributed
     h = _Hash()
@@ -153,7 +153,7 @@ def test_resident_shares_give_the_host_rows(table, monkeypatch):
 
 
 def test_prefetch_asks_for_every_page_the_rows_touch(table, monkeypatch):
-    """#178: WILLNEED on each distinct page a row lies on (both pages of a row across a page boundary)."""
+    """WILLNEED on each distinct page a row lies on (both pages of a row across a page boundary)."""
     import os
     from sharar.model.flashnext import ple as ple_module
     calls = []
@@ -171,7 +171,7 @@ def test_prefetch_asks_for_every_page_the_rows_touch(table, monkeypatch):
 
 
 def test_a_prompt_prefetches_its_later_chunks_once(table):
-    """#178: the first chunk of a prompt asks for the rows of the rest of it, once; nothing with resident heads."""
+    """The first chunk of a prompt asks for the rows of the rest of it, once; nothing with resident heads."""
     ple = _Hash()
     ple.table = table
     asked = []

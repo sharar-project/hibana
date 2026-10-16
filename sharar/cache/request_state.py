@@ -59,7 +59,7 @@ class _Lap:
 
 class StateManager:
     commit_profile: dict | None = None  # set to a dict to time commit_reconstructed sub-phases (benchmarks)
-    # Wide batches (the throughput profile, #59): prefill snapshots never take the recurrent slots that
+    # Wide batches (the throughput profile): prefill snapshots never take the recurrent slots that
     # admitting up to `admission_slots` live requests needs (0: snapshots take any free slot, as at batch four).
     admission_slots = 0
     live = 0  # admitted requests that still own a slot

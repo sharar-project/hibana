@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The lossy-change gate (#31): one scorecard, paired against a baseline profile, for a lossy speed option.
+"""The lossy-change gate: one scorecard, paired against a baseline profile, for a lossy speed option.
 
     tools/lossy-gate.py --target flashnext --name fast --profile fast
     tools/lossy-gate.py --target flashnext --name recal --profile fast --env SHARAR_W3_CHECKPOINT=/path/to/candidate
