@@ -1,11 +1,11 @@
-"""Draft depth policies (#45): how many drafted tokens a round verifies.
+"""Draft depth policies: how many drafted tokens a round verifies.
 
 `SpecDecoder` asks its policy once per round; the answer must be one of the
 depths whose verify graphs were captured (`SpecDecoder.verify_depths`).
 `FixedDepth` is the served behavior: the proposer's k every round.
-`BatchDepth` chooses by the batch bucket (#59): the throughput profile verifies
+`BatchDepth` chooses by the batch bucket: the throughput profile verifies
 shallower blocks, or none (depth 0: plain decode), when many requests share a
-round. Adaptive depth (#43) plugs in here.
+round. Adaptive depth plugs in here.
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ def parse_depths(text: str | None, sizes: tuple[int, ...], k: int) -> BatchDepth
 
 
 class AcceptanceDepth:
-    """Adaptive depth (#43): each request drafts as deep as its own recent acceptance pays for.
+    """Adaptive depth: each request drafts as deep as its own recent acceptance pays for.
 
     Per request, a moving average (weight `alpha` per round) of the drafted tokens accepted per position tested, q.
     With a draft accepted position by position at rate q, a round of depth d emits (1 - q^(d+1)) / (1 - q) tokens on

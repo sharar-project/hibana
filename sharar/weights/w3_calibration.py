@@ -89,7 +89,7 @@ def quantize(weight: torch.Tensor, covariance: torch.Tensor, *, damping: float =
     quantized row's projection on the exact row keeps the exact row's energy: c = w w^T / w_q w^T ("weight"),
     or the same under the covariance, c = w H w^T / w_q H w^T ("output"). The quantizer is MSE-optimal per
     matrix, which shrinks each row by about its relative error squared (3 to 10% on the Flash-Next trunk);
-    through a deep residual trunk the shrinkage adds coherently (#61). On Flash-Next's decode path "weight"
+    through a deep residual trunk the shrinkage adds coherently. On Flash-Next's decode path "weight"
     removed more of the added KL than "output": the calibration covariance under-states the shrinkage."""
     n, k = weight.shape
     if n % 128 or k % 128 or covariance.shape != (k, k):

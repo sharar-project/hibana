@@ -98,7 +98,7 @@ class ParallelDraftModel:
         self.kind = cfg['architectures'][0]
         if self.kind != 'DFlash2DraftModel':
             raise ValueError('unsupported draft architecture')
-        # The geometry is the checkpoint's (#49): hidden width, heads, KV heads, head size and layers.
+        # The geometry is the checkpoint's: hidden width, heads, KV heads, head size and layers.
         self.hidden, self.heads, self.kv_heads, self.head_dim = (cfg['hidden_size'], cfg['num_attention_heads'],
                                                                  cfg['num_key_value_heads'], cfg['head_dim'])
         self.layers = cfg['num_hidden_layers']
@@ -106,7 +106,7 @@ class ParallelDraftModel:
             raise ValueError(f"the draft's hidden width {self.hidden} is not the target's embedding width {target.embed.shape[1]} (the draft reads the target's embeddings)")
         self.target, self.device = target, target.device
         from sharar.proposers.draft_head import TargetHead
-        self.draft_head = TargetHead(lambda x: self.target.logits(x))  # the vocabulary projection the selector reads (#45); resolved per call
+        self.draft_head = TargetHead(lambda x: self.target.logits(x))  # the vocabulary projection the selector reads; resolved per call
         self.features = tuple(cfg['dflash_config']['target_layer_ids'])
         self.window = cfg['sliding_window']
         self.cos, self.sin = frequencies(cfg, max_context + 32, self.device)

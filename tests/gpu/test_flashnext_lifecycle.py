@@ -1,4 +1,4 @@
-"""Flash-Next executor lifecycle on the pinned checkpoint (#54): prefill, MTP speculative rounds, release, the
+"""Flash-Next executor lifecycle on the pinned checkpoint: prefill, MTP speculative rounds, release, the
 prefix cache and the SSD tier, with every page and state slot back afterwards; repeat runs are identical."""
 import gc
 
@@ -41,7 +41,7 @@ def runtime(tmp_path_factory):
     with config.using(config.current().replace(target="flashnext", w3_decode=False, w3_checkpoint=None, **ssd)):
         model = targets.load_model(target, snap)
         torch.cuda.empty_cache()
-        # Batch 8 so batches of five to seven pad the batch-8 graphs with several rows (#94); batch 4 keeps its bucket.
+        # Batch 8 so batches of five to seven pad the batch-8 graphs with several rows; batch 4 keeps its bucket.
         ex = Executor(model, log=print, max_batch=8, max_context=32768, spec_config=SpecConfig("mtp", 4, "reconstruct", "bf16", None))
         ex.capture_graphs(log=print)
         ex.warmup(log=print)
@@ -79,7 +79,7 @@ def test_repeat_runs_in_one_process_are_identical(runtime, graphs, batch):
     """Bit-identical run to run, eager or with CUDA graphs. Batches 4 and 6 with graphs cover padded rounds (requests
     finish at different rounds; six rows replay the batch-8 graphs with two padded rows): padded rows once wrote page 0
     together, in the target's verify graph and in the MTP draft graph, and the race reached the real rows through
-    the per-tensor activation scale (#94)."""
+    the per-tensor activation scale."""
     ex, tok = runtime
     spec = ex.spec
     vg, dg = spec.verify_graphs, spec.proposer.graphs

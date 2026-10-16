@@ -6,6 +6,10 @@ unless a change explicitly validates a new one. Favor a small implementation wit
 explicit tensor ownership over a registry or framework. Read [the architecture](docs/architecture.md) and
 [the interfaces](docs/interfaces.md) first; open work is in the GitHub issues.
 
+Code, comments and tests carry no issue or pull-request numbers. Say what the code does and why, with the
+measurement when it decides a choice; the history (which issue asked for it, which pull request changed it) belongs
+in the commit message, the pull request and the docs.
+
 ## Run checks
 
 On the GB10, `uv sync` builds the environment from `uv.lock` and `uv run pytest tests/unit` runs the control,

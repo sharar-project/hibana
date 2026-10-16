@@ -16,7 +16,7 @@ the negative log-likelihood of the text itself.
 The last line is the control: BF16 with another prefill chunk differs from the
 baseline only by rounding, which is the floor any quantized trunk is judged
 against (on the frozen profile prompts (`profiling/inputs.py`), argmax 86%/91% and KL 0.36/0.27 dense/sparse;
-the FP8 trunk 83%/87% and 0.49/0.36, #5).
+the FP8 trunk 83%/87% and 0.49/0.36).
 """
 import argparse
 import json

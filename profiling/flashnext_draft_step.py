@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""One Flash-Next MTP draft step on the head alone (#9): graph-replay time, kernels per step, and a bitwise check
+"""One Flash-Next MTP draft step on the head alone: graph-replay time, kernels per step, and a bitwise check
 of the step's outputs across code versions.
 
 Loads only what the draft reads (the MTP layer, the embedding, the FP8 lm_head and its 3-bit draft copy, about

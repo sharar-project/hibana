@@ -1,4 +1,4 @@
-"""One attention planner per KV geometry (#46).
+"""One attention planner per KV geometry.
 
 Every paged attention call in the engine plans a FlashInfer wrapper first: the
 target's prefill, decode and verification (eager and graph-bound), both MTP

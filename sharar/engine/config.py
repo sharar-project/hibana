@@ -1,4 +1,4 @@
-"""EngineConfig: every engine setting in one frozen value (#44).
+"""EngineConfig: every engine setting in one frozen value.
 
 The launcher and the CLI pass settings as `SHARAR_*` environment variables;
 `EngineConfig.from_env()` reads them once, with the defaults the modules used to
@@ -76,11 +76,11 @@ class EngineConfig:
     flashnext_mtp_trunk: str | None = None    # SHARAR_FLASHNEXT_MTP_TRUNK: the MTP draft head's precision (unset: the trunk's)
     trunk_keep_bf16: str | None = None        # SHARAR_TRUNK_KEEP_BF16: regex of Flash-Next projections kept BF16
     flashnext_experts_sim3: int = 0           # SHARAR_FLASHNEXT_EXPERTS_SIM3: routed experts rounded to a 3-bit format with this group (16/32), a quality screen (weights/expert_sim3.py)
-    flashnext_experts: str = "w3"             # SHARAR_FLASHNEXT_EXPERTS: w3 (the W3 checkpoint's 3-bit routed experts when it carries them, #73) | nvfp4
+    flashnext_experts: str = "w3"             # SHARAR_FLASHNEXT_EXPERTS: w3 (the W3 checkpoint's 3-bit routed experts when it carries them) | nvfp4
     # --- speculation
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
     spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
-    spec_step_cost: float = 0.0               # SHARAR_SPEC_STEP_COST: adaptive depth per request (#43, engine/depth.AcceptanceDepth): one more drafted token's cost relative to a depth-1 round; SHARAR_SPEC is the cap (0: the fixed depth)
+    spec_step_cost: float = 0.0               # SHARAR_SPEC_STEP_COST: adaptive depth per request (engine/depth.AcceptanceDepth): one more drafted token's cost relative to a depth-1 round; SHARAR_SPEC is the cap (0: the fixed depth)
     draft_dir: str | None = None              # SHARAR_DRAFT
     draft_vocab: int = 0                      # SHARAR_DRAFT_VOCAB: reduced MTP draft vocabulary rows (0: full)
     draft_head: str = "fp8"                   # SHARAR_DRAFT_HEAD: fp8 (the target's head) or w3
@@ -90,7 +90,7 @@ class EngineConfig:
     accept_default_sampled: bool = False      # SHARAR_ACCEPT_DEFAULT_SAMPLED
     accept_default_sampled_threshold: str | None = None  # SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD: K:M for sampled requests (unset: accept_default's)
     qsa_sparse_graphs: bool = True            # SHARAR_QSA_SPARSE_GRAPHS=0: rows past the indexer budget run eagerly
-    ple_resident: str = "auto"                 # SHARAR_PLE_RESIDENT: Flash-Next's PLE table in device memory, each tensor-parallel rank its share of the heads (#178); auto: on two Sparks, 0: off
+    ple_resident: str = "auto"                 # SHARAR_PLE_RESIDENT: Flash-Next's PLE table in device memory, each tensor-parallel rank its share of the heads; auto: on two Sparks, 0: off
     # --- the SSD tier (cache/ssd.py) under the GPU prefix cache
     ssd: bool = False                         # SHARAR_SSD
     ssd_gib: float = 200.0                    # SHARAR_SSD_GIB: its capacity
@@ -107,12 +107,14 @@ class EngineConfig:
     traces: str | None = None                 # SHARAR_TRACES
     traces_max_mib: int = 32768               # SHARAR_TRACES_MAX_MIB
     mtp_precision: str = "bf16"               # SHARAR_MTP_PRECISION: the 27B's MTP head projections, bf16 or fp8 (Flash-Next's: SHARAR_FLASHNEXT_MTP_TRUNK)
-    trace_confidence: bool = False            # SHARAR_TRACE_CONFIDENCE: the MTP draft's confidence per drafted position in trace rounds (#32, #43; read when the proposer is built)
+    trace_confidence: bool = False            # SHARAR_TRACE_CONFIDENCE: the MTP draft's confidence per drafted position in trace rounds (read when the proposer is built)
     # --- diagnostics and benchmark loader
     debug_sync: bool = False                  # SHARAR_DEBUG_SYNC
     commit_profile: bool = False              # SHARAR_COMMIT_PROFILE
     bench_verify_state: str = "snapshots"     # SHARAR_BENCH_VERIFY_STATE
     bench_max_context: int = 0                # SHARAR_BENCH_MAX_CONTEXT
+    moe_keep: int = 0                         # SHARAR_MOE_KEEP=k: Flash-Next, each token keeps its own top k experts in decode and verify forwards (model/flashnext/moe.py); 0, or k of 10 and above: the served top-10
+    moe_reuse: int = 0                        # SHARAR_MOE_REUSE=r: up to r more experts a token from its ranks k+1..20, only ones the call's other tokens keep (k + r <= 10), so the call reads no expert beyond the tokens' top k
 
     @property
     def ssd_buffers(self) -> dict[str, int]:
@@ -176,6 +178,8 @@ class EngineConfig:
             commit_profile=_flag(e, "SHARAR_COMMIT_PROFILE"),
             bench_verify_state=e.get("SHARAR_BENCH_VERIFY_STATE", "snapshots"),
             bench_max_context=_int(e, "SHARAR_BENCH_MAX_CONTEXT", 0),
+            moe_keep=_int(e, "SHARAR_MOE_KEEP", 0),
+            moe_reuse=_int(e, "SHARAR_MOE_REUSE", 0),
         )
 
     def replace(self, **changes) -> EngineConfig:

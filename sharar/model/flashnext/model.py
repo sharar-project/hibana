@@ -62,7 +62,7 @@ class DecoderLayer:
         h = all_reduce(self.mixer.forward(h, ctx))
         hyper = self.attn_hc.combine(h, res)
         h, res = self.mlp_hc.mix(hyper)
-        h = all_reduce(self.moe(h))
+        h = all_reduce(self.moe(h, ctx))
         return self.mlp_hc.combine(h, res)
 
 
@@ -86,7 +86,7 @@ class FlashNext:
         self._extras = None
         self.precision = precision or current().flashnext_trunk  # bf16 | fp8
         # The calibrated 3-bit copies (SHARAR_W3_DECODE with SHARAR_W3_CHECKPOINT). When the checkpoint carries the
-        # routed experts (#73) and SHARAR_FLASHNEXT_EXPERTS is not nvfp4, those are the only expert copy: the NVFP4
+        # routed experts and SHARAR_FLASHNEXT_EXPERTS is not nvfp4, those are the only expert copy: the NVFP4
         # experts are never read. Under tensor parallelism each rank holds half of them, whole (expert parallel).
         calibrated = None
         if current().w3_decode:

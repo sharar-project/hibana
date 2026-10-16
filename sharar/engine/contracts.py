@@ -34,7 +34,7 @@ class ForwardResult(TypedDict):
 
 @dataclass(frozen=True)
 class Capabilities:
-    """What a proposer offers beyond the `Proposer` lifecycle (#45). The engine reads these flags
+    """What a proposer offers beyond the `Proposer` lifecycle. The engine reads these flags
     instead of probing for methods; `check_capabilities` verifies each promised protocol."""
     device_feedback: bool = False   # DeviceFeedback: accepted_prepare / feedback_device / accepted_publish (device acceptance)
     checkpoint_cache: bool = False  # CheckpointCache: bind_checkpoint_cache(pool) and a feature_cache with stats

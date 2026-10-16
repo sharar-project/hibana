@@ -1081,7 +1081,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.3,<2.4" },
     { name = "pytest", marker = "extra == 'test'", specifier = "==9.1.1" },
     { name = "safetensors", specifier = ">=0.5" },
-    { name = "sharar-eval", marker = "extra == 'eval'", git = "https://github.com/abdelfattah-lab/sharar-eval?rev=080cd5d5d2c38dfd8566418650fc59b6155707aa" },
+    { name = "sharar-eval", marker = "extra == 'eval'", git = "https://github.com/abdelfattah-lab/sharar-eval?rev=58ea950577947004861da46b11f62e7c052dc565" },
     { name = "tokenizers", specifier = ">=0.21" },
     { name = "torch", specifier = ">=2.13,<2.14", index = "https://download.pytorch.org/whl/cu130" },
     { name = "uvicorn", specifier = ">=0.52,<0.53" },
@@ -1104,7 +1104,7 @@ gb10 = [
 [[package]]
 name = "sharar-eval"
 version = "0.1.0"
-source = { git = "https://github.com/abdelfattah-lab/sharar-eval?rev=080cd5d5d2c38dfd8566418650fc59b6155707aa#080cd5d5d2c38dfd8566418650fc59b6155707aa" }
+source = { git = "https://github.com/abdelfattah-lab/sharar-eval?rev=58ea950577947004861da46b11f62e7c052dc565#58ea950577947004861da46b11f62e7c052dc565" }
 dependencies = [
     { name = "absl-py" },
     { name = "editdistance" },

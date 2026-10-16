@@ -23,7 +23,7 @@ KV_BYTES_PER_TOKEN = DEFAULT_TARGET.kv_bytes_per_token
 STATE_BYTES_PER_SLOT = DEFAULT_TARGET.state_bytes_per_slot
 # Per-request context every running request is guaranteed at once; longer
 # contexts are guaranteed for one request (the 32K profile's plan is unchanged).
-# Above four running requests (the throughput profile, #59) the same total is
+# Above four running requests (the throughput profile) the same total is
 # guaranteed and split between them: 16 requests are guaranteed 8K each.
 SHARED_CONTEXT = 32768
 SHARED_REQUESTS = 4

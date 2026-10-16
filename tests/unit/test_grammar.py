@@ -1,4 +1,4 @@
-"""Constrained output (#16): grammar masks for sampling and for a verify block of drafted tokens, and acceptance on
+"""Constrained output: grammar masks for sampling and for a verify block of drafted tokens, and acceptance on
 masked logits. A small plain-text vocabulary stands in for Qwen's."""
 from types import SimpleNamespace
 

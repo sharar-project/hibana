@@ -1,4 +1,4 @@
-"""Device-resident acceptance with the MTP proposer in a wide bucket at a depth below k (#59 with #36): the
+"""Device-resident acceptance with the MTP proposer in a wide bucket at a depth below k: the
 throughput profile's buckets 8/16 verify fewer drafts; their accept graphs must commit like the host round."""
 import gc
 

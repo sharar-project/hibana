@@ -1,4 +1,4 @@
-"""The refusal guard (#108): repeated refusals of one tool get a reminder, then the server ends the turn."""
+"""The refusal guard: repeated refusals of one tool get a reminder, then the server ends the turn."""
 import json
 
 import pytest

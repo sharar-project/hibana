@@ -104,7 +104,7 @@ def test_fp8_gemv_any(shape):
     _close(fk.fp8_gemv_any(q, w8, alpha), ref.to(torch.bfloat16), 1e-2)
 
 
-# ---- draft-step fusions (#9): bitwise against the unfused chains they replace ----
+# ---- draft-step fusions: bitwise against the unfused chains they replace ----
 
 def _act_input(m, k, seed, outliers=True):
     g = torch.Generator(device="cuda").manual_seed(seed)

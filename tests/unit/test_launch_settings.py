@@ -65,7 +65,7 @@ def test_profile_knobs():
     ("fast", "qwen38", "2:1.0"), ("throughput", "qwen38", "2:1.0"), ("fast", "flashnext", None), ("throughput", "flashnext", None),
     ("exact", "qwen38", None)])
 def test_the_27b_samples_at_a_tighter_threshold_under_fast(profile, target, threshold):
-    # #11: at 3:2.0 the 27B's sampled thinking looped to max_tokens in Claude Code sessions, at 2:1.0 it did not
+    # at 3:2.0 the 27B's sampled thinking looped to max_tokens in Claude Code sessions, at 2:1.0 it did not
     assert launch.profile_defaults(profile, target).get("SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD") == threshold
 
 
@@ -73,14 +73,14 @@ def test_the_27b_samples_at_a_tighter_threshold_under_fast(profile, target, thre
     ("exact", "qwen38", "0"), ("exact", "flashnext", "0"),
     ("fast", "qwen38", "1"), ("fast", "flashnext", "1"), ("throughput", "qwen38", "1"), ("throughput", "flashnext", "1")])
 def test_the_profile_alone_turns_the_3bit_copies_on(profile, target, w3):
-    # #72: one switch for both targets
+    # one switch for both targets
     assert launch.profile_defaults(profile, target)["SHARAR_W3_DECODE"] == w3
 
 
 @pytest.mark.parametrize("target, experts, batch, depths", [
     ("flashnext", "w3", "128", "16:3,32:3,64:3,128:3"), ("flashnext", "nvfp4", "64", "16:3"), ("qwen38", "w3", "16", None)])
 def test_throughput_decodes_more_requests(target, experts, batch, depths):
-    # #59: Flash-Next verifies within the 64 rows its 3-bit copies serve; the 27B keeps its full depth (GSM8K x1.74);
+    # Flash-Next verifies within the 64 rows its 3-bit copies serve; the 27B keeps its full depth (GSM8K x1.74);
     # with 3-bit experts on one Spark, every bucket from 16 requests verifies 3 drafts
     knobs = launch.profile_defaults("throughput", target, experts)
     assert knobs["SHARAR_MAX_BATCH"] == batch and knobs.get("SHARAR_SPEC_DEPTHS") == depths
@@ -88,8 +88,23 @@ def test_throughput_decodes_more_requests(target, experts, batch, depths):
         assert launch.profile_defaults(profile, target)["SHARAR_MAX_BATCH"] == "4"
 
 
+def test_expert_selection_is_on_in_fast_and_throughput(env):
+    on = {"SHARAR_MOE_KEEP": "5", "SHARAR_MOE_REUSE": "5"}
+    pick = lambda *args, **kw: {k: launch.profile_defaults(*args, **kw).get(k) for k in on}  # noqa: E731
+    for profile in ("fast", "throughput"):
+        assert pick(profile, "flashnext") == on
+        assert pick(profile, "flashnext", "nvfp4") == on  # the NVFP4 experts repeat a kept expert at weight 0
+        assert pick(profile, "flashnext", tp=2) == on
+        assert pick(profile, "flashnext", "nvfp4", tp=2) == on
+        assert pick(profile, "qwen38") == {k: None for k in on}  # the 27B has no routed experts
+    assert pick("exact", "flashnext") == {k: None for k in on}
+    assert resolve(env, "flashnext", "fast").get("SHARAR_MOE_KEEP") == "5"
+    assert resolve({**env, "SHARAR_MOE_KEEP": "0"}, "flashnext", "fast").get("SHARAR_MOE_KEEP") == "0"
+    assert resolve(env, "flashnext", "throughput", tp=2).get("SHARAR_MOE_KEEP") == "5"
+
+
 def test_adaptive_depth_prices_a_drafted_token_per_spark_count(env):
-    # #146: on two Sparks the one-Spark price (0.14) drafted chat and prose too deep; 0.2 measured best
+    # on two Sparks the one-Spark price (0.14) drafted chat and prose too deep; 0.2 measured best
     assert launch.profile_defaults("fast", "flashnext").get("SHARAR_SPEC_STEP_COST") == "0.14"
     assert launch.profile_defaults("fast", "flashnext", tp=2).get("SHARAR_SPEC_STEP_COST") == "0.2"
     assert resolve(env, "flashnext", "fast", tp=2).get("SHARAR_SPEC_STEP_COST") == "0.2"
@@ -102,7 +117,7 @@ def test_adaptive_depth_prices_a_drafted_token_per_spark_count(env):
     ("exact", "qwen38", None), ("fast", "qwen38", None), ("throughput", "qwen38", "int8"),
     ("exact", "flashnext", None), ("fast", "flashnext", None), ("throughput", "flashnext", "int8")])
 def test_the_8bit_state_under_throughput(profile, target, state):
-    # #161: +8-30% decode on the 27B at 4-16 requests, +13-25% on Flash-Next at 16-64; at one request nothing, and
+    # +8-30% decode on the 27B at 4-16 requests, +13-25% on Flash-Next at 16-64; at one request nothing, and
     # the 27B's prefill is slower, so `fast` and `exact` keep the FP32 state
     assert launch.profile_defaults(profile, target).get("SHARAR_SSM_STATE") == state
 
