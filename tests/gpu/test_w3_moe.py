@@ -127,3 +127,30 @@ def test_pass_per_block_gives_the_same_bits(experts, m, expert_parallel, k, monk
     monkeypatch.setattr(w3_moe, "WIDE_ROWS", 1)
     passes = w3_moe.w3_moe(ex, x, ids, weights)
     assert torch.equal(passes.view(torch.int16), looped.view(torch.int16))
+
+
+@pytest.mark.parametrize("k", [w3_moe.TOPK, 5])
+@pytest.mark.parametrize("m", [1, 5, 64, 200, 1500])
+@pytest.mark.parametrize("expert_parallel", [False, True])
+def test_pairs_then_fused_combine_gives_the_same_bits(experts, m, expert_parallel, k):
+    """`w3_moe(..., pairs=True)` summed by `moe_combine_pairs` (MoeLayer's path): the bits of the kernel's own combine
+    followed by `moe_combine`, with unfilled slots (id 512) and, expert parallel, another rank's pairs left out."""
+    from dataclasses import replace
+
+    from sharar.kernels import flashnext_fused as fk
+    torch.manual_seed(300 + m + k)
+    x = torch.randn(m, w3_moe.HIDDEN, device="cuda", dtype=torch.bfloat16)
+    ids = torch.stack([torch.randperm(E, device="cuda")[:k] for _ in range(m)]).to(torch.int32)
+    ids[::3, -1] = w3_moe.EXPERTS
+    weights = torch.softmax(torch.randn(m, k, device="cuda"), -1)
+    shared = torch.randn(m, w3_moe.HIDDEN, device="cuda", dtype=torch.bfloat16)
+    gate = torch.randn(w3_moe.HIDDEN, device="cuda") * 0.02
+    ex = experts
+    if expert_parallel:
+        half = E // 2
+        ex = replace(experts, planes13=experts.planes13[half:], scales13=experts.scales13[half:], row13=experts.row13[half:],
+                     planes2=experts.planes2[half:], scales2=experts.scales2[half:], row2=experts.row2[half:], base=half)
+    expected = fk.moe_combine(w3_moe.w3_moe(ex, x, ids, weights), shared, x, gate)
+    pairs = w3_moe.w3_moe(ex, x, ids, weights, pairs=True)
+    actual = fk.moe_combine_pairs(pairs, ids, weights, shared, x, gate, ex.base, ex.experts)
+    assert torch.equal(actual.view(torch.int16), expected.view(torch.int16))

@@ -345,6 +345,45 @@ def moe_combine(routed: torch.Tensor, shared: torch.Tensor, x: torch.Tensor, gat
     return y
 
 
+# ---- the 3-bit experts' routed sum + MoE combine: `w3_moe`'s combine, then `moe_combine`, in one pass ----
+@triton.jit
+def _moe_combine_pairs_kernel(Yp, Ids, Wt, S, X, G, Y, e_lo, e_n, stride_yp, stride_s, stride_x, stride_y, H: tl.constexpr,
+                              TOPK: tl.constexpr, BLOCK: tl.constexpr, DBLOCK: tl.constexpr):
+    t = tl.program_id(0)
+    dot = tl.zeros([DBLOCK], dtype=tl.float32)
+    for start in tl.static_range(0, H, DBLOCK):
+        i = start + tl.arange(0, DBLOCK)
+        dot += tl.load(X + t * stride_x + i, mask=i < H, other=0.0).to(tl.float32) * tl.load(G + i, mask=i < H, other=0.0).to(tl.float32)
+    g = _sigmoid(tl.sum(dot, 0))
+    cols = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
+    mask = cols < H
+    # csrc/w3_gemm.cu's combine_kernel: v += w_k * y_k over this rank's pairs in slot order, one FMA each (it is
+    # compiled with contraction), rounded to BF16 once
+    v = tl.zeros([BLOCK], dtype=tl.float32)
+    for k in tl.static_range(TOPK):
+        e = tl.load(Ids + t * TOPK + k) - e_lo
+        if (e >= 0) & (e < e_n):
+            yk = tl.load(Yp + (t * TOPK + k).to(tl.int64) * stride_yp + cols, mask=mask, other=0.0)
+            v = tl.fma(tl.full([BLOCK], 0.0, tl.float32) + tl.load(Wt + t * TOPK + k), yk, v)
+    r = v.to(tl.bfloat16).to(tl.float32)
+    s = tl.load(S + t * stride_s + cols, mask=mask, other=0.0).to(tl.float32)
+    tl.store(Y + t * stride_y + cols, (r + g * s).to(tl.bfloat16), mask=mask)
+
+
+def moe_combine_pairs(y: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor, shared: torch.Tensor, x: torch.Tensor, gate_w: torch.Tensor,
+                      e_lo: int = 0, e_n: int = 512) -> torch.Tensor:
+    """`moe_combine(w3_moe(...), shared, x, gate_w)` from `w3_moe(..., pairs=True)`'s FP32 pair outputs y [m*topk, H], bit
+    for bit, without writing the routed sum: ids int32 / weights fp32 [m, topk]; pairs whose expert is outside
+    e_lo .. e_lo + e_n - 1 add nothing."""
+    m, topk = ids.shape
+    h = y.shape[1]
+    out = torch.empty((m, h), dtype=torch.bfloat16, device=y.device)
+    blk = 1024
+    _moe_combine_pairs_kernel[(m, triton.cdiv(h, blk))](y, ids, weights.contiguous(), shared, x, gate_w, out, e_lo, e_n, y.stride(0), shared.stride(0),
+                                                        x.stride(0), out.stride(0), h, topk, BLOCK=blk, DBLOCK=1024)
+    return out
+
+
 # ---- routed sum + MoE combine: out = bf16(sum_k w_k * y_k) + sigmoid(x . g) * shared (the MTP head's experts) ----
 @triton.jit
 def _moe_combine_routed_kernel(Yr, Wt, S, X, G, Y, stride_yr, stride_s, stride_x, stride_y, H: tl.constexpr, TOPK: tl.constexpr,
