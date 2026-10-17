@@ -191,7 +191,7 @@ def arm_plan(s: launch.Settings) -> dict:
     w3 = preflight.ensure_w3(s, fetch=False)
     cenv = {k: v for k, v in s.engine_env(w3).items() if k not in SERVER_ONLY}
     spec = s.spec
-    accept = accept_rule(s.get("SHARAR_ACCEPT_DEFAULT", "2:1.0")) if spec else "1:0.0"
+    accept = accept_rule(s.get("SHARAR_ACCEPT_DEFAULT", "off")) if spec else "1:0.0"
     cenv["SHARAR_SPEC"], cenv["SHARAR_ACCEPT_DEFAULT"] = str(spec), accept
     sampled_on = s.get("SHARAR_ACCEPT_DEFAULT_SAMPLED") == "1" and accept != "1:0.0"
     # sampled requests' own K:M, as `sharar engine` records it: only while they are relaxed (an exact one turns them off)

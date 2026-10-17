@@ -5,8 +5,6 @@ batch sizes and prefill shapes retain the ordinary dispatch. The FP4 path
 uses the pinned FlashInfer 0.6.17 CuTe compiler with a larger K tile; packed
 weights/scales are borrowed, and each call owns its BF16 output. Compilation
 is cached before CUDA graph capture by the normal executor warmup.
-
-Captured-operand and full-generation evidence: docs/gb10-bs1-speedups.md.
 """
 
 import torch

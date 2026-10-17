@@ -1,8 +1,11 @@
 """EngineConfig: every engine setting in one frozen value.
 
 The launcher and the CLI pass settings as `SHARAR_*` environment variables;
-`EngineConfig.from_env()` reads them once, with the defaults the modules used to
-apply at import. `sharar serve` and the benchmark loader install the result
+`EngineConfig.from_env()` reads them once. The field defaults are the library's
+baseline (no lossy option, no SSD tier) that tests and benchmarks build on; a
+served engine's defaults are the target's and the profile's
+(`sharar/launch/settings.py`), which `sharar engine` resolves beneath the
+environment as `sharar serve` does. `sharar serve` and the benchmark loader install the result
 before building the model; modules read `current()` where they construct
 things (a model, a linear, a proposer, a graph set), never at import, and the
 few per-call checks read one attribute of the installed value. Tests and
@@ -86,7 +89,7 @@ class EngineConfig:
     draft_head: str = "fp8"                   # SHARAR_DRAFT_HEAD: fp8 (the target's head) or w3
     draft_head_rescore: int = 8               # SHARAR_DRAFT_HEAD_RESCORE
     device_accept: bool = False               # SHARAR_DEVICE_ACCEPT
-    accept_default: str = "2:1.0"             # SHARAR_ACCEPT_DEFAULT (greedy requests that set neither field)
+    accept_default: str = "off"               # SHARAR_ACCEPT_DEFAULT: K:M for greedy requests that set neither field (off: exact)
     accept_default_sampled: bool = False      # SHARAR_ACCEPT_DEFAULT_SAMPLED
     accept_default_sampled_threshold: str | None = None  # SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD: K:M for sampled requests (unset: accept_default's)
     qsa_sparse_graphs: bool = True            # SHARAR_QSA_SPARSE_GRAPHS=0: rows past the indexer budget run eagerly
@@ -161,7 +164,7 @@ class EngineConfig:
             draft_head=_str(e, "SHARAR_DRAFT_HEAD", "fp8"),
             draft_head_rescore=_int(e, "SHARAR_DRAFT_HEAD_RESCORE", 8),
             device_accept=_flag(e, "SHARAR_DEVICE_ACCEPT"),
-            accept_default=e.get("SHARAR_ACCEPT_DEFAULT", "2:1.0"),
+            accept_default=e.get("SHARAR_ACCEPT_DEFAULT", "off"),
             accept_default_sampled=_flag(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED"),
             accept_default_sampled_threshold=_str(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"),
             qsa_sparse_graphs=e.get("SHARAR_QSA_SPARSE_GRAPHS", "1") != "0",

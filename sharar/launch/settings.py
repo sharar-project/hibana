@@ -204,8 +204,8 @@ class Settings:
                 "--verify-state", self.get("SHARAR_VERIFY_STATE", "reconstruct"), "--spec", str(self.spec),
                 "--context-length", str(self.max_context), "--max-batch", self.get("SHARAR_MAX_BATCH", "4"),
                 "--draft-precision", self.get("SHARAR_DRAFT_PRECISION", "bf16"),
-                "--accept-default", self.get("SHARAR_ACCEPT_DEFAULT", "2:1.0")]
-        accept, sampled = self.get("SHARAR_ACCEPT_DEFAULT", "2:1.0"), self.get("SHARAR_ACCEPT_DEFAULT_SAMPLED", "0")
+                "--accept-default", self.get("SHARAR_ACCEPT_DEFAULT", "off")]
+        accept, sampled = self.get("SHARAR_ACCEPT_DEFAULT", "off"), self.get("SHARAR_ACCEPT_DEFAULT_SAMPLED", "0")
         if sampled == "1" and accept != "off":
             args.append("--accept-default-sampled")
             if self.get("SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"):
@@ -289,6 +289,9 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(re.fullmatch(r"[0-9]+(\.[0-9]+)?", values.get("SHARAR_SSD_GIB", "200")) is not None, "SHARAR_SSD_GIB must be a number of GiB")
     _check(values.get("SHARAR_TRACES_MAX_MIB", "32768").isdigit() and int(values.get("SHARAR_TRACES_MAX_MIB", "32768")) > 0,
            "SHARAR_TRACES_MAX_MIB must be a positive integer")
+    if "SHARAR_DRAFT_PRECISION" not in {**user, **(overrides or {})} and not (
+            int(values.get("SHARAR_SPEC", "15")) and values["SHARAR_PROPOSER"] == "dflash2"):
+        values["SHARAR_DRAFT_PRECISION"] = "bf16"  # the target's FP8 draft applies when its parallel draft runs
     precision, proposer, spec = values.get("SHARAR_DRAFT_PRECISION"), values["SHARAR_PROPOSER"], int(values.get("SHARAR_SPEC", "15"))
     _check(proposer in ("mtp", "dflash2"), f"SHARAR_PROPOSER must be mtp or dflash2 (got {proposer!r})")
     _check(precision != "fp8" or (spec and proposer == "dflash2"), "FP8 draft precision requires enabled DFlash2 speculation")

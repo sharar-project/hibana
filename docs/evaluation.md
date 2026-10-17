@@ -74,7 +74,7 @@ default 45) and waits while another model server or GPU process runs. Layers 1 a
 builds the executor; layer 3 serves each arm with `sharar serve <target> --<profile>` in the foreground on `--port`
 (30100 by default), checks that
 `/get_server_info` reports the in-process arm's configuration, and runs sharar-eval's `evals.suite`
-(`--evals`, beside this checkout by default, with its `.venv`): `quick` as the screen, `full` when the screen
+(`--evals`, default `SHARAR_EVALS`, else the environment's `eval` extra): `quick` as the screen, `full` when the screen
 is close, and `hard` / `long` (RULER v2) / both / `agentic` (Terminal-Bench 2.1) with
 `--battery hard|long|all|agentic`. Served arms run with `SHARAR_SSD=0` (no SSD tier), the same in every stage. The baseline arm is cached in
 `$SHARAR_RESULTS/reviews/lossy-gate-baselines/` (keyed by engine commit, baseline settings, prompts, worker and eval
