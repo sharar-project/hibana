@@ -3,14 +3,17 @@
 The tiered radix tree (`radix.py`) is the only record of what is on disk;
 `ssd_store.py` only stores objects. This module moves data between them:
 
-- Backup. When a finished request's sequence of at least `min_tokens` enters
-  the tree, `backup()` queues each of its full KV blocks (`store.block` tokens)
-  not yet stored, and the tails at its resume points (the sequence's end and
-  its prompt's end) for a write-through: a snapshot the GPU cache later drops
-  for want of state slots stays restorable. `step()` (every engine loop
-  iteration) gathers queued tails, then queued blocks, from the pool pages
-  and slots into pinned host memory, up to `step_bytes` per step and
-  `staging_bytes` in flight, and hands them to the store's writer threads.
+- Backup. A request's prompt enters the tree as soon as it is prefilled
+  (`StateManager.cache_prompt`), and its whole sequence once it finishes. Each
+  time, for at least `min_tokens`, `backup()` queues each of its full KV blocks
+  (`store.block` tokens) not yet stored, so a long prompt's blocks go out while
+  the request decodes. At the finish it also queues the tails at the
+  sequence's resume points (its end and its prompt's end) for a write-through:
+  a snapshot the GPU cache later drops for want of state slots stays
+  restorable. `step()` (every engine loop iteration) gathers queued tails,
+  then queued blocks, from the pool pages and slots into pinned host memory,
+  up to `step_bytes` per step and `staging_bytes` in flight, and hands them
+  to the store's writer threads.
   An object larger than that limit goes out alone. Gathers that eviction, a
   restore or shutdown need at once wait for room. `step()` skips a queued
   tail whose snapshot the GPU cache dropped first.

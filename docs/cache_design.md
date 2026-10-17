@@ -13,8 +13,8 @@ them, and the SSD tier below them (on in every profile; `SHARAR_SSD=0` turns it 
                          │   │  deeper resume point on the SSD? ──► SsdTier.restore_async() ───┐   │
                          │   ▼                                                                 │   │
                          │ prefill the rest ─► decode ─► finish ─► RadixCache.insert()         │   │
-                         │                                          │                          │   │
-                         │                                          └► SsdTier.backup()        │   │
+                         │   │ prompt done: its whole blocks        │                          │   │
+                         │   └► RadixCache.insert() ────────────────┴► SsdTier.backup()        │   │
                          │ every scheduler step: SsdTier.step()  (gather queued writes,       │   │
                          │                       drain completions, enforce the disk budget)   │   │
                          └────────────────────────────────────────────────────────────────────│───┘
@@ -78,6 +78,7 @@ flipped byte or a torn write is a miss, never wrong KV. Startup also drops a fil
 ## Lifecycle of a cached prefix
 
 ```
+ prompt prefilled ──► insert its whole blocks into L1, locked for the request ──► backup(): queue them
  finish ──► insert into L1 ──► backup(): queue full blocks not yet on disk + tails at resume points
                                    │
                          step() ───┤ gather into staging ──► writers: .tmp, fdatasync, rename

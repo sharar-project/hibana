@@ -13,10 +13,13 @@ import torch
 
 from sharar.cache.kv_pool import KvPool
 from sharar.cache.radix import RadixCache
+from sharar.cache.request_state import StateManager
 from sharar.cache.ssd import SsdTier
 from sharar.cache import ssd, ssd_store
 from sharar.cache.ssd_store import BLOCK, SsdStore, memory_backed
 from sharar.cache.state_pool import StatePool
+from sharar.engine.request import Request
+from sharar.engine.sampler import SamplingParams
 from sharar.target import DEFAULT_TARGET
 
 CPU = torch.device("cpu")
@@ -934,3 +937,78 @@ def test_admission_with_the_restore_off_restores_in_line(tmp_path):
     tier.async_restore = False
     assert cache.restore_async(IDS + [7]) and tier.async_restores == 0 and tier.restores == 1
     assert same(restored(cache, kv, sp, IDS), before) and not any(locks(cache))
+
+
+# ---- a prompt's blocks go out while its request decodes ----
+
+def prefilled(state, kv, sp, ids, seed):
+    """Admit a request for ids, prefill all of it and sample its first token."""
+    req = Request(prompt_ids=list(ids), params=SamplingParams(max_new_tokens=4))
+    state.admit(req, req.prompt_ids)
+    fill(kv, sp, req.pages[req.prefix_len:], req.slot, seed)
+    state.commit_prefill(req, req.prefill_len)
+    state.cache_prompt(req)
+    req.push(7)
+    return req
+
+
+def owned_by_cache(kv, free, n):
+    """Of the `free` pages the pool had, the cache holds exactly n; none came back twice."""
+    return kv.free_count == free - n and len(set(kv._free)) == len(kv._free)
+
+
+def test_a_prefilled_prompt_is_backed_up_before_its_request_finishes(tmp_path):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    state, free = StateManager(kv, sp, cache), kv.free_count
+    ids = list(range(5000, 5000 + 3 * BLOCK))  # whole blocks only: the last one ends at the last prompt token
+    req = prefilled(state, kv, sp, ids, seed=1)
+    assert req.prompt_node is cache.node_at(ids) and req.prompt_node.lock == 1 and req.page_ids == [-1] * len(ids)
+    settle(cache, tier)
+    assert tier.backed_blocks == 3  # written while the request still runs
+    evict_all(cache, kv)
+    assert cache.node_at(ids).in_l1  # its request holds it
+    before = snapshot(kv, sp, req.pages, req.slot)
+    state.release(req)
+    assert not any(locks(cache)) and owned_by_cache(kv, free, len(ids))
+    settle(cache, tier)
+    assert tier.backed_blocks == 3 and tier.tails_through == 1  # only the tail at the release, no block written twice
+    evict_all(cache, kv)
+    assert tier.restore(cache, ids + [7]) == len(ids)
+    assert same(restored(cache, kv, sp, ids), before)
+
+
+def test_a_later_turn_hands_over_only_the_prompt_past_its_cached_prefix(tmp_path):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    state, free = StateManager(kv, sp, cache), kv.free_count
+    first = prefilled(state, kv, sp, list(range(5000, 5000 + BLOCK + 10)), seed=1)
+    state.release(first)
+    ids = first.prompt_ids + first.output_ids + list(range(9000, 9000 + 3 * BLOCK))
+    req = prefilled(state, kv, sp, ids, seed=2)
+    assert req.prefix_len == BLOCK + 10 and req.prompt_node is cache.node_at(ids[:4 * BLOCK])
+    assert req.page_ids[:3 * BLOCK - 10] == [-1] * (3 * BLOCK - 10) and -1 not in req.page_ids[3 * BLOCK - 10:]
+    state.release(req)
+    assert not any(locks(cache)) and owned_by_cache(kv, free, len(ids))
+    settle(cache, tier)
+    assert tier.backed_blocks == 4
+
+
+def test_a_retracted_request_leaves_its_prompt_cached_and_a_duplicate_frees_its_own_copy(tmp_path):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    state, free = StateManager(kv, sp, cache), kv.free_count
+    ids = list(range(5000, 5000 + 3 * BLOCK + 37))
+    req = prefilled(state, kv, sp, ids, seed=1)
+    state.retract(req)
+    assert req.prompt_node is None and not any(locks(cache))
+    assert owned_by_cache(kv, free, 3 * BLOCK)  # the cache keeps the prompt's whole blocks; the request freed the rest
+    again = prefilled(state, kv, sp, ids, seed=1)  # those blocks are cached already: its own copies stay its own
+    assert again.prompt_node is cache.node_at(ids[:3 * BLOCK]) and -1 not in again.page_ids
+    state.release(again)
+    assert not any(locks(cache)) and owned_by_cache(kv, free, len(ids))
+
+
+def test_without_an_ssd_tier_the_request_keeps_its_prompt_until_it_finishes(tmp_path):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    cache.ssd = None
+    state = StateManager(kv, sp, cache)
+    req = prefilled(state, kv, sp, list(range(5000, 5000 + 3 * BLOCK)), seed=1)
+    assert req.prompt_node is None and -1 not in req.page_ids and cache.cached_tokens == 0

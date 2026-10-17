@@ -530,6 +530,7 @@ class Executor:
         for i in finishing:
             req = chunks[i][0]
             self.state.checkpoint(req, req.prefill_len, copy=True)
+            self.state.cache_prompt(req)
         if self.timing:  # benchmarks: wall time to completion; serving keeps the GPU queue full
             torch.cuda.synchronize()
         elapsed = time.perf_counter() - started
@@ -556,6 +557,7 @@ class Executor:
             # Allocate the immutable endpoint before the proposer attaches its
             # features; the active committed slot continues advancing in decode.
             self.state.checkpoint(req, n, copy=True)
+            self.state.cache_prompt(req)
             if self.spec is not None:
                 self.spec.start(req, token)
         if self.timing:

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from sharar.engine.request import Request
     from sharar.cache.kv_pool import KvPool
     from sharar.cache.state_pool import StatePool
-    from sharar.cache.radix import Match, RadixCache
+    from sharar.cache.radix import Match, Node, RadixCache
 
 
 @dataclass
@@ -34,7 +34,8 @@ class RequestState:
     match: Match | None = None
     checkpoints: dict[int, int] = field(default_factory=dict)
     reservation: Reservation | None = None
-    page_ids: list[int] = field(default_factory=list)  # host ids of the request-owned pages (after prefix_len), in order
+    page_ids: list[int] = field(default_factory=list)  # host ids of the pages after prefix_len (-1: the cache owns it)
+    prompt_node: Node | None = None  # where `cache_prompt` ended the prompt in the cache; locked until release
     cacheable: bool = True
     cache_enabled: bool = False
     released: bool = False
@@ -183,6 +184,22 @@ class StateManager:
         if not req.committed_len <= end <= len(req.pages):
             raise ValueError("prefill commit outside owned pages")
         req.prefill_pos = req.committed_len = end
+
+    def cache_prompt(self, req: Request) -> None:
+        """With an SSD tier, hand the cache the prompt's whole blocks as soon as the prompt is prefilled, locked for the
+        request, and queue them for backup: the tier writes them while the request decodes instead of after it
+        finishes, so eviction finds them stored. A prompt's KV is final once it is prefilled, a drafter's stored pages
+        included (`stored_pages`): decoding writes only the positions after it."""
+        end = self.cache.backup_span(req.prefill_len) if self.cache is not None and req.cacheable else 0
+        if end <= req.prefix_len or req.prompt_node is not None:
+            return
+        ids = req.prefill_ids[:end]
+        owned = [-1] * req.prefix_len + req.page_ids
+        new_start = min(self.cache.insert(ids, req.pages[:end], {}, page_ids=owned[:end]), end)
+        req.page_ids[new_start - req.prefix_len:end - req.prefix_len] = [-1] * (end - new_start)  # the cache's from now on
+        req.prompt_node = self.cache.node_at(ids)
+        self.cache.lock(req.prompt_node, 1)
+        self.cache.backup(ids)
 
     def reserve(self, requests: list[Request], width: int) -> torch.Tensor:
         if width < 1 or any(r.reservation is not None or r.finished for r in requests):
@@ -357,9 +374,12 @@ class StateManager:
         if req.match is not None:
             self.cache.lock(req.match.node, -1)
             req.match = None
+        if req.prompt_node is not None:
+            self.cache.lock(req.prompt_node, -1)
+            req.prompt_node = None
         if not cached:
             if req.pages is not None:
-                self.kv.free_ids(req.page_ids)  # host ids: no device read-back
+                self.kv.free_ids([p for p in req.page_ids if p >= 0])  # host ids: no device read-back
             if req.slot >= 0:
                 self.recurrent.free(req.slot)
             for slot in req.checkpoints.values():
@@ -377,10 +397,10 @@ class StateManager:
         for p, slot in req.checkpoints.items():
             if p >= n:
                 self.recurrent.free(slot)
-        ids_full = [-1] * req.prefix_len + req.page_ids  # -1: cache-owned prefix pages (never freed here)
+        ids_full = [-1] * req.prefix_len + req.page_ids  # -1: cache-owned pages (never freed here)
         new_start = self.cache.insert(ids, req.pages[:n], snapshots, req.cache_auxiliary, page_ids=ids_full[:n])
         if new_start > req.prefix_len:
-            self.kv.free_ids(ids_full[req.prefix_len:new_start])
+            self.kv.free_ids([p for p in ids_full[req.prefix_len:new_start] if p >= 0])
         if len(req.pages) > n:
             self.kv.free_ids(ids_full[n:])
         req.page_ids = []  # ownership moved to the cache
