@@ -308,9 +308,11 @@ class SsdStore:
                     self.deletes += 1
             else:
                 try:
+                    if c is not None:
+                        c.synchronize()  # the payload's copy lands before anything here can fail and free it
                     if buf is None and self.direct:
                         buf = mmap.mmap(-1, WRITE_BUFFER)  # anonymous, so page-aligned
-                    done = self._write(a, b, c, buf)
+                    done = self._write(a, b, buf)
                 except Exception as exc:  # a full disk or an I/O error loses the stored copy, never the served request
                     with self._lock:
                         self.write_errors += 1
@@ -322,10 +324,8 @@ class SsdStore:
                     self._filled.notify_all()
             jobs.task_done()
 
-    def _write(self, header: Header, tensors: list[torch.Tensor], ready, buf: mmap.mmap | None) -> tuple[str, str, bool, int]:
+    def _write(self, header: Header, tensors: list[torch.Tensor], buf: mmap.mmap | None) -> tuple[str, str, bool, int]:
         t0 = time.perf_counter()
-        if ready is not None:
-            ready.synchronize()
         chunks = []
         for t in tensors:  # each segment starts 256-byte aligned, so a read can view every dtype in place
             chunk = _bytes(t).cpu()

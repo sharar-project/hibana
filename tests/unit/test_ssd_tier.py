@@ -240,10 +240,10 @@ def test_a_failed_tail_write_removes_the_unrestorable_leaf(tmp_path, monkeypatch
     settle(cache, tier)
     real = tier.store._write
 
-    def full_disk(header, tensors, ready):
+    def full_disk(header, tensors, buf):
         if header.kind == "tail":
             raise OSError(28, "No space left on device")
-        return real(header, tensors, ready)
+        return real(header, tensors, buf)
     monkeypatch.setattr(tier.store, "_write", full_disk)
     evict_all(cache, kv)
     settle(cache, tier)
