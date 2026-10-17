@@ -19,7 +19,7 @@ def test_packed_output_equals_the_split_output(lens):
 
     def run(**kw):
         states = torch.randn(len(lens), dim, width - 1, device="cuda", dtype=torch.bfloat16, generator=torch.Generator("cuda").manual_seed(3))
-        out = causal_conv1d_fn(x.transpose(0, 1), weight, None, conv_states=states, has_initial_state=initial,
+        out = causal_conv1d_fn(x.transpose(0, 1), weight, conv_states=states, has_initial_state=initial,
                                cache_indices=cache, query_start_loc=starts, seq_lens_cpu=lens, activation="silu", **kw)
         return out, states
 

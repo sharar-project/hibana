@@ -79,8 +79,7 @@ class FlashNextGdn(GatedDeltaNet):
 
     def _finish(self, core: torch.Tensor, z: torch.Tensor, t: int, *, verify: bool = False) -> torch.Tensor:
         core = rms_norm_gated(
-            x=core.reshape(t, self.value_dim), weight=self.norm_weight, bias=None, z=z.reshape(t, self.value_dim),
-            eps=self.eps, group_size=self.head_v_dim, norm_before_gate=True, is_rms_norm=True,
-            activation=self.gate_activation,
+            x=core.reshape(t, self.value_dim), weight=self.norm_weight, z=z.reshape(t, self.value_dim),
+            eps=self.eps, group_size=self.head_v_dim, activation=self.gate_activation,
         )
         return self.out(core)

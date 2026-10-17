@@ -4,21 +4,13 @@
 import contextlib
 import functools
 import inspect
-import logging
 import os
-from enum import Enum
 from functools import lru_cache
-from typing import Any, Callable, Dict, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import torch
 import triton
 
-from sharar.kernels._compat import torch_release
-
-logger = logging.getLogger(__name__)
-
-COMPILER_MODE = os.getenv("FLA_COMPILER_MODE") == "1"
-FLA_CI_ENV = os.getenv("FLA_CI_ENV") == "1"
 FLA_CACHE_RESULTS = os.getenv("FLA_CACHE_RESULTS", "1") == "1"
 
 
@@ -29,35 +21,6 @@ SUPPORTS_AUTOTUNE_CACHE = (
 autotune_cache_kwargs = (
     {"cache_results": FLA_CACHE_RESULTS} if SUPPORTS_AUTOTUNE_CACHE else {}
 )
-
-
-def get_abs_err(x, y):
-    return (x.detach() - y.detach()).flatten().abs().max().item()
-
-
-def get_err_ratio(x, y):
-    err = (x.detach() - y.detach()).flatten().square().mean().sqrt().item()
-    base = (x.detach()).flatten().square().mean().sqrt().item()
-    return err / (base + 1e-8)
-
-
-def assert_close(prefix, ref, tri, ratio, warning=False, err_atol=1e-6):
-    abs_atol = get_abs_err(ref, tri)
-    msg = f"{prefix} diff: {abs_atol:.6f} ratio: {get_err_ratio(ref, tri):.6f}"
-    logger.info(msg)
-    error_rate = get_err_ratio(ref, tri)
-    if abs_atol <= err_atol:
-        return
-    if warning or (FLA_CI_ENV and (error_rate < 0.01 or abs_atol <= 0.3)):
-        if error_rate > ratio:
-            import warnings
-
-            warnings.warn(msg)
-    else:
-        assert error_rate < ratio, msg
-
-
-SUPPRESS_LEVEL = int(os.getenv("GDN_RECOMPUTE_SUPPRESS_LEVEL", "0"))
 
 
 def tensor_cache(fn: Callable[..., torch.Tensor]) -> Callable[..., torch.Tensor]:
@@ -139,150 +102,24 @@ def input_guard(fn: Callable[..., torch.Tensor]) -> Callable[..., torch.Tensor]:
     return wrapper
 
 
-contiguous = input_guard
-
-
-def require_version(version, hint):
-    """
-    Perform a runtime check of the dependency versions, using the exact same syntax used by pip.
-    """
-
-    def decorator(fn):
-        @functools.wraps(fn)
-        def wrapper(ctx, *args, **kwargs):
-            from transformers.utils.versions import require_version
-
-            require_version(version, hint)
-            return fn(
-                ctx,
-                *(
-                    i if not isinstance(i, torch.Tensor) else i.contiguous()
-                    for i in args
-                ),
-                **{
-                    k: (v if not isinstance(v, torch.Tensor) else v.contiguous())
-                    for k, v in kwargs.items()
-                },
-            )
-
-        return wrapper
-
-    return decorator
-
-
-def checkpoint(fn):
-    def wrapper(*args, **kwargs):
-        return torch.utils.checkpoint.checkpoint(fn, *args, **kwargs)
-
-    return wrapper
-
-
-def _cpu_device_warning():
-    import warnings
-
-    warnings.warn(
-        ("Triton is not supported on current platform, roll back to CPU."), stacklevel=1
-    )
-
-
 @lru_cache(maxsize=None)
 def get_available_device() -> str:
     try:
         return triton.runtime.driver.active.get_current_target().backend
     except BaseException:
-        _cpu_device_warning()
         return "cpu"
 
 
-@lru_cache(maxsize=None)
-def _check_platform() -> Literal["nvidia", "amd", "intel", "musa"]:
-    device = get_available_device()
-    if device == "cuda":
-        return "nvidia"
-    elif device == "hip":
-        return "amd"
-    elif device == "xpu":
-        return "intel"
-    else:
-        return device
-
-
-# For AMD GPUs, the triton backend is 'hip', while for Nvidia GPUs, the triton backend is 'cuda'.
-# However, the torch backend is 'cuda' for both Nvidia and AMD GPUs.
-# Therefore, we need to check the triton backend to determine the actual GPU vendor.
-device = get_available_device() if get_available_device() != "hip" else "cuda"
+device = get_available_device()
 device_torch_lib = getattr(torch, device)
-device_platform = _check_platform()
+is_nvidia = device == "cuda"
 
-is_amd = device_platform == "amd"
-is_intel = device_platform == "intel"
-is_nvidia = device_platform == "nvidia"
-is_intel_alchemist = is_intel and "Intel(R) Arc(TM) A" in torch.xpu.get_device_name(0)
-is_nvidia_hopper = is_nvidia and (
-    "NVIDIA H" in torch.cuda.get_device_name(0)
-    or torch.cuda.get_device_capability()[0] >= 9
-)
-use_cuda_graph = is_nvidia and os.environ.get("FLA_USE_CUDA_GRAPH", "0") == "1"
-
-# Nvidia Ampere or newer, haven't check AMD and intel yet.
+# Nvidia Ampere or newer.
 is_tf32_supported = is_nvidia and torch.cuda.get_device_capability(0)[0] >= 8
-is_gather_supported = hasattr(triton.language, "gather")
+
+device = "cuda" if device == "cpu" else device
+autocast_custom_fwd = functools.partial(torch.amp.custom_fwd, device_type=device)
 
 
-def get_all_max_shared_mem():
-    try:
-        return [
-            triton.runtime.driver.active.utils.get_device_properties(i)[
-                "max_shared_mem"
-            ]
-            for i in range(device_torch_lib.device_count())
-        ]
-    except BaseException:
-        _cpu_device_warning()
-        return [-1]
-
-
-class Backend(Enum):
-    ADA = 101376  # RTX 4090
-    AMPERE = 166912  # A100
-    HOPPER = 232448  # H100
-    DEFAULT = 102400  # Default
-
-    @classmethod
-    def get_shared_memory(cls, arch: str) -> int:
-        try:
-            return cls[arch.upper()].value
-        except KeyError:
-            return cls.DEFAULT.value
-
-
-@lru_cache(maxsize=None)
-def check_shared_mem(arch: str = "none", tensor_idx: int = 0) -> bool:
-    try:
-        device_shared_mem_list = get_all_max_shared_mem()
-        max_shared_memory = device_shared_mem_list[tensor_idx]
-        return max_shared_memory >= Backend.get_shared_memory(arch)
-    except Exception:
-        return False
-
-
-if torch_release >= (2, 4):
-    device = "cuda" if device == "cpu" else device
-    autocast_custom_fwd = functools.partial(torch.amp.custom_fwd, device_type=device)
-    autocast_custom_bwd = functools.partial(torch.amp.custom_bwd, device_type=device)
-
-    def custom_device_ctx(index: int):
-        return device_torch_lib.device(index)
-
-else:
-    assert (
-        device == "cuda"
-    ), "Only cuda device is supported for PyTorch version < 2.4.0."
-    autocast_custom_fwd = device_torch_lib.amp.custom_fwd
-    autocast_custom_bwd = device_torch_lib.amp.custom_bwd
-
-    def custom_device_ctx(index: int):
-        return torch.cuda.device(index)
-
-
-device_platform = get_available_device()
+def custom_device_ctx(index: int):
+    return device_torch_lib.device(index)

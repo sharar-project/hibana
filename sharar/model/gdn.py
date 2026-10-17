@@ -118,9 +118,8 @@ class GatedDeltaNet:
             normalized = verify_gated_norm(core, z, self.norm_weight, self.eps, self.head_v_dim)
             return quant_fp8(normalized.reshape(t, self.value_dim), self.out.input_scale)
         core = rms_norm_gated(
-            x=core.reshape(t, self.value_dim), weight=self.norm_weight, bias=None, z=z,
-            eps=self.eps, group_size=self.head_v_dim, norm_before_gate=True,
-            is_rms_norm=True, activation="swish",
+            x=core.reshape(t, self.value_dim), weight=self.norm_weight, z=z,
+            eps=self.eps, group_size=self.head_v_dim, activation="swish",
         )
         return quant_fp8(core, self.out.input_scale)
 
@@ -151,7 +150,6 @@ class GatedDeltaNet:
         packed = causal_conv1d_fn(
             mixed_qkv.transpose(0, 1),
             self.conv_weight,
-            None,
             activation="silu",
             conv_states=conv_states,
             has_initial_state=plan.has_initial_state,
@@ -180,7 +178,6 @@ class GatedDeltaNet:
             cu_seqlens=plan.query_start_loc,
             chunk_indices=plan.chunk_indices,
             chunk_offsets=plan.chunk_offsets,
-            head_first=False,
             use_qk_l2norm_in_kernel=True,
         )
         # h[0, c] is the state entering chunk c, laid out per sequence.
@@ -197,7 +194,7 @@ class GatedDeltaNet:
         ssm_states = ctx.state_pool.ssm[self.layer_id]
         mixed_qkv, z, b, a = self._project(x, x_q)
         mixed_qkv = causal_conv1d_update(
-            mixed_qkv, conv_states, self.conv_weight, None, "silu", conv_state_indices=ctx.slots
+            mixed_qkv, conv_states, self.conv_weight, "silu", conv_state_indices=ctx.slots
         )
         if _window(ctx) is not None:
             return self._window_out(self._window_decode(mixed_qkv, z, b, a, ctx), z, b_sz)

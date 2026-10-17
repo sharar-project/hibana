@@ -169,8 +169,8 @@ def test_fused_sigmoid_norm_epilogue_matches_the_separate_kernel(steps):
     weight = (1 + 0.1 * torch.randn(lay.v, device="cuda", generator=g)).to(torch.bfloat16).repeat(lay.value_heads)
     rk, ru, rg = _ring(batch, 16)
     core = W.window_verify(lay, views, slots=slots, steps=steps, ring_k=rk, ring_u=ru, ring_g=rg, **ins)
-    want = rms_norm_gated(x=core.reshape(tokens, -1), weight=weight, bias=None, z=gate, eps=1e-6, group_size=lay.v,
-                          norm_before_gate=True, is_rms_norm=True, activation="sigmoid")
+    want = rms_norm_gated(x=core.reshape(tokens, -1), weight=weight, z=gate, eps=1e-6, group_size=lay.v,
+                          activation="sigmoid")
     rk2, ru2, rg2 = _ring(batch, 16)
     got = W.window_verify(lay, views, slots=slots, steps=steps, ring_k=rk2, ring_u=ru2, ring_g=rg2,
                           norm=(gate, weight, 1e-6, None, "sigmoid"), **ins)

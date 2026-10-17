@@ -44,7 +44,7 @@ def prefill(*, q, k, v, g, beta, state, plan, triton_kernel=None):
             q=q, k=k, v=v, g=g, beta=beta, initial_state=state,
             initial_state_indices=plan.cache_indices,
             cu_seqlens=plan.query_start_loc, chunk_indices=plan.chunk_indices,
-            chunk_offsets=plan.chunk_offsets, head_first=False,
+            chunk_offsets=plan.chunk_offsets,
             use_qk_l2norm_in_kernel=True,
         )
         for slot, _, chunk in plan.checkpoints:

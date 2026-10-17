@@ -17,10 +17,6 @@ def is_arch_support_pdl() -> bool:
     return torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 9
 
 
-# SGLang exposes this as a (major, minor) tuple, and the fla utils compare it.
-torch_release = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2])
-
-
 def cdiv(a: int, b: int) -> int:
     return (a + b - 1) // b
 
