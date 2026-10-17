@@ -77,6 +77,19 @@ def test_the_profile_alone_turns_the_3bit_copies_on(profile, target, w3):
     assert launch.profile_defaults(profile, target)["SHARAR_W3_DECODE"] == w3
 
 
+@pytest.mark.parametrize("profile, target, backend", [
+    ("exact", "flashnext", None), ("fast", "flashnext", "auto"), ("throughput", "flashnext", "auto"),
+    ("fast", "qwen38", None), ("throughput", "qwen38", None)])
+def test_the_lossy_profiles_take_the_optimized_qsa_prefill(profile, target, backend):
+    # exact keeps the original kernels (the engine's own default); an explicit setting still wins
+    assert launch.profile_defaults(profile, target).get("SHARAR_QSA_PREFILL_BACKEND") == backend
+
+
+def test_an_explicit_qsa_prefill_backend_wins_over_the_profile(env):
+    assert resolve({**env, "SHARAR_QSA_PREFILL_BACKEND": "original"}, "flashnext", "fast").get("SHARAR_QSA_PREFILL_BACKEND") == "original"
+    assert resolve(env, "flashnext", "fast").get("SHARAR_QSA_PREFILL_BACKEND") == "auto"
+
+
 @pytest.mark.parametrize("target, experts, batch, depths", [
     ("flashnext", "w3", "128", "16:3,32:3,64:3,128:3"), ("flashnext", "nvfp4", "64", "16:3"), ("qwen38", "w3", "16", None)])
 def test_throughput_decodes_more_requests(target, experts, batch, depths):

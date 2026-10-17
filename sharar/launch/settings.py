@@ -40,7 +40,8 @@ TARGET_SETTINGS = {
 #             verify 4 drafts), and Flash-Next's batch-aware expert selection (keep 5 + reuse 5: each token's own top
 #             5, then up to 5 the forward's other tokens already read; one Spark: decode +20% at one request, +27-41%
 #             at sixteen, the quick suite within noise at both; two Sparks: +10-12% at one request, +18% at sixteen;
-#             at 32 / 64 / 128 requests +14 / +12 / +7% on one Spark, +13 / +9 / +6% on two)
+#             at 32 / 64 / 128 requests +14 / +12 / +7% on one Spark, +13 / +9 / +6% on two), and Flash-Next's
+#             optimized QSA prefill kernels where eligible (SHARAR_QSA_PREFILL_BACKEND=auto: RULER v2 32K equal)
 #   throughput  fast with more requests decoded together: the 27B 16 (full depth; batches of five or more verify on
 #             the original weights, GSM8K x1.74), Flash-Next 128 with its 3-bit experts (64 with NVFP4 experts), three
 #             drafts at sixteen requests so their verification stays within the 64 rows the 3-bit copies serve (four
@@ -64,6 +65,9 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
     if flashnext and profile != "exact":
         # batch-aware expert selection: decode and verify forwards at any number of requests
         p.update(SHARAR_MOE_KEEP="5", SHARAR_MOE_REUSE="5")
+        # the optimized QSA prefill kernels where eligible (SM121, one or two Sparks, through 32K): RULER v2 32K 94.1
+        # against 94.0 (120 items, 2 better / 2 worse), prefill 3-4% faster at 8K and 32K
+        p["SHARAR_QSA_PREFILL_BACKEND"] = "auto"
     if flashnext:
         p["SHARAR_SPEC"] = "4"
         if profile == "fast":  # adaptive depth: h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
