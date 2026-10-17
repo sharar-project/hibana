@@ -253,6 +253,23 @@ def test_a_failed_tail_write_removes_the_unrestorable_leaf(tmp_path, monkeypatch
 LONG = list(range(5000, 5000 + 6 * BLOCK + 11))  # six full blocks and an 11-token tail
 
 
+def test_a_prefill_step_backs_up_past_the_decode_step_budget_and_leaves_room_for_a_tail(tmp_path):
+    """A decode step gathers `step_bytes`; a prefill step gathers what the staging limit takes, less one tail's room."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    cost = tier._block_charge()
+    tier.step_bytes = cost
+    release(cache, tier, kv, sp, feats, LONG, seed=5)  # six blocks queued
+    tier.step(cache)
+    assert tier.backed_blocks == 1
+    tier.store.wait()  # the next step applies that write first: nothing in flight
+    tier.staging_bytes = tier._tail_room + 2 * cost
+    tier.step(cache, prefilling=True)
+    assert tier.backed_blocks == 3 and tier.staged == 2 * cost
+    tier.staging_bytes = 2**30
+    tier.step(cache, prefilling=True)
+    assert tier.backed_blocks == 6 and not tier.queue
+
+
 def test_a_restore_streams_through_a_staging_buffer_smaller_than_it(tmp_path):
     cache, tier, kv, sp, feats = engine(tmp_path, chunk_bytes=1)  # each half holds one object: seven chunks, alternating halves
     before = release(cache, tier, kv, sp, feats, LONG, seed=11)

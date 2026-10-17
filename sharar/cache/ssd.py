@@ -12,8 +12,9 @@ The tiered radix tree (`radix.py`) is the only record of what is on disk;
   a snapshot the GPU cache later drops for want of state slots stays
   restorable. `step()` (every engine loop iteration) gathers queued tails,
   then queued blocks, from the pool pages and slots into pinned host memory,
-  up to `step_bytes` per step and `staging_bytes` in flight, and hands them
-  to the store's writer threads.
+  up to `step_bytes` while no request is prefilling and as much as staging
+  takes while one is, blocks leaving room for one tail within `staging_bytes`
+  in flight, and hands them to the store's writer threads.
   An object larger than that limit goes out alone. Gathers that eviction, a
   restore or shutdown need at once wait for room. `step()` skips a queued
   tail whose snapshot the GPU cache dropped first.
@@ -261,6 +262,11 @@ def _pinned(nbytes: int) -> int:
     return 1 << max(nbytes - 1, 0).bit_length()
 
 
+def _charge(sizes, cuda: bool) -> int:
+    """What host copies of `sizes` bytes hold against the staging limit."""
+    return sum(_pinned(n) for n in sizes) if cuda else sum(sizes)
+
+
 def _to_host(t: torch.Tensor, cuda: bool) -> torch.Tensor:
     host = torch.empty(t.shape, dtype=t.dtype, pin_memory=cuda)
     host.copy_(t, non_blocking=cuda)
@@ -307,6 +313,9 @@ class SsdTier:
         self._staging = Staging(2 * max(self.chunk_bytes, _pad(tail)), device)
         self._layouts: dict = {}  # expected segment layouts by (kind, rows, aux counts); the pools' geometry is fixed
         self._payloads: dict = {}  # payload layouts by row count (`_payload`)
+        # what the largest tail holds against the staging limit (a block of KV less a token, a slot's state, and the
+        # largest drafter payload written so far): background gathers leave it free for eviction's tail
+        self._tail_room = self._tail_charge(self.block - 1, [t for _, t in self._state(0)])
         # asynchronous restores (`restore_async`): one at a time; a worker thread reads, the engine thread scatters
         self._worker = ThreadPoolExecutor(1, thread_name_prefix="sharar-ssd-restore")
         self._job: _Restore | None = None  # the restore in flight
@@ -502,9 +511,10 @@ class SsdTier:
                 for (a, b), host in zip(spans, hosts)]
 
     def _submit(self, kind: str, key: bytes, parent: bytes, start: int, tokens: list[int], segs, ref: SsdRef, scalars=None,
-                packed: torch.Tensor | None = None, spec=None) -> None:
+                packed: torch.Tensor | None = None, spec=None, held: list[int] | None = None) -> None:
         """Queue an object's write. `packed`: one host buffer holding every segment in payload layout (`_gather`),
-        described by `spec` (`_payload`) instead of `segs`."""
+        described by `spec` (`_payload`) instead of `segs`. `held`: the sizes of the host buffers `segs` are views
+        of, when they share some."""
         ready = None
         if self.device.type == "cuda":
             ready = torch.cuda.Event(blocking=True)  # writers wait on it: sleep, don't spin a core each
@@ -514,8 +524,8 @@ class SsdTier:
         else:
             spec = [[name, dtype, list(shape), n] for name, dtype, shape, n in spec]  # each header owns its spec
         # the pinned memory the copies hold: the caching host allocator rounds each up to a power of two
-        sizes = [packed.numel()] if packed is not None else [s[3] for s in spec]
-        pinned = sum(_pinned(n) for n in sizes) if self.device.type == "cuda" else sum(sizes)
+        sizes = [packed.numel()] if packed is not None else held if held is not None else [s[3] for s in spec]
+        pinned = _charge(sizes, self.device.type == "cuda")
         header = Header(kind, key.hex(), parent.hex(), start, tokens, spec, scalars or {})
         self.inflight[(kind, key.hex())] = (ref, pinned)
         self.staged += pinned
@@ -533,12 +543,17 @@ class SsdTier:
             assert self.staged == 0
         return True
 
+    def _block_charge(self) -> int:
+        """What one block's host copy holds against the staging limit."""
+        return _charge([self._payload(self.block)[1]], self.device.type == "cuda")
+
     def _gather_block(self, item, wait: bool = False) -> bool:
         return self._gather_blocks([item], wait) == 1
 
-    def _gather_blocks(self, items, wait: bool = False) -> int:
-        """Copy out queued blocks, those of one path in one gather, as many as the staging limit takes (waiting for
-        room with `wait`). Returns how many of items are done (copied, or no longer needing it): a prefix."""
+    def _gather_blocks(self, items, wait: bool = False, limit: int | None = None) -> int:
+        """Copy out queued blocks, those of one path in one gather, as many as the staging limit (or `limit`, below
+        it) takes, waiting for room with `wait`. Returns how many of items are done (copied, or no longer needing
+        it): a prefix."""
         live = []  # (position in items, item, owner, ref)
         for i, item in enumerate(items):
             anchor, end, h, _ = item
@@ -546,9 +561,10 @@ class SsdTier:
             ref = owner.blocks.get(end)
             if not (ref is None or ref.key != h.hex() or ref.nbytes < 0 or ref.ready or ("kv", ref.key) in self.inflight):
                 live.append((i, item, owner, ref))
-        cost, j = self.block * self._row, 0
+        cost, j = self._block_charge(), 0
+        cap = self.staging_bytes if limit is None else limit
         while j < len(live):
-            fit = len(live) - j if self.staged + (len(live) - j) * cost <= self.staging_bytes else max(0, (self.staging_bytes - self.staged) // cost)
+            fit = len(live) - j if self.staged + (len(live) - j) * cost <= cap else max(0, (cap - self.staged) // cost)
             if fit == 0 and self.staged == 0:
                 fit = 1  # an object larger than the limit goes alone
             if fit == 0:
@@ -604,10 +620,10 @@ class SsdTier:
         for room for a tail, at most for the writes already in flight: without
         its tail no turn can resume from the prefix, so each ancestor would in
         turn need a tail of its own and be dropped with blocks already stored,
-        and the next turn would prefill all of it again. Background backups keep
-        the staging buffer full while long prompts are in flight, so a tail
-        rarely finds room at once. Shutdown (`patient`) waits for blocks too, so
-        every cached prefix is persisted."""
+        and the next turn would prefill all of it again. Background block backups
+        leave room for one tail, but the leaf's own queued blocks, copied just
+        before it, or a write-through tail can take that room. Shutdown
+        (`patient`) waits for blocks too, so every cached prefix is persisted."""
         t0 = time.perf_counter()
         end = leaf.depth
         missing, node = end // self.block, leaf
@@ -655,6 +671,19 @@ class SsdTier:
                 return False
         return True
 
+    def _state(self, slot: int) -> list[tuple[str, torch.Tensor]]:
+        sp = self.state_pool
+        return ([("conv", sp.conv_all[:, slot]), ("ssm", sp.ssm_all[:, slot])]
+                + [(f"pool.{name}", t[slot]) for name, t in sp.aux.items()])
+
+    def _tail_charge(self, rows: int, state: list[torch.Tensor]) -> int:
+        """What a tail of `rows` KV rows (one host buffer) and the `state` tensors (one each) holds against the
+        staging limit, as `_submit` charges it."""
+        return _charge(self._tail_sizes(rows, state), self.device.type == "cuda")
+
+    def _tail_sizes(self, rows: int, state: list[torch.Tensor]) -> list[int]:
+        return ([self._payload(rows)[1]] if rows else []) + [t.numel() * t.element_size() for t in state]
+
     def _write_tail(self, leaf: Node, end: int, wait: bool = False) -> bool:
         if leaf.tail is not None and leaf.tail.nbytes >= 0:
             return True  # already written (or on its way)
@@ -669,9 +698,8 @@ class SsdTier:
         if pending is not None:
             leaf.tail = pending
             return True
-        sp, slot, cuda = self.state_pool, leaf.snapshot_slot, self.device.type == "cuda"
-        state = [("conv", sp.conv_all[:, slot]), ("ssm", sp.ssm_all[:, slot])]
-        state += [(f"pool.{name}", t[slot]) for name, t in sp.aux.items()]
+        cuda = self.device.type == "cuda"
+        state = self._state(leaf.snapshot_slot)
         scalars = {}
         for identity, value in leaf.auxiliary.items():
             codec = self.codecs.get(identity)
@@ -680,7 +708,8 @@ class SsdTier:
                 continue
             scalars[str(identity)] = [x for x in payload if not torch.is_tensor(x)]
             state += [(f"aux.{identity}.{i}", x) for i, x in enumerate(t for t in payload if torch.is_tensor(t))]
-        nbytes = (end - whole) * self._row + sum(t.numel() * t.element_size() for _, t in state)
+        nbytes = self._tail_charge(end - whole, [t for _, t in state])
+        self._tail_room = max(self._tail_room, self._tail_charge(self.block - 1, [t for _, t in state]))
         if not self._room(nbytes, wait):
             return False
         # `_queue_blocks` queues the full blocks; gather the partial block only once the whole tail has room.
@@ -691,7 +720,8 @@ class SsdTier:
             tokens, segs, _ = got
             segs += [(name, _to_host(t, cuda)) for name, t in state]
             leaf.tail = SsdRef(key.hex())
-            self._submit("tail", key, last, whole, tokens, segs, leaf.tail, scalars)
+            self._submit("tail", key, last, whole, tokens, segs, leaf.tail, scalars,
+                         held=self._tail_sizes(end - whole, [t for _, t in state]))
         self.tails += 1
         return True
 
@@ -795,8 +825,14 @@ class SsdTier:
         self._discard_node(node)
         cache.remove_ssd_leaf(node)
 
-    def _gather_queued(self, wait: bool = False) -> None:
-        spent = 0
+    def _gather_queued(self, wait: bool = False, prefilling: bool = False) -> None:
+        """Queued write-through tails, up to `step_bytes` a step, then queued blocks: up to `step_bytes` of payload
+        while no request is prefilling (copies there take DRAM time from the decode), as many as the staging limit
+        takes while one is (seconds of compute they hide behind), and every one with `wait` (shutdown). Background
+        blocks leave room for one tail, which eviction needs at once."""
+        budget, spent, size = (self.staging_bytes if prefilling else self.step_bytes), 0, self._payload(self.block)[1]
+        room = self.staging_bytes - self._tail_room  # below a tail and a block, blocks go one at a time without it
+        limit = None if wait or room < self._block_charge() else room
         while self.through and (wait or spent < self.step_bytes):  # tails first: a dropped snapshot is gone
             node, end = self.through[0]
             if node.tail is not None and node.tail.nbytes >= 0:  # eviction wrote it meanwhile, or backup queued it twice
@@ -811,23 +847,25 @@ class SsdTier:
             self.through.popleft()
             self.tails_through += 1
             spent += self.inflight[("tail", node.tail.key)][1]
-        while self.queue and (wait or spent < self.step_bytes):
-            take = len(self.queue) if wait else max(1, min(len(self.queue), (self.step_bytes - spent) // (self.block * self._row)))
+        while self.queue and (wait or spent < budget):
+            take = len(self.queue) if wait else max(1, min(len(self.queue), (budget - spent) // size))
             items = [self.queue[i] for i in range(take)]
-            done = self._gather_blocks(items, wait=wait)
+            done = self._gather_blocks(items, wait=wait, limit=limit)
             for _ in range(done):
                 self.queue.popleft()
-            spent += done * self.block * self._row
+            spent += done * size
             if done < take:
                 break
 
-    def step(self, cache: RadixCache) -> None:
+    def step(self, cache: RadixCache, prefilling: bool = False) -> None:
+        """Each engine step; `prefilling`: a request is mid-prefill as the step starts (scheduler state, the same on
+        every rank)."""
         t0 = time.perf_counter()
         self._steps += 1
         self._poll(cache)
         self._finish_writes()
         self._trim(cache)
-        self._gather_queued()
+        self._gather_queued(prefilling=prefilling)
         spent = time.perf_counter() - t0
         self.step_seconds += spent
         self.step_max = max(self.step_max, spent)

@@ -214,10 +214,11 @@ class RadixCache:
         end = length // self.ssd.block * self.ssd.block
         return end if end >= self.ssd.min_tokens else 0
 
-    def step(self) -> None:
-        """Once per engine loop iteration: apply finished SSD writes, trim to the SSD budget and start queued backups."""
+    def step(self, prefilling: bool = False) -> None:
+        """Once per engine loop iteration: apply finished SSD writes, trim to the SSD budget and start queued backups
+        (more of them while a request is prefilling)."""
         if self.ssd is not None:
-            self.ssd.step(self)
+            self.ssd.step(self, prefilling)
 
     def lock(self, node: Node | None, delta: int) -> None:
         while node is not None and node is not self.root:

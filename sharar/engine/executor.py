@@ -311,11 +311,12 @@ class Executor:
         if log:
             log(f"  ssd tier: {listed} stored prefixes, {tier.used / GIB:.1f} of {tier.budget / GIB:.0f} GiB, {tier.block}-token blocks")
 
-    def cache_step(self) -> None:
+    def cache_step(self, prefilling: bool = False) -> None:
         """Once per engine loop iteration: the prefix cache's background work
-        (finished SSD writes, the disk budget, queued backups)."""
+        (finished SSD writes, the disk budget, queued backups; more of them
+        while a request is prefilling)."""
         if self.cache is not None:
-            self.cache.step()
+            self.cache.step(prefilling)
 
     def persist_prefixes(self, log=None) -> int:
         """At shutdown, with the engine stopped: write every cached prefix to
