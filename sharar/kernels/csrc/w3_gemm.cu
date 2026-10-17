@@ -350,7 +350,8 @@ void launch(torch::Tensor y, torch::Tensor ws, torch::Tensor counters, torch::Te
 //            in passes of at most 64 rows (the weights stream once per pass; wide calls: one block per pass of at
 //            most kWide rows). Epilogue: h = bf16(silu(bf16 gate)
 //            * bf16 up) for the block's 64 intermediate columns, then E4M3 per (pair, 32-group) into hq / hs.
-//   fc2      grid (2560 / 128, min(pairs, 512)): the same loop over each pair's quantized h; FP32 y per pair.
+//   fc2      grid (2560 / 128, min(pairs, 512)): the same loop over each pair's quantized h; FP32 y per pair (BF16 when
+//            the caller asks for its pairs in BF16: half the traffic of the widest tensor of a prefill call).
 //   combine  out[r] = bf16(sum_k w[r, k] * y[r, k]) in selection order.
 namespace moe {
 
@@ -381,6 +382,7 @@ struct Params {
   uint8_t* hq;  // [pairs, kI] e4m3
   float* hs;    // [pairs, kI / 32]
   float* y;     // [pairs, kH]
+  __nv_bfloat16* yb;  // [pairs, kH] instead of y when the pairs are returned in BF16, else null
   __nv_bfloat16* out;
   uint32_t lut_lo, lut_hi;
   int M;
@@ -732,18 +734,20 @@ __device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], S
   }
 
   const float* rs = (FC1 ? p.row13 : p.row2) + static_cast<size_t>(e) * N + nb * 32;
-  if (!FC1) {  // y[pair, n] in FP32
+  if (!FC1) {  // y[pair, n] in FP32, or BF16
 #pragma unroll
     for (int mt = 0; mt < MT; ++mt)
 #pragma unroll
       for (int half = 0; half < 2; ++half) {
         const int m = mt * 16 + g + 8 * half;
         if (m < rows) {
-          float* yr = p.y + static_cast<size_t>(__ldg(list + m)) * kH + nb * 32;
+          const size_t at = static_cast<size_t>(__ldg(list + m)) * kH + nb * 32;
 #pragma unroll
           for (int nt = 0; nt < 4; ++nt) {
             const int n = nt * 8 + 2 * t;
-            *reinterpret_cast<float2*>(yr + n) = make_float2(acc[mt][nt][2 * half] * rs[n], acc[mt][nt][2 * half + 1] * rs[n + 1]);
+            const float2 v = make_float2(acc[mt][nt][2 * half] * rs[n], acc[mt][nt][2 * half + 1] * rs[n + 1]);
+            if (p.yb) *reinterpret_cast<__nv_bfloat162*>(p.yb + at + n) = __float22bfloat162_rn(v);
+            else *reinterpret_cast<float2*>(p.y + at + n) = v;
           }
         }
       }
@@ -918,18 +922,19 @@ std::vector<torch::Tensor> quant_groups(torch::Tensor x) {
 // Routed experts in the three-bit format for x [M, 2560] bf16, ids [M, k] int32, weights [M, k] fp32 (k <= 10) -> bf16
 // [M, 2560] (the routed sum; no shared expert). The weights hold experts e_lo .. e_lo + E - 1 (all 512, or one
 // rank's range under expert parallelism): pairs routed elsewhere are skipped, and the result is this rank's partial
-// sum. With `pairs`, the FP32 output of every (row, k) pair [M * k, 2560] instead, unsummed (rows of pairs routed
-// elsewhere are not written). `wide_rows`: from this many rows each pass of up to kWide pairs gets its own block (`gemm_pass_kernel`; the same bits).
+// sum. With `pairs` 1, the FP32 output of every (row, k) pair [M * k, 2560] instead, unsummed (rows of pairs routed
+// elsewhere are not written); with `pairs` 2 the same in BF16. `wide_rows`: from this many rows each pass of up to kWide pairs gets its own block (`gemm_pass_kernel`; the same bits).
 // `order`: when there are more than 640 pairs, this rank's pairs stably sorted by expert first (int32 [M * k],
 // the others after them), else empty (the prep kernel sorts them). An id outside e_lo .. e_lo + E - 1 (another rank's
 // expert, or 512 and above: none) adds no pair, whatever its weight.
 torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, torch::Tensor order,
                      torch::Tensor planes13, torch::Tensor scales13, torch::Tensor row13,
                      torch::Tensor planes2, torch::Tensor scales2, torch::Tensor row2, int64_t lut, int64_t e_lo,
-                     int64_t wide_rows, bool pairs) {
+                     int64_t wide_rows, int64_t pairs) {
   using namespace moe;
   const int M = x.size(0), topk = ids.dim() == 2 ? ids.size(1) : 0, P = M * topk;
   TORCH_CHECK(M >= 1, "w3_moe: no rows");
+  TORCH_CHECK(pairs >= 0 && pairs <= 2, "pairs: 0 (the sum), 1 (FP32 pairs) or 2 (BF16 pairs)");
   TORCH_CHECK(x.is_cuda() && x.dtype() == at::kBFloat16 && x.is_contiguous() && x.size(1) == kH, "x must be contiguous bf16 [M, 2560]");
   TORCH_CHECK(ids.dim() == 2 && ids.dtype() == at::kInt && ids.is_contiguous() && ids.size(0) == M && topk >= 1 && topk <= kMaxTopk,
               "ids must be int32 [M, k] with 1 <= k <= 10");
@@ -954,13 +959,15 @@ torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, 
   auto xs = torch::empty({M, kH / 32}, f32);
   auto hq = torch::empty({P, kI}, u8);
   auto hs = torch::empty({P, kI / 32}, f32);
-  auto y = torch::empty({P, kH}, f32);
+  auto y = torch::empty({pairs == 2 ? 0 : P, kH}, f32);
+  auto yb = pairs == 2 ? torch::empty({P, kH}, x.options()) : torch::Tensor();
   auto out = torch::empty({M, kH}, x.options());
   Params p{(const __nv_bfloat16*)x.data_ptr(), (const int*)ids.data_ptr(), (const float*)weights.data_ptr(),
            (const uint4*)planes13.data_ptr(), (const uint4*)scales13.data_ptr(), (const uint4*)planes2.data_ptr(), (const uint4*)scales2.data_ptr(),
            (const float*)row13.data_ptr(), (const float*)row2.data_ptr(), (int*)plan.data_ptr(),
            wide ? (int*)work.data_ptr() : nullptr, (int*)sorted.data_ptr(),
            (uint8_t*)xq.data_ptr(), (float*)xs.data_ptr(), (uint8_t*)hq.data_ptr(), (float*)hs.data_ptr(), (float*)y.data_ptr(),
+           pairs == 2 ? (__nv_bfloat16*)yb.data_ptr() : nullptr,
            (__nv_bfloat16*)out.data_ptr(),
            static_cast<uint32_t>(lut & 0xFFFFFFFFu), static_cast<uint32_t>(static_cast<uint64_t>(lut) >> 32), M, topk,
            topk == 1 ? 0u : static_cast<uint32_t>(0xFFFFFFFFu / topk + 1), static_cast<int>(e_lo), static_cast<int>(E), sort};
@@ -978,7 +985,7 @@ torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, 
   }
   if (pairs) {  // the caller sums them (flashnext_fused.moe_combine_pairs: this combine's arithmetic, fused with the next step)
     C10_CUDA_KERNEL_LAUNCH_CHECK();
-    return y;
+    return pairs == 2 ? yb : y;
   }
   combine_kernel<<<(M * kH + 255) / 256, 256, 0, stream>>>(p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();

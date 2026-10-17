@@ -154,3 +154,33 @@ def test_pairs_then_fused_combine_gives_the_same_bits(experts, m, expert_paralle
     pairs = w3_moe.w3_moe(ex, x, ids, weights, pairs=True)
     actual = fk.moe_combine_pairs(pairs, ids, weights, shared, x, gate, ex.base, ex.experts)
     assert torch.equal(actual.view(torch.int16), expected.view(torch.int16))
+
+
+@pytest.mark.parametrize("m", [5, 200, 1500])
+@pytest.mark.parametrize("expert_parallel", [False, True])
+def test_bf16_pairs_are_the_fp32_pairs_rounded(experts, m, expert_parallel):
+    """`pairs_bf16` (prefill calls): each pair is the FP32 pair rounded once to BF16, and `moe_combine_pairs` sums
+    them like the FP32 pairs."""
+    from dataclasses import replace
+
+    from sharar.kernels import flashnext_fused as fk
+    torch.manual_seed(400 + m)
+    k = w3_moe.TOPK
+    x = torch.randn(m, w3_moe.HIDDEN, device="cuda", dtype=torch.bfloat16)
+    ids = torch.stack([torch.randperm(E, device="cuda")[:k] for _ in range(m)]).to(torch.int32)
+    weights = torch.softmax(torch.randn(m, k, device="cuda"), -1)
+    ex = experts
+    if expert_parallel:
+        half = E // 2
+        ex = replace(experts, planes13=experts.planes13[half:], scales13=experts.scales13[half:], row13=experts.row13[half:],
+                     planes2=experts.planes2[half:], scales2=experts.scales2[half:], row2=experts.row2[half:], base=half)
+    fp32 = w3_moe.w3_moe(ex, x, ids, weights, pairs=True)
+    bf16 = w3_moe.w3_moe(ex, x, ids, weights, pairs=True, pairs_bf16=True)
+    assert bf16.dtype == torch.bfloat16
+    local = ((ids - ex.base >= 0) & (ids - ex.base < ex.experts)).reshape(-1)
+    assert torch.equal(bf16[local].view(torch.int16), fp32[local].to(torch.bfloat16).view(torch.int16))
+    shared = torch.randn(m, w3_moe.HIDDEN, device="cuda", dtype=torch.bfloat16)
+    gate = torch.randn(w3_moe.HIDDEN, device="cuda") * 0.02
+    expected = fk.moe_combine_pairs(fp32.to(torch.bfloat16).float(), ids, weights, shared, x, gate, ex.base, ex.experts)
+    actual = fk.moe_combine_pairs(bf16, ids, weights, shared, x, gate, ex.base, ex.experts)
+    assert torch.equal(actual.view(torch.int16), expected.view(torch.int16))
