@@ -11,11 +11,11 @@ sees the (p + 1) // 4 complete groups; past 512 of them it scores each group
 as relu(q . k) summed over the heads / sqrt(128), keeps the top 512 and adds
 its own pending tail, which is at most 2,051 tokens. The semantics are
 SGLang's `qsa` package (checked in `tests/unit/test_qsa_reference.py` and
-`tests/gpu/test_qsa.py`); the attention itself is `kernels/qsa.py`.
+`tests/gpu/test_qsa.py`); the attention itself is `kernels/qsa/attention.py`.
 
 Keys are maintained on every forward; selection runs only when some row is
 past the budget, otherwise attention stays the dense path it is equal to.
-Selection is `kernels/qsa_select.py`: fixed shapes, so graphs replay it too.
+Selection is `kernels/qsa/selection.py`: fixed shapes, so graphs replay it too.
 """
 
 from __future__ import annotations
@@ -38,6 +38,36 @@ class FlashNextIndexer:
         self.qk = w.get(f"{p}.index_qk_proj.weight").to(device)  # BF16 [5 * 128, hidden], as the checkpoint ships it
         self.q_norm = w.get(f"{p}.q_layernorm.weight").to(device)
         self.k_norm = w.get(f"{p}.k_layernorm.weight").to(device)
+        self._prefill = None
+        self._prefill_backend = "original"
+
+    def configure_prefill(self, target, cos_sin, *, sharded: bool = True) -> None:
+        from sharar.engine.config import current
+        from sharar.distributed import get_tp_info
+        cfg = current()
+        self._prefill = None
+        # Replicated MTP attention is outside the target prefill setting.
+        self._prefill_backend = cfg.qsa_prefill_backend if sharded else "original"
+        if self._prefill_backend == "original":
+            return
+        tp_size = get_tp_info().size
+        geometry = (target.num_attention_heads, target.num_kv_heads, target.head_dim)
+        supported = ((tp_size == 1 and geometry == (24, 2, 256))
+                     or (tp_size == 2 and geometry == (12, 1, 256)))
+        index_geometry = (self.heads, self.dim, self.ratio, self.budget, self.rotary_dim)
+        reason = None
+        if cfg.stable_numerics:
+            reason = "stable numerics is enabled"
+        elif not supported or index_geometry != (4, 128, 4, 2048, 64):
+            reason = f"unsupported TP={tp_size} attention/index geometry {geometry}/{index_geometry}"
+        elif not self.qk.is_cuda or torch.cuda.get_device_capability(self.qk.device) != (12, 1):
+            reason = "requires CUDA on SM121"
+        if reason is not None:
+            if self._prefill_backend == "optimized":
+                raise ValueError(f"SHARAR_QSA_PREFILL_BACKEND=optimized: {reason}")
+            return
+        from sharar.kernels.qsa.prefill import PrefillKernels
+        self._prefill = PrefillKernels(cos_sin)
 
     @property
     def bytes(self) -> int:
@@ -50,6 +80,17 @@ class FlashNextIndexer:
         """Store this forward's index keys and complete its groups; return the
         selected pages per row ([T, width] int32, valid first) and counts ([T]),
         or None when every row sees at most the budget (dense attention)."""
+        if ctx.extras is not None:
+            ctx.extras.qsa_optimized_prefill=False
+        optimized=getattr(self,"_prefill",None)
+        if optimized is not None and optimized.eligible(x,ctx,self):
+            return optimized.run(self,x,ctx,token_pages)
+        if getattr(self, "_prefill_backend", "original") == "optimized" and ctx.mode == "prefill":
+            from sharar.kernels.qsa.prefill import PrefillKernels
+            if PrefillKernels.in_scope(x, ctx, self):
+                raise ValueError("SHARAR_QSA_PREFILL_BACKEND=optimized: unsupported sparse eager prefill; "
+                                 "requires CUDA BF16 inputs, contiguous BF16 index weights, "
+                                 "matching sequence metadata and context <=32768")
         h, d = self.heads, self.dim
         aux = ctx.kv_pool.page_aux[self.name]
         qk = F.linear(x, self.qk)
@@ -66,7 +107,7 @@ class FlashNextIndexer:
                gcap: int, chunk: int | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """Selection for rows at `positions` from their index projections `qk`; `base` is each
         row's offset in the flat page `table`, `gcap` the groups the widest row may see."""
-        from sharar.kernels.qsa_select import select_pages
+        from sharar.kernels.qsa.selection import select_pages
         t, h, d = qk.shape[0], self.heads, self.dim
         q = gemma_rms(qk[:, : h * d].reshape(t, h, d), self.q_norm, self.eps)
         q = rope_neox(q, positions, self.rotary_dim, self.theta)

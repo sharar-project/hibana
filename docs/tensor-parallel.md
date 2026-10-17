@@ -15,8 +15,8 @@ that answers ssh (or `SHARAR_TP_PEER`). Before each serve it mirrors the checkou
 (`uv sync --frozen`; uv is copied there if missing), and copies the model, draft and 3-bit checkpoint (rsync copies
 only what changed). Both ranks run `sharar engine ... --tp 2 --tp-rank R`; when they meet, rank 0 broadcasts the
 `EngineConfig` it resolved, so rank 1 serves with rank 0's settings and the paths in them must exist on both Sparks.
-SIGTERM or Ctrl-C reaches rank 0 alone: it drains its requests, and the stop command it broadcasts ends rank 1; both
-persist their cached sessions first (below). In LXD/Incus containers whose CPU set has holes, each rank restarts
+SIGTERM or Ctrl-C reaches rank 0 alone: it drains its requests, and the stop it broadcasts ends rank 1; with the SSD
+tier on, both store their cached prefixes first (below). In LXD/Incus containers whose CPU set has holes, each rank restarts
 itself in a namespace whose CPU lists agree with `/proc/cpuinfo` (`sharar/launch/lxcfs.py`), which keeps
 `import torch` from corrupting its heap.
 
@@ -31,13 +31,11 @@ vanishes). When a rank ends, however it ends, the others end within a second ins
 collective for NCCL's 10-minute timeout, and `sharar serve` restarts the pair (up to 5 times in 10 minutes; then it
 stops and says so). Measured on the 27B: rank 1 or rank 0 SIGKILLed, serving again 26 s later.
 
-**The cold tier and the session store** run on every rank, each parking and storing its own heads of the same
-sessions. Every decision is the same on every rank: the arena budget and each new slab take the minimum over ranks
-of what the hosts allow, a stored record is found only when every rank's background writer has landed it and
-restored only when every rank read it, and a record names its rank. The store is
-`$SHARAR_RESULTS/sessions-tp` on each Spark (`SHARAR_SESSION_DIR`; `off` disables). Measured on the 27B: a
-21K-token session persisted at a stop answered its follow-up after a restart in 0.19 s (57 ms disk load per rank)
-against 6.5 s cold.
+**Cached prefixes.** The SSD tier ([operations](operations.md)) runs on both ranks: each stores its
+own heads of every stored prefix under `$SHARAR_RESULTS/ssd/<target>` on its own Spark (`SHARAR_SSD_GIB` is per Spark). Both ranks
+decide alike, as their schedulers do: a write counts once it completed on both ranks (failed if it failed on
+either), a restore goes ahead only if both read every object intact, and a restart lists only the prefixes both
+stored. The tier runs on both ranks or on neither (a store that cannot open turns it off on both).
 
 ## Design
 

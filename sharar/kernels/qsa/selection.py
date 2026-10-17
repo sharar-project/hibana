@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Flash-Next indexer selection with fixed shapes (CUDA-graph safe).
+"""Original Flash-Next indexer selection with fixed shapes (CUDA-graph safe).
 
 Every row scores the compressed keys of the groups it sees in one Triton kernel:
 the key of group g lives in page aux row 1 of the page holding token

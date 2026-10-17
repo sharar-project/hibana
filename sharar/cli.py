@@ -152,7 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request (default 262144)")
     p.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: the profile's)")
     p.add_argument("--traces", action="store_true", help="record each request's token IDs and speculative rounds (SHARAR_TRACES, else $SHARAR_RESULTS/traces)")
-    p.add_argument("--no-sessions", action="store_true", help="do not store parked sessions on disk")
+    p.add_argument("--no-sessions", action="store_true", help=argparse.SUPPRESS)  # the session store is gone; accepted for old scripts
     p.add_argument("--draft", default=None, help="serve this DFlash2 checkpoint directory instead of the publisher's draft")
     p.add_argument("--proposer", choices=("mtp", "dflash2"), default=None, help=argparse.SUPPRESS)
     p.add_argument("--spec", type=int, default=None, help=argparse.SUPPRESS)
@@ -164,6 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("stop", help="stop a detached server").add_argument("target", nargs="?", choices=TARGET_CHOICES, metavar="TARGET")
     sub.add_parser("status", help="what is serving, with which settings").add_argument("target", nargs="?", choices=TARGET_CHOICES, metavar="TARGET")
+    sub.add_parser("cache", help="what is cached: the GPU prefix cache and the SSD tier").add_argument("target", nargs="?", choices=TARGET_CHOICES, metavar="TARGET")
     p = sub.add_parser("logs", help="the log of a detached server")
     add_target(p)
     p.add_argument("-n", "--lines", type=int, default=50)
@@ -231,8 +232,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     from sharar.launch import ctl, lxcfs, run
 
-    if args.command in ("serve", "engine", "dev"):
-        lxcfs.reexec_if_needed()  # before anything imports torch
+    if args.command in ("engine", "dev") or (args.command == "serve" and args.tp == 1):
+        # Before anything imports torch. On two Sparks only the ranks (`sharar engine`) restart in the namespace: in it
+        # the process is root, and the launcher's ssh would read root's keys instead of the user's.
+        lxcfs.reexec_if_needed()
     if args.command == "serve":
         return run.serve(args)
     if args.command == "engine":
@@ -241,6 +244,8 @@ def main(argv: list[str] | None = None) -> int:
         return run.stop(args)
     if args.command == "status":
         return run.status(args)
+    if args.command == "cache":
+        return run.cache(args)
     if args.command == "logs":
         return run.logs(args)
     if args.command in ("chat", "launch", "verify"):

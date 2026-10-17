@@ -140,7 +140,7 @@ def test_graph_safe_maintenance_matches_the_eager_keys_under_replay():
 
 def _torch_select(q, aux, first, n, seq_pages, ratio, budget):
     """The indexer's former torch selection (scores every visible group, top budget // ratio,
-    the pending tail, valid entries first): the oracle for `kernels/qsa_select.py`."""
+    the pending tail, valid entries first): the oracle for `kernels/qsa/selection.py`."""
     r, d, device = ratio, q.shape[-1], q.device
     width = budget + r - 1
     positions = torch.arange(first, first + n, device=device)
@@ -164,7 +164,7 @@ def _torch_select(q, aux, first, n, seq_pages, ratio, budget):
 
 @pytest.mark.parametrize("budget,length,rows", [(2048, 3000, 1), (2048, 70000, 1), (2048, 70000, 4), (2048, 9000, 256), (64, 600, 40), (2048, 1500, 3)])
 def test_selection_kernel_matches_the_torch_selection(budget, length, rows):
-    from sharar.kernels.qsa_select import select_pages
+    from sharar.kernels.qsa.selection import select_pages
     g = torch.Generator(device="cuda").manual_seed(2)
     ratio, dev = 4, torch.device("cuda")
     pages = length + 500
@@ -237,7 +237,7 @@ def test_selecting_graph_matches_the_eager_selection():
 def test_chunked_selection_is_the_selection_per_chunk(rows, chunk, ties):
     """`select_pages(..., chunk=c)`: the top-k per c rows, the rest at once; exactly the concatenation of calls on c rows
     each, in order (ties included: rows whose scores are mostly relu zeros)."""
-    from sharar.kernels.qsa_select import select_pages
+    from sharar.kernels.qsa.selection import select_pages
     g = torch.Generator(device="cuda").manual_seed(3)
     ratio, dev, budget, length = 4, torch.device("cuda"), 2048, 12000
     aux = torch.randn(length + 100, 2, 128, generator=g, device=dev).to(torch.bfloat16)
@@ -279,7 +279,7 @@ def _assemble_reference(values, idx, positions, base, table, ratio, width):
 def test_assembly_kernel_is_the_torch_assembly(budget, length, rows, ties):
     """Pages and counts in exactly the torch assembly's order, from the same top-k: rows near the budget (groups
     scoring -inf), relu-zero ties, a nonzero base offset and every tail length."""
-    from sharar.kernels.qsa_select import score_groups, select_pages
+    from sharar.kernels.qsa.selection import score_groups, select_pages
     g = torch.Generator(device="cuda").manual_seed(4)
     ratio, dev = 4, torch.device("cuda")
     aux = torch.randn(length + 50, 2, 128, generator=g, device=dev).to(torch.bfloat16)

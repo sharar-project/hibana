@@ -165,7 +165,7 @@ against a reference server, the CPU contracts, the GPU lifecycle suites and a
    of the change.
 3. Declare optional features in `ProposerRequirements.capabilities`
    (`engine/contracts.py`): device acceptance feedback, checkpoint
-   feature cache, cold-tier payload, a configurable draft head.
+   feature cache, SSD-tier payload, a configurable draft head.
    The engine reads the flags, never probes for methods, and
    `check_capabilities` rejects a flag without its protocol. End the draft in a
    draft head (`proposers/draft_head.py`: the target's head by default, or a

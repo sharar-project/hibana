@@ -58,17 +58,17 @@ the NVMe: three fresh 10K-token prompts reach their first token in 4.66 s on ave
 ## Sparse attention past 2,048 tokens
 
 `indexer.py` implements Qwen Sparse Attention: every token's raw index key and each completed group's compressed
-key live in its KV page (`KvPool.page_aux`, so they follow pages through the prefix cache, the cold tier and the
-session store). A row past the budget scores the visible groups, keeps the top 512 plus its pending tail and
-attends over those pages through the vendored sparse kernel (`kernels/qsa.py`). Below the budget the dense path
+key live in its KV page (`KvPool.page_aux`, so they follow pages through the prefix cache and the
+SSD tier). A row past the budget scores the visible groups, keeps the top 512 plus its pending tail and
+attends over those pages through the vendored sparse kernel (`kernels/qsa/attention.py`). Below the budget the dense path
 runs unchanged.
 
 Decode and verification replay CUDA graphs at every context length. Inside the budget the dense graphs run with
 graph-safe key maintenance; once any row is past it, a second set of graphs selects on the device
-(`kernels/qsa_select.py` scores every visible group through the plan's page table in one Triton kernel, takes
+(`kernels/qsa/selection.py` scores every visible group through the plan's page table in one Triton kernel, takes
 the top 512 of a fixed-width buffer and assembles the pages in a second kernel), so no shape depends on the context.
-Eager prefill computes the forward's indexer layout once (`FlashNextIndexer._plan`) and ranks 256 rows per top-k. `SHARAR_QSA_SPARSE_GRAPHS=0` keeps
-rows past the budget eager.
+`SHARAR_QSA_SPARSE_GRAPHS=0` keeps rows past the budget eager. Eager prefill computes the forward's indexer layout
+once (`FlashNextIndexer._plan`) and ranks 256 rows per top-k.
 
 ## The MTP draft
 

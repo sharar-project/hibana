@@ -2,7 +2,7 @@
 """Flash-Next's attention layers (24 q / 2 kv heads of 256, gated output, quarter rotary) on the
 27B's attention module with FP8-at-load projections, with the sparse-attention indexer
 (`indexer.py`): dense while every row sees at most the 2,048-token budget, otherwise each
-row attends over the pages its indexer selected (`kernels/qsa.py`)."""
+row attends over the pages its indexer selected (`kernels/qsa/attention.py`)."""
 
 from __future__ import annotations
 
@@ -37,6 +37,8 @@ class FlashNextAttention(Attention):
         self.rope = rope
         self.ragged = ragged
         self.indexer = FlashNextIndexer(w, prefix, layer_id, device, target) if target.indexer_budget else None
+        if self.indexer is not None:
+            self.indexer.configure_prefill(target, self.rope.cos_sin, sharded=sharded)
 
     @property
     def bytes(self) -> int:
@@ -74,7 +76,8 @@ class FlashNextAttention(Attention):
         k_pool, v_pool = ctx.kv_pool.cache(self.layer_id)
         n = k_pool.shape[0] * k_pool.shape[1]
         attn = sparse_attention(q, k_pool.view(n, self.num_kv_heads, self.head_dim), v_pool.view(n, self.num_kv_heads, self.head_dim),
-                                *selected, self.head_dim ** -0.5)
+                                *selected, self.head_dim ** -0.5,
+                                optimized_prefill=getattr(ctx.extras,"qsa_optimized_prefill",False))
         return self._finish(attn.view(q.shape[0], self.q_size), gate)
 
     @property
