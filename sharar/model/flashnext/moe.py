@@ -93,14 +93,6 @@ class MoeLayer:
                 raise ValueError(f"3-bit experts {w3.base}..{w3.base + w3.experts - 1}: the model has {self.experts}")
             return
         nv = load_nvfp4_experts(w, prefix, self.experts, device, ColumnParallel((self.inter,)).rows, ROW_PARALLEL.cols)
-        self.sim3_error = None
-        group = cfg.flashnext_experts_sim3
-        if group:  # simulated low-bit experts (weights/expert_sim3.py): the same kernel, the format's values (a screen)
-            from sharar.weights.expert_sim3 import requantize
-            nv["w13"], nv["s13"], e13 = requantize(nv["w13"], nv["s13"], group)
-            nv["w2"], nv["s2"], e2 = requantize(nv["w2"], nv["s2"], group)
-            self.sim3_error = (e13, e2)
-            torch.cuda.empty_cache()
         self.w13, self.w2 = nv["w13"], nv["w2"]  # [E, 2I, K/2], [E, K, I/2] uint8
         self.s13 = swizzle_block_scales_batched(nv["s13"])
         self.s2 = swizzle_block_scales_batched(nv["s2"])

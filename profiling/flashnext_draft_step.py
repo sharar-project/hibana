@@ -45,7 +45,7 @@ def load(device, max_batch: int, k: int, max_context: int):
                                 rope=PartialRotary(t.head_dim, t.rotary_dim, t.rope_theta, t.max_position_embeddings, device),
                                 lm_head=TrunkLinear.load(w, ["lm_head.weight"], device, current().flashnext_trunk or "fp8"),
                                 mixer=HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", t.hc_count, t.hidden_size, t.rms_norm_eps,
-                                                           device, combine=False, precision=current().flashnext_mixers))
+                                                           device, combine=False))
         head = FlashNextMtpHead(w, device, model, max_batch * (max_context + 16) + 64, padding_rows=max_batch)
     finally:
         w.close()

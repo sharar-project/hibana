@@ -89,7 +89,7 @@ class Server:
 
     def __init__(self, tree: Path, target: str, profile: str, port: int, logfile: Path, env: dict):
         self.cmd = [str(VENV / "bin" / "python"), "-u", "-m", "sharar", "serve", target, f"--{profile}", "--port", str(port),
-                    "--no-sessions", "--no-fetch"]
+                    "--no-fetch"]
         self.tree, self.logfile, self.env = tree, logfile, env
         self.proc = None
 

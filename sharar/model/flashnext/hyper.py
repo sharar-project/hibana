@@ -25,7 +25,7 @@ def grouped_gemma_rms(x: torch.Tensor, weight: torch.Tensor, eps: float, group: 
 
 class HyperConnection:
     """The three mixer matrices are `TrunkLinear`s: the checkpoint's BF16, or FP8 at load with a
-    dynamic activation scale (`precision="fp8"`, the default; SHARAR_FLASHNEXT_MIXERS=bf16 keeps the checkpoint's)."""
+    dynamic activation scale (`precision="fp8"`, the default; "bf16" keeps the checkpoint's)."""
 
     def __init__(self, norm: torch.Tensor, down: torch.Tensor, up: torch.Tensor, inject: torch.Tensor | None, hc: int, hidden: int, eps: float,
                  precision: str = "bf16", fused: bool = True):
@@ -41,7 +41,7 @@ class HyperConnection:
         self.inject = TrunkLinear.from_bf16((inject * scale).to(torch.bfloat16), "bf16") if inject is not None else None  # [hc, hc*hidden]
 
     @classmethod
-    def load(cls, w, prefix: str, hc: int, hidden: int, eps: float, device, combine: bool = True, precision: str = "bf16", fused: bool = True) -> "HyperConnection":
+    def load(cls, w, prefix: str, hc: int, hidden: int, eps: float, device, combine: bool = True, precision: str = "fp8", fused: bool = True) -> "HyperConnection":
         g = lambda name: w.get(f"{prefix}.{name}").to(device)  # noqa: E731
         return cls(g("hc_norm.weight"), g("input_mix_weight_down.weight"), g("input_mix_weight_up.weight"),
                    g("block_inject_weight.weight") if combine else None, hc, hidden, eps, precision, fused)

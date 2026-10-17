@@ -41,9 +41,8 @@ class DecoderLayer:
         self.index, self.kind = index, kind
         hc, hidden, eps = target.hc_count, target.hidden_size, target.rms_norm_eps
         self.ple = PleLayer(w, snap, f"{p}.ple", device, target, TrunkLinear, precision) if (index + 1) in target.ple_layer_ids else None
-        mixers = current().flashnext_mixers
-        self.attn_hc = HyperConnection.load(w, f"{p}.attn_hyper_connection", hc, hidden, eps, device, precision=mixers)
-        self.mlp_hc = HyperConnection.load(w, f"{p}.mlp_hyper_connection", hc, hidden, eps, device, precision=mixers)
+        self.attn_hc = HyperConnection.load(w, f"{p}.attn_hyper_connection", hc, hidden, eps, device)
+        self.mlp_hc = HyperConnection.load(w, f"{p}.mlp_hyper_connection", hc, hidden, eps, device)
         if kind == "full_attention":
             self.mixer = FlashNextAttention(w, f"{p}.self_attn", index, device, rope, ragged, target, precision)
         else:
@@ -126,7 +125,7 @@ class FlashNext:
         if log and expert_layers:
             log(f"  experts: 3-bit from {current().w3_checkpoint} ({sum(layer.moe.expert_bytes for layer in self.layers) / 2**30:.1f} GiB)")
         self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", target.hc_count, target.hidden_size, target.rms_norm_eps, self.device,
-                                          combine=False, precision=current().flashnext_mixers)
+                                          combine=False)
         # Vocabulary-parallel: each rank scores its rows of the vocabulary and `logits` gathers them.
         self.lm_head = TrunkLinear.load(w, ["lm_head.weight"], self.device, self.precision,
                                         ColumnParallel((div_even(target.vocab_size, tp.size),)))

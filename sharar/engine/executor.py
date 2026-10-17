@@ -296,7 +296,6 @@ class Executor:
             return
         if proposer is not None and proposer.requirements.capabilities.stored_payload:
             tier.register_codec(*proposer.auxiliary_codec())
-        tier.async_restore = cfg.ssd_async
         self.cache.ssd = tier
         listed = tier.rebuild(self.cache)
         # never fill the drive: at most what is stored plus the free space beyond a reserve (a tenth of the drive, at
