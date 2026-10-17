@@ -376,6 +376,68 @@ class Peer:
         return values
 
 
+def gated(tier):
+    """Hold each of the tier's writes until the test opens its gate (by key), so writes finish when and in the order
+    a test says. Returns the gate lookup."""
+    gates, lock, real = {}, threading.Lock(), tier.store._write
+
+    def gate(key):
+        with lock:
+            return gates.setdefault(key, threading.Event())
+
+    def write(header, tensors, *rest):
+        assert gate(header.key).wait(10), "a gated write was never let through"
+        return real(header, tensors, *rest)
+
+    tier.store._write = write
+    return gate
+
+
+def six_blocks_in_flight(tmp_path, seed):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    gate = gated(tier)
+    tier.step_bytes = 2**30
+    release(cache, tier, kv, sp, feats, LONG, seed=seed)
+    tier.step(cache)
+    cost = tier._block_charge()
+    assert tier.staged == 6 * cost and len(tier.inflight) == 6
+    tier.staging_bytes = 6 * cost
+    return cache, tier, gate, cost
+
+
+def test_a_wait_for_staging_room_waits_for_the_oldest_writes_that_free_it_and_no_others(tmp_path):
+    cache, tier, gate, cost = six_blocks_in_flight(tmp_path, seed=7)
+    for _, key in list(tier.inflight)[:2]:
+        gate(key).set()
+    assert tier._room(2 * cost, True)
+    assert tier.room_waits == 1 and tier.room_wait_writes == 2 and len(tier.inflight) == 4 and tier.staged == 4 * cost
+    for _, key in list(tier.inflight):
+        gate(key).set()
+    settle(cache, tier)
+
+
+def test_tensor_parallel_a_wait_for_staging_room_applies_the_same_writes_on_every_rank(tmp_path):
+    """Each rank waits for its own oldest writes, so one agreement applies them on every rank."""
+    cache, tier, gate, cost = six_blocks_in_flight(tmp_path, seed=8)
+    peer = Peer(landed=2)  # it waited for its own two oldest, and no more of its writes have finished
+    asked = []
+
+    def counted(question, values):
+        asked.append(question)
+        return peer.min_over_ranks(question, values)
+
+    tier._min_over_ranks = counted
+    for _, key in list(tier.inflight)[:2]:
+        gate(key).set()
+    assert tier._room(2 * cost, True)
+    assert asked.count("landed") == 1 and peer.applied == 2 and tier.room_wait_writes == 2
+    assert len(tier.inflight) == 4 and tier.staged + 2 * cost <= tier.staging_bytes
+    peer.landed = 10**9
+    for _, key in list(tier.inflight):
+        gate(key).set()
+    settle(cache, tier)
+
+
 def blocks_of(cache):
     (node,) = cache.root.children.values()
     return [r for _, r in sorted(node.blocks.items())]
@@ -636,6 +698,7 @@ def test_serving_eviction_drops_a_leaf_it_cannot_copy_instead_of_waiting_for_the
     tier.staging_bytes = 1
     tier.staged = 1  # another copy holds the staging buffer
     monkeypatch.setattr(tier.store, "wait", lambda: pytest.fail("eviction waited for the writers"))
+    monkeypatch.setattr(tier.store, "wait_first", lambda n: pytest.fail("eviction waited for the writers"))
     evict_all(cache, kv)
     assert tier.evict_dropped == 1 and not tier.inflight and cache.ssd_prefixes() == 0
     tier.staged = 0

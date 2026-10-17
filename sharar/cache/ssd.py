@@ -300,6 +300,8 @@ class SsdTier:
         self.step_seconds = self.step_max = 0.0  # the engine thread in step(): completions, trimming, gathering copies
         self.patient = False  # eviction waits for staging room (shutdown); serving drops a leaf it cannot copy at once
         self.evict_dropped = 0  # leaves eviction dropped instead of waiting for the writers
+        self.room_waits = self.room_wait_writes = 0  # waits for staging room, and the writes they waited for
+        self.room_wait_seconds = self.room_wait_max = 0.0
         self._pool = ThreadPoolExecutor(8, thread_name_prefix="sharar-ssd-read")  # parallel O_DIRECT reads keep the drive's queue full
         # backup copies run on their own stream, so they overlap the model's kernels instead of sitting between them;
         # every free of pages or a slot first makes the main stream wait for them (`fence`)
@@ -534,13 +536,26 @@ class SsdTier:
     def _room(self, nbytes: int, wait: bool) -> bool:
         """Whether a copy of `nbytes` fits within the staging limit (asked before
         copying). An object larger than the limit can go alone; eviction,
-        restores and shutdown wait for older copies instead of exceeding it."""
-        if self.staged and self.staged + nbytes > self.staging_bytes:
-            if not wait:
-                return False
-            self.store.wait()
-            self._finish_writes()  # every rank has finished its writers before agreeing on completions
-            assert self.staged == 0
+        restores and shutdown wait for older copies instead of exceeding it,
+        for the fewest of the oldest writes in flight that free the room."""
+        if not (self.staged and self.staged + nbytes > self.staging_bytes):
+            return True
+        if not wait:
+            return False
+        t0, over, k = time.perf_counter(), self.staged + nbytes - self.staging_bytes, 0
+        for _, staged in self.inflight.values():  # in submission order, the order completions apply in
+            k += 1
+            over -= staged
+            if over <= 0:
+                break
+        self.store.wait_first(k - len(self.landed))  # `landed` holds the oldest that finished here already
+        self._finish_writes()  # every rank has its own first k, so the agreement applies at least k everywhere
+        assert self.staged == 0 or self.staged + nbytes <= self.staging_bytes
+        spent = time.perf_counter() - t0
+        self.room_waits += 1
+        self.room_wait_writes += k
+        self.room_wait_seconds += spent
+        self.room_wait_max = max(self.room_wait_max, spent)
         return True
 
     def _block_charge(self) -> int:
@@ -573,7 +588,7 @@ class SsdTier:
                 if not wait:
                     return live[j][0]
                 got = one = segs = packed = None  # the last batch's host copies are the writers' now: room counts them gone
-                self._room(cost, True)
+                self._room(min(len(live) - j, max(1, cap // cost)) * cost, True)
                 continue
             batch, j = live[j:j + fit], j + fit
             groups: dict[int, list] = {}
@@ -1368,7 +1383,9 @@ class SsdTier:
                 "restored_tokens": self.restored_tokens, "restored_kv_tokens": self.restored_kv_tokens, "waited_for_writes": self.waited, "deleted": self.deleted,
                 "evict_ms_total": round(1000 * self.evict_seconds, 1),
                 "evict_ms_max": round(1000 * self.evict_max, 1), "settle_ms_total": round(1000 * self.settle_seconds, 1),
-                "settle_ms_max": round(1000 * self.settle_max, 1),
+                "settle_ms_max": round(1000 * self.settle_max, 1), "room_waits": self.room_waits,
+                "room_wait_writes": self.room_wait_writes, "room_wait_ms_total": round(1000 * self.room_wait_seconds, 1),
+                "room_wait_ms_max": round(1000 * self.room_wait_max, 1),
                 "step_ms_total": round(1000 * self.step_seconds, 1), "step_ms_max": round(1000 * self.step_max, 1),
                 "restore_ms_avg": round(1000 * self.restore_seconds / max(1, self.restores), 1),
                 "async_restores": self.async_restores, "restore_wait_steps": self.restore_wait_steps,
