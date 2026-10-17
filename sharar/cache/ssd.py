@@ -37,8 +37,8 @@ The tiered radix tree (`radix.py`) is the only record of what is on disk;
   kernel launch, `_RowCopy`) and the request waiting in the queue.
   Once the reads landed on every rank, `step()` imports the tail's state and
   inserts the path back into L1, held until the request is admitted.
-  `restore()` does the same with the engine waiting (SHARAR_SSD_ASYNC=0, or a
-  caller outside admission). When the GPU
+  `restore()` does the same with the engine waiting (a caller outside
+  admission). When the GPU
   cache dropped only a snapshot and kept its pages, the restore reads only the
   tail: its state goes into a slot and the pages stay where they are. The
   chunk size, not the restore, bounds the buffer, so the pool plan reserves a
@@ -324,7 +324,6 @@ class SsdTier:
         self._held: list = []  # (ids, node, since) of landed restores, their paths locked until their requests are admitted
         self._staging_free = None  # an event: the last restore's state import has read the staging buffer
         self._steps = 0  # engine steps (`step` calls), the same count on every rank
-        self.async_restore = True  # admission restores in the background (`restore_async`); SHARAR_SSD_ASYNC=0: in line
         self.async_restores = self.restore_wait_steps = 0
         self.restore_blocked_seconds = 0.0  # the engine thread inside restores: all of a synchronous one, the start and finish of an asynchronous one
 

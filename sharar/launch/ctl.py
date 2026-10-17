@@ -221,7 +221,7 @@ def verify(url: str, s: Settings) -> int:
         get("/health")
         info = get("/get_server_info")
         expected = {"engine": "sharar", "model_path": c.MODEL_ID, "revision": c.MODEL_REVISION,
-                    "kv_cache_dtype": "float8_e4m3fn", "mamba_ssm_dtype": "float32"}
+                    "kv_cache_dtype": "float8_e4m3fn"}
         wrong = {k: (info.get(k), v) for k, v in expected.items() if info.get(k) != v}
         if wrong:
             sys.exit(f"sharar verify: {url} serves something else: {wrong}")

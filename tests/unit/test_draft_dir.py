@@ -39,11 +39,13 @@ def test_serve_cli_passes_the_draft_dir(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr("sharar.api.server.serve", lambda *args, **kwargs: calls.append(kwargs))
     monkeypatch.delenv("SHARAR_DRAFT", raising=False)
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "model.safetensors").write_bytes(b"")
     assert cli.main(["engine", "--spec", "15", "--draft", str(tmp_path)]) == 0
     assert calls[-1]["draft_dir"] == str(tmp_path)
-    monkeypatch.setenv("SHARAR_DRAFT", "/elsewhere")
+    monkeypatch.setenv("SHARAR_DRAFT", str(tmp_path))
     assert cli.main(["engine", "--spec", "15"]) == 0
-    assert calls[-1]["draft_dir"] == "/elsewhere"
+    assert calls[-1]["draft_dir"] == str(tmp_path)
     monkeypatch.delenv("SHARAR_DRAFT")
     assert cli.main(["engine", "--spec", "15"]) == 0 and calls[-1]["draft_dir"] is None
     with pytest.raises(SystemExit):

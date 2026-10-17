@@ -6,7 +6,6 @@ build/
 dist/
 .venv
 .venv-cpu/
-.venv-aiperf/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -14,7 +13,6 @@ dist/
 # Host-local configuration and evidence never belong in git.
 config/gb10.env
 results/
-/parity/
 *.log
 *.safetensors
 *.npy

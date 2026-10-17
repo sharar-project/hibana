@@ -16,7 +16,7 @@ To measure a served build (quality suites, AIPerf speed, a lossy option) use the
 | `prefill_gemm_tactics.py` | Every CUTLASS FP4 tactic for the 27B's MLP GEMMs at prefill row counts: bitwise equality with the default dispatch and time; the input to `sharar/kernels/prefill_gemm.py`'s table |
 | `tp_comm.py` | Two Sparks: the RDMA one-shot all-reduce against NCCL's ring per message size, bitwise check, inside a CUDA graph after GPU work and back to back (`sharar dev tp-comm` runs both ranks) |
 | `tp_draft_head.py` | Two Sparks: the vocabulary-parallel draft head against the whole-vocabulary one (`sharar dev tp-draft-head`) |
-| `ssd_turns.py` | Concurrent multi-turn conversations over HTTP with a small KV pool, so returning turns restore from the SSD tier: time to first token of later turns, gaps in everyone else's stream (a restore that pauses the batch), restore counters. Compares `SHARAR_SSD_ASYNC=1` / `0` / `SHARAR_SSD=0` |
+| `ssd_turns.py` | Concurrent multi-turn conversations over HTTP with a small KV pool, so returning turns restore from the SSD tier: time to first token of later turns, gaps in everyone else's stream (a restore that pauses the batch), restore counters. Compares the SSD tier against `SHARAR_SSD=0` |
 | `tp_serve_bench.py` | Served speed over HTTP on one Spark or two: single-stream decode, 4 and 16 concurrent requests, long-prompt time to first token |
 | `decode_curve.py` | Decode speed against concurrency at a populated 10K-token context, prefill excluded (the benchmark prompts of `sharar.benchmark_workloads`, request index varied): steady-state ms per round, tokens per round and output tokens/s per batch size, served `throughput`-profile settings by default. The common curve for comparing a change (run control and candidate alternately) |
 | `flashnext_moe_w3.py` | Flash-Next's 3-bit routed experts against FlashInfer's CUTLASS fused MoE on real expert weights: time, distinct experts and effective bandwidth per layer at each verify row count, inside CUDA graphs |
@@ -28,9 +28,5 @@ and geometry before running; run candidate and control in separate fresh process
 when earlier loads left the model files in the page cache (CUDA on the GB10 sees MemFree): drop them first
 (`posix_fadvise(DONTNEED)` over the model cache, as `tools/ci/gb10.sh` does).
 
-The 3-bit calibration builders that produce the serving artifacts moved into the package:
-`python3 -m sharar.weights.w3_calibrate` (27B), `sharar.weights.flashnext_w3_calibrate` and
-`sharar.weights.w3_calibration_inputs` ([workflow](../docs/w3-calibration.md)).
-
-Raw tensors, outputs and traces stay outside Git. Finished one-off studies are at the tags
-`archive/bench-pre-split-2026-10-04` and `archive/pre-cleanup-2026-09-26`.
+The 3-bit calibration builders are in the package ([calibration](../docs/w3-calibration.md)). Raw tensors, outputs
+and traces stay outside Git; finished one-off studies are at the `archive/` tags.

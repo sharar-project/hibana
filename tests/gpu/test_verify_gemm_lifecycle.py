@@ -1,4 +1,4 @@
-"""Compare complete k=15 rounds and committed state against the old kernels."""
+"""Compare complete k=15 rounds and committed state against the CUTLASS/cuBLAS path (VERIFY_GEMM_ENABLED=False)."""
 
 import pytest
 import torch

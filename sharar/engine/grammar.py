@@ -152,7 +152,7 @@ class Grammars:
     compiled grammars cached by their source."""
 
     # Whitespace is bounded: before the output (the newlines after </think>) and in each run inside JSON. Unbounded
-    # whitespace let a sampled request drift into it until max_tokens (Flash-Next, t=0.7, 2026-10-05).
+    # whitespace let a sampled request drift into it until max_tokens (Flash-Next, t=0.7).
     WS = "root ::= [ \\t\\n]{0,4}"
     MAX_WS = 24  # one JSON whitespace run: a newline and deep indentation
 

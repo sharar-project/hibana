@@ -12,8 +12,7 @@ it lives in one `FlashNextSideInputs` value on `ctx.extras`, built by
 
 The engine only calls `for_prefill` / `for_decode` / `for_verify` on the eager
 path, `buffers` / `fill` / `selecting` around CUDA graphs, and `variant` to pick
-the dense or selecting graph. The values are the ones the executor computed
-itself before this module existed.
+the dense or selecting graph.
 """
 
 from __future__ import annotations

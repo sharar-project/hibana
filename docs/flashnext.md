@@ -15,16 +15,15 @@ adds a gated, causally convolved projection to the streams; a global mixer feeds
 also ships a one-layer MTP head (the served drafter) and a vision tower (not loaded).
 
 Serving formats: the trunk is quantized to FP8 at load (per-tensor, dynamic activation scale), with calibrated
-3-bit decode copies in `fast` and `throughput`. The routed experts are 3-bit too when the W3 checkpoint carries
-them, as the pinned one does: GPTQ-calibrated on routed activations (#73), read by `kernels/w3_moe.py` in decode
-and prefill, and the only resident expert copy (46.1 GiB instead of 63.3; 53 GiB of weights in all). Without
-expert entries, with `SHARAR_FLASHNEXT_EXPERTS=nvfp4`, in `exact` and on two Sparks, the experts are the
-checkpoint's NVFP4 through FlashInfer's `cutlass_fused_moe` ([calibration](w3-calibration.md)). The PLE table
-stays on the NVMe as memory maps; on two Sparks each rank keeps its half of the heads in device memory
-([tensor parallel](tensor-parallel.md)). On one Spark a prompt's first prefill chunk starts reading the rows of the rest
-of the prompt into the page cache in the background (`PleTable.prefetch`, #178), so its later chunks do not wait on
-the NVMe: three fresh 10K-token prompts reach their first token in 4.66 s on average with a cold page cache, against
-4.94 s without the prefetch and 4.74 s with every row already cached.
+3-bit decode copies in `fast` and `throughput`. The routed experts are 3-bit too when those copies are on and the W3
+checkpoint carries them, as the pinned one does: GPTQ-calibrated on routed activations, read by `kernels/w3_moe.py`
+in decode and prefill, and the only resident expert copy (46.1 GiB instead of 63.3; 53 GiB of weights in all). On two
+Sparks each rank holds half of them, whole experts ([tensor parallel](tensor-parallel.md#flash-next)). In `exact` (no
+3-bit copies), without a W3 checkpoint or its expert entries, or with `SHARAR_FLASHNEXT_EXPERTS=nvfp4`, the experts
+are the checkpoint's NVFP4 through FlashInfer's `cutlass_fused_moe` ([calibration](w3-calibration.md)). The PLE table
+stays on the NVMe as memory maps; on two Sparks each rank keeps its half of the heads in device memory. On one Spark a
+prompt's first prefill chunk starts reading the rows of the rest of the prompt into the page cache in the background
+(`PleTable.prefetch`), so its later chunks do not wait on the NVMe.
 
 ## Package
 
@@ -72,66 +71,35 @@ once (`FlashNextIndexer._plan`) and ranks 256 rows per top-k.
 
 ## The MTP draft
 
-- **Depth, per request (#43).** Deeper drafts win on code and math and lose on prose and multilingual text, so no
-  fixed depth suits both: on the h2h set (one Spark, `fast`, greedy) depth 8 beats 4 by 12-17% on code, math and
-  structured output and loses 9-13% on chat, prose and multilingual. `fast` sets the depth per request
-  (`engine/depth.AcceptanceDepth`, `SHARAR_SPEC_STEP_COST=0.14`, 0.2 on two Sparks): a moving average of the request's
-  accepted drafts per position tested, q, and the depth d up to 8 that maximizes the expected emitted tokens (1 -
-  q^(d+1)) / (1 - q) per round cost 1 + 0.14 (d - 1) (measured: 31.5 ms at depth 1, about 4.3 ms per token more). On
-  two Sparks a round costs 26.7 ms plus 2.9 ms per token (0.11), but drafted tokens deep in a round are accepted less
-  often than the model's single q assumes, and at 0.14 chat and prose drafted too deep there (-12% and -7% against
-  depth 4); the profile prices a token at 0.2 on two Sparks, which measured best of 0.14, 0.2 and 0.3. A batch
-  verifies the deepest depth its requests want, up to 4 for two or more requests (`SHARAR_SPEC_DEPTHS=2:4,4:4`: four
-  streams measured best at 4). The choice is made before drafting: stopping the draft on its own confidence step by
-  step (which the confidence predicts well, 95% accepted above 0.9 against 21% at 0.1-0.2) cost 17% in host waits
-  between steps. Measured 2026-10-14 against depth 4 on the h2h set, the means of two runs:
-
-  | | median | chat | code | math | multilingual | prose | structured | 4 streams |
-  |---|---:|---:|---:|---:|---:|---:|---:|---:|
-  | one Spark, greedy | 90.9 -> 105.3 | +6% | +17% | +11% | 0% | +1% | +19% | 158.5 -> 161.7 |
-  | one Spark, t=0.7 | 89.0 -> 92.3 | -1% | +9% | +7% | 0% | -2% | +14% | 147.5 -> 147.0 |
-  | two Sparks, greedy | 121.6 -> 131.3 | -5% | +17% | +11% | +4% | 0% | +15% | 226.6 -> 222.2 |
-  | two Sparks, t=0.7 | 118.4 -> 124.7 | -5% | +9% | +8% | -1% | -1% | +12% | 207.1 -> 204.9 |
-
-  The two-Spark rows use 0.2 (four streams: one run). Chat has two prompts, and depth 4's own two runs differed by 7%
-  on it. Under exact acceptance a different depth changes the rows each verification computes, so near-tie tokens can
-  round differently: main at a fixed depth 8 and at depth 4 diverge on 5 of 6 prompts (from token 6 to 106), as
-  adaptive depth does; each setting repeats its own outputs exactly. Under `fast`'s relaxed acceptance a deeper round
-  gives the rule more positions; GSM8K (first 300) and HumanEval stayed within run-to-run noise (pooled -0.2 points
-  against a repeat of depth 4, whose two runs themselves differed by 1.3). `exact` keeps depth 4; `throughput` verifies 3 drafts from 16 requests up (with 3-bit experts on one Spark; #172: at
-  32-128 requests a verified row costs about 0.5 ms and depth 3 was the best fixed depth in steady state).
+- **Depth, per request.** Deeper drafts win on code and math and lose on prose and multilingual text, so no fixed
+  depth suits both. `fast` drafts up to 8 (`SHARAR_SPEC=8`) and sets the depth per request
+  (`engine/depth.AcceptanceDepth`): a moving average of the request's accepted drafts per position tested, q, and
+  the depth d that maximizes the expected emitted tokens (1 - q^(d+1)) / (1 - q) per round cost
+  1 + c (d - 1). `SHARAR_SPEC_STEP_COST` is c: 0.14 on one Spark (a round measured 31.5 ms at depth 1 and about
+  4.3 ms per token more), 0.2 on two, where 0.14 drafted chat and prose too deep. A batch verifies the deepest depth
+  its requests want, up to 4 for two to four requests (`SHARAR_SPEC_DEPTHS=2:4,4:4`). The choice is made before
+  drafting, so drafting is not held up. `exact` keeps depth 4. `throughput` drafts 4 and verifies 3 from 9 requests up
+  (`SHARAR_SPEC_DEPTHS=16:3,32:3,64:3,128:3`, with 3-bit experts on one Spark, where at 32-128 requests a verified row
+  costs about 0.5 ms and depth 3 was the best fixed depth); with NVFP4 experts or on two Sparks only the 16-request
+  bucket verifies 3 (`16:3`).
 - **Draft-only head.** `SHARAR_DRAFT_HEAD=w3` gives the draft steps a 3-bit copy of the lm_head; its top 8
   candidates (`SHARAR_DRAFT_HEAD_RESCORE`) are rescored with the target's FP8 rows, so the draft picks what the
   full head would except on near-ties. Exact acceptance is unaffected. `SHARAR_DRAFT_VOCAB` restricts the draft
   to the first N lm_head rows (off by default: it costs multilingual text).
 - **Fused steps.** Each draft step is one graph replay of 66 kernels (`kernels/flashnext_fused.py`): FP8 GEMVs
   quantize their own input, the attention's q/k norm, RoPE and KV write are one kernel, and the experts' gather,
-  SiLU-mul and routed sum are fused. Every fusion is bitwise against the chain it replaced
-  (`tests/gpu/test_flashnext_fused.py`). A step is now bandwidth-bound: the 3-bit draft head is about 1.1 of its
-  1.9 ms.
+  SiLU-mul and routed sum are fused. Every fusion is bitwise against the unfused chain
+  (`tests/gpu/test_flashnext_fused.py`). A step is bandwidth-bound: the 3-bit draft head is about 1.1 of its 1.9 ms.
 - **No host gaps.** The verify plan and indexer rows are prepared before the PLE read, and each drafted token's PLE
   rows are read while the next draft step runs. Device-resident acceptance (on in `fast`) covers MTP too
-  ([interfaces](interfaces.md#device-resident-acceptance)). At high batch two host costs had grown back (#172):
-  - The indexer rows were built per sequence (about eight small launches each). At 128 requests they filled the
-    launch queue behind the draft graphs and held the host about 39 ms, so the PLE rows were read only after the
-    drafts. `FlashNextIndexer.static_rows` now builds every row's page indices on the host and uploads them once.
-  - The PLE gather (`kernels/csrc/ple_gather.cpp`) reads the rows from a native thread pool, outside the GIL, in two
-    passes: `preadv2(RWF_NOWAIT)` copies the rows the page cache holds (callable whatever the Python build, #166),
-    then the others are read blocking, one per pool thread, so their NVMe latencies overlap however few rows a call
-    has. The Python gather it replaced cost about 2.4 us of interpreter work per row, and its thread pool's page
-    faults queued on the GIL.
-  - At 128 requests the GPU idled 54 ms per round before the verify and now 4. Served, one Spark, `throughput`:
-    1 / 32 / 64 / 128 requests 102 -> 108, 551 -> 643, 731 -> 899, 912 -> 1076 tok/s.
+  ([interfaces](interfaces.md#device-resident-acceptance)). `FlashNextIndexer.static_rows` builds every row's page
+  indices on the host and uploads them once, and the PLE gather (`kernels/csrc/ple_gather.cpp`) reads rows from a
+  native thread pool outside the GIL: `preadv2(RWF_NOWAIT)` copies the rows the page cache holds, then the others are
+  read blocking, one per pool thread, so their NVMe latencies overlap.
 - **Confidence.** `SHARAR_TRACE_CONFIDENCE=1` beside traces records the draft's top-1 probability and top-two
   margin per drafted position ([operations](operations.md#request-traces)).
 
 ## Tools
 
-`profiling/flashnext_round.py` splits a speculative round into draft, verify, acceptance and GPU idle
-(`--phase-kernels` by kernel; `SHARAR_BENCH_VERIFY_STATE=reconstruct --accept 3:2.0` is the served `fast` round);
-`profiling/flashnext_draft_step.py` times one draft step and checks it bitwise across builds;
-`profiling/flashnext_moe_w3.py` compares the 3-bit and NVFP4 expert kernels; `profiling/flashnext_profile.py`
-breaks decode steps down by kernel; `profiling/flashnext_quant.py` scores a
-trunk precision against the BF16 trunk with a rounding-noise control. Flash-Next loads stall when earlier loads
-left the model files in the page cache (CUDA on the GB10 sees MemFree): drop them first, as `tools/ci/gb10.sh`
-does.
+The Flash-Next profilers (`profiling/flashnext_*.py`: a speculative round, one draft step, the 3-bit against the NVFP4
+expert kernels, decode by kernel, trunk quantization error) are listed in [profiling](../profiling/README.md).

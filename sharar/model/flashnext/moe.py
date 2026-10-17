@@ -93,14 +93,6 @@ class MoeLayer:
                 raise ValueError(f"3-bit experts {w3.base}..{w3.base + w3.experts - 1}: the model has {self.experts}")
             return
         nv = load_nvfp4_experts(w, prefix, self.experts, device, ColumnParallel((self.inter,)).rows, ROW_PARALLEL.cols)
-        self.sim3_error = None
-        group = cfg.flashnext_experts_sim3
-        if group:  # simulated low-bit experts (weights/expert_sim3.py): the same kernel, the format's values (a screen)
-            from sharar.weights.expert_sim3 import requantize
-            nv["w13"], nv["s13"], e13 = requantize(nv["w13"], nv["s13"], group)
-            nv["w2"], nv["s2"], e2 = requantize(nv["w2"], nv["s2"], group)
-            self.sim3_error = (e13, e2)
-            torch.cuda.empty_cache()
         self.w13, self.w2 = nv["w13"], nv["w2"]  # [E, 2I, K/2], [E, K, I/2] uint8
         self.s13 = swizzle_block_scales_batched(nv["s13"])
         self.s2 = swizzle_block_scales_batched(nv["s2"])
@@ -157,7 +149,7 @@ class MoeLayer:
             fc1_expert_weights=self.w13_long, fc2_expert_weights=self.w2_long,
             output_dtype=torch.bfloat16, quant_scales=self.quant_scales,
             # The tactic is chosen for this token count; the default (8192) picks a large-M
-            # configuration that runs the one-row decode GEMMs at half speed (profile 2026-09-19).
+            # configuration that runs the one-row decode GEMMs at half speed (profiled).
             tune_max_num_tokens=max(1, 1 << (m - 1).bit_length()),
         )
         return routed[0] if isinstance(routed, (list, tuple)) else routed  # flashinfer 0.6 returns [output]

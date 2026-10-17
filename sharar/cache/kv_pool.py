@@ -3,8 +3,8 @@
 Layout is FlashInfer "NHD" paged: k[layer] and v[layer] are
 [num_pages, page_size, num_kv_heads, head_dim] in float8_e4m3fn. K/V are
 written with scale 1.0, as the reference does for this checkpoint (it ships no
-k_scale/v_scale). Page size is 1 like the reference. Measured 2026-09-18 with
-`bench/kv_page_size.py`, tag archive/bench-pre-split-2026-10-04: page 16 would leave decode attention unchanged and
+k_scale/v_scale). Page size is 1 like the reference. Measured with `bench/kv_page_size.py`
+(tag archive/bench-pre-split-2026-10-04): page 16 would leave decode attention unchanged and
 save about 0.45 ms (batch one) to 1.1 ms (batch four) of 16-row verify
 attention per round at 10K context, under 1% of the round, so the
 token-granular cache stays.

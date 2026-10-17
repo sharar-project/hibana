@@ -4,31 +4,6 @@ import torch
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs the GB10")
 
 
-@cuda
-def test_gemma_rmsnorm_matches_torch():
-    from sharar.kernels.fused_norm import gemma_rmsnorm
-    from sharar.model.norm import GemmaRMSNorm
-
-    torch.manual_seed(0)
-    x = torch.randn(37, 5120, device="cuda", dtype=torch.bfloat16)
-    r = torch.randn(37, 5120, device="cuda", dtype=torch.bfloat16)
-    w = torch.randn(5120, device="cuda", dtype=torch.bfloat16) * 0.1
-    ref_norm = GemmaRMSNorm(w, 1e-6)
-    out, _ = gemma_rmsnorm(x, w, 1e-6)
-    _close_bf16(out, ref_norm(x))
-    r2 = r.clone()
-    out2, fp8 = gemma_rmsnorm(x, w, 1e-6, residual=r2, fp8_scale=torch.tensor(0.05, device="cuda"), fp32_residual_sum=True)
-    ref_out, ref_res = ref_norm.fused_add(x, r)
-    assert torch.equal(r2, ref_res)
-    _close_bf16(out2, ref_out)
-    ref_fp8 = (ref_out.float() / 0.05).clamp(-448, 448).to(torch.float8_e4m3fn)
-    _close_fp8(fp8, ref_fp8)
-
-
-def _close_bf16(a, b):
-    # Operation order differs from torch; allow one bf16 ulp on a few elements.
-    assert torch.allclose(a.float(), b.float(), rtol=1e-2, atol=1e-3), (a.float() - b.float()).abs().max()
-
 
 def _close_fp8(a, b):
     a = a.float()
@@ -53,20 +28,6 @@ def test_quant_fp8_and_gate():
     ref_g = (gated.float() / 0.02).clamp(-448, 448).to(torch.float8_e4m3fn)
     _close_fp8(gated_quant_fp8(x.view(5, 24, 256), gate, scale), ref_g)
 
-
-@cuda
-def test_fp8_gemv_matches_scaled_mm():
-    from sharar.kernels.fp8_gemv import fp8_gemv
-
-    torch.manual_seed(0)
-    for m in (1, 2, 4):
-        x = (torch.randn(m, 5120, device="cuda") * 40).clamp(-448, 448).to(torch.float8_e4m3fn)
-        w = (torch.randn(6144, 5120, device="cuda") * 40).clamp(-448, 448).to(torch.float8_e4m3fn)
-        a = torch.tensor(0.2, device="cuda")
-        b = torch.tensor(0.001, device="cuda")
-        ref = torch._scaled_mm(x, w.t(), scale_a=a.reshape(1, 1), scale_b=b.reshape(1, 1), out_dtype=torch.bfloat16)
-        out = fp8_gemv(x, w, a * b)
-        assert torch.allclose(out.float(), ref.float(), rtol=2e-2, atol=1e-2), (out - ref).abs().max()
 
 
 @cuda

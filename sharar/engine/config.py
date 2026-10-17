@@ -1,8 +1,11 @@
 """EngineConfig: every engine setting in one frozen value.
 
 The launcher and the CLI pass settings as `SHARAR_*` environment variables;
-`EngineConfig.from_env()` reads them once, with the defaults the modules used to
-apply at import. `sharar serve` and the benchmark loader install the result
+`EngineConfig.from_env()` reads them once. The field defaults are the library's
+baseline (no lossy option, no SSD tier) that tests and benchmarks build on; a
+served engine's defaults are the target's and the profile's
+(`sharar/launch/settings.py`), which `sharar engine` resolves beneath the
+environment as `sharar serve` does. `sharar serve` and the benchmark loader install the result
 before building the model; modules read `current()` where they construct
 things (a model, a linear, a proposer, a graph set), never at import, and the
 few per-call checks read one attribute of the installed value. Tests and
@@ -72,10 +75,7 @@ class EngineConfig:
     ssm_window: int = 16                      # SHARAR_SSM_WINDOW: committed tokens per requantization (8, 16, 32)
     ssm_compensators: int | None = None       # SHARAR_SSM_COMPENSATORS: FP16 rank-one outlier terms kept beside the quantized state (0-16; unset: 4, or 8 for int4)
     flashnext_trunk: str = "fp8"              # SHARAR_FLASHNEXT_TRUNK: bf16 | fp8
-    flashnext_mixers: str = "fp8"             # SHARAR_FLASHNEXT_MIXERS
-    flashnext_mtp_trunk: str | None = None    # SHARAR_FLASHNEXT_MTP_TRUNK: the MTP draft head's precision (unset: the trunk's)
     trunk_keep_bf16: str | None = None        # SHARAR_TRUNK_KEEP_BF16: regex of Flash-Next projections kept BF16
-    flashnext_experts_sim3: int = 0           # SHARAR_FLASHNEXT_EXPERTS_SIM3: routed experts rounded to a 3-bit format with this group (16/32), a quality screen (weights/expert_sim3.py)
     flashnext_experts: str = "w3"             # SHARAR_FLASHNEXT_EXPERTS: w3 (the W3 checkpoint's 3-bit routed experts when it carries them) | nvfp4
     # --- speculation
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
@@ -86,7 +86,7 @@ class EngineConfig:
     draft_head: str = "fp8"                   # SHARAR_DRAFT_HEAD: fp8 (the target's head) or w3
     draft_head_rescore: int = 8               # SHARAR_DRAFT_HEAD_RESCORE
     device_accept: bool = False               # SHARAR_DEVICE_ACCEPT
-    accept_default: str = "2:1.0"             # SHARAR_ACCEPT_DEFAULT (greedy requests that set neither field)
+    accept_default: str = "off"               # SHARAR_ACCEPT_DEFAULT: K:M for greedy requests that set neither field (off: exact)
     accept_default_sampled: bool = False      # SHARAR_ACCEPT_DEFAULT_SAMPLED
     accept_default_sampled_threshold: str | None = None  # SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD: K:M for sampled requests (unset: accept_default's)
     qsa_sparse_graphs: bool = True            # SHARAR_QSA_SPARSE_GRAPHS=0: rows past the indexer budget run eagerly
@@ -102,18 +102,14 @@ class EngineConfig:
     ssd_writers: int = 4                      # SHARAR_SSD_WRITERS: the store's writer threads (at least 1)
     ssd_staging_mib: int = 512                # SHARAR_SSD_STAGING_MIB: backup copies in flight to the writers
     ssd_chunk_mib: int = 256                  # SHARAR_SSD_CHUNK_MIB: each half of the restore staging buffer
-    ssd_async: bool = True                    # SHARAR_SSD_ASYNC=0: a restore pauses the engine until it lands (the old way)
     kv_pool_tokens: int | None = None         # SHARAR_KV_POOL_TOKENS: a fixed KV pool size, e.g. to compare the SSD tier on and off; unset: planned
     # --- traces
     traces: str | None = None                 # SHARAR_TRACES
     traces_max_mib: int = 32768               # SHARAR_TRACES_MAX_MIB
-    mtp_precision: str = "bf16"               # SHARAR_MTP_PRECISION: the 27B's MTP head projections, bf16 or fp8 (Flash-Next's: SHARAR_FLASHNEXT_MTP_TRUNK)
     trace_confidence: bool = False            # SHARAR_TRACE_CONFIDENCE: the MTP draft's confidence per drafted position in trace rounds (read when the proposer is built)
     # --- diagnostics and benchmark loader
     debug_sync: bool = False                  # SHARAR_DEBUG_SYNC
-    commit_profile: bool = False              # SHARAR_COMMIT_PROFILE
     bench_verify_state: str = "snapshots"     # SHARAR_BENCH_VERIFY_STATE
-    bench_max_context: int = 0                # SHARAR_BENCH_MAX_CONTEXT
     moe_keep: int = 0                         # SHARAR_MOE_KEEP=k: Flash-Next, each token keeps its own top k experts in decode and verify forwards (model/flashnext/moe.py); 0, or k of 10 and above: the served top-10
     moe_reuse: int = 0                        # SHARAR_MOE_REUSE=r: up to r more experts a token from its ranks k+1..20, only ones the call's other tokens keep (k + r <= 10), so the call reads no expert beyond the tokens' top k
 
@@ -148,10 +144,7 @@ class EngineConfig:
             ssm_window=_int(e, "SHARAR_SSM_WINDOW", 16),
             ssm_compensators=_int(e, "SHARAR_SSM_COMPENSATORS", None),
             flashnext_trunk=_str(e, "SHARAR_FLASHNEXT_TRUNK", "fp8"),
-            flashnext_mixers=_str(e, "SHARAR_FLASHNEXT_MIXERS", "fp8"),
-            flashnext_mtp_trunk=_str(e, "SHARAR_FLASHNEXT_MTP_TRUNK"),
             trunk_keep_bf16=_str(e, "SHARAR_TRUNK_KEEP_BF16"),
-            flashnext_experts_sim3=_int(e, "SHARAR_FLASHNEXT_EXPERTS_SIM3", 0) or 0,
             flashnext_experts=_str(e, "SHARAR_FLASHNEXT_EXPERTS", "w3"),
             spec=_str(e, "SHARAR_SPEC"),
             spec_depths=_str(e, "SHARAR_SPEC_DEPTHS"),
@@ -161,7 +154,7 @@ class EngineConfig:
             draft_head=_str(e, "SHARAR_DRAFT_HEAD", "fp8"),
             draft_head_rescore=_int(e, "SHARAR_DRAFT_HEAD_RESCORE", 8),
             device_accept=_flag(e, "SHARAR_DEVICE_ACCEPT"),
-            accept_default=e.get("SHARAR_ACCEPT_DEFAULT", "2:1.0"),
+            accept_default=e.get("SHARAR_ACCEPT_DEFAULT", "off"),
             accept_default_sampled=_flag(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED"),
             accept_default_sampled_threshold=_str(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"),
             qsa_sparse_graphs=e.get("SHARAR_QSA_SPARSE_GRAPHS", "1") != "0",
@@ -175,16 +168,12 @@ class EngineConfig:
             ssd_writers=_positive(e, "SHARAR_SSD_WRITERS", 4),
             ssd_staging_mib=_positive(e, "SHARAR_SSD_STAGING_MIB", 512),
             ssd_chunk_mib=_positive(e, "SHARAR_SSD_CHUNK_MIB", 256),
-            ssd_async=_flag(e, "SHARAR_SSD_ASYNC", True),
             kv_pool_tokens=_int(e, "SHARAR_KV_POOL_TOKENS", 0) or None,
             traces=_str(e, "SHARAR_TRACES"),
             traces_max_mib=_int(e, "SHARAR_TRACES_MAX_MIB", 32768),
             trace_confidence=_flag(e, "SHARAR_TRACE_CONFIDENCE"),
-            mtp_precision=_str(e, "SHARAR_MTP_PRECISION", "bf16"),
             debug_sync=_flag(e, "SHARAR_DEBUG_SYNC"),
-            commit_profile=_flag(e, "SHARAR_COMMIT_PROFILE"),
             bench_verify_state=e.get("SHARAR_BENCH_VERIFY_STATE", "snapshots"),
-            bench_max_context=_int(e, "SHARAR_BENCH_MAX_CONTEXT", 0),
             moe_keep=_int(e, "SHARAR_MOE_KEEP", 0),
             moe_reuse=_int(e, "SHARAR_MOE_REUSE", 0),
         )

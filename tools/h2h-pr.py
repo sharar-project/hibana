@@ -7,7 +7,8 @@
 
 Each arm is a git worktree of its ref under the run directory, served by this checkout's Python environment
 (`uv sync`; the two refs must share `uv.lock`) with `sharar serve <target> --fast|--throughput` on --port, the
-user's config file, no sessions, no traces. Per arm and profile, under the shared GPU lock:
+user's config file, no traces, and the SSD tier on as served but in a fresh directory per server (removed after), so
+no arm or repeat restores another's prefixes. Per arm and profile, under the shared GPU lock:
 
 - `fast`: 1 request = h2h `decode` (the 22 prompts of `evals/workloads/h2h_v1.json`, one at a time; the median of
   their decode tok/s), and `--fast` stream counts above one as h2h's closed-loop `--streams`;
@@ -18,7 +19,8 @@ Prompts: chat, code, math, multilingual, prose, structured (22, in turn by categ
 `--streams`, so none share a prefix), thinking off, up to 1,024 output tokens with natural stops; --modes picks the
 sampling (greedy, t07 = T 0.7, t10 = T 1.0, both top-p 0.95, top-k 20), each with the profile's acceptance default.
 Order: base then PR, `--repeats` times; the table averages the repeats. Results, logs and the table (report.md) go
-to $SHARAR_RESULTS/reviews/<date>-h2h-<name>/; a rerun with the same --name skips what exists.
+to $SHARAR_RESULTS/reviews/<date>-h2h-<name>/; a rerun with the same --name skips what exists. The arms' worktrees
+are removed once the report is written.
 
 sharar-eval runs from this environment's `eval` extra (pinned in uv.lock), or from a checkout given with --evals /
 SHARAR_EVALS for unreleased sharar-eval changes, as `tools/evaluate.py` does.
@@ -32,6 +34,7 @@ import fcntl
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import statistics
 import subprocess
@@ -87,7 +90,7 @@ class Server:
 
     def __init__(self, tree: Path, target: str, profile: str, port: int, logfile: Path, env: dict):
         self.cmd = [str(VENV / "bin" / "python"), "-u", "-m", "sharar", "serve", target, f"--{profile}", "--port", str(port),
-                    "--no-sessions", "--no-fetch"]
+                    "--no-fetch"]
         self.tree, self.logfile, self.env = tree, logfile, env
         self.proc = None
 
@@ -185,7 +188,7 @@ def main() -> int:
     if git("show", f"{refs['base']}:uv.lock") != git("show", f"{refs['pr']}:uv.lock"):
         raise SystemExit("the two refs pin different dependencies (uv.lock); both arms run this checkout's environment")
     conf = launch.config_file()
-    env = {**os.environ, "SHARAR_TRACES": "off", "SHARAR_COLD_TIER_GIB": "0", **({"SHARAR_CONFIG_FILE": str(conf)} if conf else {})}
+    env = {**os.environ, "SHARAR_TRACES": "off", **({"SHARAR_CONFIG_FILE": str(conf)} if conf else {})}
     results = launch.resolve(target, "fast", {}, env=env, traces=False).results
     run = results / "reviews" / f"{dt.date.today():%Y-%m-%d}-h2h-{args.name or refs['pr'][:12]}"
     trees = run / "trees"
@@ -212,7 +215,10 @@ def main() -> int:
                 if done.exists():
                     continue
                 out.unlink(missing_ok=True)
-                with gpu_lock(lock, f"{arm} {profile} r{rep}"), Server(trees / arm, target, profile, args.port, run / f"{arm}-{profile}-r{rep}.server.log", env) as s:
+                ssd = run / f"{arm}-{profile}-r{rep}.ssd"
+                shutil.rmtree(ssd, ignore_errors=True)
+                with gpu_lock(lock, f"{arm} {profile} r{rep}"), Server(trees / arm, target, profile, args.port, run / f"{arm}-{profile}-r{rep}.server.log",
+                                                                       {**env, "SHARAR_SSD_DIR": str(ssd)}) as s:
                     (run / f"{arm}-{profile}-r{rep}.server.json").write_text(json.dumps(s.info, indent=1) + "\n")
                     log(f"{arm} ({labels[arm]}) {profile} r{rep}: serving")
                     hlog = run / f"{arm}-{profile}-r{rep}.h2h.log"
@@ -223,6 +229,7 @@ def main() -> int:
                     if streams:
                         h2h(ev, arm, out, ["--workloads", "conc", "--streams", ",".join(map(str, streams)),
                                                            "--warmup-s", str(args.warmup_s), "--duration-s", str(args.duration_s), *common], hlog, evals_env)
+                shutil.rmtree(ssd, ignore_errors=True)
                 done.touch()
                 log(f"{arm} {profile} r{rep}: done")
     md = (f"**h2h, {target}, one Spark** ({args.repeats} repeat{'s' if args.repeats > 1 else ''}, base then PR): "
@@ -231,6 +238,8 @@ def main() -> int:
           f"{args.warmup_s:.0f} s. Thinking off, up to 1,024 tokens, natural stops; greedy / t07 = T 0.7 (top-p 0.95, top-k 20).\n\n"
           + table(run, plan, args.modes.split(",")) + "\n")
     (run / "report.md").write_text(md)
+    for arm in refs:
+        git("worktree", "remove", "--force", str(trees / arm))
     print(md)
     log(f"report: {run / 'report.md'}")
     return 0

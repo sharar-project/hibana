@@ -5,7 +5,7 @@ hidden state h_{i-1} of the previous position,
   u = fc(cat(norm_e(embed(x_i)), norm_h(h_{i-1})))
   d = final_norm(attention_decoder_layer(u))      # one full-attention layer, dense MLP
   logits = lm_head(d)                              # the target's NVFP4 lm_head
-which predicts x_{i+1}. The projections are BF16 (`SHARAR_MTP_PRECISION=fp8` quantizes them at load, as Flash-Next's).
+which predicts x_{i+1}. The projections are BF16 (`precision="fp8"` quantizes them at load, as Flash-Next's).
 """
 
 from __future__ import annotations
@@ -24,13 +24,12 @@ class MtpHead(MtpLayer):
     DRAFT_HEADS = False  # only the target's NVFP4 head (a shortlist head needs FP8 rows)
 
     def __init__(self, w, device: torch.device, model, num_pages: int, precision: str | None = None, padding_rows: int = 0):
-        from sharar.engine.config import current
         t = self.target = model.target
         self.embed, self.lm_head = model.embed, model.lm_head
         self.hidden_width = t.hidden_size  # the hidden row the proposer carries
         from sharar.proposers.draft_head import TargetHead
         self.draft_head = TargetHead(self.logits)  # the target's NVFP4 head
-        precision = precision or current().mtp_precision
+        precision = precision or "bf16"
         eps = t.rms_norm_eps
         g = lambda name: w.get(f"{PREFIX}.{name}").to(device)  # noqa: E731
         p = f"{PREFIX}.layers.0"

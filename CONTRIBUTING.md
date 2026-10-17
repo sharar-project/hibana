@@ -6,9 +6,10 @@ unless a change explicitly validates a new one. Favor a small implementation wit
 explicit tensor ownership over a registry or framework. Read [the architecture](docs/architecture.md) and
 [the interfaces](docs/interfaces.md) first; open work is in the GitHub issues.
 
-Code, comments and tests carry no issue or pull-request numbers. Say what the code does and why, with the
-measurement when it decides a choice; the history (which issue asked for it, which pull request changed it) belongs
-in the commit message, the pull request and the docs.
+Tracked files (code, comments, tests, docs, configs) carry no issue or pull-request numbers and no dates; pinned
+revisions and hashes and archive tag names are the exceptions. Say what the code does and why, with the measurement
+when it decides a choice. The history (which issue asked for it, which pull request changed it, what was tried and
+measured on the way) belongs in the commit message and the pull request, not the docs.
 
 ## Run checks
 
@@ -43,85 +44,33 @@ prospective pool/draft budget before allocation.
 Performance measurements need exclusive GPU use. The check command does not
 stop or replace a running service.
 
-Anything that changes arithmetic (kernels, dispatch thresholds, draft
-precision, verify shapes, proposers) passes the GPU suite, then is measured
-against main with `tools/evaluate.py` ([evaluation](docs/evaluation.md#judge-a-change-to-arithmetic)):
-`--speed --suite quick` from the candidate's checkout, paired with the same run from
-a checkout of main (`--baseline`). AIPerf speed moves by under 1% between identical
-builds; the `quick` suite (GSM8K, HumanEval, MGSM, needles) is compared item
-by item, and a paired quality loss is a regression. Bit-identical outputs are
-not required and not a substitute: the target's arithmetic already changes with
-the row count, so outputs drift whenever shapes move.
-`profiling/flashnext_round.py` isolates round cost and tokens per round when a
-speed change needs explaining. A lossy option (one that changes what the model
-emits on purpose) is judged by the lossy-change gate below instead.
-When a change alters a default or adds a setting, update [operations](docs/operations.md) in the same change.
+Anything that changes arithmetic (kernels, dispatch thresholds, draft precision, verify shapes, proposers) passes
+the GPU suite, then is measured against main, paired item by item, as [evaluation](docs/evaluation.md#judge-a-change-to-arithmetic)
+describes; bit-identical outputs are neither required nor a substitute. When a change alters a default or adds a
+setting, update [operations](docs/operations.md) in the same change.
 
 A change meant to make serving faster posts `tools/h2h-pr.py`'s table in its pull request, so changes compare on one
 workload and their gains stack:
 
     tools/h2h-pr.py --target flashnext --pr <branch>      # and --target 27b when the change touches the 27B
 
-It serves main and the branch in turn (same environment, the user's config file) and runs sharar-eval's h2h:
-`fast` at 1 request (the 22 h2h prompts one at a time, median decode tok/s) and 4, `throughput` at 8, 16, 32, 64
-and 128 closed-loop streams (aggregate tok/s in a window, the server held at that many requests), greedy and T 0.7.
-About 1.5 hours a target; `--repeats 2` when the difference is within a few percent.
+It serves main and the branch in turn and runs sharar-eval's h2h on `fast` (1 and 4 requests) and `throughput`
+(8 to 128 closed-loop streams), greedy and T 0.7; the tool's docstring has the details. About 1.5 hours a target;
+`--repeats 2` when the difference is within a few percent.
 
 ## Judge a lossy option
 
-A lossy speed option (low-bit weights, fewer or pruned experts, relaxed
-acceptance, a reduced draft vocabulary) never enters the `exact` profile. It
-enters `fast` (and so `throughput`) only through the lossy-change gate, one
-command for either target:
+A lossy option changes what the model emits on purpose (low-bit weights, fewer or pruned experts, relaxed acceptance,
+a reduced draft vocabulary). It never enters the `exact` profile, and it enters `fast` (and so `throughput`) only
+through the lossy-change gate, which pairs the candidate against `exact` on the same engine:
 
 ```bash
 tools/lossy-gate.py --target flashnext --name my-option --profile exact --env SHARAR_X=1
 tools/lossy-gate.py --target qwen38 --name fast --profile fast
 ```
 
-The candidate is a serving profile plus `SHARAR_*` overrides on the target's
-launcher config, paired against the `exact` profile on the same engine (this checkout). The tool
-runs unattended, takes the GPU lock for each phase, resumes after an
-interruption, and writes `$SHARAR_RESULTS/reviews/<date>-lossy-gate-<name>/`
-(`SUMMARY.md`, `scorecard.json`, one verdict line). Its three layers run
-cheapest first:
-
-1. **Distribution distance** (in-process, minutes): argmax agreement and
-   KL(exact || candidate) on the exact model's own greedy continuations of 28
-   frozen prompts (code, math, prose, multilingual, structured, short chat),
-   64 rows per forward (the decode path, where 3-bit copies act). The floor is
-   the exact model at 32 rows per forward. Reported per domain.
-2. **Speculation health** (same process): tokens per round, round cost and
-   decode tok/s per prompt with the profile's acceptance rule; the floor is a
-   repeated baseline pass. The verdict's speed delta comes from here.
-3. **Task battery** (served over HTTP, paired per item, McNemar; the suites of
-   `sharar-eval`'s `evals.suite`):
-   - **Screen:** the `quick` suite (GSM8K 300, HumanEval 164, MGSM 24 per language, needles at 16K and 64K).
-   - **Full sets, when the screen is close:** the `full` suite (GSM8K 1,319, HumanEval, MBPP 500, MGSM 2,750).
-   - **`--battery hard` (opt-in, 4-6 hours per arm):** the `hard` suite (MMLU-Pro, GPQA Diamond, IFEval, WMT24++).
-     It is the one that separates close variants on knowledge.
-   - **`--battery long` (opt-in, about 3 hours per arm):** the `long` suite (RULER v2 at 32K and 128K, 120 items
-     each). Use it for anything that touches attention, the KV cache or prefill. `--battery all` runs both.
-   - **`--battery agentic` (opt-in, about 18 hours per arm):** Terminal-Bench 2.1 through Harbor (the 78 tasks
-     valid on the GB10, twice). It detects only differences of about 10 points, so it is an agentic check, not a fine gate.
-
-The verdict (intervals are 95%; pooled = all tasks of the stage):
-
-| Profile | Rule |
-|---|---|
-| `exact` | layers 1 and 2 within their floors in every domain (the change is lossless; layer 3 is skipped) |
-| rejected | no measurable speed gain (decode interval lower bound at or below 1.035, the layer's own noise), or a task or the pooled battery significantly worse (McNemar p < 0.05 with more losses than wins; with `--battery` also MMLU-Pro, GPQA, IFEval or a RULER v2 length (paired sign test), while WMT24++ chrF++ is reported only), or a pooled loss above 2.0 points |
-| `fast` | not rejected: the loss is not significant and at most 2.0 points. The reasons say when the full stage also holds it within 1.0 point (pooled interval lower bound at or above -1.0 point and every task within -1.0 point) |
-
-The screen escalates to the full sets unless it rejects the candidate or its
-pooled interval already excludes a loss of more than 1.0 point. Layer 1 grants
-nothing beyond `exact`: it says which domain a change hurts and is the cheap
-early warning. Layer 2 resolves speed to about 3.5% (a warm baseline repeat reads x1.035, a
-second exact process x0.986); a smaller gain needs the served, interleaved h2h
-arms. Argmax agreement breaks exact logit ties by index order, so identical
-distributions read about 99.3%, not 100%; the floor carries the same effect.
-Relaxed acceptance does not move layer 1 (the distribution is
-unchanged); it shows in layers 2 and 3. Sampled requests are not scored.
+The layers, the verdict rules and the outputs are in the docstring of [`tools/lossy-gate.py`](tools/lossy-gate.py);
+[evaluation](docs/evaluation.md#the-lossy-change-gate) covers running it.
 
 ## Add a setting
 
@@ -190,12 +139,10 @@ StateManager commit and stop/continuation tests.
 ## Change the drafter
 
 Sharar serves the publisher's drafters; `--draft DIR` serves another DFlash2
-checkpoint of the same architecture, trained elsewhere. Drafter training on
-recorded traffic was removed (it gained about 3% served throughput, #118); the
-trainer, its trace features and hot reload are at the tag
-`archive/draft-training`, to return only with a method that clearly pays for
-itself. Trace format changes bump `FORMAT_VERSION` in `engine/traces.py` and
-keep the reader accepting older records.
+checkpoint of the same architecture, trained elsewhere (a trainer on recorded
+traffic is archived at the tag `archive/draft-training`). Trace format changes
+bump `FORMAT_VERSION` in `engine/traces.py` and keep the reader accepting older
+records.
 
 ## Add a GB10 kernel
 
@@ -237,15 +184,9 @@ needs its own pressure and graph-address tests.
 
 ## Propose a hardware optimization
 
-GB10 shares physical DRAM between CPU and GPU, but not every CUDA allocation is coherently CPU-accessible; a
-mapped-allocation experiment must establish its visibility and synchronization contract
-([porting notes](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/cuda.html)). Use host
-`MemAvailable` alongside allocator measurements, and benchmark with background CPU load as well as an idle
-machine ([UMA guidance](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/optimization.html)).
-
-Before building, write down the bottleneck evidence, the mechanism (what traffic or synchronization it
-removes), the predicted gain and the result that would make you abandon it. Measure against the same target
-work in separate fresh processes, with repeated runs and intervals; keep kernel-cost comparisons apart from
-generation runs when changed continuations alter the amount of work. Record the source commit, model, draft,
-shapes, cache state, sampling and host load with the results, negative ones included, in the issue or pull
-request. A microbenchmark alone does not establish a serving gain.
+GB10 shares physical DRAM between CPU and GPU, but not every CUDA allocation is coherently CPU-accessible
+([porting notes](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/porting/cuda.html),
+[UMA guidance](https://docs.nvidia.com/dgx/dgx-spark-porting-guide/optimization.html)). Write down the bottleneck
+evidence, the mechanism and the predicted gain before building; measure in fresh processes with repeats, intervals
+and host `MemAvailable`, and report the results, negative ones included, in the pull request. A microbenchmark alone
+does not establish a serving gain.

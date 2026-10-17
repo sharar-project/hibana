@@ -128,8 +128,9 @@ def generate(args) -> None:
 
 
 def build(args) -> None:
-    from transformers import AutoTokenizer
-    tok = AutoTokenizer.from_pretrained(str(args.tokenizer))
+    from sharar.api.chat_template import ChatTemplate
+    from sharar.tokenizer import SnapshotTokenizer
+    tmpl, tok = ChatTemplate(args.tokenizer), SnapshotTokenizer(args.tokenizer)
     base = json.loads(args.base.read_text())
     answers = json.loads(args.answers.read_text())["items"]
     samples, current, sources = [], [], []
@@ -139,9 +140,9 @@ def build(args) -> None:
         reply = {"role": "assistant", "content": it["answer"]}
         if it.get("reasoning"):  # a thinking trace: rendered as the model writes it (<think> ... </think> then the answer)
             reply["reasoning_content"] = it["reasoning"]
-        text = tok.apply_chat_template([{"role": "user", "content": it["prompt"]}, reply], tokenize=False,
-                                       enable_thinking=bool(it.get("reasoning")))
-        ids = tok.encode(text, add_special_tokens=False)[:args.max_tokens]
+        text = tmpl.render([{"role": "user", "content": it["prompt"]}, reply], add_generation_prompt=False,
+                           enable_thinking=bool(it.get("reasoning")))
+        ids = tok.encode(text)[:args.max_tokens]
         if current and len(current) + len(ids) > args.max_tokens:
             samples.append({"source": ",".join(sorted(set(sources))), "input_ids": current})
             current, sources = [], []

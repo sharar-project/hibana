@@ -1,4 +1,4 @@
-"""Offline activation-aware quantization into Sharar's existing W3 format.
+"""Offline activation-aware quantization into the W3 format (kernels/w3.py).
 
 Uses the GPTQ column-error update (Frantar et al., arXiv:2210.17323): the
 upper Cholesky factor of the inverse damped input covariance distributes

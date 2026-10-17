@@ -59,6 +59,37 @@ def test_serve_runs_the_engine_in_the_foreground(home, monkeypatch):
     assert env["SHARAR_SSD"] == "1" and env["SHARAR_SSD_DIR"] == str(home / "results" / "ssd" / "flashnext")  # on by default
 
 
+def test_engine_by_hand_serves_what_serve_would(home):
+    from sharar.engine.config import EngineConfig
+
+    args = cli.engine_parser().parse_args(["--target", "flashnext"])
+    cfg = EngineConfig.from_env(cli.resolved_engine_env(args))
+    assert (args.port, args.proposer, args.verify_state, args.draft_precision) == (30004, "mtp", "reconstruct", "bf16")
+    assert cfg.profile == "fast" and cfg.accept_default == "3:2.0" and cfg.device_accept and (cfg.moe_keep, cfg.moe_reuse) == (5, 5)
+    assert cfg.qsa_prefill_backend == "auto" and cfg.max_context == 262144 and cfg.spec == "8"
+    assert cfg.ssd and cfg.ssd_dir == str(home / "results" / "ssd" / "flashnext") and cfg.w3_decode
+    args = cli.engine_parser().parse_args(["--port", "31000"])
+    cfg = EngineConfig.from_env(cli.resolved_engine_env(args))
+    assert (args.port, args.proposer, args.draft_precision) == (31000, "dflash2", "fp8") and cfg.target == "qwen38"
+
+
+@pytest.mark.parametrize("profile", ["--exact", "--fast", "--throughput"])
+@pytest.mark.parametrize("target", ["27b", "flashnext"])
+def test_engine_resolution_keeps_what_serve_prepared(home, monkeypatch, target, profile):
+    from sharar.engine.config import EngineConfig
+
+    started = []
+    monkeypatch.setattr(run.guard, "start_thread", lambda **kw: None)
+    monkeypatch.setattr(cli, "run_engine", lambda args, parser: started.append((args, dict(os.environ))) or 0)
+    assert cli.main(["serve", target, profile]) == 0
+    args, env = started[0]
+    before = vars(args).copy()
+    os.environ.clear()  # the engine process's environment (the `home` fixture restores the test's)
+    os.environ.update(env)
+    assert EngineConfig.from_env(cli.resolved_engine_env(args)) == EngineConfig.from_env(env)
+    assert vars(args) == before
+
+
 def test_cache_reports_the_gpu_cache_and_the_ssd_tier(home, monkeypatch, capsys):
     ssd = {"prefixes": 4, "used_gib": 1.5, "budget_gib": 200.0, "restores": 2, "restored_tokens": 9000}
     info = {"kv_pages": 1000, "config": {"ssd": True, "ssd_dir": "/tmp/sharar-ssd"},
@@ -193,12 +224,6 @@ def test_launch_sets_up_each_agent_for_the_serving_target(home, monkeypatch, tmp
 def test_launch_and_chat_need_a_server(home):
     with pytest.raises(SystemExit, match="nothing is serving"):
         cli.main(["chat"])
-
-
-def test_no_launcher_scripts_left():
-    for name in ("sharar-ctl", "sharar-tp", "run-sharar.sh", "run-sharar-train.sh"):
-        assert not (ROOT / name).exists()
-    assert sorted(p.name for p in (ROOT / "tools").glob("*.sh")) == ["check.sh"]
 
 
 def test_rank0_gets_the_resolved_settings_not_the_callers(monkeypatch):

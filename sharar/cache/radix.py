@@ -193,9 +193,6 @@ class RadixCache:
         when ids can be matched now. A restore that landed keeps its path locked until `release(ids)`."""
         if self.ssd is None:
             return True
-        if not self.ssd.async_restore:
-            self.ssd.restore(self, ids, reserve)
-            return True
         return self.ssd.restore_async(self, ids, reserve)
 
     def release(self, ids: list[int]) -> None:

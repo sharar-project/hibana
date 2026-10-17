@@ -105,6 +105,26 @@ would evict the restored path before the request could use it, then read it agai
 object intact (missing file, bad header, CRC mismatch) returns its pages and slot and reports 0 tokens; the request
 prefills from the L1 prefix as if the SSD copy never existed.
 
+## Store and budget
+
+The launcher points the tier at `$SHARAR_RESULTS/ssd/<target>` (one store per target; `SHARAR_SSD_DIR` moves it, e.g.
+to another drive). The directory is private (0700: tails hold token ids), one server holds it at a time (a second
+one disables its tier rather than share it), and a store on a tmpfs or ramfs is refused: it would sit in memory,
+which on a Spark is the GPU's. If a store cannot open, the server logs why and runs without the tier. The budget
+(`SHARAR_SSD_GIB`, default 200) never fills the drive: at startup it is capped to what is stored plus the free space
+beyond a reserve (a tenth of the drive, at most 64 GiB).
+
+The tier skips prefixes shorter than 4,096 tokens: each tail carries the recurrent snapshot (147 MiB per 27B prefix
+in FP32, 58 MiB with `SHARAR_SSM_STATE=int8`), and a short prefix re-prefills in about a second. A finished
+request's snapshot is written at its end, where its conversation's next turn resumes, not at its prompt's end; a
+request that regenerates from the same prompt may prefill its last turn again. A node whose descendants are already
+stored (a prompt's end, a chunk checkpoint) is demoted with its KV blocks and no snapshot. Writer threads write with
+O_DIRECT through a 16 MiB buffer each, or where the filesystem refuses O_DIRECT through the page cache, dropped
+after each file (`direct_writes` in `cache.ssd.store` says which). A prefix eviction cannot copy at once is dropped
+and counted in `evict_dropped`. A restart lists the stored prefixes again only for the same target revision, decode
+weights, geometry, recurrent-state format and prefill numerics, and deletes another format's at startup.
+`cache.ssd` in `/get_server_info` reports usage, restores and read GB/s; `sharar cache` shows what the tier holds.
+
 ## Restore pipeline
 
 ```
@@ -124,14 +144,13 @@ scatter kernels read it in place: no host memcpy and no host-to-device copy.
 The engine does not wait for the reads (`restore_async`). A worker thread reads and checks each chunk; the engine
 thread scatters it on the main stream at its next step, in one kernel launch for every pool the tier stores
 (`kernels/csrc/kv_copy.cu`, which also gathers backups into their pinned payloads), and the reader refills that
-half once the scatter has read it. The scatter stays on the engine thread on purpose: issued from the worker, the
-launch and the Python that plans it wait for the GIL behind the busy engine thread, tens of milliseconds a chunk on
-the 27B, against under one on the engine thread. One restore runs at a time (they share the buffer and the drive);
-the next request that needs one waits for it. A restore that landed keeps its path locked until its request is
-admitted, so eviction cannot take it first. On two Sparks each rank reads its own heads, and the ranks agree each
-step whether every rank's reads have landed before either imports the state (one integer all-reduce per step while
-a restore is in flight). `SHARAR_SSD_ASYNC=0` restores with the engine waiting, as before. The chunk size, not the
-context, bounds the buffer, so the pool plan reserves a constant for it (`SsdTier.memory_bound`).
+half once the scatter has read it. The scatter stays on the engine thread because a launch issued from the worker,
+and the Python that plans it, wait on the GIL behind it: tens of milliseconds a chunk on the 27B. One restore runs at
+a time (they share the buffer and the drive); the next request that needs one waits for it. A restore that landed
+keeps its path locked until its request is admitted, so eviction cannot take it first. On two Sparks each rank reads
+its own heads, and the ranks agree each step whether every rank's reads have landed before either imports the state
+(one integer all-reduce per step while a restore is in flight). The chunk size, not the context, bounds the buffer,
+so the pool plan reserves a constant for it (`SsdTier.memory_bound`).
 
 ## What a restore costs
 
@@ -143,74 +162,17 @@ objects plus a 147 MiB tail):
 | 4K | 2.5 s | — | +0.06 s over a GPU hit | 2.5× faster |
 | 258K | 353 s | — | +0.77 s over a GPU hit | 61× faster |
 
-- **The drive bounds long restores.** A 258K restore takes about 663 ms; the drive alone needs about
-  620–660 ms for the 8.6 GB.
-- **Fixed host work bounds short restores.** Planning, page allocation and per-object header checks are the
-  part software can still cut, and they show most at short contexts (32K: 116 ms for 1.2 GB).
-- **More reader threads do not help.** Reader threads share the GIL with the engine thread; 16 threads and a
-  separate checksum pool were both slower than 8.
-- **After a restore, attention dominates.** Time to first token after a hit is mostly the prefill of the new
-  tokens over the long prefix (about 5 s for 2,048 new tokens at 258K, 0.19 s for one).
+The drive bounds long restores (it alone needs about 620-660 ms for the 8.6 GB); fixed host work (planning, page
+allocation, header checks) bounds short ones. After a restore, time to first token is mostly the prefill of the new
+tokens over the long prefix.
 
-Two things would move the numbers further: overlapping the restore with compute layer by layer, and more drive
-bandwidth (a second NVMe striped with the first, or GPUDirect Storage).
+## Measure it
 
-## Benchmark it yourself
-
-This measures three times to first token for one long context: re-prefilling it, finding it in GPU memory, and
-restoring it from the SSD. It needs only the server. Use a GPU nothing else runs on, and an `SHARAR_SSD_DIR` on
-the NVMe itself (a loop device or a file-backed pool serves reads from the host page cache).
-
-**1. Serve with the SSD tier on.**
-
-```bash
-uv run sharar serve 27b --detach
-```
-
-**2. Save this client** (standard library only) as `ttft.py`. Each request asks for one output token, so its
-latency is the time to first token; `cached_tokens` says how much of the prompt the server reused.
-
-```python
-import json, random, sys, time, urllib.request
-
-URL = "http://127.0.0.1:30001"
-
-def generate(ids):
-    body = json.dumps({"input_ids": ids, "sampling_params": {"max_new_tokens": 1, "temperature": 0}}).encode()
-    req = urllib.request.Request(URL + "/generate", body, {"Content-Type": "application/json"})
-    t = time.perf_counter()
-    with urllib.request.urlopen(req, timeout=3600) as r:
-        meta = json.loads(r.read())["meta_info"]
-    return time.perf_counter() - t, meta["cached_tokens"]
-
-def context(n, seed):
-    rng = random.Random(seed)
-    return [rng.randrange(1000, 100000) for _ in range(n)]
-
-step, n = sys.argv[1], int(sys.argv[2])
-ids = context(n, seed=n)
-follow = ids + context(64, seed=n + 1)  # the next turn: the same context plus 64 new tokens
-if step == "prefill":                   # a context the server has not seen
-    print("re-prefill  %.2f s  (cached %d)" % generate(ids))
-    print("GPU hit     %.2f s  (cached %d)" % generate(follow))
-else:                                   # after a restart the context is only on the SSD
-    print("SSD restore %.2f s  (cached %d)" % generate(follow))
-    ssd = json.load(urllib.request.urlopen(URL + "/get_server_info"))["scheduler"]["cache"]["ssd"]
-    print("restores %d, %.1f GB/s read" % (ssd["restores"], ssd["restore_read_gbps"]))
-```
-
-**3. Measure.** The `prefill` step caches the context. The restart moves every cached prefix to the SSD (the
-shutdown writes them, the startup lists them again), so the `restore` step reads the context back from the SSD.
-
-```bash
-python3 ttft.py prefill 131072
-uv run sharar stop && uv run sharar serve 27b --detach   # returns once the server is ready
-python3 ttft.py restore 131072
-```
-
-Repeat with other lengths (the tier skips contexts under 4,096 tokens), a fresh length each time so the first
-request misses the cache. With `SHARAR_SSD_TRACE=1` the server also writes one line per restore, with its read and
-scatter times, to `<SHARAR_SSD_DIR>/v2/restores.jsonl`. `uv run sharar cache` shows what the tier holds.
+`profiling/ssd_turns.py` runs concurrent multi-turn conversations against a server with a small KV pool, so turns
+restore from the SSD, and reports time to first token, stream gaps and the server's restore counters. With
+`SHARAR_SSD_TRACE=1` the server also writes one line per restore, with its read and scatter times, to
+`<SHARAR_SSD_DIR>/v2/restores.jsonl`. Use a GPU nothing else runs on and an `SHARAR_SSD_DIR` on the NVMe itself (a
+loop device or a file-backed pool serves reads from the host page cache).
 
 ## Tensor parallel
 

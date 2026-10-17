@@ -1051,12 +1051,6 @@ def test_a_synchronous_restore_finishes_the_one_in_flight_first(tmp_path):
     assert not any(locks(cache))
 
 
-def test_admission_with_the_restore_off_restores_in_line(tmp_path):
-    cache, tier, kv, sp, feats, before = stored(tmp_path)
-    tier.async_restore = False
-    assert cache.restore_async(IDS + [7]) and tier.async_restores == 0 and tier.restores == 1
-    assert same(restored(cache, kv, sp, IDS), before) and not any(locks(cache))
-
 
 # ---- a prompt's blocks go out while its request decodes ----
 

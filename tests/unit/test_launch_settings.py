@@ -77,6 +77,19 @@ def test_the_profile_alone_turns_the_3bit_copies_on(profile, target, w3):
     assert launch.profile_defaults(profile, target)["SHARAR_W3_DECODE"] == w3
 
 
+@pytest.mark.parametrize("profile, target, backend", [
+    ("exact", "flashnext", None), ("fast", "flashnext", "auto"), ("throughput", "flashnext", "auto"),
+    ("fast", "qwen38", None), ("throughput", "qwen38", None)])
+def test_the_lossy_profiles_take_the_optimized_qsa_prefill(profile, target, backend):
+    # exact keeps the `original` QSA prefill (the engine's own default); an explicit setting still wins
+    assert launch.profile_defaults(profile, target).get("SHARAR_QSA_PREFILL_BACKEND") == backend
+
+
+def test_an_explicit_qsa_prefill_backend_wins_over_the_profile(env):
+    assert resolve({**env, "SHARAR_QSA_PREFILL_BACKEND": "original"}, "flashnext", "fast").get("SHARAR_QSA_PREFILL_BACKEND") == "original"
+    assert resolve(env, "flashnext", "fast").get("SHARAR_QSA_PREFILL_BACKEND") == "auto"
+
+
 @pytest.mark.parametrize("target, experts, batch, depths", [
     ("flashnext", "w3", "128", "16:3,32:3,64:3,128:3"), ("flashnext", "nvfp4", "64", "16:3"), ("qwen38", "w3", "16", None)])
 def test_throughput_decodes_more_requests(target, experts, batch, depths):
@@ -135,7 +148,7 @@ def test_the_8bit_state_default_yields(env):
     ({"SHARAR_MAX_BATCH": "129"}, "MAX_BATCH"), ({"SHARAR_SPEC_DEPTHS": "8"}, "SPEC_DEPTHS"),
     ({"SHARAR_DRAFT_PRECISION": "fp4"}, "DRAFT_PRECISION"), ({"SHARAR_PROPOSER": "dspark"}, "SHARAR_PROPOSER"),
     ({"SHARAR_PROPOSER": "ngram"}, "SHARAR_PROPOSER"),
-    ({"SHARAR_PROPOSER": "mtp"}, "FP8 draft precision"), ({"SHARAR_FLASHNEXT_EXPERTS": "fp4"}, "EXPERTS")])
+    ({"SHARAR_PROPOSER": "mtp", "SHARAR_DRAFT_PRECISION": "fp8"}, "FP8 draft precision"), ({"SHARAR_FLASHNEXT_EXPERTS": "fp4"}, "EXPERTS")])
 def test_bad_settings_are_refused(env, override, message):
     with pytest.raises(ValueError, match=message):
         resolve(env, "27b", overrides=override)
@@ -160,9 +173,9 @@ def test_the_engine_gets_explicit_flags_and_its_environment(env, tmp_path):
     assert "--tp" in resolve(env, "27b", tp=2).engine_args(tp=2)
 
 
-def test_the_ssd_tier_settings_are_checked(env, tmp_path, capsys):
-    """The SSD tier stores under the results directory, one store per target, on every Spark; the removed cold-tier
-    and session-store settings are ignored with a warning, so `sharar stop` still works with an old config file."""
+def test_the_ssd_tier_settings_are_checked(env, tmp_path):
+    """The SSD tier stores under the results directory, one store per target, on every Spark, or under SHARAR_SSD_DIR
+    when set; malformed SHARAR_SSD, SHARAR_SSD_BLOCK_TOKENS and SHARAR_SSD_GIB values are rejected."""
     s = resolve(env, "27b", overrides={"SHARAR_SSD": "1", "SHARAR_SSD_GIB": "50", "SHARAR_SSD_BLOCK_TOKENS": "1024"})
     e = s.engine_env(None)
     assert s.ssd == s.results / "ssd" / "qwen38" and e["SHARAR_SSD_DIR"] == str(s.ssd)
@@ -173,12 +186,6 @@ def test_the_ssd_tier_settings_are_checked(env, tmp_path, capsys):
                               ({"SHARAR_SSD_GIB": "lots"}, "number of GiB")):
         with pytest.raises(ValueError, match=message):
             resolve(env, "27b", overrides=override)
-    from sharar.launch import settings
-    settings._WARNED.clear()
-    for old in ("SHARAR_COLD_TIER_GIB", "SHARAR_SESSION_DIR", "SHARAR_SESSION_GIB", "SHARAR_SESSION_MIN_TOKENS"):
-        resolve(env, "27b", overrides={old: "8"})
-        resolve(env, "27b", overrides={old: "8"})
-        assert capsys.readouterr().err.count(f"{old} was removed and is ignored") == 1  # once per process
     two = resolve(env, "27b", overrides={"SHARAR_SSD": "1"}, tp=2)  # each rank stores on its own Spark, same path
     assert two.engine_env(None)["SHARAR_SSD_DIR"] == str(s.ssd) and "--tp" in two.engine_args(tp=2)
 
@@ -189,7 +196,7 @@ def test_flashnext_without_a_checkpoint_serves_its_fp8_trunk(env):
 
 
 @pytest.mark.parametrize("policy", ["auto", "cute", "triton"])
-def test_gdn_prefill_backend_reaches_engine_through_new_launcher(env, policy):
+def test_gdn_prefill_backend_reaches_engine_through_the_launcher(env, policy):
     from sharar.engine.config import EngineConfig
     resolved = resolve({**env, "SHARAR_GDN_PREFILL": policy}, "27b")
     engine_env = resolved.engine_env(None)
@@ -244,3 +251,9 @@ def test_config_file_parsing(tmp_path, monkeypatch):
     conf = tmp_path / "c.env"
     conf.write_text('export SHARAR_A="x y"\nSHARAR_B=$SOMEWHERE/b  # note\nnot a setting\nSHARAR_A=z\n')
     assert launch.read_config_file(conf) == {"SHARAR_A": "z", "SHARAR_B": "/data/b"}
+
+
+def test_the_27b_fp8_draft_applies_when_its_draft_runs(env):
+    assert resolve(env, "27b").get("SHARAR_DRAFT_PRECISION") == "fp8"
+    for override in ({"SHARAR_SPEC": "0"}, {"SHARAR_PROPOSER": "mtp"}):
+        assert resolve(env, "27b", overrides=override).get("SHARAR_DRAFT_PRECISION") == "bf16"

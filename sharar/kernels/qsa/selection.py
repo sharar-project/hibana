@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Original Flash-Next indexer selection with fixed shapes (CUDA-graph safe).
+"""Graph-safe indexer selection (the `original` QSA backend) with fixed shapes (CUDA-graph safe).
 
 Every row scores the compressed keys of the groups it sees in one Triton kernel:
 the key of group g lives in page aux row 1 of the page holding token
@@ -7,7 +7,8 @@ g * ratio + ratio - 1, found through a flat page table at the row's base offset.
 The score is relu(q . k) summed over the index heads, times `scale`; groups the
 row cannot see score -inf. The top `budget // ratio` groups of a fixed-width
 buffer, their tokens and the row's pending tail form the row's selection, valid
-entries first, as `FlashNextIndexer._select` builds it.
+entries first, as `FlashNextIndexer.select`
+(sharar/model/flashnext/indexer.py) builds it.
 """
 
 from __future__ import annotations

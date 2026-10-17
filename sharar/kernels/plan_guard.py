@@ -4,7 +4,7 @@ plan() fills a pinned host buffer and copies it to the device asynchronously.
 Planning the same wrapper again before the GPU has executed that copy rewrites
 the buffer under the queued copy, so the earlier launch reads the later plan:
 wrong page indices and an illegal memory access. Eager Flash-Next hit it under
-load (2026-09-23): the MTP head re-plans once per draft step, and a cache-hit
+load: the MTP head re-plans once per draft step, and a cache-hit
 prefill and a verification shared a wrapper in one scheduler step. CUDA graphs
 plan into fixed buffers between replays and are not affected. Waiting on an
 event recorded after the previous plan only blocks when the GPU has not yet

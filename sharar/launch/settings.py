@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -40,11 +39,12 @@ TARGET_SETTINGS = {
 #             verify 4 drafts), and Flash-Next's batch-aware expert selection (keep 5 + reuse 5: each token's own top
 #             5, then up to 5 the forward's other tokens already read; one Spark: decode +20% at one request, +27-41%
 #             at sixteen, the quick suite within noise at both; two Sparks: +10-12% at one request, +18% at sixteen;
-#             at 32 / 64 / 128 requests +14 / +12 / +7% on one Spark, +13 / +9 / +6% on two)
+#             at 32 / 64 / 128 requests +14 / +12 / +7% on one Spark, +13 / +9 / +6% on two), and Flash-Next's
+#             optimized QSA prefill kernels where eligible (SHARAR_QSA_PREFILL_BACKEND=auto: RULER v2 32K equal)
 #   throughput  fast with more requests decoded together: the 27B 16 (full depth; batches of five or more verify on
 #             the original weights, GSM8K x1.74), Flash-Next 128 with its 3-bit experts (64 with NVFP4 experts), three
 #             drafts at sixteen requests so their verification stays within the 64 rows the 3-bit copies serve (four
-#             above: wider batches exceed 64 rows at any depth, and three measured no faster there, 2026-10-12)
+#             above: wider batches exceed 64 rows at any depth, and three measured no faster there)
 PROFILE_NAMES = ("exact", "fast", "throughput")
 
 
@@ -64,6 +64,9 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
     if flashnext and profile != "exact":
         # batch-aware expert selection: decode and verify forwards at any number of requests
         p.update(SHARAR_MOE_KEEP="5", SHARAR_MOE_REUSE="5")
+        # the optimized QSA prefill kernels where eligible (SM121, one or two Sparks, through 32K): RULER v2 32K 94.1
+        # against 94.0 (120 items, 2 better / 2 worse), prefill 3-4% faster at 8K and 32K
+        p["SHARAR_QSA_PREFILL_BACKEND"] = "auto"
     if flashnext:
         p["SHARAR_SPEC"] = "4"
         if profile == "fast":  # adaptive depth: h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
@@ -84,7 +87,6 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
 
 
 DEFAULT_CONTEXT = 262144
-GUARD_FLOOR_GIB = 16.0
 
 
 def target_name(name: str | None) -> str:
@@ -200,8 +202,8 @@ class Settings:
                 "--verify-state", self.get("SHARAR_VERIFY_STATE", "reconstruct"), "--spec", str(self.spec),
                 "--context-length", str(self.max_context), "--max-batch", self.get("SHARAR_MAX_BATCH", "4"),
                 "--draft-precision", self.get("SHARAR_DRAFT_PRECISION", "bf16"),
-                "--accept-default", self.get("SHARAR_ACCEPT_DEFAULT", "2:1.0")]
-        accept, sampled = self.get("SHARAR_ACCEPT_DEFAULT", "2:1.0"), self.get("SHARAR_ACCEPT_DEFAULT_SAMPLED", "0")
+                "--accept-default", self.get("SHARAR_ACCEPT_DEFAULT", "off")]
+        accept, sampled = self.get("SHARAR_ACCEPT_DEFAULT", "off"), self.get("SHARAR_ACCEPT_DEFAULT_SAMPLED", "0")
         if sampled == "1" and accept != "off":
             args.append("--accept-default-sampled")
             if self.get("SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"):
@@ -215,9 +217,6 @@ class Settings:
         if tp > 1:
             args += ["--tp", str(tp)]
         return args
-
-
-_WARNED: set[str] = set()  # removed settings already warned about in this process
 
 
 def _check(cond: bool, message: str) -> None:
@@ -272,19 +271,15 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(values.get("SHARAR_PLE_RESIDENT", "auto") in ("auto", "0"), "SHARAR_PLE_RESIDENT must be auto or 0")
     _check(values.get("SHARAR_SSM_STATE", "fp32") in ("fp32", "int8", "int4"), "SHARAR_SSM_STATE must be fp32, int8 or int4")
     _check(values.get("SHARAR_DRAFT_VOCAB", "0").isdigit(), "SHARAR_DRAFT_VOCAB must be a row count (0 = the full lm_head)")
-    for old, why in (("SHARAR_COLD_TIER_GIB", "the GPU pools take that memory; SHARAR_SSD=1 keeps evicted prefixes on the NVMe"),
-                     ("SHARAR_SESSION_DIR", "SHARAR_SSD=1 turns the SSD tier on, in $SHARAR_RESULTS/ssd (SHARAR_SSD_DIR moves it)"),
-                     ("SHARAR_SESSION_GIB", "the SSD tier's capacity is SHARAR_SSD_GIB"),
-                     ("SHARAR_SESSION_MIN_TOKENS", "the SSD tier stores prefixes of 4,096 tokens or more")):
-        if values.get(old) and old not in _WARNED:  # a warning, not an error: `sharar stop` must work with an old config
-            _WARNED.add(old)
-            print(f"sharar: {old} was removed and is ignored ({why})", file=sys.stderr)
     _check(values.get("SHARAR_SSD", "0") in ("0", "1"), "SHARAR_SSD must be 0 or 1")
     block = values.get("SHARAR_SSD_BLOCK_TOKENS", "256")
     _check(block.isdigit() and int(block) > 0 and 2048 % int(block) == 0, "SHARAR_SSD_BLOCK_TOKENS must divide 2048")
     _check(re.fullmatch(r"[0-9]+(\.[0-9]+)?", values.get("SHARAR_SSD_GIB", "200")) is not None, "SHARAR_SSD_GIB must be a number of GiB")
     _check(values.get("SHARAR_TRACES_MAX_MIB", "32768").isdigit() and int(values.get("SHARAR_TRACES_MAX_MIB", "32768")) > 0,
            "SHARAR_TRACES_MAX_MIB must be a positive integer")
+    if "SHARAR_DRAFT_PRECISION" not in {**user, **(overrides or {})} and not (
+            int(values.get("SHARAR_SPEC", "15")) and values["SHARAR_PROPOSER"] == "dflash2"):
+        values["SHARAR_DRAFT_PRECISION"] = "bf16"  # the target's FP8 draft applies when its parallel draft runs
     precision, proposer, spec = values.get("SHARAR_DRAFT_PRECISION"), values["SHARAR_PROPOSER"], int(values.get("SHARAR_SPEC", "15"))
     _check(proposer in ("mtp", "dflash2"), f"SHARAR_PROPOSER must be mtp or dflash2 (got {proposer!r})")
     _check(precision != "fp8" or (spec and proposer == "dflash2"), "FP8 draft precision requires enabled DFlash2 speculation")

@@ -55,7 +55,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     app = FastAPI(title="sharar", lifespan=lifespan)
     started = time.time()
     # Messages API requests this server declines or reduces, to see what harnesses send.
-    messages_stats = {"forced_tool_choice_rejected": 0, "server_tools_ignored": 0}
+    messages_stats = {"server_tools_ignored": 0}
     # Requests with constrained output, by kind.
     constrained_stats = {"json_schema": 0, "json_object": 0, "tool_call": 0}
     # Turns the refusal guard changed: a reminder added after repeated refusals, or the turn ended by the server.
@@ -617,7 +617,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     @app.post("/v1/messages/count_tokens")
     async def count_tokens(http: HttpRequest):
         async def count(body: dict, http: HttpRequest):
-            # A forced tool_choice does not change the prompt, so it is counted, not rejected.
+            # A forced tool_choice does not change the prompt.
             _, _, ids, _ = _messages_prompt(body, messages_api.tool_choice(body))
             return {"input_tokens": len(ids)}
         return await _messages_errors(count, http)
@@ -798,9 +798,11 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
                                            "sampled": sampled_threshold != (1, 0.0), "sampled_accept_top_k": sampled_threshold[0],
                                            "sampled_accept_margin": sampled_threshold[1]}} if spec else None,
         "attention_backend": "flashinfer",
-        "gdn_backend": "triton",
+        # the chunked GDN prefill (kernels/gdn_prefill.backend): CuTe on SM12x for the FP32 state, else Triton
+        "gdn_backend": current().gdn_prefill if current().gdn_prefill != "auto" else
+                       "triton" if ex.ssm_format.quantized or current().stable_numerics else "cute",
         "kv_cache_dtype": "float8_e4m3fn",
-        "mamba_ssm_dtype": "float32",
+        "mamba_ssm_dtype": "float32" if not ex.ssm_format.quantized else ex.ssm_format.describe(),
         "traces": {"dir": str(sink.directory), "max_mib": traces_max_mib} if sink is not None else None,
     }
     engine = EngineLoop(sched)
