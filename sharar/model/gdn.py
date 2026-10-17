@@ -170,7 +170,7 @@ class GatedDeltaNet:
                 q=q, k=k, v=v, g=g, beta=beta,
                 state=ssm_states, plan=plan, triton_kernel=chunk_gated_delta_rule,
             )
-        # Keep upstream's quantized-window prefill path unchanged. Its packed
+        # The quantized window uses the Triton prefill: its packed
         # FP32 scratch slots and entering-chunk snapshots have separate indices
         # from the persistent pool; the CuTe dispatcher handles FP32 pools only.
         core, _, h = chunk_gated_delta_rule(

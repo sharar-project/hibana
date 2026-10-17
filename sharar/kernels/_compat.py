@@ -1,4 +1,4 @@
-"""Small helpers the vendored kernels used to import from SGLang.
+"""Stand-ins for the SGLang helpers the vendored kernels call.
 
 Sharar targets one CUDA device, so every platform probe collapses to a constant.
 """

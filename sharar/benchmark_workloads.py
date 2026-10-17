@@ -6,16 +6,16 @@ Tokenization happens before timing; materialized IDs are saved with every run.
 from importlib.resources import files
 
 WORKLOADS = ('code', 'design', 'reasoning')
-LEGACY_WORKLOADS = ('code_v1',)  # the 2026-09 code prompt: the model answers with a tool call and stops at output 98
+LEGACY_WORKLOADS = ('code_v1',)  # the tool-call code prompt: the model answers with a tool call and stops at output 98
 VERSION = 'gb10-coding-v2'
 
 CODE_V1_QUESTION = ('Explain the ownership and rollback invariants in this code. '
                     'Then write a complete Python implementation of a transactional '
                     'range allocator with reserve, commit, rollback and release, '
                     'with a detailed explanation and tests.')
-# v2 (2026-09-15): the same task, but the model is told it has no tools, so it
-# writes the answer instead of emitting a tool call and ending its turn. Probed
-# on the GB10: 1,000 greedy tokens, no EOS (reviews/2026-09-14-family-gate/code-prompt-probe).
+# v2: the same task, but the model is told it has no tools, so it writes the
+# answer instead of emitting a tool call and ending its turn. Probed on the
+# GB10: 1,000 greedy tokens, no EOS.
 CODE_QUESTION = ('Answer in one message without using tools. First, explain the ownership and rollback invariants '
                  'in this code in detail. Second, write a complete, self-contained Python module implementing a '
                  'transactional range allocator (reserve, commit, rollback, release) with docstrings. Third, write '

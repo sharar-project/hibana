@@ -226,12 +226,6 @@ def test_launch_and_chat_need_a_server(home):
         cli.main(["chat"])
 
 
-def test_no_launcher_scripts_left():
-    for name in ("sharar-ctl", "sharar-tp", "run-sharar.sh", "run-sharar-train.sh"):
-        assert not (ROOT / name).exists()
-    assert sorted(p.name for p in (ROOT / "tools").glob("*.sh")) == ["check.sh"]
-
-
 def test_rank0_gets_the_resolved_settings_not_the_callers(monkeypatch):
     """SHARAR_TRACES=off in the caller's environment must not reach rank 0, which would read it as a trace directory."""
     from sharar.launch import tp

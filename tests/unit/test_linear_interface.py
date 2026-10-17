@@ -27,7 +27,7 @@ def test_every_format_implements_the_interface():
         assert lin.bytes > 0 and lin.w3 is None, name
 
 
-def test_dequantize_matches_the_old_packing_sources():
+def test_dequantize_matches_the_packed_sources():
     f = _formats()
     assert torch.equal(f["fp8"].dequantize(), f["fp8"].weight.float() * f["fp8"].weight_scale.float())
     assert torch.equal(f["draft"].dequantize(), f["draft"].weight.float() * f["draft"].scale.float())

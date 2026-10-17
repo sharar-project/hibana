@@ -19,7 +19,7 @@ In another terminal:
 
 ```bash
 uv run sharar chat            # chat in the terminal
-uv run sharar launch claude   # Claude Code on the model (also opencode, aider; `show` for other tools)
+uv run sharar launch claude   # Claude Code on the model (also opencode, aider, codex; `show` for other tools)
 ```
 
 (`source .venv/bin/activate` lets you drop the `uv run`.) The first serve downloads the model (26 GB for the 27B,
@@ -36,7 +36,7 @@ uv run sharar launch claude   # Claude Code on the model (also opencode, aider; 
 | `sharar serve 27b --tp 2` | Tensor-parallel on two Sparks linked by their ConnectX ports ([tensor parallel](docs/tensor-parallel.md)) |
 | `sharar status` | What is serving, with which settings |
 | `sharar cache` | What is cached on the GPU and on the SSD tier (`$SHARAR_RESULTS/ssd/<target>`, up to `SHARAR_SSD_GIB`) |
-| `sharar chat`, `sharar launch claude\|opencode\|aider\|show` | Use the serving model |
+| `sharar chat`, `sharar launch claude\|opencode\|aider\|codex\|show` | Use the serving model |
 
 `sharar <command> --help` lists the options. Settings (cache and results locations, profiles, ports) are flags, then
 `SHARAR_*` environment variables, then an optional `config/gb10.env` ([example](config/gb10.env.example),
@@ -49,8 +49,26 @@ uv run pytest tests/unit                      # CPU tests
 SHARAR_RUN_GPU=1 uv run pytest tests/gpu      # GPU suite (the GPU to itself)
 ```
 
-The engine is `sharar/` ([architecture](docs/architecture.md)); in-process profilers are in `profiling/`, checks and
-gates in `tools/`, and every doc is listed in [docs/](docs/README.md). Quality and speed benchmarks live in
-[sharar-eval](https://github.com/abdelfattah-lab/sharar-eval) ([evaluation](docs/evaluation.md)). Read [CONTRIBUTING.md](CONTRIBUTING.md) before
-changing the engine. Work in progress is tracked in [issues](https://github.com/abdelfattah-lab/sharar/issues).
-Apache 2.0 ([license](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md)).
+The engine is `sharar/`, in-process profilers are in `profiling/`, and checks and gates in `tools/`. Quality and
+speed benchmarks live in [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval). Read
+[CONTRIBUTING.md](CONTRIBUTING.md) before changing the engine. Work in progress is tracked in
+[issues](https://github.com/abdelfattah-lab/sharar/issues). Apache 2.0 ([license](LICENSE),
+[third-party notices](THIRD_PARTY_NOTICES.md)).
+
+## Documentation
+
+Each page describes the code as it is; measurements and plans live in issues and pull requests. When a change alters
+behavior, update its page in the same pull request (`python3 tools/check_links.py` after moving or deleting one).
+
+| Page | Contents |
+|---|---|
+| [Operations](docs/operations.md) | Prerequisites, launcher settings, serving profiles, traces, the SSD tier |
+| [API](docs/api.md) | Endpoints, request controls, tool calls, constrained output, Anthropic Messages |
+| [Architecture](docs/architecture.md) | Package layout, the seams both targets share, capability matrix |
+| [Cache design](docs/cache_design.md) | GPU pools, the radix prefix cache and the SSD tier |
+| [Interfaces](docs/interfaces.md) | Request ownership, proposer lifecycle, device-resident acceptance, failure handling |
+| [Flash-Next](docs/flashnext.md) | The second target: model, package, conventions, sparse attention, its MTP draft |
+| [Tensor parallel](docs/tensor-parallel.md) | Two Sparks: setup, sharding, the RDMA all-reduce, limits |
+| [3-bit calibration](docs/w3-calibration.md) | Fitting and serving the calibrated 3-bit copies |
+| [Evaluation](docs/evaluation.md) | Measuring a build or a change, the lossy-change gate, nightly and weekly GB10 checks |
+| [Profiling](profiling/README.md) | In-process profilers |

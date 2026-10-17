@@ -38,8 +38,7 @@ def _rotate(X, V, Pos, Cos, Sin, Pages, Kout, Vout,
 def rotate_bf16(x, positions, cos, sin, *, values=None, caches=None, pages=None):
     """Rotate [tokens, heads, dim]; optionally write private, unique KV pages.
 
-    The caller owns page bounds and uniqueness, as with the original indexed
-    assignment. Values can be the strided half of a fused K/V projection.
+    The caller owns page bounds and uniqueness. Values can be the strided half of a fused K/V projection.
     """
     t, h, d = x.shape
     if x.dtype != torch.bfloat16 or x.stride(-1) != 1 or d % 2:

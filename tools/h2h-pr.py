@@ -19,7 +19,8 @@ Prompts: chat, code, math, multilingual, prose, structured (22, in turn by categ
 `--streams`, so none share a prefix), thinking off, up to 1,024 output tokens with natural stops; --modes picks the
 sampling (greedy, t07 = T 0.7, t10 = T 1.0, both top-p 0.95, top-k 20), each with the profile's acceptance default.
 Order: base then PR, `--repeats` times; the table averages the repeats. Results, logs and the table (report.md) go
-to $SHARAR_RESULTS/reviews/<date>-h2h-<name>/; a rerun with the same --name skips what exists.
+to $SHARAR_RESULTS/reviews/<date>-h2h-<name>/; a rerun with the same --name skips what exists. The arms' worktrees
+are removed once the report is written.
 
 sharar-eval runs from this environment's `eval` extra (pinned in uv.lock), or from a checkout given with --evals /
 SHARAR_EVALS for unreleased sharar-eval changes, as `tools/evaluate.py` does.
@@ -237,6 +238,8 @@ def main() -> int:
           f"{args.warmup_s:.0f} s. Thinking off, up to 1,024 tokens, natural stops; greedy / t07 = T 0.7 (top-p 0.95, top-k 20).\n\n"
           + table(run, plan, args.modes.split(",")) + "\n")
     (run / "report.md").write_text(md)
+    for arm in refs:
+        git("worktree", "remove", "--force", str(trees / arm))
     print(md)
     log(f"report: {run / 'report.md'}")
     return 0

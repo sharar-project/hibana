@@ -61,21 +61,11 @@ Decisions that read local memory take the minimum over ranks. Request constraint
 compile again on each rank; sampled requests get one seed for all ranks. An engine failure ends the process, and
 the other ranks follow within a second (see "A failed rank" above).
 
-## What it buys
+## Outputs
 
-Measured on two GB10s linked by RoCE, `fast` profile (27B 2026-10-07, Flash-Next 2026-10-09):
-
-| | 27B, one Spark | 27B, two | Flash-Next, one Spark | Flash-Next, two |
-|---|---:|---:|---:|---:|
-| Single-stream greedy decode, median of seven prompts | 77.1 tok/s | 119.1 | 73.5 | 99.0 |
-| Four concurrent requests, aggregate | 135.1 tok/s | 199.1 | 147.6 | 198.7 |
-
-Cold prefill is x1.4 to x1.7 faster on two Sparks (28K tokens: time to first token 16.1 to 9.5 s on the 27B).
-Flash-Next holds 36.3 GiB of weights per rank against 70.3 on one Spark. GSM8K is unchanged (27B 95.3% on one, 95.0% on two). TP=2 is not bitwise TP=1: summing two partial products in
-another order moves the logits as much as any other reassociation (88-95% teacher-forced argmax agreement, flips
-at near ties), and TP=1 is unchanged by the tensor-parallel code. Flash-Next's verification scales less than its
-bytes: the fused MoE has a fixed cost per call, and the hyper-connection mixers, router and elementwise kernels
-are replicated.
+TP=2 is not bitwise TP=1: summing two partial products in another order moves the logits as much as any other
+reassociation (outputs can flip at near ties), and TP=1 is unchanged by the tensor-parallel code. Flash-Next's
+verification scales less than its bytes: the hyper-connection mixers, router and elementwise kernels are replicated.
 
 ## Profiling
 
@@ -84,11 +74,7 @@ SHARAR_TP_PREFIX="nsys profile --trace=cuda,nvtx --sample=none --cpuctxsw=none -
   --delay=420 --duration=20 -o /path/tp2_%h" uv run sharar serve 27b --tp 2   # then keep requests flowing
 ```
 
-Both ranks run under the prefix; `%h` names each host's report, and nsys ends the session after the window. In 20 s
-of single-stream `fast` traffic with NCCL's all-reduce (385 rounds), 96% of kernel time ran from CUDA graphs and the GPU was busy 95% of the
-time. A round replays a verify graph (1388 kernels with its 128 all-reduces and the logits all-gather, 38 ms under
-node tracing), a DFlash2 draft graph (210 kernels, one all-gather, 7-8 ms) and an accept graph (1.7 ms). Kernel time:
-3-bit GEMMs 58%, NCCL 18% (about 65 us per collective including skew), NVFP4/FP8 GEMMs 13%, the rest under 5% each.
+Both ranks run under the prefix; `%h` names each host's report, and nsys ends the session after the window.
 
 ## The link
 
@@ -112,46 +98,28 @@ The same roles on Flash-Next's layers (`model/flashnext/`): attention q|k|v by h
 GDN by head (8 of 16 key, 24 of 48 value heads), o_proj and out_proj row-parallel, and every expert's
 intermediate split, routed and shared alike (320 of 640 columns: gate|up column-parallel, down row-parallel),
 so each rank streams half of every selected expert and the decoder layer all-reduces one partial sum per block.
-The 3-bit routed experts (#73, the default when the W3 checkpoint carries them) are split by expert instead: rank r
-holds experts 256r to 256r + 255 whole (`sharding.ExpertParallel`), since a down projection's 320 columns per rank
-would not fill the 3-bit format's 128-wide chunks. `kernels/w3_moe.py` skips the pairs routed to the other rank's
-experts, so each rank returns the partial sum over its own, all-reduced as before; a rank holds 23.0 GiB of experts
-(27.6 GiB in all, against 36.3 with the split NVFP4 experts). A token's ten experts land unevenly (five each on
-average), which costs less than the bytes saved: on 2026-10-11 single-stream decode went from 93.4 to 102.8 tok/s and
-four requests from 192.9 to 237.7, with GSM8K (first 300) and HumanEval as on one Spark with the 3-bit experts
-(95.7% and 93.9% both; the split NVFP4 experts 94.0% and 93.9%).
+The 3-bit routed experts (the default when the W3 checkpoint carries them) are split by expert instead: rank r holds
+experts 256r to 256r + 255 whole (`sharding.ExpertParallel`), since a down projection's 320 columns per rank would
+not fill the 3-bit format's 128-wide chunks; `kernels/w3_moe.py` skips the pairs routed to the other rank's experts,
+and a rank holds 23.0 GiB of experts (27.6 GiB of weights in all, against 36.3 with the split NVFP4 experts).
 FlashInfer's fused NVFP4 MoE runs the 320-column experts as they are (two halves sum to the whole within BF16
-rounding; one MoE call of one row takes 97 us against 145 us, sixteen rows 944 against 1,645 us). FP8 trunk parts
+rounding). FP8 trunk parts
 are quantized with the whole matrix's scale, so a rank's part is exactly its rows or columns of the single-GPU
 copy, and the calibrated 3-bit copies load the same parts; the shared expert's down projection (320 input columns
 per rank) cannot be held in the 3-bit format's 128-column chunks and stays FP8. The hyper-connection mixers, the
 router, the indexer and the PLE read the whole (replicated) stream and stay whole on every rank; the lm_head is
 vocabulary-parallel.
 
-The PLE table (47.7 GiB: 16 heads of 20M rows of 160 bytes) is split by head instead (#178,
-`model/flashnext/ple.py:ResidentRows`). Each head's rows are one contiguous region, so rank r keeps heads 8r to 8r + 7
-in device memory, 23.8 GiB read from the checkpoint at load in about 15 s. A forward's rows are gathered on the device
-and all-gathered (1,280 bytes per token from each rank), so every rank holds the bytes one Spark reads from its memory
-maps, and the outputs are the same. Nothing waits on the NVMe: one Spark decodes text it reads for the first time 11-14%
-slower than text whose rows are cached, and two Sparks now decode both at the cached speed. Measured 2026-10-14 against
-the host gather (#169), page cache dropped before each start, outputs identical:
-
-| | host gather | resident heads |
-|---|---:|---:|
-| `fast`, single-stream decode, median of seven prompts | 107.8 tok/s | 123.8 |
-| `fast`, four concurrent requests | 234.3 tok/s | 272.0 |
-| `fast`, time to first token, three 10K-token prompts | 3.86 / 3.75 / 3.68 s | 3.83 / 3.20 / 3.21 |
-| `throughput`, decode at 16 / 32 / 64 requests | 481 / 658 / 954 tok/s | 591 / 874 / 1,203 |
-
-- **Memory.** The KV pool sizes around the resident half: `throughput` keeps 590K tokens per rank against 982K, and
-  257 state slots. MemAvailable stayed at least 33 GiB under 64 requests, against the 16 GiB floor.
-- **Turning it off.** `SHARAR_PLE_RESIDENT=0` keeps the host gather on two Sparks.
+The PLE table (47.7 GiB: 16 heads of 20M rows of 160 bytes) is split by head instead
+(`model/flashnext/ple.py:ResidentRows`): rank r keeps heads 8r to 8r + 7 in device memory (23.8 GiB, read from the
+checkpoint at load), gathers a forward's rows on the device and all-gathers them (1,280 bytes per token from each
+rank), so the outputs are those of one Spark's memory-mapped gather and nothing waits on the NVMe.
+`SHARAR_PLE_RESIDENT=0` keeps the host gather on two Sparks.
 
 The MTP draft layer is replicated and drafts through the target's vocabulary-parallel lm_head
 (`proposers/draft_head.py:VocabParallelHead`): each rank scores its half of the vocabulary with its 3-bit copy,
 the ranks exchange their best eight, and the rank holding each candidate's FP8 row rescores it, so the pick is the
-whole-vocabulary shortlist head's (`sharar dev tp-draft-head`: identical picks at 1 to 20 rows, graphed too) at
-0.72 ms per draft step instead of 1.17.
+whole-vocabulary shortlist head's (`sharar dev tp-draft-head` checks that the picks are identical).
 
 ## Limits
 

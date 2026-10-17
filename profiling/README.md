@@ -28,9 +28,5 @@ and geometry before running; run candidate and control in separate fresh process
 when earlier loads left the model files in the page cache (CUDA on the GB10 sees MemFree): drop them first
 (`posix_fadvise(DONTNEED)` over the model cache, as `tools/ci/gb10.sh` does).
 
-The 3-bit calibration builders that produce the serving artifacts moved into the package:
-`python3 -m sharar.weights.w3_calibrate` (27B), `sharar.weights.flashnext_w3_calibrate` and
-`sharar.weights.w3_calibration_inputs` ([workflow](../docs/w3-calibration.md)).
-
-Raw tensors, outputs and traces stay outside Git. Finished one-off studies are at the tags
-`archive/bench-pre-split-2026-10-04` and `archive/pre-cleanup-2026-09-26`.
+The 3-bit calibration builders are in the package ([calibration](../docs/w3-calibration.md)). Raw tensors, outputs
+and traces stay outside Git; finished one-off studies are at the `archive/` tags.

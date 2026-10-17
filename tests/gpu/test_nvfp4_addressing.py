@@ -9,7 +9,7 @@ def test_large_strided_rows_match_small_reference(fused):
     from sharar.kernels.nvfp4_quant import nvfp4_quantize, silu_mul_nvfp4_quantize
 
     m, k = 65536, 17408
-    # A preceding owned guard makes the old wrapped loads safe to reproduce.
+    # A preceding owned guard makes int32-wrapping offsets safe to reproduce.
     # Both paths have stride 34816; plain quantization takes a strided view.
     storage = torch.zeros((2*m, 2*k), device="cuda", dtype=torch.bfloat16)
     x = storage[m:]

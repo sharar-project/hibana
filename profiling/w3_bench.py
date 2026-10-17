@@ -5,7 +5,7 @@ decode projections (plus the lm_head and the draft's q/o) and M in (16, 32, 64)
 it packs a random matrix, checks the kernel against an FP32 reference on the
 same E4M3 activations, sweeps the split-K factor and reports the achieved
 bandwidth (bytes of packed weights per launch over the median time) next to
-the serving kernel times the 2026-09-15 profile measured for the same shapes.
+the times a serving profile measured for the same shapes in their checkpoint format.
 """
 from __future__ import annotations
 
@@ -19,15 +19,15 @@ import torch
 from sharar.kernels import w3
 
 SHAPES = {  # (N, K): (name, profile median us at M=16, at M=64)
-    (34816, 5120): ("mlp gate_up (NVFP4 today)", 442, 472),
-    (5120, 17408): ("mlp down (NVFP4 today)", 234, 250),
-    (10240, 5120): ("gdn qkv (FP8 today)", 242, 283),
-    (6144, 5120): ("gdn z / attn o_proj (FP8 today)", 159, 183),
-    (5120, 6144): ("gdn out (FP8 today)", 151, 162),
-    (14336, 5120): ("attention qkv (FP8 today)", 338, 359),
-    (248320, 5120): ("lm_head (NVFP4 today)", None, None),
-    (4096, 5120): ("draft q_proj (FP8 today)", None, None),
-    (5120, 4096): ("draft o_proj (FP8 today)", None, None),
+    (34816, 5120): ("mlp gate_up (NVFP4 base)", 442, 472),
+    (5120, 17408): ("mlp down (NVFP4 base)", 234, 250),
+    (10240, 5120): ("gdn qkv (FP8 base)", 242, 283),
+    (6144, 5120): ("gdn z / attn o_proj (FP8 base)", 159, 183),
+    (5120, 6144): ("gdn out (FP8 base)", 151, 162),
+    (14336, 5120): ("attention qkv (FP8 base)", 338, 359),
+    (248320, 5120): ("lm_head (NVFP4 base)", None, None),
+    (4096, 5120): ("draft q_proj (FP8 base)", None, None),
+    (5120, 4096): ("draft o_proj (FP8 base)", None, None),
 }
 
 

@@ -1,8 +1,10 @@
 # HTTP API
 
 The launcher exposes the API at `http://127.0.0.1:30001`; `sharar chat` is a terminal client for it. The supported target
-context is 262,144 tokens as launched (`SHARAR_MAX_CONTEXT`; the engine default is 32,768), with at most four running and 16 queued requests.
-Admission also checks the output budget and speculative scratch capacity.
+context is 262,144 tokens as launched (`SHARAR_MAX_CONTEXT`). At most the profile's batch size runs at once
+(`SHARAR_MAX_BATCH`: 4 in `fast` and `exact`; in `throughput` 16 on the 27B and 128 on Flash-Next, 64 with NVFP4
+experts), and at least two batches (and at least 16 requests) can queue. Admission also checks the output budget and
+speculative scratch capacity.
 
 | Endpoint | Purpose |
 |---|---|
@@ -27,7 +29,7 @@ Admission also checks the output budget and speculative scratch capacity.
 | `max_tokens` / `max_completion_tokens` | Requested output budget |
 | `temperature`, `top_p`, `top_k`, `seed` | Validated sampling parameters. An omitted `temperature` is OpenAI's 1.0 (with top_p 0.95 and top_k 20, the models' own generation config); send `temperature: 0` for greedy. OpenCode sends no sampling fields, and greedy thinking looped until `max_tokens` in its runs. `/v1/completions` and `/generate` keep greedy as their default |
 | `stop` | A nonempty string or list of nonempty stop strings |
-| `n` | 1 to 16 choices (non-streaming). The prompt is prefilled once by a one-token primer and published to the prefix cache; the n samples resume from it (at most 64 tokens re-prefilled each) and decode side by side, four at a time. With a `seed`, choice i uses seed + i; use a temperature above 0 for distinct choices |
+| `n` | 1 to 16 choices (non-streaming). The prompt is prefilled once by a one-token primer and published to the prefix cache; the n samples resume from it (at most 64 tokens re-prefilled each) and decode side by side, up to the batch size at a time. With a `seed`, choice i uses seed + i; use a temperature above 0 for distinct choices |
 | `chat_template_kwargs.enable_thinking` | Thinking defaults to true; false disables it |
 | `reasoning_effort` | `low`, `medium`, `high` select the template's reasoning instruction (`low`, `medium`, `xhigh`; `high` and `max` map to `xhigh`, the default); unknown values keep the default; `chat_template_kwargs.reasoning_effort` takes precedence |
 | `tools` | Tool schemas passed to the template; generated calls are parsed |
@@ -64,16 +66,14 @@ until its readers finish, reported by `flush_pending`.
 ## Refused tool calls
 
 When a harness keeps refusing a tool call (Claude Code without permission answers "This command requires approval"),
-the model sometimes retries it with small variations instead of reporting it: on 2026-10-05 the 27B did so on 4 of 4
-phrasings of a fix-and-test task in the `fast` profile and 1 of 4 in `exact`, each time for minutes (229-352 calls)
-until the client gave up. The server guards against it without keeping state, since the conversation comes back on
+the model sometimes retries it with small variations for minutes instead of reporting it, until the client gives up.
+The server guards against it without keeping state, since the conversation comes back on
 every turn ([sharar/api/refusal_guard.py](../sharar/api/refusal_guard.py)):
 
 - A refusal is a tool result marked as an error (Anthropic `is_error`), or reading like a permission refusal, that
   repeats word for word for the same tool since the user's last message.
 - From 3 such refusals a reminder follows them in the prompt: the call was refused N times, retrying will be refused
-  again, finish without it and tell the user what is needed. With it every looping case above stopped after 3
-  refusals with a correct report.
+  again, finish without it and tell the user what is needed.
 - From 8 the server ends the turn itself with a short message (`end_turn` / `finish_reason: stop`) instead of
   generating.
 - `/get_server_info` counts both (`refusal_guard`); a request can send `refusal_guard: false` to turn it off.
@@ -101,12 +101,6 @@ engine.
 - A forced `tool_choice` cannot be combined with a JSON `response_format`; either needs `tools` / a schema.
 - `/get_server_info` counts constrained requests by kind (`constrained`).
 
-Measured 2026-10-05 on the GB10, fast profile: six schemas (weather, contact, order with line items, sentiment,
-code review, entities) with thinking off and on, greedy and t=0.7 (four samples each), `json_object`, forced tool
-calls on both APIs and a mixed batch of four constrained and four unconstrained requests: 49/49 valid on each target.
-Speed at batch one against the same request without the constraint: tokens per round identical, decode tok/s
--1.6% to +1.0% on the 27B and -0.8% to 0% on Flash-Next (within run-to-run noise).
-
 ## Anthropic Messages
 
 `POST /v1/messages` translates the request into the chat input above and
@@ -122,23 +116,24 @@ prompt length as `{"input_tokens": N}`.
 | `system` | A string or text blocks |
 | `messages` | `user`, `assistant` and `system` turns (see below). Text; in assistant turns `thinking` (rendered as reasoning; signatures are not checked), `redacted_thinking` (dropped) and `tool_use`; in user turns `tool_result` with string or text-block content, in order with the turn's text |
 | `tools` | Custom tools become the chat tool schemas; typed server tools (`web_search_*` and similar) are dropped |
-| `tool_choice` | `auto` or omitted, and `none`, as in chat |
+| `tool_choice` | `auto` or omitted: unconstrained. `none`: as in chat. `any` / `{"type":"tool","name":...}`: constrained, as chat's `required` / named function (one or more calls to any tool / exactly one call to that tool, [constrained output](#constrained-output)); they need `tools`, and the name must be one of them |
 | `thinking` | `enabled` or `adaptive` turn thinking on (`budget_tokens` is not enforced), `disabled` turns it off; omitted, `chat_template_kwargs.enable_thinking` decides, default on |
-| `output_config.effort` | As chat `reasoning_effort`: Claude Code's default `high` is the template's `xhigh`, `/effort low` its `low` (the template's instruction only; on three short prompts on 2026-09-23 `low` did not shorten the answers) |
-| `temperature`, `top_p`, `top_k`, `stop_sequences`, `stream` | As the chat fields, except that an omitted `temperature` is Anthropic's 1.0 (with the chat defaults top_p 0.95 and top_k 20, the models' own generation config), not greedy. Claude Code sends no sampling fields, and greedy thinking looped until `max_tokens` in its sessions (#11) |
+| `output_config.effort` | As chat `reasoning_effort`: Claude Code's default `high` is the template's `xhigh`, `/effort low` its `low` (the template's instruction only, not a token budget) |
+| `temperature`, `top_p`, `top_k`, `stop_sequences`, `stream` | As the chat fields, except that an omitted `temperature` is Anthropic's 1.0 (with the chat defaults top_p 0.95 and top_k 20, the models' own generation config), not greedy. Claude Code sends no sampling fields, and greedy thinking looped until `max_tokens` in its sessions |
 | `trace`, `accept_top_k`, `accept_margin`, `chat_template_kwargs` | Sharar's extensions, as in chat |
 
 `cache_control` markers are accepted and not acted on; the prefix cache
 reuses shared prefixes regardless. `metadata`, other top-level fields,
 `anthropic-version`, `anthropic-beta`, `x-api-key` and `?beta=true` are
 ignored. HTTP 400 in Anthropic's error shape: `image` and `document` blocks
-(text-only model), other content block types, `tool_choice` `any` or `tool`
-(forced calls need constrained decoding), a missing `max_tokens`, and a
-prompt that fills the context (`prompt is too long: N tokens > M maximum`).
+(text-only model), other content block types, an unknown `tool_choice`
+type, a forced `tool_choice` without `tools`, a `tool` choice without a name
+or naming a tool not among them, a missing `max_tokens`, and a prompt that
+fills the context (`prompt is too long: N tokens > M maximum`).
 Queue saturation returns 429 `rate_limit_error`, an unavailable engine 503
 `overloaded_error`, and a stream already in progress an `error` event.
-`/get_server_info` counts rejected forced tool choices and dropped server
-tools under `messages_api` (`sharar_messages_*` in `/metrics`).
+`/get_server_info` counts dropped server tools under `messages_api`
+(`sharar_messages_server_tools_ignored` in `/metrics`).
 
 Content is ordered thinking (signature `sharar-unsigned`), text, then
 `tool_use` blocks with parsed `input`. `stop_reason` is `end_turn`,

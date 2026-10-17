@@ -23,43 +23,36 @@ tools/evaluate.py --target flashnext --profile exact --suite quick --speed \
   directory, the AIPerf run, `/get_server_info` and the logs. A rerun with the same `--name` resumes.
 
 Two runs of the same build differ by under 1% in AIPerf TPS and by about ±1 point on GSM8K (300) and
-HumanEval at p ≥ 0.45 (2026-10-03, both targets): served batches change rounding, so quality is compared
+HumanEval at p ≥ 0.45 (both targets): served batches change rounding, so quality is compared
 item by item with a paired test, never on point estimates.
 
 ## Judge a change to arithmetic
 
 A kernel, dispatch threshold, draft precision, verify shape or proposer passes the GPU suite
-(`SHARAR_RUN_GPU=1 uv run pytest tests/gpu`), then is measured against main: `tools/evaluate.py --speed --suite quick`
-from the candidate's checkout, paired with the same command from a checkout of main (`--baseline`; a worktree of
-main works). Bit-identical outputs are not
-required (the target's arithmetic changes with the row count), but a quality loss paired against main is a
-regression. `profiling/flashnext_round.py` isolates round cost and tokens per round when the speed change
-needs explaining. The rules are in [CONTRIBUTING](../CONTRIBUTING.md#run-checks).
+(`SHARAR_RUN_GPU=1 uv run pytest tests/gpu`; [CONTRIBUTING](../CONTRIBUTING.md#run-checks)), then is measured against
+main: `tools/evaluate.py --speed --suite quick` from the candidate's checkout, paired with the same command from a
+checkout of main (`--baseline`; a worktree of main works). The `quick` suite (GSM8K, HumanEval, MGSM, needles) is
+compared item by item, and a quality loss paired against main is a regression. Bit-identical outputs are not
+required and not a substitute: the target's arithmetic changes with the row count, so outputs drift whenever shapes
+move ([numerical limits](operations.md#numerical-limits)). `profiling/flashnext_round.py` isolates round cost and
+tokens per round when the speed change needs explaining. A lossy option is judged by the
+[lossy-change gate](#the-lossy-change-gate) instead.
 
-## End-to-end speed (sharar-eval)
+## sharar-eval
 
-The HTTP speed and serving benchmarks live in sharar-eval. They only talk to a running server, so the same
-commands measure Sharar, SGLang or Atlas. Run by hand, sharar-eval needs this configuration's results directory
-and model cache (`tools/evaluate.py` and `tools/lossy-gate.py` pass them):
-
-```bash
-uv sync --extra eval                                                           # once: sharar-eval in this environment
-export SHARAR_RESULTS=<results directory> SHARAR_HF_CACHE=<27B model cache>   # as in config/gb10.env
-uv run sharar-eval speed --url http://127.0.0.1:30004       # AIPerf: frozen 10K/1K, cold prefix, BS1 (uv tool install aiperf==0.12.0)
-uv run sharar-eval sharegpt ...                             # ShareGPT buckets at several concurrencies
-uv run sharar-eval competitive ...                          # engine-neutral native /generate cells
-uv run sharar-eval engine-matrix ...                        # Sharar / SGLang / Atlas token-input matrix
-uv run sharar-eval local ... / uv run sharar-eval agent ... # local-use and agent-shaped workloads
-```
-
-The frozen prompts are byte-identical to the ones here: `sharar/benchmark_workloads.py` stays because the
-in-process tools (`profiling/inputs.py`, `tools/check_distribution.py`) use it, and both repositories pin the
-same digests in their tests.
+The quality suites, AIPerf speed and the HTTP serving benchmarks live in
+[sharar-eval](https://github.com/abdelfattah-lab/sharar-eval), pinned as the `eval` extra in `pyproject.toml`
+(`uv sync --extra eval`). It only talks to a running server, so the same commands measure other engines; its README
+lists them. Run by hand, it needs this configuration's results directory and model cache (`SHARAR_RESULTS`,
+`SHARAR_HF_CACHE`, as in `config/gb10.env`). This repository's tools run it with both set and the server managed:
+`tools/evaluate.py` (a build), `tools/h2h-pr.py` (a speed change against main;
+[CONTRIBUTING](../CONTRIBUTING.md#run-checks)) and `tools/lossy-gate.py` (a lossy option).
 
 ## The lossy-change gate
 
-A lossy speed option is judged by `tools/lossy-gate.py` (rules and layers in
-[CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option) and the tool's docstring):
+`tools/lossy-gate.py` judges a lossy option ([when](../CONTRIBUTING.md#judge-a-lossy-option)); its docstring is the
+canonical description of the three layers (distribution distance, speculation health, a served task battery) and
+the verdict rules.
 
 ```bash
 tools/lossy-gate.py --target flashnext --name fast --profile fast                  # a profile against exact
@@ -69,17 +62,14 @@ tools/lossy-gate.py --target flashnext --name fast --profile fast --report      
 ```
 
 Do not wrap it in `flock`: it takes `$SHARAR_RESULTS/.gpu.lock` for each phase (at most `--hold-minutes`,
-default 45) and waits while another model server or GPU process runs. Layers 1 and 2 run `tools/gate/lossy_gate.py`
-(prompts `tools/gate/workloads/lossy_v1.json`) from the checkout's Python environment, built as `sharar serve`
-builds the executor; layer 3 serves each arm with `sharar serve <target> --<profile>` in the foreground on `--port`
-(30100 by default), checks that
-`/get_server_info` reports the in-process arm's configuration, and runs sharar-eval's `evals.suite`
-(`--evals`, default `SHARAR_EVALS`, else the environment's `eval` extra): `quick` as the screen, `full` when the screen
-is close, and `hard` / `long` (RULER v2) / both / `agentic` (Terminal-Bench 2.1) with
-`--battery hard|long|all|agentic`. Served arms run with `SHARAR_SSD=0` (no SSD tier), the same in every stage. The baseline arm is cached in
-`$SHARAR_RESULTS/reviews/lossy-gate-baselines/` (keyed by engine commit, baseline settings, prompts, worker and eval
-code) and reused by every candidate. A rerun with the same `--name` resumes; `--through` stops after
-`inprocess` or `screen`, or forces `full`.
+default 45) and waits while another model server or GPU process runs. Layer 3 serves each arm with
+`sharar serve <target> --<profile>` on `--port` (30100 by default) without the SSD tier, checks that
+`/get_server_info` reports the in-process arm's configuration, and adds sharar-eval's longer suites with
+`--battery hard|long|all|agentic`. The baseline arm is cached in `$SHARAR_RESULTS/reviews/lossy-gate-baselines/` and
+reused by every candidate. A rerun with the same `--name` resumes; `--through` stops after `inprocess` or `screen`,
+or forces `full`. In layer 1, identical distributions read about 99.3% argmax agreement, not 100% (exact logit ties
+break by index order; the floor carries the same effect), and relaxed acceptance does not move it: it shows in
+layers 2 and 3.
 
 ## Nightly and weekly checks on the GB10
 

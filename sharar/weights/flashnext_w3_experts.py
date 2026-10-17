@@ -8,7 +8,7 @@ stored in the kernel's row order (w3_moe.fc1_order). Serving it with the 3-bit c
 SHARAR_W3_CHECKPOINT=DIR) replaces the NVFP4 experts.
 
 Two methods:
-- `cheap` (the 2026-09-30 route, `w3_moe.quantize`): group scales on a clipping grid minimizing the weight error,
+- `cheap` (the nearest-level route, `w3_moe.quantize`): group scales on a clipping grid minimizing the weight error,
   nearest level. Needs no activations. It lost recall (MMLU-Pro law -13 pp).
 - `gptq`: GPTQ (w3_calibration's column-error update and activation-weighted scale grid, batched over experts) on
   the inputs each expert is routed. `capture` prefills the frozen calibration samples through the serving model

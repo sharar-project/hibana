@@ -81,7 +81,7 @@ def test_the_profile_alone_turns_the_3bit_copies_on(profile, target, w3):
     ("exact", "flashnext", None), ("fast", "flashnext", "auto"), ("throughput", "flashnext", "auto"),
     ("fast", "qwen38", None), ("throughput", "qwen38", None)])
 def test_the_lossy_profiles_take_the_optimized_qsa_prefill(profile, target, backend):
-    # exact keeps the original kernels (the engine's own default); an explicit setting still wins
+    # exact keeps the `original` QSA prefill (the engine's own default); an explicit setting still wins
     assert launch.profile_defaults(profile, target).get("SHARAR_QSA_PREFILL_BACKEND") == backend
 
 
@@ -174,8 +174,8 @@ def test_the_engine_gets_explicit_flags_and_its_environment(env, tmp_path):
 
 
 def test_the_ssd_tier_settings_are_checked(env, tmp_path):
-    """The SSD tier stores under the results directory, one store per target, on every Spark; the removed cold-tier
-    and session-store settings are ignored with a warning, so `sharar stop` still works with an old config file."""
+    """The SSD tier stores under the results directory, one store per target, on every Spark, or under SHARAR_SSD_DIR
+    when set; malformed SHARAR_SSD, SHARAR_SSD_BLOCK_TOKENS and SHARAR_SSD_GIB values are rejected."""
     s = resolve(env, "27b", overrides={"SHARAR_SSD": "1", "SHARAR_SSD_GIB": "50", "SHARAR_SSD_BLOCK_TOKENS": "1024"})
     e = s.engine_env(None)
     assert s.ssd == s.results / "ssd" / "qwen38" and e["SHARAR_SSD_DIR"] == str(s.ssd)
@@ -196,7 +196,7 @@ def test_flashnext_without_a_checkpoint_serves_its_fp8_trunk(env):
 
 
 @pytest.mark.parametrize("policy", ["auto", "cute", "triton"])
-def test_gdn_prefill_backend_reaches_engine_through_new_launcher(env, policy):
+def test_gdn_prefill_backend_reaches_engine_through_the_launcher(env, policy):
     from sharar.engine.config import EngineConfig
     resolved = resolve({**env, "SHARAR_GDN_PREFILL": policy}, "27b")
     engine_env = resolved.engine_env(None)

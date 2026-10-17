@@ -26,7 +26,7 @@ FP4_GEMM_BACKEND = "cutlass"
 FP4_QUANT_BACKEND = "cuda"
 
 # Validated 16-row target shapes only. Benchmarks may disable this before
-# graph capture to retain the original CUTLASS/cuBLAS arithmetic oracle.
+# graph capture to use the CUTLASS/cuBLAS path as reference.
 VERIFY_GEMM_ENABLED = True
 
 

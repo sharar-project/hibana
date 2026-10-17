@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Frozen calibration samples for the 3-bit decode copies (`sharar.weights.w3_calibrate`, `sharar.weights.flashnext_w3_calibrate`).
 
-A synthetic coding proxy, as the 2026-09-17 set was: source files of this repository (`sharar/`, without
-`sharar/parity/`), chosen by a seeded shuffle of the files at a commit, each file's text tokenized with the
+A synthetic coding proxy: Python source files under `sharar/` (a `sharar/parity/` filter only matters when
+rebuilding samples at an older commit that still had it), chosen by a seeded shuffle of the files at a commit, each file's text tokenized with the
 target's tokenizer and cut to --max-tokens. Task-accuracy datasets never enter. Both targets share the
 tokenizer, so one file serves both calibrations. The output records the commit, the tokenizer's hash and each
 source file's hash, so the same command at the same commit rebuilds the same samples.
