@@ -32,8 +32,8 @@ The tiered radix tree (`radix.py`) is the only record of what is on disk;
   scatters the previous chunk from the other straight into fresh pages and a
   slot. Admission's path, `restore_async()`, does not wait for it: it takes
   the pages and a slot, locks the path, and a worker thread reads while the
-  engine keeps serving everyone else, scattering each chunk as it lands (a
-  few milliseconds of kernel launches) and the request waiting in the queue.
+  engine keeps serving everyone else, scattering each chunk as it lands (one
+  kernel launch, `_RowCopy`) and the request waiting in the queue.
   Once the reads landed on every rank, `step()` imports the tail's state and
   inserts the path back into L1, held until the request is admitted.
   `restore()` does the same with the engine waiting (SHARAR_SSD_ASYNC=0, or a
@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import math
 import time
 from array import array
 from collections import deque
@@ -109,11 +110,11 @@ class _Restore:
 
 
 class Staging:
-    """One reusable host buffer that restores read into with O_DIRECT and the
-    GPU reads in place. On GB10 (integrated GPU, unified memory) it registers
-    its mapping with CUDA, and the device pointer is the host address: the
-    scatter kernels read it directly, with no host memcpy and no host-to-device
-    copy. Without CUDA it is a plain mapping."""
+    """One reusable host buffer the GPU reads in place: the restore buffer, which
+    restores read into with O_DIRECT, and the copy tables (`_RowCopy`). On GB10
+    (integrated GPU, unified memory) it registers its mapping with CUDA, and the
+    device pointer is the host address: kernels read it directly, with no host
+    memcpy and no host-to-device copy. Without CUDA it is a plain mapping."""
 
     def __init__(self, nbytes: int, device: torch.device):
         import mmap
@@ -128,12 +129,12 @@ class Staging:
         rt = _cudart()
         ptr = ctypes.addressof(ctypes.c_char.from_buffer(self.mm))
         if rt.cudaHostRegister(ctypes.c_void_p(ptr), ctypes.c_size_t(nbytes), ctypes.c_uint(2)) != 0:  # cudaHostRegisterMapped
-            raise RuntimeError("cudaHostRegister failed for the SSD staging buffer")
+            raise RuntimeError("cudaHostRegister failed for an SSD tier host buffer")
         self.rt, self.ptr = rt, ptr
         dev = ctypes.c_void_p()
         if rt.cudaHostGetDevicePointer(ctypes.byref(dev), ctypes.c_void_p(ptr), ctypes.c_uint(0)) != 0:
             self.close()
-            raise RuntimeError("cudaHostGetDevicePointer failed for the SSD staging buffer")
+            raise RuntimeError("cudaHostGetDevicePointer failed for an SSD tier host buffer")
         self.__cuda_array_interface__ = {"shape": (nbytes,), "typestr": "|u1", "data": (dev.value, False), "version": 3, "strides": None}
         self.base = torch.as_tensor(self, device=device)
 
@@ -151,6 +152,78 @@ class Staging:
             self.mm.close()
         except BufferError:  # a view still exported (a caller kept a segment): the mapping goes with it
             pass
+
+
+class _RowCopy:
+    """The tier's KV copies on the GPU: one launch moves a restore chunk's rows from the staging buffer into their
+    pages, or a backup gather's rows from their pages into pinned payloads, for every pool the tier stores
+    (kernels/csrc/kv_copy.cu). The engine thread shares the GIL with the tier's I/O threads and the API, and a torch
+    op lets it go: per pool, an op could wait milliseconds to get it back. Each launch's table goes into a slot of a
+    small registered host buffer the GPU reads in place, so issuing a copy takes no torch op until its event."""
+
+    SLOTS = 16  # tables in flight; a slot is rewritten once the launch that read it has finished
+    SLOT_BYTES = 256 * 1024  # one launch's table: about 900 objects on the 27B; a larger copy takes several launches
+
+    def __init__(self, targets, device: torch.device):
+        from sharar.kernels.kv_copy import module
+        self.kernel = module().kv_copy
+        pools = [pool for _, pool in targets]
+        assert all(pool.is_contiguous() for pool in pools), "a page's rows are one contiguous run of every pool"
+        self.names = [name for name, _ in targets]
+        self.row_bytes = [pool[0].numel() * pool.element_size() for pool in pools]
+        self.word = 16  # the widest word (1 to 16 bytes) every row and pool start allows
+        for v in self.row_bytes + [pool.data_ptr() for pool in pools]:
+            self.word = math.gcd(self.word, v)
+        self.width = 2 + len(pools)
+        table = array("q", [v for pool, n in zip(pools, self.row_bytes) for v in (pool.data_ptr(), n)])
+        self.pools = torch.frombuffer(table, dtype=torch.int64).to(device)
+        self.tables = Staging(self.SLOTS * self.SLOT_BYTES, device)
+        self.words = memoryview(self.tables.mm).cast("q")
+        self.events: list = [None] * self.SLOTS
+        self.next = 0
+
+    def put_rows(self, base: int, got, parts, dst: torch.Tensor) -> None:
+        """`SsdTier._put_rows`: the KV rows of every object of `got` (headers and payload offsets from `base`, the
+        staging buffer's device address) into pages dst, in order."""
+        table, n, most, cursor, layout, at = array("q"), 0, 0, 0, None, None
+        for (h, off), (_, _, start, lo, hi) in zip(got, parts):
+            a, b = lo - start, hi - start
+            if b <= a:
+                continue
+            if h.segments != layout:  # whole blocks share one layout: look its offsets up once
+                where = {name: seg_off for name, _, _, seg_off, _ in h.layout()}
+                at, layout = [where[name] for name in self.names], h.segments
+            table.append(b - a)
+            table.append(cursor)
+            table.extend([base + off + seg_off + a * row for seg_off, row in zip(at, self.row_bytes)])
+            cursor, n, most = cursor + b - a, n + 1, max(most, b - a)
+        self._launch(table, n, most, dst, to_pool=True)
+
+    def gather(self, pages: torch.Tensor, starts: list[int], rows: int, hosts: list[int], offsets: list[int]) -> None:
+        """`SsdTier._gather_spans`: `rows` rows from pages[start:] for each start, into the pinned payload at each of
+        `hosts`, every pool's rows at its offset."""
+        table = array("q")
+        for start, host in zip(starts, hosts):
+            table.append(rows)
+            table.append(start)
+            table.extend([host + o for o in offsets])
+        self._launch(table, len(starts), rows, pages, to_pool=False)
+
+    def _launch(self, table, n: int, most: int, pages: torch.Tensor, to_pool: bool) -> None:
+        stream = torch.cuda.current_stream()
+        per = self.SLOT_BYTES // (8 * self.width)  # objects one slot holds
+        for first in range(0, n, per):
+            slot, self.next = self.next, (self.next + 1) % self.SLOTS
+            if (done := self.events[slot]) is not None:
+                done.synchronize()  # the launch SLOTS launches ago, long finished in practice
+            part = table[first * self.width:(first + per) * self.width]
+            at = slot * self.SLOT_BYTES // 8
+            self.words[at:at + len(part)] = part
+            self.kernel(self.pools.data_ptr(), self.tables.base.data_ptr() + slot * self.SLOT_BYTES, pages.data_ptr(),
+                        pages.dtype == torch.int64, self.width - 2, len(part) // self.width, most, self.word, to_pool,
+                        stream.cuda_stream)
+            self.events[slot] = torch.cuda.Event()
+            self.events[slot].record(stream)
 
 
 def _cudart():
@@ -227,6 +300,7 @@ class SsdTier:
         self._copies = torch.cuda.Stream(device) if device.type == "cuda" else None
         self.extra_pages = list(extra_pages)  # (name, per-page tensor) beside the KV, e.g. the MTP draft layer's KV
         self._row = kv_pool.row_bytes + sum(t[0].numel() * t.element_size() for _, t in self.extra_pages)
+        self._copy = _RowCopy(self._kv_targets(), device) if device.type == "cuda" else None
         # two halves, each chunk_bytes or one whole tail (a block of KV, the slot's state and a drafter payload), reused by
         # every restore; sized here, never grown mid-restore, where a failure on one rank would leave the other waiting
         tail = self.block * self._row + state_pool.bytes_per_slot + 32 * MIB
@@ -248,11 +322,13 @@ class SsdTier:
         """Pinned host memory the tier can hold, for the pool plan: the restore
         buffer's two halves (each chunk_bytes, or one whole tail object if that
         is larger: a block of KV and a snapshot), the backup staging (at least
-        one whole object) and the snapshot a tail gather copies. The context
+        one whole object), the snapshot a tail gather copies and the copy
+        tables (`_RowCopy`). The context
         length does not change it: restores stream through the halves chunk by
         chunk."""
         tail = block * (target.kv_bytes_per_token + extra_page_bytes) + target.state_bytes_per_slot + 32 * MIB  # + header, draft state
-        return 2 * max(chunk_bytes, tail) + max(staging_bytes, tail) + target.state_bytes_per_slot
+        return (2 * max(chunk_bytes, tail) + max(staging_bytes, tail) + target.state_bytes_per_slot
+                + _RowCopy.SLOTS * _RowCopy.SLOT_BYTES)
 
     @contextlib.contextmanager
     def _copying(self):
@@ -380,37 +456,37 @@ class SsdTier:
 
     def _gather_spans(self, anchor: Node, spans: list[tuple[int, int]]):
         """For each (lo, hi) on anchor's path, all of one length: tokens, segments and the one host buffer they are
-        views of, laid out as the file's payload (each segment 256-byte aligned). Each pool is gathered once for every
-        span, into one device buffer with the spans one after another; each span comes back in one copy and goes out
-        in one write. The engine thread shares the GIL with the writers and the API, so every op counts: per span and
-        pool, a host copy each took 3-5 ms a block. None if a span is no longer in L1."""
+        views of, laid out as the file's payload (each segment 256-byte aligned); each span goes out in one write. On
+        the GPU one launch writes every span's payload into its pinned buffer (`_RowCopy`); on the CPU each pool is
+        gathered once for all spans together. None if a span is no longer in L1."""
         lo, hi = min(a for a, _ in spans), max(b for _, b in spans)
         span = self._span(anchor, lo, hi)
         if span is None:
             return None
         tokens, pages = span
         rows = spans[0][1] - spans[0][0]
-        contiguous = all(a == lo + i * rows and b - a == rows for i, (a, b) in enumerate(spans))
-        idx = (pages if contiguous else torch.cat([pages[a - lo:b - lo] for a, b in spans])).to(torch.int64)
         layout, total = [], 0
         for name, pool in self._kv_targets():
-            src = pool.view(torch.uint8)  # every pool as raw bytes
-            n = rows * src[0].numel()
-            layout.append((name, pool, src, total, n))
+            n = rows * pool[0].numel() * pool.element_size()
+            layout.append((name, pool, total, n))
             total += _seg_pad(n)
-        padded = any(n % SEG_ALIGN for *_, n in layout)
-        dev = (torch.zeros if padded else torch.empty)((len(spans), total), dtype=torch.uint8, device=self.device)  # zero padding, as a file has
-        for _, _, src, at, n in layout:
-            if len(spans) == 1:
-                torch.index_select(src, 0, idx, out=dev[0, at:at + n].view(rows, *src.shape[1:]))
-            else:
-                dev[:, at:at + n].copy_(src.index_select(0, idx).view(len(spans), n))
-        cuda, out = self.device.type == "cuda", []
-        for i, (a, b) in enumerate(spans):
-            host = _to_host(dev[i], cuda)
-            out.append((tokens[a - lo:b - lo], [(name, host[at:at + n].view(pool.dtype).view(rows, *pool.shape[1:]))
-                                                for name, pool, _, at, n in layout], host))
-        return out
+        empty = torch.zeros if any(n % SEG_ALIGN for *_, n in layout) else torch.empty  # zero padding, as a file has
+        if self._copy is not None:
+            hosts = [empty(total, dtype=torch.uint8, pin_memory=True) for _ in spans]
+            self._copy.gather(pages, [a - lo for a, _ in spans], rows, [h.data_ptr() for h in hosts], [at for _, _, at, _ in layout])
+        else:
+            contiguous = all(a == lo + i * rows and b - a == rows for i, (a, b) in enumerate(spans))
+            idx = (pages if contiguous else torch.cat([pages[a - lo:b - lo] for a, b in spans])).to(torch.int64)
+            dev = empty((len(spans), total), dtype=torch.uint8, device=self.device)
+            for _, pool, at, n in layout:
+                src = pool.view(torch.uint8)  # every pool as raw bytes
+                if len(spans) == 1:
+                    torch.index_select(src, 0, idx, out=dev[0, at:at + n].view(rows, *src.shape[1:]))
+                else:
+                    dev[:, at:at + n].copy_(src.index_select(0, idx).view(len(spans), n))
+            hosts = [_to_host(dev[i], False) for i in range(len(spans))]
+        return [(tokens[a - lo:b - lo], [(name, host[at:at + n].view(pool.dtype).view(rows, *pool.shape[1:]))
+                                         for name, pool, at, n in layout], host) for (a, b), host in zip(spans, hosts)]
 
     def _submit(self, kind: str, key: bytes, parent: bytes, start: int, tokens: list[int], segs, ref: SsdRef, scalars=None,
                 packed: torch.Tensor | None = None) -> None:
@@ -795,9 +871,9 @@ class SsdTier:
     def restore_async(self, cache: RadixCache, ids: list[int], reserve: int = 0) -> bool:
         """Admission's question for the request with ids: True when it can go ahead (nothing worth restoring, or its
         restore has landed and holds the path in L1 until `release`), False while a restore is in flight: its own,
-        started here if it needs one, or another one holding the staging buffer. The reads and the KV scatter run on
-        a worker thread while the engine keeps serving everyone else; `step()` finishes the restore once it landed
-        on every rank. Every rank asks alike (the trees are the same), so every rank starts the same restores."""
+        started here if it needs one, or another one holding the staging buffer. A worker thread reads, and the engine
+        thread scatters each chunk as it lands while it keeps serving everyone else; `step()` finishes the restore
+        once it landed on every rank. Every rank asks alike (the trees are the same), so every rank starts the same restores."""
         if self._landed(ids) is not None:
             return True
         job = self._job
@@ -891,8 +967,7 @@ class SsdTier:
         staging buffer (in parallel within a chunk), check each, and hand it to the engine thread (`landed`), which
         scatters it: a chunk goes into a half only once the scatter of the one before it there has read it. Returns
         (the tail's header and offset, the parts this rank found missing, corrupt or a collision, bytes read, seconds
-        waiting on reads). The scatter runs on the engine thread because there it is a few milliseconds of kernel
-        launches; on this thread, sharing the GIL with a busy engine thread, the same launches took hundreds."""
+        waiting on reads)."""
         sizes, stride, _, chunks = job.plan
         st = self._staging
         half = st.nbytes // 2
@@ -1111,8 +1186,12 @@ class SsdTier:
 
     def _put_rows(self, got, parts, dst: torch.Tensor, stride: int) -> None:
         """The KV rows of every object into pages dst, read in place from the
-        staging buffer. Whole blocks sharing one layout go in one scatter per
-        segment over a strided view of all of them; the rest object by object."""
+        staging buffer: on the GPU in one launch (`_RowCopy`); on the CPU, whole
+        blocks sharing one layout in one scatter per segment over a strided view
+        of all of them, the rest object by object."""
+        if self._copy is not None:
+            self._copy.put_rows(self._staging.base.data_ptr(), got, parts, dst)
+            return
         base, targets = self._staging.base, self._kv_targets()
         pieces = [(h, off, lo - start, hi - start) for (h, off), (_, _, start, lo, hi) in zip(got, parts)]
         cursor, i = 0, 0

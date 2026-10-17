@@ -122,15 +122,16 @@ On GB10 the tier registers the staging buffer with CUDA, and its device pointer 
 scatter kernels read it in place: no host memcpy and no host-to-device copy.
 
 The engine does not wait for the reads (`restore_async`). A worker thread reads and checks each chunk; the engine
-thread scatters it on the main stream at its next step, a few milliseconds of kernel launches, and the reader
-refills that half once the scatter has read it. The scatter stays on the engine thread on purpose: issued from the
-worker, the same launches waited on the GIL behind the busy engine thread and took 170-270 ms per 500 MB restore
-instead of 2-5 ms. One restore runs at a time (they share the buffer and the drive); the next request that needs one
-waits for it. A restore that landed keeps its path locked until its request is admitted, so eviction cannot take it
-first. On two Sparks each rank reads its own heads, and the ranks agree each step whether every rank's reads have
-landed before either imports the state (one integer all-reduce per step while a restore is in flight).
-`SHARAR_SSD_ASYNC=0` restores with the engine waiting, as before. The chunk size, not the context,
-bounds the buffer, so the pool plan reserves a constant for it (`SsdTier.memory_bound`).
+thread scatters it on the main stream at its next step, in one kernel launch for every pool the tier stores
+(`kernels/csrc/kv_copy.cu`, which also gathers backups into their pinned payloads), and the reader refills that
+half once the scatter has read it. The scatter stays on the engine thread on purpose: issued from the worker, the
+launch and the Python that plans it wait for the GIL behind the busy engine thread, tens of milliseconds a chunk on
+the 27B, against under one on the engine thread. One restore runs at a time (they share the buffer and the drive);
+the next request that needs one waits for it. A restore that landed keeps its path locked until its request is
+admitted, so eviction cannot take it first. On two Sparks each rank reads its own heads, and the ranks agree each
+step whether every rank's reads have landed before either imports the state (one integer all-reduce per step while
+a restore is in flight). `SHARAR_SSD_ASYNC=0` restores with the engine waiting, as before. The chunk size, not the
+context, bounds the buffer, so the pool plan reserves a constant for it (`SsdTier.memory_bound`).
 
 ## What a restore costs
 
