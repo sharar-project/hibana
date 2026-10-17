@@ -289,7 +289,7 @@ class SpecDecoder:
         """The eager verification's own paged-prefill wrapper (Executor._verify_prefill). plan()
         uploads its metadata from a pinned buffer asynchronously, so sharing the prefill wrapper
         let a cache-hit prefill and a verification in the same scheduler step overwrite each
-        other's plan before the GPU read it (illegal memory access under load, 2026-09-23)."""
+        other's plan before the GPU read it (illegal memory access under load)."""
         return getattr(self.ex, "_verify_prefill", self.ex._paged_prefill)  # test doubles have only one
 
     def _relaxed_matches(self, reqs, logits, y, b_sz: int, s_len: int):

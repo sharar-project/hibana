@@ -1,8 +1,8 @@
 """Stop an agent from retrying a tool call its harness keeps refusing.
 
 When a harness refuses a call (Claude Code without permission: "This command requires approval"), a frontier model
-reports it and stops. Qwen3.8 sometimes retries with small variations instead: 352 calls in five minutes on the 27B
-(2026-10-05), until the client gave up. The conversation comes back whole on every turn, so the server sees the
+reports it and stops. Qwen3.8 sometimes retries with small variations instead: 352 calls in five minutes on the 27B,
+until the client gave up. The conversation comes back whole on every turn, so the server sees the
 refusals without keeping any state:
 
 - a refusal is a tool result marked as an error (Anthropic `is_error`), or one whose text reads like a permission

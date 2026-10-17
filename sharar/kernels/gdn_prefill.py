@@ -27,7 +27,7 @@ def backend(q, k, v, state) -> str:
         and state.dtype == torch.float32 and state.is_contiguous()
         and _sm12x(q.device.index)
     )
-    # Stable mode keeps its existing arithmetic. Explicit cute is a diagnostic
+    # Stable numerics stay on Triton. Explicit cute is a diagnostic
     # override, not a promise of bit identity with Triton's 64-token algorithm.
     if policy == "cute" and not supported:
         raise ValueError("CuTe GDN requires SM120/121, BF16 D128 and FP32 state")

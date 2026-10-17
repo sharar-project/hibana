@@ -62,7 +62,7 @@ def test_tool_call_drafted_in_closed_reasoning_stays_reasoning(size):
 
 
 @pytest.mark.parametrize("tools,text", [
-    (False, "Thinking " + CALL),                        # no tools offered: the old behaviour
+    (False, "Thinking " + CALL),                        # no tools offered: stays reasoning
     (True, "Thinking <tool_call>\n<function=Bash>"),    # cut off mid-call (max_tokens): still reasoning
 ])
 def test_unclosed_reasoning_otherwise_stays_reasoning(tools, text):

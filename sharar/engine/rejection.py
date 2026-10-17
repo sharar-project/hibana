@@ -106,7 +106,7 @@ def verify_row(tokens, p, q, support, generator):
 
     Only the accepted prefix consumes target random draws. Python control and
     scalar transfers make this an explicit reference path for sampled requests.
-    Greedy serving retains the existing vectorized acceptance fast path.
+    Greedy serving uses the vectorized path.
     """
     for j in range(len(tokens)):
         token = int(tokens[j])

@@ -55,7 +55,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     app = FastAPI(title="sharar", lifespan=lifespan)
     started = time.time()
     # Messages API requests this server declines or reduces, to see what harnesses send.
-    messages_stats = {"forced_tool_choice_rejected": 0, "server_tools_ignored": 0}
+    messages_stats = {"server_tools_ignored": 0}
     # Requests with constrained output, by kind.
     constrained_stats = {"json_schema": 0, "json_object": 0, "tool_call": 0}
     # Turns the refusal guard changed: a reminder added after repeated refusals, or the turn ended by the server.
@@ -617,7 +617,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     @app.post("/v1/messages/count_tokens")
     async def count_tokens(http: HttpRequest):
         async def count(body: dict, http: HttpRequest):
-            # A forced tool_choice does not change the prompt, so it is counted, not rejected.
+            # A forced tool_choice does not change the prompt.
             _, _, ids, _ = _messages_prompt(body, messages_api.tool_choice(body))
             return {"input_tokens": len(ids)}
         return await _messages_errors(count, http)

@@ -44,7 +44,7 @@ TARGET_SETTINGS = {
 #   throughput  fast with more requests decoded together: the 27B 16 (full depth; batches of five or more verify on
 #             the original weights, GSM8K x1.74), Flash-Next 128 with its 3-bit experts (64 with NVFP4 experts), three
 #             drafts at sixteen requests so their verification stays within the 64 rows the 3-bit copies serve (four
-#             above: wider batches exceed 64 rows at any depth, and three measured no faster there, 2026-10-12)
+#             above: wider batches exceed 64 rows at any depth, and three measured no faster there)
 PROFILE_NAMES = ("exact", "fast", "throughput")
 
 

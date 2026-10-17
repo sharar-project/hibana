@@ -1,5 +1,4 @@
-# Python 3.12, extracted from the validated runtime on 2026-09-05.
-# xgrammar (constrained output, #16) and its dependencies added 2026-10-05.
+# Python 3.12, extracted from the validated runtime, plus xgrammar (constrained output) and its dependencies.
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.0

@@ -16,7 +16,7 @@ def digest(value):
 
 @pytest.mark.parametrize('case,expected', [
     ('code', '2286736c0fbe18746221e5f483170178626dfe6b1f72649d02a5f4e021943050'),  # gb10-coding-v2, tool-free prompt
-    ('code_v1', '04d6e0023e3b6b63d412de5a8bf49f6ee7efe68ef7061da013ec126426b4e195'),  # pre-2026-09-15 prompt
+    ('code_v1', '04d6e0023e3b6b63d412de5a8bf49f6ee7efe68ef7061da013ec126426b4e195'),  # the tool-call prompt
     ('design', '0402378ae156b5906548dcd7bbacf6484421643b6386284e8b8375727df975b1'),
     ('reasoning', 'fced3b9d8b1cafb6d661e1f604d171681751e555530b97b0ad6b4ef66f79ed40'),
 ])

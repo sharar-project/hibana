@@ -1,9 +1,9 @@
 """Device-resident acceptance for all-greedy verify batches.
 
-After the verify graph, the eager round used to download the argmax rows,
-decide acceptance on the host and only then launch the accepted-state
+After the verify graph, the host path downloads the argmax rows, decides
+acceptance on the host and only then launches the accepted-state
 reconstruction, the convolution copies and the draft feedback, one small
-launch at a time; the GPU idled while the host worked. Here one captured
+launch at a time; the GPU idles while the host works. Here one captured
 graph per batch bucket does all of that from the verify graph's static
 outputs: `accept.accept_block` decides the counts (exact or relaxed rule,
 budget clamp, stop tokens), `AcceptedState.run` reconstructs the committed

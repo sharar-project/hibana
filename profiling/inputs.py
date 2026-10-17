@@ -1,8 +1,7 @@
 """Frozen long prompts for the in-process profilers: 18 synthetic engineering-task families plus the three
 benchmark prompts (code, design, reasoning), 10,000 input tokens each.
 
-`profiling/workloads/family_v1.json` holds the family specifications (protocol `causal-selector-v1`, formerly
-the family gate's `family-eval-v1` set); the benchmark prompts come from `sharar/benchmark_workloads.py`.
+`profiling/workloads/family_v1.json` holds the family specifications (protocol `causal-selector-v1`); the benchmark prompts come from `sharar/benchmark_workloads.py`.
 `tasks(encode)` builds them with any tokenizer's `encode`, so no generated file has to be kept anywhere:
 
     from profiling.inputs import tasks
@@ -43,7 +42,7 @@ def materialize(protocol: dict, encode, benchmarks: dict[str, list[int]]) -> dic
 
 
 def tasks(encode, protocol_path: Path = PROTOCOL) -> list[dict]:
-    """The frozen tasks, tokenized with `encode`; benchmark_code is the original 2026-09 code prompt (`code_v1`)."""
+    """The frozen tasks, tokenized with `encode`; benchmark_code is the tool-call code prompt (`code_v1`)."""
     protocol = json.loads(protocol_path.read_text())
     benchmarks = {case: materialize_benchmark(encode, "code_v1" if case == "code" else case, protocol["input_tokens"]) for case in WORKLOADS}
     return materialize(protocol, encode, benchmarks)["tasks"]

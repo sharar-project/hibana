@@ -213,7 +213,7 @@ def _module():
 
 
 _WORKSPACE: dict[torch.device, tuple[torch.Tensor, torch.Tensor]] = {}
-# Split-K factor per (N, K, rows): profiling/w3_bench.py on GB10 (2026-09-17). More blocks help the weight stream
+# Split-K factor per (N, K, rows): profiling/w3_bench.py on GB10. More blocks help the weight stream
 # at 16 rows; at 64 rows the partial-sum traffic and the tensor-core work per block argue for fewer splits.
 SPLITS: dict[tuple[int, int, int], int] = {  # (N, K, rows) -> splits
     (5120, 17408, 16): 8, (5120, 17408, 32): 2, (5120, 17408, 64): 2,
@@ -293,7 +293,7 @@ def attach(linears, codebook=DEFAULT_CODEBOOK) -> tuple[int, int]:
 def attach_model(model, log=print, codebook=DEFAULT_CODEBOOK) -> dict:
     """Pack 3-bit decode copies for every projection `model.linears()` lists (calibrated ones from
     SHARAR_W3_CHECKPOINT when set). The lm_head keeps its NVFP4 weights (a 3-bit copy cost about two
-    GSM8K points, 2026-09-17)."""
+    GSM8K points)."""
     total = 0
     count = 0
     from sharar.weights.w3_checkpoint import CalibratedWeights

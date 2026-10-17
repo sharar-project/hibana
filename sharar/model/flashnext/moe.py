@@ -149,7 +149,7 @@ class MoeLayer:
             fc1_expert_weights=self.w13_long, fc2_expert_weights=self.w2_long,
             output_dtype=torch.bfloat16, quant_scales=self.quant_scales,
             # The tactic is chosen for this token count; the default (8192) picks a large-M
-            # configuration that runs the one-row decode GEMMs at half speed (profile 2026-09-19).
+            # configuration that runs the one-row decode GEMMs at half speed (profiled).
             tune_max_num_tokens=max(1, 1 << (m - 1).bit_length()),
         )
         return routed[0] if isinstance(routed, (list, tuple)) else routed  # flashinfer 0.6 returns [output]

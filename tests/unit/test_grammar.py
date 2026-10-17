@@ -132,7 +132,7 @@ def test_apply_bitmask_matches_the_bit_layout():
 
 def test_a_drafted_stop_token_ends_the_walk(grammars):
     """A draft that completes the JSON and then proposes the stop token: rows after it are never reached, and the
-    walk must not ask the finished grammar for another mask (it raised in the engine, 2026-10-05)."""
+    walk must not ask the finished grammar for another mask (it raised in the engine)."""
     state = GrammarState(grammars.json_schema(SCHEMA, armed=True))
     assert all(state.accept(t) for t in JSON[:-1])
     drafted = [ID['}'], STOP, ID['a'], ID['b']]
@@ -147,7 +147,7 @@ def test_a_drafted_stop_token_ends_the_walk(grammars):
 
 
 def test_whitespace_is_bounded_before_and_inside_the_json(grammars):
-    """Unbounded whitespace let a sampled request drift into it until max_tokens (2026-10-05)."""
+    """Unbounded whitespace let a sampled request drift into it until max_tokens."""
     state = GrammarState(grammars.json_schema(SCHEMA, armed=True))
     assert all(state.accept(ID['\n']) for _ in range(4))
     mask = host_bitmask(1, V)

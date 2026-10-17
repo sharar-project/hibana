@@ -34,12 +34,13 @@ Layers, cheapest first:
      32K and 128K, 120 items each; about 3 hours per arm), `all` (both) or `agentic` (Terminal-Bench 2.1 through
      Harbor, the 78 tasks valid on the GB10 twice; about 18 hours per arm, in one GPU window).
 
-Verdict rules (also in CONTRIBUTING.md, "Judge a lossy option"). Intervals are 95%: bootstrap over
+Verdict rules. Intervals are 95%: bootstrap over
 64-position blocks (layer 1) or prompts (layer 2), normal approximation of the paired difference
 (layer 3); "pooled" adds the discordant pairs of every task of the stage.
   exact     layer 1 within its floor in every domain (excess KL interval reaches 0, argmax
             agreement not below the floor's) and layer-2 tokens per round within its floor
-            (interval includes 1); a lossless change. Layer 3 is skipped (--through screen forces it).
+            (interval includes 1); a lossless change. Layer 3 is skipped (--through screen forces it, and
+            then its pooled difference must not be significant).
   rejected  any of: no measurable speed gain, the speed interval's lower bound at or below 1.035 (a
             lossy option must pay for itself, beyond the layer's 3.5% noise; layer 3 is skipped); a
             task or the pooled battery significantly worse (McNemar p < 0.05, more losses than wins;
@@ -107,7 +108,7 @@ STAGES = {"screen": ("quick", ["gsm8k", "humaneval", "mgsm-pl24", "needles"]), "
 BATTERIES = {"quick": [], "hard": ["hard"], "long": ["long"], "agentic": ["agentic"], "all": ["hard", "long"]}
 AGENTIC_HOLD_MINUTES = 36 * 60  # one window: a Terminal-Bench task cut off by a window restarts from scratch
 TIGHT_MARGIN, FAST_MARGIN = 1.0, 2.0  # accuracy points: the tighter one is reported and sets the screen escalation
-# Layer-2 speed resolution (Flash-Next, 2026-09-27): a warm baseline repeat reads x1.035 and a second exact
+# Layer-2 speed resolution (Flash-Next): a warm baseline repeat reads x1.035 and a second exact
 # process x0.986, so a gain must clear 3.5% to be told from the instrument's own noise.
 SPEED_NOISE = 0.035
 

@@ -13,7 +13,6 @@ dist/
 # Host-local configuration and evidence never belong in git.
 config/gb10.env
 results/
-/parity/
 *.log
 *.safetensors
 *.npy

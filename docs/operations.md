@@ -55,18 +55,14 @@ same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (defau
 | Draft checkpoint | the publisher's pinned draft | `sharar serve --draft DIR` or `SHARAR_DRAFT=/dir`: a DFlash2 checkpoint of the same architecture (27B only) |
 | Accepted state | reconstruction | `SHARAR_VERIFY_STATE` |
 | Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
-| Requests decoded together | 4; `throughput`: 16 on the 27B, 128 on Flash-Next (64 with NVFP4 experts) | `SHARAR_MAX_BATCH` / `sharar serve --max-batch`, 1-128 (graph buckets 1, 2, 4, ... 128). Above four, the pool guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full context |
-| Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:4,4:4`, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark, [#172](https://github.com/abdelfattah-lab/sharar/issues/172)), else `16:3` | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC`). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
+| Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:4,4:4`, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark), else `16:3` | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC`). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
 | Adaptive draft depth (MTP) | Flash-Next `fast`: on, 0.14 (0.2 on two Sparks) | `SHARAR_SPEC_STEP_COST` (0 = the fixed depth): each request drafts as deep as its own recent acceptance pays for, up to the batch bucket's depth ([how](flashnext.md#the-mtp-draft)) |
 | Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext` | `sharar serve --port`, `SHARAR_PORT` / `SHARAR_SERVICE` |
 | Request traces | off | `sharar serve --traces` (in `$SHARAR_RESULTS/traces`) or `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
 | Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
 | Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `SHARAR_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
-| Flash-Next expert selection (lossy) | `fast` and `throughput`, on one or two Sparks: keep 5 + reuse 5 ([profiles](#serving-profiles)); otherwise each token's top 10 | `SHARAR_MOE_KEEP=k` keeps each token's own top k in decode and verify forwards, at any number of requests; `SHARAR_MOE_REUSE=r` (k + r <= 10) adds up to r more, only experts another token of the forward keeps, so the forward loads no more experts. Slots nothing fills stay empty for the 3-bit experts, which skip them; the NVFP4 experts need an expert in every slot, so there they repeat the token's top expert at weight 0 (the same bits as leaving the slot out). Prefill keeps the top 10, so the lossy gate's layer 1, which scores prefill, does not see it: judge it on layers 2 and 3. A token's experts depend on the other tokens of its forward (other requests and the drafts), so a greedy reply can change with what else the server runs. `SHARAR_MOE_KEEP=0` turns it off |
-| GDN recurrent state | 8-bit under `throughput` ([profiles](#serving-profiles)); FP32 otherwise | `SHARAR_SSM_STATE=fp32`, `int8` or `int4`. The quantized formats store each GDN layer's state per window as in LeapQuant ([arXiv 2609.38166](https://arxiv.org/abs/2609.38166); `sharar/cache/ssm_format.py`, `sharar/kernels/ssm_window.py`): an integer residual with per-row scales and smoothed key columns, FP16 compensator terms (`SHARAR_SSM_COMPENSATORS`, unset: 4, or 8 for int4) and the committed tokens of the current window (`SHARAR_SSM_WINDOW`, 16), requantized once per window. The recurrent state per slot is 55 MiB (int8) or 41 MiB (int4) instead of 144 on the 27B, and 41 or 31 MiB instead of 108 on Flash-Next. Needs the reconstruct accepted state. Lossy (measurements in [#129](https://github.com/abdelfattah-lab/sharar/pull/129) and [#161](https://github.com/abdelfattah-lab/sharar/issues/161)). It also lets more requests fit where memory is short (a Spark container: 64 Flash-Next requests instead of 16) |
 | Flash-Next PLE table on two Sparks | each rank's half of the heads in device memory (23.8 GiB per rank; [tensor parallel](tensor-parallel.md)) | `SHARAR_PLE_RESIDENT=0` reads it from the memory maps on the host, as one Spark does (which prefetches a prompt's later chunks into the page cache) |
 | Shape-stable prefill numerics | off | `SHARAR_STABLE_NUMERICS=1` (M-invariant kernels for the three row-count-dependent ops; see [limits](#numerical-limits)) |
-| Flash-Next QSA prefill backend | fast, throughput: auto; exact: original | `SHARAR_QSA_PREFILL_BACKEND=original\|auto\|optimized`. `original` keeps the baseline; `auto` selects optimized SM121 TP1/TP2 sparse eager prefill through 32K when eligible, otherwise original; `optimized` requires support and rejects incompatible settings/inputs. TP2 uses 12 query heads and 1 KV head per rank with a replicated indexer. Dense prefill, decode/verify/capture and replicated MTP attention remain original. Stable numerics makes `auto` use original and conflicts with `optimized`. Compilation/launch errors surface. Score arithmetic/tie order can differ, so `exact` keeps `original`; on RULER v2 32K (120 items, one Spark, `fast`) `auto` scored 94.1 against 94.0 (2 items better, 2 worse; 47 answers' text changed), and it makes 8K and 32K prefill 3-4% faster. |
 
 For MTP on the 27B, use `SHARAR_PROPOSER=mtp SHARAR_SPEC=3 SHARAR_DRAFT_PRECISION=bf16`. `SHARAR_PROPOSER` is `mtp`
 or `dflash2`.
@@ -83,7 +79,7 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 | Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | Flash-Next top-3 within 2.0; the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
 | Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next also its routed experts) | off | on | on |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next only | as fast |
-| Batch-aware expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_REUSE`) | off | Flash-Next on one or two Sparks: keep 5 + reuse 5 | as fast |
+| Batch-aware expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_REUSE`) | off | Flash-Next: keep 5 + reuse 5 | as fast |
 | Optimized QSA prefill kernels (`SHARAR_QSA_PREFILL_BACKEND`) | off (original) | Flash-Next: auto (where eligible: SM121, one or two Sparks, through 32K) | as fast |
 | Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
 | 8-bit GDN recurrent state (`SHARAR_SSM_STATE`) | off (FP32) | off (FP32) | on |
@@ -96,11 +92,24 @@ most 64 rows) cover the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resi
 original format. Speculative decoding itself, the Flash-Next 3-bit draft head, FP8/NVFP4
 weights and CUDA graphs are lossless and on in every profile. Benchmarks and gates use `exact`.
 
-The 8-bit GDN recurrent state (`int8:w16:r4`) shortens the verify round where the state is a large share of it, which
-grows with the requests decoded together. Measured on one Spark: the 27B decodes 8% faster at 4 requests, 24% at 8 and
-30% at 16; Flash-Next 13% faster at 16, 17% at 32 and 25% at 64 (9-13% on two Sparks). At one request neither gains,
-and the 27B's first token on a 10K-token prompt comes 14% later (3.08 to 3.51 s), so `fast` keeps FP32. A launch with
-`SHARAR_VERIFY_STATE=snapshots` keeps FP32, which that accepted state needs.
+Four of the knobs take more than the table shows:
+
+- **`SHARAR_MAX_BATCH`** (`sharar serve --max-batch`, 1-128; graph buckets 1, 2, 4, ... 128). Above four, the pool
+  guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full
+  context.
+- **`SHARAR_MOE_KEEP=k`, `SHARAR_MOE_REUSE=r`** (Flash-Next, k + r <= 10): each token keeps its own top k experts in
+  decode and verify forwards, plus up to r more that another token of the forward already keeps, so the forward loads
+  no more experts; `SHARAR_MOE_KEEP=0` turns it off. A token's experts depend on the rest of its forward, so a greedy
+  reply can change with what else the server runs.
+- **`SHARAR_SSM_STATE=fp32|int8|int4`**: the integer formats quantize each GDN layer's recurrent state per window as
+  in LeapQuant ([arXiv 2609.38166](https://arxiv.org/abs/2609.38166); `sharar/cache/ssm_format.py`), a fraction of
+  FP32's memory per slot, and need `SHARAR_VERIFY_STATE=reconstruct` (with `snapshots` the state stays FP32). The
+  saving pays with many requests (on one Spark the 27B decodes 30% faster at 16) but not at one, where it also
+  delays a long prompt's first token, so `fast` keeps FP32.
+- **`SHARAR_QSA_PREFILL_BACKEND=original|auto|optimized`** (Flash-Next): `auto` runs the optimized SM121 sparse
+  eager prefill through 32K where eligible and the original elsewhere; `optimized` requires it. Its score
+  arithmetic and tie order differ, so `exact` keeps `original`; it makes 8K and 32K prefill 3-4% faster with
+  RULER v2 at 32K unchanged. `SHARAR_STABLE_NUMERICS=1` makes `auto` use the original.
 
 A new lossy option enters `fast` (and so `throughput`) only through the lossy-change gate
 ([CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option)).
@@ -118,12 +127,9 @@ separate thread and never blocks the engine; a full queue or disk counts as `dro
 holds the user's own traffic. `sharar traces --dir DIR` summarizes a directory. The traces are the user's prompts and
 stay on this machine unless the user copies them elsewhere.
 
-**Draft confidence (MTP).** With `SHARAR_TRACE_CONFIDENCE=1` beside
-`SHARAR_TRACES` (the launcher forwards both), each round record also carries the
-MTP draft's top-1 probability `p1` and top-1/top-2 margin `m` per drafted
-position; `params` records the request's acceptance rule. The setting is read
-when the proposer is built (the draft graphs capture the extra output); off,
-nothing changes. It is the calibration data for adaptive draft depth.
+**Draft confidence (MTP).** With `SHARAR_TRACE_CONFIDENCE=1` beside `SHARAR_TRACES`, each round record also carries
+the MTP draft's top-1 probability `p1` and top-1/top-2 margin `m` per drafted position, the calibration data for
+adaptive draft depth. It is read when the proposer is built; off, nothing changes.
 
 Inspect `sharar status`, `sharar logs` (detached servers), `/health` and `/get_server_info` for status.
 The latter reports draft precision, scheduler settings, KV/state geometry and
@@ -133,74 +139,24 @@ KV. The pools take what is available at startup beyond the floor, the prefill
 reserve and a 4 GiB margin. No host-memory tier sits below them: on unified
 memory it would hold the same prefixes in the same DRAM.
 
-**SSD tier (on in every profile, `SHARAR_SSD=0` turns it off; capacity `SHARAR_SSD_GIB`, default 200).**
-It is the only tier below the GPU pools; without it the cache drops an evicted
-prefix and its next request prefills again. One radix tree indexes both tiers.
-The tier writes to `$SHARAR_RESULTS/ssd/<target>` (one store per target;
-`SHARAR_SSD_DIR` moves it, e.g. to another drive), so stored prefixes survive
-restarts and reboots. The directory is private (0700), one server holds it at a
-time (a second one disables its tier rather than share it), and a store on a
-tmpfs or ramfs is refused: it would sit in memory, which on a Spark is the GPU's.
-The budget never fills the drive: at startup it is capped to what is stored plus
-the free space beyond a reserve (a tenth of the drive, at most 64 GiB). It
-stores KV as content-addressed blocks of 256 tokens, one copy per shared
-prefix, plus one tail per evicted prefix (its partial block and the recurrent
-snapshot). It skips prefixes shorter than 4,096 tokens: each tail carries the
-recurrent snapshot (147 MiB per 27B prefix in FP32, 58 MiB with
-`SHARAR_SSM_STATE=int8`), and a short prefix re-prefills in about a second.
-Evicting a prefix from the GPU pools keeps its node in the tree, on the SSD
-only. The next request that extends it reads back what the GPU no longer holds
-(from where the path's GPU pages end) with O_DIRECT reads into a
-CUDA-registered staging buffer of two 256 MiB halves: the readers fill one half
-while the GPU scatters the previous chunk from the other in place, so the
-buffer (and the 1.1 GiB the pool plan reserves for the tier) does not grow with
-the context. The engine keeps serving other requests while a restore reads:
-the returning request waits in the queue, and the engine scatters each chunk
-as it lands. Backup copies run on their own CUDA stream, beside the model's
-kernels, and share a 512 MiB staging limit; a single larger object runs alone.
-A finished request's recurrent snapshot is written through at its end (where its
-conversation's next turn resumes), not at its prompt's end; a request that
-regenerates from the same prompt may prefill its last turn again. Writer threads write them with O_DIRECT through a 16 MiB
-buffer each (where the filesystem refuses O_DIRECT, through the page cache,
-dropped after each file; `direct_writes` in `cache.ssd.store` says which).
-Eviction takes the least recently used prefix already on the SSD first, so it
-rarely needs a copy. When none is left it copies the prefix's unwritten blocks
-and tail at once if the staging limit has room, and otherwise drops the prefix
-as it would without the tier (`evict_dropped` in `cache.ssd`): waiting for the
-writers would stall every running request. Shutdown waits instead. A node whose descendants are already stored (a
-prompt's end, a chunk checkpoint) is demoted with its KV blocks and no snapshot:
-the conversation resumes from its descendants. When the
-completed copies exceed the disk budget, the tier drops SSD-only leaves first,
-then the disk copies of nodes still on the GPU, which keep their GPU pages and
-snapshots. At shutdown the server writes every cached prefix to the SSD. After
-a restart, a process with the same target revision, decode weights, geometry,
-recurrent-state format and prefill numerics lists them again; it deletes
-another format's prefixes at startup. On two Sparks each rank stores its own
-heads on its own Spark, and the ranks agree on every write, restore and listing
-([tensor parallel](tensor-parallel.md)). If a store cannot open, the server
-logs why and runs without the tier. `cache.ssd` in `/get_server_info` reports
-usage, restores and read GB/s; `sharar cache` prints the GPU cache and the SSD
-tier, or with nothing serving, what the store holds. Design and measurements:
-[cache design](cache_design.md). Measure on a path that reaches the NVMe
-directly: a filesystem on a loop device without direct I/O caps reads near
-1 GB/s and serves fresh data from the host page cache.
+**SSD tier.** On in every profile (`SHARAR_SSD=0` turns it off), it is the only tier below the GPU pools: an
+evicted prefix of 4,096 tokens or more goes to `$SHARAR_RESULTS/ssd/<target>` (`SHARAR_SSD_DIR` moves it, e.g. to
+another drive; capacity `SHARAR_SSD_GIB`, default 200, never filling the drive) instead of being dropped,
+and its next request reads it back instead of prefilling again. At shutdown the server writes every cached prefix
+there, so stored prefixes survive restarts and reboots. `cache.ssd` in `/get_server_info` reports usage and
+restores; `sharar cache` prints the GPU cache and the SSD tier, or with nothing serving, what the store holds.
+Measure it on a real NVMe: a filesystem on a loop device without direct I/O caps reads near 1 GB/s and serves
+fresh data from the host page cache. How it works: [cache design](cache_design.md).
+
 While host `MemAvailable` is under the 16 GiB floor the scheduler holds new
 admissions (`floor_holds` in `/get_server_info`) so running requests can
 finish and release memory before the memory guard has to act.
 
-## Development and checks
+## Development
 
-On the GB10, `.venv` is the development environment: `uv run sharar ...` runs this checkout's code (the editable
-install), `uv run pytest tests/unit` the CPU tests and `SHARAR_RUN_GPU=1 uv run pytest tests/gpu` the GPU suite, which
-`tests/conftest.py` points at the caches and 3-bit copies `sharar serve` would use. Reserve an exclusive GPU window
-(`flock $SHARAR_RESULTS/.gpu.lock ...`) before loading a model. `uv run sharar dev --help` lists the in-process
-diagnostics (`check`, `generate`, `profile`, a `repl` without a server, the two-Spark `tp-comm`).
-
-Off the GB10 (the CPU CI), `bash tools/check.sh setup-cpu` builds a CPU environment with pip and runs the unit tests;
-`.venv-cpu/bin/python tools/check_distribution.py` checks the sdist and wheel, and `python3 tools/check_links.py` the
-documentation links.
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for numerical and lifecycle checks.
+`uv run sharar ...` runs this checkout's code (the editable install); the checks are in
+[CONTRIBUTING](../CONTRIBUTING.md#run-checks). Reserve an exclusive GPU window (`flock $SHARAR_RESULTS/.gpu.lock ...`)
+before loading a model; `uv run sharar dev --help` lists the in-process diagnostics.
 
 ## Numerical limits
 
