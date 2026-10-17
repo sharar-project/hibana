@@ -148,7 +148,7 @@ def test_the_8bit_state_default_yields(env):
     ({"SHARAR_MAX_BATCH": "129"}, "MAX_BATCH"), ({"SHARAR_SPEC_DEPTHS": "8"}, "SPEC_DEPTHS"),
     ({"SHARAR_DRAFT_PRECISION": "fp4"}, "DRAFT_PRECISION"), ({"SHARAR_PROPOSER": "dspark"}, "SHARAR_PROPOSER"),
     ({"SHARAR_PROPOSER": "ngram"}, "SHARAR_PROPOSER"),
-    ({"SHARAR_PROPOSER": "mtp"}, "FP8 draft precision"), ({"SHARAR_FLASHNEXT_EXPERTS": "fp4"}, "EXPERTS")])
+    ({"SHARAR_PROPOSER": "mtp", "SHARAR_DRAFT_PRECISION": "fp8"}, "FP8 draft precision"), ({"SHARAR_FLASHNEXT_EXPERTS": "fp4"}, "EXPERTS")])
 def test_bad_settings_are_refused(env, override, message):
     with pytest.raises(ValueError, match=message):
         resolve(env, "27b", overrides=override)
@@ -257,3 +257,9 @@ def test_config_file_parsing(tmp_path, monkeypatch):
     conf = tmp_path / "c.env"
     conf.write_text('export SHARAR_A="x y"\nSHARAR_B=$SOMEWHERE/b  # note\nnot a setting\nSHARAR_A=z\n')
     assert launch.read_config_file(conf) == {"SHARAR_A": "z", "SHARAR_B": "/data/b"}
+
+
+def test_the_27b_fp8_draft_applies_when_its_draft_runs(env):
+    assert resolve(env, "27b").get("SHARAR_DRAFT_PRECISION") == "fp8"
+    for override in ({"SHARAR_SPEC": "0"}, {"SHARAR_PROPOSER": "mtp"}):
+        assert resolve(env, "27b", overrides=override).get("SHARAR_DRAFT_PRECISION") == "bf16"

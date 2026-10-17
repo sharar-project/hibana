@@ -29,34 +29,65 @@ PROFILE_HELP = {"exact": "the target's own distribution: exact acceptance, no lo
 def add_engine_args(p: argparse.ArgumentParser) -> None:
     """`sharar engine`: the server itself, with every setting explicit (what `sharar serve` and the ranks run)."""
     p.add_argument("--target", default=None, help="pinned serving target (default: SHARAR_TARGET, else qwen38)")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=30001)
-    p.add_argument("--proposer", choices=("mtp", "dflash2"), default="dflash2")
-    p.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default="reconstruct")
-    p.add_argument("--draft-precision", choices=("bf16", "fp8"), default="bf16", help="parallel draft matrix precision")
+    p.add_argument("--host", default=None, help="default: 127.0.0.1")
+    p.add_argument("--port", type=int, default=None, help="default: the target's, as `sharar serve` (27B 30001, Flash-Next 30004)")
+    p.add_argument("--proposer", choices=("mtp", "dflash2"), default=None, help="default: the target's (27B dflash2, Flash-Next mtp)")
+    p.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default=None, help="default: reconstruct")
+    p.add_argument("--draft-precision", choices=("bf16", "fp8"), default=None, help="parallel draft matrix precision (default: the target's)")
     p.add_argument("--spec", type=int, default=None, help="draft tokens per round (0 = off; default: SHARAR_SPEC, else the proposer's validated depth)")
     p.add_argument("--draft", default=None, help="DFlash2 checkpoint directory to serve instead of the pinned draft (default: SHARAR_DRAFT)")
     p.add_argument("--traces", default=None, help="directory for opt-in request traces (default: SHARAR_TRACES; unset disables recording)")
     p.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: SHARAR_TRACES_MAX_MIB or 32768)")
-    p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request, up to 262144 (default: SHARAR_MAX_CONTEXT, else the target profile's 32768)")
-    p.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: SHARAR_MAX_BATCH, else 4; the throughput profile sets 16)")
+    p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request, up to 262144 (default: SHARAR_MAX_CONTEXT, else 262144)")
+    p.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: SHARAR_MAX_BATCH, else the profile's)")
     p.add_argument("--spec-depths", default=None, help="verify depth per batch bucket as BUCKET:DEPTH pairs, e.g. 8:1,16:0 (0: plain decode; default: SHARAR_SPEC_DEPTHS, else --spec everywhere)")
     p.add_argument("--accept-default-sampled", action="store_true", default=None, help="also apply the relaxed acceptance default to sampled requests (default: SHARAR_ACCEPT_DEFAULT_SAMPLED=1, else greedy only)")
     p.add_argument("--accept-default-sampled-threshold", default=None, help="with --accept-default-sampled, the K:M sampled requests get instead of --accept-default's (default: SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD)")
-    p.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests that do not set accept_top_k/accept_margin, as K:M (default: SHARAR_ACCEPT_DEFAULT, else 2:1.0); 'off' keeps every request exact")
+    p.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests that do not set accept_top_k/accept_margin, as K:M (default: SHARAR_ACCEPT_DEFAULT, else the profile's); 'off' keeps every request exact")
     p.add_argument("--tp", type=int, default=1, help="tensor-parallel ranks, one GPU (Spark) each; rank 0 serves HTTP")
     p.add_argument("--tp-rank", type=int, default=0, help="this process's tensor-parallel rank")
     p.add_argument("--tp-address", default=None, help="HOST:PORT on rank 0's host where the ranks meet (required with --tp > 1)")
 
 
+def resolved_engine_env(args) -> dict[str, str]:
+    """The engine's environment with what `sharar serve` would resolve beneath it, and the flags it would pass filled in.
+
+    `sharar serve` hands the engine every setting (its flags and SHARAR_* environment), so for it nothing changes; run
+    by hand, `sharar engine` serves the same target settings and profile (SHARAR_PROFILE, else fast) as `sharar serve`."""
+    import os
+
+    from sharar.launch import preflight
+    from sharar.launch.run import serve_overrides
+    from sharar.launch.settings import resolve
+
+    overrides = serve_overrides(args)
+    if args.verify_state is not None:
+        overrides["SHARAR_VERIFY_STATE"] = args.verify_state
+    s = resolve(args.target, overrides=overrides, env=dict(os.environ), tp=args.tp)
+    env = {**s.engine_env(preflight.ensure_w3(s, fetch=False)), **os.environ}
+    for name, value in (("host", s.host), ("port", s.port), ("proposer", s.proposer),
+                        ("verify_state", s.get("SHARAR_VERIFY_STATE", "reconstruct")),
+                        ("draft_precision", s.get("SHARAR_DRAFT_PRECISION", "bf16"))):
+        if getattr(args, name) is None:
+            setattr(args, name, value)
+    return env
+
+
 def run_engine(args, parser) -> int:
-    """Serve with explicit settings (the environment holds the rest; `sharar serve` prepares both)."""
+    """Serve with explicit settings; whatever is not given resolves as `sharar serve` would (the environment holds the rest)."""
     from sharar import target as targets
     from sharar.distributed import broadcast_pyobj, close_distributed, init_distributed
     from sharar.engine import config as engine_config
     from sharar.proposers.factory import MAX_DEPTHS
 
-    cfg = engine_config.EngineConfig.from_env()
+    env = None
+    if args.tp_rank == 0:  # the other ranks serve with the primary's configuration (broadcast below) and explicit flags
+        from sharar.launch.preflight import PreflightError
+        try:
+            env = resolved_engine_env(args)
+        except (ValueError, PreflightError) as exc:
+            parser.error(str(exc))
+    cfg = engine_config.EngineConfig.from_env(env)
     if args.tp > 1:
         if args.tp_address is None or not 0 <= args.tp_rank < args.tp:
             parser.error("--tp > 1 needs --tp-address and a --tp-rank below --tp")

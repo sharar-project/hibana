@@ -23,7 +23,7 @@
 # checks' own processes); on any sign of someone else's work it stops the checks' processes and ends the run as
 # "gave way" (exit 0). A skipped or interrupted nightly run is not recorded as tested.
 #
-# Settings come from ~/sharar-ci/gb10.env (SHARAR_CONFIG_FILE): SHARAR_HF_CACHE, SHARAR_RESULTS, SHARAR_AIPERF,
+# Settings come from ~/sharar-ci/gb10.env (SHARAR_CONFIG_FILE): SHARAR_HF_CACHE, SHARAR_RESULTS,
 # optionally SHARAR_FLASHNEXT_CACHE. sharar-eval is the `eval` extra of the environment the venv stage syncs.
 set -Euo pipefail
 SELF="$(realpath "${BASH_SOURCE[0]}")"

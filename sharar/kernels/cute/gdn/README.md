@@ -41,6 +41,6 @@ snapshots, continuation, untouched slots, FP32 recurrence and graph replay.
 These rank-local tests are not a two-machine TP/RDMA integration test.
 
 ```bash
-bash tools/dev-shell.sh -- env SHARAR_RUN_GPU=1 python -m pytest -q \
+SHARAR_RUN_GPU=1 uv run python -m pytest -q \
   tests/gpu/test_gdn_cute.py tests/gpu/test_gdn_plan.py
 ```
