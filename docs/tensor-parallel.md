@@ -61,21 +61,11 @@ Decisions that read local memory take the minimum over ranks. Request constraint
 compile again on each rank; sampled requests get one seed for all ranks. An engine failure ends the process, and
 the other ranks follow within a second (see "A failed rank" above).
 
-## What it buys
+## Outputs
 
-Measured on two GB10s linked by RoCE, `fast` profile:
-
-| 27B | one Spark | two Sparks |
-|---|---:|---:|
-| Single-stream greedy decode, median of seven prompts | 77.1 tok/s | 119.1 |
-| Four concurrent requests, aggregate | 135.1 tok/s | 199.1 |
-
-Flash-Next on two Sparks, with its 3-bit experts and the PLE heads resident (below): 123.8 tok/s single-stream, 272.0
-for four concurrent requests. Cold prefill is x1.4 to x1.7 faster on two Sparks (28K tokens: time to first token 16.1
-to 9.5 s on the 27B). GSM8K is unchanged (27B 95.3% on one, 95.0% on two). TP=2 is not bitwise TP=1: summing two
-partial products in another order moves the logits as much as any other reassociation (88-95% teacher-forced argmax
-agreement, flips at near ties), and TP=1 is unchanged by the tensor-parallel code. Flash-Next's verification scales
-less than its bytes: the hyper-connection mixers, router and elementwise kernels are replicated.
+TP=2 is not bitwise TP=1: summing two partial products in another order moves the logits as much as any other
+reassociation (outputs can flip at near ties), and TP=1 is unchanged by the tensor-parallel code. Flash-Next's
+verification scales less than its bytes: the hyper-connection mixers, router and elementwise kernels are replicated.
 
 ## Profiling
 
@@ -84,12 +74,7 @@ SHARAR_TP_PREFIX="nsys profile --trace=cuda,nvtx --sample=none --cpuctxsw=none -
   --delay=420 --duration=20 -o /path/tp2_%h" uv run sharar serve 27b --tp 2   # then keep requests flowing
 ```
 
-Both ranks run under the prefix; `%h` names each host's report, and nsys ends the session after the window. In 20 s
-of single-stream `fast` traffic on the 27B with `SHARAR_TP_ALLREDUCE=nccl` instead of the default RDMA one-shot (385
-rounds), 96% of kernel time ran from CUDA graphs and the GPU was busy 95% of the
-time. A round replays a verify graph (1388 kernels with its 128 all-reduces and the logits all-gather, 38 ms under
-node tracing), a DFlash2 draft graph (210 kernels, one all-gather, 7-8 ms) and an accept graph (1.7 ms). Kernel time:
-3-bit GEMMs 58%, NCCL 18% (about 65 us per collective including skew), NVFP4/FP8 GEMMs 13%, the rest under 5% each.
+Both ranks run under the prefix; `%h` names each host's report, and nsys ends the session after the window.
 
 ## The link
 
@@ -134,8 +119,7 @@ rank), so the outputs are those of one Spark's memory-mapped gather and nothing 
 The MTP draft layer is replicated and drafts through the target's vocabulary-parallel lm_head
 (`proposers/draft_head.py:VocabParallelHead`): each rank scores its half of the vocabulary with its 3-bit copy,
 the ranks exchange their best eight, and the rank holding each candidate's FP8 row rescores it, so the pick is the
-whole-vocabulary shortlist head's (`sharar dev tp-draft-head`: identical picks at 1 to 20 rows, graphed too) at
-0.72 ms per draft step instead of 1.17.
+whole-vocabulary shortlist head's (`sharar dev tp-draft-head` checks that the picks are identical).
 
 ## Limits
 
