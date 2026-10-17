@@ -604,6 +604,22 @@ def test_serving_eviction_drops_a_leaf_it_cannot_copy_instead_of_waiting_for_the
     assert tier.restore(cache, LONG + [7]) == 0 and tier.used == 0
 
 
+def test_serving_eviction_waits_for_room_for_a_tail_instead_of_dropping_a_stored_prefix(tmp_path):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    before = release(cache, tier, kv, sp, feats, LONG, seed=44)
+    settle(cache, tier)  # its blocks are stored; its tail is not
+    other = [t + 20000 for t in LONG]
+    release(cache, tier, kv, sp, feats, other, seed=45)
+    cache.lock(cache.node_at(other), 1)
+    tier.step(cache)  # another prefix's backups fill the staging buffer
+    tier.staging_bytes = tier.staged
+    evict_all(cache, kv)
+    assert tier.evict_dropped == 0 and tier.tails == 1
+    settle(cache, tier)
+    assert tier.restore(cache, LONG + [7]) == len(LONG)
+    assert same(restored(cache, kv, sp, LONG), before)
+
+
 @pytest.mark.parametrize("entry", ["restore", "rebuild"])
 @pytest.mark.parametrize("damage", ["state_name", "kv_name", "state_shape", "kv_shape", "state_dtype"])
 def test_an_incompatible_tensor_layout_is_a_miss_before_scatter_or_import(tmp_path, monkeypatch, entry, damage):

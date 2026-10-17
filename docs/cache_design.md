@@ -85,8 +85,9 @@ flipped byte or a torn write is a miss, never wrong KV. Startup also drops a fil
                                    │                                   │
                                    │ completion ◄──────────────────────┘ SsdRef.ready = True
                                    ▼
- L1 pressure ──► evict LRU leaf ──► evicting(): copy its path's queued blocks and tail if staging has room now,
-                                   else drop it (serving never waits for the writers; shutdown does)
+ L1 pressure ──► evict LRU leaf ──► evicting(): copy its path's queued blocks if staging has room now, else drop
+                                   it (serving never waits to copy blocks; shutdown does); write its tail,
+                                   waiting for the writes in flight if staging has no room for it
                                    ──► demote: pages and slot freed, node stays (SSD-only)
                                    ▼
  next turn ──► match(): L1 prefix ends at depth d, a ready tail at depth D > d

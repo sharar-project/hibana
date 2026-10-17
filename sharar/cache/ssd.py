@@ -21,8 +21,9 @@ The tiered radix tree (`radix.py`) is the only record of what is on disk;
   which gathers every queued block touching the leaf and, for a leaf of at
   least `min_tokens` with a snapshot, writes its tail (its last partial block,
   the GDN snapshot at its end, the pool's per-slot aux and the drafter
-  payload) unless a write-through already did. The tree then keeps the leaf
-  SSD-only instead of deleting it.
+  payload) unless a write-through already did, waiting for staging room for
+  the tail if it must. The tree then keeps the leaf SSD-only instead of
+  deleting it.
 - Restore. At admission the tier finds the deepest ready tail past the L1
   prefix (first finishing its writes if it was evicted moments ago) and
   streams the blocks past the KV still in L1, then the tail, through a host
@@ -500,12 +501,18 @@ class SsdTier:
         conversation resumes from them, so an interior snapshot (a prompt's end,
         a chunk checkpoint) is not worth its copy. True keeps the leaf SSD-only.
 
-        While serving, eviction never waits for the writers: when the staging
-        buffer cannot take the leaf's copies now, the leaf is dropped as it would
+        While serving, eviction never waits to copy blocks: when the staging
+        buffer cannot take the leaf's blocks now, the leaf is dropped as it would
         be without the tier (counted in `evict_dropped`). Waiting there stalls
         every running request behind fdatasyncs, which costs more than the
-        prefix is worth when the cache is under that much pressure. Shutdown
-        (`patient`) waits instead, so every cached prefix is persisted."""
+        prefix is worth when the cache is under that much pressure. It does wait
+        for room for a tail, at most for the writes already in flight: without
+        its tail no turn can resume from the prefix, so each ancestor would in
+        turn need a tail of its own and be dropped with blocks already stored,
+        and the next turn would prefill all of it again. Background backups keep
+        the staging buffer full while long prompts are in flight, so a tail
+        rarely finds room at once. Shutdown (`patient`) waits for blocks too, so
+        every cached prefix is persisted."""
         t0 = time.perf_counter()
         end = leaf.depth
         missing, node = end // self.block, leaf
@@ -527,7 +534,7 @@ class SsdTier:
             self.queue.extendleft(reversed([(leaf.parent, e, h, p) for _, e, h, p in pending[done:] if e <= start]))
         written = leaf.tail is not None and leaf.tail.nbytes >= 0  # written through already: its snapshot may be gone
         due = not leaf.children and leaf.snapshot_slot is not None and end >= self.min_tokens
-        keep = copied and (written or (due and self._write_tail(leaf, end, wait=wait)))
+        keep = copied and (written or (due and self._write_tail(leaf, end, wait=True)))
         if not keep and (written or due):
             self.evict_dropped += 1
         if not keep and not leaf.children:
