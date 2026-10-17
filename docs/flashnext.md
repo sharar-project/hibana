@@ -65,9 +65,10 @@ runs unchanged.
 
 Decode and verification replay CUDA graphs at every context length. Inside the budget the dense graphs run with
 graph-safe key maintenance; once any row is past it, a second set of graphs selects on the device
-(`kernels/qsa/selection.py` scores every visible group through the plan's page table in one Triton kernel and takes
-the top 512 of a fixed-width buffer), so no shape depends on the context. `SHARAR_QSA_SPARSE_GRAPHS=0` keeps
-rows past the budget eager.
+(`kernels/qsa/selection.py` scores every visible group through the plan's page table in one Triton kernel, takes
+the top 512 of a fixed-width buffer and assembles the pages in a second kernel), so no shape depends on the context.
+`SHARAR_QSA_SPARSE_GRAPHS=0` keeps rows past the budget eager. Eager prefill computes the forward's indexer layout
+once (`FlashNextIndexer._plan`) and ranks 256 rows per top-k.
 
 ## The MTP draft
 

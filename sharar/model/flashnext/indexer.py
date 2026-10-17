@@ -95,27 +95,23 @@ class FlashNextIndexer:
         aux = ctx.kv_pool.page_aux[self.name]
         qk = F.linear(x, self.qk)
         aux[token_pages.long(), 0] = qk[:, h * d:]
-        seqs = ctx.extras.qsa_seqs
-        self._compress(aux, seqs, x.device, x.dtype)
-        if all(first + n - 1 < self.width for first, n, _ in seqs):
+        plan = self._plan(ctx.extras, x.device)
+        self._compress(aux, ctx.extras.qsa_seqs, x.device, x.dtype, plan)
+        if plan["dense"]:
             return None
-        table = torch.cat([pages.to(torch.int32) for _, _, pages in seqs])
-        indptr = torch.tensor([0] + [len(pages) for _, _, pages in seqs], dtype=torch.int64).cumsum(0)
-        base = torch.repeat_interleave(indptr[:-1], torch.tensor([n for _, n, _ in seqs])).to(device=x.device, dtype=torch.int32)
-        gcap = max((first + n) // self.ratio for first, n, _ in seqs)
-        parts = [self.select(qk[a:a + 256], ctx.positions[a:a + 256], aux, table, base[a:a + 256], gcap)
-                 for a in range(0, x.shape[0], 256)]  # [rows, groups] scores in row chunks
-        return torch.cat([p for p, _ in parts]), torch.cat([c for _, c in parts])
+        # scores and top-k in chunks of 256 rows (a bounded score buffer); the queries' norm and rotation, and the
+        # selection after the top-k, for every row at once (row by row the same bits)
+        return self.select(qk, ctx.positions, aux, plan["table"], plan["base"], plan["gcap"], chunk=256)
 
     def select(self, qk: torch.Tensor, positions: torch.Tensor, aux: torch.Tensor, table: torch.Tensor, base: torch.Tensor,
-               gcap: int) -> tuple[torch.Tensor, torch.Tensor]:
+               gcap: int, chunk: int | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """Selection for rows at `positions` from their index projections `qk`; `base` is each
         row's offset in the flat page `table`, `gcap` the groups the widest row may see."""
         from sharar.kernels.qsa.selection import select_pages
         t, h, d = qk.shape[0], self.heads, self.dim
         q = gemma_rms(qk[:, : h * d].reshape(t, h, d), self.q_norm, self.eps)
         q = rope_neox(q, positions, self.rotary_dim, self.theta)
-        return select_pages(q, aux, table, base, positions, self.ratio, self.budget, gcap, d ** -0.5)
+        return select_pages(q, aux, table, base, positions, self.ratio, self.budget, gcap, d ** -0.5, chunk)
 
     def maintain(self, x: torch.Tensor, ctx, token_pages: torch.Tensor) -> torch.Tensor:
         """Graph-safe key maintenance: store every row's raw key and compress every
@@ -173,13 +169,43 @@ class FlashNextIndexer:
         writes = torch.where(flat[:, ratio + 1] != 0, selected[:, ratio], torch.zeros_like(selected[:, ratio]))
         return selected[:, :ratio].to(torch.int32), writes.to(torch.int32)
 
-    def _compress(self, aux, seqs, device, dtype) -> None:
+    def _plan(self, side, device) -> dict:
+        """The forward's indexer layout, the same for every attention layer: computed by the first and kept on the side
+        inputs. The group completions (`_groups`) and the selection's page table."""
+        plan = getattr(side, "_qsa_plan", None)
+        if plan is not None:
+            return plan
+        seqs, r = side.qsa_seqs, self.ratio
+        plan = self._groups(seqs, device)
+        plan["dense"] = all(first + n - 1 < self.width for first, n, _ in seqs)
+        if not plan["dense"]:
+            plan["table"] = seqs[0][2].to(torch.int32) if len(seqs) == 1 else torch.cat([p.to(torch.int32) for _, _, p in seqs])
+            indptr = torch.tensor([0] + [len(p) for _, _, p in seqs], dtype=torch.int64).cumsum(0)
+            plan["base"] = torch.repeat_interleave(indptr[:-1], torch.tensor([n for _, n, _ in seqs])).to(device=device, dtype=torch.int32)
+            plan["gcap"] = max((first + n) // r for first, n, _ in seqs)
+        side._qsa_plan = plan
+        return plan
+
+    def _groups(self, seqs, device) -> dict:
+        """The groups the sequences' new tokens complete: their member pages [G, ratio] (one gather, indices from the
+        host) and first positions [G], or members None."""
+        import numpy as np
         r = self.ratio
-        ends = [(p, s) for s, (first, n, _) in enumerate(seqs) for p in range(first, first + n) if p % r == r - 1]
-        if not ends:
+        pages = seqs[0][2] if len(seqs) == 1 else torch.cat([p for _, _, p in seqs])
+        offsets = np.cumsum([0] + [len(p) for _, _, p in seqs[:-1]])
+        ends = [np.arange(first + (r - 1 - first) % r, first + n, r, dtype=np.int64) for first, n, _ in seqs]
+        index = np.concatenate([o + e[:, None] - np.arange(r - 1, -1, -1) for o, e in zip(offsets, ends)])
+        if not index.shape[0]:
+            return {"members": None}
+        return {"members": pages[torch.from_numpy(index).to(device)].long(),
+                "first": torch.from_numpy(np.concatenate(ends) - (r - 1)).to(device)}
+
+    def _compress(self, aux, seqs, device, dtype, groups: dict | None = None) -> None:
+        """Write the compressed key of every group the sequences' new tokens complete; `groups`: `_groups(seqs)`."""
+        groups = groups if groups is not None else self._groups(seqs, device)
+        members = groups["members"]
+        if members is None:
             return
-        members = torch.cat([seqs[s][2][p - r + 1:p + 1].long().unsqueeze(0) for p, s in ends])  # [G, ratio] pages
         keys = aux[members, 0].float().mean(dim=1).to(dtype)  # FP32 mean, stored in the activation dtype
         keys = gemma_rms(keys.unsqueeze(1), self.k_norm, self.eps)
-        first_positions = torch.tensor([p - r + 1 for p, _ in ends], dtype=torch.int64, device=device)
-        aux[members[:, -1], 1] = rope_neox(keys, first_positions, self.rotary_dim, self.theta)[:, 0]
+        aux[members[:, -1], 1] = rope_neox(keys, groups["first"], self.rotary_dim, self.theta)[:, 0]

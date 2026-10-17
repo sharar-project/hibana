@@ -918,14 +918,15 @@ std::vector<torch::Tensor> quant_groups(torch::Tensor x) {
 // Routed experts in the three-bit format for x [M, 2560] bf16, ids [M, k] int32, weights [M, k] fp32 (k <= 10) -> bf16
 // [M, 2560] (the routed sum; no shared expert). The weights hold experts e_lo .. e_lo + E - 1 (all 512, or one
 // rank's range under expert parallelism): pairs routed elsewhere are skipped, and the result is this rank's partial
-// sum. `wide_rows`: from this many rows each pass of up to kWide pairs gets its own block (`gemm_pass_kernel`; the same bits).
+// sum. With `pairs`, the FP32 output of every (row, k) pair [M * k, 2560] instead, unsummed (rows of pairs routed
+// elsewhere are not written). `wide_rows`: from this many rows each pass of up to kWide pairs gets its own block (`gemm_pass_kernel`; the same bits).
 // `order`: when there are more than 640 pairs, this rank's pairs stably sorted by expert first (int32 [M * k],
 // the others after them), else empty (the prep kernel sorts them). An id outside e_lo .. e_lo + E - 1 (another rank's
 // expert, or 512 and above: none) adds no pair, whatever its weight.
 torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, torch::Tensor order,
                      torch::Tensor planes13, torch::Tensor scales13, torch::Tensor row13,
                      torch::Tensor planes2, torch::Tensor scales2, torch::Tensor row2, int64_t lut, int64_t e_lo,
-                     int64_t wide_rows) {
+                     int64_t wide_rows, bool pairs) {
   using namespace moe;
   const int M = x.size(0), topk = ids.dim() == 2 ? ids.size(1) : 0, P = M * topk;
   TORCH_CHECK(M >= 1, "w3_moe: no rows");
@@ -974,6 +975,10 @@ torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, 
   } else {
     gemm_kernel<true, 4><<<dim3(2 * kI / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
     gemm_kernel<false, 4><<<dim3(kH / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
+  }
+  if (pairs) {  // the caller sums them (flashnext_fused.moe_combine_pairs: this combine's arithmetic, fused with the next step)
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    return y;
   }
   combine_kernel<<<(M * kH + 255) / 256, 256, 0, stream>>>(p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();

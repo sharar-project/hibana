@@ -230,3 +230,70 @@ def test_selecting_graph_matches_the_eager_selection():
         assert torch.equal(out_counts, want_counts), f"step {step}"
         for i in range(b):
             assert torch.equal(out_pages[i].sort().values, want_pages[i].sort().values), f"step {step} row {i}"
+
+
+@pytest.mark.parametrize("rows,chunk", [(1000, 256), (4096, 256), (300, 256), (256, 256)])
+@pytest.mark.parametrize("ties", [False, True])
+def test_chunked_selection_is_the_selection_per_chunk(rows, chunk, ties):
+    """`select_pages(..., chunk=c)`: the top-k per c rows, the rest at once; exactly the concatenation of calls on c rows
+    each, in order (ties included: rows whose scores are mostly relu zeros)."""
+    from sharar.kernels.qsa.selection import select_pages
+    g = torch.Generator(device="cuda").manual_seed(3)
+    ratio, dev, budget, length = 4, torch.device("cuda"), 2048, 12000
+    aux = torch.randn(length + 100, 2, 128, generator=g, device=dev).to(torch.bfloat16)
+    if ties:
+        aux[:, 1] = aux[:, 1].abs()
+    table = torch.randperm(length + 100, generator=g, device=dev)[:length].to(torch.int32)
+    q = torch.randn(rows, 4, 128, generator=g, device=dev).to(torch.bfloat16)
+    if ties:
+        q = -q.abs()  # every score relu(negative) = 0 but where a key component flips the sign
+        q[::5] = q[::5].abs()
+    positions = torch.arange(length - rows, length, device=dev)
+    base = torch.zeros(rows, dtype=torch.int32, device=dev)
+    gcap = length // ratio
+    got, counts = select_pages(q, aux, table, base, positions, ratio, budget, gcap, 128 ** -0.5, chunk=chunk)
+    parts = [select_pages(q[a:a + chunk], aux, table, base[a:a + chunk], positions[a:a + chunk], ratio, budget, gcap, 128 ** -0.5)
+             for a in range(0, rows, chunk)]
+    assert torch.equal(got, torch.cat([p for p, _ in parts])) and torch.equal(counts, torch.cat([c for _, c in parts]))
+
+
+def _assemble_reference(values, idx, positions, base, table, ratio, width):
+    """The torch assembly the kernel replaced: chosen groups' tokens, the pending tail, valid first (stable), as pages."""
+    rows, top, device = values.shape[0], values.shape[1], values.device
+    positions = positions.long()
+    sel = torch.full((rows, width), -1, dtype=torch.int64, device=device)
+    if top:
+        chosen = torch.where(torch.isfinite(values), idx, torch.full_like(idx, -1))
+        members = chosen.unsqueeze(-1) * ratio + torch.arange(ratio, device=device)
+        sel[:, : top * ratio] = torch.where(chosen.unsqueeze(-1) >= 0, members, torch.full_like(members, -1)).reshape(rows, top * ratio)
+    visible = (positions + 1) // ratio
+    tail = (visible * ratio).unsqueeze(1) + torch.arange(ratio - 1, device=device)
+    sel[:, width - (ratio - 1):] = torch.where(tail <= positions.unsqueeze(1), tail, torch.full_like(tail, -1))
+    sel = sel.gather(1, torch.argsort((sel < 0).to(torch.int8), dim=1, stable=True))
+    pages = torch.where(sel >= 0, table[(base.long().unsqueeze(1) + sel.clamp_min(0))].long(), torch.full_like(sel, -1)).to(torch.int32)
+    return pages, (pages >= 0).sum(1, dtype=torch.int32)
+
+
+@pytest.mark.parametrize("budget,length,rows", [(2048, 2100, 64), (2048, 9000, 300), (2048, 40000, 256), (64, 600, 40), (64, 70, 7), (2048, 2055, 9)])
+@pytest.mark.parametrize("ties", [False, True])
+def test_assembly_kernel_is_the_torch_assembly(budget, length, rows, ties):
+    """Pages and counts in exactly the torch assembly's order, from the same top-k: rows near the budget (groups
+    scoring -inf), relu-zero ties, a nonzero base offset and every tail length."""
+    from sharar.kernels.qsa.selection import score_groups, select_pages
+    g = torch.Generator(device="cuda").manual_seed(4)
+    ratio, dev = 4, torch.device("cuda")
+    aux = torch.randn(length + 50, 2, 128, generator=g, device=dev).to(torch.bfloat16)
+    if ties:
+        aux[:, 1] = aux[:, 1].abs()
+    table = torch.cat([torch.zeros(5, dtype=torch.int32, device=dev), torch.randperm(length + 50, generator=g, device=dev)[:length].to(torch.int32)])
+    q = torch.randn(rows, 4, 128, generator=g, device=dev).to(torch.bfloat16)
+    if ties:
+        q = -q.abs()
+    positions = torch.arange(length - rows, length, device=dev)
+    base = torch.full((rows,), 5, dtype=torch.int32, device=dev)
+    gcap = length // ratio + 3
+    top = min(budget // ratio, gcap)
+    values, idx = score_groups(q, aux, table, base, positions, ratio, gcap, 128 ** -0.5).topk(top, dim=-1)
+    want, want_counts = _assemble_reference(values, idx, positions, base, table, ratio, budget + ratio - 1)
+    got, counts = select_pages(q, aux, table, base, positions, ratio, budget, gcap, 128 ** -0.5)
+    assert torch.equal(got, want) and torch.equal(counts, want_counts)

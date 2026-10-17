@@ -229,6 +229,8 @@ class PleLayer:
             self.resident = ResidentRows(self.table, self.offsets, self.vocab_sizes, tp.rank, tp.size, device)
         self.state_len = (self.kernel - 1) * self.ngram  # conv window rows kept per sequence
         self._scratch: torch.Tensor | None = None  # stand-alone (no pool) window
+        self._pinned: torch.Tensor | None = None  # prefill rows' staging (`device_rows`), and the event of its last upload
+        self._uploaded = None
 
     @property
     def bytes(self) -> int:
@@ -278,7 +280,18 @@ class PleLayer:
         resident shares when they hold the table, else the host gather and an upload."""
         if self.resident is not None:
             return self.resident.gather(ids)
-        return torch.from_numpy(self.table.gather(ids.numpy())).to(self.device, non_blocking=False)
+        if self.device.type != "cuda" or ids.numel() < 4096:  # decode and verification rows: a few KB
+            return torch.from_numpy(self.table.gather(ids.numpy())).to(self.device, non_blocking=False)
+        # prefill: gathered into pinned memory, one fast upload (from pageable memory it took ~8 ms per 4K chunk)
+        n = ids.numel()
+        if self._pinned is None or self._pinned.shape[0] < n:
+            self._pinned, self._uploaded = torch.empty((n, ROW_BYTES), dtype=torch.uint8, pin_memory=True), torch.cuda.Event()
+        else:
+            self._uploaded.synchronize()  # the previous upload has read the buffer
+        self.table.gather(ids.numpy(), out=self._pinned[:n].numpy())
+        rows = self._pinned[:n].to(self.device, non_blocking=True).view(*ids.shape, ROW_BYTES)
+        self._uploaded.record()
+        return rows
 
     # ---- state ----
     STATE_NAME = "ple_conv"

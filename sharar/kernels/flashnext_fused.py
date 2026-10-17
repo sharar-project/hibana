@@ -103,6 +103,41 @@ def inject_combine(hyper: torch.Tensor, block: torch.Tensor, inj: torch.Tensor, 
     return y
 
 
+# ---- residual injection, then the next hyper-connection's grouped norm of its result (one pass) ----
+@triton.jit
+def _inject_norm_kernel(R, B, I, Y, W, N, Amax, stride_r, stride_b, stride_i, stride_y, stride_n, H: tl.constexpr, eps,
+                        BLOCK: tl.constexpr):
+    t = tl.program_id(0)
+    s = tl.program_id(1)
+    cols = tl.arange(0, BLOCK)
+    mask = cols < H
+    off = s * H + cols
+    g = 2.0 * _sigmoid(tl.load(I + t * stride_i + s).to(tl.float32))
+    r = tl.load(R + t * stride_r + off, mask=mask, other=0.0).to(tl.float32)
+    b = tl.load(B + t * stride_b + cols, mask=mask, other=0.0).to(tl.float32)
+    hb = (r + b * g).to(tl.bfloat16)
+    tl.store(Y + t * stride_y + off, hb, mask=mask)
+    # `_grouped_norm_kernel` on the stored values: the same block, warps and reduction, so the same bits
+    x = hb.to(tl.float32)
+    var = tl.sum(x * x, 0) / H
+    w = tl.load(W + off, mask=mask, other=0.0).to(tl.float32)
+    yb = (x * tl.rsqrt(var + eps) * (1.0 + w)).to(tl.bfloat16)
+    tl.store(N + t * stride_n + off, yb, mask=mask)
+    tl.store(Amax + t * tl.num_programs(1) + s, tl.max(tl.where(mask, tl.abs(yb.to(tl.float32)), 0.0), 0))
+
+
+def inject_combine_norm(hyper: torch.Tensor, block: torch.Tensor, inj: torch.Tensor, hc: int, hidden: int, weight: torch.Tensor, eps: float):
+    """`inject_combine`, then `grouped_gemma_rms(..., amax=True)` of its result with `weight`, in one pass (the
+    result is not read back): -> (hyper', normed, block maxima), each bitwise the two kernels'."""
+    t = hyper.shape[0]
+    y = torch.empty_like(hyper)
+    normed = torch.empty_like(hyper)
+    parts = torch.empty((t * hc,), dtype=torch.float32, device=hyper.device)
+    _inject_norm_kernel[(t, hc)](hyper, block, inj, y, weight, normed, parts, hyper.stride(0), block.stride(0), inj.stride(0),
+                                 y.stride(0), normed.stride(0), hidden, eps, BLOCK=triton.next_power_of_2(hidden), num_warps=8)
+    return y, normed, parts
+
+
 # ---- per-tensor dynamic FP8 for a few rows: one program, two passes; also alpha = scale * wscale ----
 @triton.jit
 def _quant_small_kernel(X, Y, Scale, Alpha, WScale, N: tl.constexpr, BLOCK: tl.constexpr):
@@ -308,6 +343,45 @@ def moe_combine(routed: torch.Tensor, shared: torch.Tensor, x: torch.Tensor, gat
     blk = 1024
     _moe_combine_kernel[(t, triton.cdiv(h, blk))](routed, shared, x, gate_w, y, routed.stride(0), shared.stride(0), x.stride(0), y.stride(0), h, BLOCK=blk, DBLOCK=1024)
     return y
+
+
+# ---- the 3-bit experts' routed sum + MoE combine: `w3_moe`'s combine, then `moe_combine`, in one pass ----
+@triton.jit
+def _moe_combine_pairs_kernel(Yp, Ids, Wt, S, X, G, Y, e_lo, e_n, stride_yp, stride_s, stride_x, stride_y, H: tl.constexpr,
+                              TOPK: tl.constexpr, BLOCK: tl.constexpr, DBLOCK: tl.constexpr):
+    t = tl.program_id(0)
+    dot = tl.zeros([DBLOCK], dtype=tl.float32)
+    for start in tl.static_range(0, H, DBLOCK):
+        i = start + tl.arange(0, DBLOCK)
+        dot += tl.load(X + t * stride_x + i, mask=i < H, other=0.0).to(tl.float32) * tl.load(G + i, mask=i < H, other=0.0).to(tl.float32)
+    g = _sigmoid(tl.sum(dot, 0))
+    cols = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
+    mask = cols < H
+    # csrc/w3_gemm.cu's combine_kernel: v += w_k * y_k over this rank's pairs in slot order, one FMA each (it is
+    # compiled with contraction), rounded to BF16 once
+    v = tl.zeros([BLOCK], dtype=tl.float32)
+    for k in tl.static_range(TOPK):
+        e = tl.load(Ids + t * TOPK + k) - e_lo
+        if (e >= 0) & (e < e_n):
+            yk = tl.load(Yp + (t * TOPK + k).to(tl.int64) * stride_yp + cols, mask=mask, other=0.0)
+            v = tl.fma(tl.full([BLOCK], 0.0, tl.float32) + tl.load(Wt + t * TOPK + k), yk, v)
+    r = v.to(tl.bfloat16).to(tl.float32)
+    s = tl.load(S + t * stride_s + cols, mask=mask, other=0.0).to(tl.float32)
+    tl.store(Y + t * stride_y + cols, (r + g * s).to(tl.bfloat16), mask=mask)
+
+
+def moe_combine_pairs(y: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor, shared: torch.Tensor, x: torch.Tensor, gate_w: torch.Tensor,
+                      e_lo: int = 0, e_n: int = 512) -> torch.Tensor:
+    """`moe_combine(w3_moe(...), shared, x, gate_w)` from `w3_moe(..., pairs=True)`'s FP32 pair outputs y [m*topk, H], bit
+    for bit, without writing the routed sum: ids int32 / weights fp32 [m, topk]; pairs whose expert is outside
+    e_lo .. e_lo + e_n - 1 add nothing."""
+    m, topk = ids.shape
+    h = y.shape[1]
+    out = torch.empty((m, h), dtype=torch.bfloat16, device=y.device)
+    blk = 1024
+    _moe_combine_pairs_kernel[(m, triton.cdiv(h, blk))](y, ids, weights.contiguous(), shared, x, gate_w, out, e_lo, e_n, y.stride(0), shared.stride(0),
+                                                        x.stride(0), out.stride(0), h, topk, BLOCK=blk, DBLOCK=1024)
+    return out
 
 
 # ---- routed sum + MoE combine: out = bf16(sum_k w_k * y_k) + sigmoid(x . g) * shared (the MTP head's experts) ----
