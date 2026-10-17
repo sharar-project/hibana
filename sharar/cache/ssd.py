@@ -554,13 +554,15 @@ class SsdTier:
         """Copy out queued blocks, those of one path in one gather, as many as the staging limit (or `limit`, below
         it) takes, waiting for room with `wait`. Returns how many of items are done (copied, or no longer needing
         it): a prefix."""
-        live = []  # (position in items, item, owner, ref)
+        live, seen = [], set()  # (position in items, item, owner, ref); a block queued twice goes out once
         for i, item in enumerate(items):
             anchor, end, h, _ = item
             owner = self._owner(anchor, end)
             ref = owner.blocks.get(end)
-            if not (ref is None or ref.key != h.hex() or ref.nbytes < 0 or ref.ready or ("kv", ref.key) in self.inflight):
+            if not (ref is None or ref.key != h.hex() or ref.nbytes < 0 or ref.ready or ("kv", ref.key) in self.inflight
+                    or ref.key in seen):
                 live.append((i, item, owner, ref))
+                seen.add(ref.key)
         cost, j = self._block_charge(), 0
         cap = self.staging_bytes if limit is None else limit
         while j < len(live):
@@ -570,6 +572,7 @@ class SsdTier:
             if fit == 0:
                 if not wait:
                     return live[j][0]
+                got = one = segs = packed = None  # the last batch's host copies are the writers' now: room counts them gone
                 self._room(cost, True)
                 continue
             batch, j = live[j:j + fit], j + fit

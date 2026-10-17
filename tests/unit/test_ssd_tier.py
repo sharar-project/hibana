@@ -253,6 +253,18 @@ def test_a_failed_tail_write_removes_the_unrestorable_leaf(tmp_path, monkeypatch
 LONG = list(range(5000, 5000 + 6 * BLOCK + 11))  # six full blocks and an 11-token tail
 
 
+def test_a_block_queued_twice_is_written_once(tmp_path):
+    """The disk budget's clearing of GPU-resident copies, then a re-queue, can leave one block in the queue twice."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    release(cache, tier, kv, sp, feats, IDS, seed=9)
+    tier.queue.extend(list(tier.queue))
+    tier.step(cache)
+    assert tier.backed_blocks == 2 and len(tier.inflight) == 2
+    assert tier.staged == sum(n for _, n in tier.inflight.values())
+    settle(cache, tier)
+    assert tier.store.writes == 2 and all(r.ready for r in blocks_of(cache))
+
+
 def test_a_prefill_step_backs_up_past_the_decode_step_budget_and_leaves_room_for_a_tail(tmp_path):
     """A decode step gathers `step_bytes`; a prefill step gathers what the staging limit takes, less one tail's room."""
     cache, tier, kv, sp, feats = engine(tmp_path)
