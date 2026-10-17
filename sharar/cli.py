@@ -183,7 +183,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request (default 262144)")
     p.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: the profile's)")
     p.add_argument("--traces", action="store_true", help="record each request's token IDs and speculative rounds (SHARAR_TRACES, else $SHARAR_RESULTS/traces)")
-    p.add_argument("--no-sessions", action="store_true", help=argparse.SUPPRESS)  # the session store is gone; accepted for old scripts
     p.add_argument("--draft", default=None, help="serve this DFlash2 checkpoint directory instead of the publisher's draft")
     p.add_argument("--proposer", choices=("mtp", "dflash2"), default=None, help=argparse.SUPPRESS)
     p.add_argument("--spec", type=int, default=None, help=argparse.SUPPRESS)

@@ -6,10 +6,8 @@ from sharar.cache.kv_pool import KvPool
 from sharar.model.flashnext.attention import FlashNextAttention
 from sharar.model.flashnext.indexer import FlashNextIndexer
 from sharar.model.flashnext.linear import TrunkLinear
-from sharar.model.flashnext.reference import gemma_rms, rope_neox
 from sharar.model.norm import GemmaRMSNorm
 from sharar.model.rope import PartialRotary
-from sharar.kernels.qsa import sparse_attention
 from sharar.target import FLASHNEXT
 
 

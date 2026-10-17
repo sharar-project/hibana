@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -88,7 +87,6 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
 
 
 DEFAULT_CONTEXT = 262144
-GUARD_FLOOR_GIB = 16.0
 
 
 def target_name(name: str | None) -> str:
@@ -221,9 +219,6 @@ class Settings:
         return args
 
 
-_WARNED: set[str] = set()  # removed settings already warned about in this process
-
-
 def _check(cond: bool, message: str) -> None:
     if not cond:
         raise ValueError(message)
@@ -276,13 +271,6 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(values.get("SHARAR_PLE_RESIDENT", "auto") in ("auto", "0"), "SHARAR_PLE_RESIDENT must be auto or 0")
     _check(values.get("SHARAR_SSM_STATE", "fp32") in ("fp32", "int8", "int4"), "SHARAR_SSM_STATE must be fp32, int8 or int4")
     _check(values.get("SHARAR_DRAFT_VOCAB", "0").isdigit(), "SHARAR_DRAFT_VOCAB must be a row count (0 = the full lm_head)")
-    for old, why in (("SHARAR_COLD_TIER_GIB", "the GPU pools take that memory; SHARAR_SSD=1 keeps evicted prefixes on the NVMe"),
-                     ("SHARAR_SESSION_DIR", "SHARAR_SSD=1 turns the SSD tier on, in $SHARAR_RESULTS/ssd (SHARAR_SSD_DIR moves it)"),
-                     ("SHARAR_SESSION_GIB", "the SSD tier's capacity is SHARAR_SSD_GIB"),
-                     ("SHARAR_SESSION_MIN_TOKENS", "the SSD tier stores prefixes of 4,096 tokens or more")):
-        if values.get(old) and old not in _WARNED:  # a warning, not an error: `sharar stop` must work with an old config
-            _WARNED.add(old)
-            print(f"sharar: {old} was removed and is ignored ({why})", file=sys.stderr)
     _check(values.get("SHARAR_SSD", "0") in ("0", "1"), "SHARAR_SSD must be 0 or 1")
     block = values.get("SHARAR_SSD_BLOCK_TOKENS", "256")
     _check(block.isdigit() and int(block) > 0 and 2048 % int(block) == 0, "SHARAR_SSD_BLOCK_TOKENS must divide 2048")

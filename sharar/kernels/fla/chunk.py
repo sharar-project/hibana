@@ -19,7 +19,6 @@ from sharar.kernels.fla.utils import (
     SUPPRESS_LEVEL,
     autocast_custom_fwd,
     input_guard,
-    is_intel,
 )
 
 
@@ -100,9 +99,6 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
         chunk_indices: torch.Tensor | None = None,
         chunk_offsets: torch.Tensor | None = None,
     ):
-        q_orig = q
-        k_orig = k
-
         if use_qk_l2norm_in_kernel:
             q = l2norm_fwd(q)
             k = l2norm_fwd(k)

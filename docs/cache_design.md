@@ -127,7 +127,7 @@ instead of 2-5 ms. One restore runs at a time (they share the buffer and the dri
 waits for it. A restore that landed keeps its path locked until its request is admitted, so eviction cannot take it
 first. On two Sparks each rank reads its own heads, and the ranks agree each step whether every rank's reads have
 landed before either imports the state (one integer all-reduce per step while a restore is in flight).
-`SHARAR_SSD_ASYNC=0` restores with the engine waiting, as before. The chunk size, not the context,
+The chunk size, not the context,
 bounds the buffer, so the pool plan reserves a constant for it (`SsdTier.memory_bound`).
 
 ## What a restore costs

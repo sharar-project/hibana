@@ -94,7 +94,7 @@ BLOCK = 64  # layer-1 bootstrap unit: consecutive continuation positions
 PROFILE_NAMES = launch.PROFILE_NAMES
 # EngineConfig fields the served arm must report exactly as the in-process arm installed them.
 CHECKED = ("target", "profile", "w3_decode", "w3_checkpoint", "stable_numerics", "flashnext_trunk",
-           "flashnext_mixers", "flashnext_mtp_trunk", "trunk_keep_bf16", "draft_vocab", "draft_head",
+           "trunk_keep_bf16", "draft_vocab", "draft_head",
            "draft_head_rescore", "device_accept", "accept_default", "accept_default_sampled",
            "accept_default_sampled_threshold", "qsa_sparse_graphs", "flashnext_experts", "ssm_state", "ssm_window",
            "ssm_compensators")

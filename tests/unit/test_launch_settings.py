@@ -173,7 +173,7 @@ def test_the_engine_gets_explicit_flags_and_its_environment(env, tmp_path):
     assert "--tp" in resolve(env, "27b", tp=2).engine_args(tp=2)
 
 
-def test_the_ssd_tier_settings_are_checked(env, tmp_path, capsys):
+def test_the_ssd_tier_settings_are_checked(env, tmp_path):
     """The SSD tier stores under the results directory, one store per target, on every Spark; the removed cold-tier
     and session-store settings are ignored with a warning, so `sharar stop` still works with an old config file."""
     s = resolve(env, "27b", overrides={"SHARAR_SSD": "1", "SHARAR_SSD_GIB": "50", "SHARAR_SSD_BLOCK_TOKENS": "1024"})
@@ -186,12 +186,6 @@ def test_the_ssd_tier_settings_are_checked(env, tmp_path, capsys):
                               ({"SHARAR_SSD_GIB": "lots"}, "number of GiB")):
         with pytest.raises(ValueError, match=message):
             resolve(env, "27b", overrides=override)
-    from sharar.launch import settings
-    settings._WARNED.clear()
-    for old in ("SHARAR_COLD_TIER_GIB", "SHARAR_SESSION_DIR", "SHARAR_SESSION_GIB", "SHARAR_SESSION_MIN_TOKENS"):
-        resolve(env, "27b", overrides={old: "8"})
-        resolve(env, "27b", overrides={old: "8"})
-        assert capsys.readouterr().err.count(f"{old} was removed and is ignored") == 1  # once per process
     two = resolve(env, "27b", overrides={"SHARAR_SSD": "1"}, tp=2)  # each rank stores on its own Spark, same path
     assert two.engine_env(None)["SHARAR_SSD_DIR"] == str(s.ssd) and "--tp" in two.engine_args(tp=2)
 

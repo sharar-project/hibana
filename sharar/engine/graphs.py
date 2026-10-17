@@ -12,6 +12,7 @@ replay (host side) and run() is inside the graph.
 from __future__ import annotations
 
 import dataclasses
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -19,6 +20,9 @@ from sharar.engine import graph_set
 from sharar.engine.context import ForwardContext
 from sharar.engine.contracts import FeatureRequest
 from sharar.engine.profile import ServingProfile
+
+if TYPE_CHECKING:
+    import flashinfer
 
 CAPTURE_SIZES = (1, 2, 4)
 

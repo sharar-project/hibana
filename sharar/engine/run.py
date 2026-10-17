@@ -25,10 +25,7 @@ def _load(graphs: bool = True, spec: int = 0) -> tuple[Qwen38, Executor, Snapsho
     if spec:
         from sharar.cache.spec_budget import SpecConfig
         spec_config = SpecConfig("mtp", spec, cfg.bench_verify_state, "bf16", None)  # reserve the verify/draft budget in the pool plan
-    max_context = cfg.bench_max_context or None  # smaller pools for large models
-    ex = Executor(model, log=print, spec_config=spec_config, max_context=max_context)  # a spec_config enables speculation itself
-    if cfg.commit_profile:
-        ex.state.commit_profile = {}
+    ex = Executor(model, log=print, spec_config=spec_config)  # a spec_config enables speculation itself
     if graphs:
         started = time.perf_counter()
         ex.capture_graphs()

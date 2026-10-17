@@ -16,7 +16,6 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from sharar.engine.config import current
 from sharar.model.flashnext.hyper import HyperConnection
 from sharar.model.flashnext.linear import TrunkLinear
 from sharar.model.mtp_layer import MtpLayer
@@ -39,8 +38,7 @@ class FlashNextMtpHead(MtpLayer):
         self.draft_head = VocabParallelHead(self.lm_head) if self.tensor_parallel else TargetHead(self.lm_head)
         self.hidden_size, self.hc = t.hidden_size, t.hc_count
         self.hidden_width = self.hc * self.hidden_size  # the "hidden" the proposer carries per row
-        # SHARAR_FLASHNEXT_MTP_TRUNK: the draft head's own precision, bf16 or fp8 (default: the trunk's).
-        precision = precision or current().flashnext_mtp_trunk or model.precision
+        precision = precision or model.precision  # the draft head's projections: the trunk's precision
         eps = t.rms_norm_eps
         g = lambda name: w.get(f"{PREFIX}.{name}").to(device)  # noqa: E731
         self.fc_e = TrunkLinear.from_bf16(g("fc_embedding.weight"), precision)
@@ -48,10 +46,9 @@ class FlashNextMtpHead(MtpLayer):
         self.norm_e = GemmaRMSNorm(g("pre_fc_norm_embedding.weight"), eps)
         self.norm_h = GemmaRMSNorm(g("pre_fc_norm_hidden.weight"), eps)  # over the whole hc*H vector
         p = f"{PREFIX}.layers.0"
-        mixers = current().flashnext_mixers
-        self.attn_hc = HyperConnection.load(w, f"{p}.attn_hyper_connection", self.hc, self.hidden_size, eps, device, precision=mixers)
-        self.mlp_hc = HyperConnection.load(w, f"{p}.mlp_hyper_connection", self.hc, self.hidden_size, eps, device, precision=mixers)
-        self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", self.hc, self.hidden_size, eps, device, combine=False, precision=mixers)
+        self.attn_hc = HyperConnection.load(w, f"{p}.attn_hyper_connection", self.hc, self.hidden_size, eps, device)
+        self.mlp_hc = HyperConnection.load(w, f"{p}.mlp_hyper_connection", self.hc, self.hidden_size, eps, device)
+        self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", self.hc, self.hidden_size, eps, device, combine=False)
         self._attention_setup(w, f"{p}.self_attn", device, t, model.rope, precision, num_pages, padding_rows)
         # Routed experts, fused [E, 2I, H] (gate rows then up rows) and [E, H, I]: stored FP8 with one
         # scale per expert matrix, upcast per token for the ten gathered experts (5.2 GB BF16 would not

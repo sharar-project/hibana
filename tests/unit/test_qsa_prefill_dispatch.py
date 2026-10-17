@@ -29,7 +29,6 @@ def test_prefill_scope(monkeypatch,mode,first,length,expected):
 
 def test_tp2_configuration_enables_sharded_attention(monkeypatch):
     from sharar.engine.config import EngineConfig,using
-    from sharar.model.flashnext.indexer import FlashNextIndexer
     import sharar.distributed as distributed
     monkeypatch.setattr(distributed,'get_tp_info',lambda:SimpleNamespace(size=2))
     monkeypatch.setattr('sharar.kernels.qsa.prefill.PrefillKernels',lambda table:table)
@@ -42,7 +41,6 @@ def test_tp2_configuration_enables_sharded_attention(monkeypatch):
 
 def test_stable_numerics_stays_original():
     from sharar.engine.config import EngineConfig,using
-    from sharar.model.flashnext.indexer import FlashNextIndexer
     ix=fake_indexer()
     with using(EngineConfig(qsa_prefill_backend='auto',stable_numerics=True)):
         ix.configure_prefill(SimpleNamespace(num_attention_heads=24,num_kv_heads=2,head_dim=256),None)
@@ -51,7 +49,6 @@ def test_stable_numerics_stays_original():
 
 def test_replicated_tp2_draft_stays_original(monkeypatch):
     from sharar.engine.config import EngineConfig,using
-    from sharar.model.flashnext.indexer import FlashNextIndexer
     import sharar.distributed as distributed
     monkeypatch.setattr(distributed,'get_tp_info',lambda:SimpleNamespace(size=2))
     ix=fake_indexer()
