@@ -126,6 +126,17 @@ def test_back_up_evict_and_restore_byte_exact(tmp_path):
     assert scalars_and_views[:2] == (3, 9) and torch.equal(scalars_and_views[2], feats["h"][2])
 
 
+def test_a_block_backup_describes_its_payload_as_its_views_would(tmp_path):
+    """Block backups take their header's segment spec from the cached payload layout, not from per-pool views."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    release(cache, tier, kv, sp, feats, IDS, seed=3)
+    (node,) = cache.root.children.values()
+    (_, segs, host), = tier._gather_spans(node, [(BLOCK, 2 * BLOCK)])
+    (_, none, packed), = tier._gather_spans(node, [(BLOCK, 2 * BLOCK)], views=False)
+    assert none is None and torch.equal(host, packed)
+    assert tier._payload(BLOCK)[3] == [[name, ssd._dtype_name(t), list(t.shape), t.numel() * t.element_size()] for name, t in segs]
+
+
 def test_restore_after_a_restart_from_the_headers_alone(tmp_path):
     cache, tier, kv, sp, feats = engine(tmp_path)
     before = release(cache, tier, kv, sp, feats, IDS, seed=2)

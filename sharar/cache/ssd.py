@@ -306,6 +306,7 @@ class SsdTier:
         tail = self.block * self._row + state_pool.bytes_per_slot + 32 * MIB
         self._staging = Staging(2 * max(self.chunk_bytes, _pad(tail)), device)
         self._layouts: dict = {}  # expected segment layouts by (kind, rows, aux counts); the pools' geometry is fixed
+        self._payloads: dict = {}  # payload layouts by row count (`_payload`)
         # asynchronous restores (`restore_async`): one at a time; a worker thread reads, the engine thread scatters
         self._worker = ThreadPoolExecutor(1, thread_name_prefix="sharar-ssd-restore")
         self._job: _Restore | None = None  # the restore in flight
@@ -454,23 +455,34 @@ class SsdTier:
         got = self._gather_spans(anchor, [(lo, hi)])
         return None if got is None else got[0]
 
-    def _gather_spans(self, anchor: Node, spans: list[tuple[int, int]]):
-        """For each (lo, hi) on anchor's path, all of one length: tokens, segments and the one host buffer they are
-        views of, laid out as the file's payload (each segment 256-byte aligned); each span goes out in one write. On
-        the GPU one launch writes every span's payload into its pinned buffer (`_RowCopy`); on the CPU each pool is
-        gathered once for all spans together. None if a span is no longer in L1."""
+    def _payload(self, rows: int):
+        """The file payload of `rows` rows of every pool: per pool (name, pool, offset, bytes), the padded total,
+        whether it has padding (zero, as a file has) and the header's segment spec. The pools' geometry is fixed, so
+        each row count is laid out once."""
+        got = self._payloads.get(rows)
+        if got is None:
+            layout, total = [], 0
+            for name, pool in self._kv_targets():
+                n = rows * pool[0].numel() * pool.element_size()
+                layout.append((name, pool, total, n))
+                total += _seg_pad(n)
+            spec = [[name, _dtype_name(pool), [rows, *pool.shape[1:]], n] for name, pool, _, n in layout]
+            got = self._payloads[rows] = (layout, total, any(n % SEG_ALIGN for *_, n in layout), spec)
+        return got
+
+    def _gather_spans(self, anchor: Node, spans: list[tuple[int, int]], views: bool = True):
+        """For each (lo, hi) on anchor's path, all of one length: tokens, segments (with `views`; else None) and the
+        one host buffer they are views of, laid out as the file's payload (`_payload`); each span goes out in one
+        write. On the GPU one launch writes every span's payload into its pinned buffer (`_RowCopy`); on the CPU each
+        pool is gathered once for all spans together. None if a span is no longer in L1."""
         lo, hi = min(a for a, _ in spans), max(b for _, b in spans)
         span = self._span(anchor, lo, hi)
         if span is None:
             return None
         tokens, pages = span
         rows = spans[0][1] - spans[0][0]
-        layout, total = [], 0
-        for name, pool in self._kv_targets():
-            n = rows * pool[0].numel() * pool.element_size()
-            layout.append((name, pool, total, n))
-            total += _seg_pad(n)
-        empty = torch.zeros if any(n % SEG_ALIGN for *_, n in layout) else torch.empty  # zero padding, as a file has
+        layout, total, padded, _ = self._payload(rows)
+        empty = torch.zeros if padded else torch.empty
         if self._copy is not None:
             hosts = [empty(total, dtype=torch.uint8, pin_memory=True) for _ in spans]
             self._copy.gather(pages, [a - lo for a, _ in spans], rows, [h.data_ptr() for h in hosts], [at for _, _, at, _ in layout])
@@ -486,16 +498,21 @@ class SsdTier:
                     dev[:, at:at + n].copy_(src.index_select(0, idx).view(len(spans), n))
             hosts = [_to_host(dev[i], False) for i in range(len(spans))]
         return [(tokens[a - lo:b - lo], [(name, host[at:at + n].view(pool.dtype).view(rows, *pool.shape[1:]))
-                                         for name, pool, at, n in layout], host) for (a, b), host in zip(spans, hosts)]
+                                         for name, pool, at, n in layout] if views else None, host)
+                for (a, b), host in zip(spans, hosts)]
 
     def _submit(self, kind: str, key: bytes, parent: bytes, start: int, tokens: list[int], segs, ref: SsdRef, scalars=None,
-                packed: torch.Tensor | None = None) -> None:
-        """Queue an object's write. `packed`: one host buffer holding every segment in payload layout (`_gather`)."""
+                packed: torch.Tensor | None = None, spec=None) -> None:
+        """Queue an object's write. `packed`: one host buffer holding every segment in payload layout (`_gather`),
+        described by `spec` (`_payload`) instead of `segs`."""
         ready = None
         if self.device.type == "cuda":
             ready = torch.cuda.Event(blocking=True)  # writers wait on it: sleep, don't spin a core each
             ready.record()
-        spec = [[name, _dtype_name(t), list(t.shape), t.numel() * t.element_size()] for name, t in segs]
+        if spec is None:
+            spec = [[name, _dtype_name(t), list(t.shape), t.numel() * t.element_size()] for name, t in segs]
+        else:
+            spec = [[name, dtype, list(shape), n] for name, dtype, shape, n in spec]  # each header owns its spec
         # the pinned memory the copies hold: the caching host allocator rounds each up to a power of two
         sizes = [packed.numel()] if packed is not None else [s[3] for s in spec]
         pinned = sum(_pinned(n) for n in sizes) if self.device.type == "cuda" else sum(sizes)
@@ -546,14 +563,16 @@ class SsdTier:
             for group in groups.values():
                 anchor = group[0][1][0]
                 with self._copying():
-                    got = self._gather_spans(anchor, [(e[1][1] - self.block, e[1][1]) for e in group])
+                    got = self._gather_spans(anchor, [(e[1][1] - self.block, e[1][1]) for e in group], views=False)
+                    spec = self._payload(self.block)[3]
                     for k, (_, (_, end, h, parent), owner, ref) in enumerate(group):
                         one = got[k] if got is not None else self._gather(anchor, end - self.block, end)
                         if one is None:  # part of the block left L1 while it sat in the queue: drop its ref
                             del owner.blocks[end]
                             continue
                         tokens, segs, packed = one
-                        self._submit("kv", h, parent, end - self.block, tokens, segs, ref, packed=packed)
+                        self._submit("kv", h, parent, end - self.block, tokens, segs, ref, packed=packed,
+                                     spec=spec if segs is None else None)
                         self.backed_blocks += 1
         return len(items)
 
