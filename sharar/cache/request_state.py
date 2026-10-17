@@ -174,7 +174,7 @@ class StateManager:
         finishes, so eviction finds them stored. A prompt's KV is final once it is prefilled, a drafter's stored pages
         included (`stored_pages`): decoding writes only the positions after it."""
         end = self.cache.backup_span(req.prefill_len) if self.cache is not None and req.cacheable else 0
-        if end <= req.prefix_len or req.prompt_node is not None:
+        if end <= req.prefix_len:
             return
         ids = req.prefill_ids[:end]
         owned = [-1] * req.prefix_len + req.page_ids

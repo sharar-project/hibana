@@ -3,9 +3,9 @@
 The tiered radix tree (`radix.py`) is the only record of what is on disk;
 `ssd_store.py` only stores objects. This module moves data between them:
 
-- Backup. A request's prompt enters the tree as soon as it is prefilled
-  (`StateManager.cache_prompt`), and its whole sequence once it finishes. Each
-  time, for at least `min_tokens`, `backup()` queues each of its full KV blocks
+- Backup. A request's prompt, in whole blocks, enters the tree as soon as it
+  is prefilled (`StateManager.cache_prompt`), and its whole sequence once it
+  finishes. Each time, for at least `min_tokens`, `backup()` queues each of its full KV blocks
   (`store.block` tokens) not yet stored, so a long prompt's blocks go out while
   the request decodes. At the finish it also queues the tails at the
   sequence's resume points (its end and its prompt's end) for a write-through:
@@ -298,7 +298,7 @@ class SsdTier:
         self.restore_seconds = 0.0
         self.evict_seconds = self.evict_max = self.settle_seconds = self.settle_max = 0.0  # the engine blocked on backups
         self.step_seconds = self.step_max = 0.0  # the engine thread in step(): completions, trimming, gathering copies
-        self.patient = False  # eviction waits for staging room (shutdown); serving drops a leaf it cannot copy at once
+        self.patient = False  # also wait for room to copy blocks (shutdown); serving drops a leaf whose blocks do not fit
         self.evict_dropped = 0  # leaves eviction dropped instead of waiting for the writers
         self.room_waits = self.room_wait_writes = 0  # waits for staging room, and the writes they waited for
         self.room_wait_seconds = self.room_wait_max = 0.0
@@ -334,9 +334,8 @@ class SsdTier:
         buffer's two halves (each chunk_bytes, or one whole tail object if that
         is larger: a block of KV and a snapshot), the backup staging (at least
         one whole object), the snapshot a tail gather copies and the copy
-        tables (`_RowCopy`). The context
-        length does not change it: restores stream through the halves chunk by
-        chunk."""
+        tables (`_RowCopy`). The context length does not change it: restores
+        stream through the halves chunk by chunk."""
         tail = block * (target.kv_bytes_per_token + extra_page_bytes) + target.state_bytes_per_slot + 32 * MIB  # + header, draft state
         return (2 * max(chunk_bytes, tail) + max(staging_bytes, tail) + target.state_bytes_per_slot
                 + _RowCopy.SLOTS * _RowCopy.SLOT_BYTES)
@@ -629,9 +628,10 @@ class SsdTier:
         conversation resumes from them, so an interior snapshot (a prompt's end,
         a chunk checkpoint) is not worth its copy. True keeps the leaf SSD-only.
 
-        While serving, eviction never waits to copy blocks: when the staging
-        buffer cannot take the leaf's blocks now, the leaf is dropped as it would
-        be without the tier (counted in `evict_dropped`). Waiting there stalls
+        While serving, eviction waits to copy blocks only for a leaf whose
+        SSD-only descendants need them: otherwise, when the staging buffer
+        cannot take the leaf's blocks now, the leaf is dropped as it would be
+        without the tier (counted in `evict_dropped`). Waiting there stalls
         every running request behind fdatasyncs, which costs more than the
         prefix is worth when the cache is under that much pressure. It does wait
         for room for a tail, at most for the writes already in flight: without
@@ -848,8 +848,8 @@ class SsdTier:
         takes while one is (seconds of compute they hide behind), and every one with `wait` (shutdown). Background
         blocks leave room for one tail, which eviction needs at once."""
         budget, spent, size = (self.staging_bytes if prefilling else self.step_bytes), 0, self._payload(self.block)[1]
-        room = self.staging_bytes - self._tail_room  # below a tail and a block, blocks go one at a time without it
-        limit = None if wait or room < self._block_charge() else room
+        room = self.staging_bytes - self._tail_room
+        limit = None if wait or room < self._block_charge() else room  # keep a tail's room only if a block fits beside it
         while self.through and (wait or spent < self.step_bytes):  # tails first: a dropped snapshot is gone
             node, end = self.through[0]
             if node.tail is not None and node.tail.nbytes >= 0:  # eviction wrote it meanwhile, or backup queued it twice

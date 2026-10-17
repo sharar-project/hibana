@@ -53,6 +53,8 @@ same prefix and its matching snapshot.
   round-robin. `checkpoint` may recycle only that request's older completed snapshots; destinations beyond
   `committed_len` are pending kernel writes and cannot be recycled. An exact prompt-end copy preserves the latest
   interior boundary needed by identical retries. `commit_prefill` publishes the successfully processed extent.
+- `cache_prompt`, with an SSD tier, moves the prompt's whole blocks past the matched prefix into the cache once it
+  is prefilled, locked for the request, and queues them for backup; `page_ids` marks those pages -1 (the cache's).
 - `reserve(requests, width)` attaches one disjoint pending reservation per request. `step_pages` borrows committed
   pages plus the reservation. Callers may write through these views; they do not acquire ownership.
 - `commit(req, count, ssm=..., conv=...)` copies the verify snapshot after input `count-1`, keeps exactly `count`
@@ -63,7 +65,8 @@ same prefix and its matching snapshot.
 - `retract` drops physical resources. Executor preserves emitted history, remaining budget, RNG and stream cursor,
   and replays that history on admission.
 - `release` is idempotent. It transfers a valid prefix into the cache or frees the request's suffix, slot and
-  checkpoints, then unlocks the borrowed prefix. A flush defers reclamation until the last loan returns.
+  checkpoints, then unlocks the borrowed prefix and the prompt `cache_prompt` locked (retract does too). A flush
+  defers reclamation until the last loan returns.
 
 When only recurrent capacity is exhausted, the radix cache can drop an unlocked interior snapshot and its draft
 metadata while keeping KV pages and newer resume points (`snapshot_evictions`); this returns a slot to the

@@ -4,7 +4,8 @@
 // segments). Two int64 tables describe a launch:
 //   pools [P, 2]:      each pool's address and row bytes (fixed for a tier, in device memory)
 //   objs  [n, 2 + P]:  per object its rows, the index of its first page in `pages`, then per pool the address of
-//                      its first row on the linear side (registered host memory the GPU reads in place)
+//                      its first row on the linear side (host memory the GPU reads or writes in place: the
+//                      registered restore buffer, or a backup's pinned payload)
 // Block (x, y) copies rows of object x / blocks_per_obj for pool y, one warp per row in 16-byte (or narrower)
 // words. The kernel touches only the pages `pages` lists.
 

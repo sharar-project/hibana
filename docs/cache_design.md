@@ -86,8 +86,8 @@ flipped byte or a torn write is a miss, never wrong KV. Startup also drops a fil
                                    │ completion ◄──────────────────────┘ SsdRef.ready = True
                                    ▼
  L1 pressure ──► evict LRU leaf ──► evicting(): copy its path's queued blocks if staging has room now, else drop
-                                   it (serving never waits to copy blocks; shutdown does); write its tail,
-                                   waiting for the writes in flight if staging has no room for it
+                                   it (serving waits for room only when SSD-only descendants need them; shutdown
+                                   always); write its tail, waiting for the oldest writes in flight to free room
                                    ──► demote: pages and slot freed, node stays (SSD-only)
                                    ▼
  next turn ──► match(): L1 prefix ends at depth d, a ready tail at depth D > d
@@ -120,9 +120,10 @@ request's snapshot is written at its end, where its conversation's next turn res
 request that regenerates from the same prompt may prefill its last turn again. A node whose descendants are already
 stored (a prompt's end, a chunk checkpoint) is demoted with its KV blocks and no snapshot. Writer threads write with
 O_DIRECT through a 16 MiB buffer each, or where the filesystem refuses O_DIRECT through the page cache, dropped
-after each file (`direct_writes` in `cache.ssd.store` says which). A prefix eviction cannot copy at once is dropped
-and counted in `evict_dropped`. A restart lists the stored prefixes again only for the same target revision, decode
-weights, geometry, recurrent-state format and prefill numerics, and deletes another format's at startup.
+after each file (`direct_writes` in `cache.ssd.store` says which). A prefix whose queued blocks eviction cannot
+copy at once is dropped and counted in `evict_dropped`; for its tail, eviction waits for room. A restart lists the
+stored prefixes again only for the same target revision, decode weights, geometry, recurrent-state format and
+prefill numerics, and deletes another format's at startup.
 `cache.ssd` in `/get_server_info` reports usage, restores and read GB/s; `sharar cache` shows what the tier holds.
 
 ## Restore pipeline
