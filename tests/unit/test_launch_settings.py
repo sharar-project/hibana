@@ -268,3 +268,17 @@ def test_flashnext_expert_selection_per_profile(profile, tp, keep, reuse, budget
     Sparks keep 5 + reuse 5; `exact` routes in full."""
     d = launch.profile_defaults(profile, "flashnext", tp=tp)
     assert (d.get("SHARAR_MOE_KEEP"), d.get("SHARAR_MOE_REUSE"), d.get("SHARAR_MOE_BUDGET")) == (keep, reuse, budget)
+
+
+def test_moe_budget_setting_and_guarantee():
+    from sharar.engine.config import EngineConfig
+    from sharar.model.flashnext.moe import MoeLayer
+    assert (EngineConfig.from_env({"SHARAR_MOE_BUDGET": "64"}).moe_budget, EngineConfig.from_env({"SHARAR_MOE_BUDGET": "64"}).moe_budget_per_request) == (64, 0)
+    cfg = EngineConfig.from_env({"SHARAR_MOE_BUDGET": "12:64"})
+    assert (cfg.moe_budget, cfg.moe_budget_per_request) == (64, 12)
+    with pytest.raises(ValueError, match="SHARAR_MOE_BUDGET"):
+        EngineConfig.from_env({"SHARAR_MOE_BUDGET": "a:b"})
+    m = MoeLayer.__new__(MoeLayer)
+    m.keep, m.budget, m.per_request = 4, 64, 12
+    # one request (decode, or a verify of 5 rows) and four keep 4; sixteen and up keep 2; never below 2
+    assert [m.guarantee(r * s, s) for r, s in [(1, 1), (1, 5), (4, 5), (16, 4), (64, 4), (128, 4)]] == [4, 4, 4, 2, 2, 2]

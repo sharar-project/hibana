@@ -80,3 +80,16 @@ def test_graph_replay_gives_the_same_ids():
     graph.replay()
     torch.cuda.synchronize()
     assert torch.equal(eager[0], captured[0]) and torch.equal(eager[1], captured[1])
+
+
+def test_per_request_cap_counts_only_real_requests():
+    """budget P:B: the cap is min(B, P x real requests); a graph's padded requests (slot 0) do not raise it."""
+    lg = logits_of(40, 11, shared=0.5)  # 8 requests x 5 rows
+    slots = torch.tensor([3, 4, 0, 0, 0, 0, 0, 0], dtype=torch.int32)  # two real requests
+    ids, _ = fk.route_budget(lg.cuda(), K, 1, 64, slots.cuda(), 5, per_request=6)
+    got = {int(e) for e in ids.cpu().reshape(-1).tolist()} - {E}
+    core = {c[0] for i, c in enumerate(candidates(lg)) if i < 10}
+    assert core <= got and len(got) <= max(12, len(core))  # min(64, 6 x 2) = 12
+    full, _ = fk.route_budget(lg.cuda(), K, 1, 64, torch.arange(1, 9, dtype=torch.int32).cuda(), 5, per_request=6)
+    assert len({int(e) for e in full.cpu().reshape(-1).tolist()} - {E}) > 12  # eight real requests: min(64, 48)
+    check(lg, K, 1, 12, slots, 5)  # the same set as a fixed cap of 12

@@ -92,6 +92,7 @@ class MoeLayer:
         # SHARAR_MOE_BUDGET: instead of the reuse rule, the call's experts are chosen for all its rows under a cap
         # (route_budget); each row keeps its top `keep` and takes up to topk from the chosen set
         self.budget = cfg.moe_budget if keep else 0
+        self.per_request = cfg.moe_budget_per_request
         self.w3 = w3
         if w3 is not None:
             if w3.base + w3.experts > self.experts:
@@ -126,9 +127,9 @@ class MoeLayer:
             from sharar.kernels.flashnext_fused import route_subst, route_topk
             if self.budget:
                 from sharar.kernels.flashnext_fused import route_budget
-                if ctx.mode == "decode":
-                    return route_budget(logits, self.topk, self.keep, self.budget, ctx.slots, repeat=self.w3 is None)
-                return route_budget(logits, self.topk, self.keep, self.budget, ctx.seq_slots, ctx.verify_steps, repeat=self.w3 is None)
+                slots, steps = (ctx.slots, 1) if ctx.mode == "decode" else (ctx.seq_slots, ctx.verify_steps)
+                return route_budget(logits, self.topk, self.guarantee(logits.shape[0], steps), self.budget, slots, steps,
+                                    repeat=self.w3 is None, per_request=self.per_request)
             if not self.reuse:
                 return route_topk(logits, self.keep)  # ids and weights [rows, keep]: the routed experts take any k <= 10
             # A graph pads with requests on the dummy state slot 0, which route_subst leaves out of the core. A
@@ -146,6 +147,15 @@ class MoeLayer:
         weights, ids = torch.topk(probs, self.topk, dim=-1)
         weights = weights / weights.sum(-1, keepdim=True)
         return ids.to(torch.int32), weights.contiguous()
+
+    MIN_GUARANTEE = 2  # below two experts a token, GSM8K fell 3.3 points at 16 requests (keep 1 + budget 64)
+
+    def guarantee(self, rows: int, steps: int) -> int:
+        """Each token's guaranteed top experts under SHARAR_MOE_BUDGET: SHARAR_MOE_KEEP for small calls, fewer as the call
+        grows so the guaranteed experts (about half of rows x g are distinct) fit the cap: clamp(2 cap / rows, 2, keep),
+        from the call's shape (a graph's bucket), so one request keeps 4 and sixteen 2 at 12:64."""
+        cap = min(self.budget, self.per_request * (rows // steps)) if self.per_request else self.budget
+        return max(min(self.MIN_GUARANTEE, self.keep), min(self.keep, 2 * cap // rows))
 
     def routed(self, x: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
         """The routed experts' weighted sum for x [M, H] bf16 -> bf16 [M, H]."""
