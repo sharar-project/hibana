@@ -13,10 +13,13 @@ import torch
 
 from sharar.cache.kv_pool import KvPool
 from sharar.cache.radix import RadixCache
+from sharar.cache.request_state import StateManager
 from sharar.cache.ssd import SsdTier
 from sharar.cache import ssd, ssd_store
 from sharar.cache.ssd_store import BLOCK, SsdStore, memory_backed
 from sharar.cache.state_pool import StatePool
+from sharar.engine.request import Request
+from sharar.engine.sampler import SamplingParams
 from sharar.target import DEFAULT_TARGET
 
 CPU = torch.device("cpu")
@@ -123,6 +126,17 @@ def test_back_up_evict_and_restore_byte_exact(tmp_path):
     assert scalars_and_views[:2] == (3, 9) and torch.equal(scalars_and_views[2], feats["h"][2])
 
 
+def test_a_block_backup_describes_its_payload_as_its_views_would(tmp_path):
+    """Block backups take their header's segment spec from the cached payload layout, not from per-pool views."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    release(cache, tier, kv, sp, feats, IDS, seed=3)
+    (node,) = cache.root.children.values()
+    (_, segs, host), = tier._gather_spans(node, [(BLOCK, 2 * BLOCK)])
+    (_, none, packed), = tier._gather_spans(node, [(BLOCK, 2 * BLOCK)], views=False)
+    assert none is None and torch.equal(host, packed)
+    assert tier._payload(BLOCK)[3] == [[name, ssd._dtype_name(t), list(t.shape), t.numel() * t.element_size()] for name, t in segs]
+
+
 def test_restore_after_a_restart_from_the_headers_alone(tmp_path):
     cache, tier, kv, sp, feats = engine(tmp_path)
     before = release(cache, tier, kv, sp, feats, IDS, seed=2)
@@ -226,10 +240,10 @@ def test_a_failed_tail_write_removes_the_unrestorable_leaf(tmp_path, monkeypatch
     settle(cache, tier)
     real = tier.store._write
 
-    def full_disk(header, tensors, ready):
+    def full_disk(header, tensors, buf):
         if header.kind == "tail":
             raise OSError(28, "No space left on device")
-        return real(header, tensors, ready)
+        return real(header, tensors, buf)
     monkeypatch.setattr(tier.store, "_write", full_disk)
     evict_all(cache, kv)
     settle(cache, tier)
@@ -237,6 +251,35 @@ def test_a_failed_tail_write_removes_the_unrestorable_leaf(tmp_path, monkeypatch
 
 
 LONG = list(range(5000, 5000 + 6 * BLOCK + 11))  # six full blocks and an 11-token tail
+
+
+def test_a_block_queued_twice_is_written_once(tmp_path):
+    """The disk budget's clearing of GPU-resident copies, then a re-queue, can leave one block in the queue twice."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    release(cache, tier, kv, sp, feats, IDS, seed=9)
+    tier.queue.extend(list(tier.queue))
+    tier.step(cache)
+    assert tier.backed_blocks == 2 and len(tier.inflight) == 2
+    assert tier.staged == sum(n for _, n in tier.inflight.values())
+    settle(cache, tier)
+    assert tier.store.writes == 2 and all(r.ready for r in blocks_of(cache))
+
+
+def test_a_prefill_step_backs_up_past_the_decode_step_budget_and_leaves_room_for_a_tail(tmp_path):
+    """A decode step gathers `step_bytes`; a prefill step gathers what the staging limit takes, less one tail's room."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    cost = tier._block_charge()
+    tier.step_bytes = cost
+    release(cache, tier, kv, sp, feats, LONG, seed=5)  # six blocks queued
+    tier.step(cache)
+    assert tier.backed_blocks == 1
+    tier.store.wait()  # the next step applies that write first: nothing in flight
+    tier.staging_bytes = tier._tail_room + 2 * cost
+    tier.step(cache, prefilling=True)
+    assert tier.backed_blocks == 3 and tier.staged == 2 * cost
+    tier.staging_bytes = 2**30
+    tier.step(cache, prefilling=True)
+    assert tier.backed_blocks == 6 and not tier.queue
 
 
 def test_a_restore_streams_through_a_staging_buffer_smaller_than_it(tmp_path):
@@ -331,6 +374,68 @@ class Peer:
         if question == "read":
             return [0 if i in self.unreadable else v for i, v in enumerate(values)]
         return values
+
+
+def gated(tier):
+    """Hold each of the tier's writes until the test opens its gate (by key), so writes finish when and in the order
+    a test says. Returns the gate lookup."""
+    gates, lock, real = {}, threading.Lock(), tier.store._write
+
+    def gate(key):
+        with lock:
+            return gates.setdefault(key, threading.Event())
+
+    def write(header, tensors, *rest):
+        assert gate(header.key).wait(10), "a gated write was never let through"
+        return real(header, tensors, *rest)
+
+    tier.store._write = write
+    return gate
+
+
+def six_blocks_in_flight(tmp_path, seed):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    gate = gated(tier)
+    tier.step_bytes = 2**30
+    release(cache, tier, kv, sp, feats, LONG, seed=seed)
+    tier.step(cache)
+    cost = tier._block_charge()
+    assert tier.staged == 6 * cost and len(tier.inflight) == 6
+    tier.staging_bytes = 6 * cost
+    return cache, tier, gate, cost
+
+
+def test_a_wait_for_staging_room_waits_for_the_oldest_writes_that_free_it_and_no_others(tmp_path):
+    cache, tier, gate, cost = six_blocks_in_flight(tmp_path, seed=7)
+    for _, key in list(tier.inflight)[:2]:
+        gate(key).set()
+    assert tier._room(2 * cost, True)
+    assert tier.room_waits == 1 and tier.room_wait_writes == 2 and len(tier.inflight) == 4 and tier.staged == 4 * cost
+    for _, key in list(tier.inflight):
+        gate(key).set()
+    settle(cache, tier)
+
+
+def test_tensor_parallel_a_wait_for_staging_room_applies_the_same_writes_on_every_rank(tmp_path):
+    """Each rank waits for its own oldest writes, so one agreement applies them on every rank."""
+    cache, tier, gate, cost = six_blocks_in_flight(tmp_path, seed=8)
+    peer = Peer(landed=2)  # it waited for its own two oldest, and no more of its writes have finished
+    asked = []
+
+    def counted(question, values):
+        asked.append(question)
+        return peer.min_over_ranks(question, values)
+
+    tier._min_over_ranks = counted
+    for _, key in list(tier.inflight)[:2]:
+        gate(key).set()
+    assert tier._room(2 * cost, True)
+    assert asked.count("landed") == 1 and peer.applied == 2 and tier.room_wait_writes == 2
+    assert len(tier.inflight) == 4 and tier.staged + 2 * cost <= tier.staging_bytes
+    peer.landed = 10**9
+    for _, key in list(tier.inflight):
+        gate(key).set()
+    settle(cache, tier)
 
 
 def blocks_of(cache):
@@ -593,12 +698,29 @@ def test_serving_eviction_drops_a_leaf_it_cannot_copy_instead_of_waiting_for_the
     tier.staging_bytes = 1
     tier.staged = 1  # another copy holds the staging buffer
     monkeypatch.setattr(tier.store, "wait", lambda: pytest.fail("eviction waited for the writers"))
+    monkeypatch.setattr(tier.store, "wait_first", lambda n: pytest.fail("eviction waited for the writers"))
     evict_all(cache, kv)
     assert tier.evict_dropped == 1 and not tier.inflight and cache.ssd_prefixes() == 0
     tier.staged = 0
     monkeypatch.undo()
     settle(cache, tier)
     assert tier.restore(cache, LONG + [7]) == 0 and tier.used == 0
+
+
+def test_serving_eviction_waits_for_room_for_a_tail_instead_of_dropping_a_stored_prefix(tmp_path):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    before = release(cache, tier, kv, sp, feats, LONG, seed=44)
+    settle(cache, tier)  # its blocks are stored; its tail is not
+    other = [t + 20000 for t in LONG]
+    release(cache, tier, kv, sp, feats, other, seed=45)
+    cache.lock(cache.node_at(other), 1)
+    tier.step(cache)  # another prefix's backups fill the staging buffer
+    tier.staging_bytes = tier.staged
+    evict_all(cache, kv)
+    assert tier.evict_dropped == 0 and tier.tails == 1
+    settle(cache, tier)
+    assert tier.restore(cache, LONG + [7]) == len(LONG)
+    assert same(restored(cache, kv, sp, LONG), before)
 
 
 @pytest.mark.parametrize("entry", ["restore", "rebuild"])
@@ -927,3 +1049,79 @@ def test_a_synchronous_restore_finishes_the_one_in_flight_first(tmp_path):
     assert tier._job is None and same(restored(cache, kv, sp, IDS), one) and same(restored(cache, kv, sp, second), two)
     cache.release(IDS + [7])
     assert not any(locks(cache))
+
+
+
+# ---- a prompt's blocks go out while its request decodes ----
+
+def prefilled(state, kv, sp, ids, seed):
+    """Admit a request for ids, prefill all of it and sample its first token."""
+    req = Request(prompt_ids=list(ids), params=SamplingParams(max_new_tokens=4))
+    state.admit(req, req.prompt_ids)
+    fill(kv, sp, req.pages[req.prefix_len:], req.slot, seed)
+    state.commit_prefill(req, req.prefill_len)
+    state.cache_prompt(req)
+    req.push(7)
+    return req
+
+
+def owned_by_cache(kv, free, n):
+    """Of the `free` pages the pool had, the cache holds exactly n; none came back twice."""
+    return kv.free_count == free - n and len(set(kv._free)) == len(kv._free)
+
+
+def test_a_prefilled_prompt_is_backed_up_before_its_request_finishes(tmp_path):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    state, free = StateManager(kv, sp, cache), kv.free_count
+    ids = list(range(5000, 5000 + 3 * BLOCK))  # whole blocks only: the last one ends at the last prompt token
+    req = prefilled(state, kv, sp, ids, seed=1)
+    assert req.prompt_node is cache.node_at(ids) and req.prompt_node.lock == 1 and req.page_ids == [-1] * len(ids)
+    settle(cache, tier)
+    assert tier.backed_blocks == 3  # written while the request still runs
+    evict_all(cache, kv)
+    assert cache.node_at(ids).in_l1  # its request holds it
+    before = snapshot(kv, sp, req.pages, req.slot)
+    state.release(req)
+    assert not any(locks(cache)) and owned_by_cache(kv, free, len(ids))
+    settle(cache, tier)
+    assert tier.backed_blocks == 3 and tier.tails_through == 1  # only the tail at the release, no block written twice
+    evict_all(cache, kv)
+    assert tier.restore(cache, ids + [7]) == len(ids)
+    assert same(restored(cache, kv, sp, ids), before)
+
+
+def test_a_later_turn_hands_over_only_the_prompt_past_its_cached_prefix(tmp_path):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    state, free = StateManager(kv, sp, cache), kv.free_count
+    first = prefilled(state, kv, sp, list(range(5000, 5000 + BLOCK + 10)), seed=1)
+    state.release(first)
+    ids = first.prompt_ids + first.output_ids + list(range(9000, 9000 + 3 * BLOCK))
+    req = prefilled(state, kv, sp, ids, seed=2)
+    assert req.prefix_len == BLOCK + 10 and req.prompt_node is cache.node_at(ids[:4 * BLOCK])
+    assert req.page_ids[:3 * BLOCK - 10] == [-1] * (3 * BLOCK - 10) and -1 not in req.page_ids[3 * BLOCK - 10:]
+    state.release(req)
+    assert not any(locks(cache)) and owned_by_cache(kv, free, len(ids))
+    settle(cache, tier)
+    assert tier.backed_blocks == 4
+
+
+def test_a_retracted_request_leaves_its_prompt_cached_and_a_duplicate_frees_its_own_copy(tmp_path):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    state, free = StateManager(kv, sp, cache), kv.free_count
+    ids = list(range(5000, 5000 + 3 * BLOCK + 37))
+    req = prefilled(state, kv, sp, ids, seed=1)
+    state.retract(req)
+    assert req.prompt_node is None and not any(locks(cache))
+    assert owned_by_cache(kv, free, 3 * BLOCK)  # the cache keeps the prompt's whole blocks; the request freed the rest
+    again = prefilled(state, kv, sp, ids, seed=1)  # those blocks are cached already: its own copies stay its own
+    assert again.prompt_node is cache.node_at(ids[:3 * BLOCK]) and -1 not in again.page_ids
+    state.release(again)
+    assert not any(locks(cache)) and owned_by_cache(kv, free, len(ids))
+
+
+def test_without_an_ssd_tier_the_request_keeps_its_prompt_until_it_finishes(tmp_path):
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    cache.ssd = None
+    state = StateManager(kv, sp, cache)
+    req = prefilled(state, kv, sp, list(range(5000, 5000 + 3 * BLOCK)), seed=1)
+    assert req.prompt_node is None and -1 not in req.page_ids and cache.cached_tokens == 0

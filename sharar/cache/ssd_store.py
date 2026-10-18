@@ -243,6 +243,7 @@ class SsdStore:
             threading.Thread(target=lambda: [shutil.rmtree(p, ignore_errors=True) for p in stale], daemon=True).start()
         self.queues: list[queue.Queue] = [queue.Queue() for _ in range(writers)]  # one per writer, chosen by key
         self.done: deque = deque()  # per write, in submission order: a one-item list its writer fills with the completion
+        self._filled = threading.Condition()  # a writer filled a completion (`wait_first`)
         self._lock = threading.Lock()  # guards the counters the writer and reader threads update
         self.writes = self.reads = self.read_errors = self.write_errors = self.deletes = 0
         self.write_bytes = self.read_bytes = 0
@@ -284,6 +285,12 @@ class SsdStore:
         for q in self.queues:
             q.join()
 
+    def wait_first(self, n: int) -> None:
+        """Block until the oldest `n` writes `completions` has not returned yet have finished (all of them if fewer
+        are in flight)."""
+        with self._filled:
+            self._filled.wait_for(lambda: all(self.done[i][0] is not None for i in range(min(n, len(self.done)))))
+
     def completions(self) -> list[tuple[str, str, bool, int]]:
         """(kind, key, ok, nbytes) of the finished writes, in submission order, up to the first still in flight."""
         out = []
@@ -301,21 +308,24 @@ class SsdStore:
                     self.deletes += 1
             else:
                 try:
+                    if c is not None:
+                        c.synchronize()  # the payload's copy lands before anything here can fail and free it
                     if buf is None and self.direct:
                         buf = mmap.mmap(-1, WRITE_BUFFER)  # anonymous, so page-aligned
-                    slot[0] = self._write(a, b, c, buf)
+                    done = self._write(a, b, buf)
                 except Exception as exc:  # a full disk or an I/O error loses the stored copy, never the served request
                     with self._lock:
                         self.write_errors += 1
                         self.last_error = repr(exc)
-                    slot[0] = (a.kind, a.key, False, 0)
-            del a, b, c, slot  # do not retain the last write's staging tensors while waiting for another job
+                    done = (a.kind, a.key, False, 0)
+                a = b = c = None  # the staging tensors go before the engine can see the write done and reuse its room
+                with self._filled:
+                    slot[0] = done
+                    self._filled.notify_all()
             jobs.task_done()
 
-    def _write(self, header: Header, tensors: list[torch.Tensor], ready, buf: mmap.mmap | None) -> tuple[str, str, bool, int]:
+    def _write(self, header: Header, tensors: list[torch.Tensor], buf: mmap.mmap | None) -> tuple[str, str, bool, int]:
         t0 = time.perf_counter()
-        if ready is not None:
-            ready.synchronize()
         chunks = []
         for t in tensors:  # each segment starts 256-byte aligned, so a read can view every dtype in place
             chunk = _bytes(t).cpu()

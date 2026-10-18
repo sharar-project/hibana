@@ -288,6 +288,26 @@ def test_a_failed_write_leaves_no_partial_file(tmp_path, monkeypatch):
     assert store.write_errors == 1 and not any(p.is_file() for p in store.dir.rglob("*"))
 
 
+def test_a_write_that_fails_first_waits_for_the_copy_into_its_payload(tmp_path, monkeypatch):
+    store = SsdStore(tmp_path, IDENTITY)
+    store.direct = True
+    key = tail_hash(store.root, [1])
+    tensor = torch.zeros(256, dtype=torch.uint8)
+    payload, waits = weakref.ref(tensor), []
+
+    class Ready:  # the event of a gather kernel still writing the payload
+        def synchronize(self):
+            waits.append(payload() is not None)
+
+    def no_memory(*args):
+        raise OSError(errno.ENOMEM, "Cannot allocate memory")
+    monkeypatch.setattr(mmap, "mmap", no_memory)  # the writer's buffer, mapped at its first write
+    store.write(header("tail", key, store.root, 0, [1], [("data", tensor)]), [tensor], Ready())
+    del tensor
+    store.wait()
+    assert waits == [True] and store.write_errors == 1 and payload() is None
+
+
 def test_a_restart_deletes_epochs_a_crash_left_behind(tmp_path):
     store = SsdStore(tmp_path, IDENTITY)
     store.flush()

@@ -13,8 +13,8 @@ them, and the SSD tier below them (on in every profile; `SHARAR_SSD=0` turns it 
                          │   │  deeper resume point on the SSD? ──► SsdTier.restore_async() ───┐   │
                          │   ▼                                                                 │   │
                          │ prefill the rest ─► decode ─► finish ─► RadixCache.insert()         │   │
-                         │                                          │                          │   │
-                         │                                          └► SsdTier.backup()        │   │
+                         │   │ prompt done: its whole blocks        │                          │   │
+                         │   └► RadixCache.insert() ────────────────┴► SsdTier.backup()        │   │
                          │ every scheduler step: SsdTier.step()  (gather queued writes,       │   │
                          │                       drain completions, enforce the disk budget)   │   │
                          └────────────────────────────────────────────────────────────────────│───┘
@@ -78,14 +78,16 @@ flipped byte or a torn write is a miss, never wrong KV. Startup also drops a fil
 ## Lifecycle of a cached prefix
 
 ```
+ prompt prefilled ──► insert its whole blocks into L1, locked for the request ──► backup(): queue them
  finish ──► insert into L1 ──► backup(): queue full blocks not yet on disk + tails at resume points
                                    │
                          step() ───┤ gather into staging ──► writers: .tmp, fdatasync, rename
                                    │                                   │
                                    │ completion ◄──────────────────────┘ SsdRef.ready = True
                                    ▼
- L1 pressure ──► evict LRU leaf ──► evicting(): copy its path's queued blocks and tail if staging has room now,
-                                   else drop it (serving never waits for the writers; shutdown does)
+ L1 pressure ──► evict LRU leaf ──► evicting(): copy its path's queued blocks if staging has room now, else drop
+                                   it (serving waits for room only when SSD-only descendants need them; shutdown
+                                   always); write its tail, waiting for the oldest writes in flight to free room
                                    ──► demote: pages and slot freed, node stays (SSD-only)
                                    ▼
  next turn ──► match(): L1 prefix ends at depth d, a ready tail at depth D > d
@@ -118,9 +120,10 @@ request's snapshot is written at its end, where its conversation's next turn res
 request that regenerates from the same prompt may prefill its last turn again. A node whose descendants are already
 stored (a prompt's end, a chunk checkpoint) is demoted with its KV blocks and no snapshot. Writer threads write with
 O_DIRECT through a 16 MiB buffer each, or where the filesystem refuses O_DIRECT through the page cache, dropped
-after each file (`direct_writes` in `cache.ssd.store` says which). A prefix eviction cannot copy at once is dropped
-and counted in `evict_dropped`. A restart lists the stored prefixes again only for the same target revision, decode
-weights, geometry, recurrent-state format and prefill numerics, and deletes another format's at startup.
+after each file (`direct_writes` in `cache.ssd.store` says which). A prefix whose queued blocks eviction cannot
+copy at once is dropped and counted in `evict_dropped`; for its tail, eviction waits for room. A restart lists the
+stored prefixes again only for the same target revision, decode weights, geometry, recurrent-state format and
+prefill numerics, and deletes another format's at startup.
 `cache.ssd` in `/get_server_info` reports usage, restores and read GB/s; `sharar cache` shows what the tier holds.
 
 ## Restore pipeline
@@ -140,14 +143,15 @@ On GB10 the tier registers the staging buffer with CUDA, and its device pointer 
 scatter kernels read it in place: no host memcpy and no host-to-device copy.
 
 The engine does not wait for the reads (`restore_async`). A worker thread reads and checks each chunk; the engine
-thread scatters it on the main stream at its next step, a few milliseconds of kernel launches, and the reader
-refills that half once the scatter has read it. The scatter stays on the engine thread because launches issued from
-the worker wait on the GIL behind it. One restore runs at a time (they share the buffer and the drive); the next
-request that needs one waits for it. A restore that landed keeps its path locked until its request is admitted, so
-eviction cannot take it first. On two Sparks each rank reads its own heads, and the ranks agree each step whether
-every rank's reads have landed before either imports the state (one integer all-reduce per step while a restore is
-in flight). The chunk size, not the context, bounds the buffer, so the pool plan reserves a constant for it
-(`SsdTier.memory_bound`).
+thread scatters it on the main stream at its next step, in one kernel launch for every pool the tier stores
+(`kernels/csrc/kv_copy.cu`, which also gathers backups into their pinned payloads), and the reader refills that
+half once the scatter has read it. The scatter stays on the engine thread because a launch issued from the worker,
+and the Python that plans it, wait on the GIL behind it: tens of milliseconds a chunk on the 27B. One restore runs at
+a time (they share the buffer and the drive); the next request that needs one waits for it. A restore that landed
+keeps its path locked until its request is admitted, so eviction cannot take it first. On two Sparks each rank reads
+its own heads, and the ranks agree each step whether every rank's reads have landed before either imports the state
+(one integer all-reduce per step while a restore is in flight). The chunk size, not the context, bounds the buffer,
+so the pool plan reserves a constant for it (`SsdTier.memory_bound`).
 
 ## What a restore costs
 

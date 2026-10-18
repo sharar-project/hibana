@@ -127,3 +127,52 @@ def test_prefix_cache_and_ssd_tier_continue_like_a_cold_prefill(runtime):
     assert restored.output_ids == cold(third)
     ex.flush_cache()
     assert free(ex) == before
+
+
+def settle(ex) -> None:
+    tier = ex.cache.ssd
+    for _ in range(100):
+        ex.cache_step()
+        tier.store.wait()
+        if not tier.queue and not tier.through and not tier.inflight:
+            return
+    raise AssertionError("backups did not settle")
+
+
+def stored_rows(ex, pages: torch.Tensor) -> list[torch.Tensor]:
+    """The bytes a stored block holds for these pages: the target's KV and the MTP draft layer's (`stored_pages`)."""
+    idx = pages.long()
+    return [pool.view(torch.uint8)[idx].cpu() for _, pool in ex.cache.ssd._kv_targets()]
+
+
+def test_a_prompt_backed_up_once_prefilled_restores_the_kv_it_had_at_the_finish(runtime):
+    """The SSD tier writes a prompt's whole blocks as soon as it is prefilled, before the request decodes. After
+    eviction, a restore brings back the target's and the MTP draft layer's KV exactly as the finished request left
+    them: decoding writes no prompt position."""
+    from sharar.engine.prompts import random_ids
+    ex, _ = runtime
+    ex.flush_cache()
+    before = free(ex)
+    tier = ex.cache.ssd
+    assert any(name.startswith("draft.") for name, _ in tier._kv_targets())
+    ids = random_ids(3 * tier.block, 21)  # whole blocks only: the last one ends at the last prompt token
+    req = ex.admit(ids, SamplingParams(max_new_tokens=12))
+    ex.prefill(req)
+    assert req.prompt_node is ex.cache.node_at(ids) and len(tier.queue) == 3
+    settle(ex)  # the prompt's blocks are on the SSD before its first decode step
+    assert tier.backed_blocks == 3
+    while not req.finished:
+        ex.decode_step([req])
+    seq = req.prompt_ids + req.output_ids[:-1]
+    at_finish = stored_rows(ex, req.pages[:len(seq)])
+    ex.release(req)
+    settle(ex)
+    assert tier.backed_blocks == 3  # the release wrote only the tail
+    ex.cache.evict(need_pages=ex.kv_pool.num_pages)  # demote every leaf to the SSD tier
+    assert ex.cache.match(seq, touch=False).length == 0
+    assert ex.cache.restore(seq + [ids[0]]) == len(seq)
+    m = ex.cache.match(seq, touch=False)
+    assert m.length == len(seq)
+    assert all(torch.equal(a, b) for a, b in zip(stored_rows(ex, m.pages), at_finish, strict=True))
+    ex.flush_cache()
+    assert free(ex) == before

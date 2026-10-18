@@ -134,6 +134,16 @@ class RadixCache:
             self.hits += 1
         return Match(best_len, pages, best_node.snapshot_slot, best_node, raw)
 
+    def node_at(self, ids: list[int]) -> Node | None:
+        """The node whose path from the root is exactly ids, or None."""
+        node, pos = self.root, 0
+        while pos < len(ids):
+            child = node.children.get(ids[pos])
+            if child is None or ids[pos:pos + len(child.key)] != child.key:
+                return None
+            node, pos = child, pos + len(child.key)
+        return node
+
     def ssd_match(self, ids: list[int], l1_len: int, block: int, pending: bool = False) -> SsdHit | None:
         """The deepest resume point on the SSD past `l1_len`: the end of a node
         with a ready tail, every KV block covering [l1_len, that end) ready
@@ -193,10 +203,19 @@ class RadixCache:
         if self.ssd is not None:
             self.ssd.backup(self, ids, resume_points)
 
-    def step(self) -> None:
-        """Once per engine loop iteration: apply finished SSD writes, trim to the SSD budget and start queued backups."""
+    def backup_span(self, length: int) -> int:
+        """How much of a sequence's first `length` tokens the SSD tier backs up as whole blocks: 0 without a tier,
+        while flushing, or when that is shorter than the tier's minimum."""
+        if self.ssd is None or self.flushing:
+            return 0
+        end = length // self.ssd.block * self.ssd.block
+        return end if end >= self.ssd.min_tokens else 0
+
+    def step(self, prefilling: bool = False) -> None:
+        """Once per engine loop iteration: apply finished SSD writes, trim to the SSD budget and start queued backups
+        (more of them while a request is prefilling)."""
         if self.ssd is not None:
-            self.ssd.step(self)
+            self.ssd.step(self, prefilling)
 
     def lock(self, node: Node | None, delta: int) -> None:
         while node is not None and node is not self.root:
