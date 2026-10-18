@@ -94,3 +94,17 @@ def test_last_combine_without_a_next_site():
     inj = 2 * torch.sigmoid(res[1].inj)
     ref = (hyper.float().reshape(t, HC, H) + block.float()[:, None] * inj[..., None]).reshape(t, -1)
     assert torch.allclose(out.float(), ref, atol=0.05, rtol=1e-2)
+
+
+def test_block_input_fp8_copy_is_the_projections_own_quantization():
+    """`fp8_input` of a mixed block input: bitwise `draft_fp8.quant_dynamic` of it, computed once and shared."""
+    from sharar.kernels.draft_fp8 import quant_dynamic
+    g = torch.Generator(device="cuda").manual_seed(3)
+    a, _ = _site(g)
+    hyper = (torch.randn(1500, HC * H, device="cuda", generator=g) * 3).to(torch.bfloat16)
+    mixed, _ = a.mix(hyper)
+    q, scale = hp.fp8_input(mixed)
+    q2, scale2 = quant_dynamic(mixed)
+    assert torch.equal(q.view(torch.uint8), q2.view(torch.uint8)) and torch.equal(scale, scale2)
+    assert hp.fp8_input(mixed)[0] is q  # cached
+    assert hp.fp8_input(mixed.clone()) is None  # only the tensor `mix` returned

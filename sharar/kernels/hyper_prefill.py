@@ -13,7 +13,8 @@ take at prefill row counts. Here a site is three launches and about 90 KB per ro
          logits in FP32 (a dot over the normalized row; the decode path rounds them to BF16).
   down   `torch._scaled_mm` with the row scales: FP8 tensor cores, BF16 out.
   up     `up_gate_mean`: the up projection on BF16 activations against the FP8 weights (exact in BF16), with the
-         gate, the recomputed norm and the mean over the streams in its epilogue; the gate never leaves registers.
+         gate, the recomputed norm and the mean over the streams in its epilogue; the gate never leaves registers. It
+         also writes each tile's maximum, so the block's projections share one FP8 copy of its input (`fp8_input`).
 
 Every step keeps or raises the decode path's precision (per-row instead of per-tensor activation scales, unquantized
 up-projection input, FP32 inject logits); the results are not bitwise the decode path's.
@@ -116,45 +117,55 @@ def combine_norm(hyper: torch.Tensor, block: torch.Tensor | None, inj: torch.Ten
 
 
 @triton.jit
-def _up_gate_mean_kernel(A, Wq, WS, Hp, Rstd, Nw, Out, T, stride_a, stride_w, stride_h, stride_o, H: tl.constexpr, K: tl.constexpr,
-                         BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr):
+def _up_gate_mean_kernel(A, Wq, WS, Hp, Rstd, Nw, Out, Amax, T, stride_a, stride_w, stride_h, stride_o, H: tl.constexpr, K: tl.constexpr,
+                         BM: tl.constexpr, BN: tl.constexpr, KP: tl.constexpr):
     pm = tl.program_id(0)
     pn = tl.program_id(1)
     rm = pm * BM + tl.arange(0, BM)
     rn = pn * BN + tl.arange(0, BN)
-    rk = tl.arange(0, BK)
     mm = rm < T
     mn = rn < H
     ws = tl.load(WS)
+    # the activations once per program: the first KP columns and the (at most 64) after them
+    k1 = tl.arange(0, KP)
+    k2 = KP + tl.arange(0, 64)
+    a1 = tl.load(A + rm[:, None] * stride_a + k1[None, :], mask=mm[:, None], other=0.0)
+    a2 = tl.load(A + rm[:, None] * stride_a + k2[None, :], mask=mm[:, None] & (k2[None, :] < K), other=0.0)
     mix = tl.zeros((BM, BN), dtype=tl.float32)
     for s in tl.static_range(4):
-        acc = tl.zeros((BM, BN), dtype=tl.float32)
-        for k0 in tl.static_range(0, K, BK):
-            kk = k0 + rk
-            a = tl.load(A + rm[:, None] * stride_a + kk[None, :], mask=mm[:, None] & (kk[None, :] < K), other=0.0)
-            w = tl.load(Wq + (s * H + rn)[None, :] * stride_w + kk[:, None], mask=mn[None, :] & (kk[:, None] < K), other=0.0)
-            acc = tl.dot(a, w.to(tl.bfloat16), acc)
+        w1 = tl.load(Wq + (s * H + rn)[None, :] * stride_w + k1[:, None], mask=mn[None, :], other=0.0)
+        w2 = tl.load(Wq + (s * H + rn)[None, :] * stride_w + k2[:, None], mask=mn[None, :] & (k2[:, None] < K), other=0.0)
+        acc = tl.dot(a2, w2.to(tl.bfloat16), tl.dot(a1, w1.to(tl.bfloat16)))
         u = (acc * ws).to(tl.bfloat16).to(tl.float32)
         x = tl.load(Hp + rm[:, None] * stride_h + (s * H + rn)[None, :], mask=mm[:, None] & mn[None, :], other=0.0).to(tl.float32)
         r = tl.load(Rstd + rm * 4 + s, mask=mm, other=0.0)
         nw = tl.load(Nw + s * H + rn, mask=mn, other=0.0).to(tl.float32)
         n = ((x * r[:, None]) * (1.0 + nw[None, :])).to(tl.bfloat16).to(tl.float32)
         mix += _sigmoid(u) * n
-    tl.store(Out + rm[:, None] * stride_o + rn[None, :], (mix / 4).to(tl.bfloat16), mask=mm[:, None] & mn[None, :])
+    y = (mix / 4).to(tl.bfloat16)
+    tl.store(Out + rm[:, None] * stride_o + rn[None, :], y, mask=mm[:, None] & mn[None, :])
+    # this tile's max |y| as stored: the per-tensor FP8 quantization of y then needs no pass of its own (`fp8_input`)
+    peak = tl.max(tl.max(tl.where(mm[:, None] & mn[None, :], tl.abs(y.to(tl.float32)), 0.0), 1), 0)
+    tl.store(Amax + pm * tl.num_programs(1) + pn, peak)
 
 
 def up_gate_mean(a: torch.Tensor, up_w: torch.Tensor, up_scale: torch.Tensor, hyper: torch.Tensor, rstd: torch.Tensor, norm: torch.Tensor,
-                 hidden: int) -> torch.Tensor:
+                 hidden: int) -> tuple[torch.Tensor, torch.Tensor]:
     """mixed [T, H] = mean_s sigmoid(bf16(a @ W_s^T)) * norm_s(hyper'), a [T, K] bf16 the SiLU of the down projection,
-    up_w [4H, K] E4M3 with its scalar scale; norm_s recomputed from hyper' and `rstd` as `combine_norm` computed it."""
+    up_w [4H, K] E4M3 with its scalar scale; norm_s recomputed from hyper' and `rstd` as `combine_norm` computed it.
+    -> (mixed, the max |mixed| of each output tile, fp32)."""
     t, k = a.shape
     assert up_w.shape == (4 * hidden, k) and a.stride(1) == 1 and up_w.stride(1) == 1
+    kp = triton.next_power_of_2(k) // 2 if k & (k - 1) else k
+    assert k - kp <= 64 or kp == k, "the kernel splits K into a power of two and at most 64 more"
+    # 32 x 64 tiles: larger ones spill (the four streams' accumulators and the hoisted activations)
+    bm, bn = 32, 64
+    grid = (triton.cdiv(t, bm), triton.cdiv(hidden, bn))
     out = torch.empty((t, hidden), dtype=torch.bfloat16, device=a.device)
-    bm, bn, bk = 64, 64, 64  # larger tiles spill (the four streams' accumulators): 64x128 is 8x slower
-    _up_gate_mean_kernel[(triton.cdiv(t, bm), triton.cdiv(hidden, bn))](a, up_w, up_scale, hyper, rstd, norm, out, t, a.stride(0), up_w.stride(0),
-                                                                       hyper.stride(0), out.stride(0), hidden, k, BM=bm, BN=bn, BK=bk,
-                                                                       num_warps=4, num_stages=2)
-    return out
+    parts = torch.empty((grid[0] * grid[1],), dtype=torch.float32, device=a.device)
+    _up_gate_mean_kernel[grid](a, up_w, up_scale, hyper, rstd, norm, out, parts, t, a.stride(0), up_w.stride(0), hyper.stride(0), out.stride(0),
+                               hidden, k, BM=bm, BN=bn, KP=kp, num_warps=4, num_stages=2)
+    return out, parts
 
 
 def mix(nq: torch.Tensor, xs: torch.Tensor, rstd: torch.Tensor, hyper: torch.Tensor, down, up, norm: torch.Tensor, hidden: int) -> torch.Tensor:
@@ -162,4 +173,22 @@ def mix(nq: torch.Tensor, xs: torch.Tensor, rstd: torch.Tensor, hyper: torch.Ten
     `down` / `up` are the site's FP8 `TrunkLinear`s (the 1/hc of silu(down(x)/hc) folded into `down`)."""
     ws = down.scale.reshape(1, 1).expand(1, down.out_features).contiguous()
     d = torch._scaled_mm(nq, down.weight.T, scale_a=xs, scale_b=ws, out_dtype=torch.bfloat16)
-    return up_gate_mean(torch.nn.functional.silu(d), up.weight, up.scale, hyper, rstd, norm, hidden)
+    mixed, parts = up_gate_mean(torch.nn.functional.silu(d), up.weight, up.scale, hyper, rstd, norm, hidden)
+    mixed._sharar_amax_parts = parts  # for `fp8_input`
+    return mixed
+
+
+def fp8_input(x: torch.Tensor):
+    """The per-tensor dynamic FP8 of a block input `mix` produced, or None for any other tensor: quantized once from the
+    tile maxima `up_gate_mean` wrote and kept on the tensor, so every projection of the block (GDN in_qkv and in_z, the
+    attention's qkv, the shared expert) reads the same E4M3 copy. Bitwise the quantization each would do itself
+    (`draft_fp8.quant_dynamic`: the same maximum, scale and rounding). -> (fp8 like x, scale [1, 1]) or None."""
+    cached = getattr(x, "_sharar_fp8", None)
+    if cached is not None:
+        return cached
+    parts = getattr(x, "_sharar_amax_parts", None)
+    if parts is None:
+        return None
+    from sharar.kernels.flashnext_fused import quant_fp8_parts
+    x._sharar_fp8 = quant_fp8_parts(x, parts)
+    return x._sharar_fp8
