@@ -64,6 +64,11 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
     if flashnext and profile != "exact":
         # batch-aware expert selection: decode and verify forwards at any number of requests
         p.update(SHARAR_MOE_KEEP="5", SHARAR_MOE_REUSE="5")
+        if profile == "throughput" and tp == 1 and flashnext_experts == "w3":
+            # budgeted expert selection (measured with the 3-bit experts on one Spark): each token keeps its top 2, the call reads at most 64 experts chosen by router
+            # probability across its rows (route_budget). One Spark, 16 / 32 / 64 streams: aggregate tok/s +34 / +22
+            # / +13% against keep 5 + reuse 5; quick suite at 16 concurrent requests +2.2 pp pooled (paired, 728 items)
+            p.update(SHARAR_MOE_KEEP="2", SHARAR_MOE_BUDGET="64")
         # the optimized QSA prefill kernels where eligible (SM121, one or two Sparks, through 32K): RULER v2 32K 94.1
         # against 94.0 (120 items, 2 better / 2 worse), prefill 3-4% faster at 8K and 32K
         p["SHARAR_QSA_PREFILL_BACKEND"] = "auto"
