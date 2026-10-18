@@ -105,7 +105,8 @@ def test_expert_selection_is_on_in_fast_and_throughput(env):
     on = {"SHARAR_MOE_KEEP": "5", "SHARAR_MOE_REUSE": "5"}
     pick = lambda *args, **kw: {k: launch.profile_defaults(*args, **kw).get(k) for k in on}  # noqa: E731
     for profile in ("fast", "throughput"):
-        assert pick(profile, "flashnext") == on
+        if profile == "fast":  # throughput with the 3-bit experts on one Spark takes the budget (test below)
+            assert pick(profile, "flashnext") == on
         assert pick(profile, "flashnext", "nvfp4") == on  # the NVFP4 experts repeat a kept expert at weight 0
         assert pick(profile, "flashnext", tp=2) == on
         assert pick(profile, "flashnext", "nvfp4", tp=2) == on
@@ -257,3 +258,13 @@ def test_the_27b_fp8_draft_applies_when_its_draft_runs(env):
     assert resolve(env, "27b").get("SHARAR_DRAFT_PRECISION") == "fp8"
     for override in ({"SHARAR_SPEC": "0"}, {"SHARAR_PROPOSER": "mtp"}):
         assert resolve(env, "27b", overrides=override).get("SHARAR_DRAFT_PRECISION") == "bf16"
+
+
+@pytest.mark.parametrize("profile, tp, keep, reuse, budget", [
+    ("fast", 1, "5", "5", None), ("throughput", 1, "2", "5", "64"), ("throughput", 2, "5", "5", None), ("exact", 1, None, None, None)])
+# (throughput with NVFP4 experts keeps 5 + reuse 5: test_expert_selection_is_on_in_fast_and_throughput)
+def test_flashnext_expert_selection_per_profile(profile, tp, keep, reuse, budget):
+    """`throughput` on one Spark takes the budgeted selection (keep 2, at most 64 experts a forward); `fast` and two
+    Sparks keep 5 + reuse 5; `exact` routes in full."""
+    d = launch.profile_defaults(profile, "flashnext", tp=tp)
+    assert (d.get("SHARAR_MOE_KEEP"), d.get("SHARAR_MOE_REUSE"), d.get("SHARAR_MOE_BUDGET")) == (keep, reuse, budget)
