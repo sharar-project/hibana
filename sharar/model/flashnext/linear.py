@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import torch
 
 from sharar.weights.sharding import REPLICATED, Shard
-from sharar.kernels import prefill_gemm
+from sharar.kernels import hyper_prefill, prefill_gemm
 
 FP8_MAX = 448.0
 GEMV_MAX_ROWS = 4
@@ -117,7 +117,10 @@ class TrunkLinear:
                 flat = torch.nn.functional.silu(flat)
             elif act == fk.ACT_SILU_MUL:
                 flat = fk.silu_mul(flat)
-            if amax_parts is not None and act == fk.ACT_NONE:  # the producer's block maxima: a parallel quantization
+            pre = hyper_prefill.fp8_input(x) if act == fk.ACT_NONE else None
+            if pre is not None:  # a hyper-connection's block input: its one shared FP8 copy
+                x_q, x_scale = pre
+            elif amax_parts is not None and act == fk.ACT_NONE:  # the producer's block maxima: a parallel quantization
                 x_q, x_scale = fk.quant_fp8_parts(flat, amax_parts)
             elif flat.numel() <= 65536:  # decode rows: one-kernel quantization
                 x_q, x_scale, _ = fk.quant_fp8_small(flat, self.scale)

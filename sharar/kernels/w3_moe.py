@@ -144,14 +144,16 @@ def calibrate(w13, s13, scale2_13, w2, s2, scale2_2, codebook="lloyd", ratios=RA
 
 # ------------------------------------------------------------------ the kernel
 
-def w3_moe(experts: W3Experts, x: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor, pairs: bool = False) -> torch.Tensor:
+def w3_moe(experts: W3Experts, x: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor, pairs: bool = False,
+           pairs_bf16: bool = False) -> torch.Tensor:
     """Routed experts for x [M, 2560] bf16 with the router's ids [M, k] int32 and weights [M, k] fp32 (k <= 10) -> bf16
     [M, 2560], the weighted sum in selection order (no shared expert). Graph-capturable and deterministic. When
     `experts` holds one rank's range (expert parallel), pairs routed to another rank's experts are skipped: the result
     is this rank's partial sum, which the decoder layer all-reduces. An id of EXPERTS (512) names no expert and adds
     nothing (an unfilled slot, `flashnext_fused.route_subst` without the fallback). With `pairs`, the FP32 output of each
     (row, k) pair [M * k, 2560], unsummed (`flashnext_fused.moe_combine_pairs` sums them; rows of skipped pairs are
-    garbage)."""
+    garbage). `pairs_bf16`: those pairs in BF16, rounded once from the FP32 the kernel accumulates (prefill calls: the
+    pairs are the call's widest tensor, written by fc2 and read back by the combine)."""
     ids = ids.to(torch.int32).contiguous()
     order = ids.new_empty(0)
     if ids.numel() > ORDER_IN_KERNEL:  # a stable sort keeps each expert's pairs in row order
@@ -162,7 +164,7 @@ def w3_moe(experts: W3Experts, x: torch.Tensor, ids: torch.Tensor, weights: torc
         order = torch.sort(key, stable=True).indices.to(torch.int32)
     return w3._module().w3_moe(x.contiguous(), ids, weights.float().contiguous(), order,
                                experts.planes13, experts.scales13, experts.row13, experts.planes2, experts.scales2, experts.row2,
-                               experts.lut, experts.base, WIDE_ROWS, pairs)
+                               experts.lut, experts.base, WIDE_ROWS, 2 if pairs and pairs_bf16 else int(pairs))
 
 
 def quant_e4m3(t: torch.Tensor, stage: str) -> torch.Tensor:

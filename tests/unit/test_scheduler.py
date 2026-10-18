@@ -254,3 +254,33 @@ def test_decode_never_waits_more_than_two_prefill_steps():
         last = ex.clock
     # one prefill step, plus one more for requests that arrived meanwhile
     assert max(gaps) <= 2 * (1024 / PREFILL_TOKS_PER_S) + DECODE_STEP_S + 1e-9
+
+
+def test_solo_prefill_takes_the_solo_chunk_until_another_request_needs_the_gpu():
+    """A request prefilling alone with nothing decoding takes solo_chunk_size per step; once a second request is
+    admitted (or anything decodes), steps go back to chunk_size so no decode waits on the longer chunk."""
+    ex = FakeExecutor()
+    sizes = []
+    original = ex.prefill_batch
+    ex.prefill_batch = lambda chunks: (sizes.append([n for _, n in chunks]), original(chunks))
+    sched = Scheduler(ex, SchedulerConfig(chunk_size=4096, prefill_budget=4096, solo_chunk_size=8192))
+    first = submit(sched, ex, 20_000, 4)
+    sched.step()  # a step runs up to two prefill chunks
+    assert sizes == [[8192], [8192]]
+    second = submit(sched, ex, 6000, 4)
+    sched.step()  # two prefilling: the shared chunk; then the second alone, but the first decodes
+    assert sizes[2:] == [[3616, 480], [4096]]
+    run(sched, ex)
+    assert first.finished and second.finished
+    assert all(max(s) <= 4096 for s in sizes[2:])
+
+
+def test_solo_chunk_defaults_off():
+    ex = FakeExecutor()
+    sizes = []
+    original = ex.prefill_batch
+    ex.prefill_batch = lambda chunks: (sizes.append([n for _, n in chunks]), original(chunks))
+    sched = Scheduler(ex, SchedulerConfig(chunk_size=2048, prefill_budget=4096))
+    submit(sched, ex, 10_000, 2)
+    sched.step()
+    assert sizes == [[2048], [2048]]

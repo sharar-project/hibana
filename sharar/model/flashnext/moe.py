@@ -161,7 +161,9 @@ class MoeLayer:
         if self.w3 is not None:
             # the 3-bit experts' per-pair outputs, summed by the combine itself: the same bits without the routed sum's round trip
             from sharar.kernels.w3_moe import w3_moe
-            pairs = w3_moe(self.w3, x, ids, weights, pairs=True)
+            from sharar.kernels.w3_moe import WIDE_ROWS
+            # prefill calls return the pairs in BF16: half the traffic of their widest tensor
+            pairs = w3_moe(self.w3, x, ids, weights, pairs=True, pairs_bf16=x.shape[0] >= WIDE_ROWS)
             shared = self.shared_down(self.shared_gate_up(x), act=ACT_SILU_MUL)
             return moe_combine_pairs(pairs, ids.to(torch.int32).contiguous(), weights.float().contiguous(), shared, x, self.shared_gate_vec,
                                      self.w3.base, self.w3.experts)

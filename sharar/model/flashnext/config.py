@@ -51,3 +51,6 @@ MTP_LAYERS = 1
 # plus the staging of one layer's expert shards during the load.
 WEIGHT_LOAD_PEAK_BYTES = 80 * 2**30
 PREFILL_CHUNK = 4096  # prompt tokens a request prefills per step (target.py)
+# A request prefilling alone, with nothing decoding: each chunk streams all 512 experts' weights, so 8K chunks prefill
+# a 32K prompt ~5% faster than 4K (16K: no further gain) for about 1 GiB more activations.
+SOLO_PREFILL_CHUNK = 8192

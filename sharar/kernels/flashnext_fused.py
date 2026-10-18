@@ -363,7 +363,7 @@ def _moe_combine_pairs_kernel(Yp, Ids, Wt, S, X, G, Y, e_lo, e_n, stride_yp, str
     for k in tl.static_range(TOPK):
         e = tl.load(Ids + t * TOPK + k) - e_lo
         if (e >= 0) & (e < e_n):
-            yk = tl.load(Yp + (t * TOPK + k).to(tl.int64) * stride_yp + cols, mask=mask, other=0.0)
+            yk = tl.load(Yp + (t * TOPK + k).to(tl.int64) * stride_yp + cols, mask=mask, other=0.0).to(tl.float32)  # FP32 or BF16 pairs
             v = tl.fma(tl.full([BLOCK], 0.0, tl.float32) + tl.load(Wt + t * TOPK + k), yk, v)
     r = v.to(tl.bfloat16).to(tl.float32)
     s = tl.load(S + t * stride_s + cols, mask=mask, other=0.0).to(tl.float32)

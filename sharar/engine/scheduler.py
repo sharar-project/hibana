@@ -30,6 +30,7 @@ class SchedulerConfig:
     max_queued: int = 16
     chunk_size: int = 2048  # most prompt tokens one request prefills per step
     prefill_budget: int = 4096  # most prompt tokens one step spends across requests (oldest first)
+    solo_chunk_size: int = 0  # chunk and budget when one request prefills and none decodes (0: chunk_size)
     decode_steps_per_chunk: int = 1  # decode steps run after each prefill step
     reserve_tokens: int = 64  # pages kept spare per admitted request for decoding
 
@@ -39,6 +40,8 @@ class SchedulerConfig:
                 raise ValueError(f"{name} must be a positive integer")
         if type(self.reserve_tokens) is not int or self.reserve_tokens < 0:
             raise ValueError("reserve_tokens must be a non-negative integer")
+        if type(self.solo_chunk_size) is not int or self.solo_chunk_size < 0:
+            raise ValueError("solo_chunk_size must be a non-negative integer")
 
 
 @dataclass
@@ -206,16 +209,20 @@ class Scheduler:
 
     def _prefill_step(self) -> None:
         """Spend up to chunk_size prompt tokens on the prefilling requests,
-        oldest first, in one forward."""
+        oldest first, in one forward. A request prefilling alone, with nothing
+        decoding, takes solo_chunk_size: no other request's decode waits on
+        the longer step."""
         # on_progress may cancel an admitted request between the two chunks.
         # Remove it before reserving the next prefill chunk.
         self._reap()
-        budget = self.cfg.prefill_budget
+        budget, chunk = self.cfg.prefill_budget, self.cfg.chunk_size
+        if len(self.prefilling) == 1 and not self.running and self.cfg.solo_chunk_size > chunk:
+            budget = chunk = self.cfg.solo_chunk_size
         chunks: list[tuple[Request, int]] = []
         for req in self.prefilling:
             if budget <= 0:
                 break
-            n = min(budget, self.cfg.chunk_size, req.prefill_len - req.prefill_pos)
+            n = min(budget, chunk, req.prefill_len - req.prefill_pos)
             if n > 0:
                 chunks.append((req, n))
                 budget -= n

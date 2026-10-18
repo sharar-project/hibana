@@ -7,12 +7,26 @@ mix:     normed = grouped_gemma_rms(hyper)                     [T, hc*H], one we
          input  = mean over streams of gate * normed           [T, H]
 combine: inject = 2 * sigmoid(inject(normed) / hc)             [T, hc]
          hyper' = hyper + block_output * inject                 per stream
+
+Prefill-sized calls (`hyper_prefill.ROWS` rows and up) carry `WideNorm` between a combine and the next mix instead
+of the BF16 normalized streams: the kernels in `sharar/kernels/hyper_prefill.py` read the streams about half as often.
 """
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import torch
 import torch.nn.functional as F
+
+
+class WideNorm(NamedTuple):
+    """A site's normalized streams as `hyper_prefill.combine_norm` leaves them: E4M3 with row scales, 1/rms per stream
+    and the site's inject logits (FP32)."""
+    nq: torch.Tensor
+    xs: torch.Tensor
+    rstd: torch.Tensor
+    inj: torch.Tensor | None
 
 
 def grouped_gemma_rms(x: torch.Tensor, weight: torch.Tensor, eps: float, group: int) -> torch.Tensor:
@@ -50,8 +64,25 @@ class HyperConnection:
     def bytes(self) -> int:
         return self.norm.numel() * 2 + self.down.bytes + self.up.bytes + (self.inject.bytes if self.inject is not None else 0)
 
+    def _wide(self, rows: int) -> bool:
+        from sharar.kernels import hyper_prefill
+        return self.fused and rows >= hyper_prefill.ROWS and self.down.scale is not None and self.up.scale is not None
+
+    def _wide_norm(self, hyper: torch.Tensor, block=None, inj=None):
+        from sharar.kernels import hyper_prefill
+        y, nq, xs, rstd, own = hyper_prefill.combine_norm(hyper, block, inj, self.norm, self.inject.weight if self.inject is not None else None,
+                                                          self.hidden, self.eps)
+        return y, WideNorm(nq, xs, rstd, own)
+
     def mix(self, hyper: torch.Tensor, normed=None):
-        """`normed`: (normed, block maxima) of `hyper` under this norm, when the previous `combine` computed them."""
+        """`normed`: (normed, block maxima) of `hyper` under this norm, or a `WideNorm`, when the previous `combine`
+        computed them."""
+        if isinstance(normed, WideNorm) or (normed is None and self._wide(hyper.shape[0])):
+            from sharar.kernels import hyper_prefill
+            if normed is None:
+                _, normed = self._wide_norm(hyper)
+            mixed = hyper_prefill.mix(normed.nq, normed.xs, normed.rstd, hyper, self.down, self.up, self.norm, self.hidden)
+            return mixed, (hyper, normed)
         if self.fused:
             from sharar.kernels import flashnext_fused as fk
             # The norm writes its block maxima, so the down projection's FP8 quantization is one parallel launch (many
@@ -68,6 +99,12 @@ class HyperConnection:
         """hyper'. With `then` (the next hyper-connection, fused), (hyper', (normed, block maxima)) for `then.mix`:
         its norm runs on the combined values in the same pass, so hyper' is not read back."""
         hyper, normed = residuals
+        if isinstance(normed, WideNorm):
+            if then is not None and then._wide(hyper.shape[0]):
+                return then._wide_norm(hyper, block_output, normed.inj)
+            from sharar.kernels import flashnext_fused as fk
+            out = fk.inject_combine(hyper, block_output, normed.inj, self.hc, self.hidden)
+            return (out, None) if then is not None else out
         if self.fused:
             from sharar.kernels import flashnext_fused as fk
             if then is not None and then.fused:
