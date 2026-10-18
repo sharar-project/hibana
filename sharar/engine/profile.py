@@ -18,6 +18,7 @@ class ServingProfile:
     max_queued: int = 16
     chunk_size: int = 2048
     prefill_budget: int = 4096
+    solo_chunk_size: int = 0  # `SchedulerConfig.solo_chunk_size`
 
     def __post_init__(self):
         for name, upper in (("max_context", MAX_CONTEXT), ("max_batch", MAX_BATCH)):

@@ -60,6 +60,8 @@ class Target:
     output_gate: str = "swish"
     # Most prompt tokens one request prefills per step (`ServingProfile.chunk_size`).
     prefill_chunk: int = 2048
+    # The chunk when one request prefills and nothing decodes (`SchedulerConfig.solo_chunk_size`; 0: prefill_chunk).
+    solo_prefill_chunk: int = 0
     # Mixture of experts (0 = dense MLP of `intermediate_size`).
     num_experts: int = 0
     experts_per_token: int = 0
@@ -264,7 +266,7 @@ def _flashnext() -> Target:
         # Every 2K chunk streams all 512 experts' weights (47 GB over the 48 layers); 4K chunks halve that per token
         # (with the MoE's pass-per-block kernel, 16K prompts prefill ~4% faster) for 1 GiB more activations and
         # 2 s instead of 1 s that a step holds other requests' decode (the prefill budget is already 4,096 rows).
-        prefill_chunk=c.PREFILL_CHUNK,
+        prefill_chunk=c.PREFILL_CHUNK, solo_prefill_chunk=c.SOLO_PREFILL_CHUNK,
         num_experts=c.NUM_EXPERTS, experts_per_token=c.EXPERTS_PER_TOKEN, moe_intermediate_size=c.MOE_INTERMEDIATE_SIZE,
         shared_expert_intermediate_size=c.SHARED_EXPERT_INTERMEDIATE_SIZE,
         hc_count=c.HC_COUNT, hc_lowrank=c.HC_LOWRANK,

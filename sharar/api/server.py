@@ -755,7 +755,8 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     ex.enable_ssd_tier(log=log)
     # a burst as wide as the batch must queue, not be refused: the queue holds at least two batches
     cfg = SchedulerConfig(max_running=ex.profile.max_batch, max_queued=max(ex.profile.max_queued, 2 * ex.profile.max_batch),
-                          chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget)
+                          chunk_size=ex.profile.chunk_size, prefill_budget=ex.profile.prefill_budget,
+                          solo_chunk_size=ex.profile.solo_chunk_size)
     sched = Scheduler(ex, cfg)
     if not get_tp_info().is_primary():
         log(f"tensor-parallel rank {get_tp_info().rank}: serving the primary rank's requests")
@@ -786,6 +787,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "max_queued_requests": cfg.max_queued,
         "chunked_prefill_size": cfg.chunk_size,
         "prefill_budget": cfg.prefill_budget,
+        "solo_prefill_chunk": cfg.solo_chunk_size,
         "kv_pages": ex.kv_pool.num_pages,
         "state_slots": ex.state_pool.num_slots,
         "ledger_gib": {k: round(v / 2**30, 2) for k, v in ex.ledger.entries.items()},
