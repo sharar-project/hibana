@@ -57,6 +57,8 @@ def load_nvfp4_experts(w, prefix: str, experts: int, device, rows=None, cols=Non
 
 
 class MoeLayer:
+    budget = 0  # SHARAR_MOE_BUDGET (set in __init__)
+
     def __init__(self, w, prefix: str, device: torch.device, target, linear_cls, precision: str, w3=None):
         """`w3`: this layer's 3-bit experts (kernels/w3_moe.W3Experts, from the W3 checkpoint); the NVFP4 experts are
         then not read at all."""
@@ -79,7 +81,7 @@ class MoeLayer:
         # expert (id = experts), which the w3 kernel skips, or for the NVFP4 experts, which need an expert in every
         # slot, the token's own top 1 at weight 0 (the same bits as leaving the slot out). Keeping topk or more is the
         # served route.
-        for name, v in (("SHARAR_MOE_KEEP", cfg.moe_keep), ("SHARAR_MOE_REUSE", cfg.moe_reuse)):
+        for name, v in (("SHARAR_MOE_KEEP", cfg.moe_keep), ("SHARAR_MOE_REUSE", cfg.moe_reuse), ("SHARAR_MOE_BUDGET", cfg.moe_budget)):
             if v < 0:
                 raise ValueError(f"{name}={v}: a count of experts, or 0 (off)")
         keep = cfg.moe_keep if cfg.moe_keep < self.topk else 0
@@ -87,6 +89,9 @@ class MoeLayer:
         if keep + reuse > self.topk:
             raise ValueError(f"SHARAR_MOE_KEEP + SHARAR_MOE_REUSE = {keep + reuse}: at most {self.topk} experts a token")
         self.keep, self.reuse = keep, reuse
+        # SHARAR_MOE_BUDGET: instead of the reuse rule, the call's experts are chosen for all its rows under a cap
+        # (route_budget); each row keeps its top `keep` and takes up to topk from the chosen set
+        self.budget = cfg.moe_budget if keep else 0
         self.w3 = w3
         if w3 is not None:
             if w3.base + w3.experts > self.experts:
@@ -119,6 +124,11 @@ class MoeLayer:
         logits = x @ self.router.T
         if self.keep and ctx.mode in ("decode", "verify"):
             from sharar.kernels.flashnext_fused import route_subst, route_topk
+            if self.budget:
+                from sharar.kernels.flashnext_fused import route_budget
+                if ctx.mode == "decode":
+                    return route_budget(logits, self.topk, self.keep, self.budget, ctx.slots, repeat=self.w3 is None)
+                return route_budget(logits, self.topk, self.keep, self.budget, ctx.seq_slots, ctx.verify_steps, repeat=self.w3 is None)
             if not self.reuse:
                 return route_topk(logits, self.keep)  # ids and weights [rows, keep]: the routed experts take any k <= 10
             # A graph pads with requests on the dummy state slot 0, which route_subst leaves out of the core. A

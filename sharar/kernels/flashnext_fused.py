@@ -321,6 +321,83 @@ def route_subst(logits: torch.Tensor, k: int, keep: int, slots: torch.Tensor | N
     return ids, w
 
 
+# ---- budgeted expert selection: a cap on the distinct experts a decode or verify call reads ----
+@triton.jit
+def _budget_score_kernel(Slots, Cand, P, Score, R, CP: tl.constexpr, K: tl.constexpr, STEPS: tl.constexpr,
+                         HAS_SLOTS: tl.constexpr, EB: tl.constexpr):
+    """Score[e]: the router probability expert e takes within the top K of the call's real rows, summed in row order
+    (one program per EB experts; no atomics, so the same bits on every run)."""
+    ex = tl.program_id(0) * EB + tl.arange(0, EB)
+    j = tl.arange(0, CP)
+    acc = tl.zeros([EB], dtype=tl.float32)
+    for r in range(R):
+        cand = tl.load(Cand + r * CP + j)
+        p = tl.where(j < K, tl.load(P + r * CP + j), 0.0)
+        if HAS_SLOTS:  # a padded row (dummy slot 0) scores nothing
+            p = tl.where(tl.load(Slots + r // STEPS) != 0, p, 0.0)
+        acc += tl.sum(tl.where(cand[None, :] == ex[:, None], p[None, :], 0.0), 1)
+    tl.store(Score + ex, acc)
+
+
+@triton.jit
+def _budget_select_kernel(Score, Bits, R, Budget, E: tl.constexpr, BLOCK: tl.constexpr, NW: tl.constexpr, RB: tl.constexpr):
+    """The selected set: every real row's top KEEP (the OR of Bits), then the highest-scoring other experts up to Budget
+    in all (equal scores: the lower expert). Written into every row of Bits, which `_subst_pick_kernel` then ORs."""
+    cols = tl.arange(0, BLOCK)
+    w = tl.arange(0, NW)
+    rr = tl.arange(0, RB)
+    core = tl.zeros([NW], dtype=tl.int32)
+    for r0 in range(0, R, RB):
+        b = tl.load(Bits + (r0 + rr)[:, None] * NW + w[None, :], mask=(r0 + rr)[:, None] < R, other=0)
+        core = core | tl.reduce(b, 0, _or)
+    incore = ((tl.gather(core, cols // 32, 0) >> (cols % 32)) & 1) != 0
+    s = tl.load(Score + cols, mask=cols < E, other=0.0)
+    key = tl.where(incore | (s <= 0.0) | (cols >= E), -1.0, s)
+    need = Budget - tl.sum(incore.to(tl.int32), 0)
+    rank = tl.zeros([BLOCK], dtype=tl.int32)  # other experts ahead of each: higher score, or equal and lower id
+    for c0 in tl.static_range(0, BLOCK, 32):
+        f = c0 + tl.arange(0, 32)
+        sf = tl.load(Score + f, mask=f < E, other=0.0)
+        inf = ((tl.gather(core, f // 32, 0) >> (f % 32)) & 1) != 0
+        kf = tl.where(inf | (sf <= 0.0) | (f >= E), -1.0, sf)
+        ahead = (kf[None, :] > key[:, None]) | ((kf[None, :] == key[:, None]) & (f[None, :] < cols[:, None]))
+        rank += tl.sum(ahead.to(tl.int32), 1)
+    sel = incore | ((key > 0.0) & (rank < need))
+    words = tl.sum(tl.reshape(tl.where(sel, 1 << (cols % 32), 0), [NW, 32]), 1)  # distinct bits: the sum is the OR
+    for r in range(R):
+        tl.store(Bits + r * NW + w, words)
+
+
+def route_budget(logits: torch.Tensor, k: int, keep: int, budget: int, slots: torch.Tensor | None = None, steps: int = 1,
+                 repeat: bool = False):
+    """Budgeted top-k: like `route_subst`, but the experts the call reads are chosen for the whole call, under a cap.
+    The set is every real row's top `keep` (guaranteed), then the experts with the most router probability within the
+    real rows' top k, summed over the rows, until it holds `budget` experts (more only when the guaranteed experts
+    alone exceed it). Each real row then takes its candidates (its SUBST_CANDIDATES largest logits) that are in the set,
+    in rank order, up to k: its top `keep` first. Slots, padding, `repeat` and weights as `route_subst`. Four launches,
+    no host sync: graph-capturable."""
+    r, e = logits.shape
+    block, cp = triton.next_power_of_2(e), triton.next_power_of_2(SUBST_CANDIDATES)
+    dev = logits.device
+    cand = torch.empty((r, cp), dtype=torch.int32, device=dev)
+    p = torch.empty((r, cp), dtype=torch.float32, device=dev)
+    bits = torch.empty((r, block // 32), dtype=torch.int32, device=dev)
+    score = torch.empty((block,), dtype=torch.float32, device=dev)
+    ids = torch.empty((r, k), dtype=torch.int32, device=dev)
+    w = torch.empty((r, k), dtype=torch.float32, device=dev)
+    sl = cand if slots is None else slots
+    common = dict(C=SUBST_CANDIDATES, CP=cp, STEPS=steps, HAS_SLOTS=slots is not None)
+    _subst_rank_kernel[(r,)](logits, sl, cand, p, bits, logits.stride(0), e, BLOCK=block, KEEP=keep, num_warps=1, **common)
+    _budget_score_kernel[(block // 32,)](sl, cand, p, score, r, CP=cp, K=k, STEPS=steps, HAS_SLOTS=slots is not None, EB=32, num_warps=1)
+    rb = min(64, max(16, triton.next_power_of_2(r)))
+    _budget_select_kernel[(1,)](score, bits, r, budget, E=e, BLOCK=block, NW=block // 32, RB=rb, num_warps=4)
+    # the rows take their candidates in the set in rank order (KEEP=0: every candidate rank may be taken; a row's top
+    # `keep` are in the set, so they come first)
+    _subst_pick_kernel[(triton.cdiv(r, rb),)](sl, cand, p, bits, ids, w, r, k, NW=block // 32, RB=rb, num_warps=4,
+                                              KP=triton.next_power_of_2(k), NONE=e, REPEAT=repeat, KEEP=0, **common)
+    return ids, w
+
+
 # ---- MoE combine: out = routed + sigmoid(x . g) * shared ----
 @triton.jit
 def _moe_combine_kernel(R, S, X, G, Y, stride_r, stride_s, stride_x, stride_y, H: tl.constexpr, BLOCK: tl.constexpr, DBLOCK: tl.constexpr):

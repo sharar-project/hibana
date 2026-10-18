@@ -111,6 +111,7 @@ class EngineConfig:
     debug_sync: bool = False                  # SHARAR_DEBUG_SYNC
     bench_verify_state: str = "snapshots"     # SHARAR_BENCH_VERIFY_STATE
     moe_keep: int = 0                         # SHARAR_MOE_KEEP=k: Flash-Next, each token keeps its own top k experts in decode and verify forwards (model/flashnext/moe.py); 0, or k of 10 and above: the served top-10
+    moe_budget: int = 0                       # SHARAR_MOE_BUDGET=B: Flash-Next decode and verify calls read at most B distinct experts (more only for the rows' guaranteed top SHARAR_MOE_KEEP): those with the most router probability across the call's rows; replaces the reuse rule (route_budget); 0: off
     moe_reuse: int = 0                        # SHARAR_MOE_REUSE=r: up to r more experts a token from its ranks k+1..20, only ones the call's other tokens keep (k + r <= 10), so the call reads no expert beyond the tokens' top k
 
     def __post_init__(self) -> None:
@@ -176,6 +177,7 @@ class EngineConfig:
             bench_verify_state=e.get("SHARAR_BENCH_VERIFY_STATE", "snapshots"),
             moe_keep=_int(e, "SHARAR_MOE_KEEP", 0),
             moe_reuse=_int(e, "SHARAR_MOE_REUSE", 0),
+            moe_budget=_int(e, "SHARAR_MOE_BUDGET", 0),
         )
 
     def replace(self, **changes) -> EngineConfig:
