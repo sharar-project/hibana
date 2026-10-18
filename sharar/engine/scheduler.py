@@ -2,8 +2,9 @@
 
 One `step()` does, in order: release finished or cancelled requests, admit
 queued requests while there is room (FCFS, bounded by max_running, max_queued
-and the pools), run one prefill chunk for the oldest request still prefilling,
-and run one decode step for every running request. Prefill chunks and decode
+and the pools), run prefill chunks for the requests still prefilling (shortest
+remaining prompt first, so a short prompt does not wait behind a long one), and
+run one decode step for every running request. Prefill chunks and decode
 steps are separate forwards; interleaving them bounds the decode stall to one
 chunk and keeps the CUDA-graph decode path. Retraction under memory pressure
 frees the newest running request back to the queue.
@@ -31,6 +32,7 @@ class SchedulerConfig:
     chunk_size: int = 2048  # most prompt tokens one request prefills per step
     prefill_budget: int = 4096  # most prompt tokens one step spends across requests (oldest first)
     solo_chunk_size: int = 0  # chunk and budget when one request prefills and none decodes (0: chunk_size)
+    prefill_max_waits: int = 4  # prefill steps a request may be passed over before it goes first (bounds its wait)
     decode_steps_per_chunk: int = 1  # decode steps run after each prefill step
     reserve_tokens: int = 64  # pages kept spare per admitted request for decoding
 
@@ -42,6 +44,8 @@ class SchedulerConfig:
             raise ValueError("reserve_tokens must be a non-negative integer")
         if type(self.solo_chunk_size) is not int or self.solo_chunk_size < 0:
             raise ValueError("solo_chunk_size must be a non-negative integer")
+        if type(self.prefill_max_waits) is not int or self.prefill_max_waits < 1:
+            raise ValueError("prefill_max_waits must be a positive integer")
 
 
 @dataclass
@@ -93,6 +97,7 @@ class Scheduler:
         # Optional engine/traces.py sink; recording is decided per request at submission.
         self.sink = None
         self.queue: list[Request] = []
+        self._prefill_waits: dict[int, int] = {}  # request id -> prefill steps passed over in a row
         self.prefilling: list[Request] = []
         self.running: list[Request] = []
         self.metrics = Metrics()
@@ -208,10 +213,13 @@ class Scheduler:
             self.metrics.admitted += 1
 
     def _prefill_step(self) -> None:
-        """Spend up to chunk_size prompt tokens on the prefilling requests,
-        oldest first, in one forward. A request prefilling alone, with nothing
-        decoding, takes solo_chunk_size: no other request's decode waits on
-        the longer step."""
+        """Spend up to prefill_budget prompt tokens (at most chunk_size each) on
+        the prefilling requests in one forward: the fewest remaining prompt
+        tokens first (shortest-remaining-first minimizes the mean time to first
+        token; ties keep admission order), except that a request passed over
+        prefill_max_waits steps in a row goes first. A request prefilling
+        alone, with nothing decoding, takes solo_chunk_size: no other request's
+        decode waits on the longer step."""
         # on_progress may cancel an admitted request between the two chunks.
         # Remove it before reserving the next prefill chunk.
         self._reap()
@@ -219,13 +227,17 @@ class Scheduler:
         if len(self.prefilling) == 1 and not self.running and self.cfg.solo_chunk_size > chunk:
             budget = chunk = self.cfg.solo_chunk_size
         chunks: list[tuple[Request, int]] = []
-        for req in self.prefilling:
+        waits = self._prefill_waits
+        order = sorted(self.prefilling, key=lambda r: (waits.get(r.request_id, 0) < self.cfg.prefill_max_waits, r.prefill_len - r.prefill_pos))
+        for req in order:
             if budget <= 0:
                 break
             n = min(budget, chunk, req.prefill_len - req.prefill_pos)
             if n > 0:
                 chunks.append((req, n))
                 budget -= n
+        served = {r.request_id for r, _ in chunks}
+        self._prefill_waits = {r.request_id: 0 if r.request_id in served else waits.get(r.request_id, 0) + 1 for r in self.prefilling}
         if not chunks:
             return
         try:

@@ -284,3 +284,42 @@ def test_solo_chunk_defaults_off():
     submit(sched, ex, 10_000, 2)
     sched.step()
     assert sizes == [[2048], [2048]]
+
+
+def test_short_prompt_is_not_stuck_behind_a_long_prefill():
+    """Shortest remaining prompt first: a chat arriving while a 32K prompt prefills gets its first token after about
+    one chunk, not after the whole long prompt; the long prompt is delayed by the short one's tokens only."""
+    ex = FakeExecutor()
+    sched = Scheduler(ex, SchedulerConfig(chunk_size=4096, prefill_budget=4096, solo_chunk_size=8192))
+    long = submit(sched, ex, 32768, 64)
+    sched.step()
+    short = submit(sched, ex, 200, 64)
+    run(sched, ex)
+    assert ttft(short) < 2.5, ttft(short)  # one 4K chunk at 2.5K tok/s, plus a decode step
+    alone = FakeExecutor()
+    solo = Scheduler(alone, SchedulerConfig(chunk_size=4096, prefill_budget=4096, solo_chunk_size=8192))
+    only = submit(solo, alone, 32768, 64)
+    run(solo, alone)
+    assert ttft(long) - ttft(only) < 1.0, (ttft(long), ttft(only))
+
+
+def test_a_long_prefill_still_advances_under_a_stream_of_short_prompts():
+    """A request passed over prefill_max_waits steps goes first, so arrivals that each fit the budget cannot starve it."""
+    ex = FakeExecutor()
+    sizes = []
+    original = ex.prefill_batch
+    ex.prefill_batch = lambda chunks: (sizes.append({r.request_id: n for r, n in chunks}), original(chunks))
+    sched = Scheduler(ex, SchedulerConfig(max_running=64, max_queued=64, chunk_size=4096, prefill_budget=4096, prefill_max_waits=2))
+    long = submit(sched, ex, 20_000, 4)
+    for _ in range(12):
+        for _ in range(3):
+            submit(sched, ex, 1500, 4)  # three short prompts (4,500 tokens) a step: more than the budget
+        sched.step()
+    # passed over at most prefill_max_waits steps in a row, then served first: within 12 steps of a load that alone
+    # exceeds the budget, the 20K prompt is done (FCFS would take 5 prefills; it gets them within 3 x 5 + slack)
+    gaps, run_ = [], 0
+    for s in sizes:
+        run_ = 0 if long.request_id in s or long.prefill_done else run_ + 1
+        gaps.append(run_)
+    assert max(gaps) <= 2 * sched.cfg.prefill_max_waits, gaps
+    assert long.prefill_done, long.prefill_pos
