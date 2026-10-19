@@ -1,7 +1,7 @@
 # Adapt from https://github.com/fla-org/flash-linear-attention/blob/main/fla/modules/layernorm_gated.py
 # Copyright (c) 2024, Tri Dao.
 # Based on the Triton LayerNorm tutorial: https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
-# Forward only (the gated RMS norm of the GDN layers), CUDA only.
+# Forward only: the gated RMS norm (norm before gate, no bias) of the GDN layers, CUDA only.
 
 from functools import lru_cache
 
@@ -21,9 +21,7 @@ def _layer_norm_fwd_1pass_kernel(
     X,  # pointer to the input
     Y,  # pointer to the output
     W,  # pointer to the weights
-    B,  # pointer to the biases
     Z,  # pointer to the other branch
-    Mean,  # pointer to the mean
     Rstd,  # pointer to the 1/std
     stride_x_row,  # how much to increase the pointer when moving by 1 row
     stride_y_row,
@@ -33,10 +31,7 @@ def _layer_norm_fwd_1pass_kernel(
     eps,  # epsilon to avoid division by zero
     BLOCK_N: tl.constexpr,
     ROWS_PER_BLOCK: tl.constexpr,
-    HAS_BIAS: tl.constexpr,
     HAS_Z: tl.constexpr,
-    NORM_BEFORE_GATE: tl.constexpr,
-    IS_RMS_NORM: tl.constexpr,
     ACTIVATION: tl.constexpr,
     USE_GDC: tl.constexpr = False,
 ):
@@ -67,28 +62,9 @@ def _layer_norm_fwd_1pass_kernel(
     # Load input data with 2D tile
     x = tl.load(X_base, mask=mask, other=0.0).to(tl.float32)
 
-    if HAS_Z and not NORM_BEFORE_GATE:
-        Z_base = Z + rows[:, None] * stride_z_row + col_offsets
-        z = tl.load(Z_base, mask=mask, other=0.0).to(tl.float32)
-        if ACTIVATION == "swish" or ACTIVATION == "silu":
-            x *= z * tl.sigmoid(z)
-        elif ACTIVATION == "sigmoid":
-            x *= tl.sigmoid(z)
-
-    # Compute mean and variance per row (reduce along axis 1)
-    if not IS_RMS_NORM:
-        mean = tl.sum(x, axis=1) / N  # Shape: [ROWS_PER_BLOCK]
-        # Store mean for each row
-        mean_offsets = group * M + rows
-        mean_mask = rows < M
-        tl.store(Mean + mean_offsets, mean, mask=mean_mask)
-        # Broadcast mean back to 2D for subtraction
-        xbar = tl.where(mask, x - mean[:, None], 0.0)
-        var = tl.sum(xbar * xbar, axis=1) / N  # Shape: [ROWS_PER_BLOCK]
-    else:
-        xbar = tl.where(mask, x, 0.0)
-        var = tl.sum(xbar * xbar, axis=1) / N  # Shape: [ROWS_PER_BLOCK]
-        mean = 0.0  # Placeholder for RMS norm
+    # Mean square per row (reduce along axis 1)
+    xbar = tl.where(mask, x, 0.0)
+    var = tl.sum(xbar * xbar, axis=1) / N  # Shape: [ROWS_PER_BLOCK]
 
     rstd = tl.rsqrt(var + eps)  # Shape: [ROWS_PER_BLOCK]
 
@@ -97,23 +73,16 @@ def _layer_norm_fwd_1pass_kernel(
     rstd_mask = rows < M
     tl.store(Rstd + rstd_offsets, rstd, mask=rstd_mask)
 
-    # Load weights and biases (broadcast across rows)
+    # Weights broadcast across rows
     w_offsets = cols + group * N
     w_mask = cols < N
     w = tl.load(W + w_offsets, mask=w_mask, other=0.0).to(tl.float32)
 
-    if HAS_BIAS:
-        b = tl.load(B + w_offsets, mask=w_mask, other=0.0).to(tl.float32)
+    x_hat = x * rstd[:, None]
 
-    # Normalize and apply linear transformation
-    if not IS_RMS_NORM:
-        x_hat = (x - mean[:, None]) * rstd[:, None]
-    else:
-        x_hat = x * rstd[:, None]
+    y = x_hat * w[None, :]
 
-    y = x_hat * w[None, :] + b[None, :] if HAS_BIAS else x_hat * w[None, :]
-
-    if HAS_Z and NORM_BEFORE_GATE:
+    if HAS_Z:
         Z_base = Z + rows[:, None] * stride_z_row + col_offsets
         z = tl.load(Z_base, mask=mask, other=0.0).to(tl.float32)
         if ACTIVATION == "swish" or ACTIVATION == "silu":
@@ -148,13 +117,9 @@ def calc_rows_per_block(M: int, device: torch.device) -> int:
 def _layer_norm_fwd(
     x,
     weight,
-    bias,
     eps,
     z=None,
-    out=None,
     group_size=None,
-    norm_before_gate=True,
-    is_rms_norm=False,
     activation: str = "swish",
 ):
     M, N = x.shape
@@ -168,20 +133,8 @@ def _layer_norm_fwd(
         assert z.shape == (M, N)
     assert weight.shape == (N,)
     assert weight.stride(-1) == 1
-    if bias is not None:
-        assert bias.stride(-1) == 1
-        assert bias.shape == (N,)
-    # allocate output
-    if out is not None:
-        assert out.shape == x.shape
-    else:
-        out = torch.empty_like(x)
+    out = torch.empty_like(x)
     assert out.stride(-1) == 1
-    mean = (
-        torch.empty((ngroups * M,), dtype=torch.float32, device=x.device)
-        if not is_rms_norm
-        else None
-    )
     rstd = torch.empty((ngroups * M,), dtype=torch.float32, device=x.device)
     # Less than 64KB per feature: enqueue fused kernel
     MAX_FUSED_SIZE = 65536 // x.element_size()
@@ -200,9 +153,7 @@ def _layer_norm_fwd(
             x,
             out,
             weight,
-            bias,
             z,
-            mean,
             rstd,
             x.stride(0),
             out.stride(0),
@@ -212,30 +163,24 @@ def _layer_norm_fwd(
             eps,
             BLOCK_N=BLOCK_N,
             ROWS_PER_BLOCK=rows_per_block,
-            HAS_BIAS=bias is not None,
             HAS_Z=z is not None,
-            NORM_BEFORE_GATE=norm_before_gate,
-            IS_RMS_NORM=is_rms_norm,
             num_warps=num_warps,
             ACTIVATION=activation,
             **pdl_kwargs,
         )
-    return out, mean, rstd
+    return out, rstd
 
 
 def rms_norm_gated(
     *,
     x,
     weight,
-    bias,
     z=None,
     eps=1e-6,
     group_size=None,
-    norm_before_gate=True,
-    is_rms_norm=False,
     activation: str = "swish",
 ):
-    """If z is not None, we do norm(x) * silu(z) if norm_before_gate, else norm(x * silu(z))"""
+    """Grouped RMS norm of x, then times activation(z) when z is given ("swish"/"silu" or "sigmoid")."""
 
     x_shape_og = x.shape
     # reshape input data into 2D tensor
@@ -248,17 +193,12 @@ def rms_norm_gated(
         if z.stride(-1) != 1:
             z = z.contiguous()
     weight = weight.contiguous()
-    if bias is not None:
-        bias = bias.contiguous()
-    y, mean, rstd = _layer_norm_fwd(
+    y, rstd = _layer_norm_fwd(
         x,
         weight,
-        bias,
         eps,
         z=z,
         group_size=group_size,
-        norm_before_gate=norm_before_gate,
-        is_rms_norm=is_rms_norm,
         activation=activation,
     )
     return y.reshape(x_shape_og)

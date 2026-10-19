@@ -14,7 +14,7 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
     dt_bias,
     softplus_beta,
     softplus_threshold,
-    lower_bound,
+    lower_bound,  # unused; kept so the kernel's parameter layout (and its compiled code) stays as vendored
     q,
     k,
     v,
@@ -24,14 +24,9 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
     h0_indices,
     stride_h0_source,
     cu_seqlens,
-    # Parameters for target_verify support (unused for decode)
     intermediate_states_buffer,
     intermediate_state_indices,
     cache_steps,
-    retrieve_parent_token_ptr,
-    stride_retrieve_parent_token_seq: tl.constexpr,
-    stride_retrieve_parent_token_token: tl.constexpr,
-    # ================================================
     scale,
     T,
     stride_a,
@@ -39,7 +34,6 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
     stride_k,
     stride_v,
     stride_b,
-    NP2_T: tl.constexpr,
     B: tl.constexpr,
     H: tl.constexpr,
     HV: tl.constexpr,
@@ -50,15 +44,10 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
     USE_INITIAL_STATE: tl.constexpr,
     USE_QK_L2NORM_IN_KERNEL: tl.constexpr,
     IS_VARLEN: tl.constexpr,
-    IS_KDA: tl.constexpr,
-    USE_LOWER_BOUND: tl.constexpr,
-    # Optional flags for target_verify support (default False for decode)
     DISABLE_STATE_UPDATE: tl.constexpr = False,
     CACHE_INTERMEDIATE_STATES: tl.constexpr = False,
-    HAS_EAGLE_TREE_CUSTOM_ATTN_MASK: tl.constexpr = False,
-    # ReplaySSM fused ring-write. Pointers stay None and CACHE_RING False for
-    # decode / flag-off -> byte-identical. The gate ring layout follows IS_KDA
-    # (see the store below).
+    # Accepted-state ring write (`AcceptedState.layer_inputs`). Pointers stay
+    # None and CACHE_RING False when the round has no replay.
     replayssm_rawv=None,
     replayssm_rawk=None,
     replayssm_g=None,
@@ -70,22 +59,16 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
     MAX_CACHE_LEN: tl.constexpr = 0,
     CACHE_RING: tl.constexpr = False,
     RING_USES_SCRATCH: tl.constexpr = False,
-    SPLIT_N_HV_GRID: tl.constexpr = False,
     USE_GDC: tl.constexpr = False,
 ):
     """
     Fused kernel that combines sigmoid gating computation with recurrent delta rule update.
     """
-    if SPLIT_N_HV_GRID:
-        i_v, i_n, i_hv = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-        # The GPU wrapper asserts NK == 1. Keep N and HV on independent grid
-        # axes so large GLM5 decode batches do not exceed CUDA's grid limit.
-        i_k = 0
-    else:
-        i_k, i_v, i_nh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-        i_n, i_hv = i_nh // HV, i_nh % HV
-    # PDL: overlap this kernel's prologue with the producer (the KDA/GDN
-    # conv1d_update). All global loads below happen after the wait, so
+    i_v, i_n, i_hv = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    # The wrapper asserts NK == 1. N and HV sit on independent grid axes.
+    i_k = 0
+    # PDL: overlap this kernel's prologue with the producer (the verify
+    # convolution). All global loads below happen after the wait, so
     # numerics are unchanged. The immediate trigger releases the LAUNCH of
     # the next PDL kernel so its prologue overlaps this whole body;
     # consumers' own gdc_wait still fences on full completion.
@@ -117,12 +100,8 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
 
     # Gating computation pointers
     p_A_log = A_log + i_hv
-    if IS_KDA:
-        p_a = a + bos * stride_a + i_hv * K + o_k
-        p_dt_bias = dt_bias + i_hv * K + o_k
-    else:
-        p_a = a + bos * stride_a + i_hv
-        p_dt_bias = dt_bias + i_hv
+    p_a = a + bos * stride_a + i_hv
+    p_dt_bias = dt_bias + i_hv
 
     mask_k = o_k < K
     mask_v = o_v < V
@@ -130,10 +109,8 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
 
     b_h = tl.zeros([BK, BV], dtype=tl.float32)
     if USE_INITIAL_STATE:
-        # Slot stride comes from the caller (h0_source.stride(0)): the state pool
-        # may be an envelope-strided view (page-major / unified memory), where the
-        # per-slot pitch spans ALL layers' state, not HV*K*V. int64: envelope
-        # pitches overflow an int32 index product.
+        # Slot pitch comes from the caller (h0_source.stride(0)); int64 so the
+        # slot * pitch product cannot overflow.
         idx = tl.load(h0_indices + i_n).to(tl.int64)
         if idx >= 0:
             p_h0 = (
@@ -145,19 +122,6 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
             )
             b_h += tl.load(p_h0, mask=mask_h, other=0).to(tl.float32)
 
-    # Preload tree attention data if needed
-    if HAS_EAGLE_TREE_CUSTOM_ATTN_MASK:
-        token_indices = tl.arange(0, NP2_T)
-        mask_retrieve = token_indices < T
-        retrieve_parent_token_base = (
-            retrieve_parent_token_ptr
-            + (i_n * stride_retrieve_parent_token_seq)
-            + token_indices * stride_retrieve_parent_token_token
-        )
-        parent_idx_tokens = tl.load(
-            retrieve_parent_token_base, mask=mask_retrieve, other=0
-        )
-
     # Prepare intermediate state cache index if enabled. int64: the buffer is
     # contiguous but `cache_idx * cache_steps * HV * K * V` can exceed int32 for
     # large slot counts.
@@ -167,54 +131,26 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
 
     step_idx = 0
     for _ in range(0, T):
-        # Tree attention: load parent's cached state
-        if HAS_EAGLE_TREE_CUSTOM_ATTN_MASK:
-            # step_idx == 0 uses b_h from USE_INITIAL_STATE
-            if step_idx != 0 and cache_idx >= 0:
-                parent_step_idx = tl.sum(
-                    tl.where(token_indices == step_idx, parent_idx_tokens, 0)
-                )
-                step_offset = parent_step_idx * HV * K * V
-                cache_ptr = (
-                    intermediate_states_buffer
-                    + cache_idx * cache_steps * HV * K * V
-                    + step_offset
-                    + i_hv * K * V
-                    + o_v[None, :] * K
-                    + o_k[:, None]
-                )
-                b_h = tl.load(cache_ptr, mask=mask_h, other=0).to(tl.float32)
-
         # Load inputs
         b_q = tl.load(p_q, mask=mask_k, other=0).to(tl.float32)
         b_k = tl.load(p_k, mask=mask_k, other=0).to(tl.float32)
         b_v = tl.load(p_v, mask=mask_v, other=0).to(tl.float32)
         b_b = tl.load(p_b).to(tl.float32)
 
-        # Compute sigmoid gating
-        # Load gating parameters
+        # Gating parameters
         b_A_log = tl.load(p_A_log).to(tl.float32)
-        if IS_KDA:
-            b_a = tl.load(p_a, mask=mask_k, other=0).to(tl.float32)
-            b_dt_bias = tl.load(p_dt_bias, mask=mask_k, other=0).to(tl.float32)
-        else:
-            b_a = tl.load(p_a).to(tl.float32)
-            b_dt_bias = tl.load(p_dt_bias).to(tl.float32)
+        b_a = tl.load(p_a).to(tl.float32)
+        b_dt_bias = tl.load(p_dt_bias).to(tl.float32)
 
         x = b_a + b_dt_bias
-        if USE_LOWER_BOUND:
-            # KDA safe gate: lower_bound * sigmoid(exp(A_log) * (a + dt_bias))
-            b_g = lower_bound * tl.sigmoid(tl.exp(b_A_log) * x)
-        else:
-            # Compute g = -exp(A_log) * softplus(a + dt_bias)
-            beta_x = softplus_beta * x
-            # Apply softplus with numerical stability
-            softplus_x = tl.where(
-                beta_x <= softplus_threshold,
-                (1.0 / softplus_beta) * tl.log(1.0 + tl.exp(beta_x)),
-                x,
-            )
-            b_g = -tl.exp(b_A_log) * softplus_x
+        # g = -exp(A_log) * softplus(a + dt_bias), softplus guarded by its threshold
+        beta_x = softplus_beta * x
+        softplus_x = tl.where(
+            beta_x <= softplus_threshold,
+            (1.0 / softplus_beta) * tl.log(1.0 + tl.exp(beta_x)),
+            x,
+        )
+        b_g = -tl.exp(b_A_log) * softplus_x
 
         # Compute beta = sigmoid(b)
         b_beta = 1.0 / (1.0 + tl.exp(-b_b))
@@ -252,30 +188,14 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
                         b_k.to(replayssm_rawk.dtype.element_ty),
                         mask=mask_k & (i_hv % (HV // H) == 0),
                     )
-                    # b_g follows IS_KDA: KDA loads a/dt_bias with mask_k, so the
-                    # gate is a per-K vector and the ring row is K wide; GDN's is
-                    # a scalar per (head, step). The two layouts are not
-                    # interchangeable -- storing one into the other's stride is a
-                    # shape error, not a slow path -- and memory_pool.py sizes
-                    # replayssm_g off the same is_kda test.
-                    if IS_KDA:
-                        tl.store(
-                            replayssm_g
-                            + ring_slot * stride_g_slot
-                            + i_hv * MAX_CACHE_LEN * K
-                            + step_idx * K
-                            + o_k,
-                            b_g,
-                            mask=mask_k,
-                        )
-                    else:
-                        tl.store(
-                            replayssm_g
-                            + ring_slot * stride_g_slot
-                            + i_hv * MAX_CACHE_LEN
-                            + step_idx,
-                            b_g,
-                        )
+                    # The gate is one scalar per (v-head, step).
+                    tl.store(
+                        replayssm_g
+                        + ring_slot * stride_g_slot
+                        + i_hv * MAX_CACHE_LEN
+                        + step_idx,
+                        b_g,
+                    )
                     if i_k == 0:
                         tl.store(
                             replayssm_beta
@@ -293,10 +213,7 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
         b_q = b_q * scale
 
         # Apply gating to hidden state: h *= exp(g)
-        if IS_KDA:
-            b_h *= tl.exp(b_g[:, None])
-        else:
-            b_h *= tl.exp(b_g)
+        b_h *= tl.exp(b_g)
 
         # Delta rule: v -= sum(h * k, dim=0)
         b_v -= tl.sum(b_h * b_k[:, None], 0)
@@ -362,20 +279,14 @@ def fused_sigmoid_gating_delta_rule_update(
     b: torch.Tensor,
     initial_state_source: torch.Tensor,
     initial_state_indices: torch.Tensor,
-    scale: Optional[float] = None,
     use_qk_l2norm_in_kernel: bool = False,
     cu_seqlens: Optional[torch.Tensor] = None,
-    is_kda: bool = False,
-    lower_bound: Optional[float] = None,
-    # Optional parameters for target_verify support
     disable_state_update: bool = False,
     intermediate_states_buffer: Optional[torch.Tensor] = None,
     intermediate_state_indices: Optional[torch.Tensor] = None,
     cache_steps: Optional[int] = None,
-    retrieve_parent_token: Optional[torch.Tensor] = None,
-    # fused ReplaySSM ring-write (spec verify). When cache_ring, each draft step
-    # stores pre-norm k / raw v / gate / beta into these per-slot rings,
-    # replacing the eager ring-write. Off by default -> decode unchanged.
+    # Accepted-state ring write (spec verify): with cache_ring each step stores
+    # pre-norm k / raw v / gate / beta into these per-slot rings.
     cache_ring: bool = False,
     ring_uses_scratch: bool = False,
     replayssm_rawv: Optional[torch.Tensor] = None,
@@ -384,26 +295,18 @@ def fused_sigmoid_gating_delta_rule_update(
     replayssm_beta: Optional[torch.Tensor] = None,
 ):
     """
-    Fused triton implementation of sigmoid gating delta rule update.
-    This function uses a single fused kernel that combines both sigmoid gating computation
-    and the recurrent delta rule update for better performance.
-
-    Supports both decode and target_verify modes:
-    - decode: standard single-step update with state write-back
-    - target_verify: multi-step with intermediate state caching, optional tree attention,
-                     and optional state update disable
+    Fused sigmoid gating + gated delta rule recurrence for speculative verify:
+    each sequence's tokens run from its committed state, optionally caching the
+    state after every token (`intermediate_states_buffer`) and the ring inputs
+    (`cache_ring`); `disable_state_update` leaves the committed state untouched.
     """
     B, T, H, K, V = *k.shape, v.shape[-1]
     stride_q = q.stride()[1]
     stride_k = k.stride()[1]
     stride_v = v.stride()[1]
     stride_b = b.stride()[-2]
-    # Both paths (KDA/GDN) advance p_a once per token, so use the token-axis stride.
-    # For 2D a ([T, ...]) this is stride(0); for 3D a ([B, T, ...]) this is stride(1).
-    # Using stride()[-2] covers GDN [T, HV] and KDA layouts ([T, HV*K] / [B, T, HV*K]).
-    # KDA decode also passes 4-D [B, T, H, K], where [-2] is the head stride, not the
-    # token stride; take dim 1 explicitly for that layout.
-    stride_a = a.stride()[1] if a.ndim == 4 else a.stride()[-2]
+    # p_a advances once per token: the token-axis stride of the [T, HV] gate input.
+    stride_a = a.stride()[-2]
     HV = v.shape[2]
     N = B if cu_seqlens is None else len(cu_seqlens) - 1
     BK, BV = triton.next_power_of_2(K), min(triton.next_power_of_2(V), 32)
@@ -412,28 +315,14 @@ def fused_sigmoid_gating_delta_rule_update(
     num_stages = 3
     num_warps = 1
 
-    if scale is None:
-        scale = k.shape[-1] ** -0.5
-    else:
-        assert scale > 0, "scale must be positive"
+    scale = k.shape[-1] ** -0.5
 
     o = q.new_empty(NK, *v.shape)
 
-    # Prepare retrieve_parent_token strides
-    if retrieve_parent_token is not None:
-        stride_retrieve_parent_token_seq = retrieve_parent_token.stride(0)
-        stride_retrieve_parent_token_token = retrieve_parent_token.stride(1)
-    else:
-        stride_retrieve_parent_token_seq = 0
-        stride_retrieve_parent_token_token = 0
+    grid = (NV, N, HV)
 
-    NP2_T = triton.next_power_of_2(T)
-
-    split_n_hv_grid = q.device.type == "cuda"
-    grid = (NV, N, HV) if split_n_hv_grid else (NK, NV, N * HV)
-
-    # Adaptive spec changes the runtime draft count without changing the
-    # allocated per-request pitch, which is preserved in stride(0).
+    # The per-request pitch of the intermediate buffer is its stride(0), which
+    # can exceed this round's step count.
     if intermediate_states_buffer is not None:
         cache_stride_steps = intermediate_states_buffer.stride(0) // (HV * K * V)
     elif cache_steps is not None and cache_steps > 0:
@@ -445,14 +334,11 @@ def fused_sigmoid_gating_delta_rule_update(
     # the kernel offsets within a slot with MAX_CACHE_LEN and the dim extents).
     if cache_ring:
         # stride(0) is used as the slot pitch, so a tensor still carrying the
-        # layer dim would scribble outside its slot. The gate ring is the one
-        # whose rank depends on the model: per-K vector for KDA, per-head scalar
-        # for GDN, matching g_shape in memory_pool.py and the IS_KDA branch in
-        # the store above.
+        # layer dim would scribble outside its slot.
         assert (
             replayssm_rawv.dim() == 4
             and replayssm_rawk.dim() == 4
-            and replayssm_g.dim() == (4 if is_kda else 3)
+            and replayssm_g.dim() == 3
             and replayssm_beta.dim() == 3
         ), "cache_ring expects per-layer ring views"
         max_cache_len = replayssm_rawv.shape[-2]
@@ -464,9 +350,8 @@ def fused_sigmoid_gating_delta_rule_update(
         max_cache_len = 0
         stride_rawv_slot = stride_rawk_slot = stride_g_slot = stride_beta_slot = 0
 
-    # PDL (sm90+): chain this kernel behind its producer conv1d_update, which
-    # already launches dependents. Bit-exact (scheduling only) — benefits both
-    # KDA and GDN recurrent paths.
+    # PDL (sm90+): chain this kernel behind its producer, which already
+    # launches dependents. Bit-exact (scheduling only).
     pdl_kwargs = {"USE_GDC": True, "launch_pdl": True} if is_arch_support_pdl() else {}
 
     fused_sigmoid_gating_delta_rule_update_kernel[grid](
@@ -475,7 +360,7 @@ def fused_sigmoid_gating_delta_rule_update(
         dt_bias=dt_bias,
         softplus_beta=softplus_beta,
         softplus_threshold=softplus_threshold,
-        lower_bound=lower_bound if lower_bound is not None else 0.0,
+        lower_bound=0.0,
         q=q,
         k=k,
         v=v,
@@ -483,8 +368,6 @@ def fused_sigmoid_gating_delta_rule_update(
         o=o,
         h0_source=initial_state_source,
         h0_indices=initial_state_indices,
-        # Envelope-strided state pools (page-major / unified memory) have a
-        # per-slot pitch != HV*K*V; contiguous pools pass exactly HV*K*V.
         stride_h0_source=(
             initial_state_source.stride(0) if initial_state_source is not None else 0
         ),
@@ -492,9 +375,6 @@ def fused_sigmoid_gating_delta_rule_update(
         intermediate_states_buffer=intermediate_states_buffer,
         intermediate_state_indices=intermediate_state_indices,
         cache_steps=cache_stride_steps,
-        retrieve_parent_token_ptr=retrieve_parent_token,
-        stride_retrieve_parent_token_seq=stride_retrieve_parent_token_seq,
-        stride_retrieve_parent_token_token=stride_retrieve_parent_token_token,
         scale=scale,
         T=T,
         stride_a=stride_a,
@@ -502,7 +382,6 @@ def fused_sigmoid_gating_delta_rule_update(
         stride_k=stride_k,
         stride_v=stride_v,
         stride_b=stride_b,
-        NP2_T=NP2_T,
         B=B,
         H=H,
         HV=HV,
@@ -513,11 +392,8 @@ def fused_sigmoid_gating_delta_rule_update(
         USE_INITIAL_STATE=initial_state_source is not None,
         USE_QK_L2NORM_IN_KERNEL=use_qk_l2norm_in_kernel,
         IS_VARLEN=cu_seqlens is not None,
-        IS_KDA=is_kda,
-        USE_LOWER_BOUND=lower_bound is not None,
         DISABLE_STATE_UPDATE=disable_state_update,
         CACHE_INTERMEDIATE_STATES=intermediate_states_buffer is not None,
-        HAS_EAGLE_TREE_CUSTOM_ATTN_MASK=retrieve_parent_token is not None,
         replayssm_rawv=replayssm_rawv,
         replayssm_rawk=replayssm_rawk,
         replayssm_g=replayssm_g,
@@ -529,7 +405,6 @@ def fused_sigmoid_gating_delta_rule_update(
         MAX_CACHE_LEN=max_cache_len,
         CACHE_RING=cache_ring,
         RING_USES_SCRATCH=ring_uses_scratch,
-        SPLIT_N_HV_GRID=split_n_hv_grid,
         num_warps=num_warps,
         num_stages=num_stages,
         **pdl_kwargs,
