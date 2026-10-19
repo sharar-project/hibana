@@ -138,6 +138,7 @@ class EngineConfig:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> EngineConfig:
         e = os.environ if env is None else env
+        budget = _budget(e)  # (per request, cap)
         return cls(
             profile=_str(e, "SHARAR_PROFILE", "fast"),
             target=_str(e, "SHARAR_TARGET"),
@@ -187,8 +188,8 @@ class EngineConfig:
             debug_sync=_flag(e, "SHARAR_DEBUG_SYNC"),
             bench_verify_state=e.get("SHARAR_BENCH_VERIFY_STATE", "snapshots"),
             moe_keep=_int(e, "SHARAR_MOE_KEEP", 0),
-            moe_budget=_budget(e)[1],
-            moe_budget_per_request=_budget(e)[0],
+            moe_budget=budget[1],
+            moe_budget_per_request=budget[0],
         )
 
     def replace(self, **changes) -> EngineConfig:
