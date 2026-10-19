@@ -79,7 +79,7 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 | Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | Flash-Next top-3 within 2.0; the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
 | Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next also its routed experts) | off | on | on |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next only | as fast |
-| Batch-aware expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_REUSE`, `SHARAR_MOE_BUDGET`) | off | Flash-Next: keep 5 + reuse 5 | Flash-Next, 3-bit experts on one Spark: keep 2 + a budget of 64 experts; otherwise as fast |
+| Budgeted expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_BUDGET`) | off | Flash-Next: keep 4, budget 12:64 | as fast |
 | Optimized QSA prefill kernels (`SHARAR_QSA_PREFILL_BACKEND`) | off (original) | Flash-Next: auto (where eligible: SM121, one or two Sparks, through 32K) | as fast |
 | Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
 | 8-bit GDN recurrent state (`SHARAR_SSM_STATE`) | off (FP32) | off (FP32) | on |
@@ -97,15 +97,13 @@ Four of the knobs take more than the table shows:
 - **`SHARAR_MAX_BATCH`** (`sharar serve --max-batch`, 1-128; graph buckets 1, 2, 4, ... 128). Above four, the pool
   guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full
   context.
-- **`SHARAR_MOE_KEEP=k`, `SHARAR_MOE_REUSE=r`** (Flash-Next, k + r <= 10): each token keeps its own top k experts in
-  decode and verify forwards, plus up to r more that another token of the forward already keeps, so the forward loads
-  no more experts; `SHARAR_MOE_KEEP=0` turns it off. A token's experts depend on the rest of its forward, so a greedy
-  reply can change with what else the server runs.
-- **`SHARAR_MOE_BUDGET=B`** (Flash-Next, with `SHARAR_MOE_KEEP=k`): instead of the reuse rule, a decode or verify
-  forward reads at most B distinct experts (more only when the tokens' guaranteed top k alone exceed it): every
-  token's top k, then the experts with the most router probability summed over the forward's tokens. Each token takes
-  up to 10 of them, its own top k first. The cap binds when many tokens share a forward, so `throughput` sets keep 2 +
-  budget 64 with the 3-bit experts on one Spark; at one request it saves nothing.
+- **`SHARAR_MOE_KEEP=k`, `SHARAR_MOE_BUDGET=[P:]B`** (Flash-Next): a decode or verify forward reads at most B distinct
+  experts, or min(B, P x its requests): every token's guaranteed top experts, then those with the most router
+  probability summed over the forward's tokens. Each token takes up to 10 of them, its guaranteed ones first. The
+  guarantee is k for small forwards and shrinks as the forward grows (at least 2), so the cap keeps binding: at 4 and
+  12:64, one to four requests keep 4, eight 3, sixteen and more 2. `SHARAR_MOE_KEEP` alone gives each token its top k;
+  `SHARAR_MOE_KEEP=0` routes in full. A token's experts depend on the rest of its forward, so a greedy reply can change
+  with what else the server runs.
 - **`SHARAR_SSM_STATE=fp32|int8|int4`**: the integer formats quantize each GDN layer's recurrent state per window as
   in LeapQuant ([arXiv 2609.38166](https://arxiv.org/abs/2609.38166); `sharar/cache/ssm_format.py`), a fraction of
   FP32's memory per slot, and need `SHARAR_VERIFY_STATE=reconstruct` (with `snapshots` the state stays FP32). The

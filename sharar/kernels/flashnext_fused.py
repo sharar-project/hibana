@@ -202,8 +202,9 @@ def route_topk(logits: torch.Tensor, k: int):
     return ids, w
 
 
-# ---- batch-aware routing (SHARAR_MOE_KEEP / SHARAR_MOE_REUSE): each row's top `keep`, the rest drawn toward the call's core ----
-SUBST_CANDIDATES = 20  # a row fills its other slots from its router ranks keep+1..20
+# ---- budgeted expert selection (SHARAR_MOE_KEEP / SHARAR_MOE_BUDGET): a cap on the distinct experts a decode or verify
+# forward reads, chosen for all its rows; each row takes its guaranteed top `keep`, then its other candidates in the set ----
+ROUTE_CANDIDATES = 20  # a row takes its experts from its router ranks 1..20
 
 
 @triton.jit
@@ -212,7 +213,7 @@ def _or(a, b):
 
 
 @triton.jit
-def _subst_rank_kernel(L, Slots, Cand, P, Bits, stride_l, E: tl.constexpr, BLOCK: tl.constexpr, KEEP: tl.constexpr,
+def _route_rank_kernel(L, Slots, Cand, P, Bits, stride_l, E: tl.constexpr, BLOCK: tl.constexpr, KEEP: tl.constexpr,
                        C: tl.constexpr, CP: tl.constexpr, STEPS: tl.constexpr, HAS_SLOTS: tl.constexpr):
     t = tl.program_id(0)
     cols = tl.arange(0, BLOCK)
@@ -248,13 +249,13 @@ def _subst_rank_kernel(L, Slots, Cand, P, Bits, stride_l, E: tl.constexpr, BLOCK
 
 
 @triton.jit
-def _subst_pick_kernel(Slots, Cand, P, Bits, Ids, W, R, K: tl.constexpr, KEEP: tl.constexpr, C: tl.constexpr,
+def _route_pick_kernel(Slots, Cand, P, Bits, Ids, W, R, K: tl.constexpr, C: tl.constexpr,
                        CP: tl.constexpr, NW: tl.constexpr, RB: tl.constexpr, STEPS: tl.constexpr,
                        HAS_SLOTS: tl.constexpr, KP: tl.constexpr, NONE: tl.constexpr, REPEAT: tl.constexpr):
     rr = tl.arange(0, RB)
     w = tl.arange(0, NW)
     core = tl.zeros([NW], dtype=tl.int32)
-    for r0 in range(0, R, RB):  # the core: the OR of every row's top-KEEP bit set
+    for r0 in range(0, R, RB):  # the call's set (`_budget_select_kernel` wrote it into every row's bits)
         b = tl.load(Bits + (r0 + rr)[:, None] * NW + w[None, :], mask=(r0 + rr)[:, None] < R, other=0)
         core = core | tl.reduce(b, 0, _or)
     rows = tl.program_id(0) * RB + rr
@@ -263,15 +264,14 @@ def _subst_pick_kernel(Slots, Cand, P, Bits, Ids, W, R, K: tl.constexpr, KEEP: t
     cand = tl.load(Cand + rows[:, None] * CP + j, mask=live[:, None], other=0)
     p = tl.load(P + rows[:, None] * CP + j, mask=live[:, None], other=1.0)  # rows past R: no 0 / 0
     word = tl.reshape(tl.gather(core, tl.reshape(cand // 32, [RB * CP]), 0), [RB, CP])
-    pull = (j >= KEEP) & (j < C) & (((word >> (cand % 32)) & 1) != 0)  # a reuse candidate the core already reads
+    pull = (j < C) & (((word >> (cand % 32)) & 1) != 0)  # a candidate in the set (the row's guaranteed ones are)
     real = tl.full([RB], 1, tl.int1)
     if HAS_SLOTS:  # a padded row takes no expert
         real = tl.load(Slots + rows // STEPS, mask=live, other=0) != 0
     a = pull.to(tl.int32)
-    # output slot of each rank: the top KEEP, then the pulled ranks in rank order
-    slot = tl.where(j < KEEP, j, KEEP + tl.cumsum(a, 1) - 1)
-    chosen = ((j < KEEP) | pull) & (slot < K) & real[:, None]
-    used = tl.where(real, KEEP + tl.minimum(tl.sum(a, 1), K - KEEP), 0)
+    slot = tl.cumsum(a, 1) - 1  # output slot of each rank: the candidates in the set, in rank order
+    chosen = pull & (slot < K) & real[:, None]
+    used = tl.where(real, tl.minimum(tl.sum(a, 1), K), 0)
     total = tl.sum(tl.where(chosen, p, 0.0), 1)
     smask = live[:, None] & chosen
     tl.store(Ids + rows[:, None] * K + slot, cand, mask=smask)
@@ -288,40 +288,6 @@ def _subst_pick_kernel(Slots, Cand, P, Bits, Ids, W, R, K: tl.constexpr, KEEP: t
     tl.store(W + rows[:, None] * K + q, tl.zeros([RB, KP], dtype=tl.float32), mask=hole)
 
 
-def route_subst(logits: torch.Tensor, k: int, keep: int, slots: torch.Tensor | None = None, steps: int = 1,
-                repeat: bool = False):
-    """Batch-aware top-k: logits bf16 [R, E] contiguous, 1 <= keep < k <= SUBST_CANDIDATES -> (int32 ids [R, k], fp32
-    weights [R, k]). A row's candidates are its SUBST_CANDIDATES largest logits, largest first, an exact logit tie
-    to the lower expert (route_topk's order, except where two different logits give the same fp32 probability); the
-    core is the union of every real row's top `keep`. A real row takes its top `keep`, then its other candidates in
-    the core in rank order, up to k; the slots left over (all of a padded row's) hold expert id E, past the last
-    expert, at weight 0, and the call reads only the core: the 3-bit routed experts (kernels/w3_moe.py) skip ids
-    outside their range. With `repeat` those slots instead name an expert the
-    call already reads, at weight 0 (the row's top 1; a padded row, row 0's): kernels that need a real expert in every
-    slot (FlashInfer's NVFP4 MoE) add exactly nothing for them and load no further expert. Row r is real iff
-    slots[r // steps] != 0 (slots int32 [R // steps], slot 0 is the dummy that padded graph rows use); without
-    `slots` every row is real. Weights: route_topk's fp32 softmax over E, renormalized over the chosen experts, in the
-    ids' order. Two launches (one program per row, then one per tile of up to 64 rows), no host sync:
-    graph-capturable."""
-    r, e = logits.shape
-    block, cp = triton.next_power_of_2(e), triton.next_power_of_2(SUBST_CANDIDATES)
-    dev = logits.device
-    cand = torch.empty((r, cp), dtype=torch.int32, device=dev)
-    p = torch.empty((r, cp), dtype=torch.float32, device=dev)
-    bits = torch.empty((r, block // 32), dtype=torch.int32, device=dev)
-    ids = torch.empty((r, k), dtype=torch.int32, device=dev)
-    w = torch.empty((r, k), dtype=torch.float32, device=dev)
-    sl = cand if slots is None else slots  # not read without slots
-    common = dict(KEEP=keep, C=SUBST_CANDIDATES, CP=cp, STEPS=steps, HAS_SLOTS=slots is not None)
-    # one warp per row: each of the SUBST_CANDIDATES rank passes reduces with warp shuffles alone
-    _subst_rank_kernel[(r,)](logits, sl, cand, p, bits, logits.stride(0), e, BLOCK=block, num_warps=1, **common)
-    rb = min(64, max(16, triton.next_power_of_2(r)))
-    _subst_pick_kernel[(triton.cdiv(r, rb),)](sl, cand, p, bits, ids, w, r, k, NW=block // 32, RB=rb, num_warps=4,
-                                              KP=triton.next_power_of_2(k), NONE=e, REPEAT=repeat, **common)
-    return ids, w
-
-
-# ---- budgeted expert selection: a cap on the distinct experts a decode or verify call reads ----
 @triton.jit
 def _budget_score_kernel(Slots, Cand, P, Score, R, CP: tl.constexpr, K: tl.constexpr, STEPS: tl.constexpr,
                          HAS_SLOTS: tl.constexpr, EB: tl.constexpr):
@@ -344,7 +310,7 @@ def _budget_select_kernel(Score, Bits, Slots, R, Budget, PerRequest, E: tl.const
                           RB: tl.constexpr, STEPS: tl.constexpr, HAS_SLOTS: tl.constexpr):
     """The selected set: every real row's top KEEP (the OR of Bits), then the highest-scoring other experts up to the cap
     in all (equal scores: the lower expert). The cap is Budget, or with PerRequest, min(Budget, PerRequest x the call's
-    real requests). Written into every row of Bits, which `_subst_pick_kernel` then ORs."""
+    real requests). Written into every row of Bits, which `_route_pick_kernel` then ORs."""
     cols = tl.arange(0, BLOCK)
     if PerRequest > 0:
         reqs = R // STEPS
@@ -380,15 +346,21 @@ def _budget_select_kernel(Score, Bits, Slots, R, Budget, PerRequest, E: tl.const
 
 def route_budget(logits: torch.Tensor, k: int, keep: int, budget: int, slots: torch.Tensor | None = None, steps: int = 1,
                  repeat: bool = False, per_request: int = 0):
-    """Budgeted top-k: like `route_subst`, but the experts the call reads are chosen for the whole call, under a cap.
-    The set is every real row's top `keep` (guaranteed), then the experts with the most router probability within the
-    real rows' top k, summed over the rows, until it holds `budget` experts (more only when the guaranteed experts
-    alone exceed it); with `per_request`, the cap is min(budget, per_request x the real requests). Each real row then takes
-    its candidates (its SUBST_CANDIDATES largest logits) that are in the set,
-    in rank order, up to k: its top `keep` first. Slots, padding, `repeat` and weights as `route_subst`. Four launches,
-    no host sync: graph-capturable."""
+    """Budgeted top-k: logits bf16 [R, E] contiguous -> (int32 ids [R, k], fp32 weights [R, k]). The experts the call
+    reads are chosen for the whole call, under a cap:
+      - the set: every real row's top `keep` (guaranteed), then the experts with the most router probability within the
+        real rows' top k, summed over the rows, until it holds the cap (more only when the guaranteed experts alone
+        exceed it). The cap is `budget`, or with `per_request`, min(budget, per_request x the real requests);
+      - each real row takes its candidates (its ROUTE_CANDIDATES largest logits, largest first, an exact logit tie to
+        the lower expert) that are in the set, in rank order, up to k: its top `keep` first.
+    Slots left over (all of a padded row's) hold expert id E at weight 0, which the 3-bit experts skip; with `repeat`
+    they name the row's top 1 (a padded row: row 0's) at weight 0, for kernels that need a real expert in every slot
+    (FlashInfer's NVFP4 MoE: the same bits, no further expert read). Row r is real iff slots[r // steps] != 0 (slot 0
+    is the dummy padded graph rows use); without `slots` every row is. Weights: the fp32 softmax over E at the chosen
+    experts, renormalized over them. Four launches, no atomics (the same bits on every run), no host sync:
+    graph-capturable."""
     r, e = logits.shape
-    block, cp = triton.next_power_of_2(e), triton.next_power_of_2(SUBST_CANDIDATES)
+    block, cp = triton.next_power_of_2(e), triton.next_power_of_2(ROUTE_CANDIDATES)
     dev = logits.device
     cand = torch.empty((r, cp), dtype=torch.int32, device=dev)
     p = torch.empty((r, cp), dtype=torch.float32, device=dev)
@@ -397,16 +369,17 @@ def route_budget(logits: torch.Tensor, k: int, keep: int, budget: int, slots: to
     ids = torch.empty((r, k), dtype=torch.int32, device=dev)
     w = torch.empty((r, k), dtype=torch.float32, device=dev)
     sl = cand if slots is None else slots
-    common = dict(C=SUBST_CANDIDATES, CP=cp, STEPS=steps, HAS_SLOTS=slots is not None)
-    _subst_rank_kernel[(r,)](logits, sl, cand, p, bits, logits.stride(0), e, BLOCK=block, KEEP=keep, num_warps=1, **common)
-    _budget_score_kernel[(block // 32,)](sl, cand, p, score, r, CP=cp, K=k, STEPS=steps, HAS_SLOTS=slots is not None, EB=32, num_warps=1)
+    common = dict(C=ROUTE_CANDIDATES, CP=cp, STEPS=steps, HAS_SLOTS=slots is not None)
+    # one warp per row: each of the ROUTE_CANDIDATES rank passes reduces with warp shuffles alone
+    _route_rank_kernel[(r,)](logits, sl, cand, p, bits, logits.stride(0), e, BLOCK=block, KEEP=keep, num_warps=1, **common)
+    _budget_score_kernel[(block // 32,)](sl, cand, p, score, r, CP=cp, K=k, STEPS=steps, HAS_SLOTS=slots is not None, EB=32,
+                                         num_warps=1)
     rb = min(64, max(16, triton.next_power_of_2(r)))
     _budget_select_kernel[(1,)](score, bits, sl, r, budget, per_request, E=e, BLOCK=block, NW=block // 32, RB=rb, STEPS=steps,
                                 HAS_SLOTS=slots is not None, num_warps=4)
-    # the rows take their candidates in the set in rank order (KEEP=0: every candidate rank may be taken; a row's top
-    # `keep` are in the set, so they come first)
-    _subst_pick_kernel[(triton.cdiv(r, rb),)](sl, cand, p, bits, ids, w, r, k, NW=block // 32, RB=rb, num_warps=4,
-                                              KP=triton.next_power_of_2(k), NONE=e, REPEAT=repeat, KEEP=0, **common)
+    # the rows take their candidates in the set in rank order: a row's top `keep` are in it, so they come first
+    _route_pick_kernel[(triton.cdiv(r, rb),)](sl, cand, p, bits, ids, w, r, k, NW=block // 32, RB=rb, num_warps=4,
+                                              KP=triton.next_power_of_2(k), NONE=e, REPEAT=repeat, **common)
     return ids, w
 
 

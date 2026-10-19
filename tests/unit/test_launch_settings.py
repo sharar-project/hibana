@@ -102,19 +102,20 @@ def test_throughput_decodes_more_requests(target, experts, batch, depths):
 
 
 def test_expert_selection_is_on_in_fast_and_throughput(env):
-    on = {"SHARAR_MOE_KEEP": "5", "SHARAR_MOE_REUSE": "5"}
+    """Flash-Next's budgeted selection (keep 4, 12 experts a request up to 64) in fast and throughput, on one Spark or
+    two and with either expert format; exact and the 27B route in full."""
+    on = {"SHARAR_MOE_KEEP": "4", "SHARAR_MOE_BUDGET": "12:64"}
     pick = lambda *args, **kw: {k: launch.profile_defaults(*args, **kw).get(k) for k in on}  # noqa: E731
     for profile in ("fast", "throughput"):
-        if profile == "fast":  # throughput with the 3-bit experts on one Spark takes the budget (test below)
-            assert pick(profile, "flashnext") == on
+        assert pick(profile, "flashnext") == on
         assert pick(profile, "flashnext", "nvfp4") == on  # the NVFP4 experts repeat a kept expert at weight 0
         assert pick(profile, "flashnext", tp=2) == on
         assert pick(profile, "flashnext", "nvfp4", tp=2) == on
         assert pick(profile, "qwen38") == {k: None for k in on}  # the 27B has no routed experts
     assert pick("exact", "flashnext") == {k: None for k in on}
-    assert resolve(env, "flashnext", "fast").get("SHARAR_MOE_KEEP") == "5"
+    assert resolve(env, "flashnext", "fast").get("SHARAR_MOE_KEEP") == "4"
     assert resolve({**env, "SHARAR_MOE_KEEP": "0"}, "flashnext", "fast").get("SHARAR_MOE_KEEP") == "0"
-    assert resolve(env, "flashnext", "throughput", tp=2).get("SHARAR_MOE_KEEP") == "5"
+    assert resolve(env, "flashnext", "throughput", tp=2).get("SHARAR_MOE_BUDGET") == "12:64"
 
 
 def test_adaptive_depth_prices_a_drafted_token_per_spark_count(env):
@@ -260,25 +261,11 @@ def test_the_27b_fp8_draft_applies_when_its_draft_runs(env):
         assert resolve(env, "27b", overrides=override).get("SHARAR_DRAFT_PRECISION") == "bf16"
 
 
-@pytest.mark.parametrize("profile, tp, keep, reuse, budget", [
-    ("fast", 1, "5", "5", None), ("throughput", 1, "2", "5", "64"), ("throughput", 2, "5", "5", None), ("exact", 1, None, None, None)])
-# (throughput with NVFP4 experts keeps 5 + reuse 5: test_expert_selection_is_on_in_fast_and_throughput)
-def test_flashnext_expert_selection_per_profile(profile, tp, keep, reuse, budget):
-    """`throughput` on one Spark takes the budgeted selection (keep 2, at most 64 experts a forward); `fast` and two
-    Sparks keep 5 + reuse 5; `exact` routes in full."""
-    d = launch.profile_defaults(profile, "flashnext", tp=tp)
-    assert (d.get("SHARAR_MOE_KEEP"), d.get("SHARAR_MOE_REUSE"), d.get("SHARAR_MOE_BUDGET")) == (keep, reuse, budget)
-
-
-def test_moe_budget_setting_and_guarantee():
+def test_moe_budget_setting():
     from sharar.engine.config import EngineConfig
-    from sharar.model.flashnext.moe import MoeLayer
     assert (EngineConfig.from_env({"SHARAR_MOE_BUDGET": "64"}).moe_budget, EngineConfig.from_env({"SHARAR_MOE_BUDGET": "64"}).moe_budget_per_request) == (64, 0)
     cfg = EngineConfig.from_env({"SHARAR_MOE_BUDGET": "12:64"})
     assert (cfg.moe_budget, cfg.moe_budget_per_request) == (64, 12)
     with pytest.raises(ValueError, match="SHARAR_MOE_BUDGET"):
         EngineConfig.from_env({"SHARAR_MOE_BUDGET": "a:b"})
-    m = MoeLayer.__new__(MoeLayer)
-    m.keep, m.budget, m.per_request = 4, 64, 12
-    # one request (decode, or a verify of 5 rows) and four keep 4; sixteen and up keep 2; never below 2
-    assert [m.guarantee(r * s, s) for r, s in [(1, 1), (1, 5), (4, 5), (16, 4), (64, 4), (128, 4)]] == [4, 4, 4, 2, 2, 2]
+    assert EngineConfig.from_env({}).moe_budget == 0

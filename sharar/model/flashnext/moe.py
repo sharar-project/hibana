@@ -57,8 +57,6 @@ def load_nvfp4_experts(w, prefix: str, experts: int, device, rows=None, cols=Non
 
 
 class MoeLayer:
-    budget = 0  # SHARAR_MOE_BUDGET (set in __init__)
-
     def __init__(self, w, prefix: str, device: torch.device, target, linear_cls, precision: str, w3=None):
         """`w3`: this layer's 3-bit experts (kernels/w3_moe.W3Experts, from the W3 checkpoint); the NVFP4 experts are
         then not read at all."""
@@ -76,22 +74,16 @@ class MoeLayer:
                                               ColumnParallel((shared_inter, shared_inter)))
         self.shared_down = linear_cls.load(w, [f"{prefix}.shared_expert.down_proj.weight"], device, precision, ROW_PARALLEL)
         cfg = current()
-        # Expert selection in decode and verify forwards: each token keeps its own top `keep` experts, then reuses up
-        # to `reuse` more from those the call's other real tokens keep (route_subst). Reuse slots nothing fills name no
-        # expert (id = experts), which the w3 kernel skips, or for the NVFP4 experts, which need an expert in every
-        # slot, the token's own top 1 at weight 0 (the same bits as leaving the slot out). Keeping topk or more is the
-        # served route.
-        for name, v in (("SHARAR_MOE_KEEP", cfg.moe_keep), ("SHARAR_MOE_REUSE", cfg.moe_reuse), ("SHARAR_MOE_BUDGET", cfg.moe_budget)):
+        # Expert selection in decode and verify forwards (SHARAR_MOE_KEEP / SHARAR_MOE_BUDGET, route_budget): the call
+        # reads at most a budget of distinct experts, chosen for all its tokens; each token keeps its own top experts
+        # (`guarantee`, at most `keep`), then takes others from the set, up to topk. Slots left over name no expert,
+        # which the w3 kernel skips, or for the NVFP4 experts (an expert in every slot) the token's own top 1 at
+        # weight 0, the same bits. SHARAR_MOE_KEEP alone: each token's top `keep`. Keeping topk or more is the served route.
+        for name, v in (("SHARAR_MOE_KEEP", cfg.moe_keep), ("SHARAR_MOE_BUDGET", cfg.moe_budget)):
             if v < 0:
                 raise ValueError(f"{name}={v}: a count of experts, or 0 (off)")
-        keep = cfg.moe_keep if cfg.moe_keep < self.topk else 0
-        reuse = cfg.moe_reuse if keep else 0  # SHARAR_MOE_KEEP=0 turns the selection off, whatever the reuse
-        if keep + reuse > self.topk:
-            raise ValueError(f"SHARAR_MOE_KEEP + SHARAR_MOE_REUSE = {keep + reuse}: at most {self.topk} experts a token")
-        self.keep, self.reuse = keep, reuse
-        # SHARAR_MOE_BUDGET: instead of the reuse rule, the call's experts are chosen for all its rows under a cap
-        # (route_budget); each row keeps its top `keep` and takes up to topk from the chosen set
-        self.budget = cfg.moe_budget if keep else 0
+        self.keep = cfg.moe_keep if cfg.moe_keep < self.topk else 0
+        self.budget = cfg.moe_budget if self.keep else 0
         self.per_request = cfg.moe_budget_per_request
         self.w3 = w3
         if w3 is not None:
@@ -124,22 +116,16 @@ class MoeLayer:
     def route(self, x: torch.Tensor, ctx) -> tuple[torch.Tensor, torch.Tensor]:
         logits = x @ self.router.T
         if self.keep and ctx.mode in ("decode", "verify"):
-            from sharar.kernels.flashnext_fused import route_subst, route_topk
-            if self.budget:
-                from sharar.kernels.flashnext_fused import route_budget
-                slots, steps = (ctx.slots, 1) if ctx.mode == "decode" else (ctx.seq_slots, ctx.verify_steps)
-                return route_budget(logits, self.topk, self.guarantee(logits.shape[0], steps), self.budget, slots, steps,
-                                    repeat=self.w3 is None, per_request=self.per_request)
-            if not self.reuse:
+            if not self.budget:
+                from sharar.kernels.flashnext_fused import route_topk
                 return route_topk(logits, self.keep)  # ids and weights [rows, keep]: the routed experts take any k <= 10
-            # A graph pads with requests on the dummy state slot 0, which route_subst leaves out of the core. A
-            # verify forward's rows are request-major, verify_steps per request, and every request drafts the
-            # call's depth (adaptive depth verifies the deepest any request wants), so every row of a real request
-            # is real.
-            width = self.keep + self.reuse
-            if ctx.mode == "decode":
-                return route_subst(logits, width, self.keep, ctx.slots, repeat=self.w3 is None)
-            return route_subst(logits, width, self.keep, ctx.seq_slots, ctx.verify_steps, repeat=self.w3 is None)
+            from sharar.kernels.flashnext_fused import route_budget
+            # A graph pads with requests on the dummy state slot 0, which route_budget leaves out. A verify forward's
+            # rows are request-major, verify_steps per request, and every request drafts the call's depth (adaptive
+            # depth verifies the deepest any request wants), so every row of a real request is real.
+            slots, steps = (ctx.slots, 1) if ctx.mode == "decode" else (ctx.seq_slots, ctx.verify_steps)
+            return route_budget(logits, self.topk, self.guarantee(logits.shape[0], steps), self.budget, slots, steps,
+                                repeat=self.w3 is None, per_request=self.per_request)
         if x.shape[0] <= 64:
             from sharar.kernels.flashnext_fused import route_topk
             return route_topk(logits, self.topk)
@@ -151,11 +137,12 @@ class MoeLayer:
     MIN_GUARANTEE = 2  # below two experts a token, GSM8K fell 3.3 points at 16 requests (keep 1 + budget 64)
 
     def guarantee(self, rows: int, steps: int) -> int:
-        """Each token's guaranteed top experts under SHARAR_MOE_BUDGET: SHARAR_MOE_KEEP for small calls, fewer as the call
-        grows so the guaranteed experts (about half of rows x g are distinct) fit the cap: clamp(2 cap / rows, 2, keep),
-        from the call's shape (a graph's bucket), so one request keeps 4 and sixteen 2 at 12:64."""
+        """Each token's guaranteed top experts under SHARAR_MOE_BUDGET: the largest g <= SHARAR_MOE_KEEP with
+        g x rows < 2 x cap (about half of the guaranteed slots are distinct experts, so they stay under the cap and it
+        binds), at least MIN_GUARANTEE; from the call's shape (a graph's bucket). At 4 and 12:64: one to four requests
+        keep 4, eight 3 (32 verify rows), sixteen and more 2."""
         cap = min(self.budget, self.per_request * (rows // steps)) if self.per_request else self.budget
-        return max(min(self.MIN_GUARANTEE, self.keep), min(self.keep, 2 * cap // rows))
+        return max(min(self.MIN_GUARANTEE, self.keep), min(self.keep, (2 * cap - 1) // rows))
 
     def routed(self, x: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
         """The routed experts' weighted sum for x [M, H] bf16 -> bf16 [M, H]."""

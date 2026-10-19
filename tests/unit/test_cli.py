@@ -65,7 +65,7 @@ def test_engine_by_hand_serves_what_serve_would(home):
     args = cli.engine_parser().parse_args(["--target", "flashnext"])
     cfg = EngineConfig.from_env(cli.resolved_engine_env(args))
     assert (args.port, args.proposer, args.verify_state, args.draft_precision) == (30004, "mtp", "reconstruct", "bf16")
-    assert cfg.profile == "fast" and cfg.accept_default == "3:2.0" and cfg.device_accept and (cfg.moe_keep, cfg.moe_reuse) == (5, 5)
+    assert cfg.profile == "fast" and cfg.accept_default == "3:2.0" and cfg.device_accept and (cfg.moe_keep, cfg.moe_budget, cfg.moe_budget_per_request) == (4, 64, 12)
     assert cfg.qsa_prefill_backend == "auto" and cfg.max_context == 262144 and cfg.spec == "8"
     assert cfg.ssd and cfg.ssd_dir == str(home / "results" / "ssd" / "flashnext") and cfg.w3_decode
     args = cli.engine_parser().parse_args(["--port", "31000"])

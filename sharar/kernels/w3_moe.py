@@ -150,7 +150,7 @@ def w3_moe(experts: W3Experts, x: torch.Tensor, ids: torch.Tensor, weights: torc
     [M, 2560], the weighted sum in selection order (no shared expert). Graph-capturable and deterministic. When
     `experts` holds one rank's range (expert parallel), pairs routed to another rank's experts are skipped: the result
     is this rank's partial sum, which the decoder layer all-reduces. An id of EXPERTS (512) names no expert and adds
-    nothing (an unfilled slot, `flashnext_fused.route_subst` without the fallback). With `pairs`, the FP32 output of each
+    nothing (an unfilled slot, `flashnext_fused.route_budget` without `repeat`). With `pairs`, the FP32 output of each
     (row, k) pair [M * k, 2560], unsummed (`flashnext_fused.moe_combine_pairs` sums them; rows of skipped pairs are
     garbage). `pairs_bf16`: those pairs in BF16, rounded once from the FP32 the kernel accumulates (prefill calls: the
     pairs are the call's widest tensor, written by fc2 and read back by the combine)."""
