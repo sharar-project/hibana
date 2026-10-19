@@ -37,9 +37,9 @@ TARGET_SETTINGS = {
 #             in Claude Code sessions), the calibrated 3-bit copies, device-resident acceptance on Flash-Next,
 #             and Flash-Next's draft depth per request (up to 8 for one request, 4 for two or more; the others
 #             verify 4 drafts), and Flash-Next's budgeted expert selection (a decode or verify forward reads at most
-#             12 experts a request, 64 in all, chosen by router probability across its tokens; each token keeps its
-#             top 4, fewer in wide forwards; one Spark: one request +9% over keep 5 + reuse 5, sixteen requests about
-#             +34% over it), and Flash-Next's
+#             12 experts a request, 16 for a request alone, 64 in all, chosen by router probability across its tokens;
+#             each token keeps its top 4, fewer in wide forwards; one Spark: 1 / 4 requests +2 / +8% over keep 5 + reuse
+#             5), and Flash-Next's
 #             optimized QSA prefill kernels where eligible (SHARAR_QSA_PREFILL_BACKEND=auto: RULER v2 32K equal)
 #   throughput  fast with more requests decoded together: the 27B 16 (full depth; batches of five or more verify on
 #             the original weights, GSM8K x1.74), Flash-Next 128 with its 3-bit experts (64 with NVFP4 experts), three
@@ -62,11 +62,13 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
         raise ValueError(f"unknown serving profile {profile!r} (choose from {', '.join(PROFILE_NAMES)})")
     p["SHARAR_MAX_BATCH"] = "4"
     if flashnext and profile != "exact":
-        # budgeted expert selection in decode and verify forwards: at most 12 experts a request, 64 in all, chosen by
-        # router probability across the forward's tokens; each token keeps its top 4, fewer in wide forwards (2 from 64 tokens).
-        # Against the former keep 5 + reuse 5 (3-bit experts, one Spark): fast 1 request +9% tok/s, quick suite +0.7 pp;
-        # throughput 1 / 4 / 16 / 64 streams +19 / +7 / 0 / 0% against keep 2 + budget 64, RULER v2 32K +2.5.
-        # (8 streams -4%: its forwards keep 3.) Two Sparks and the NVFP4 experts take the same setting, unmeasured.
+        # budgeted expert selection in decode and verify forwards: at most 12 experts a request (16 for a request alone),
+        # 64 in all, chosen by router probability across the forward's tokens; each token keeps its top 4, fewer in wide
+        # forwards (2 from 64 tokens). One Spark, 3-bit experts, against keep 5 + reuse 5 in fast and keep 2 + budget 64
+        # in throughput: fast 1 / 4 requests +2 / +8% tok/s, GSM8K-300 one request at a time -1.3 pp (not significant),
+        # quick suite at 4 requests +0.7 pp; throughput 16 / 64 streams +4 / +1%, RULER v2 32K +2.5. Two Sparks, before
+        # the faster route kernels and the 16-expert floor: fast -6.5% at one request (NVFP4 experts -5%), throughput
+        # -2 to +9%; NVFP4 experts on one Spark unmeasured.
         p.update(SHARAR_MOE_KEEP="4", SHARAR_MOE_BUDGET="12:64")
         # the optimized QSA prefill kernels where eligible (SM121, one or two Sparks, through 32K): RULER v2 32K 94.1
         # against 94.0 (120 items, 2 better / 2 worse), prefill 3-4% faster at 8K and 32K
