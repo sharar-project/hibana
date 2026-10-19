@@ -3,7 +3,6 @@ copy picks what the FP8 head picks when the winner is clear."""
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 
 
 def _fp8_head(n: int, k: int):

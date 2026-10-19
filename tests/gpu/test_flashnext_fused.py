@@ -5,7 +5,6 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU")
 from sharar.kernels import flashnext_fused as fk  # noqa: E402
 
 H, HC = 2560, 4

@@ -9,17 +9,15 @@ from sharar.engine.sampler import SamplingParams
 
 
 @pytest.fixture(scope='module')
-def runtime():
+def runtime(qwen38):
     from sharar import config
     from sharar.engine.executor import Executor
-    from sharar.model.qwen38 import Qwen38
     from sharar.engine.prompts import PARAGRAPH
     from sharar.tokenizer import SnapshotTokenizer
-    gc.collect()
+    gc.collect()  # the previous module's executor
     torch.cuda.empty_cache()
     with torch.inference_mode():
-        model = Qwen38(config.snapshot_dir(), log=print)
-        ex = Executor(model, num_pages=35000, num_slots=12)
+        ex = Executor(qwen38, num_pages=35000, num_slots=12)
         ex.enable_spec(3, proposer='mtp', state_strategy='reconstruct')
         ex.capture_graphs(log=print)
         ex.warmup(log=print)
@@ -27,7 +25,7 @@ def runtime():
         prompts = [tok.encode(PARAGRAPH * n)[:length] for n, length in ((8, 300), (6, 220), (4, 150), (3, 90))]
         yield ex, prompts
         ex.flush_cache()
-        del ex, model
+        del ex
         gc.collect()
         torch.cuda.empty_cache()
 

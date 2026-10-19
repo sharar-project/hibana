@@ -1,8 +1,4 @@
-import pytest
 import torch
-
-cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs the GB10")
-
 
 
 def _close_fp8(a, b):
@@ -13,7 +9,6 @@ def _close_fp8(a, b):
     assert torch.allclose(a, b, rtol=0.13, atol=0.5), (a - b).abs().max()
 
 
-@cuda
 def test_quant_fp8_and_gate():
     from sharar.kernels.fp8_quant import gated_quant_fp8, quant_fp8
 
@@ -30,7 +25,6 @@ def test_quant_fp8_and_gate():
 
 
 
-@cuda
 def test_qk_norm_rope_matches_torch():
     from sharar.kernels.qk_norm_rope import qk_norm_rope
     from sharar.model.norm import GemmaRMSNorm
@@ -53,7 +47,6 @@ def test_qk_norm_rope_matches_torch():
     assert torch.allclose(k.float(), k_ref.float(), rtol=2e-2, atol=2e-2), (k.float() - k_ref.float()).abs().max()
 
 
-@cuda
 def test_nvfp4_quantize_matches_flashinfer():
     from sharar.kernels import ops
     from sharar.kernels.nvfp4_quant import nvfp4_quantize
@@ -72,7 +65,6 @@ def test_nvfp4_quantize_matches_flashinfer():
         assert torch.equal(q, q_ref)
 
 
-@cuda
 def test_silu_mul_nvfp4_quantize_matches_two_step():
     from sharar.kernels.nvfp4_quant import nvfp4_quantize, silu_mul_nvfp4_quantize
 

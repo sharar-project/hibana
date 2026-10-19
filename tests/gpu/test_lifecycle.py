@@ -36,17 +36,13 @@ def test_cache_restore_matches_manual_restore_at_every_layer(setup, tmp_path):
 
 
 @pytest.fixture(scope='module', params=['snapshots', 'reconstruct'])
-def runtime(request):
-    from sharar.model.qwen38 import Qwen38
+def runtime(request, qwen38):
     import gc
-    config.check()
     # Pytest drops the previous parametrized fixture's cached result after
-    # its finalizer, so collect its executor/graph cycles before the next load.
+    # its finalizer, so collect its executor/graph cycles before the next build.
     gc.collect()
     torch.cuda.empty_cache()
-    model = Qwen38(config.snapshot_dir(), log=print)
-    torch.cuda.empty_cache()
-    ex = Executor(model, num_pages=35000, num_slots=12, log=print)
+    ex = Executor(qwen38, num_pages=35000, num_slots=12, log=print)
     ex.enable_spec(3, log=print, state_strategy=request.param)
     if request.param == 'reconstruct':
         # Test-only reference storage: the original verify kernel writes all
@@ -66,8 +62,7 @@ def runtime(request):
     ex.flush_cache()
     if request.param == 'reconstruct':
         del spec
-    del ex, model
-    import gc
+    del ex
     gc.collect()
     torch.cuda.empty_cache()
 

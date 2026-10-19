@@ -10,17 +10,15 @@ from sharar.engine.sampler import SamplingParams
 K = 3
 
 
-def serve_rounds(trace_confidence: bool, rounds: int = 6):
+def serve_rounds(model, trace_confidence: bool, rounds: int = 6):
     from sharar import config
     from sharar.engine import config as engine_config
     from sharar.engine.executor import Executor
-    from sharar.model.qwen38 import Qwen38
     from sharar.engine.prompts import PARAGRAPH
     from sharar.tokenizer import SnapshotTokenizer
     gc.collect()
     torch.cuda.empty_cache()
     with engine_config.using(engine_config.current().replace(trace_confidence=trace_confidence)), torch.inference_mode():
-        model = Qwen38(config.snapshot_dir(), log=print)
         ex = Executor(model, num_pages=35000, num_slots=12)
         ex.enable_spec(K, proposer='mtp', state_strategy='reconstruct')
         ex.capture_graphs(log=print)
@@ -42,15 +40,15 @@ def serve_rounds(trace_confidence: bool, rounds: int = 6):
             r.cacheable = False
             ex.release(r)
         ex.flush_cache()
-        del ex, model
+        del ex
     gc.collect()
     torch.cuda.empty_cache()
     return result
 
 
 @pytest.fixture(scope='module')
-def runs():
-    return serve_rounds(False), serve_rounds(True)
+def runs(qwen38):
+    return serve_rounds(qwen38, False), serve_rounds(qwen38, True)
 
 
 def test_confidence_does_not_change_the_outputs(runs):

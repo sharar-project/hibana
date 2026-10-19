@@ -9,7 +9,6 @@ import torch
 from sharar.engine.rejection import distribution, plausible, small_laws, verify_rows
 from sharar.engine.sampler import SamplingParams
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA")
 DEV = torch.device("cuda")
 
 

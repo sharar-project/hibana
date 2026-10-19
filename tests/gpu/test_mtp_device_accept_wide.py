@@ -10,18 +10,16 @@ from tests.gpu.test_mtp_device_accept import run_rounds
 
 
 @pytest.fixture(scope='module')
-def runtime():
+def runtime(qwen38):
     from sharar import config
     from sharar.engine.config import current, using
     from sharar.engine.executor import Executor
-    from sharar.model.qwen38 import Qwen38
     from sharar.engine.prompts import PARAGRAPH
     from sharar.tokenizer import SnapshotTokenizer
-    gc.collect()
+    gc.collect()  # the previous module's executor
     torch.cuda.empty_cache()
     with torch.inference_mode(), using(current().replace(spec_depths="8:2")):
-        model = Qwen38(config.snapshot_dir(), log=print)
-        ex = Executor(model, num_pages=35000, num_slots=24, max_batch=8)
+        ex = Executor(qwen38, num_pages=35000, num_slots=24, max_batch=8)
         ex.enable_spec(3, proposer='mtp', state_strategy='reconstruct')
         ex.capture_graphs(log=print)
         ex.warmup(log=print)
@@ -29,7 +27,7 @@ def runtime():
         prompts = [tok.encode(PARAGRAPH * 8)[i * 17:i * 17 + length] for i, length in enumerate((300, 260, 220, 190, 150, 120, 90, 70))]
         yield ex, prompts
         ex.flush_cache()
-        del ex, model
+        del ex
         gc.collect()
         torch.cuda.empty_cache()
 

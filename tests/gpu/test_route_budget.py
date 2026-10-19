@@ -6,7 +6,6 @@ bitwise."""
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU")
 from sharar.kernels import flashnext_fused as fk  # noqa: E402
 from tests.unit.test_moe_batch_aware import E, K, candidates  # noqa: E402
 

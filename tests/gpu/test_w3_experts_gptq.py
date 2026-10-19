@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """The batched expert GPTQ (weights/flashnext_w3_experts.py) against the per-matrix pass it batches
 (weights/w3_calibration.quantize), and its output error against the weight-error fit."""
-import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA")
 
 
 def _case(c=3, n=256, k=384, rows=2000, seed=0):

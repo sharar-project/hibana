@@ -13,6 +13,7 @@ a new file, and add a row here in the same commit.
 | Z Lab DFlash, <https://github.com/z-lab/dflash>, snapshot `07ebd93db9f472af339b644bb70221ad8428328a` | DFlash2 reference convolution arithmetic order and selector semantics | MIT, Copyright (c) 2026 Z Lab |
 | flash-linear-attention, <https://github.com/fla-org/flash-linear-attention> (Songlin Yang, Yu Zhang) | Gated DeltaNet Triton kernels: chunked prefill, fused recurrent decode, gated RMSNorm, L2 norm | MIT License |
 | SGLang, snapshot `d62b9c2480f3b4b2ff16344c90e6a73e4b1d09fa` | QSA query prep and key-compression adaptations in `sharar/kernels/qsa/csrc/`; bundled `LICENSE.sglang` | Apache License 2.0 |
+| SGLang v0.5.20, `srt/layers/attention/qsa/sparse_attn.py` | The QSA sparse attention kernel `_sparse_gqa_chunk_prefill` in `sharar/kernels/qsa/attention.py`, unchanged except for its wrapper | Apache License 2.0 |
 | SGLang, `csrc/gemm/sm120_fp8_gemv.cuh` | The small-M FP8 GEMV in `sharar/kernels/csrc/fp8_gemv.cu`, extended from one activation row to four (attribution in its header) | Apache License 2.0 |
 | vLLM, snapshot `f26d9f432ced7b1087d02d29bffed2249df1a18e` | QSA tiled scorer adapted in `sharar/kernels/qsa/tiled_scaled.py`, with fused fill/mask/scale; bundled `sharar/kernels/qsa/LICENSE.vllm` | Apache License 2.0 |
 | causal-conv1d, <https://github.com/Dao-AILab/causal-conv1d> (Tri Dao) and vLLM, <https://github.com/vllm-project/vllm> | Triton causal Conv1D prefill and state-update kernels | BSD 3-Clause (causal-conv1d), Apache License 2.0 (vLLM) |
