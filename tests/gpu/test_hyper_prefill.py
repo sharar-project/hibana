@@ -4,7 +4,6 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU")
 from sharar.kernels import hyper_prefill as hp  # noqa: E402
 from sharar.model.flashnext.hyper import HyperConnection, WideNorm  # noqa: E402
 

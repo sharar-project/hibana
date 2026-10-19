@@ -13,7 +13,7 @@ from sharar.proposers.parallel import DraftState
 
 
 @pytest.fixture(scope='module', params=['dflash2'])
-def runtime(request):
+def runtime(request, qwen38):
     from sharar import config
     from sharar.proposers.factory import draft_snapshot
     from sharar.proposers.parallel import PINS
@@ -21,14 +21,12 @@ def runtime(request):
         name, revision = PINS[request.param]
         pytest.skip(f'{request.param} draft weights not in the model cache: {name}@{revision[:7]}')
     from sharar.engine.executor import Executor
-    from sharar.model.qwen38 import Qwen38
     from sharar.engine.prompts import PARAGRAPH
     from sharar.tokenizer import SnapshotTokenizer
-    gc.collect()
+    gc.collect()  # the previous module's executor
     torch.cuda.empty_cache()
+    model = qwen38
     with torch.inference_mode():
-        model = Qwen38(config.snapshot_dir(), log=print)
-        torch.cuda.empty_cache()
         ex = Executor(model, num_pages=35000, num_slots=12)
         ex.enable_spec(7, proposer=request.param, state_strategy='reconstruct')
         ex.capture_graphs(log=print)
@@ -40,8 +38,10 @@ def runtime(request):
             return out
         model.forward = forward
         req = ex.admit(ids, SamplingParams(max_new_tokens=1))
-        ex.prefill(req)
-        model.forward = original
+        try:
+            ex.prefill(req)
+        finally:
+            del model.forward  # the shared model's own forward again
         ex.release(req)
         ex.flush_cache()
         yield ex, ids, captured

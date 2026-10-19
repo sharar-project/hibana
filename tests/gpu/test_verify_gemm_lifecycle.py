@@ -6,18 +6,20 @@ import torch
 
 
 @pytest.fixture(scope='module')
-def runtime():
+def runtime(qwen38):
+    import gc
     from sharar import config
     from sharar.engine.executor import Executor
     from sharar.engine.spec_graphs import VerifyGraphs
     from sharar.kernels import ops
-    from sharar.model.qwen38 import Qwen38
     from sharar.tokenizer import SnapshotTokenizer
+    gc.collect()  # the previous module's executor
+    torch.cuda.empty_cache()
     with torch.inference_mode():
         original = ops.VERIFY_GEMM_ENABLED
         try:
             ops.VERIFY_GEMM_ENABLED = False
-            ex = Executor(Qwen38(config.snapshot_dir()), num_pages=35000, num_slots=12)
+            ex = Executor(qwen38, num_pages=35000, num_slots=12)
             ex.enable_spec(15, proposer='dflash2', state_strategy='reconstruct', draft_precision='fp8')
             ex.capture_graphs()
             graphs = {False: ex.spec.verify_graphs}

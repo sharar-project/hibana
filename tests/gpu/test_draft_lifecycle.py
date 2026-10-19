@@ -6,19 +6,16 @@ import torch
 
 
 @pytest.fixture(scope='module', params=['bf16', 'fp8'])
-def draft_runtime(request):
+def draft_runtime(request, qwen38):
     import gc
     from sharar import config
     from sharar.engine.executor import Executor
-    from sharar.model.qwen38 import Qwen38
     from sharar.engine.prompts import PARAGRAPH
     from sharar.tokenizer import SnapshotTokenizer
-    gc.collect()
+    gc.collect()  # the other precision's executor
     torch.cuda.empty_cache()
     with torch.inference_mode():
-        model = Qwen38(config.snapshot_dir(), log=print)
-        torch.cuda.empty_cache()
-        ex = Executor(model, num_pages=35000, num_slots=12)
+        ex = Executor(qwen38, num_pages=35000, num_slots=12)
         ex.enable_spec(7, proposer='dflash2', state_strategy='reconstruct', draft_precision=request.param)
         ex.spec.verify_depths = (1, 3, 7)
         ex.capture_graphs(log=print)

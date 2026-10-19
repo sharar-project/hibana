@@ -36,8 +36,8 @@ SHARAR_RUN_GPU=1 uv run pytest tests/gpu/test_qsa.py -x
 workload content and checksums (`tools/gate/workloads/`, `profiling/workloads/`,
 `sharar/benchmark_workloads.py`) when moving readers.
 
-The real-checkpoint fixture uses bounded pools: 35,000 KV pages and 12 recurrent
-slots. Keep the memory guard active for the run (`uv run python -m sharar.launch.guard --pid PID`). The loader
+The modules on the real 27B share one load (the session fixture `qwen38` in `tests/gpu/conftest.py`), run last,
+and build their executors on it with bounded pools: 35,000 KV pages and 12 recurrent slots. Keep the memory guard active for the run (`uv run python -m sharar.launch.guard --pid PID`). The loader
 requires 40 GiB `MemAvailable`: a 24 GiB allowance based on the measured 21.3 GiB
 streaming-load peak plus the 16 GiB host floor. Runtime separately checks the
 prospective pool/draft budget before allocation.
