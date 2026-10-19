@@ -98,11 +98,12 @@ Four of the knobs take more than the table shows:
   guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full
   context.
 - **`SHARAR_MOE_KEEP=k`, `SHARAR_MOE_BUDGET=[P:]B`** (Flash-Next): a decode or verify forward reads at most B distinct
-  experts, or min(B, P x its requests): every token's guaranteed top experts, then those with the most router
+  experts, or min(B, max(16, P x its requests)): every token's guaranteed top experts, then those with the most router
   probability summed over the forward's tokens. Each token takes up to 10 of them, its guaranteed ones first. The
   guarantee shrinks as the forward grows, 2 x cap / tokens within [2, k], so the cap keeps binding: at 4 and 12:64, up
-  to 4 tokens a request keep 4, a depth-8 draft of one request or eight requests of 5 tokens fewer, 64 tokens and more
-  2. `SHARAR_MOE_KEEP` alone gives each token its top k;
+  to 4 tokens a request keep 4 (one request alone, up to 8), a depth-8 draft of one request or eight requests of 5
+  tokens 3, 64 tokens and more 2. The floor of 16 is for a request alone: at 12 its GSM8K fell 4.7 points.
+  `SHARAR_MOE_KEEP` alone gives each token its top k;
   `SHARAR_MOE_KEEP=0` routes in full. A token's experts depend on the rest of its forward, so a greedy reply can change
   with what else the server runs.
 - **`SHARAR_SSM_STATE=fp32|int8|int4`**: the integer formats quantize each GDN layer's recurrent state per window as

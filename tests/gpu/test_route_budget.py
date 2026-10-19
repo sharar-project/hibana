@@ -46,13 +46,13 @@ def request_slots(n: int, seed: int) -> list[torch.Tensor]:
     return [trailing, anywhere, torch.zeros(n, dtype=torch.int32)]
 
 
-def check(logits, keep, cap, slots=None, steps=1, per_request=0, repeat=False):
+def check(logits, keep, cap, slots=None, steps=1, per_request=0, repeat=False, min_cap=0):
     ids, w = fk.route_budget(logits.cuda(), K, keep, cap, None if slots is None else slots.cuda(), steps, repeat=repeat,
-                             per_request=per_request)
+                             per_request=per_request, min_cap=min_cap)
     ids, w = ids.cpu(), w.cpu()
     real = [slots is None or int(slots[i // steps]) != 0 for i in range(logits.shape[0])]
     if per_request:
-        cap = min(cap, per_request * sum(1 for i in range(0, len(real), steps) if real[i]))
+        cap = min(cap, max(min_cap, per_request * sum(1 for i in range(0, len(real), steps) if real[i])))
     want, core, score = selected(logits, K, keep, cap, real)
     # the set as the real rows name it (with `repeat` a hole repeats the row's top 1, which is in it)
     got = {int(e) for i, row in enumerate(ids.tolist()) if real[i] for e in row} - {E}
@@ -95,6 +95,15 @@ def test_per_request_cap_counts_only_real_requests():
     assert len(got) <= 12
     _, got = check(lg, 1, 64, torch.arange(1, 9, dtype=torch.int32), 5, per_request=6)  # min(64, 48)
     assert 12 < len(got) <= 48
+
+
+def test_a_request_alone_takes_the_minimum_cap():
+    lg = router_logits(9, 12, shared=0.5)  # one request, a depth-8 draft
+    _, got = check(lg, 1, 64, torch.tensor([5], dtype=torch.int32), 9, per_request=12, min_cap=16)  # max(16, 12)
+    assert 12 < len(got) <= 16
+    lg = router_logits(36, 13, shared=0.5)  # four requests: 48, above the floor
+    _, got = check(lg, 1, 64, torch.arange(1, 5, dtype=torch.int32), 9, per_request=12, min_cap=16)
+    assert 16 < len(got) <= 48
 
 
 @pytest.mark.parametrize("rows,steps", [(5, 5), (20, 1), (320, 5)])

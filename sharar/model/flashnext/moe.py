@@ -125,7 +125,7 @@ class MoeLayer:
             # depth verifies the deepest any request wants), so every row of a real request is real.
             slots, steps = (ctx.slots, 1) if ctx.mode == "decode" else (ctx.seq_slots, ctx.verify_steps)
             return route_budget(logits, self.topk, self.guarantee(logits.shape[0], steps), self.budget, slots, steps,
-                                repeat=self.w3 is None, per_request=self.per_request)
+                                repeat=self.w3 is None, per_request=self.per_request, min_cap=self.MIN_CAP)
         if x.shape[0] <= 64:
             from sharar.kernels.flashnext_fused import route_topk
             return route_topk(logits, self.topk)
@@ -135,13 +135,17 @@ class MoeLayer:
         return ids.to(torch.int32), weights.contiguous()
 
     MIN_GUARANTEE = 2  # below two experts a token, GSM8K fell 3.3 points at 16 requests (keep 1 + budget 64)
+    # The per-request cap's floor: one request alone at 12 experts (a depth-8 draft: 9 rows, each guaranteed 2) lost 4.7
+    # points of GSM8K-300 one request at a time (3 better / 17 worse); at 16 (guaranteed 3) -1.3 (4 / 8, p 0.39), as at 20
+    MIN_CAP = 16
 
     def guarantee(self, rows: int, steps: int) -> int:
         """Each token's guaranteed top experts under SHARAR_MOE_BUDGET: 2 cap / rows (about half of the guaranteed slots
         are distinct experts, so they fill about the cap and it binds), within [MIN_GUARANTEE, SHARAR_MOE_KEEP]; from the
         call's shape (a graph's bucket). At 4 and 12:64: decode and verify forwards of up to 4 tokens a request keep 4
-        (one request: up to 6 tokens), wider drafts and bigger batches fewer, 64 tokens and more 2."""
-        cap = min(self.budget, self.per_request * (rows // steps)) if self.per_request else self.budget
+        (one request, whose cap is MIN_CAP: up to 8 tokens, a depth-8 draft 3), wider drafts and bigger batches fewer,
+        64 tokens and more 2."""
+        cap = min(self.budget, max(self.MIN_CAP, self.per_request * (rows // steps))) if self.per_request else self.budget
         return max(min(self.MIN_GUARANTEE, self.keep), min(self.keep, 2 * cap // rows))
 
     def routed(self, x: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:

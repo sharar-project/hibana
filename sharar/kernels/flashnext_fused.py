@@ -306,11 +306,12 @@ def _budget_score_kernel(Dense, Score, R, BLOCK: tl.constexpr, EB: tl.constexpr,
 
 
 @triton.jit
-def _budget_select_kernel(Score, Bits, Slots, Set, R, Budget, PerRequest, E: tl.constexpr, BLOCK: tl.constexpr,
+def _budget_select_kernel(Score, Bits, Slots, Set, R, Budget, PerRequest, MinCap, E: tl.constexpr, BLOCK: tl.constexpr,
                           NW: tl.constexpr, RB: tl.constexpr, STEPS: tl.constexpr, HAS_SLOTS: tl.constexpr):
     """Word `program_id` of the selected set: every real row's top KEEP (the OR of Bits), then the highest-scoring other
     experts up to the cap in all (equal scores: the lower expert). The cap is Budget, or with PerRequest,
-    min(Budget, PerRequest x the call's real requests). One program per 32 experts, each ranking its own against all."""
+    min(Budget, max(MinCap, PerRequest x the call's real requests)). One program per 32 experts, each ranking its own
+    against all."""
     g = tl.program_id(0)
     if PerRequest > 0:
         reqs = R // STEPS
@@ -319,7 +320,7 @@ def _budget_select_kernel(Score, Bits, Slots, Set, R, Budget, PerRequest, E: tl.
             for q0 in range(0, R // STEPS, RB):
                 q = q0 + tl.arange(0, RB)
                 reqs += tl.sum((tl.load(Slots + q, mask=q < R // STEPS, other=0) != 0).to(tl.int32), 0)
-        Budget = tl.minimum(Budget, PerRequest * reqs)
+        Budget = tl.minimum(Budget, tl.maximum(MinCap, PerRequest * reqs))
     w = tl.arange(0, NW)
     rr = tl.arange(0, RB)
     core = tl.zeros([NW], dtype=tl.int32)
@@ -342,12 +343,13 @@ def _budget_select_kernel(Score, Bits, Slots, Set, R, Budget, PerRequest, E: tl.
 
 
 def route_budget(logits: torch.Tensor, k: int, keep: int, budget: int, slots: torch.Tensor | None = None, steps: int = 1,
-                 repeat: bool = False, per_request: int = 0):
+                 repeat: bool = False, per_request: int = 0, min_cap: int = 0):
     """Budgeted top-k: logits bf16 [R, E] contiguous -> (int32 ids [R, k], fp32 weights [R, k]). The experts the call
     reads are chosen for the whole call, under a cap:
       - the set: every real row's top `keep` (guaranteed), then the experts with the most router probability within the
         real rows' top k, summed over the rows, until it holds the cap (more only when the guaranteed experts alone
-        exceed it). The cap is `budget`, or with `per_request`, min(budget, per_request x the real requests);
+        exceed it). The cap is `budget`, or with `per_request`, min(budget, max(min_cap, per_request x the real
+        requests));
       - each real row takes its candidates (its ROUTE_CANDIDATES largest logits, largest first, an exact logit tie to
         the lower expert) that are in the set, in rank order, up to k: its top `keep` first.
     Slots left over (all of a padded row's) hold expert id E at weight 0, which the 3-bit experts skip; with `repeat`
@@ -375,7 +377,7 @@ def route_budget(logits: torch.Tensor, k: int, keep: int, budget: int, slots: to
                              num_warps=1, **common)
     _budget_score_kernel[(block // 32,)](dense, score, r, BLOCK=block, EB=32, RB=16, num_warps=1)  # 16 rows a load
     rb = min(64, max(16, triton.next_power_of_2(r)))
-    _budget_select_kernel[(nw,)](score, bits, sl, chosen, r, budget, per_request, E=e, BLOCK=block, NW=nw, RB=rb, STEPS=steps,
+    _budget_select_kernel[(nw,)](score, bits, sl, chosen, r, budget, per_request, min_cap, E=e, BLOCK=block, NW=nw, RB=rb, STEPS=steps,
                                  HAS_SLOTS=slots is not None, num_warps=4)
     # the rows take their candidates in the set in rank order: a row's top `keep` are in it, so they come first
     _route_pick_kernel[(triton.cdiv(r, rb),)](sl, cand, p, chosen, ids, w, r, k, NW=nw, RB=rb, num_warps=4,

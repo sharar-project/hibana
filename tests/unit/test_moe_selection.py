@@ -117,9 +117,10 @@ def kernels(monkeypatch):
     route at K and "top<k>" below it."""
     calls = []
 
-    def route_budget(logits, k, keep, budget, slots=None, steps=1, repeat=False, per_request=0):
+    def route_budget(logits, k, keep, budget, slots=None, steps=1, repeat=False, per_request=0, min_cap=0):
         assert logits.shape[1] == E
-        calls.append(SimpleNamespace(k=k, keep=keep, budget=budget, slots=slots, steps=steps, repeat=repeat, per_request=per_request))
+        calls.append(SimpleNamespace(k=k, keep=keep, budget=budget, slots=slots, steps=steps, repeat=repeat, per_request=per_request,
+                                     min_cap=min_cap))
         return "budget"
 
     stub = SimpleNamespace(route_budget=route_budget, route_topk=lambda logits, k: "served" if k == K else f"top{k}")
@@ -160,11 +161,11 @@ def test_settings_resolve_to_keep_and_budget():
 
 
 def test_the_guarantee_shrinks_as_the_forward_grows():
-    """2 cap / rows within [2, keep]: at 4 and 12:64, requests x tokens 1 x 1, 1 x 5, 4 x 5 keep 4; 1 x 9 (a depth-8
-    draft) 2; 8 x 5 3; 16 x 4 and up 2; a keep below 2 stays."""
+    """2 cap / rows within [2, keep], the cap at least MIN_CAP: at 4 and 12:64, requests x tokens 1 x 1, 1 x 5, 1 x 8,
+    4 x 5 keep 4; 1 x 9 (a depth-8 draft, cap 16) 3; 2 x 9 2; 8 x 5 3; 16 x 4 and up 2; a keep below 2 stays."""
     layer = _layer()
-    shapes = [(1, 1), (1, 5), (4, 5), (1, 9), (8, 5), (16, 4), (64, 4), (128, 1)]
-    assert [layer.guarantee(r * s, s) for r, s in shapes] == [4, 4, 4, 2, 3, 2, 2, 2]
+    shapes = [(1, 1), (1, 5), (1, 8), (4, 5), (1, 9), (2, 9), (8, 5), (16, 4), (64, 4), (128, 1)]
+    assert [layer.guarantee(r * s, s) for r, s in shapes] == [4, 4, 4, 4, 3, 2, 3, 2, 2, 2]
     assert _layer(keep=1).guarantee(256, 4) == 1
     assert _layer(per_request=0).guarantee(5, 5) == 4  # a fixed cap of 64
 
@@ -176,8 +177,8 @@ def test_decode_and_verify_forwards_take_route_budget_with_their_slots(kernels):
     assert _layer().route(x, _ctx("verify", 20, verify_slots, 5)) == "budget"
     assert _layer().route(x, _ctx("decode", 20, decode_slots)) == "budget"
     _layer(w3=False).route(x, _ctx("decode", 20, decode_slots))  # the NVFP4 experts need an expert in every slot
-    assert [(c.k, c.keep, c.budget, c.per_request, c.steps, c.repeat) for c in kernels] == [
-        (K, 4, 64, 12, 5, False), (K, 4, 64, 12, 1, False), (K, 4, 64, 12, 1, True)]
+    assert [(c.k, c.keep, c.budget, c.per_request, c.min_cap, c.steps, c.repeat) for c in kernels] == [
+        (K, 4, 64, 12, 16, 5, False), (K, 4, 64, 12, 16, 1, False), (K, 4, 64, 12, 16, 1, True)]
     assert kernels[0].slots is verify_slots and kernels[1].slots is decode_slots
 
 
