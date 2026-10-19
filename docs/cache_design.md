@@ -75,6 +75,13 @@ its last full block's hash with its partial tokens. A read recomputes the key fr
 tokens and checks the segment sizes and two CRC32s, the header's and the payload's, so a collision, a stale file, a
 flipped byte or a torn write is a miss, never wrong KV. Startup also drops a file shorter or longer than its header says.
 
+A shared copy is equivalent to the KV another request computes for the same tokens, not always bitwise equal: kernels
+round differently with the rows in a call, so the same tokens prefilled in other chunks give slightly different bits,
+the drafter's KV included. The GPU cache shares the same way (`insert` keeps a resident node's pages and gives an
+SSD-only node the inserting request's), so a session restored after a restart can hold another session's copy of a
+stretch they share, and its output can part from the never-evicted session's at a near-tie; with speculation, a changed
+acceptance count changes the verify shape and makes that likelier.
+
 ## Lifecycle of a cached prefix
 
 ```
