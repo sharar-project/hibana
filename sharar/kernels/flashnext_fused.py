@@ -213,8 +213,8 @@ def _or(a, b):
 
 
 @triton.jit
-def _route_rank_kernel(L, Slots, Cand, P, Bits, stride_l, E: tl.constexpr, BLOCK: tl.constexpr, KEEP: tl.constexpr,
-                       C: tl.constexpr, CP: tl.constexpr, STEPS: tl.constexpr, HAS_SLOTS: tl.constexpr):
+def _route_rank_kernel(L, Slots, Cand, P, Bits, Dense, stride_l, E: tl.constexpr, BLOCK: tl.constexpr, KEEP: tl.constexpr,
+                       C: tl.constexpr, CP: tl.constexpr, STEPS: tl.constexpr, HAS_SLOTS: tl.constexpr, K: tl.constexpr):
     t = tl.program_id(0)
     cols = tl.arange(0, BLOCK)
     mask = cols < E
@@ -231,6 +231,7 @@ def _route_rank_kernel(L, Slots, Cand, P, Bits, stride_l, E: tl.constexpr, BLOCK
     vals = tl.full([CP], float("-inf"), tl.float32)
     w = tl.arange(0, BLOCK // 32)
     bits = tl.zeros([BLOCK // 32], dtype=tl.int32)
+    dense = tl.zeros([BLOCK], dtype=tl.float32)
     for c in tl.static_range(C):  # rank c: the largest key left
         top = tl.max(key, 0)
         e = BLOCK - 1 - (top & 0xFFFF)
@@ -238,26 +239,28 @@ def _route_rank_kernel(L, Slots, Cand, P, Bits, stride_l, E: tl.constexpr, BLOCK
         v = ((o ^ ((o >> 15) & 0x7FFF)) << 16).to(tl.float32, bitcast=True)  # its logit, exactly
         ids = tl.where(j == c, e, ids)
         vals = tl.where(j == c, v, vals)
+        if c < K:
+            dense = tl.where(cols == e, tl.exp(v - m) / s, dense)
         if c < KEEP:
             bits = tl.where(w == e // 32, bits | (1 << (e % 32)), bits)
         key = tl.where(cols == e, -2147483648, key)
+    p = tl.exp(vals - m) / s  # route_topk's p of each candidate (0 past rank C)
     tl.store(Cand + t * CP + j, ids)
-    tl.store(P + t * CP + j, tl.exp(vals - m) / s)  # route_topk's p of each candidate (0 past rank C)
-    if HAS_SLOTS:  # a padded row (dummy slot 0) adds nothing to the core
-        bits = tl.where(tl.load(Slots + t // STEPS) != 0, bits, 0)
+    tl.store(P + t * CP + j, p)
+    real = True
+    if HAS_SLOTS:  # a padded row (dummy slot 0) adds nothing to the core or the scores
+        real = tl.load(Slots + t // STEPS) != 0
+        bits = tl.where(real, bits, 0)
     tl.store(Bits + t * (BLOCK // 32) + w, bits)
+    tl.store(Dense + t * BLOCK + cols, tl.where(real, dense, 0.0))  # its p within its top K by expert, for the scores
 
 
 @triton.jit
-def _route_pick_kernel(Slots, Cand, P, Bits, Ids, W, R, K: tl.constexpr, C: tl.constexpr,
+def _route_pick_kernel(Slots, Cand, P, Set, Ids, W, R, K: tl.constexpr, C: tl.constexpr,
                        CP: tl.constexpr, NW: tl.constexpr, RB: tl.constexpr, STEPS: tl.constexpr,
                        HAS_SLOTS: tl.constexpr, KP: tl.constexpr, NONE: tl.constexpr, REPEAT: tl.constexpr):
     rr = tl.arange(0, RB)
-    w = tl.arange(0, NW)
-    core = tl.zeros([NW], dtype=tl.int32)
-    for r0 in range(0, R, RB):  # the call's set (`_budget_select_kernel` wrote it into every row's bits)
-        b = tl.load(Bits + (r0 + rr)[:, None] * NW + w[None, :], mask=(r0 + rr)[:, None] < R, other=0)
-        core = core | tl.reduce(b, 0, _or)
+    core = tl.load(Set + tl.arange(0, NW))  # the call's set, from `_budget_select_kernel`
     rows = tl.program_id(0) * RB + rr
     live = rows < R
     j = tl.arange(0, CP)[None, :]
@@ -289,29 +292,26 @@ def _route_pick_kernel(Slots, Cand, P, Bits, Ids, W, R, K: tl.constexpr, C: tl.c
 
 
 @triton.jit
-def _budget_score_kernel(Slots, Cand, P, Score, R, CP: tl.constexpr, K: tl.constexpr, STEPS: tl.constexpr,
-                         HAS_SLOTS: tl.constexpr, EB: tl.constexpr):
-    """Score[e]: the router probability expert e takes within the top K of the call's real rows, summed in row order
-    (one program per EB experts; no atomics, so the same bits on every run)."""
+def _budget_score_kernel(Dense, Score, R, BLOCK: tl.constexpr, EB: tl.constexpr, RB: tl.constexpr):
+    """Score[e]: the router probability expert e takes within the top K of the call's real rows (`_route_rank_kernel`'s
+    dense rows), summed in row order (one program per EB experts; no atomics, so the same bits on every run)."""
     ex = tl.program_id(0) * EB + tl.arange(0, EB)
-    j = tl.arange(0, CP)
+    rr = tl.arange(0, RB)
     acc = tl.zeros([EB], dtype=tl.float32)
-    for r in range(R):
-        cand = tl.load(Cand + r * CP + j)
-        p = tl.where(j < K, tl.load(P + r * CP + j), 0.0)
-        if HAS_SLOTS:  # a padded row (dummy slot 0) scores nothing
-            p = tl.where(tl.load(Slots + r // STEPS) != 0, p, 0.0)
-        acc += tl.sum(tl.where(cand[None, :] == ex[:, None], p[None, :], 0.0), 1)
+    for r0 in range(0, R, RB):  # RB rows a load, added one row at a time (rows past R add 0)
+        tile = tl.load(Dense + (r0 + rr)[:, None] * BLOCK + ex[None, :], mask=(r0 + rr)[:, None] < R, other=0.0)
+        for i in tl.static_range(RB):
+            acc += tl.sum(tl.where(rr[:, None] == i, tile, 0.0), 0)
     tl.store(Score + ex, acc)
 
 
 @triton.jit
-def _budget_select_kernel(Score, Bits, Slots, R, Budget, PerRequest, E: tl.constexpr, BLOCK: tl.constexpr, NW: tl.constexpr,
-                          RB: tl.constexpr, STEPS: tl.constexpr, HAS_SLOTS: tl.constexpr):
-    """The selected set: every real row's top KEEP (the OR of Bits), then the highest-scoring other experts up to the cap
-    in all (equal scores: the lower expert). The cap is Budget, or with PerRequest, min(Budget, PerRequest x the call's
-    real requests). Written into every row of Bits, which `_route_pick_kernel` then ORs."""
-    cols = tl.arange(0, BLOCK)
+def _budget_select_kernel(Score, Bits, Slots, Set, R, Budget, PerRequest, E: tl.constexpr, BLOCK: tl.constexpr,
+                          NW: tl.constexpr, RB: tl.constexpr, STEPS: tl.constexpr, HAS_SLOTS: tl.constexpr):
+    """Word `program_id` of the selected set: every real row's top KEEP (the OR of Bits), then the highest-scoring other
+    experts up to the cap in all (equal scores: the lower expert). The cap is Budget, or with PerRequest,
+    min(Budget, PerRequest x the call's real requests). One program per 32 experts, each ranking its own against all."""
+    g = tl.program_id(0)
     if PerRequest > 0:
         reqs = R // STEPS
         if HAS_SLOTS:  # a graph's padded requests (dummy slot 0) do not count
@@ -326,22 +326,19 @@ def _budget_select_kernel(Score, Bits, Slots, R, Budget, PerRequest, E: tl.const
     for r0 in range(0, R, RB):
         b = tl.load(Bits + (r0 + rr)[:, None] * NW + w[None, :], mask=(r0 + rr)[:, None] < R, other=0)
         core = core | tl.reduce(b, 0, _or)
+    cols = tl.arange(0, BLOCK)
     incore = ((tl.gather(core, cols // 32, 0) >> (cols % 32)) & 1) != 0
     s = tl.load(Score + cols, mask=cols < E, other=0.0)
     key = tl.where(incore | (s <= 0.0) | (cols >= E), -1.0, s)
     need = Budget - tl.sum(incore.to(tl.int32), 0)
-    rank = tl.zeros([BLOCK], dtype=tl.int32)  # other experts ahead of each: higher score, or equal and lower id
-    for c0 in tl.static_range(0, BLOCK, 32):
-        f = c0 + tl.arange(0, 32)
-        sf = tl.load(Score + f, mask=f < E, other=0.0)
-        inf = ((tl.gather(core, f // 32, 0) >> (f % 32)) & 1) != 0
-        kf = tl.where(inf | (sf <= 0.0) | (f >= E), -1.0, sf)
-        ahead = (kf[None, :] > key[:, None]) | ((kf[None, :] == key[:, None]) & (f[None, :] < cols[:, None]))
-        rank += tl.sum(ahead.to(tl.int32), 1)
-    sel = incore | ((key > 0.0) & (rank < need))
-    words = tl.sum(tl.reshape(tl.where(sel, 1 << (cols % 32), 0), [NW, 32]), 1)  # distinct bits: the sum is the OR
-    for r in range(R):
-        tl.store(Bits + r * NW + w, words)
+    f = g * 32 + tl.arange(0, 32)  # this program's experts
+    sf = tl.load(Score + f, mask=f < E, other=0.0)
+    inf = ((tl.gather(core, f // 32, 0) >> (f % 32)) & 1) != 0
+    kf = tl.where(inf | (sf <= 0.0) | (f >= E), -1.0, sf)
+    ahead = (key[None, :] > kf[:, None]) | ((key[None, :] == kf[:, None]) & (cols[None, :] < f[:, None]))
+    rank = tl.sum(ahead.to(tl.int32), 1)  # other experts ahead of each: higher score, or equal and lower id
+    sel = inf | ((kf > 0.0) & (rank < need))
+    tl.store(Set + g, tl.sum(tl.where(sel, 1 << (f % 32), 0), 0))  # distinct bits: the sum is the OR
 
 
 def route_budget(logits: torch.Tensor, k: int, keep: int, budget: int, slots: torch.Tensor | None = None, steps: int = 1,
@@ -361,24 +358,27 @@ def route_budget(logits: torch.Tensor, k: int, keep: int, budget: int, slots: to
     graph-capturable."""
     r, e = logits.shape
     block, cp = triton.next_power_of_2(e), triton.next_power_of_2(ROUTE_CANDIDATES)
+    nw = block // 32
     dev = logits.device
     cand = torch.empty((r, cp), dtype=torch.int32, device=dev)
     p = torch.empty((r, cp), dtype=torch.float32, device=dev)
-    bits = torch.empty((r, block // 32), dtype=torch.int32, device=dev)
+    bits = torch.empty((r, nw), dtype=torch.int32, device=dev)
+    dense = torch.empty((r, block), dtype=torch.float32, device=dev)
     score = torch.empty((block,), dtype=torch.float32, device=dev)
+    chosen = torch.empty((nw,), dtype=torch.int32, device=dev)
     ids = torch.empty((r, k), dtype=torch.int32, device=dev)
     w = torch.empty((r, k), dtype=torch.float32, device=dev)
     sl = cand if slots is None else slots
     common = dict(C=ROUTE_CANDIDATES, CP=cp, STEPS=steps, HAS_SLOTS=slots is not None)
     # one warp per row: each of the ROUTE_CANDIDATES rank passes reduces with warp shuffles alone
-    _route_rank_kernel[(r,)](logits, sl, cand, p, bits, logits.stride(0), e, BLOCK=block, KEEP=keep, num_warps=1, **common)
-    _budget_score_kernel[(block // 32,)](sl, cand, p, score, r, CP=cp, K=k, STEPS=steps, HAS_SLOTS=slots is not None, EB=32,
-                                         num_warps=1)
+    _route_rank_kernel[(r,)](logits, sl, cand, p, bits, dense, logits.stride(0), e, BLOCK=block, KEEP=keep, K=k,
+                             num_warps=1, **common)
+    _budget_score_kernel[(block // 32,)](dense, score, r, BLOCK=block, EB=32, RB=16, num_warps=1)  # 16 rows a load
     rb = min(64, max(16, triton.next_power_of_2(r)))
-    _budget_select_kernel[(1,)](score, bits, sl, r, budget, per_request, E=e, BLOCK=block, NW=block // 32, RB=rb, STEPS=steps,
-                                HAS_SLOTS=slots is not None, num_warps=4)
+    _budget_select_kernel[(nw,)](score, bits, sl, chosen, r, budget, per_request, E=e, BLOCK=block, NW=nw, RB=rb, STEPS=steps,
+                                 HAS_SLOTS=slots is not None, num_warps=4)
     # the rows take their candidates in the set in rank order: a row's top `keep` are in it, so they come first
-    _route_pick_kernel[(triton.cdiv(r, rb),)](sl, cand, p, bits, ids, w, r, k, NW=block // 32, RB=rb, num_warps=4,
+    _route_pick_kernel[(triton.cdiv(r, rb),)](sl, cand, p, chosen, ids, w, r, k, NW=nw, RB=rb, num_warps=4,
                                               KP=triton.next_power_of_2(k), NONE=e, REPEAT=repeat, **common)
     return ids, w
 
