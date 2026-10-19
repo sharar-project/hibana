@@ -63,10 +63,10 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
     p["SHARAR_MAX_BATCH"] = "4"
     if flashnext and profile != "exact":
         # budgeted expert selection in decode and verify forwards: at most 12 experts a request, 64 in all, chosen by
-        # router probability across the forward's tokens; each token keeps its top 4 (3 at 8 requests, 2 from 16).
+        # router probability across the forward's tokens; each token keeps its top 4, fewer in wide forwards (2 from 64 tokens).
         # Against the former keep 5 + reuse 5 (3-bit experts, one Spark): fast 1 request +9% tok/s, quick suite +0.7 pp;
         # throughput 1 / 4 / 16 / 64 streams +19 / +7 / 0 / 0% against keep 2 + budget 64, RULER v2 32K +2.5.
-        # Two Sparks and the NVFP4 experts take the same setting, unmeasured.
+        # (8 streams -4%: its forwards keep 3.) Two Sparks and the NVFP4 experts take the same setting, unmeasured.
         p.update(SHARAR_MOE_KEEP="4", SHARAR_MOE_BUDGET="12:64")
         # the optimized QSA prefill kernels where eligible (SM121, one or two Sparks, through 32K): RULER v2 32K 94.1
         # against 94.0 (120 items, 2 better / 2 worse), prefill 3-4% faster at 8K and 32K

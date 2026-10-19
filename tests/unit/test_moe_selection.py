@@ -160,10 +160,11 @@ def test_settings_resolve_to_keep_and_budget():
 
 
 def test_the_guarantee_shrinks_as_the_forward_grows():
-    """The largest g <= keep with g x rows < 2 x cap, at least 2: at 4 and 12:64, one to four requests keep 4 (decode
-    and verify of 5 rows), eight 3, sixteen and more 2; a keep below 2 stays."""
+    """2 cap / rows within [2, keep]: at 4 and 12:64, requests x tokens 1 x 1, 1 x 5, 4 x 5 keep 4; 1 x 9 (a depth-8
+    draft) 2; 8 x 5 3; 16 x 4 and up 2; a keep below 2 stays."""
     layer = _layer()
-    assert [layer.guarantee(r * s, s) for r, s in [(1, 1), (1, 5), (4, 5), (8, 4), (16, 4), (64, 4), (128, 1)]] == [4, 4, 4, 3, 2, 2, 2]
+    shapes = [(1, 1), (1, 5), (4, 5), (1, 9), (8, 5), (16, 4), (64, 4), (128, 1)]
+    assert [layer.guarantee(r * s, s) for r, s in shapes] == [4, 4, 4, 2, 3, 2, 2, 2]
     assert _layer(keep=1).guarantee(256, 4) == 1
     assert _layer(per_request=0).guarantee(5, 5) == 4  # a fixed cap of 64
 

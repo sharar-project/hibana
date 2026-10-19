@@ -137,12 +137,12 @@ class MoeLayer:
     MIN_GUARANTEE = 2  # below two experts a token, GSM8K fell 3.3 points at 16 requests (keep 1 + budget 64)
 
     def guarantee(self, rows: int, steps: int) -> int:
-        """Each token's guaranteed top experts under SHARAR_MOE_BUDGET: the largest g <= SHARAR_MOE_KEEP with
-        g x rows < 2 x cap (about half of the guaranteed slots are distinct experts, so they stay under the cap and it
-        binds), at least MIN_GUARANTEE; from the call's shape (a graph's bucket). At 4 and 12:64: one to four requests
-        keep 4, eight 3 (32 verify rows), sixteen and more 2."""
+        """Each token's guaranteed top experts under SHARAR_MOE_BUDGET: 2 cap / rows (about half of the guaranteed slots
+        are distinct experts, so they fill about the cap and it binds), within [MIN_GUARANTEE, SHARAR_MOE_KEEP]; from the
+        call's shape (a graph's bucket). At 4 and 12:64: decode and verify forwards of up to 4 tokens a request keep 4
+        (one request: up to 6 tokens), wider drafts and bigger batches fewer, 64 tokens and more 2."""
         cap = min(self.budget, self.per_request * (rows // steps)) if self.per_request else self.budget
-        return max(min(self.MIN_GUARANTEE, self.keep), min(self.keep, (2 * cap - 1) // rows))
+        return max(min(self.MIN_GUARANTEE, self.keep), min(self.keep, 2 * cap // rows))
 
     def routed(self, x: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
         """The routed experts' weighted sum for x [M, H] bf16 -> bf16 [M, H]."""
