@@ -23,15 +23,18 @@ from sharar.model.flashnext.attention import FlashNextAttention
 from sharar.model.flashnext.gdn import FlashNextGdn
 from sharar.model.flashnext.hyper import HyperConnection
 from sharar.model.flashnext.linear import TrunkLinear
-from sharar.model.flashnext.moe import MoeLayer
+from sharar.model.flashnext.moe import MoeLayer, nvfp4_expert_names
 from sharar.model.flashnext.ple import PleLayer
 from sharar.model.gdn_plan import prepare_gdn_prefill
 from sharar.model.rope import PartialRotary
 from sharar.target import FLASHNEXT, Target
+from sharar.weights import files
 from sharar.weights.safetensors import SnapshotWeights
 from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 
 PREFIX = "model.language_model"
+# Layers whose routed experts are being read while one builds: about 1 GiB each (3-bit) or 1.4 GiB (NVFP4).
+EXPERTS_AHEAD = 2
 
 
 class DecoderLayer:
@@ -115,13 +118,29 @@ class FlashNext:
         self.rope = PartialRotary(target.head_dim, target.rotary_dim, target.rope_theta, target.max_position_embeddings, self.device)
         self.ragged = ops.RaggedAttention(self.device, target.num_attention_heads, target.num_kv_heads, target.head_dim)
         self.layers: list[DecoderLayer] = []
-        for i, kind in enumerate(types):
-            experts3 = (calibrated.load_experts(i, target.num_experts, self.full_target.moe_intermediate_size, target.hidden_size, self.device)
-                        if expert_layers else None)
-            self.layers.append(DecoderLayer(w, snap, i, kind, self.device, self.rope, self.ragged, target, self.precision, experts3))
-            w.close()  # the PLE keeps its own maps; expert shards are reopened per layer
-            if log and (i + 1) % 8 == 0:
-                log(f"  loaded {i + 1}/{len(types)} layers ({time.perf_counter() - started:.0f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB)")
+
+        def ahead(i: int) -> None:
+            """Start reading layer i's routed experts, the bulk of a layer, on the read pool (`weights/files.py`)."""
+            if i < len(types):
+                if expert_layers:
+                    calibrated.ahead(calibrated.expert_names(i))
+                else:
+                    w.ahead(nvfp4_expert_names(f"{PREFIX}.layers.{i}.mlp", target.num_experts))
+
+        try:
+            for i in range(EXPERTS_AHEAD):
+                ahead(i)
+            for i, kind in enumerate(types):
+                ahead(i + EXPERTS_AHEAD)
+                experts3 = (calibrated.load_experts(i, target.num_experts, self.full_target.moe_intermediate_size, target.hidden_size, self.device)
+                            if expert_layers else None)
+                self.layers.append(DecoderLayer(w, snap, i, kind, self.device, self.rope, self.ragged, target, self.precision, experts3))
+                w.close()  # the PLE keeps its own maps
+                if log and (i + 1) % 8 == 0:
+                    log(f"  loaded {i + 1}/{len(types)} layers ({time.perf_counter() - started:.0f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB)")
+        except BaseException:
+            files.discard()
+            raise
         if log and expert_layers:
             log(f"  experts: 3-bit from {current().w3_checkpoint} ({sum(layer.moe.expert_bytes for layer in self.layers) / 2**30:.1f} GiB)")
         self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", target.hc_count, target.hidden_size, target.rms_norm_eps, self.device,
@@ -184,13 +203,11 @@ class FlashNext:
         missing = sorted(set(names) - set(linears))
         if missing:
             raise ValueError(f"calibrated names not in this model: {missing[:4]}")
-        skipped = []
-        for name in names:
-            lin = linears[name]
-            if lin.shard is ROW_PARALLEL and lin.in_features % 128:  # a part the 3-bit format cannot hold (the shared down's 320 columns)
-                skipped.append(name)
-                continue
-            lin.w3 = calibrated.load(name, lin, lin.shard)
+        # a part the 3-bit format cannot hold (the shared down's 320 columns)
+        skipped = [name for name in names if linears[name].shard is ROW_PARALLEL and linears[name].in_features % 128]
+        loads = [(name, linears[name], linears[name].shard) for name in names if name not in skipped]
+        for (_, lin, _), w3 in zip(loads, calibrated.load_many(loads)):
+            lin.w3 = w3
         if log:
             log(f"  w3: {len(names) - len(skipped)} calibrated trunk matrices from {calibrated.directory}"
                 + (f"; {len(skipped)} tensor-parallel parts stay FP8 (input width not a multiple of 128)" if skipped else ""))

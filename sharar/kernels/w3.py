@@ -303,10 +303,12 @@ def attach_model(model, log=print, codebook=DEFAULT_CODEBOOK) -> dict:
     linears = list(model.linears())
     if calibrated is not None and set(calibrated.weights) != {name for name, _ in linears}:
         raise ValueError("calibrated W3 checkpoint must contain every target layer projection")
-    for name, lin in linears:
-        if getattr(lin, "w3", None) is None:
-            lin.w3 = calibrated.load(name, lin, lin.shard) if calibrated else pack(lin.dequantize(), codebook)
-            total += lin.w3.bytes; count += 1
+    todo = [(name, lin) for name, lin in linears if getattr(lin, "w3", None) is None]
+    copies = (calibrated.load_many((name, lin, lin.shard) for name, lin in todo) if calibrated
+              else (pack(lin.dequantize(), codebook) for _, lin in todo))
+    for (_, lin), w3 in zip(todo, copies):
+        lin.w3 = w3
+        total += lin.w3.bytes; count += 1
     torch.cuda.synchronize()
     model.w3_identity = calibrated.identity if calibrated else "nearest:" + str(codebook)
     _module()  # build the kernel before serving starts

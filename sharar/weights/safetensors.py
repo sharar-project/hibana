@@ -8,6 +8,8 @@ from pathlib import Path
 import torch
 from safetensors import safe_open
 
+from sharar.weights import files
+
 
 class SnapshotWeights:
     def __init__(self, snap: Path):
@@ -33,6 +35,27 @@ class SnapshotWeights:
         # few hundred MB/s on GB10 (105 s of a 108 s load). A memcpy into RAM
         # first runs at 25 GB/s and the device copy then at 18 GB/s.
         return handle.get_tensor(name).clone()
+
+    def shards(self, names) -> list[Path]:
+        """The files holding `names`, in first-use order."""
+        return [self.snap / shard for shard in dict.fromkeys(self._map[name] for name in names)]
+
+    def ahead(self, names) -> None:
+        """Start reading the files holding `names` whole (`files.ahead`), for a later `get_whole`."""
+        for path in self.shards(names):
+            files.ahead(path)
+
+    def get_whole(self, names, device) -> dict[str, torch.Tensor]:
+        """`names` as views of one device copy of each file holding them, read whole (`weights/files.py`): for files
+        that hold little else, such as one layer's routed experts. The files' other tensors are copied too."""
+        out = {}
+        for path in self.shards(names):
+            data = files.take(path)
+            entries = files.layout(data)
+            raw = files.as_tensor(data).to(device)
+            del data
+            out.update({name: files.tensor(raw, entries[name]) for name in names if self.snap / self._map[name] == path})
+        return out
 
     def close(self) -> None:
         self._handles.clear()
