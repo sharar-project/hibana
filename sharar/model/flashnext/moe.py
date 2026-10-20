@@ -29,31 +29,40 @@ def swizzle_block_scales_batched(scales: torch.Tensor) -> torch.Tensor:
     return padded.reshape(e, m_pad, k_pad).view(torch.int32)
 
 
+def nvfp4_expert_names(prefix: str, experts: int) -> list[str]:
+    """Every tensor `load_nvfp4_experts` reads for the layer at `prefix`."""
+    kinds = ("weight", "weight_scale", "weight_scale_2", "input_scale")
+    return [f"{prefix}.experts.{e}.{proj}.{kind}" for e in range(experts) for proj in ("gate_proj", "up_proj", "down_proj")
+            for kind in kinds]
+
+
 def load_nvfp4_experts(w, prefix: str, experts: int, device, rows=None, cols=None) -> dict[str, torch.Tensor]:
     """A layer's NVFP4 experts as stored: w13 [E, 2I, H/2] = [up rows; gate rows] and w2 [E, H, I/2] uint8 (low nibble
     first), their float8_e4m3fn block scales s13 / s2 (unswizzled), the per-expert global scales scale2_13 / scale2_2
-    and input scales in13 / in2 (FP32 [E]). `rows` / `cols` cut this rank's tensor-parallel part (default: whole)."""
+    and input scales in13 / in2 (FP32 [E]). `rows` / `cols` cut this rank's tensor-parallel part (default: whole).
+    The layer's expert files are read whole and copied to the device once (`SnapshotWeights.get_whole`); the stacks
+    are built there."""
     rows = rows or (lambda t: t)
     cols = cols or (lambda t: t)
-    p = f"{prefix}.experts"
-    w13, w2, s13, s2, scale2_13, scale2_2, in13, in2 = [], [], [], [], [], [], [], []
-    for e in range(experts):
-        g, u, d = (f"{p}.{e}.gate_proj", f"{p}.{e}.up_proj", f"{p}.{e}.down_proj")
-        # FlashInfer's CUTLASS fused MoE reads fc1 as [up rows; gate rows] (measured: the other order
-        # gives cosine 0.79 against the dequantized reference, this one 0.999).
-        w13.append(torch.cat([rows(w.get(f"{u}.weight")), rows(w.get(f"{g}.weight"))], dim=0))
-        w2.append(cols(w.get(f"{d}.weight")))  # packed [K, I/2] and block scales [K, I/16]: this rank's columns
-        s13.append(torch.cat([rows(w.get(f"{u}.weight_scale")), rows(w.get(f"{g}.weight_scale"))], dim=0))
-        s2.append(cols(w.get(f"{d}.weight_scale")))
-        g2, u2 = w.get(f"{g}.weight_scale_2").float().reshape(()), w.get(f"{u}.weight_scale_2").float().reshape(())
-        if not torch.equal(g2, u2):
-            raise ValueError(f"expert {e}: gate and up global scales differ; the fused kernel needs one")
-        scale2_13.append(g2)
-        scale2_2.append(w.get(f"{d}.weight_scale_2").float().reshape(()))
-        in13.append(torch.maximum(w.get(f"{g}.input_scale").float().reshape(()), w.get(f"{u}.input_scale").float().reshape(())))
-        in2.append(w.get(f"{d}.input_scale").float().reshape(()))
-    out = {"w13": w13, "w2": w2, "s13": s13, "s2": s2, "scale2_13": scale2_13, "scale2_2": scale2_2, "in13": in13, "in2": in2}
-    return {k: torch.stack(v).to(device) for k, v in out.items()}
+    t = w.get_whole(nvfp4_expert_names(prefix, experts), device)
+
+    def each(proj: str, kind: str, cut=lambda x: x) -> torch.Tensor:
+        return torch.stack([cut(t[f"{prefix}.experts.{e}.{proj}.{kind}"]) for e in range(experts)])
+
+    # FlashInfer's CUTLASS fused MoE reads fc1 as [up rows; gate rows] (measured: the other order
+    # gives cosine 0.79 against the dequantized reference, this one 0.999).
+    w13 = torch.cat([each("up_proj", "weight", rows), each("gate_proj", "weight", rows)], dim=1)
+    s13 = torch.cat([each("up_proj", "weight_scale", rows), each("gate_proj", "weight_scale", rows)], dim=1)
+    # packed [K, I/2] and block scales [K, I/16]: this rank's columns
+    w2, s2 = each("down_proj", "weight", cols), each("down_proj", "weight_scale", cols)
+    g2, u2 = each("gate_proj", "weight_scale_2").float(), each("up_proj", "weight_scale_2").float()
+    differ = (g2 != u2).nonzero().flatten().tolist()
+    if differ:
+        raise ValueError(f"expert {differ[0]}: gate and up global scales differ; the fused kernel needs one")
+    out = {"w13": w13, "w2": w2, "s13": s13, "s2": s2, "scale2_13": g2, "scale2_2": each("down_proj", "weight_scale_2").float(),
+           "in13": torch.maximum(each("gate_proj", "input_scale").float(), each("up_proj", "input_scale").float()),
+           "in2": each("down_proj", "input_scale").float()}
+    return {k: v.contiguous() for k, v in out.items()}
 
 
 class MoeLayer:

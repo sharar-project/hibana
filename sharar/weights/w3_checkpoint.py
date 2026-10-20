@@ -16,9 +16,10 @@ import sys
 from pathlib import Path
 
 import torch
-from safetensors.torch import load_file, save_file
+from safetensors.torch import save_file
 
 from sharar.model.qwen38_config import MODEL_REVISION
+from sharar.weights import files
 from sharar.weights.sharding import REPLICATED, Shard
 
 FORMAT_VERSION = 1
@@ -63,9 +64,33 @@ class CalibratedWeights:
         self.weights = self.manifest["weights"]
         self.identity = sha256(self.directory / "manifest.json")
 
+    def paths(self, names) -> list[tuple[Path, str]]:
+        """The files of `names` and their recorded checksums."""
+        return [(self.directory / self.weights[name]["file"], self.weights[name]["sha256"]) for name in names]
+
+    def ahead(self, names) -> None:
+        """Start reading (and checking) the files of `names` on the read pool (`weights/files.py`)."""
+        for path, digest in self.paths(names):
+            files.ahead(path, digest)
+
+    @staticmethod
+    def expert_names(layer: int) -> list[str]:
+        return [f"layers.{layer}.experts.w13", f"layers.{layer}.experts.w2"]
+
     def load(self, name: str, linear, shard: Shard = REPLICATED):
         """`linear`'s copy: its tensor-parallel part `shard` of the checkpoint's whole matrix."""
         return self._load(name, linear.out_features, linear.in_features, linear.weight.device, shard)
+
+    def load_many(self, items, window: int = 8):
+        """`load` for each (name, linear, shard) in order, reading `window` files ahead."""
+        items = list(items)
+        try:
+            for i, (name, linear, shard) in enumerate(items):
+                self.ahead(name for name, _, _ in items[i:i + window])
+                yield self.load(name, linear, shard)
+        except BaseException:
+            files.discard()
+            raise
 
     def expert_layers(self) -> set[int]:
         """The layers whose routed experts the checkpoint carries (`layers.N.experts.w13` / `.w2`, kernels/w3_moe.py)."""
@@ -77,8 +102,9 @@ class CalibratedWeights:
         from sharar.kernels.w3_moe import W3Experts
         from sharar.weights.sharding import ExpertParallel, expert_range
         lo, hi = expert_range(experts)
-        fc1 = self._load(f"layers.{layer}.experts.w13", (hi - lo) * 2 * inter, hidden, device, ExpertParallel(experts, 2 * inter))
-        fc2 = self._load(f"layers.{layer}.experts.w2", (hi - lo) * hidden, inter, device, ExpertParallel(experts, hidden))
+        w13, w2 = self.expert_names(layer)
+        fc1 = self._load(w13, (hi - lo) * 2 * inter, hidden, device, ExpertParallel(experts, 2 * inter))
+        fc2 = self._load(w2, (hi - lo) * hidden, inter, device, ExpertParallel(experts, hidden))
         return W3Experts.from_stacked(fc1, fc2, hi - lo, base=lo)
 
     def _load(self, name: str, out_features: int, in_features: int, device, shard: Shard = REPLICATED):
@@ -88,10 +114,10 @@ class CalibratedWeights:
         filename = entry["file"]
         if Path(filename).name != filename:
             raise ValueError("calibrated W3 files must be directly inside the checkpoint")
-        path = self.directory / filename
-        if sha256(path) != entry["sha256"]:
-            raise ValueError(f"calibrated W3 checksum mismatch for {name}")
-        tensors = load_file(str(path), device="cpu")
+        # Read once, checked against the manifest's checksum as it is read (`weights/files.py`).
+        data = files.take(self.directory / filename, entry["sha256"])
+        raw = files.as_tensor(data)
+        tensors = {key: files.tensor(raw, value) for key, value in files.layout(data).items()}
         expected = {"planes": ((n // 32, k // 128, 3, 32, 4), torch.uint32),
                     "scales": ((n // 32, k // 128, 4, 32), torch.uint8),
                     "row_scale": ((n,), torch.float32)}
@@ -105,11 +131,7 @@ class CalibratedWeights:
         n, k = row_scale.shape[0], planes.shape[1] * 128
         if (n, k) != (out_features, in_features):
             raise ValueError(f"calibrated W3 shape mismatch for {name}")
-        # On GB10, copying a file-backed mmap directly to CUDA is much slower
-        # than staging it in ordinary CPU storage, as the draft loader does.
-        # Only one projection (or one layer's experts) is staged at a time.
-        return W3Weight(*(t.clone(memory_format=torch.contiguous_format).to(device) for t in (planes, scales, row_scale)),
-                        n, k, levels, lut_of(levels))
+        return W3Weight(*(t.contiguous().to(device) for t in (planes, scales, row_scale)), n, k, levels, lut_of(levels))
 
 
 def fetched_name(target, revision: str) -> str:
