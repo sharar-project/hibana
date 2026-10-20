@@ -33,6 +33,17 @@ def _int(env: Mapping[str, str], name: str, default: int | None) -> int | None:
     return default if value in (None, "") else int(value)
 
 
+def _budget(env: Mapping[str, str]) -> tuple[int, int]:
+    """SHARAR_MOE_BUDGET as (per request, cap): "64" -> (0, 64), "12:64" -> (12, 64), unset -> (0, 0)."""
+    value = env.get("SHARAR_MOE_BUDGET") or "0"
+    per, sep, cap = value.partition(":")
+    if not sep:
+        per, cap = "0", per
+    if not per.strip().isdigit() or not cap.strip().isdigit():
+        raise ValueError(f"SHARAR_MOE_BUDGET must be B or P:B (experts), got {value!r}")
+    return int(per), int(cap)
+
+
 SSD_DIR = str(Path.home() / ".local" / "share" / "sharar" / "ssd")  # the engine's default; the launcher passes $SHARAR_RESULTS/ssd/<target>
 
 
@@ -110,9 +121,9 @@ class EngineConfig:
     # --- diagnostics and benchmark loader
     debug_sync: bool = False                  # SHARAR_DEBUG_SYNC
     bench_verify_state: str = "snapshots"     # SHARAR_BENCH_VERIFY_STATE
-    moe_keep: int = 0                         # SHARAR_MOE_KEEP=k: Flash-Next, each token keeps its own top k experts in decode and verify forwards (model/flashnext/moe.py); 0, or k of 10 and above: the served top-10
-    moe_budget: int = 0                       # SHARAR_MOE_BUDGET=B: Flash-Next decode and verify calls read at most B distinct experts (more only for the rows' guaranteed top SHARAR_MOE_KEEP): those with the most router probability across the call's rows; replaces the reuse rule (route_budget); 0: off
-    moe_reuse: int = 0                        # SHARAR_MOE_REUSE=r: up to r more experts a token from its ranks k+1..20, only ones the call's other tokens keep (k + r <= 10), so the call reads no expert beyond the tokens' top k
+    moe_keep: int = 0                         # SHARAR_MOE_KEEP=k: Flash-Next decode and verify forwards, the most top experts a token is guaranteed (alone: each token's top k); 0, or k of 10 and above: the served top-10
+    moe_budget: int = 0                       # SHARAR_MOE_BUDGET=[P:]B: with SHARAR_MOE_KEEP, a decode or verify forward reads at most B distinct experts, or min(B, P x its requests) (more only for the tokens' guaranteed experts): those with the most router probability across its tokens (model/flashnext/moe.py, route_budget); 0: off
+    moe_budget_per_request: int = 0           # the P of SHARAR_MOE_BUDGET=P:B
 
     def __post_init__(self) -> None:
         if self.qsa_prefill_backend not in ("original", "auto", "optimized"):
@@ -127,6 +138,7 @@ class EngineConfig:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> EngineConfig:
         e = os.environ if env is None else env
+        budget = _budget(e)  # (per request, cap)
         return cls(
             profile=_str(e, "SHARAR_PROFILE", "fast"),
             target=_str(e, "SHARAR_TARGET"),
@@ -176,8 +188,8 @@ class EngineConfig:
             debug_sync=_flag(e, "SHARAR_DEBUG_SYNC"),
             bench_verify_state=e.get("SHARAR_BENCH_VERIFY_STATE", "snapshots"),
             moe_keep=_int(e, "SHARAR_MOE_KEEP", 0),
-            moe_reuse=_int(e, "SHARAR_MOE_REUSE", 0),
-            moe_budget=_int(e, "SHARAR_MOE_BUDGET", 0),
+            moe_budget=budget[1],
+            moe_budget_per_request=budget[0],
         )
 
     def replace(self, **changes) -> EngineConfig:

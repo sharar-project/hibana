@@ -64,16 +64,16 @@ def test_qsa_prefill_backend_configuration(backend):
 def test_qsa_backend_preserves_ple_and_moe_settings(backend, resident):
     cfg = EngineConfig.from_env({"SHARAR_QSA_PREFILL_BACKEND": backend,
                                 "SHARAR_PLE_RESIDENT": resident,
-                                "SHARAR_MOE_KEEP": "5", "SHARAR_MOE_REUSE": "5"})
+                                "SHARAR_MOE_KEEP": "4", "SHARAR_MOE_BUDGET": "12:64"})
     assert cfg.qsa_prefill_backend == backend
     assert cfg.ple_resident == resident
     assert cfg.describe()["qsa_prefill_backend"] == backend
     assert cfg.describe()["ple_resident"] == resident
-    assert (cfg.moe_keep, cfg.moe_reuse) == (5, 5)
-    assert (cfg.describe()["moe_keep"], cfg.describe()["moe_reuse"]) == (5, 5)
+    assert (cfg.moe_keep, cfg.moe_budget, cfg.moe_budget_per_request) == (4, 64, 12)
+    assert (cfg.describe()["moe_keep"], cfg.describe()["moe_budget"], cfg.describe()["moe_budget_per_request"]) == (4, 64, 12)
     assert cfg.replace(qsa_prefill_backend="original").ple_resident == resident
     assert (cfg.replace(qsa_prefill_backend="original").moe_keep,
-            cfg.replace(qsa_prefill_backend="original").moe_reuse) == (5, 5)
+            cfg.replace(qsa_prefill_backend="original").moe_budget) == (4, 64)
     assert cfg.replace(ple_resident="auto").qsa_prefill_backend == backend
 
 

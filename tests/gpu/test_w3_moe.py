@@ -62,7 +62,7 @@ def test_fewer_experts_per_row(experts, m, k):
 
 @pytest.mark.parametrize("m", [2, 5, 16, 17, 80])  # 80 rows: 800 slots, sorted outside the kernel
 def test_ids_past_the_last_expert_add_nothing(experts, m):
-    """Unfilled slots (route_subst without the fallback) name id 512 at weight 0: no pair, whatever else the row
+    """Unfilled slots (route_budget without `repeat`) name id 512 at weight 0: no pair, whatever else the row
     holds. Every row shares one expert, as consecutive verify rows often do, with 1 to 9 unfilled slots: the result is
     the reference over the filled slots, and padded rows (every slot unfilled) come out zero."""
     torch.manual_seed(300 + m)
