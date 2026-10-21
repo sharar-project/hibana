@@ -169,7 +169,8 @@ def quant_fp8_small(x: torch.Tensor, wscale: torch.Tensor):
 
 # ---- softmax top-k routing ----
 @triton.jit
-def _route_kernel(L, Ids, W, stride_l, E: tl.constexpr, K: tl.constexpr, BLOCK: tl.constexpr):
+def _route_kernel(L, Slots, Ids, W, stride_l, E: tl.constexpr, K: tl.constexpr, BLOCK: tl.constexpr, STEPS: tl.constexpr,
+                  HAS_SLOTS: tl.constexpr, REPEAT: tl.constexpr):
     t = tl.program_id(0)
     cols = tl.arange(0, BLOCK)
     mask = cols < E
@@ -178,6 +179,12 @@ def _route_kernel(L, Ids, W, stride_l, E: tl.constexpr, K: tl.constexpr, BLOCK: 
     p = tl.exp(logits - m)
     p = p / tl.sum(p, 0)
     p = tl.where(mask, p, -1.0)
+    real = True
+    fill = E  # a padded row (a graph's dummy slot 0) reads no expert the call would not read anyway
+    if HAS_SLOTS:
+        real = tl.load(Slots + t // STEPS) != 0
+        if REPEAT:  # row 0's top 1 (row 0 is real: a graph's padding follows its requests)
+            fill = tl.argmax(tl.load(L + cols, mask=mask, other=float("-inf")).to(tl.float32), 0).to(tl.int32)
     work = p
     total = 0.0
     for k in tl.static_range(K):  # pass 1: the top-k mass
@@ -188,17 +195,20 @@ def _route_kernel(L, Ids, W, stride_l, E: tl.constexpr, K: tl.constexpr, BLOCK: 
     for k in tl.static_range(K):  # pass 2: store ids and renormalized weights in descending order
         idx = tl.argmax(work, 0)
         val = tl.max(work, 0)
-        tl.store(Ids + t * K + k, idx.to(tl.int32))
-        tl.store(W + t * K + k, val / total)
+        tl.store(Ids + t * K + k, tl.where(real, idx.to(tl.int32), fill))
+        tl.store(W + t * K + k, tl.where(real, val / total, 0.0))
         work = tl.where(cols == idx, -1.0, work)
 
 
-def route_topk(logits: torch.Tensor, k: int):
-    """[M, E] -> (int32 ids [M, k], fp32 renormalized softmax weights [M, k]), largest first."""
+def route_topk(logits: torch.Tensor, k: int, slots: torch.Tensor | None = None, steps: int = 1, repeat: bool = False):
+    """[M, E] -> (int32 ids [M, k], fp32 renormalized softmax weights [M, k]), largest first. With `slots`, row r is real
+    iff slots[r // steps] != 0; a padded row (a graph's dummy slot 0) takes expert E at weight 0, which the 3-bit experts
+    skip, or with `repeat` row 0's top 1 at weight 0 (FlashInfer's NVFP4 MoE needs a real expert: no further read)."""
     m, e = logits.shape
     ids = torch.empty((m, k), dtype=torch.int32, device=logits.device)
     w = torch.empty((m, k), dtype=torch.float32, device=logits.device)
-    _route_kernel[(m,)](logits, ids, w, logits.stride(0), e, k, BLOCK=triton.next_power_of_2(e))
+    _route_kernel[(m,)](logits, ids if slots is None else slots, ids, w, logits.stride(0), e, k, BLOCK=triton.next_power_of_2(e),
+                        STEPS=steps, HAS_SLOTS=slots is not None, REPEAT=repeat)
     return ids, w
 
 

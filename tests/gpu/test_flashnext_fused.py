@@ -62,6 +62,21 @@ def test_route_topk(m):
     _close(w.sort(-1, descending=True).values, (rw / rw.sum(-1, keepdim=True)).sort(-1, descending=True).values, 1e-4)
 
 
+@pytest.mark.parametrize("steps", [1, 5])
+@pytest.mark.parametrize("repeat", [False, True])
+def test_route_topk_padded_rows(steps, repeat):
+    """A graph's padded requests (dummy slot 0) read no extra experts: E at weight 0, or row 0's top 1 with `repeat`;
+    the real rows' ids and weights are the same bits as without slots."""
+    slots = torch.tensor([3, 7, 1, 0], dtype=torch.int32, device="cuda")
+    logits = (torch.randn(4 * steps, 512, device="cuda") * 2).to(torch.bfloat16)
+    ids0, w0 = fk.route_topk(logits, 10)
+    ids, w = fk.route_topk(logits, 10, slots, steps, repeat=repeat)
+    real = 3 * steps
+    assert torch.equal(ids[:real], ids0[:real]) and torch.equal(w[:real], w0[:real])
+    assert torch.equal(ids[real:], torch.full_like(ids[real:], int(ids0[0, 0]) if repeat else 512))
+    assert torch.equal(w[real:], torch.zeros_like(w[real:]))
+
+
 def test_moe_combine_silu_mul_sigmoid_gate():
     t = 4
     routed = torch.randn(t, H, device="cuda", dtype=torch.bfloat16)
