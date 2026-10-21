@@ -114,8 +114,8 @@ def _ctx(mode, rows, slots=None, steps=0):
 @pytest.fixture
 def kernels(monkeypatch):
     """flashnext_fused stand-in (the module needs Triton): route_budget notes its arguments, route_topk is the served
-    route at K and "top<k>" below it."""
-    calls = []
+    route at K and "top<k>" below it; route_topk's arguments in `.topk`."""
+    calls = type("Calls", (list,), {})()
 
     def route_budget(logits, k, keep, budget, slots=None, steps=1, repeat=False, per_request=0, min_cap=0):
         assert logits.shape[1] == E
@@ -123,7 +123,12 @@ def kernels(monkeypatch):
                                      min_cap=min_cap))
         return "budget"
 
-    stub = SimpleNamespace(route_budget=route_budget, route_topk=lambda logits, k: "served" if k == K else f"top{k}")
+    def route_topk(logits, k, slots=None, steps=1, repeat=False):
+        topk.append(SimpleNamespace(k=k, slots=slots, steps=steps, repeat=repeat))
+        return "served" if k == K else f"top{k}"
+
+    topk = calls.topk = []
+    stub = SimpleNamespace(route_budget=route_budget, route_topk=route_topk)
     monkeypatch.setitem(sys.modules, "sharar.kernels.flashnext_fused", stub)
     return calls
 
@@ -188,5 +193,12 @@ def test_keep_alone_takes_route_topk_and_prefill_the_served_route(kernels):
     assert alone.route(x, _ctx("verify", 20, torch.ones(4, dtype=torch.int32), 5)) == "top4"
     assert alone.route(x, _ctx("decode", 20, torch.ones(20, dtype=torch.int32))) == "top4"
     assert _layer().route(x, _ctx("prefill", 20)) == "served"
-    assert _layer(keep=0, budget=0).route(x, _ctx("decode", 20, torch.ones(20, dtype=torch.int32))) == "served"
+    exact = _layer(keep=0, budget=0)
+    decode_slots, verify_slots = torch.ones(20, dtype=torch.int32), torch.tensor([3, 1, 2, 0], dtype=torch.int32)
+    assert exact.route(x, _ctx("decode", 20, decode_slots)) == "served"
+    assert exact.route(x, _ctx("verify", 20, verify_slots, 5)) == "served"
     assert kernels == []
+    # `exact` (no selection) still keeps a graph's padded requests (dummy slot 0) out of the experts it reads
+    served = kernels.topk[-2:]
+    assert [(c.k, c.steps, c.repeat) for c in served] == [(K, 1, False), (K, 5, False)]
+    assert served[0].slots is decode_slots and served[1].slots is verify_slots
