@@ -137,6 +137,9 @@ class MoeLayer:
                                 repeat=self.w3 is None, per_request=self.per_request, min_cap=self.MIN_CAP)
         if x.shape[0] <= 64:
             from sharar.kernels.flashnext_fused import route_topk
+            if ctx.mode in ("decode", "verify"):  # a graph's padded requests (dummy slot 0) read no extra experts
+                slots, steps = (ctx.slots, 1) if ctx.mode == "decode" else (ctx.seq_slots, ctx.verify_steps)
+                return route_topk(logits, self.topk, slots, steps, repeat=self.w3 is None)
             return route_topk(logits, self.topk)
         probs = torch.softmax(logits.float(), dim=-1)
         weights, ids = torch.topk(probs, self.topk, dim=-1)
