@@ -3,7 +3,7 @@
 Every speculator ends in a vocabulary projection: the MTP heads take the argmax,
 DFlash2's selector takes the top-k with values. The
 default is the target's own head (`TargetHead`). A `ShortlistHead` reads fewer bytes: a subset
-of the head's rows (a reduced draft vocabulary), a 3-bit copy of them, or both,
+of the head's rows (a reduced draft vocabulary), a 3-bit or 2-bit copy of them, or both,
 with the leading candidates rescored against the target's FP8 rows. The target
 still verifies with its own head, so under exact acceptance a cheaper draft head
 changes how many drafts are accepted, never what is emitted.
@@ -14,6 +14,9 @@ from __future__ import annotations
 from typing import Callable
 
 import torch
+
+FORMATS = ("fp8", "w3", "w2")  # SHARAR_DRAFT_HEAD
+RESCORE = {"w3": 8, "w2": 16}  # SHARAR_DRAFT_HEAD_RESCORE's default per format: the 2-bit top 8 miss the FP8 argmax 0.6% of steps, the top 16 0.2%
 
 
 def confidence(logits: torch.Tensor) -> torch.Tensor:
@@ -52,27 +55,27 @@ class TargetHead:
 
 class ShortlistHead:
     """The rows `ids` of an FP8 lm_head (`TrunkLinear`; every row when `ids` is None), as they are
-    or as a 3-bit copy (`fmt="w3"`); with `rescore` > 1 the 3-bit logits only pick that many
-    candidates and the target head's own FP8 rows choose among them."""
+    or as a 3-bit (`fmt="w3"`) or 2-bit (`"w2"`) copy; with `rescore` > 1 the copy's logits only pick
+    that many candidates and the target head's own FP8 rows choose among them."""
 
     rows_changed = True
 
     def __init__(self, lm_head, ids: torch.Tensor | None = None, fmt: str = "fp8", rescore: int = 0):
         from sharar.model.flashnext.linear import TrunkLinear
-        if fmt not in ("fp8", "w3"):
-            raise ValueError(f"draft head format must be fp8 or w3, not {fmt!r}")
+        if fmt not in FORMATS:
+            raise ValueError(f"draft head format must be fp8, w3 or w2, not {fmt!r}")
         if not hasattr(lm_head, "weight") or lm_head.weight.dim() != 2:
             raise ValueError("a shortlist draft head reads rows of a TrunkLinear lm_head (Flash-Next); the 27B's NVFP4 head is not supported yet")
         self.fmt = fmt
         self.ids = None if ids is None else ids.to(lm_head.weight.device, torch.int64).unique(sorted=True)
-        if fmt == "w3" and self.ids is not None:
+        if fmt != "fp8" and self.ids is not None:
             self.ids = _pad_rows(self.ids, 128)
         rows = lm_head if self.ids is None else TrunkLinear(lm_head.weight[self.ids].contiguous(), lm_head.scale)
-        self.head, self.w3 = (None, pack_head(rows)) if fmt == "w3" else (rows, None)
-        # Shortlist: the 3-bit logits pick `rescore` candidates and the target head's own FP8 rows
+        self.head, self.w3 = (None, pack_head(rows, fmt)) if fmt != "fp8" else (rows, None)
+        # Shortlist: the low-bit logits pick `rescore` candidates and the target head's own FP8 rows
         # (already resident) choose among them, so the pick is the full head's whenever its
         # argmax is on the shortlist.
-        self.rescore, self.source = (rescore, lm_head) if fmt == "w3" and rescore > 1 else (0, None)
+        self.rescore, self.source = (rescore, lm_head) if fmt != "fp8" and rescore > 1 else (0, None)
 
     @property
     def bytes(self) -> int:
@@ -135,12 +138,13 @@ def _pad_rows(ids: torch.Tensor, multiple: int) -> torch.Tensor:
     return ids if not short else torch.cat([ids, ids[-1:].expand(short)])
 
 
-def pack_head(lin, rows_per_chunk: int = 16384):
-    """3-bit copy of an FP8 `TrunkLinear` [N, K], dequantized a slice at a time (the whole lm_head
-    in FP32 would be a 2.5 GB temporary)."""
+def pack_head(lin, fmt: str = "w3", rows_per_chunk: int = 16384):
+    """3-bit (`w3`) or 2-bit (`w2`: four levels, fitted group scales) copy of an FP8 `TrunkLinear` [N, K],
+    dequantized a slice at a time (the whole lm_head in FP32 would be a 2.5 GB temporary)."""
     from sharar.kernels import w3
+    codebook, fit = ("lloyd2", True) if fmt == "w2" else (w3.DEFAULT_CODEBOOK, False)
     parts = [w3.pack((lin.weight[r0:r0 + rows_per_chunk].float() * lin.scale.float()) if lin.scale is not None
-                     else lin.weight[r0:r0 + rows_per_chunk].float())
+                     else lin.weight[r0:r0 + rows_per_chunk].float(), codebook, fit_scales=fit)
              for r0 in range(0, lin.out_features, rows_per_chunk)]
     if len(parts) == 1:
         return parts[0]
@@ -151,7 +155,7 @@ def pack_head(lin, rows_per_chunk: int = 16384):
 
 class VocabParallelHead:
     """A draft head over a vocabulary-parallel lm_head (tensor parallel): each rank scores only its rows of the
-    vocabulary, from its FP8 rows (`fmt="fp8"`) or a 3-bit copy of them (`"w3"`), and the ranks agree on the
+    vocabulary, from its FP8 rows (`fmt="fp8"`) or a 3-bit or 2-bit copy of them (`"w3"`, `"w2"`), and the ranks agree on the
     pick through two small collectives instead of every rank reading the whole head each draft step.
 
     Without rescoring the pick is the best of every rank's best. With `rescore` r > 1 each rank proposes its r
@@ -163,14 +167,14 @@ class VocabParallelHead:
 
     def __init__(self, lm_head, fmt: str = "fp8", rescore: int = 0):
         from sharar.distributed import get_tp_info
-        if fmt not in ("fp8", "w3"):
-            raise ValueError(f"draft head format must be fp8 or w3, not {fmt!r}")
+        if fmt not in FORMATS:
+            raise ValueError(f"draft head format must be fp8, w3 or w2, not {fmt!r}")
         tp = get_tp_info()
         self.lm_head, self.fmt = lm_head, fmt
         self.local = lm_head.out_features  # this rank's rows: [rank * local, (rank + 1) * local)
         self.offset = tp.rank * self.local
-        self.w3 = pack_head(lm_head) if fmt == "w3" else None
-        self.rescore = rescore if fmt == "w3" and rescore > 1 else 0
+        self.w3 = pack_head(lm_head, fmt) if fmt != "fp8" else None
+        self.rescore = rescore if fmt != "fp8" and rescore > 1 else 0
 
     @property
     def bytes(self) -> int:

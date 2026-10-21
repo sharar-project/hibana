@@ -60,7 +60,7 @@ benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) th
 
 | Capability | 27B | Flash-Next |
 |---|---|---|
-| Served drafter | DFlash2, k=15 | MTP, k=4 (in `fast` up to 8, chosen per request), 3-bit draft head |
+| Served drafter | DFlash2, k=15 | MTP, k=4 (in `fast` up to 8, chosen per request), 2-bit draft head |
 | Other drafters | MTP (BF16, unfused) | none (DFlash2 needs target feature taps) |
 | CUDA graphs: decode, verify, draft | yes | yes, dense and sparse-selecting variants |
 | Device-resident acceptance | opt-in | on in `fast` and `throughput` |

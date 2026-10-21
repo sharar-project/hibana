@@ -1,4 +1,4 @@
-// Three-bit decode GEMM for SM120/SM121: y[m, n] = x_scale[m] * row_scale[n] * sum_k xq[m, k] * s[n, k/32] * C[code[n, k]]
+// Three-bit (and two-bit) decode GEMM for SM120/SM121: y[m, n] = x_scale[m] * row_scale[n] * sum_k xq[m, k] * s[n, k/32] * C[code[n, k]]
 //
 // xq is E4M3 (the engine's static-scale projection inputs, or `quant_rows`
 // per-token quantization of a BF16 MLP input), C is an eight-entry E4M3
@@ -28,7 +28,7 @@ namespace {
 constexpr int kWarps = 4;                    // warps per block, 32 output rows each
 constexpr int kBlockRows = kWarps * 32;      // 128
 constexpr int kChunk = 128;                  // k per chunk
-constexpr int kPlaneWords = 3 * 32;          // uint4 per (32-row block, chunk): 3 loads x 32 lanes
+constexpr int kPlaneWords = 3 * 32;          // uint4 per (32-row block, chunk): 3 loads x 32 lanes (2 for two-bit weights)
 constexpr int kScaleWords = 8;               // uint4 per (32-row block, chunk): two per accumulator column pair t
 
 __device__ __forceinline__ uint32_t rotr(uint32_t x, uint32_t r) { return __funnelshift_r(x, x, r); }
@@ -42,10 +42,12 @@ __device__ __forceinline__ uint32_t prmt(uint32_t a, uint32_t b, uint32_t sel) {
 // Rotation for sub-step s (0..7) of a chunk: bit (4j + b + rot(s)) mod 32 of plane word b holds bit b of weight j.
 __device__ __forceinline__ constexpr uint32_t rot(int s) { return 16u * (s >> 2) + (s & 3); }
 
-// Four E4M3 weight bytes (one B-fragment register) for sub-step s from the three plane words.
-template <int S>
+// Four E4M3 weight bytes (one B-fragment register) for sub-step s from the three plane words (P = 2: two planes,
+// codes 0..3 into the codebook's first four bytes).
+template <int S, int P = 3>
 __device__ __forceinline__ uint32_t expand(uint32_t p0, uint32_t p1, uint32_t p2, uint32_t lut_lo, uint32_t lut_hi) {
-  const uint32_t q = (rotr(p0, rot(S)) & 0x1111u) | (rotr(p1, rot(S)) & 0x2222u) | (rotr(p2, rot(S)) & 0x4444u);
+  uint32_t q = (rotr(p0, rot(S)) & 0x1111u) | (rotr(p1, rot(S)) & 0x2222u);
+  if (P == 3) q |= rotr(p2, rot(S)) & 0x4444u;
   return prmt(lut_lo, lut_hi, q);
 }
 
@@ -65,7 +67,7 @@ struct Tile {
   float acc[MT][4][4];
 };
 
-template <int MT, int C, bool XG>
+template <int MT, int C, bool XG, int P = 3>
 __device__ __forceinline__ void group(float (&acc)[MT][4][4], const uint32_t* __restrict__ wd, const uint8_t* __restrict__ sb,
                                       const uint8_t* __restrict__ x, const float* __restrict__ xg, int M, int K, int k0, int g, int t,
                                       uint32_t lut_lo, uint32_t lut_hi) {
@@ -90,9 +92,9 @@ __device__ __forceinline__ void group(float (&acc)[MT][4][4], const uint32_t* __
   }
 #pragma unroll
   for (int nt = 0; nt < 4; ++nt) {
-    const uint32_t p0 = wd[3 * nt], p1 = wd[3 * nt + 1], p2 = wd[3 * nt + 2];
-    const uint32_t b0 = expand<2 * C>(p0, p1, p2, lut_lo, lut_hi);
-    const uint32_t b1 = expand<2 * C + 1>(p0, p1, p2, lut_lo, lut_hi);
+    const uint32_t p0 = wd[P * nt], p1 = wd[P * nt + 1], p2 = P == 3 ? wd[P * nt + 2] : 0u;
+    const uint32_t b0 = expand<2 * C, P>(p0, p1, p2, lut_lo, lut_hi);
+    const uint32_t b1 = expand<2 * C + 1, P>(p0, p1, p2, lut_lo, lut_hi);
     // the accumulator's columns are rows 8 nt + 2 t and + 1 of W, each with its own group scale
     const float s0 = e4m3_to_float(sb[(nt * 4 + C) * 2]), s1 = e4m3_to_float(sb[(nt * 4 + C) * 2 + 1]);
 #pragma unroll
@@ -107,14 +109,14 @@ __device__ __forceinline__ void group(float (&acc)[MT][4][4], const uint32_t* __
   }
 }
 
-template <int MT, bool XG, bool ROW_TILES = false>
+template <int MT, bool XG, bool ROW_TILES = false, int P = 3>
 __global__ void __launch_bounds__(kWarps * 32) w3_gemm_kernel(
     __nv_bfloat16* __restrict__ y,            // [M, N]
     float* __restrict__ ws,                   // [splits, M, N] partials when gridDim.y > 1
     int* __restrict__ counters,               // [N / 128], zero between launches
     const uint8_t* __restrict__ x,            // [M, K] e4m3
     const float* __restrict__ x_scale, const int x_scale_stride,  // XG: [M, K/32] per-group scales; else a scalar or one per row
-    const uint4* __restrict__ planes,         // [N/32][K/128][3][32]
+    const uint4* __restrict__ planes,         // [N/32][K/128][P][32]
     const uint4* __restrict__ scales,         // [N/32][K/128][4 t][2]
     const float* __restrict__ row_scale,      // [N]
     const uint32_t lut_lo, const uint32_t lut_hi,
@@ -122,7 +124,9 @@ __global__ void __launch_bounds__(kWarps * 32) w3_gemm_kernel(
   // Only the unsplit, statically scaled 64-row QKV projection uses this
   // specialization. Adjacent CTAs share weights through L2 while holding
   // half the row accumulators; each row keeps its original K reduction.
-  static_assert(!ROW_TILES || (MT == 2 && !XG));
+  static_assert(!ROW_TILES || (MT == 2 && !XG && P == 3));
+  static_assert(P == 2 || P == 3);
+  constexpr int kWords = P * 32;  // uint4 per (32-row block, chunk)
   const int row_begin = ROW_TILES ? (blockIdx.x % 2) * 32 : 0;
   const int column_block = ROW_TILES ? blockIdx.x / 2 : blockIdx.x;
   const int M = ROW_TILES ? 32 : full_M;
@@ -135,7 +139,7 @@ __global__ void __launch_bounds__(kWarps * 32) w3_gemm_kernel(
   const int nb = column_block * kWarps + warp;
   const int KC = K / kChunk;
   const int c_begin = blockIdx.y * chunks_per_split, c_end = c_begin + chunks_per_split;
-  const uint4* wp = planes + static_cast<size_t>(nb) * KC * kPlaneWords + lane;
+  const uint4* wp = planes + static_cast<size_t>(nb) * KC * kWords + lane;
   const uint4* sp = scales + static_cast<size_t>(nb) * KC * kScaleWords + 2 * t;
 
   float acc[MT][4][4];
@@ -146,13 +150,12 @@ __global__ void __launch_bounds__(kWarps * 32) w3_gemm_kernel(
 #pragma unroll
       for (int i = 0; i < 4; ++i) acc[mt][nt][i] = 0.f;
 
-  uint4 w[2][3];
+  uint4 w[2][P];
   uint4 s[2][2];
-  auto load = [&](int c, uint4 (&wd)[3], uint4 (&sd)[2]) {
-    const uint4* p = wp + static_cast<size_t>(c) * kPlaneWords;
-    wd[0] = __ldcs(p);
-    wd[1] = __ldcs(p + 32);
-    wd[2] = __ldcs(p + 64);
+  auto load = [&](int c, uint4 (&wd)[P], uint4 (&sd)[2]) {
+    const uint4* p = wp + static_cast<size_t>(c) * kWords;
+#pragma unroll
+    for (int i = 0; i < P; ++i) wd[i] = __ldcs(p + 32 * i);
     sd[0] = __ldg(sp + static_cast<size_t>(c) * kScaleWords);
     sd[1] = __ldg(sp + static_cast<size_t>(c) * kScaleWords + 1);
   };
@@ -164,16 +167,18 @@ __global__ void __launch_bounds__(kWarps * 32) w3_gemm_kernel(
     for (int slot = 0; slot < 2; ++slot) {
       const int cc = c + slot;
       if (cc < c_end) {
-        uint4 wl[3] = {w[slot][0], w[slot][1], w[slot][2]};
+        uint4 wl[P];
+#pragma unroll
+        for (int i = 0; i < P; ++i) wl[i] = w[slot][i];
         const uint4 sl[2] = {s[slot][0], s[slot][1]};
         if (cc + 2 < c_end) load(cc + 2, w[slot], s[slot]);
         const uint32_t* wd = reinterpret_cast<const uint32_t*>(wl);
         const uint8_t* sb = reinterpret_cast<const uint8_t*>(sl);
         const int k0 = cc * kChunk;
-        group<MT, 0, XG>(acc, wd, sb, x, x_scale, M, K, k0, g, t, lut_lo, lut_hi);
-        group<MT, 1, XG>(acc, wd, sb, x, x_scale, M, K, k0, g, t, lut_lo, lut_hi);
-        group<MT, 2, XG>(acc, wd, sb, x, x_scale, M, K, k0, g, t, lut_lo, lut_hi);
-        group<MT, 3, XG>(acc, wd, sb, x, x_scale, M, K, k0, g, t, lut_lo, lut_hi);
+        group<MT, 0, XG, P>(acc, wd, sb, x, x_scale, M, K, k0, g, t, lut_lo, lut_hi);
+        group<MT, 1, XG, P>(acc, wd, sb, x, x_scale, M, K, k0, g, t, lut_lo, lut_hi);
+        group<MT, 2, XG, P>(acc, wd, sb, x, x_scale, M, K, k0, g, t, lut_lo, lut_hi);
+        group<MT, 3, XG, P>(acc, wd, sb, x, x_scale, M, K, k0, g, t, lut_lo, lut_hi);
       }
     }
   }
@@ -323,12 +328,12 @@ __global__ void __launch_bounds__(256) quant_groups_kernel(const __nv_bfloat16* 
   quant_groups_row(x, out, scale, K, blockIdx.x);
 }
 
-template <int MT, bool XG, bool ROW_TILES = false>
+template <int MT, bool XG, bool ROW_TILES = false, int P = 3>
 void launch(torch::Tensor y, torch::Tensor ws, torch::Tensor counters, torch::Tensor x, torch::Tensor x_scale, int x_scale_stride,
             torch::Tensor planes, torch::Tensor scales, torch::Tensor row_scale, uint32_t lut_lo, uint32_t lut_hi,
             int M, int N, int K, int splits) {
   const dim3 grid((N / kBlockRows) * (ROW_TILES ? 2 : 1), splits);
-  w3_gemm_kernel<MT, XG, ROW_TILES><<<grid, kWarps * 32, 0, c10::cuda::getCurrentCUDAStream()>>>(
+  w3_gemm_kernel<MT, XG, ROW_TILES, P><<<grid, kWarps * 32, 0, c10::cuda::getCurrentCUDAStream()>>>(
       reinterpret_cast<__nv_bfloat16*>(y.data_ptr()), static_cast<float*>(ws.data_ptr()), static_cast<int*>(counters.data_ptr()),
       static_cast<const uint8_t*>(x.data_ptr()), static_cast<const float*>(x_scale.data_ptr()), x_scale_stride,
       static_cast<const uint4*>(planes.data_ptr()), static_cast<const uint4*>(scales.data_ptr()),
@@ -875,7 +880,9 @@ torch::Tensor w3_gemm(torch::Tensor x, torch::Tensor x_scale, torch::Tensor plan
   const int M = x.size(0), K = x.size(1), N = row_scale.size(0);
   TORCH_CHECK(M >= 1 && M <= 64, "M must be 1..64");
   TORCH_CHECK(N % kBlockRows == 0 && K % kChunk == 0, "N must be a multiple of 128 and K of 128");
-  TORCH_CHECK(planes.numel() == static_cast<int64_t>(N / 32) * (K / kChunk) * kPlaneWords * 4, "planes layout mismatch");
+  const int64_t blocks = static_cast<int64_t>(N / 32) * (K / kChunk);
+  const int P = planes.numel() == blocks * kPlaneWords * 4 ? 3 : planes.numel() == blocks * 2 * 32 * 4 ? 2 : 0;  // bit planes: 3- or 2-bit codes
+  TORCH_CHECK(P != 0, "planes layout mismatch");
   TORCH_CHECK(scales.numel() == static_cast<int64_t>(N / 32) * (K / kChunk) * kScaleWords * 16, "scales layout mismatch");
   TORCH_CHECK(splits >= 1 && (K / kChunk) % splits == 0, "splits must divide the chunk count");
   TORCH_CHECK(splits == 1 || (ws.numel() >= splits * static_cast<int64_t>(M) * N && counters.numel() >= N / kBlockRows), "workspace too small");
@@ -884,15 +891,17 @@ torch::Tensor w3_gemm(torch::Tensor x, torch::Tensor x_scale, torch::Tensor plan
   TORCH_CHECK(grouped || x_scale_stride == 0 || x_scale.numel() == M, "x_scale must be a scalar, one per row or one per row and 32-group");
   auto y = torch::empty({M, N}, x.options().dtype(at::kBFloat16));
   const uint32_t lut_lo = static_cast<uint32_t>(lut & 0xFFFFFFFFu), lut_hi = static_cast<uint32_t>(static_cast<uint64_t>(lut) >> 32);
-  if (M == 64 && N == 14336 && K == 5120 && !grouped && splits == 1) {
+  if (P == 3 && M == 64 && N == 14336 && K == 5120 && !grouped && splits == 1) {
     launch<2, false, true>(y, ws, counters, x, x_scale, x_scale_stride, planes, scales, row_scale,
                           lut_lo, lut_hi, M, N, K, 1);
     return y;
   }
   const int MT = (M + 15) / 16;
-#define W3_LAUNCH(T) if (MT == T) { if (grouped) launch<T, true>(y, ws, counters, x, x_scale, x_scale_stride, planes, scales, row_scale, lut_lo, lut_hi, M, N, K, static_cast<int>(splits)); \
-                                    else launch<T, false>(y, ws, counters, x, x_scale, x_scale_stride, planes, scales, row_scale, lut_lo, lut_hi, M, N, K, static_cast<int>(splits)); }
-  W3_LAUNCH(1) W3_LAUNCH(2) W3_LAUNCH(3) W3_LAUNCH(4)
+#define W3_LAUNCH(T, B) if (MT == T && P == B) { \
+    if (grouped) launch<T, true, false, B>(y, ws, counters, x, x_scale, x_scale_stride, planes, scales, row_scale, lut_lo, lut_hi, M, N, K, static_cast<int>(splits)); \
+    else launch<T, false, false, B>(y, ws, counters, x, x_scale, x_scale_stride, planes, scales, row_scale, lut_lo, lut_hi, M, N, K, static_cast<int>(splits)); }
+  W3_LAUNCH(1, 3) W3_LAUNCH(2, 3) W3_LAUNCH(3, 3) W3_LAUNCH(4, 3)
+  W3_LAUNCH(1, 2) W3_LAUNCH(2, 2) W3_LAUNCH(3, 2) W3_LAUNCH(4, 2)
 #undef W3_LAUNCH
   return y;
 }
@@ -995,6 +1004,6 @@ torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("w3_moe", &w3_moe, "routed experts in the 3-bit format, any row count (SM120/121)");
   m.def("quant_groups", &quant_groups, "per-(row, 32-group) e4m3 quantization of a bf16 matrix");
-  m.def("w3_gemm", &w3_gemm, "3-bit weight, e4m3 activation tensor-core GEMM for M <= 64 (SM120/121)");
+  m.def("w3_gemm", &w3_gemm, "3-bit (or 2-bit) weight, e4m3 activation tensor-core GEMM for M <= 64 (SM120/121)");
   m.def("quant_rows", &quant_rows, "per-row e4m3 quantization of a bf16 matrix");
 }

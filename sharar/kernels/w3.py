@@ -5,7 +5,9 @@ Format (`W3Weight`): for W [N, K], groups of 32 along K. Each weight is a
 levels of a Gaussian scaled so the largest is 3.5); each group has an E4M3
 scale, each row an FP32 multiplier that restores the scale's range. That is
 3 bits of code plus 8 bits of scale per 32 weights: 3.25 bits per weight, 72%
-of NVFP4's 4.5 and 41% of FP8's 8.
+of NVFP4's 4.5 and 41% of FP8's 8. A four-entry codebook gives the two-bit
+variant (two planes, 2.25 bits per weight; the MTP draft head's `w2` copy),
+served by the same kernel.
 
 Codes are stored as bit planes in the order the CUDA kernel's mma fragments
 consume them (`csrc/w3_gemm.cu`): a warp owns 32 output rows and streams
@@ -52,14 +54,19 @@ FP8_MAX = 448.0
 CODEBOOKS = {
     "uniform": (-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5),
     "lloyd": (-3.5, -2.25, -1.25, -0.40625, 0.40625, 1.25, 2.25, 3.5),
+    # two-bit: the Gaussian Lloyd-Max levels (0.453, 1.510 sigma) scaled to 1.5 and rounded to E4M3
+    "lloyd2": (-1.5, -0.4375, 0.4375, 1.5),
 }
+# Per-group scale multipliers `pack(fit_scales=True)` tries (the least squared error wins): with four levels,
+# scaling the largest to the group's maximum wastes them on one outlier.
+FIT_SCALES = tuple(0.55 + 0.05 * i for i in range(10))
 DEFAULT_CODEBOOK = "lloyd"  # every served copy; "uniform" remains for the packing tests and studies
 _SRC = Path(__file__).resolve().parent / "csrc" / "w3_gemm.cu"
 
 
 @dataclass
 class W3Weight:
-    planes: torch.Tensor  # [N/32, K/128, 3, 32, 4] uint32, fragment order (module docstring)
+    planes: torch.Tensor  # [N/32, K/128, bits, 32, 4] uint32, fragment order (module docstring)
     scales: torch.Tensor  # [N/32, K/128, 4, 32] uint8 E4M3: for lane column pair t, byte (4*tile + group)*2 + i is row 8*tile + 2*t + i
     row_scale: torch.Tensor  # [N] float32
     out_features: int
@@ -71,17 +78,21 @@ class W3Weight:
     def bytes(self) -> int:
         return self.planes.numel() * 4 + self.scales.numel() + self.row_scale.numel() * 4
 
+    @property
+    def bits(self) -> int:
+        return self.planes.shape[2]
+
 
 def lut_of(codebook: tuple[float, ...]) -> int:
     raw = torch.tensor(codebook, dtype=torch.float32).to(torch.float8_e4m3fn).view(torch.uint8).tolist()
-    return struct.unpack("<q", bytes(raw))[0]
+    return struct.unpack("<q", bytes(raw + [0] * (8 - len(raw))))[0]
 
 
 def _codebook(codebook) -> tuple[float, ...]:
     codebook = DEFAULT_CODEBOOK if codebook is None else codebook
     levels = CODEBOOKS[codebook] if isinstance(codebook, str) else tuple(float(v) for v in codebook)
-    if len(levels) != 8 or list(levels) != sorted(levels):
-        raise ValueError("a codebook is eight ascending levels")
+    if len(levels) not in (4, 8) or list(levels) != sorted(levels):
+        raise ValueError("a codebook is eight (or, two-bit, four) ascending levels")
     exact = torch.tensor(levels).to(torch.float8_e4m3fn).float().tolist()
     if exact != list(levels):
         raise ValueError("codebook levels must be exactly representable in E4M3")
@@ -93,8 +104,10 @@ def _rotations(device) -> torch.Tensor:
     return 16 * (s // 4) + (s % 4)  # rot(s)
 
 
-def pack(weight: torch.Tensor, codebook=None, rows_per_chunk: int = 4096) -> W3Weight:
-    """Nearest-level 3-bit quantization of a [N, K] float matrix (N % 128 == 0, K % 128 == 0) in fragment order.
+def pack(weight: torch.Tensor, codebook=None, rows_per_chunk: int = 4096, fit_scales: bool = False) -> W3Weight:
+    """Nearest-level 3-bit (2-bit with a four-level codebook) quantization of a [N, K] float matrix
+    (N % 128 == 0, K % 128 == 0) in fragment order. `fit_scales`: each group's scale is the one of
+    `FIT_SCALES` x its maximum with the least squared error, instead of the maximum itself.
 
     Rows are processed `rows_per_chunk` at a time so the integer temporaries stay
     a few hundred MB even for the lm_head (the whole-matrix version needed
@@ -105,31 +118,42 @@ def pack(weight: torch.Tensor, codebook=None, rows_per_chunk: int = 4096) -> W3W
     levels = _codebook(codebook)
     planes, scales, row_scales = [], [], []
     for r0 in range(0, n, rows_per_chunk):
-        pl, sc, rs = _pack_rows(weight[r0:r0 + rows_per_chunk], levels)
+        pl, sc, rs = _pack_rows(weight[r0:r0 + rows_per_chunk], levels, fit_scales)
         planes.append(pl); scales.append(sc); row_scales.append(rs)
     cat = (lambda xs: xs[0] if len(xs) == 1 else torch.cat(xs))
     return W3Weight(cat(planes), cat(scales), cat(row_scales), n, k, levels, lut_of(levels))
 
 
-def _pack_rows(weight: torch.Tensor, levels: tuple[float, ...]):
+def _pack_rows(weight: torch.Tensor, levels: tuple[float, ...], fit_scales: bool = False):
     n, k = weight.shape
     dev = weight.device
     w = weight.float().reshape(n, k // GROUP, GROUP)
     amax = w.abs().amax(dim=-1)  # [N, G]
+    lv = torch.tensor(levels, device=dev)
+    mids = (lv[1:] + lv[:-1]) / 2
     scale = amax / max(abs(v) for v in levels)
+    if fit_scales:
+        best = None
+        for m in FIT_SCALES:
+            s = scale * m
+            err = ((lv[torch.bucketize(w / s.clamp_min(1e-30)[:, :, None], mids)] * s[:, :, None] - w) ** 2).sum(-1)
+            if best is None:
+                best, fitted = err, s
+            else:
+                better = err < best
+                best, fitted = torch.where(better, err, best), torch.where(better, s, fitted)
+        scale = fitted
     row_scale = (scale.amax(dim=-1) / FP8_MAX).clamp_min(1e-12)  # [N]
     scale_fp8 = (scale / row_scale[:, None]).clamp(0, FP8_MAX).to(torch.float8_e4m3fn)
     scale_eff = scale_fp8.float() * row_scale[:, None]
     normalized = w / scale_eff.clamp_min(1e-30)[:, :, None]
     del w
-    lv = torch.tensor(levels, device=dev)
-    mids = (lv[1:] + lv[:-1]) / 2
-    q = torch.bucketize(normalized.reshape(n, k), mids, out_int32=True)  # [N, K] codes 0..7
+    q = torch.bucketize(normalized.reshape(n, k), mids, out_int32=True)  # [N, K] codes 0..7 (0..3)
     del normalized
-    return _pack_codes_rows(q, scale_fp8, row_scale)
+    return _pack_codes_rows(q, scale_fp8, row_scale, 2 if len(levels) == 4 else 3)
 
 
-def _pack_codes_rows(q: torch.Tensor, scale_fp8: torch.Tensor, row_scale: torch.Tensor):
+def _pack_codes_rows(q: torch.Tensor, scale_fp8: torch.Tensor, row_scale: torch.Tensor, bits: int = 3):
     n, k = q.shape
     dev = q.device
     # fragment order: n = 32 nb + 8 nt + g, k = 128 kc + 16 s + 4 t + j
@@ -137,14 +161,14 @@ def _pack_codes_rows(q: torch.Tensor, scale_fp8: torch.Tensor, row_scale: torch.
     rot = _rotations(dev)  # [s]
     j = torch.arange(4, device=dev)
     words = []
-    for b in range(3):
+    for b in range(bits):
         pos = ((4 * j[None, :] + b + rot[:, None]) % 32).to(torch.int64)  # [s, j]
         bit = ((q >> b) & 1).to(torch.int64)
         words.append((bit << pos[None, None, None, None, :, None, :]).sum(dim=(4, 6)))  # [nb, nt, g, kc, t]
         del bit
     words = torch.stack(words, dim=2)  # [nb, nt, b, g, kc, t]
-    words = words.permute(0, 4, 3, 5, 1, 2).reshape(n // 32, k // CHUNK, 32, 12)  # [nb, kc, lane, 3 nt + b]
-    planes = words.reshape(n // 32, k // CHUNK, 32, 3, 4).permute(0, 1, 3, 2, 4)  # [nb, kc, i, lane, e]
+    words = words.permute(0, 4, 3, 5, 1, 2).reshape(n // 32, k // CHUNK, 32, 4 * bits)  # [nb, kc, lane, bits nt + b]
+    planes = words.reshape(n // 32, k // CHUNK, 32, bits, 4).permute(0, 1, 3, 2, 4)  # [nb, kc, i, lane, e]
     planes = planes.bitwise_and(0xFFFFFFFF).to(torch.uint32).contiguous()
     # a lane's accumulator columns are n = 8 nt + 2 t + i, so scales are laid out per t: [nb, kc, t, (nt, grp, i)]
     sc = scale_fp8.view(torch.uint8).reshape(n // 32, 4, 4, 2, k // CHUNK, 4)  # [nb, nt, t, i, kc, grp]
@@ -158,28 +182,29 @@ def pack_codes(q: torch.Tensor, scale_fp8: torch.Tensor, row_scale: torch.Tensor
     n, k = q.shape
     if n % 128 or k % CHUNK or rows_per_chunk < 128 or rows_per_chunk % 128:
         raise ValueError("N, K and rows_per_chunk must be multiples of 128")
-    if q.dtype not in (torch.uint8, torch.int32, torch.int64) or torch.any((q < 0) | (q > 7)):
-        raise ValueError("3-bit codes must be integers between zero and seven")
+    levels = _codebook(codebook)
+    if q.dtype not in (torch.uint8, torch.int32, torch.int64) or torch.any((q < 0) | (q >= len(levels))):
+        raise ValueError(f"codes must be integers between zero and {len(levels) - 1}")
     if scale_fp8.shape != (n, k // GROUP) or scale_fp8.dtype != torch.float8_e4m3fn or row_scale.shape != (n,):
         raise ValueError("calibrated scales do not match the weight shape")
     if not torch.isfinite(scale_fp8.float()).all() or not torch.isfinite(row_scale).all() or (row_scale <= 0).any() or (scale_fp8.float() < 0).any():
         raise ValueError("calibrated scales must be finite and nonnegative, with positive row scales")
-    levels = _codebook(codebook)
-    chunks = [_pack_codes_rows(q[r:r + rows_per_chunk].int(), scale_fp8[r:r + rows_per_chunk], row_scale[r:r + rows_per_chunk])
+    bits = 2 if len(levels) == 4 else 3
+    chunks = [_pack_codes_rows(q[r:r + rows_per_chunk].int(), scale_fp8[r:r + rows_per_chunk], row_scale[r:r + rows_per_chunk], bits)
               for r in range(0, n, rows_per_chunk)]
     return W3Weight(*(torch.cat([part[i] for part in chunks]) for i in range(3)), n, k, levels, lut_of(levels))
 
 
 def codes(w3: W3Weight) -> torch.Tensor:
-    """The 3-bit codes of a packed matrix, [N, K] int64."""
-    n, k = w3.out_features, w3.in_features
+    """The codes of a packed matrix, [N, K] int64."""
+    n, k, bits = w3.out_features, w3.in_features, w3.bits
     dev = w3.planes.device
-    words = w3.planes.to(torch.int64).permute(0, 1, 3, 2, 4).reshape(n // 32, k // CHUNK, 32, 4, 3)  # [nb, kc, lane, nt, b]
-    words = words.reshape(n // 32, k // CHUNK, 8, 4, 4, 3).permute(0, 4, 2, 1, 3, 5)  # [nb, kc, g, t, nt, b] -> [nb, nt, g, kc, t, b]
+    words = w3.planes.to(torch.int64).permute(0, 1, 3, 2, 4).reshape(n // 32, k // CHUNK, 32, 4, bits)  # [nb, kc, lane, nt, b]
+    words = words.reshape(n // 32, k // CHUNK, 8, 4, 4, bits).permute(0, 4, 2, 1, 3, 5)  # [nb, kc, g, t, nt, b] -> [nb, nt, g, kc, t, b]
     rot = _rotations(dev)
     j = torch.arange(4, device=dev)
     q = torch.zeros(n // 32, 4, 8, k // CHUNK, 8, 4, 4, dtype=torch.int64, device=dev)  # [nb, nt, g, kc, s, t, j]
-    for b in range(3):
+    for b in range(bits):
         pos = (4 * j[None, :] + b + rot[:, None]) % 32  # [s, j]
         q |= ((words[..., b][:, :, :, :, None, :, None] >> pos[None, None, None, None, :, None, :]) & 1) << b
     return q.reshape(n, k)

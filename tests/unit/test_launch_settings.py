@@ -194,7 +194,7 @@ def test_the_ssd_tier_settings_are_checked(env, tmp_path):
 
 def test_flashnext_without_a_checkpoint_serves_its_fp8_trunk(env):
     e = resolve(env, "flashnext", "fast").engine_env(None)
-    assert e["SHARAR_W3_DECODE"] == "0" and e["SHARAR_FLASHNEXT_CACHE"] and e["SHARAR_DRAFT_HEAD"] == "w3"
+    assert e["SHARAR_W3_DECODE"] == "0" and e["SHARAR_FLASHNEXT_CACHE"] and e["SHARAR_DRAFT_HEAD"] == "w2"
 
 
 @pytest.mark.parametrize("policy", ["auto", "cute", "triton"])
