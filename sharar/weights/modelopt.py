@@ -63,6 +63,7 @@ class Nvfp4Linear:
     in_features: int
     w3: object = None  # optional 3-bit decode copy (sharar.kernels.w3.W3Weight)
     shard: Shard = REPLICATED  # which part of the checkpoint's matrix this rank holds (its 3-bit copy loads the same)
+    pairs: int = 0  # an MLP's gate|up interleaved in blocks of this many rows, its 3-bit copy too (`interleave_pairs`); 0: concatenated
 
     @property
     def bytes(self) -> int:
@@ -77,6 +78,26 @@ class Nvfp4Linear:
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         from sharar.kernels import ops
         return ops.nvfp4_linear(x, self)
+
+
+def pair_order(rows: int, block: int) -> torch.Tensor:
+    """Row order that interleaves [gate; up] (rows / 2 each) in blocks: gate 0..block-1, up 0..block-1, gate block..."""
+    return torch.arange(rows).view(2, rows // 2 // block, block).transpose(0, 1).reshape(-1)
+
+
+def interleave_pairs(lin: Nvfp4Linear, block: int) -> Nvfp4Linear:
+    """`lin` (an MLP's gate|up, no 3-bit copy yet) with its rows interleaved in blocks of `block`, in place of the
+    concatenated ones: a GEMM tile of 2 x block columns then holds matching gate and up columns (`kernels/mlp_fusion.py`).
+    Its output's columns follow, and SiLU-mul reads them by `pairs`."""
+    if lin.w3 is not None or lin.pairs or lin.out_features % (2 * block):
+        raise ValueError(f"cannot interleave {lin.out_features} rows in blocks of {block}")
+    order = pair_order(lin.out_features, block).to(lin.weight.device)
+    scales = unswizzle_block_scales(lin.weight_scale_swizzled.view(torch.uint8).reshape(-1), lin.out_features,
+                                    lin.in_features // 16)
+    lin.weight = lin.weight[order].contiguous()
+    lin.weight_scale_swizzled = swizzle_block_scales(scales[order]).view(torch.float8_e4m3fn)
+    lin.pairs = block
+    return lin
 
 
 def _to_fp8(x: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:

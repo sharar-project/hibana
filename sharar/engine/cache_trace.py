@@ -59,15 +59,19 @@ def last_token_trace(model, position):
     records, originals = {}, []
     active = [None]
     from sharar.kernels import ops
+    from sharar.weights.modelopt import Fp8Linear, Nvfp4Linear
+    # Stages are keyed by projection, not call order: a prefill wide enough for the fused MLP never runs gate_up alone.
+    labels = {id(v): f'{part}.{attr}' for layer in model.layers for part in ('mixer', 'mlp')
+              for attr, v in vars(getattr(layer, part)).items() if isinstance(v, (Fp8Linear, Nvfp4Linear))}
     # Preserve the normal kernels and shapes; observe their last output row.
     for name in ('fp8_linear', 'nvfp4_linear'):
         original = getattr(ops, name)
         originals.append((ops, name, original))
-        def projection(*args, original=original, name=name, **kwargs):
-            value = original(*args, **kwargs)
+        def projection(x, lin, *args, original=original, name=name, **kwargs):
+            value = original(x, lin, *args, **kwargs)
             if active[0] is not None:
                 stages = records[active[0]]['stages']
-                stages[f'{len(stages)}:{name}'] = value[-1].clone().cpu()
+                stages[labels.get(id(lin), f'{len(stages)}:{name}')] = value[-1].clone().cpu()
             return value
         setattr(ops, name, projection)
     for layer in model.layers:
@@ -186,7 +190,7 @@ def run(ex, ids, output: Path):
                  'input': difference(traces['cold'][i]['input'], traces[name][i]['input']),
                  'output': difference(traces['cold'][i]['output'], traces[name][i]['output']),
                  'stages': {s: difference(v, traces[name][i]['stages'][s])
-                            for s, v in traces['cold'][i]['stages'].items()}}
+                            for s, v in traces['cold'][i]['stages'].items() if s in traces[name][i]['stages']}}
                 for i in traces['cold']]
         comparisons['manual_vs_radix'] = [
             {'layer': i, 'output': difference(traces['manual_restore'][i]['output'], traces['radix_restore'][i]['output'])}

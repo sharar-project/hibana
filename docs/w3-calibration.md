@@ -7,7 +7,9 @@ calls of at most 64 rows (decode and verification); larger calls use the origina
 resident. On the 27B they cover 304 target matrices (MLP `gate_up` and `down` in all 64 layers, GDN `in_qkv`,
 `in_z`, `out`, attention `qkv`, `o`) plus 20 in the DFlash2 drafter (nearest-rounded at load, not calibrated);
 on Flash-Next, the trunk and the routed experts (below). Coverage and dispatch: `sharar/weights/w3_checkpoint.py`, `sharar/kernels/ops.py`,
-`sharar/model/draft_linear.py`.
+`sharar/model/draft_linear.py`. Calibrated files store the 27B's `gate_up` rows in the checkpoint's order (gate, then
+up); the loader interleaves them in blocks of 64, like the NVFP4 rows, for the fused prefill MLP
+(`sharar/kernels/mlp_fusion.py`).
 
 `sharar.weights.w3_calibrate` fits the target's optional W3 copies using activation covariances and the block-128 FP8
 release. It uses the [GPTQ column-error update](https://arxiv.org/abs/2210.17323) with the eight-level E4M3 codebook,
