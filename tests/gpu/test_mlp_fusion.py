@@ -10,7 +10,12 @@ from sharar.kernels.nvfp4_quant import nvfp4_quantize, silu_mul_nvfp4_quantize
 from sharar.weights.modelopt import Nvfp4Linear, interleave_pairs, pair_order, swizzle_block_scales
 
 H = 5120
-pytestmark = pytest.mark.skipif(not mlp_fusion.available(torch.device("cuda")), reason="the fused kernel needs SM121")
+pytestmark = pytest.mark.skipif(torch.cuda.get_device_capability() != (12, 1), reason="the fused kernel needs SM121")
+
+
+def test_available():
+    """On SM121 the source edits must apply: a FlashInfer change that breaks one fails here, not silently in prefill."""
+    assert mlp_fusion.available(torch.device("cuda"))
 
 
 def random_linear(n: int, k: int, seed: int) -> Nvfp4Linear:

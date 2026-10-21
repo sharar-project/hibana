@@ -7,10 +7,11 @@ registers instead. The MLP's gate/up rows are interleaved in blocks of PAIRS (`w
 tile's columns are 64 gate and the matching 64 up. Each thread scales its accumulators by alpha and rounds them to BF16
 (the unfused GEMM's output), takes SiLU(gate) * up in FP32 rounded to BF16, and packs four products to E2M1 with the
 group-16 E4M3 scale (amax across four lanes): the bytes the unfused path writes, without the BF16 tensor. One 2,048-row
-chunk of a 27B MLP: 2.77 -> 2.17 ms.
+chunk of a 27B MLP's gate/up and quantization: 2.78 -> 2.31 ms.
 
 The kernel is FlashInfer's source (pinned in uv.lock) with its epilogue and arguments edited at first use. Every edit must
-match exactly once; otherwise `available()` is False and prefill keeps the unfused path."""
+match exactly once; otherwise `available()` is False, prefill keeps the unfused path with a warning, and the GPU test
+`test_mlp_fusion.py::test_available` fails."""
 from __future__ import annotations
 
 import inspect
@@ -271,7 +272,7 @@ def _kernel(device_index: int):
                                    ab_cutlass_dtype=cutlass.Uint8, sf_dtype=cutlass.Float8E4M3FN,
                                    c_cutlass_dtype=cutlass.BFloat16, ab_assumed_align=32, cluster_shape_mn=(1, 1),
                                    swap_ab=False, sf_m=1, sf_n=1, sf_k=1, batch_size=1, device_index=device_index)
-    except (ImportError, OSError, ValueError) as exc:
+    except Exception as exc:  # a FlashInfer or CuTe DSL change (edits, private names, compile errors): fall back
         import warnings
         warnings.warn(f"MLP prefill fusion unavailable ({exc}); prefill runs the unfused gate/up GEMM")
         return None
