@@ -89,7 +89,7 @@ argmax, so outputs are no longer the target's exact greedy continuation; a reque
 `accept_top_k: 1` ([API](api.md)). The 3-bit copies (3.25 bits per weight, a tensor-core kernel for calls of at
 most 64 rows) cover the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resident) and Flash-Next's trunk; Flash-Next's
 3-bit routed experts replace the NVFP4 ones at every row count (17 GiB less resident). The lm_head keeps its
-original format. Speculative decoding itself, the Flash-Next 3-bit draft head, FP8/NVFP4
+original format. Speculative decoding itself, the Flash-Next 2-bit draft head, FP8/NVFP4
 weights and CUDA graphs are lossless and on in every profile. Benchmarks and gates use `exact`.
 
 Four of the knobs take more than the table shows:

@@ -82,14 +82,17 @@ once (`FlashNextIndexer._plan`) and ranks 256 rows per top-k.
   (`SHARAR_SPEC_DEPTHS=16:3,32:3,64:3,128:3`, with 3-bit experts on one Spark, where at 32-128 requests a verified row
   costs about 0.5 ms and depth 3 was the best fixed depth); with NVFP4 experts or on two Sparks only the 16-request
   bucket verifies 3 (`16:3`).
-- **Draft-only head.** `SHARAR_DRAFT_HEAD=w3` gives the draft steps a 3-bit copy of the lm_head; its top 8
-  candidates (`SHARAR_DRAFT_HEAD_RESCORE`) are rescored with the target's FP8 rows, so the draft picks what the
-  full head would except on near-ties. Exact acceptance is unaffected. `SHARAR_DRAFT_VOCAB` restricts the draft
+- **Draft-only head.** The draft steps read a 2-bit copy of the lm_head (`SHARAR_DRAFT_HEAD=w2`: four levels per
+  32 weights, each group's scale fitted, 2.25 bits per weight, 171 MiB); its top 16 candidates
+  (`SHARAR_DRAFT_HEAD_RESCORE`) are rescored with the target's FP8 rows, so the draft picks what the full head
+  would except on near-ties: on recorded draft steps of the h2h prompts the top 16 held the FP8 argmax 99.8% of the
+  time and tokens/round did not change. `w3` (3-bit, 247 MiB, top 8) and `fp8` (the target's head) remain. Exact
+  acceptance is unaffected. `SHARAR_DRAFT_VOCAB` restricts the draft
   to the first N lm_head rows (off by default: it costs multilingual text).
 - **Fused steps.** Each draft step is one graph replay of 66 kernels (`kernels/flashnext_fused.py`): FP8 GEMVs
   quantize their own input, the attention's q/k norm, RoPE and KV write are one kernel, and the experts' gather,
   SiLU-mul and routed sum are fused. Every fusion is bitwise against the unfused chain
-  (`tests/gpu/test_flashnext_fused.py`). A step is bandwidth-bound: the 3-bit draft head is about 1.1 of its 1.9 ms.
+  (`tests/gpu/test_flashnext_fused.py`). A step is bandwidth-bound: the 2-bit draft head is about 0.8 of its 1.55 ms (the 3-bit one 1.1 of 1.87).
 - **No host gaps.** The verify plan and indexer rows are prepared before the PLE read, and each drafted token's PLE
   rows are read while the next draft step runs. Device-resident acceptance (on in `fast`) covers MTP too
   ([interfaces](interfaces.md#device-resident-acceptance)). `FlashNextIndexer.static_rows` builds every row's page

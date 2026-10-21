@@ -27,7 +27,7 @@ TARGET_SETTINGS = {
                "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_PRECISION": "fp8"},
     "flashnext": {"SHARAR_SERVICE": "sharar-flashnext", "SHARAR_PORT": "30004", "SHARAR_PROPOSER": "mtp",
                   "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_PRECISION": "bf16", "SHARAR_DRAFT": "pinned",
-                  "SHARAR_DRAFT_HEAD": "w3", "SHARAR_FLASHNEXT_TRUNK": "fp8"},
+                  "SHARAR_DRAFT_HEAD": "w2", "SHARAR_FLASHNEXT_TRUNK": "fp8"},
 }
 
 # The serving profiles: the default of every speed/fidelity knob a setting does not fix.
@@ -272,7 +272,7 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     depths = values.get("SHARAR_SPEC_DEPTHS", "")
     _check(not depths or re.fullmatch(r"\d+:\d+(,\d+:\d+)*", depths) is not None, "SHARAR_SPEC_DEPTHS must be BUCKET:DEPTH pairs, e.g. 8:1,16:0")
     _check(values.get("SHARAR_FLASHNEXT_EXPERTS", "w3") in ("w3", "nvfp4"), "SHARAR_FLASHNEXT_EXPERTS must be w3 or nvfp4")
-    _check(values.get("SHARAR_DRAFT_HEAD", "fp8") in ("fp8", "w3"), "SHARAR_DRAFT_HEAD must be fp8 or w3")
+    _check(values.get("SHARAR_DRAFT_HEAD", "fp8") in ("fp8", "w3", "w2"), "SHARAR_DRAFT_HEAD must be fp8, w3 or w2")
     _check(values.get("SHARAR_QSA_SPARSE_GRAPHS", "1") in ("0", "1"), "SHARAR_QSA_SPARSE_GRAPHS must be 0 or 1")
     _check(values.get("SHARAR_PLE_RESIDENT", "auto") in ("auto", "0"), "SHARAR_PLE_RESIDENT must be auto or 0")
     _check(values.get("SHARAR_SSM_STATE", "fp32") in ("fp32", "int8", "int4"), "SHARAR_SSM_STATE must be fp32, int8 or int4")

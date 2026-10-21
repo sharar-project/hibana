@@ -1,4 +1,4 @@
-"""3-bit fragment-order packing round-trips through the reference dequantizer (CPU)."""
+"""3-bit (and 2-bit) fragment-order packing round-trips through the reference dequantizer (CPU)."""
 import os
 import struct
 
@@ -54,22 +54,47 @@ def test_pack_dequantize_round_trip_and_size(codebook):
     assert torch.equal(torch.frombuffer(bytearray(raw), dtype=torch.uint8).view(torch.float8_e4m3fn).float(), levels)
 
 
-def test_fragment_layout_matches_kernel_addressing():
-    """The word a lane reads is the one the kernel's rotate/mask sequence expects."""
+def test_two_bit_pack_round_trip_size_and_fitted_scales():
+    torch.manual_seed(0)
+    weight = torch.randn(256, 384) * 0.05
+    nearest, fitted = w3.pack(weight, "lloyd2"), w3.pack(weight, "lloyd2", fit_scales=True)
+    for packed in (nearest, fitted):
+        assert packed.bits == 2 and packed.planes.shape == (8, 3, 2, 32, 4)
+        assert packed.bytes == 256 * 384 * 2 // 8 + 256 * 12 + 256 * 4  # 2 bits per weight, one E4M3 scale per 32, a row scale
+        codes = w3.codes(packed)
+        assert codes.min() == 0 and codes.max() == 3
+        assert torch.equal(w3.dequantize(packed), torch.tensor(packed.codebook)[codes] * w3.group_scales(packed).repeat_interleave(32, dim=1))
+        raw = torch.frombuffer(bytearray(struct.pack("<q", packed.lut)), dtype=torch.uint8)
+        assert torch.equal(raw[:4].view(torch.float8_e4m3fn).float(), torch.tensor(packed.codebook)) and not raw[4:].any()
+    err = lambda p: ((w3.dequantize(p) - weight).norm() / weight.norm()).item()  # noqa: E731
+    assert err(fitted) < 0.36 < err(nearest) < 0.45  # four levels: fitting each group's scale beats its maximum
+    # calibrated two-bit codes pack without quantizing again
+    again = w3.pack_codes(w3.codes(fitted), (w3.group_scales(fitted) / fitted.row_scale[:, None]).to(torch.float8_e4m3fn),
+                          fitted.row_scale, "lloyd2")
+    assert torch.equal(again.planes, fitted.planes) and torch.equal(again.scales, fitted.scales)
+    with pytest.raises(ValueError):
+        w3.pack_codes(w3.codes(fitted) + 4, again.scales.new_zeros(256, 12).view(torch.float8_e4m3fn), fitted.row_scale, "lloyd2")
+
+
+@pytest.mark.parametrize("codebook", ["uniform", "lloyd2"])
+def test_fragment_layout_matches_kernel_addressing(codebook):
+    """The word a lane reads is the one the kernel's rotate/mask sequence expects (word bits * nt + b of a lane's
+    chunk; a 2-bit chunk has no third plane)."""
     torch.manual_seed(1)
     n, k = 128, 256
     weight = torch.randn(n, k)
-    packed = w3.pack(weight, "uniform")
+    packed = w3.pack(weight, codebook)
     codes = w3.codes(packed)
+    bits = packed.bits
     planes = packed.planes.to(torch.int64)  # [nb, kc, i, lane, e]
     nb, kc, g, t = 2, 1, 5, 3
     lane = 4 * g + t
     for nt in range(4):
-        words = [planes[nb, kc, (3 * nt + b) // 4, lane, (3 * nt + b) % 4].item() for b in range(3)]
+        words = [planes[nb, kc, (bits * nt + b) // 4, lane, (bits * nt + b) % 4].item() for b in range(bits)]
         for s in range(8):
             rot = 16 * (s // 4) + (s % 4)
             rotated = [((w >> rot) | (w << (32 - rot))) & 0xFFFFFFFF for w in words]
-            q4 = (rotated[0] & 0x1111) | (rotated[1] & 0x2222) | (rotated[2] & 0x4444)
+            q4 = (rotated[0] & 0x1111) | (rotated[1] & 0x2222) | ((rotated[2] & 0x4444) if bits == 3 else 0)
             for j in range(4):
                 row, col = 32 * nb + 8 * nt + g, 128 * kc + 16 * s + 4 * t + j
                 assert (q4 >> (4 * j)) & 0xF == codes[row, col].item()
