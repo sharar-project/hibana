@@ -13,6 +13,8 @@
 - **What runs.** sharar-eval (the `eval` extra of this environment, or a checkout with `--evals`) against the server:
   - `--suite quick|full|hard|long|agentic|all`, or `--tasks a,b` with `--limit N` (`evals.suite`); `--max-tokens N`
     replaces every task's token cap (a capped answer scores as wrong; needs sharar-eval with `run --max-tokens`);
+    `--thinking` (`--reasoning-effort`), `--temperature T` and `--seed S` set the suite's requests (default greedy,
+    thinking off; needs sharar-eval with `run --thinking`);
   - `--speed` adds the AIPerf benchmark (`evals.speed`, `--workload code|design|reasoning|all`).
     Speed requests carry no acceptance fields, so both measure the served profile as a client sees it.
 - **Where.** One GPU window under $SHARAR_RESULTS/.gpu.lock, on --port (30200-30299), the server in the foreground
@@ -96,6 +98,10 @@ def main(argv=None) -> int:
     ap.add_argument("--limit", type=int, default=0, help="the first N items of each task")
     ap.add_argument("--skip", action="append", default=[], help="leave a task out (repeatable)")
     ap.add_argument("--max-tokens", type=int, default=0, help="one token cap for every suite task instead of each task's default")
+    ap.add_argument("--thinking", action="store_true", help="suite requests with thinking on (needs --max-tokens)")
+    ap.add_argument("--reasoning-effort", choices=("xhigh", "medium", "low"), help="with --thinking: the template's level (default xhigh)")
+    ap.add_argument("--temperature", type=float, default=0.0, help="sample the suite's requests (top_p 0.95, top_k 20; default greedy)")
+    ap.add_argument("--seed", type=int, default=0, help="with --temperature: another set of per-item seeds (use another --name)")
     ap.add_argument("--speed", action="store_true", help="also run the AIPerf speed benchmark (evals.speed)")
     ap.add_argument("--workload", default="code", help="evals.speed workload: code, design, reasoning or all")
     ap.add_argument("--name", default=None, help="output name (<date>-evaluate-<name>; default: target-profile)")
@@ -146,7 +152,9 @@ def main(argv=None) -> int:
         run_dir = results / "reviews" / f"{dt.date.today().isoformat()}-evaluate-{name}"
     suite_args = [*(["--suite", args.suite] if args.suite else []), *(["--tasks", args.tasks] if args.tasks else []),
                   *(["--limit", str(args.limit)] if args.limit else []), *[a for t in args.skip for a in ("--skip", t)],
-                  *(["--max-tokens", str(args.max_tokens)] if args.max_tokens else [])]
+                  *(["--max-tokens", str(args.max_tokens)] if args.max_tokens else []), *(["--thinking"] if args.thinking else []),
+                  *(["--reasoning-effort", args.reasoning_effort] if args.reasoning_effort else []),
+                  *(["--temperature", str(args.temperature)] if args.temperature else []), *(["--seed", str(args.seed)] if args.seed else [])]
     manifest = {**spec, "name": name, "config_file": str(conf_path) if conf_path else None, "port": args.port,
                 "launcher_source": gate.git("rev-parse", "HEAD"), "dirty": bool(gate.git("status", "--porcelain", "--", "sharar", "tools")),
                 "evals": ev["label"], "evals_commit": ev["commit"],
