@@ -14,7 +14,9 @@
   - `--suite quick|full|hard|long|agentic|all`, or `--tasks a,b` with `--limit N` (`evals.suite`); `--max-tokens N`
     replaces every task's token cap (a capped answer scores as wrong; needs sharar-eval with `run --max-tokens`);
     `--thinking` (`--reasoning-effort`), `--temperature T` and `--seed S` set the suite's requests (default greedy,
-    thinking off; needs sharar-eval with `run --thinking`);
+    thinking off; needs sharar-eval with `run --thinking`); `--concurrency N` sends N suite requests at once
+    (default 4; `exact` serves 4, so add `--env SHARAR_MAX_BATCH=N`, and on Flash-Next's NVFP4 experts 16 requests fit
+    only under a shorter context, e.g. `--env SHARAR_MAX_CONTEXT=81920` for a 64K cap);
   - `--speed` adds the AIPerf benchmark (`evals.speed`, `--workload code|design|reasoning|all`).
     Speed requests carry no acceptance fields, so both measure the served profile as a client sees it.
 - **Where.** One GPU window under $SHARAR_RESULTS/.gpu.lock, on --port (30200-30299), the server in the foreground
@@ -102,6 +104,8 @@ def main(argv=None) -> int:
     ap.add_argument("--reasoning-effort", choices=("xhigh", "medium", "low"), help="with --thinking: the template's level (default xhigh)")
     ap.add_argument("--temperature", type=float, default=0.0, help="sample the suite's requests (top_p 0.95, top_k 20; default greedy)")
     ap.add_argument("--seed", type=int, default=0, help="with --temperature: another set of per-item seeds (use another --name)")
+    ap.add_argument("--concurrency", type=int, default=4,
+                    help="suite requests in flight (default 4); above the profile's SHARAR_MAX_BATCH, raise it with --env too")
     ap.add_argument("--speed", action="store_true", help="also run the AIPerf speed benchmark (evals.speed)")
     ap.add_argument("--workload", default="code", help="evals.speed workload: code, design, reasoning or all")
     ap.add_argument("--name", default=None, help="output name (<date>-evaluate-<name>; default: target-profile)")
@@ -154,7 +158,8 @@ def main(argv=None) -> int:
                   *(["--limit", str(args.limit)] if args.limit else []), *[a for t in args.skip for a in ("--skip", t)],
                   *(["--max-tokens", str(args.max_tokens)] if args.max_tokens else []), *(["--thinking"] if args.thinking else []),
                   *(["--reasoning-effort", args.reasoning_effort] if args.reasoning_effort else []),
-                  *(["--temperature", str(args.temperature)] if args.temperature else []), *(["--seed", str(args.seed)] if args.seed else [])]
+                  *(["--temperature", str(args.temperature)] if args.temperature else []), *(["--seed", str(args.seed)] if args.seed else []),
+                  *(["--concurrency", str(args.concurrency)] if args.concurrency != 4 else [])]
     manifest = {**spec, "name": name, "config_file": str(conf_path) if conf_path else None, "port": args.port,
                 "launcher_source": gate.git("rev-parse", "HEAD"), "dirty": bool(gate.git("status", "--porcelain", "--", "sharar", "tools")),
                 "evals": ev["label"], "evals_commit": ev["commit"],
