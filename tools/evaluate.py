@@ -15,7 +15,8 @@
     replaces every task's token cap (a capped answer scores as wrong; needs sharar-eval with `run --max-tokens`);
     `--thinking` (`--reasoning-effort`), `--temperature T` and `--seed S` set the suite's requests (default greedy,
     thinking off; needs sharar-eval with `run --thinking`); `--concurrency N` sends N suite requests at once
-    (default 4; `exact` serves 4, so add `--env SHARAR_MAX_BATCH=N`);
+    (default 4; `exact` serves 4, so add `--env SHARAR_MAX_BATCH=N`, and on Flash-Next's NVFP4 experts 16 requests fit
+    only under a shorter context, e.g. `--env SHARAR_MAX_CONTEXT=81920` for a 64K cap);
   - `--speed` adds the AIPerf benchmark (`evals.speed`, `--workload code|design|reasoning|all`).
     Speed requests carry no acceptance fields, so both measure the served profile as a client sees it.
 - **Where.** One GPU window under $SHARAR_RESULTS/.gpu.lock, on --port (30200-30299), the server in the foreground
