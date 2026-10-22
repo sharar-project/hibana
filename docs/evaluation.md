@@ -17,6 +17,8 @@ tools/evaluate.py --target flashnext --profile exact --suite quick --speed \
 ```
 
 - **Quality:** `--suite quick|full|hard|long|agentic|all`, or `--tasks gpqa,mmlupro --limit 50`.
+  `--max-tokens 32768` replaces every task's token cap (GPQA 8,192, MMLU-Pro and IFEval 4,096 by default),
+  so an answer that reasons longer is not scored wrong for being cut off.
 - **Speed:** `--speed` runs `evals.speed` on `--workload code|design|reasoning|all`.
 - **Acceptance:** neither pins it, so both measure the profile as served.
 - **Output:** `$SHARAR_RESULTS/reviews/<date>-evaluate-<name>/` holds `SUMMARY.md`, the sharar-eval run
