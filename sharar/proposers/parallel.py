@@ -14,8 +14,6 @@ from sharar.target import DEFAULT_TARGET
 from sharar.engine.contracts import Capabilities, FeatureRequest, ProposerRequirements
 from sharar.engine.rejection import Proposal, sample_lattice
 
-from sharar.model.qwen38_config import DRAFT_PINS as PINS  # the pinned parallel drafts
-
 
 class FeatureCache:
     """Independent LRU reference for standalone adapters and benchmark controls."""
@@ -90,12 +88,13 @@ class ParallelProposer:
         self.model, self.context, self.k, self.name = model, context, k, name
         self.feedback_graphs = None
         self._feedback_enabled = False
-        self.noise_steps = k + 1  # the anchor (the last committed token) and k draft positions
         self.window = model.window
-        self.pitch = self.window + self.noise_steps
+        # A slot is its history ring, then the noise rows of the deepest block (the anchor, which is the last committed
+        # token, and k draft positions); a round at depth d writes and reads only the first d + 1.
+        self.pitch = self.window + k + 1
         self.free_slots = list(range(context.max_batch, 0, -1))
         served = getattr(model.target, 'target', DEFAULT_TARGET)  # the draft's target model carries the serving target
-        self.cache_identity = (served.model_revision, *PINS[name], model.features, 'projected-bf16-kv-v1', self.window,
+        self.cache_identity = (served.model_revision, *served.draft_pin(name), model.features, 'projected-bf16-kv-v1', self.window,
                                getattr(model, 'source', None))
         device = context.device
         shape = ((context.max_batch + 1) * self.pitch, 1, model.kv_heads, model.head_dim)
@@ -103,11 +102,13 @@ class ParallelProposer:
                        for _ in range(model.layers)]
         self.features = torch.empty((context.max_batch + 1, self.window, model.hidden), dtype=torch.bfloat16, device=device)
         self.feature_cache = FeatureCache(context.max_batch * self.window * model.hidden * 2)
+        # FlashInfer's split-KV scratch for the draft's attention grows with the drafted rows: 161 MB at 64 requests x 7
+        # rows over the feature window
+        self.workspace = torch.empty(128 * 2**20 * max(1, -(-context.max_batch // 32)), dtype=torch.uint8, device=device)
         self.requirements = ProposerRequirements(name, FeatureRequest(layers=model.features),
                                                 persistent_bytes=self.bytes, greedy_only=False, max_depth=15,
                                                 capabilities=Capabilities(device_feedback=True, checkpoint_cache=True,
-                                                                          stored_payload=True))
-        self.workspace = torch.empty(128 * 2**20, dtype=torch.uint8, device=device)
+                                                                          stored_payload=True, short_drafts=True))
         self.attention = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self.workspace, 'NHD')
         from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
         self.planner = AttentionPlanner(AttentionGeometry(model.heads, model.kv_heads, model.head_dim,
@@ -126,7 +127,7 @@ class ParallelProposer:
         tensors = [self.features, *(t for pair in self.caches for t in pair)]
         feedback_bytes = self.feedback_graphs.bytes if self.feedback_graphs is not None else 0
         return (self.model.bytes + sum(t.numel() * t.element_size() for t in tensors)
-                + self.feature_cache.capacity + 128 * 2**20 + feedback_bytes)
+                + self.feature_cache.capacity + self.workspace.numel() + feedback_bytes)
 
     def _state(self, req):
         if req.proposer_state is None:
@@ -214,17 +215,17 @@ class ParallelProposer:
 
         return self.cache_identity, export, import_
 
-    def _plan(self, wrapper, histories, batch):
-        s = self.noise_steps
+    def _plan(self, wrapper, histories, batch, s):
         lengths = [len(p) for p in histories]
         indptr = torch.tensor([0] + list(torch.tensor(lengths).cumsum(0).tolist()), dtype=torch.int32)
         self.planner.paged_prefill(wrapper, torch.arange(0, (batch + 1) * s, s, dtype=torch.int32), indptr,
                                    torch.cat(histories).to(torch.int32), torch.ones(batch, dtype=torch.int32), causal=False, guard=False)
 
-    def propose(self, requests, pages, inputs, *, graphs):
+    def propose(self, requests, pages, inputs, *, graphs, depth=None):
+        """[batch, d] drafts from one block of the anchor and d masked positions (depth: the round's verify depth, else k)."""
         self._feedback_enabled = graphs
-        batch, s, device = len(requests), self.noise_steps, self.context.device
-        tokens = torch.full((batch, s), 248070, device=device, dtype=torch.int64)
+        batch, s, device = len(requests), (self.k if depth is None else depth) + 1, self.context.device
+        tokens = torch.full((batch, s), self.model.mask_token, device=device, dtype=torch.int64)
         tokens[:, 0] = inputs.tokens
         positions = (inputs.positions[:, None] + torch.arange(s, device=device)).reshape(-1)
         write, histories = [], []
@@ -233,14 +234,14 @@ class ParallelProposer:
             if state.end != req.committed_len or not state.valid:
                 raise ValueError('draft context is incomplete')
             base = state.slot * self.pitch
-            noise = torch.arange(base + self.window, base + self.pitch, device=device)
+            noise = torch.arange(base + self.window, base + self.window + s, device=device)
             history = torch.arange(max(0, state.end - self.window), state.end, device=device) % self.window + base
             write.append(noise)
             histories.append(torch.cat([history, noise]))
         if graphs and self.graphs is not None:
             hidden, candidates, scores = self.graphs.run(tokens, positions, torch.cat(write), histories)
         else:
-            self._plan(self.attention, histories, batch)
+            self._plan(self.attention, histories, batch, s)
             hidden = self.model.forward(tokens, positions, torch.cat(write), self.caches, self.attention)[:, 1:]
             candidates, scores = self.model.selector(hidden, inputs.tokens)
         sampled = any(not r.params.greedy for r in requests)
@@ -376,10 +377,12 @@ class ParallelProposer:
             self.free_slots.append(req.proposer_state.slot)
         req.proposer_state = None
 
-    def capture_graphs(self, log=None):
+    def capture_graphs(self, log=None, depths=None):
+        """depths: {depth: batch buckets}, the verify graphs' pairs (SpecDecoder.capture_graphs), else k at every bucket."""
+        from sharar.engine.graphs import capture_sizes
         from sharar.proposers.parallel_graphs import ParallelGraphs
         from sharar.proposers.parallel_feedback import FeedbackGraphs
-        self.graphs = ParallelGraphs(self)
+        self.graphs = ParallelGraphs(self, depths or {self.k: capture_sizes(self.context.max_batch)})
         self.graphs.capture(log=log)
         self.feedback_graphs = FeedbackGraphs(self)
         self.feedback_graphs.capture(log=log)

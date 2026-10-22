@@ -6,7 +6,7 @@ expand to FP8, multiply FP8 activations and accumulate in FP32; activations are 
 calls of at most 64 rows (decode and verification); larger calls use the original NVFP4/FP8 weights, which stay
 resident. On the 27B they cover 304 target matrices (MLP `gate_up` and `down` in all 64 layers, GDN `in_qkv`,
 `in_z`, `out`, attention `qkv`, `o`) plus 20 in the DFlash2 drafter (nearest-rounded at load, not calibrated);
-on Flash-Next, the trunk and the routed experts (below). Coverage and dispatch: `sharar/weights/w3_checkpoint.py`, `sharar/kernels/ops.py`,
+on Flash-Next, the trunk and the routed experts (below), and the 20 of its DFlash2 drafter when it serves one. Coverage and dispatch: `sharar/weights/w3_checkpoint.py`, `sharar/kernels/ops.py`,
 `sharar/model/draft_linear.py`. Calibrated files store the 27B's `gate_up` rows in the checkpoint's order (gate, then
 up); the loader interleaves them in blocks of 64, like the NVFP4 rows, for the fused prefill MLP
 (`sharar/kernels/mlp_fusion.py`).

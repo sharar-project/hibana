@@ -180,3 +180,5 @@ class Qwen38:
     @torch.inference_mode()
     def logits(self, hidden: torch.Tensor) -> torch.Tensor:
         return all_gather(ops.nvfp4_linear(hidden, self.lm_head))
+
+    head_logits = logits  # a block drafter's own rows: the same head (no mixer on a plain residual stream)

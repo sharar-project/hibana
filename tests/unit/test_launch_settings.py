@@ -237,6 +237,8 @@ def test_a_draft_directory_is_served_only_by_dflash2(env, tmp_path):
 def test_tensor_parallel_limits(env):
     with pytest.raises(ValueError, match="not MTP"):
         resolve(env, "27b", overrides={"SHARAR_PROPOSER": "mtp", "SHARAR_DRAFT_PRECISION": "bf16"}, tp=2)
+    with pytest.raises(ValueError, match="DFlash2 on one Spark"):
+        resolve(env, "flashnext", overrides={"SHARAR_PROPOSER": "dflash2"}, tp=2)
     with pytest.raises(ValueError, match="DRAFT_VOCAB"):
         resolve(env, "flashnext", overrides={"SHARAR_DRAFT_VOCAB": "65536"}, tp=2)
 
@@ -261,6 +263,28 @@ def test_the_27b_fp8_draft_applies_when_its_draft_runs(env):
         assert resolve(env, "27b", overrides=override).get("SHARAR_DRAFT_PRECISION") == "bf16"
 
 
+@pytest.mark.parametrize("profile", launch.PROFILE_NAMES)
+def test_flashnext_serves_dflash2_on_request(env, profile):
+    # FP8 as the 27B's (with the 3-bit copies where the profile decodes 3-bit), at depths that keep MTP's guaranteed
+    # experts a verified token in `fast` and MTP's own in `throughput`; MTP stays the default with its own depths
+    s = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": "dflash2"})
+    assert s.parallel_draft and s.draft_dir is None
+    assert (s.get("SHARAR_DRAFT_PRECISION"), s.get("SHARAR_SPEC_STEP_COST")) == ("fp8", "")
+    assert s.get("SHARAR_ACCEPT_DEFAULT") == {"exact": "off", "fast": "2:1.0", "throughput": "2:1.0"}[profile]  # MTP keeps 3:2.0
+    depths = {"exact": ("7", ""), "fast": ("9", "2:7,4:7"), "throughput": ("4", "16:3,32:3,64:3,128:3")}
+    assert (s.get("SHARAR_SPEC"), s.get("SHARAR_SPEC_DEPTHS")) == depths[profile]
+    capped = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": "dflash2", "SHARAR_SPEC": "5"})
+    assert capped.get("SHARAR_SPEC_DEPTHS") == {"exact": "", "fast": "2:5,4:5", "throughput": "16:3,32:3,64:3,128:3"}[profile]
+    if profile == "throughput":  # MTP's depths, also with NVFP4 experts (up to 64 requests)
+        assert resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": "dflash2", "SHARAR_FLASHNEXT_EXPERTS": "nvfp4"}).get(
+            "SHARAR_SPEC_DEPTHS") == "16:3"
+    mtp = resolve(env, "flashnext", profile)
+    assert (mtp.proposer, mtp.get("SHARAR_DRAFT_PRECISION")) == ("mtp", "bf16") and not mtp.parallel_draft
+    assert mtp.get("SHARAR_ACCEPT_DEFAULT") == ("off" if profile == "exact" else "3:2.0")
+    assert resolve({**env, "SHARAR_DRAFT_PRECISION": ""}, "flashnext", profile).get("SHARAR_DRAFT_PRECISION") == "bf16"  # empty is unset
+    assert mtp.get("SHARAR_SPEC") == ("8" if profile == "fast" else "4")
+
+
 def test_moe_budget_setting():
     from sharar.engine.config import EngineConfig
     assert (EngineConfig.from_env({"SHARAR_MOE_BUDGET": "64"}).moe_budget, EngineConfig.from_env({"SHARAR_MOE_BUDGET": "64"}).moe_budget_per_request) == (64, 0)
@@ -269,3 +293,17 @@ def test_moe_budget_setting():
     with pytest.raises(ValueError, match="SHARAR_MOE_BUDGET"):
         EngineConfig.from_env({"SHARAR_MOE_BUDGET": "a:b"})
     assert EngineConfig.from_env({}).moe_budget == 0
+
+
+def test_profile_depths_stay_within_a_lower_batch_limit(env):
+    # a limit below 128 starts (128 is no captured bucket then), and a limit that is not a bucket verifies what the
+    # bucket it would pad to does
+    cases = {("throughput", "64"): {"mtp": "16:3,32:3,64:3", "dflash2": "16:3,32:3,64:3"},
+             ("throughput", "100"): {"mtp": "16:3,32:3,64:3,100:3", "dflash2": "16:3,32:3,64:3,100:3"},
+             ("throughput", "12"): {"mtp": "12:3", "dflash2": "12:3"},
+             ("fast", "3"): {"mtp": "2:4,3:4", "dflash2": "2:7,3:7"}}
+    for (profile, batch), want in cases.items():
+        for proposer, depths in want.items():
+            s = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": proposer, "SHARAR_MAX_BATCH": batch})
+            assert s.get("SHARAR_SPEC_DEPTHS") == depths, (profile, batch, proposer)
+

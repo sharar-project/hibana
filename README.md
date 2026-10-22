@@ -67,7 +67,7 @@ behavior, update its page in the same pull request (`python3 tools/check_links.p
 | [Architecture](docs/architecture.md) | Package layout, the seams both targets share, capability matrix |
 | [Cache design](docs/cache_design.md) | GPU pools, the radix prefix cache and the SSD tier |
 | [Interfaces](docs/interfaces.md) | Request ownership, proposer lifecycle, device-resident acceptance, failure handling |
-| [Flash-Next](docs/flashnext.md) | The second target: model, package, conventions, sparse attention, its MTP draft |
+| [Flash-Next](docs/flashnext.md) | The second target: model, package, conventions, sparse attention, its MTP and DFlash2 drafts |
 | [Tensor parallel](docs/tensor-parallel.md) | Two Sparks: setup, sharding, the RDMA all-reduce, limits |
 | [3-bit calibration](docs/w3-calibration.md) | Fitting and serving the calibrated 3-bit copies |
 | [Evaluation](docs/evaluation.md) | Measuring a build or a change, the lossy-change gate, nightly and weekly GB10 checks |

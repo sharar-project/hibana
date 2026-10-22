@@ -106,8 +106,9 @@ class ParallelDraftModel:
             raise ValueError(f"the draft's hidden width {self.hidden} is not the target's embedding width {target.embed.shape[1]} (the draft reads the target's embeddings)")
         self.target, self.device = target, target.device
         from sharar.proposers.draft_head import TargetHead
-        self.draft_head = TargetHead(lambda x: self.target.logits(x))  # the vocabulary projection the selector reads; resolved per call
+        self.draft_head = TargetHead(lambda x: self.target.head_logits(x))  # the vocabulary projection the selector reads; resolved per call
         self.features = tuple(cfg['dflash_config']['target_layer_ids'])
+        self.mask_token = cfg['dflash_config']['mask_token_id']
         self.window = cfg['sliding_window']
         self.cos, self.sin = frequencies(cfg, max_context + 32, self.device)
         self.weights = {name: weight.to(self.device) for name, weight in self.read_weights(snapshot, cfg).items()}

@@ -12,7 +12,8 @@ rotary, gated output, a sparse-attention indexer with a 2,048-token budget). Eve
 NVFP4 experts (intermediate 640) plus a sigmoid-gated shared expert. A prefix-lookup n-gram embedding (PLE)
 before layer 1 reads 16 rows of a 320M-row FP8 table per token (bigram and trigram hashes, 8 heads each) and
 adds a gated, causally convolved projection to the streams; a global mixer feeds the BF16 head. The checkpoint
-also ships a one-layer MTP head (the served drafter) and a vision tower (not loaded).
+also ships a one-layer MTP head (the default drafter; a DFlash2 drafter can serve instead, [below](#the-dflash2-draft))
+and a vision tower (not loaded).
 
 Serving formats: the trunk is quantized to FP8 at load (per-tensor, dynamic activation scale), with calibrated
 3-bit decode copies in `fast` and `throughput`. The routed experts are 3-bit too when those copies are on and the W3
@@ -38,7 +39,7 @@ prompt's first prefill chunk starts reading the rows of the rest of the prompt i
 | `moe.py` | routed experts: the 3-bit experts through `kernels/w3_moe.py`, or `cutlass_fused_moe` on the checkpoint's NVFP4 packing (fc1 rows are `[up; gate]`); never both resident |
 | `ple.py` | the table as memory maps of its 128 shards; hash, gather, gate, convolution; window state in `StatePool.aux` |
 | `extras.py` | the side inputs a forward needs (PLE history and rows, indexer bookkeeping) on `ForwardContext.extras` |
-| `model.py` | `FlashNext`: the model contract; `norm` is the hyper stream, `logits()` applies the mixer |
+| `model.py` | `FlashNext`: the model contract; `norm` is the hyper stream, `logits()` applies the mixer, `head_logits()` the lm_head alone; a drafter's feature taps |
 | `mtp.py` | `FlashNextMtpHead`: the checkpoint's MTP layer (FP8 experts) for the `mtp` proposer |
 
 ## Conventions that cost a day
@@ -101,6 +102,40 @@ once (`FlashNextIndexer._plan`) and ranks 256 rows per top-k.
   read blocking, one per pool thread, so their NVMe latencies overlap.
 - **Confidence.** `SHARAR_TRACE_CONFIDENCE=1` beside traces records the draft's top-1 probability and top-two
   margin per drafted position ([operations](operations.md#request-traces)).
+
+## The DFlash2 draft
+
+`SHARAR_PROPOSER=dflash2` serves the pinned `incoai/Qwen3.8-Flash-Next-DFlash2` on one Spark through the 27B's DFlash2
+path (`proposers/parallel.py`): one draft forward proposes the round's block, FP8 weights with 3-bit decode copies,
+draft and feedback graphs, device-resident acceptance, and retained features through the prefix cache and the SSD tier.
+
+- **Taps.** The drafter reads layers 5, 15, 25, 35 and 45, each the FP32 mean of the four hyper streams leaving the
+  layer (`flashnext_fused.stream_mean`), as the publisher's SGLang capture defines them. Its rows go through the
+  lm_head alone (`FlashNext.head_logits`), not the mixer, which reads hyper streams.
+- **Short drafts.** A round drafts only the depth it checks: one block of the anchor and d masked rows, with draft
+  graphs per batch bucket and depth, so `fast` drafts 8 rows a request for two to four requests (depth 7) where a
+  whole block is 10.
+- **Depth.** Under budgeted expert selection a verify forward reads its cap's experts whatever its rows (one request:
+  32-35 ms a round from depth 3 to 15, 3-bit experts, drafting a whole block), so a deeper round guarantees each
+  checked token fewer of its own experts (2 x cap / rows). The depths are caps that keep MTP's floor of 3: `fast` checks
+  at most 9 for one request and 7 for two to four (`SHARAR_SPEC=9`, `SHARAR_SPEC_DEPTHS=2:7,4:7`); `throughput` drafts as
+  MTP, 4 and 3 from 16 requests (from 16, depth 5 decoded 9-10% slower than 3: its verification passes the 64 rows the
+  3-bit copies serve; and the verify buffers hold every request slot at the deepest depth, 1.7 GiB at 4 and 3.4 at 9
+  for 128 requests); `exact`, which reads every expert, drafts 7 (unmeasured). On the h2h prompts, greedy at `fast`'s
+  top-2 within 1.0, the drafter emits 2.8 tokens a round at depth 3, 3.6 at 7 and 3.9 at 9, counting the first d
+  drafts of a 10-row block (at 9: math 6.1, structured 5.7, code 5.4; chat 3.2, prose 2.7, multilingual 2.6).
+- **Acceptance.** `fast` and `throughput` accept a DFlash2 draft the target ranks top-2 within 1.0 logits, the 27B's
+  sampled rule: at Flash-Next's top-3 within 2.0, DFlash2 lost 3.3 points of GSM8K-300 one request at a time against
+  MTP with its 3-bit draft head; at top-2 within 1.0 it ties, for 5% fewer tokens a round there.
+- **Adaptive depth.** Off in every profile. With `SHARAR_SPEC_STEP_COST` (a DFlash2 round costs about 0.01 of a round
+  more per depth), each request checks as deep as its recent acceptance pays for, up
+  to its bucket's depth (`engine/depth.AcceptanceDepth`, [as for MTP](#the-mtp-draft)). Depth tables and adaptive
+  depth reach the 27B's DFlash2 too, a round drafting d + 1 rows; there adaptive depth captures verify and draft
+  graphs at depths 1-15 for up to four requests (unmeasured).
+- **MTP's own.** The 2-bit draft head and a reduced draft vocabulary serve MTP only: DFlash2 projects every drafted
+  position through the target's lm_head, which with 3-bit decode copies on (`fast`, `throughput`) is the lm_head's
+  3-bit copy the verify reads too. A DFlash2 round is about 85% verification at one request (a draft is 4.4 ms of
+  38.5), so a cheaper draft head would gain under 1%.
 
 ## Tools
 

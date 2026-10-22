@@ -133,7 +133,10 @@ class SpecDecoder:
             graphs.capture(log=log)
             self.width_graphs[depth] = graphs
         self.verify_graphs = self.width_graphs.get(self.k) or self.width_graphs[max(self.width_graphs)]
-        self.proposer.capture_graphs(log=log)
+        if self.proposer.requirements.capabilities.short_drafts:  # draft graphs at the verify graphs' (depth, buckets)
+            self.proposer.capture_graphs(log=log, depths={d: g.sizes for d, g in self.width_graphs.items()})
+        else:
+            self.proposer.capture_graphs(log=log)
         if AcceptGraphs.supported(self):  # captured whenever possible so the path can be switched at run time
             for graphs in self.width_graphs.values():
                 graphs.accept = AcceptGraphs(self, graphs)
@@ -191,7 +194,7 @@ class SpecDecoder:
         ex = self.ex
         policy = getattr(self, 'depth_policy', None)
         k = policy.choose(reqs) if policy is not None else self.k
-        if k not in getattr(self, 'verify_depths', (self.k,)):
+        if k not in getattr(self, 'verify_depths', (self.k,)) or not 1 <= k <= self.k:
             raise ValueError('uncaptured verification depth')
         b_sz = len(reqs)
         d = self.device

@@ -83,6 +83,8 @@ class Target:
     indexer_head_dim: int = 0
     # In-checkpoint multi-token-prediction layers.
     mtp_layers: int = 0
+    # Pinned block drafters trained on this target's features: (proposer, repository, revision).
+    draft_pins: tuple[tuple[str, str, str], ...] = ()
 
     def __post_init__(self):
         if len(self.layer_types) != self.num_layers or any(t not in ("full_attention", "linear_attention") for t in self.layer_types):
@@ -140,6 +142,13 @@ class Target:
         return self.state_bytes_per_layer * len(self.gdn_layer_ids)
 
     # ---- snapshot and host validation ----
+    def draft_pin(self, proposer: str) -> tuple[str, str]:
+        """The pinned (repository, revision) of this target's `proposer` draft."""
+        for name, repo, revision in self.draft_pins:
+            if name == proposer:
+                return repo, revision
+        raise ValueError(f"{self.name} has no pinned {proposer} draft")
+
     def snapshot_dir(self, cache_dir: str | os.PathLike | None = None) -> Path:
         """Return the pinned snapshot directory or raise if it is incomplete."""
         from sharar.engine.config import current
@@ -246,6 +255,7 @@ def _qwen38() -> Target:
         linear_conv_kernel=c.LINEAR_CONV_KERNEL, vocab_size=c.VOCAB_SIZE, rms_norm_eps=c.RMS_NORM_EPS,
         max_position_embeddings=c.MAX_POSITION_EMBEDDINGS, nvfp4_group_size=c.NVFP4_GROUP_SIZE,
         weight_load_peak_bytes=c.WEIGHT_LOAD_PEAK_BYTES, w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION,
+        draft_pins=tuple((name, *pin) for name, pin in c.DRAFT_PINS.items()),
     )
 
 
@@ -274,7 +284,7 @@ def _flashnext() -> Target:
         ple_embed_dim=c.PLE_EMBED_DIM, ple_conv_kernel=c.PLE_CONV_KERNEL,
         indexer_budget=c.INDEXER_BUDGET, indexer_compress_ratio=c.INDEXER_COMPRESS_RATIO,
         indexer_n_heads=c.INDEXER_N_HEADS, indexer_head_dim=c.INDEXER_HEAD_DIM, mtp_layers=c.MTP_LAYERS,
-        w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION,
+        w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION, draft_pins=tuple((name, *pin) for name, pin in c.DRAFT_PINS.items()),
     )
 
 

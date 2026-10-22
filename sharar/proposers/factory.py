@@ -6,14 +6,17 @@ MAX_DEPTHS = {"mtp": 8, "dflash2": 15}
 
 
 def draft_snapshot(proposer, draft_dir=None, target=None):
-    """The pinned publisher snapshot, or a DFlash2 checkpoint directory (`--draft DIR`)."""
+    """The target's pinned publisher snapshot, or a DFlash2 checkpoint directory (`--draft DIR`)."""
     import json
     from pathlib import Path
-    from sharar.proposers.parallel import PINS
-    name, revision = PINS[proposer]
+    target = target or DEFAULT_TARGET
+    name, revision = target.draft_pin(proposer)
     if draft_dir is None:
-        root = (target or DEFAULT_TARGET).snapshot_dir().parents[2]
-        return root / ("models--" + name.replace("/", "--")) / "snapshots" / revision
+        # In the target's cache or its hub/, where the launcher downloads it (launch/preflight.py checks both)
+        beside = target.snapshot_dir().parents[2]
+        root = beside.parent if beside.name == "hub" else beside
+        snapshots = [base / ("models--" + name.replace("/", "--")) / "snapshots" / revision for base in (root, root / "hub")]
+        return next((snap for snap in snapshots if (snap / "config.json").is_file()), snapshots[0])
     directory = Path(draft_dir)
     if not (directory / "config.json").is_file() or not (directory / "model.safetensors").is_file():
         raise FileNotFoundError(f"draft directory {directory} needs config.json and model.safetensors")

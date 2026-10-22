@@ -88,7 +88,8 @@ For `T` flattened tokens and hidden size `H`, `ForwardResult['norm']` is BF16 `[
 output consumed by the target LM head. The target needs it even when no proposer requests features.
 
 `FeatureRequest.layers` selects **zero-based post-block residual streams**: `hidden + residual` after that block's
-MLP, before the next block's input norm (or before final norm for the last block). Each selected BF16 `[T,H]` tensor
+MLP, before the next block's input norm (or before final norm for the last block); on Flash-Next, the FP32 mean of the
+hyper-connection streams leaving that block, as its DFlash2 drafter was trained. Each selected BF16 `[T,H]` tensor
 has fresh storage, so later in-place residual updates cannot overwrite it. Unselected layers perform no feature
 addition or allocation. With no selected layers, `ForwardResult` has no `features` key. `capture=True` remains the
 separate, expensive parity-dump mode; proposers should not enable it.
@@ -111,12 +112,14 @@ width (`max_depth`), context and features before allocating shared verify buffer
 name. MTP supports k=1–8 and DFlash2 k=1–15. Target verify graphs have batch buckets 1, 2, 4, ... up to `max_batch`
 (at most 128). With a depth per bucket or per request (`engine/depth.py`), each depth's verify graphs cover only its
 buckets and a bucket at depth 0 decodes plainly while the proposer still ingests every committed row. A proposer
-with `Capabilities.short_drafts` (MTP) gets `propose(..., depth=d)`; others draft `k` and the first `d` are
-verified.
+with `Capabilities.short_drafts` (MTP and DFlash2) gets `propose(..., depth=d)` and drafts only those `d` tokens (a
+DFlash2 round runs one block of the anchor and `d` masked rows), and its `capture_graphs(log, depths={d: buckets})`
+receives the verify graphs' pairs (DFlash2 captures a draft graph at each; MTP's one-step graphs serve every depth);
+others draft `k` and the first `d` are verified.
 
 - `ingest_prefill(req, ids, start, result)` consumes each freshly computed chunk; `start(req, token)` publishes the
   first emitted token; `ready(req)` decides whether a request may enter speculation (otherwise it decodes plainly).
-- `propose(requests, pages, StepInputs, graphs=...)` returns int64 `[B,k]` tokens or a `Proposal` (the tokens, their
+- `propose(requests, pages, StepInputs, graphs=...)` returns int64 `[B,k]` tokens (`[B,d]` with short drafts) or a `Proposal` (the tokens, their
   actual conditional probabilities, optional sparse support and confidence). `StepInputs` supplies pending tokens,
   positions and slots; `pages` is borrowed `[B,k+1]` target reservation metadata. Adapters cannot allocate target
   pages, mutate logical history or commit target recurrent state, and validate their own token IDs (the hot path

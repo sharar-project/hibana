@@ -3,8 +3,9 @@
 then routed experts), the PLE before layer 1, the global mixer and a BF16-or-FP8 lm_head.
 
 `forward()` follows the 27B model's contract (`ForwardContext` prefill / decode; `norm` is the
-mixer output the head reads). The routed experts keep the checkpoint's NVFP4, or come 3-bit from the W3
-checkpoint when it carries them (moe.py); every other matrix is FP8 at load (`SHARAR_FLASHNEXT_TRUNK=bf16` keeps the checkpoint's BF16 for parity runs).
+mixer output the head reads; a block drafter's `features` are the mean of a layer's output streams). The routed
+experts keep the checkpoint's NVFP4, or come 3-bit from the W3 checkpoint when it carries them (moe.py); every other
+matrix is FP8 at load (`SHARAR_FLASHNEXT_TRUNK=bf16` keeps the checkpoint's BF16 for parity runs).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from sharar.distributed import all_gather, all_reduce, div_even, get_tp_info
 from sharar.engine.config import current
 from sharar.engine.context import ForwardContext, scratch_prefill_context
 from sharar.engine.contracts import ForwardResult
+from sharar.kernels import flashnext_fused as fk
 from sharar.kernels import ops
 from sharar.model.flashnext.attention import FlashNextAttention
 from sharar.model.flashnext.gdn import FlashNextGdn
@@ -234,8 +236,6 @@ class FlashNext:
 
     @torch.inference_mode()
     def forward(self, input_ids: torch.Tensor, ctx: ForwardContext, capture: bool = False) -> ForwardResult:
-        if ctx.feature_request.layers:
-            raise NotImplementedError("layer feature capture is not defined for the hyper-connected trunk yet")
         if ctx.mode == "prefill":
             prepare_gdn_prefill(ctx, len(input_ids), input_ids.device)
         x = torch.nn.functional.embedding(input_ids, self.embed)
@@ -249,6 +249,12 @@ class FlashNext:
         for i, layer in enumerate(self.layers):
             then = self.layers[i + 1] if i + 1 < len(self.layers) else None
             hyper, normed = layer.forward(hyper, input_ids, ctx, self.eos, normed, then)
+            if layer.index in ctx.feature_request.layers:
+                if "features" not in out:
+                    out["features"] = {}
+                # A block drafter reads the mean of the layer's output streams (SGLang's capture for this model's
+                # DFlash2 draft, in FP32), as new storage.
+                out["features"][layer.index] = fk.stream_mean(hyper, self.target.hc_count, self.target.hidden_size)
             if capture:
                 out["layers"].append((hyper, None))
         # `norm` is the stream the head reads: the hyper-connected residual before the global
@@ -264,3 +270,8 @@ class FlashNext:
     def logits(self, hidden: torch.Tensor) -> torch.Tensor:
         """hidden: the hyper stream [T, hc*H] from `forward()["norm"]` -> logits [T, V]."""
         return all_gather(self.lm_head(self.mixer.mix(hidden)[0]))
+
+    @torch.inference_mode()
+    def head_logits(self, hidden: torch.Tensor) -> torch.Tensor:
+        """hidden: [T, H] rows a block drafter computed -> logits [T, V] from the lm_head alone (no mixer)."""
+        return all_gather(self.lm_head(hidden))

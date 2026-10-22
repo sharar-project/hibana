@@ -26,7 +26,7 @@ TARGET_SETTINGS = {
     "qwen38": {"SHARAR_SERVICE": "sharar-qwen38", "SHARAR_PORT": "30001", "SHARAR_PROPOSER": "dflash2", "SHARAR_SPEC": "15",
                "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_PRECISION": "fp8"},
     "flashnext": {"SHARAR_SERVICE": "sharar-flashnext", "SHARAR_PORT": "30004", "SHARAR_PROPOSER": "mtp",
-                  "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_PRECISION": "bf16", "SHARAR_DRAFT": "pinned",
+                  "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_PRECISION": "fp8", "SHARAR_DRAFT": "pinned",
                   "SHARAR_DRAFT_HEAD": "w2", "SHARAR_FLASHNEXT_TRUNK": "fp8"},
 }
 
@@ -48,8 +48,10 @@ TARGET_SETTINGS = {
 PROFILE_NAMES = ("exact", "fast", "throughput")
 
 
-def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", tp: int = 1) -> dict[str, str]:
-    """The profile's value for each knob it sets, as SHARAR_* settings, for one Spark or `tp` of them."""
+def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", tp: int = 1,
+                     proposer: str | None = None) -> dict[str, str]:
+    """The profile's value for each knob it sets, as SHARAR_* settings, for one Spark or `tp` of them and the drafter
+    `proposer` (None: the target's own)."""
     flashnext = target == "flashnext"
     if profile == "exact":
         p = {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "0", "SHARAR_DEVICE_ACCEPT": "0"}
@@ -75,7 +77,22 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
         p["SHARAR_QSA_PREFILL_BACKEND"] = "auto"
     if flashnext:
         p["SHARAR_SPEC"] = "4"
-        if profile == "fast":  # adaptive depth: h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
+        if proposer == "dflash2":
+            # One forward drafts the block. Under budgeted expert selection a verify round reads its cap's experts at
+            # any depth (one request: 32-35 ms from depth 3 to 15, one Spark, 3-bit experts), so a deeper round guarantees
+            # each verified token fewer of its own: the depths keep MTP's floor of 3 a token (one request 9, two and four
+            # 7), where one request at depth 10 or more, or two to four at 8 or more, would keep 2. `exact` reads every
+            # expert; its depth is unmeasured.
+            if profile == "exact":
+                p["SHARAR_SPEC"] = "7"
+            else:
+                # top-2 within 1.0, the 27B's sampled rule: at Flash-Next's top-3 within 2.0, DFlash2 lost 3.3 points of
+                # GSM8K-300 one request at a time against MTP with its 3-bit draft head (-6.2 to -0.4); at 2:1.0 it ties
+                # (-0.3, -2.9 to +2.2) for 5% fewer tokens a round there
+                p["SHARAR_ACCEPT_DEFAULT"] = "2:1.0"
+                if profile == "fast":
+                    p.update(SHARAR_SPEC="9", SHARAR_SPEC_DEPTHS="2:7,4:7")
+        elif profile == "fast":  # adaptive depth: h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
             # two Sparks: 0.14 drafted chat and prose too deep (-12%, -7% against depth 4); 0.2 keeps them within noise
             p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14" if tp == 1 else "0.2", SHARAR_SPEC_DEPTHS="2:4,4:4")
     if profile == "throughput":
@@ -83,6 +100,9 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
         if flashnext:
             # at 32-128 requests a verified row costs ~0.5 ms (one Spark, 3-bit experts) and depth 3 beat 4 in steady
             # state (32: 523 vs 516 tok/s, 64: 795 vs 783, 128: 1003 vs 974); NVFP4 experts and two Sparks are unmeasured
+            # DFlash2 drafts as MTP here: from 16 requests depth 5 decoded 9-10% slower than 3 (one Spark, 3-bit
+            # experts, 8K and 32K prompts), its verification then past the 64 rows the 3-bit copies serve; and the
+            # verify buffers hold every request slot at the deepest depth (128 requests: 1.7 GiB at 4, 3.4 at 9)
             p["SHARAR_SPEC_DEPTHS"] = "16:3,32:3,64:3,128:3" if flashnext_experts == "w3" and tp == 1 else "16:3"
         # the 8-bit GDN state pays with many requests; `fast` keeps FP32: no gain at one request, slower prefill
         p["SHARAR_SSM_STATE"] = "int8"
@@ -244,17 +264,23 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     values.update({k: v for k, v in user.items() if v != "" and k not in (overrides or {})})
     values["SHARAR_TARGET"] = name
     profile = profile or values.get("SHARAR_PROFILE") or "fast"
-    defaults = profile_defaults(profile, name, values.get("SHARAR_FLASHNEXT_EXPERTS", "w3"), tp)
+    defaults = profile_defaults(profile, name, values.get("SHARAR_FLASHNEXT_EXPERTS", "w3"), tp, values["SHARAR_PROPOSER"])
     for k, v in defaults.items():
         if k == "SHARAR_SSM_STATE" and values.get("SHARAR_VERIFY_STATE", "reconstruct") != "reconstruct":
             continue  # the quantized state commits through the verify ring: other accepted states keep FP32
         values.setdefault(k, v)
     if defaults.get("SHARAR_SPEC_DEPTHS") and values.get("SHARAR_SPEC_DEPTHS") == defaults["SHARAR_SPEC_DEPTHS"] \
-            and values.get("SHARAR_SPEC", "").isdigit():
-        # the profile's depths per batch bucket stay within a depth the user chose
-        spec = int(values["SHARAR_SPEC"])
-        values["SHARAR_SPEC_DEPTHS"] = ",".join(f"{b}:{min(int(d), spec)}" for b, d in
-                                                (item.split(":") for item in values["SHARAR_SPEC_DEPTHS"].split(",")))
+            and values.get("SHARAR_SPEC", "").isdigit() and values.get("SHARAR_MAX_BATCH", "4").isdigit():
+        # the profile's depths per batch bucket stay within a depth and a batch size the user chose; a batch limit that
+        # is not one of the profile's buckets is a bucket of its own, verifying what the bucket it would pad to does
+        spec, batch = int(values["SHARAR_SPEC"]), int(values.get("SHARAR_MAX_BATCH", "4"))
+        named = sorted((int(b), min(int(d), spec)) for b, d in
+                       (item.split(":") for item in values["SHARAR_SPEC_DEPTHS"].split(",")))
+        kept = {b: d for b, d in named if b <= batch}
+        wider = [d for b, d in named if b > batch]
+        if wider and batch not in kept:
+            kept[batch] = wider[0]
+        values["SHARAR_SPEC_DEPTHS"] = ",".join(f"{b}:{d}" for b, d in sorted(kept.items()))
     values["SHARAR_PROFILE"] = profile
 
     home = Path(env.get("HOME") or Path.home())
@@ -283,7 +309,7 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(re.fullmatch(r"[0-9]+(\.[0-9]+)?", values.get("SHARAR_SSD_GIB", "200")) is not None, "SHARAR_SSD_GIB must be a number of GiB")
     _check(values.get("SHARAR_TRACES_MAX_MIB", "32768").isdigit() and int(values.get("SHARAR_TRACES_MAX_MIB", "32768")) > 0,
            "SHARAR_TRACES_MAX_MIB must be a positive integer")
-    if "SHARAR_DRAFT_PRECISION" not in {**user, **(overrides or {})} and not (
+    if not {**user, **(overrides or {})}.get("SHARAR_DRAFT_PRECISION") and not (
             int(values.get("SHARAR_SPEC", "15")) and values["SHARAR_PROPOSER"] == "dflash2"):
         values["SHARAR_DRAFT_PRECISION"] = "bf16"  # the target's FP8 draft applies when its parallel draft runs
     precision, proposer, spec = values.get("SHARAR_DRAFT_PRECISION"), values["SHARAR_PROPOSER"], int(values.get("SHARAR_SPEC", "15"))
@@ -295,6 +321,8 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
         _check(name in ("qwen38", "flashnext"), "tensor parallel serves the 27B and Flash-Next")
         _check(not (name == "qwen38" and spec and proposer == "mtp"),
                "the 27B serves tensor-parallel with DFlash2, not MTP")
+        _check(not (name == "flashnext" and spec and proposer == "dflash2"),
+               "Flash-Next serves DFlash2 on one Spark: serve MTP tensor-parallel")
         _check(values.get("SHARAR_DRAFT_VOCAB", "0") == "0", "a reduced draft vocabulary (SHARAR_DRAFT_VOCAB) is not served tensor-parallel")
 
     # the draft: the pinned publisher draft, or a DFlash2 checkpoint directory

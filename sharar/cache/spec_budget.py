@@ -77,19 +77,18 @@ def budget(spec, batch, *, cache_slots=96, target=None):
         fixed += weights + 2 * largest + 128 * 2**20
         page_bytes = 2 * t.num_kv_heads * t.head_dim * 2
     elif spec.name == 'dflash2':
-        from sharar.proposers.parallel import PINS
-        name, revision = PINS[spec.name]
-        snapshot = t.snapshot_dir().parents[2] / ('models--' + name.replace('/', '--')) / 'snapshots' / revision
+        from sharar.proposers.factory import draft_snapshot
+        snapshot = draft_snapshot(spec.name, spec.draft_dir, t)  # the checkpoint served: pinned, or --draft DIR
         weights, largest = tensor_bytes(snapshot)
         cfg = json.loads((snapshot / 'config.json').read_text())
         window = cfg['sliding_window']
         # Active rings (+dummy), one feature window per usable recurrent slot,
         # and two temporaries while gathering and replacing a retained window.
-        # Automatic pool sizing caps recurrent slots at 96; explicit pools pass
-        # their actual count before allocation. This is a prospective cap.
+        # Automatic pool sizing passes the most slots its plan gives; explicit
+        # pools pass their actual count before allocation. This is a prospective cap.
         fixed += (batch + cache_slots + 2) * window * cfg['hidden_size'] * 2
         fixed += cfg['num_hidden_layers'] * (batch + 1) * (window + spec.depth + 1) * 2 * cfg['num_key_value_heads'] * cfg['head_dim'] * 2
-        fixed += weights + 2 * largest + 128 * 2**20
+        fixed += weights + 2 * largest + 128 * 2**20 * max(1, -(-batch // 32))  # the draft attention's workspace
     # Graph/workspace growth and allocator slack kept separate from live tensors.
     fixed += 2 * GIB
     return fixed, page_bytes

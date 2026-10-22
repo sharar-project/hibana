@@ -40,7 +40,7 @@ class Capabilities:
     checkpoint_cache: bool = False  # CheckpointCache: bind_checkpoint_cache(pool) and a feature_cache with stats
     stored_payload: bool = False    # StoredPayload: auxiliary_codec() -> (identity, export, import) for stored prefixes
     draft_head: bool = False        # DraftHeadChoice: set_draft_head(ids, fmt, rescore) on the head
-    short_drafts: bool = False      # propose(..., depth=d) drafts only the d tokens a shallower round verifies (sequential drafts)
+    short_drafts: bool = False      # propose(..., depth=d) drafts only the d tokens a shallower round verifies; capture_graphs(log, depths={d: buckets}) at the verify graphs' pairs
 
 
 @dataclass(frozen=True)

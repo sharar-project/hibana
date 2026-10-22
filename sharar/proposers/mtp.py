@@ -281,7 +281,8 @@ class MtpProposer:
     def prepare_release(self, req):
         pass  # features are retained at checkpoint creation/accepted commit
 
-    def capture_graphs(self, log=None):
+    def capture_graphs(self, log=None, depths=None):
+        """One draft step's graphs serve every depth (`depths`, the verify graphs' pairs, needs nothing more)."""
         from sharar.proposers.mtp_graphs import DraftGraphs
         self.graphs = DraftGraphs(self)
         self.graphs.capture(log=log)

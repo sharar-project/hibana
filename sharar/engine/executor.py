@@ -67,7 +67,8 @@ class Executor:
         future, extra_page = 2 * 2**30, 0
         if spec_config is not None:
             from sharar.cache.spec_budget import budget
-            future, extra_page = budget(spec_config, max_batch, cache_slots=num_slots or 96, target=self.target)
+            # the most state slots the plan gives: its target of 96, or a slot and a snapshot per running request
+            future, extra_page = budget(spec_config, max_batch, cache_slots=num_slots or max(96, 2 * max_batch + 1), target=self.target)
         cfg = current()
         if cfg.ssd:  # the SSD tier pins its staging buffers in the DRAM the pools come from: plan around them
             from sharar.cache.ssd import SsdTier
@@ -150,7 +151,7 @@ class Executor:
             raise ValueError("enable speculation once, before graph capture")
         from sharar.cache.spec_budget import SpecConfig, budget
         from sharar.cache.ledger import check_load_headroom
-        fixed, per_page = budget(SpecConfig(proposer, k, state_strategy, draft_precision), self.max_batch,
+        fixed, per_page = budget(SpecConfig(proposer, k, state_strategy, draft_precision, draft_dir), self.max_batch,
                                  cache_slots=self.state_pool.num_slots, target=self.target)
         check_load_headroom(fixed + per_page * self.kv_pool.num_pages + 8 * 2**30)
         context = ProposerContext(self.device, self.max_batch, self.max_context)

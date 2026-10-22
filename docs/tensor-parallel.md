@@ -123,7 +123,7 @@ whole-vocabulary shortlist head's (`sharar dev tp-draft-head` checks that the pi
 
 ## Limits
 
-- The 27B with DFlash2, not MTP; Flash-Next with MTP. A reduced
+- The 27B with DFlash2, not MTP; Flash-Next with MTP (its DFlash2 serves on one Spark). A reduced
   draft vocabulary (`SHARAR_DRAFT_VOCAB`) is not served tensor-parallel.
 - A `--draft DIR` checkpoint is copied to the peer at the same path before the pair starts.
 - Pool sizes, admission's memory floor and every scheduler step are collectives across the ranks: call the executor

@@ -46,6 +46,11 @@ INDEXER_COMPRESS_RATIO = 4
 INDEXER_N_HEADS = 4
 INDEXER_HEAD_DIM = 128
 MTP_LAYERS = 1
+# The pinned block drafter (repository, revision): a DFlash2 trained on this model's features (proposers/parallel.py;
+# the launcher downloads it when SHARAR_PROPOSER=dflash2).
+DRAFT_PINS = {
+    "dflash2": ("incoai/Qwen3.8-Flash-Next-DFlash2", "a22a1744e85c17364dcc54a6a420af7135d4c7f6"),
+}
 
 # Resident weights: NVFP4 experts ~68 GB + FP8 trunk ~3.5 GB + BF16 embeddings 1.3 GB + FP8 head 0.6 GB,
 # plus the staging of one layer's expert shards during the load.

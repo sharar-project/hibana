@@ -16,9 +16,9 @@ from sharar.proposers.parallel import DraftState
 def runtime(request, qwen38):
     from sharar import config
     from sharar.proposers.factory import draft_snapshot
-    from sharar.proposers.parallel import PINS
+    from sharar.target import DEFAULT_TARGET
     if not (draft_snapshot(request.param) / 'model.safetensors').is_file():
-        name, revision = PINS[request.param]
+        name, revision = DEFAULT_TARGET.draft_pin(request.param)
         pytest.skip(f'{request.param} draft weights not in the model cache: {name}@{revision[:7]}')
     from sharar.engine.executor import Executor
     from sharar.engine.prompts import PARAGRAPH

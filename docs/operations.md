@@ -9,7 +9,8 @@ user systemd session (`loginctl enable-linger` keeps it after logout).
 
 Two targets, one per process, chosen by name: `27b` (`RadixArk/Qwen3.8-27B-NVFP4` at `319f741`, with the DFlash2
 drafter `incoai/Qwen3.8-27B-DFlash2` at `dedf8df`) and `flashnext` (`RadixArk/Qwen3.8-Flash-Next-NVFP4` at
-`7b71922`, its own MTP head). `sharar serve` downloads whatever the cache lacks (about 26 GB for the 27B, 135 GB for
+`7b71922`, its own MTP head, or the DFlash2 drafter `incoai/Qwen3.8-Flash-Next-DFlash2` at `a22a174` on one Spark).
+`sharar serve` downloads whatever the cache lacks (about 26 GB for the 27B, 135 GB for
 Flash-Next) after checking free disk; serving itself runs offline.
 
 ## Install and serve
@@ -50,13 +51,13 @@ same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (defau
 |---|---|---|
 | Target | the one named on `serve` (`27b` or `flashnext`) | `SHARAR_TARGET`; Flash-Next reads its model from `SHARAR_FLASHNEXT_CACHE` and takes `SHARAR_FLASHNEXT_TRUNK=fp8\|bf16` |
 | Serving profile | `fast` | `sharar serve --exact\|--fast\|--throughput` or `SHARAR_PROFILE` ([below](#serving-profiles)) |
-| Proposer / draft proposals | 27B: DFlash2, 15 (16 verify rows); Flash-Next: MTP, 4 (`fast`: up to 8, adaptive, below) | `SHARAR_PROPOSER`, `SHARAR_SPEC` (0 = plain decode; with adaptive depth, the cap) |
-| Draft precision | 27B: FP8; Flash-Next: BF16 | `SHARAR_DRAFT_PRECISION=bf16` for the 27B publisher's precision |
-| Draft checkpoint | the publisher's pinned draft | `sharar serve --draft DIR` or `SHARAR_DRAFT=/dir`: a DFlash2 checkpoint of the same architecture (27B only) |
+| Proposer / draft proposals | 27B: DFlash2, 15 (16 verify rows); Flash-Next: MTP, 4 (`fast`: up to 8, adaptive, below), or with `SHARAR_PROPOSER=dflash2` (one Spark) DFlash2, 9 (`exact`: 7, `throughput`: 4) | `SHARAR_PROPOSER`, `SHARAR_SPEC` (0 = plain decode; with adaptive depth, the cap) |
+| Draft precision | 27B: FP8; Flash-Next: BF16 (MTP), FP8 (DFlash2) | `SHARAR_DRAFT_PRECISION=bf16` for the 27B publisher's precision |
+| Draft checkpoint | the publisher's pinned draft | `sharar serve --draft DIR` or `SHARAR_DRAFT=/dir`: a DFlash2 checkpoint of the same architecture, trained on the served target's features |
 | Accepted state | reconstruction | `SHARAR_VERIFY_STATE` |
 | Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
-| Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:4,4:4`, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark), else `16:3` | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC`). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
-| Adaptive draft depth (MTP) | Flash-Next `fast`: on, 0.14 (0.2 on two Sparks) | `SHARAR_SPEC_STEP_COST` (0 = the fixed depth): each request drafts as deep as its own recent acceptance pays for, up to the batch bucket's depth ([how](flashnext.md#the-mtp-draft)) |
+| Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:4,4:4`, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark), else `16:3`; Flash-Next DFlash2 `fast`: `2:7,4:7`, `throughput`: MTP's | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC` and `SHARAR_MAX_BATCH`, a limit between buckets verifying what the bucket it pads to does). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
+| Adaptive draft depth (MTP and DFlash2) | Flash-Next `fast` with MTP: on, 0.14 (0.2 on two Sparks); DFlash2: off | `SHARAR_SPEC_STEP_COST` (0 = the fixed depth): each request drafts as deep as its own recent acceptance pays for, up to the batch bucket's depth ([MTP](flashnext.md#the-mtp-draft), [DFlash2](flashnext.md#the-dflash2-draft)) |
 | Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext` | `sharar serve --port`, `SHARAR_PORT` / `SHARAR_SERVICE` |
 | Request traces | off | `sharar serve --traces` (in `$SHARAR_RESULTS/traces`) or `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
 | Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
@@ -75,8 +76,8 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 
 | Knob | exact | fast (default) | throughput |
 |---|---|---|---|
-| Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-3 within 2.0 logits | as fast |
-| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | Flash-Next top-3 within 2.0; the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
+| Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-3 within 2.0 logits; Flash-Next DFlash2 top-2 within 1.0 | as fast |
+| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | Flash-Next top-3 within 2.0 (DFlash2 top-2 within 1.0); the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
 | Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next also its routed experts) | off | on | on |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next only | as fast |
 | Budgeted expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_BUDGET`) | off | Flash-Next: keep 4, budget 12:64 | as fast |
@@ -87,9 +88,10 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 Relaxed acceptance accepts a drafted token the target ranks within its top-k and within a logit margin of its
 argmax, so outputs are no longer the target's exact greedy continuation; a request can pin exact acceptance with
 `accept_top_k: 1` ([API](api.md)). The 3-bit copies (3.25 bits per weight, a tensor-core kernel for calls of at
-most 64 rows) cover the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resident) and Flash-Next's trunk; Flash-Next's
-3-bit routed experts replace the NVFP4 ones at every row count (17 GiB less resident). The lm_head keeps its
-original format. Speculative decoding itself, the Flash-Next 2-bit draft head, FP8/NVFP4
+most 64 rows) cover the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resident) and Flash-Next's trunk and FP8 DFlash2 draft; Flash-Next's
+3-bit routed experts replace the NVFP4 ones at every row count (17 GiB less resident). The 27B's lm_head keeps its
+original format; Flash-Next's has a 3-bit copy, read by calls of at most 64 rows (decode, verify and DFlash2's draft
+projection). Speculative decoding itself, the Flash-Next 2-bit draft head, FP8/NVFP4
 weights and CUDA graphs are lossless and on in every profile. Benchmarks and gates use `exact`.
 
 Four of the knobs take more than the table shows:
@@ -102,7 +104,8 @@ Four of the knobs take more than the table shows:
   probability summed over the forward's tokens. Each token takes up to 10 of them, its guaranteed ones first. The
   guarantee shrinks as the forward grows, 2 x cap / tokens within [2, k], so the cap keeps binding: at 4 and 12:64, up
   to 4 tokens a request keep 4 (one request alone, up to 8), a depth-8 draft of one request or eight requests of 5
-  tokens 3, 64 tokens and more 2. The floor of 16 is for a request alone: at 12 its GSM8K fell 4.7 points.
+  tokens 3, 64 tokens and more 2. The floor of 16 is for a request alone: at 12 its GSM8K fell 4.7 points. Flash-Next's
+  DFlash2 depths keep 3 in `fast` ([how](flashnext.md#the-dflash2-draft)).
   `SHARAR_MOE_KEEP` alone gives each token its top k;
   `SHARAR_MOE_KEEP=0` routes in full. A token's experts depend on the rest of its forward, so a greedy reply can change
   with what else the server runs.
@@ -139,8 +142,8 @@ adaptive draft depth. It is read when the proposer is built; off, nothing change
 Inspect `sharar status`, `sharar logs` (detached servers), `/health` and `/get_server_info` for status.
 The latter reports draft precision, scheduler settings, KV/state geometry and
 cache statistics. `cache.draft_features` reports retained features and fallbacks.
-At 96 slots, DFlash2 feature retention reserves up to 1,900 MiB before planning
-KV. The pools take what is available at startup beyond the floor, the prefill
+At 96 slots, the 27B's DFlash2 feature retention reserves up to 1,900 MiB before planning
+KV (Flash-Next's, half as wide, half that). The pools take what is available at startup beyond the floor, the prefill
 reserve and a 4 GiB margin. No host-memory tier sits below them: on unified
 memory it would hold the same prefixes in the same DRAM.
 

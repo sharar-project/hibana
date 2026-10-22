@@ -82,6 +82,28 @@ def gate_mean(up_out: torch.Tensor, normed: torch.Tensor, hc: int, hidden: int) 
     return y
 
 
+# ---- stream mean: y[t, c] = mean_s hyper[t, s*H + c] (a layer's output as a block drafter reads it) ----
+@triton.jit
+def _stream_mean_kernel(X, Y, stride_x, stride_y, H: tl.constexpr, HC: tl.constexpr, BLOCK: tl.constexpr):
+    t = tl.program_id(0)
+    cols = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
+    mask = cols < H
+    acc = tl.zeros([BLOCK], dtype=tl.float32)
+    for s in tl.static_range(HC):
+        acc += tl.load(X + t * stride_x + s * H + cols, mask=mask, other=0.0).to(tl.float32)
+    tl.store(Y + t * stride_y + cols, (acc / HC).to(tl.bfloat16), mask=mask)
+
+
+def stream_mean(hyper: torch.Tensor, hc: int, hidden: int) -> torch.Tensor:
+    """[T, hc*H] -> bf16 [T, H], the FP32 mean of the streams: `hyper.unflatten(-1, (hc, H)).float().mean(-2)` in one
+    launch, without its FP32 [T, hc, H] temporary."""
+    t = hyper.shape[0]
+    y = torch.empty((t, hidden), dtype=torch.bfloat16, device=hyper.device)
+    block = 1024
+    _stream_mean_kernel[(t, triton.cdiv(hidden, block))](hyper, y, hyper.stride(0), y.stride(0), hidden, hc, BLOCK=block)
+    return y
+
+
 # ---- residual injection: hyper'[t, s*H + c] = hyper + block[t, c] * 2 sigmoid(inj[t, s]) ----
 @triton.jit
 def _inject_kernel(R, B, I, Y, stride_r, stride_b, stride_i, stride_y, H: tl.constexpr, BLOCK: tl.constexpr):

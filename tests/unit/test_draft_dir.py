@@ -1,4 +1,4 @@
-"""Serving a trained draft checkpoint directory instead of the pinned snapshot."""
+"""The draft a target serves: its pinned snapshot (beside the target or in hub/), or a trained checkpoint directory."""
 import json
 
 import pytest
@@ -52,3 +52,29 @@ def test_serve_cli_passes_the_draft_dir(monkeypatch, tmp_path):
         cli.main(["engine", "--spec", "0", "--draft", str(tmp_path)])
     with pytest.raises(SystemExit):
         cli.main(["engine", "--proposer", "mtp", "--spec", "3", "--draft", str(tmp_path)])
+
+
+def test_each_target_serves_its_own_pinned_draft(monkeypatch, tmp_path):
+    from sharar.model import qwen38_config
+    from sharar.model.flashnext import config as flashnext
+    from sharar.target import FLASHNEXT, QWEN38, Target
+    assert QWEN38.draft_pin("dflash2") == qwen38_config.DRAFT_PINS["dflash2"]
+    assert FLASHNEXT.draft_pin("dflash2") == flashnext.DRAFT_PINS["dflash2"] != QWEN38.draft_pin("dflash2")
+    with pytest.raises(ValueError, match="no pinned mtp draft"):
+        FLASHNEXT.draft_pin("mtp")
+    monkeypatch.setattr(Target, "snapshot_dir", lambda self, cache_dir=None: tmp_path / "models--target" / "snapshots" / "revision")
+    name, revision = FLASHNEXT.draft_pin("dflash2")
+    repo = f"models--{name.replace('/', '--')}"
+    assert draft_snapshot("dflash2", None, FLASHNEXT) == tmp_path / repo / "snapshots" / revision  # beside the target
+    hub = tmp_path / "hub" / repo / "snapshots" / revision  # where the launcher downloads it
+    hub.mkdir(parents=True)
+    (hub / "config.json").write_text("{}")
+    assert draft_snapshot("dflash2", None, FLASHNEXT) == hub
+    # a target under the cache's hub/ finds a draft in hub/ or beside it, the two places the launcher's preflight checks
+    monkeypatch.setattr(Target, "snapshot_dir", lambda self, cache_dir=None: tmp_path / "hub" / "models--target" / "snapshots" / "revision")
+    assert draft_snapshot("dflash2", None, FLASHNEXT) == hub
+    (hub / "config.json").unlink()
+    root = tmp_path / repo / "snapshots" / revision
+    root.mkdir(parents=True)
+    (root / "config.json").write_text("{}")
+    assert draft_snapshot("dflash2", None, FLASHNEXT) == root
