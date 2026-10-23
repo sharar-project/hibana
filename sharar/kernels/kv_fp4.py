@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """NVFP4 KV values: E2M1 codes with one E4M3 scale per 16 values along head_dim (global scale 1).
 
-`nvfp4_round` is the reference rounding: a value becomes scale * e2m1(value / scale), scale = e4m3(amax / 6) of its
-block of 16, the code rounded to nearest with ties to the even code and saturating at 6. A block of zeros stays
+`nvfp4_round` is the reference rounding, FlashInfer's NVFP4 KV writer's arithmetic (`page.cuh`
+`nvfp4_append_quantize_block`, global scale 1): a value becomes scale * e2m1(value * (1 / scale)), scale = e4m3(amax / 6)
+of its block of 16, the code rounded to nearest with ties to the even code and saturating at 6. A block of zeros stays
 zero. Every result is exactly representable in BF16 (a code's two significant bits times a scale's four), so a BF16
 pool holding rounded values is an FP4 pool's exact numerics (`SHARAR_KV_FORMAT=sim-fp4`, the accuracy screen).
 """
@@ -20,7 +21,8 @@ def nvfp4_round(x: torch.Tensor) -> torch.Tensor:
     v = x.float().reshape(*x.shape[:-1], d // BLOCK, BLOCK)
     amax = v.abs().amax(-1, keepdim=True)
     scale = (amax / 6.0).to(torch.float8_e4m3fn).float()
-    q = torch.where(scale > 0, v / torch.where(scale > 0, scale, 1.0), torch.zeros_like(v))
+    # times the reciprocal, as FlashInfer's NVFP4 KV writer (page.cuh nvfp4_append_quantize_block) scales a block
+    q = v * torch.where(scale > 0, 1.0 / torch.where(scale > 0, scale, 1.0), torch.zeros_like(scale))
     a = q.abs()
     # nearest E2M1 magnitude, a tie to the even code (0, 1, 2, 4), saturating at 6; constants only (graph capture)
     mag = torch.zeros_like(a)

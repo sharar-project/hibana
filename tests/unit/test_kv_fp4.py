@@ -5,8 +5,9 @@ from sharar.kernels.kv_fp4 import nvfp4_round, fp8_round, _GRID
 
 
 def _reference(x):
-    """Brute force: per block of 16, scale = e4m3(amax / 6); each value the grid point nearest x / scale (ties to the
-    even code, codes 0..7 in grid order), saturating at 6."""
+    """Brute force: per block of 16, scale = e4m3(amax / 6); each value the grid point nearest x times the FP32
+    reciprocal of the scale (FlashInfer's NVFP4 KV writer; ties to the even code, codes 0..7 in grid order),
+    saturating at 6."""
     out = torch.empty_like(x, dtype=torch.float32)
     flat = x.float().reshape(-1, 16)
     res = out.reshape(-1, 16)
@@ -16,7 +17,8 @@ def _reference(x):
             if s == 0:
                 res[b, i] = 0.0
                 continue
-            a = min(abs(v / s), 6.0)
+            inv = torch.tensor(1.0) / torch.tensor(s)  # FP32, as the writer
+            a = min(abs(float(torch.tensor(v) * inv)), 6.0)
             best = min(range(8), key=lambda c: (abs(_GRID[c] - a), c % 2))  # nearest, then the even code
             res[b, i] = (_GRID[best] if v >= 0 else -_GRID[best]) * s
     return out
