@@ -64,19 +64,36 @@ class Executor:
         from sharar.engine.config import current
         self.ssm_format = SsmFormat.from_config(current())  # GDN recurrent state storage (SHARAR_SSM_STATE)
         state_bytes = self.ssm_format.state_bytes_per_slot(self.target)
-        future, extra_page = 2 * 2**30, 0
-        if spec_config is not None:
-            from sharar.cache.spec_budget import budget
-            # the most state slots the plan gives: its target of 96, or a slot and a snapshot per running request
-            future, extra_page = budget(spec_config, max_batch, cache_slots=num_slots or max(96, 2 * max_batch + 1), target=self.target)
         cfg = current()
-        if cfg.ssd:  # the SSD tier pins its staging buffers in the DRAM the pools come from: plan around them
-            from sharar.cache.ssd import SsdTier
-            future += SsdTier.memory_bound(self.target, cfg.ssd_block_tokens, extra_page, **cfg.ssd_buffers)
+
+        def after_pools(cache_slots):
+            """Bytes allocated after the pools (the drafter's, sized by the slots it may retain features for, and the SSD
+            tier's staging) and extra bytes per KV page."""
+            future, extra_page = 0, 0
+            if spec_config is not None:
+                from sharar.cache.spec_budget import budget
+                future, extra_page = budget(spec_config, max_batch, cache_slots=cache_slots, target=self.target)
+            if cfg.ssd:  # the SSD tier pins its staging buffers in the DRAM the pools come from: plan around them
+                from sharar.cache.ssd import SsdTier
+                future += SsdTier.memory_bound(self.target, cfg.ssd_block_tokens, extra_page, **cfg.ssd_buffers)
+            # and what this executor allocates after the pools: workspaces, CUDA graphs, first-use allocations, activations
+            return future + sum(after_plan_bytes(max_batch).values()), extra_page
+
+        from sharar.cache.ledger import after_plan_bytes
+        # the slots the plan is first sized for: its target of 96, or a slot and a snapshot per running request
+        guess = num_slots or max(96, 2 * max_batch + 1)
+        future, extra_page = after_pools(guess)
+        plan = None
         planned_pages = num_pages is None
         if num_pages is None or num_slots is None:
             plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future, extra_page_bytes=extra_page,
                                     state_bytes_per_slot=state_bytes)
+            if num_slots is None and plan.state_slots > guess:
+                # more slots than the drafter was budgeted for (DFlash2 keeps a feature window per slot): budget the
+                # plan's slots and plan again; the larger budget can only give fewer slots, which it still covers
+                future, extra_page = after_pools(plan.state_slots)
+                plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future,
+                                        extra_page_bytes=extra_page, state_bytes_per_slot=state_bytes)
             num_pages = num_pages or plan.kv_tokens
             num_slots = num_slots or plan.state_slots
         num_pages, num_slots = all_reduce_min(num_pages, num_slots)  # tensor-parallel ranks admit and evict alike
@@ -101,7 +118,15 @@ class Executor:
             kv_dtype, rounding, num_pages = torch.bfloat16, SIMULATED[cfg.kv_format], num_pages // 2
             kv_token_bytes *= kv_dtype.itemsize
         from sharar.cache.ledger import check_load_headroom
-        check_load_headroom(num_pages * (kv_token_bytes + extra_page) + num_slots * state_bytes + future + 8 * 2**30)
+        # the pools and everything allocated after them must leave the floor: an explicit SHARAR_KV_POOL_TOKENS is held
+        # to the same rule as a planned pool
+        try:
+            check_load_headroom(num_pages * (kv_token_bytes + extra_page) + num_slots * state_bytes + future)
+        except MemoryError as exc:
+            if plan is not None and not planned_pages and num_pages != plan.kv_tokens:
+                raise MemoryError(f"{exc}: SHARAR_KV_POOL_TOKENS={num_pages} leaves less than the plan's headroom; "
+                                  f"the plan alone gives {plan.kv_tokens} KV tokens") from None
+            raise
         # One write-only page per padded graph row: the widest bucket's padding times the widest verify block any
         # proposer may use (speculation can be enabled after construction).
         from sharar.engine.graphs import capture_sizes
@@ -137,6 +162,9 @@ class Executor:
         self.use_graphs = False
         self.spec = None
         if log:
+            after = after_plan_bytes(max_batch)
+            log("  counted after the pools: " + ", ".join(f"{k.replace('_', ' ')} {v / 2**30:.2f}" for k, v in after.items())
+                + f" GiB; floor {self.ledger.floor_bytes / 2**30:.0f} GiB")
             log(f"  pools: {num_pages} KV pages ({self.kv_pool.bytes / 2**30:.2f} GiB), {num_slots} state slots ({num_slots * self.state_pool.bytes_per_slot / 2**30:.2f} GiB, {self.ssm_format.describe()} recurrent state)")
         if spec_config is not None:
             self.enable_spec(spec_config.depth, log=log, proposer=spec_config.name, state_strategy=spec_config.state_strategy,
@@ -173,7 +201,9 @@ class Executor:
         from sharar.cache.ledger import check_load_headroom
         fixed, per_page = budget(SpecConfig(proposer, k, state_strategy, draft_precision, draft_dir), self.max_batch,
                                  cache_slots=self.state_pool.num_slots, target=self.target)
-        check_load_headroom(fixed + per_page * self.kv_pool.num_pages + 8 * 2**30)
+        from sharar.cache.ledger import after_plan_bytes
+        after = after_plan_bytes(self.max_batch)
+        check_load_headroom(fixed + per_page * self.kv_pool.num_pages + after["graphs"] + after["first_use"] + after["activations"])
         context = ProposerContext(self.device, self.max_batch, self.max_context)
         from sharar.proposers.factory import create
         adapter = create(proposer, k, self.model, context, self.kv_pool.num_pages, draft_precision=draft_precision, draft_dir=draft_dir,

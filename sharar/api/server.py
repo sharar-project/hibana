@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from jinja2 import TemplateError
 
 from sharar import target as targets
+from sharar.cache.ledger import after_plan_bytes
 from sharar.distributed import get_tp_info
 from sharar.api import messages as messages_api
 from sharar.api import refusal_guard
@@ -39,6 +40,20 @@ from sharar.tokenizer import SnapshotTokenizer
 
 
 MAX_CHOICES = 16  # n per chat request: the scheduler queues what exceeds four running
+
+
+
+def _memory_gib() -> dict:
+    """What the process holds beyond the ledger's pools: PyTorch's allocated and reserved bytes, now and at their peak
+    (reserved only grows: freed blocks stay cached), and the process's resident host memory."""
+    import os
+    import torch
+    gib = lambda v: round(v / 2**30, 2)  # noqa: E731
+    with open("/proc/self/statm") as f:
+        rss = int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    return {"allocated": gib(torch.cuda.memory_allocated()), "reserved": gib(torch.cuda.memory_reserved()),
+            "max_allocated": gib(torch.cuda.max_memory_allocated()), "max_reserved": gib(torch.cuda.max_memory_reserved()),
+            "rss": gib(rss)}
 
 
 def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, describe: dict, grammars: Grammars | None = None) -> FastAPI:
@@ -794,6 +809,8 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "kv_pages": ex.kv_pool.num_pages,
         "state_slots": ex.state_pool.num_slots,
         "ledger_gib": {k: round(v / 2**30, 2) for k, v in ex.ledger.entries.items()},
+        "memory_gib": _memory_gib(),
+        "after_plan_gib": {k: round(v / 2**30, 2) for k, v in after_plan_bytes(ex.max_batch).items()},
         "speculative": {"algorithm": ex.spec.proposer.requirements.name, "num_draft_tokens": spec,
                         "depths_by_batch": ex.spec.depth_policy.depths,
                         "adaptive_step_cost": getattr(ex.spec.depth_policy, "step_cost", None),  # None: fixed depth

@@ -317,6 +317,8 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     block = values.get("SHARAR_SSD_BLOCK_TOKENS", "256")
     _check(block.isdigit() and int(block) > 0 and 2048 % int(block) == 0, "SHARAR_SSD_BLOCK_TOKENS must divide 2048")
     _check(re.fullmatch(r"[0-9]+(\.[0-9]+)?", values.get("SHARAR_SSD_GIB", "200")) is not None, "SHARAR_SSD_GIB must be a number of GiB")
+    _check(re.fullmatch(r"[0-9]+(\.[0-9]+)?", values.get("SHARAR_HOST_FLOOR_GIB", "4")) is not None,
+           "SHARAR_HOST_FLOOR_GIB must be a number of GiB")
     _check(values.get("SHARAR_TRACES_MAX_MIB", "32768").isdigit() and int(values.get("SHARAR_TRACES_MAX_MIB", "32768")) > 0,
            "SHARAR_TRACES_MAX_MIB must be a positive integer")
     if not {**user, **(overrides or {})}.get("SHARAR_DRAFT_PRECISION") and not (

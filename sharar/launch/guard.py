@@ -1,10 +1,10 @@
 """Stop a GPU workload before unified memory runs out.
 
-On the GB10 the GPU allocates from host memory: when MemAvailable stays under the floor (SHARAR_MIN_AVAILABLE_KIB,
-default 16 GiB) the weights page and the whole machine stalls. The watch samples every two seconds and acts after
-three low samples in a row: it asks the workload to stop (SIGTERM: the server drains) and
-kills it 15 seconds later if it is still there. The scheduler also holds new admissions under the floor, so this is
-the backstop.
+On the GB10 the GPU allocates from host memory: when MemAvailable runs out the weights page and the whole machine
+stalls. The pools are planned to leave the host floor (`floor_kib`) for the OS and other programs; the guard acts at
+half of it (`guard_kib`), when those have used more than the plan left them. The watch samples every two seconds and
+acts after three low samples in a row: it asks the workload to stop (SIGTERM: the server drains) and kills it 15
+seconds later if it is still there. The scheduler also holds new admissions there, so this is the backstop.
 
     `sharar serve` runs it as a thread beside itself (`start_thread`).
     python -m sharar.launch.guard --pid PID   watches another process and its process group (the CI's GPU suite).
@@ -19,7 +19,17 @@ import threading
 import time
 from pathlib import Path
 
-FLOOR_KIB = int(os.environ.get("SHARAR_MIN_AVAILABLE_KIB", str(16 * 2**20)))
+from sharar.hardware.gb10 import HOST_FLOOR_KIB
+
+
+def floor_kib(values=os.environ) -> int:
+    """The host floor in KiB from resolved settings (or the environment): SHARAR_HOST_FLOOR_GIB, else the GB10's."""
+    return int(float(values.get("SHARAR_HOST_FLOOR_GIB") or HOST_FLOOR_KIB / 2**20) * 2**20)
+
+
+def guard_kib(values=os.environ) -> int:
+    """Where the guard acts, in KiB: SHARAR_MIN_AVAILABLE_KIB, else half the host floor."""
+    return int(values.get("SHARAR_MIN_AVAILABLE_KIB") or floor_kib(values) // 2)
 
 
 def available_kib() -> int:
@@ -29,14 +39,16 @@ def available_kib() -> int:
     raise RuntimeError("MemAvailable not found")
 
 
-def watch(stop, alive=lambda: True, log=print, floor_kib: int = FLOOR_KIB, interval: float = 2.0) -> bool:
-    """Call stop() after three samples under the floor; returns True if it did, False once alive() turns false."""
+def watch(stop, alive=lambda: True, log=print, floor: int | None = None, interval: float = 2.0) -> bool:
+    """Call stop() after three samples under `floor` KiB (default `guard_kib()`); returns True if it did, False once
+    alive() turns false."""
+    floor = guard_kib() if floor is None else floor
     low = 0
     while alive():
-        low = low + 1 if available_kib() < floor_kib else 0
+        low = low + 1 if available_kib() < floor else 0
         if low >= 3:
             log(f"{dt.datetime.now().isoformat(timespec='seconds')} memory guard: MemAvailable under "
-                f"{floor_kib // 2**20} GiB for 6 s; stopping")
+                f"{floor // 2**20} GiB for 6 s; stopping")
             stop()
             return True
         time.sleep(interval)
@@ -49,9 +61,10 @@ def _stop_self() -> None:
     os._exit(1)
 
 
-def start_thread(log=print, stop=_stop_self) -> threading.Thread:
-    """Guard this process from a daemon thread."""
-    thread = threading.Thread(target=watch, args=(stop,), kwargs={"log": log}, name="sharar-memory-guard", daemon=True)
+def start_thread(log=print, stop=_stop_self, floor: int | None = None) -> threading.Thread:
+    """Guard this process from a daemon thread, under `floor` KiB (default `guard_kib()`)."""
+    thread = threading.Thread(target=watch, args=(stop,), kwargs={"log": log, "floor": floor}, name="sharar-memory-guard",
+                              daemon=True)
     thread.start()
     return thread
 

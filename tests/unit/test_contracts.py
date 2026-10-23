@@ -178,10 +178,11 @@ def test_profile_limits_and_load_budget(monkeypatch):
     for name, depth in [('dflash2', 16), ('mtp', 9), ('dspark', 3), ('ngram', 3)]:  # past the depth, or not served
         with pytest.raises(ValueError, match='proposer/depth'):
             SpecConfig(name, depth)
-    monkeypatch.setattr(ledger, 'mem_available_bytes', lambda: 63 * 2**30)
+    floor = ledger.host_floor_bytes()  # a load needs its peak above the host floor
+    monkeypatch.setattr(ledger, 'mem_available_bytes', lambda: floor + 48 * 2**30 - 2**30)
     with pytest.raises(MemoryError, match='model load'):
         ledger.check_load_headroom(48 * 2**30)
-    monkeypatch.setattr(ledger, 'mem_available_bytes', lambda: 64 * 2**30)
+    monkeypatch.setattr(ledger, 'mem_available_bytes', lambda: floor + 48 * 2**30)
     ledger.check_load_headroom(48 * 2**30)
 
 

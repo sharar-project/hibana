@@ -23,7 +23,7 @@ def home(monkeypatch, tmp_path):
     monkeypatch.setenv("SHARAR_HF_CACHE", str(tmp_path / "hf"))
     monkeypatch.setattr(ctl, "server_info", lambda port: None)
     monkeypatch.setattr(service, "running", lambda unit: False)
-    monkeypatch.setattr(preflight, "check_host", lambda: {"gpu": "GB10", "memory": "128 GiB"})
+    monkeypatch.setattr(preflight, "check_host", lambda floor_kib=None: {"gpu": "GB10", "memory": "128 GiB"})
     monkeypatch.setattr(preflight, "ensure_snapshots", lambda s, log=print, fetch=True: [])
     monkeypatch.setattr(preflight, "ensure_w3", lambda s, log=print, fetch=True: tmp_path / "w3" if s.get("SHARAR_W3_DECODE") == "1" else None)
     from sharar.launch import lxcfs

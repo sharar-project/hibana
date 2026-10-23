@@ -4,8 +4,10 @@ import pytest
 
 from sharar.engine.profile import MAX_CONTEXT, ServingProfile
 from sharar.cache import ledger as ledger_mod
-from sharar.cache.ledger import GIB, SHARED_CONTEXT, Ledger
+from sharar.cache.ledger import CACHED_SNAPSHOTS, GIB, SHARED_CONTEXT, Ledger
 from sharar.target import DEFAULT_TARGET
+
+FLOOR = ledger_mod.host_floor_bytes()  # the host floor the plans leave (SHARAR_HOST_FLOOR_GIB)
 
 
 def test_profile_accepts_the_native_context_and_nothing_beyond():
@@ -22,15 +24,60 @@ def plan(monkeypatch, context_len, available_gib=90):
 
 
 def test_default_profile_plan(monkeypatch):
-    # The 32K profile guarantees four full requests; all spare memory but the
-    # 4 GiB margin goes to the pools, slots first (up to their cap), then pages.
+    # The 32K profile guarantees four full requests (and two slots each, plus the dummy); everything but the floor
+    # goes to the pools (nothing is allocated after them here), split by what a cached 32K prompt costs (its pages and
+    # two snapshots), with 96 slots at least; pages take the rest, uncapped.
     kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
     got = plan(monkeypatch, 32768)
-    budget = 90 * GIB - 16 * GIB - 8 * GIB
+    budget = 90 * GIB - FLOOR
     must = 4 * 32768 * kv
-    spare = budget - must - 5 * state - 4 * GIB
-    assert got.state_slots == min(96, 5 + int(spare * 0.6) // state)
-    assert got.kv_tokens == min(1 << 20, 4 * 32768 + (spare - (got.state_slots - 5) * state) // kv)
+    spare = budget - must - 9 * state
+    share = CACHED_SNAPSHOTS * state / (CACHED_SNAPSHOTS * state + SHARED_CONTEXT * kv)
+    assert got.state_slots == min(9 + int(spare * 0.6) // state, max(96, 9 + int(spare * share) // state))
+    assert got.kv_tokens == 4 * 32768 + (spare - (got.state_slots - 9) * state) // kv
+    assert got.kv_tokens > 1 << 20 and got.after_pools_bytes == 0  # the old 2^20 cap no longer applies
+
+
+def test_what_is_allocated_after_the_pools_comes_off_the_plan(monkeypatch):
+    monkeypatch.setattr(ledger_mod, "mem_available_bytes", lambda: 90 * GIB)
+    bare = Ledger(start_available=90 * GIB).plan(max_running=4, context_len=32768)
+    after = Ledger(start_available=90 * GIB).plan(max_running=4, context_len=32768, future_bytes=6 * GIB)
+    pages_and_slots = lambda p: p.kv_tokens * DEFAULT_TARGET.kv_bytes_per_token + p.state_slots * DEFAULT_TARGET.state_bytes_per_slot  # noqa: E731
+    assert after.after_pools_bytes == 6 * GIB
+    assert 5.9 * GIB < pages_and_slots(bare) - pages_and_slots(after) <= 6 * GIB
+    with pytest.raises(MemoryError, match="SHARAR_HOST_FLOOR_GIB"):
+        Ledger(start_available=90 * GIB).plan(max_running=4, context_len=32768, future_bytes=90 * GIB)
+
+
+def test_after_plan_parts():
+    parts64, parts128 = ledger_mod.after_plan_bytes(64), ledger_mod.after_plan_bytes(128)
+    assert set(parts64) == {"workspaces", "graphs", "first_use", "activations"}
+    assert parts64["workspaces"] == 512 * 2**20 and parts128["workspaces"] == 896 * 2**20  # FlashInfer's, as allocated
+    assert parts128["graphs"] > parts64["graphs"] >= ledger_mod.graph_bytes(4) >= GIB // 2
+    assert parts64["first_use"] == parts128["first_use"] and parts64["activations"] == parts128["activations"]
+
+
+def test_admission_holds_at_half_the_floor(monkeypatch):
+    led = Ledger(start_available=90 * GIB)
+    monkeypatch.setattr(ledger_mod, "mem_available_bytes", lambda: FLOOR // 2 + 1)
+    assert led.above_floor()  # under the floor but above half: other programs are using what the plan left them
+    monkeypatch.setattr(ledger_mod, "mem_available_bytes", lambda: FLOOR // 2 - 1)
+    assert not led.above_floor()
+
+
+def test_an_explicit_kv_target_still_caps_the_pool(monkeypatch):
+    monkeypatch.setattr(ledger_mod, "mem_available_bytes", lambda: 90 * GIB)
+    capped = Ledger(start_available=90 * GIB).plan(max_running=4, context_len=32768, kv_token_target=1 << 20)
+    assert capped.kv_tokens == 1 << 20
+
+
+def test_a_wide_batch_with_compact_state_gets_slots_for_its_cached_prompts(monkeypatch):
+    # The throughput profile: 128 requests, INT8 state (about 3.4x smaller than FP32). The guaranteed 257 slots are
+    # kept and the spare memory still buys slots for cached prompts' resume points, not pages alone.
+    monkeypatch.setattr(ledger_mod, "mem_available_bytes", lambda: 60 * GIB)
+    int8 = DEFAULT_TARGET.state_bytes_per_slot * 10 // 34
+    got = Ledger(start_available=60 * GIB).plan(max_running=128, context_len=262144, state_bytes_per_slot=int8)
+    assert got.state_slots > 257 and got.kv_tokens > 262144
 
 
 def test_long_context_guarantees_one_request_not_four(monkeypatch):
@@ -38,7 +85,7 @@ def test_long_context_guarantees_one_request_not_four(monkeypatch):
     assert got.kv_tokens >= MAX_CONTEXT
     # Four full 262K requests (32 GiB of KV) would not be required up front.
     assert 4 * MAX_CONTEXT * DEFAULT_TARGET.kv_bytes_per_token > 30 * GIB
-    tight = plan(monkeypatch, MAX_CONTEXT, available_gib=16 + 8 + 16)
+    tight = plan(monkeypatch, MAX_CONTEXT, available_gib=FLOOR // GIB + 16)
     assert tight.kv_tokens >= MAX_CONTEXT
 
 
@@ -46,7 +93,7 @@ def test_intermediate_contexts_guarantee_the_larger_of_the_two(monkeypatch):
     kv = DEFAULT_TARGET.kv_bytes_per_token
     assert plan(monkeypatch, 65536).kv_tokens >= max(65536, 4 * SHARED_CONTEXT)
     with pytest.raises(MemoryError):
-        plan(monkeypatch, MAX_CONTEXT, available_gib=16 + 8 + (MAX_CONTEXT * kv) // GIB - 1)
+        plan(monkeypatch, MAX_CONTEXT, available_gib=FLOOR // GIB + (MAX_CONTEXT * kv) // GIB - 1)
 
 
 def test_wide_batches_split_the_shared_guarantee(monkeypatch):
@@ -60,14 +107,14 @@ def test_wide_batches_split_the_shared_guarantee(monkeypatch):
 
 
 
-def test_a_tight_budget_keeps_at_least_half_of_what_is_left_for_the_caches(monkeypatch):
-    """Little left after the guarantees (Flash-Next `exact`: NVFP4 experts and the SSD staging): the 4 GiB margin
-    alone would leave the pools only the guaranteed slots; they get half of what is left, as before the margin."""
+def test_a_tight_budget_gives_the_caches_all_that_is_left(monkeypatch):
+    """Little left after the guarantees (Flash-Next `exact`: NVFP4 experts and the SSD staging): with what is
+    allocated after the pools counted, there is no margin to take, and the caches get all of it."""
     kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
     must = 4 * 32768 * kv + 9 * state
-    available = 16 * GIB + 8 * GIB + must + 3 * GIB  # 3 GiB left after the guarantees, less than the margin
+    available = FLOOR + must + 3 * GIB  # 3 GiB left after the guarantees
     got = plan(monkeypatch, 32768, available_gib=available / GIB)
-    assert got.state_slots == min(96, 9 + int((3 * GIB // 2) * 0.6) // state) > 9
+    assert got.state_slots == min(96, 9 + int(3 * GIB * 0.6) // state) > 9
 
 
 def test_the_guaranteed_slots_cover_each_request_and_its_prompt_end_snapshot(monkeypatch):
@@ -75,6 +122,6 @@ def test_the_guaranteed_slots_cover_each_request_and_its_prompt_end_snapshot(mon
     requests with a snapshot each), so a start that fits works, and one that does not fails at planning."""
     kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
     must = 4 * 32768 * kv + 9 * state
-    assert plan(monkeypatch, 32768, available_gib=(16 * GIB + 8 * GIB + must) / GIB).state_slots == 9
+    assert plan(monkeypatch, 32768, available_gib=(FLOOR + must) / GIB).state_slots == 9
     with pytest.raises(MemoryError):
-        plan(monkeypatch, 32768, available_gib=(16 * GIB + 8 * GIB + must - 2 * state) / GIB)
+        plan(monkeypatch, 32768, available_gib=(FLOOR + must - 2 * state) / GIB)

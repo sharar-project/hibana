@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from sharar.hardware.gb10 import HOST_FLOOR_KIB
+
 
 def _flag(env: Mapping[str, str], name: str, default: bool = False) -> bool:
     value = env.get(name)
@@ -93,6 +95,7 @@ class EngineConfig:
     spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
     spec_step_cost: float = 0.0               # SHARAR_SPEC_STEP_COST: adaptive depth per request (engine/depth.AcceptanceDepth): one more drafted token's cost relative to a depth-1 round; SHARAR_SPEC is the cap (0: the fixed depth)
     draft_dir: str | None = None              # SHARAR_DRAFT
+    host_floor_gib: float = HOST_FLOOR_KIB / 2**20  # SHARAR_HOST_FLOOR_GIB: MemAvailable the pools leave for the OS and other programs; admission holds and the guard acts under half of it
     draft_vocab: int = 0                      # SHARAR_DRAFT_VOCAB: reduced MTP draft vocabulary rows (0: full)
     draft_head: str = "fp8"                   # SHARAR_DRAFT_HEAD: fp8 (the target's head), w3 or w2
     draft_head_rescore: int = 8               # SHARAR_DRAFT_HEAD_RESCORE (default 8, 16 for w2)
@@ -167,6 +170,7 @@ class EngineConfig:
             spec_depths=_str(e, "SHARAR_SPEC_DEPTHS"),
             spec_step_cost=float(_str(e, "SHARAR_SPEC_STEP_COST") or 0.0),
             draft_dir=_str(e, "SHARAR_DRAFT"),
+            host_floor_gib=float(_str(e, "SHARAR_HOST_FLOOR_GIB") or HOST_FLOOR_KIB / 2**20),
             draft_vocab=_int(e, "SHARAR_DRAFT_VOCAB", 0),
             draft_head=_str(e, "SHARAR_DRAFT_HEAD", "fp8"),
             draft_head_rescore=_int(e, "SHARAR_DRAFT_HEAD_RESCORE", 16 if e.get("SHARAR_DRAFT_HEAD") == "w2" else 8),

@@ -76,7 +76,7 @@ class Served(gate.Served):
             self.proc = subprocess.Popen(self.command, env=self.env, cwd=REPO, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
         deadline = time.monotonic() + 1800
         while not gate.health(self.url):
-            if not self.running() or time.monotonic() > deadline or gate.available_gib() < gate.FLOOR_GIB:
+            if not self.running() or time.monotonic() > deadline or gate.available_gib() < gate.GUARD_GIB:
                 self.stop()
                 raise RuntimeError(f"server did not come up; see {self.dir / 'server.log'}")
             time.sleep(5)

@@ -330,3 +330,18 @@ def test_both_targets_keep_nvfp4_kv_in_fast_and_throughput_on_one_spark(env):
                                          ("27b", {"SHARAR_KV_FORMAT": "fp4"}, {}, "must be fp8 or nvfp4")):
         with pytest.raises(ValueError, match=match):
             resolve(env, target, "fast", overrides=overrides, **kw)
+
+
+def test_host_floor_setting(env, tmp_path):
+    from sharar.launch import guard
+    default = resolve(env, "flashnext").values
+    assert guard.floor_kib(default) == 6 * 2**20  # the GB10 default
+    assert guard.guard_kib(default) == 3 * 2**20  # the guard acts at half the floor
+    conf = tmp_path / "floor.env"
+    conf.write_text("SHARAR_HOST_FLOOR_GIB=12\n")
+    values = resolve({**env, "SHARAR_CONFIG_FILE": str(conf)}, "flashnext").values
+    assert guard.floor_kib(values) == 12 * 2**20 and guard.guard_kib(values) == 6 * 2**20  # a config file's
+    assert guard.guard_kib({**values, "SHARAR_MIN_AVAILABLE_KIB": str(2 * 2**20)}) == 2 * 2**20  # the guard's own override
+    for bad in ("4G", "-8"):
+        with pytest.raises(ValueError, match="SHARAR_HOST_FLOOR_GIB"):
+            resolve(env, "flashnext", overrides={"SHARAR_HOST_FLOOR_GIB": bad})
