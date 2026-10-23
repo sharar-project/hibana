@@ -317,3 +317,16 @@ def test_preflight_fetches_the_targets_own_drafter(env):
         s = resolve(env, target, "fast", overrides={"SHARAR_PROPOSER": "dflash2"})
         assert pinned_snapshots(s)[-1][1:] == config.DRAFT_PINS["dflash2"], target
     assert len(pinned_snapshots(resolve(env, "flashnext", "fast"))) == 1  # MTP: the checkpoint's own head
+
+
+def test_the_27b_keeps_nvfp4_kv_in_fast_and_throughput_on_one_spark(env):
+    for profile, want in (("exact", ""), ("fast", "nvfp4"), ("throughput", "nvfp4")):
+        assert resolve(env, "27b", profile).get("SHARAR_KV_FORMAT") == want, profile
+        assert resolve(env, "flashnext", profile).get("SHARAR_KV_FORMAT") == "", profile
+    assert resolve(env, "27b", "fast", tp=2).get("SHARAR_KV_FORMAT") == ""
+    assert resolve(env, "27b", "fast", overrides={"SHARAR_KV_FORMAT": "fp8"}).get("SHARAR_KV_FORMAT") == "fp8"
+    for target, overrides, kw, match in (("flashnext", {"SHARAR_KV_FORMAT": "nvfp4"}, {}, "Flash-Next"),
+                                         ("27b", {"SHARAR_KV_FORMAT": "nvfp4"}, {"tp": 2}, "two Sparks"),
+                                         ("27b", {"SHARAR_KV_FORMAT": "fp4"}, {}, "must be fp8 or nvfp4")):
+        with pytest.raises(ValueError, match=match):
+            resolve(env, target, "fast", overrides=overrides, **kw)

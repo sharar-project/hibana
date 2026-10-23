@@ -284,6 +284,8 @@ class Executor:
                     **({"tensor_parallel": f"{tp.rank}/{tp.size}"} if tp.size > 1 else {})}  # a rank's records hold its heads
         if self.state_pool.window is not None:  # FP32 records keep their identity
             identity["ssm_state"] = self.state_pool.ssm_format.describe()
+        if getattr(self.kv_pool, "nvfp4", False):  # FP8 records keep their identity
+            identity["kv_format"] = "nvfp4"
         return identity
 
     def enable_ssd_tier(self, log=None) -> None:
