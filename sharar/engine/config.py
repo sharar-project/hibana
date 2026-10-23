@@ -113,6 +113,7 @@ class EngineConfig:
     ssd_writers: int = 4                      # SHARAR_SSD_WRITERS: the store's writer threads (at least 1)
     ssd_staging_mib: int = 512                # SHARAR_SSD_STAGING_MIB: backup copies in flight to the writers
     ssd_chunk_mib: int = 256                  # SHARAR_SSD_CHUNK_MIB: each half of the restore staging buffer
+    verify_attention: str = "auto"            # SHARAR_VERIFY_ATTENTION: auto (the 27B's graph-bound verification of more than 8 rows a sequence over an NVFP4 cache on kernels/csrc/verify_attn.cu) or fa2 (FlashInfer everywhere)
     kv_format: str = "fp8"                    # SHARAR_KV_FORMAT: fp8 (the pool), nvfp4 (the 27B: 4.5 bits a value, 16/9 the tokens; cache/kv_pool.py), or an accuracy screen: sim-fp4 / sim-k8v4 / sim-bf16 (a BF16 pool whose writes round through NVFP4; kernels/kv_fp4.py)
     kv_pool_tokens: int | None = None         # SHARAR_KV_POOL_TOKENS: a fixed KV pool size, e.g. to compare the SSD tier on and off; unset: planned
     # --- traces
@@ -130,6 +131,8 @@ class EngineConfig:
         if self.qsa_prefill_backend not in ("original", "auto", "optimized"):
             raise ValueError("SHARAR_QSA_PREFILL_BACKEND must be original, auto, or optimized; "
                              f"got {self.qsa_prefill_backend!r}")
+        if self.verify_attention not in ("auto", "fa2"):
+            raise ValueError(f"SHARAR_VERIFY_ATTENTION must be auto or fa2; got {self.verify_attention!r}")
 
     @property
     def ssd_buffers(self) -> dict[str, int]:
@@ -183,6 +186,7 @@ class EngineConfig:
             ssd_staging_mib=_positive(e, "SHARAR_SSD_STAGING_MIB", 512),
             ssd_chunk_mib=_positive(e, "SHARAR_SSD_CHUNK_MIB", 256),
             kv_format=_str(e, "SHARAR_KV_FORMAT", "fp8"),
+            verify_attention=_str(e, "SHARAR_VERIFY_ATTENTION", "auto"),
             kv_pool_tokens=_int(e, "SHARAR_KV_POOL_TOKENS", 0) or None,
             traces=_str(e, "SHARAR_TRACES"),
             traces_max_mib=_int(e, "SHARAR_TRACES_MAX_MIB", 32768),

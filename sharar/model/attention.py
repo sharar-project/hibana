@@ -89,7 +89,14 @@ class Attention:
             return attn.view(t, self.q_size)
         if ctx is not None and ctx.kv_pool is not None:
             ctx.kv_pool.write(self.layer_id, ctx.pages, k, v)
-        if ctx is not None and (ctx.prefix_len > 0 or ctx.batched):
+        if ctx is not None and ctx.verify_attention is not None:
+            # many rows a sequence over an NVFP4 cache: kernels/csrc/verify_attn.cu
+            from sharar.kernels.verify_attn_cuda import verify_attention
+            qo, kv_indptr, kv_indices, splits = ctx.verify_attention
+            attn = verify_attention(q.view(t, self.num_heads, self.head_dim), ctx.kv_pool.cache(self.layer_id),
+                                    ctx.kv_pool.scales(self.layer_id), kv_indptr, kv_indices, qo, self.head_dim ** -0.5,
+                                    splits=splits).view(t, self.q_size)
+        elif ctx is not None and (ctx.prefix_len > 0 or ctx.batched):
             # Cached prefix or several sequences: attend over each sequence's
             # prefix + new pages (FP8) with the causal mask aligned to its end.
             attn = ctx.paged_prefill_wrapper.run(q, ctx.kv_pool.cache(self.layer_id),

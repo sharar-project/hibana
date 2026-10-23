@@ -64,12 +64,26 @@ class VerifyGraphs:
             verify_replay=self.spec.replay.layer_inputs if self.spec.replay is not None else {},
             verify_conv_windows=self.spec.conv_windows, verify_aux_windows=self.spec.aux_windows,
             paged_prefill_wrapper=st["wrapper"], extras=st["side"],
+            verify_attention=self._verify_attention(st, b),
         )
         if "selecting" in self.variants:
             st["row_seq"] = torch.arange(b * s, device=d) // s
             st["ctx_sparse"] = dataclasses.replace(st["ctx"], extras=self.ex.extras.selecting(
                 st["side"], st["kv_indices"], st["kv_indptr"], st["row_seq"], self.max_context))
         return st
+
+    def _verify_attention(self, st: dict, b: int):
+        """The 27B's verification of more than 8 rows a sequence over an NVFP4 cache runs kernels/csrc/verify_attn.cu
+        (16 rows: 1.3-1.5x FlashInfer's fa2 at 64-128K, 1.9x for eight requests); up to 8 rows fa2 is faster. Splits of
+        the context: about 128 blocks over the batch's KV heads (12 for one request, 2 from sixteen)."""
+        from sharar.engine.config import current
+        pool = self.ex.kv_pool
+        if (current().verify_attention != "auto" or self.ex.extras is not None or self.s_len <= 8
+                or not getattr(pool, "nvfp4", False)
+                or (pool.num_kv_heads, pool.head_dim) != (4, 256) or self.ex.target.num_attention_heads != 24):
+            return None
+        splits = max(2, min(12, -(-128 // (b * pool.num_kv_heads))))
+        return st["qo_indptr"], st["kv_indptr"], st["kv_indices"], splits
 
     def _plan(self, st: dict, kv_all: list[torch.Tensor]) -> None:
         check_context_capacity([p.shape[0] for p in kv_all], self.max_context)

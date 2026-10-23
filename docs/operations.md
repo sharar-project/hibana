@@ -77,9 +77,15 @@ FlashInfer writes them (`nvfp4_quantize_append_paged_kv_cache_with_slot_mapping`
 attention reads them; the scales are per-page rows (`KvPool.page_aux`), so the prefix cache and the SSD tier carry them
 with each page, and an SSD store keeps its KV format in its identity.
 
-- **Speed.** Steady-state rounds of the 27B `fast`: within 1% of FP8 at 10K (one and four requests) and at 64K with one
-  request, 6% slower at 64K with four (146.0 against 154.6 ms): `fa2` unpacks the codes on the SMs, which the halved
-  bytes do not yet pay for.
+Verification of more than 8 rows a request (the 27B's graphs) runs a GB10 kernel instead,
+[kernels/csrc/verify_attn.cu](../sharar/kernels/csrc/verify_attn.cu): one block a request, KV head and chunk of the
+context, the codes converted to FP16 once a tile in shared memory, both products on the FP16 tensor cores, the chunks
+merged by their log-sum-exps. At 16 rows it takes 1.3-1.55x less time than `fa2` over the same cache (1.9x with eight
+requests), at `fa2`'s precision or better against exact attention; up to 8 rows `fa2` is faster and serves.
+`SHARAR_VERIFY_ATTENTION=fa2` turns it off.
+
+- **Speed.** Steady-state rounds of the 27B `fast` against `fa2` over NVFP4: 64K 77.6 against 83.0 ms with one request,
+  137.7 against 155.6 ms with four (FP8 KV's 146.0); within 2% at 10K.
 - **Accuracy.** Teacher-forced 256 tokens after 32K, 64K and 96K-token prompts against BF16 KV: mean KL 0.0063 where
   FP8 KV's is 0.0039, flat along the generation; argmax agreement 95.7-99.6% (FP8 96.1-99.6%). The lossy gate's
   in-process layers on its short prompts: KL 0.0055 against a floor of 0.0047, tokens a round unchanged.
