@@ -37,8 +37,13 @@ def fp8_round(x: torch.Tensor) -> torch.Tensor:
     return x.to(torch.float8_e4m3fn).to(x.dtype)
 
 
+def _same(x: torch.Tensor) -> torch.Tensor:
+    return x
+
+
 SIMULATED = {
     # SHARAR_KV_FORMAT: (key rounding, value rounding) applied on every write into a BF16 pool
+    "sim-bf16": (_same, _same),  # the unrounded reference the formats are measured against
     "sim-fp4": (nvfp4_round, nvfp4_round),
     "sim-k8v4": (fp8_round, nvfp4_round),
 }

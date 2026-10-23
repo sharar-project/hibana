@@ -113,7 +113,7 @@ class EngineConfig:
     ssd_writers: int = 4                      # SHARAR_SSD_WRITERS: the store's writer threads (at least 1)
     ssd_staging_mib: int = 512                # SHARAR_SSD_STAGING_MIB: backup copies in flight to the writers
     ssd_chunk_mib: int = 256                  # SHARAR_SSD_CHUNK_MIB: each half of the restore staging buffer
-    kv_format: str = "fp8"                    # SHARAR_KV_FORMAT: fp8 (the pool), or an accuracy screen for a smaller KV: sim-fp4 / sim-k8v4 (a BF16 pool whose writes round K and V, or V only, through NVFP4; kernels/kv_fp4.py)
+    kv_format: str = "fp8"                    # SHARAR_KV_FORMAT: fp8 (the pool), nvfp4 (the 27B: 4.5 bits a value, 16/9 the tokens; cache/kv_pool.py), or an accuracy screen: sim-fp4 / sim-k8v4 / sim-bf16 (a BF16 pool whose writes round through NVFP4; kernels/kv_fp4.py)
     kv_pool_tokens: int | None = None         # SHARAR_KV_POOL_TOKENS: a fixed KV pool size, e.g. to compare the SSD tier on and off; unset: planned
     # --- traces
     traces: str | None = None                 # SHARAR_TRACES
