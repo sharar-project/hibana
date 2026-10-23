@@ -10,14 +10,15 @@ Each arm is a git worktree of its ref under the run directory, served by this ch
 user's config file, no traces, and the SSD tier on as served but in a fresh directory per server (removed after), so
 no arm or repeat restores another's prefixes. Per arm and profile, under the shared GPU lock:
 
-- `fast`: 1 request = h2h `decode` (the 22 prompts of `evals/workloads/h2h_v1.json`, one at a time; the median of
-  their decode tok/s), and `--fast` stream counts above one as h2h's closed-loop `--streams`;
+- `fast`: 1 request = h2h `decode` (the `--categories` prompts of `evals/workloads/h2h_v1.json`, one at a time; the
+  median of their decode tok/s), and `--fast` stream counts above one as h2h's closed-loop `--streams`;
 - `throughput`: the `--throughput` stream counts (default 8, 16, 32, 64, 128) as closed-loop `--streams`: N streams
   each send their next request as one ends, tokens counted over --duration-s after --warmup-s (aggregate tok/s).
 
-Prompts: chat, code, math, multilingual, prose, structured (22, in turn by category; numbered per request under
-`--streams`, so none share a prefix), thinking off, up to 1,024 output tokens with natural stops; --modes picks the
-sampling (greedy, t07 = T 0.7, t10 = T 1.0, both top-p 0.95, top-k 20), each with the profile's acceptance default.
+Prompts: chat, code, math, prose, structured by default (18 of the 22: multilingual is left out; `--categories` picks
+others), in turn by category; numbered per request under `--streams`, so none share a prefix; thinking off, up to
+1,024 output tokens with natural stops; --modes picks the sampling (greedy, t07 = T 0.7, t10 = T 1.0, both top-p
+0.95, top-k 20), each with the profile's acceptance default.
 Order: base then PR, `--repeats` times; the table averages the repeats. Results, logs and the table (report.md) go
 to $SHARAR_RESULTS/reviews/<date>-h2h-<name>/; a rerun with the same --name skips what exists. The arms' worktrees
 are removed once the report is written.
@@ -158,6 +159,10 @@ def table(run: Path, plan: dict, modes: list[str]) -> str:
     return "\n".join(lines)
 
 
+# h2h_v1's prompt categories measured by default: all but multilingual (--categories adds it back)
+CATEGORIES = ("chat", "code", "math", "prose", "structured")
+
+
 def main() -> int:
     global URL
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
@@ -168,6 +173,8 @@ def main() -> int:
     ap.add_argument("--fast", default="1,4", help="request counts under --fast (1: h2h decode; more: closed-loop streams)")
     ap.add_argument("--throughput", default="8,16,32,64,128", help="stream counts under --throughput ('' skips the profile)")
     ap.add_argument("--modes", default="greedy,t07", help="h2h sampling modes: greedy, t07, t10")
+    ap.add_argument("--categories", default=",".join(CATEGORIES),
+                    help="h2h prompt categories (default: all but multilingual; add it back with ...,multilingual)")
     ap.add_argument("--repeats", type=int, default=1, help="base then PR, this many times; the table averages them")
     ap.add_argument("--warmup-s", type=float, default=30.0)
     ap.add_argument("--duration-s", type=float, default=60.0)
@@ -182,8 +189,8 @@ def main() -> int:
     URL = f"http://127.0.0.1:{args.port}"
     ev = gate.sharar_eval(args.evals, args.python)
     usage = subprocess.run([ev["python"], "-m", "evals.h2h", "--help"], cwd=ev["cwd"], capture_output=True, text=True).stdout
-    if "--streams" not in usage:
-        raise SystemExit(f"sharar-eval ({ev['label']}, {ev['commit'][:12]}): its h2h has no --streams; update it")
+    if "--streams" not in usage or "--only" not in usage:
+        raise SystemExit(f"sharar-eval ({ev['label']}, {ev['commit'][:12]}): its h2h has no --streams or --only; update it")
     refs = {"base": git("rev-parse", args.base), "pr": git("rev-parse", args.pr)}
     if git("show", f"{refs['base']}:uv.lock") != git("show", f"{refs['pr']}:uv.lock"):
         raise SystemExit("the two refs pin different dependencies (uv.lock); both arms run this checkout's environment")
@@ -204,7 +211,7 @@ def main() -> int:
     plan = {p: c for p, c in plan.items() if c}
     (run / "manifest.json").write_text(json.dumps({"target": target, "refs": refs, "labels": labels, "plan": plan, "modes": args.modes,
                                                   "repeats": args.repeats, "warmup_s": args.warmup_s, "duration_s": args.duration_s,
-                                                  "evals": ev["label"], "evals_commit": ev["commit"]}, indent=1) + "\n")
+                                                  "categories": args.categories, "evals": ev["label"], "evals_commit": ev["commit"]}, indent=1) + "\n")
     evals_env = {**os.environ, "SHARAR_RESULTS": str(results)}
     lock = results / ".gpu.lock"
     for rep in range(args.repeats):
@@ -222,7 +229,7 @@ def main() -> int:
                     (run / f"{arm}-{profile}-r{rep}.server.json").write_text(json.dumps(s.info, indent=1) + "\n")
                     log(f"{arm} ({labels[arm]}) {profile} r{rep}: serving")
                     hlog = run / f"{arm}-{profile}-r{rep}.h2h.log"
-                    common = ["--modes", args.modes, "--thinking", "off"]
+                    common = ["--modes", args.modes, "--thinking", "off", "--only", args.categories]
                     if 1 in counts:
                         h2h(ev, arm, out, ["--workloads", "decode", *common], hlog, evals_env)
                     streams = [n for n in counts if n > 1]
@@ -233,8 +240,8 @@ def main() -> int:
                 done.touch()
                 log(f"{arm} {profile} r{rep}: done")
     md = (f"**h2h, {target}, one Spark** ({args.repeats} repeat{'s' if args.repeats > 1 else ''}, base then PR): "
-          f"base `{labels['base']}`, PR `{labels['pr']}`. tok/s: 1 request = median decode tok/s over h2h's 22 prompts "
-          f"(one at a time); more = aggregate tok/s of that many closed-loop streams over {args.duration_s:.0f} s after "
+          f"base `{labels['base']}`, PR `{labels['pr']}`. tok/s: 1 request = median decode tok/s over h2h's {args.categories} "
+          f"prompts (one at a time); more = aggregate tok/s of that many closed-loop streams over {args.duration_s:.0f} s after "
           f"{args.warmup_s:.0f} s. Thinking off, up to 1,024 tokens, natural stops; greedy / t07 = T 0.7 (top-p 0.95, top-k 20).\n\n"
           + table(run, plan, args.modes.split(",")) + "\n")
     (run / "report.md").write_text(md)
