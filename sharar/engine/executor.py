@@ -73,6 +73,7 @@ class Executor:
         if cfg.ssd:  # the SSD tier pins its staging buffers in the DRAM the pools come from: plan around them
             from sharar.cache.ssd import SsdTier
             future += SsdTier.memory_bound(self.target, cfg.ssd_block_tokens, extra_page, **cfg.ssd_buffers)
+        planned_pages = num_pages is None
         if num_pages is None or num_slots is None:
             plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future, extra_page_bytes=extra_page,
                                     state_bytes_per_slot=state_bytes)
@@ -81,14 +82,32 @@ class Executor:
         num_pages, num_slots = all_reduce_min(num_pages, num_slots)  # tensor-parallel ranks admit and evict alike
         if type(num_pages) is not int or num_pages < 2 or type(num_slots) is not int or num_slots < 2:
             raise ValueError("pools need at least one usable entry plus the reserved dummy entry")
+        kv_dtype, rounding, nvfp4 = KV_DTYPE, None, False
+        if cfg.kv_format == "nvfp4":
+            # 4.5 bits a value (codes and scales) where FP8 takes 8: the same memory holds 16/9 the tokens
+            if self.target.name != "qwen38":
+                raise ValueError("SHARAR_KV_FORMAT=nvfp4 serves the 27B (Flash-Next's sparse attention reads FP8)")
+            nvfp4 = True
+            if planned_pages and not cfg.kv_pool_tokens:
+                num_pages = num_pages * 16 // 9
+        elif cfg.kv_format != "fp8":
+            # An accuracy screen: a BF16 pool whose writes round through the screened format, in the FP8 pool's memory
+            from sharar.kernels.kv_fp4 import SIMULATED
+            if cfg.kv_format not in SIMULATED:
+                raise ValueError(f"SHARAR_KV_FORMAT must be fp8 or one of {', '.join(SIMULATED)}")
+            if self.target.name != "qwen38" or cfg.ssd:
+                raise ValueError("a simulated KV format screens the 27B without the SSD tier (SHARAR_SSD=0)")
+            kv_dtype, rounding, num_pages = torch.bfloat16, SIMULATED[cfg.kv_format], num_pages // 2
         from sharar.cache.ledger import check_load_headroom
-        check_load_headroom(num_pages * (self.target.kv_bytes_per_token + extra_page) + num_slots * state_bytes + future + 8 * 2**30)
+        kv_token_bytes = self.target.kv_bytes_per_token * 9 // 16 if nvfp4 else self.target.kv_bytes_per_token * kv_dtype.itemsize
+        check_load_headroom(num_pages * (kv_token_bytes + extra_page) + num_slots * state_bytes + future + 8 * 2**30)
         # One write-only page per padded graph row: the widest bucket's padding times the widest verify block any
         # proposer may use (speculation can be enabled after construction).
         from sharar.engine.graphs import capture_sizes
         from sharar.proposers.factory import MAX_DEPTHS
         width = max(MAX_DEPTHS.values()) + 1
-        self.kv_pool = KvPool(num_pages, self.device, target=self.target, padding_rows=(max(capture_sizes(max_batch)) - 1) * width)
+        self.kv_pool = KvPool(num_pages, self.device, target=self.target, padding_rows=(max(capture_sizes(max_batch)) - 1) * width,
+                              dtype=kv_dtype, rounding=rounding, nvfp4=nvfp4)
         model.register_pages(self.kv_pool)  # per-page rows beyond K/V, e.g. Flash-Next's sparse-attention index keys (KvPool.page_aux)
         self.ledger.record_cuda_allocated("kv_pool")
         self.state_pool = StatePool(num_slots, self.device, target=self.target, ssm_format=self.ssm_format)
@@ -128,7 +147,7 @@ class Executor:
         planner = self.__dict__.get("_attention")
         if planner is None:  # built on first use (test executors skip __init__)
             from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
-            planner = self._attention = AttentionPlanner(AttentionGeometry.of_target(self.target, self.kv_pool.page_size, KV_DTYPE))
+            planner = self._attention = AttentionPlanner(AttentionGeometry.of_target(self.target, self.kv_pool.page_size, getattr(self.kv_pool, "dtype", KV_DTYPE)))
         return planner
 
     @property
@@ -265,6 +284,8 @@ class Executor:
                     **({"tensor_parallel": f"{tp.rank}/{tp.size}"} if tp.size > 1 else {})}  # a rank's records hold its heads
         if self.state_pool.window is not None:  # FP32 records keep their identity
             identity["ssm_state"] = self.state_pool.ssm_format.describe()
+        if getattr(self.kv_pool, "nvfp4", False):  # FP8 records keep their identity
+            identity["kv_format"] = "nvfp4"
         return identity
 
     def enable_ssd_tier(self, log=None) -> None:

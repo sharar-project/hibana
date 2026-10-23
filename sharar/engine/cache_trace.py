@@ -168,6 +168,8 @@ def run(ex, ids, output: Path):
         for lid in ex.kv_pool.layer_ids:
             ex.kv_pool.k[lid][restored.pages[:boundary]] = ex.kv_pool.k[lid][cold.pages[:boundary]]
             ex.kv_pool.v[lid][restored.pages[:boundary]] = ex.kv_pool.v[lid][cold.pages[:boundary]]
+        for rows in ex.kv_pool.page_aux.values():  # a page's other rows (NVFP4 scales, index keys) move with it
+            rows[restored.pages[:boundary]] = rows[cold.pages[:boundary]]
         ex.state_pool.ssm_all[:, restored.slot].copy_(cached_ssm)
         ex.state_pool.conv_all[:, restored.slot].copy_(cached_conv)
         ex.state.commit_prefill(restored, boundary)

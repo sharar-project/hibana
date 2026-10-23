@@ -79,7 +79,7 @@ class Attention:
 
                 new_out, new_lse = self.ragged.run_return_lse(q, k, v)
                 prefix_out, prefix_lse = ctx.paged_prefill_wrapper.run(
-                    q, ctx.kv_pool.cache(self.layer_id), return_lse=True,
+                    q, ctx.kv_pool.cache(self.layer_id), return_lse=True, kv_cache_sf=ctx.kv_pool.scales(self.layer_id),
                 )
                 attn, _ = merge_state(new_out, new_lse, prefix_out, prefix_lse)
             else:
@@ -92,7 +92,8 @@ class Attention:
         if ctx is not None and (ctx.prefix_len > 0 or ctx.batched):
             # Cached prefix or several sequences: attend over each sequence's
             # prefix + new pages (FP8) with the causal mask aligned to its end.
-            attn = ctx.paged_prefill_wrapper.run(q, ctx.kv_pool.cache(self.layer_id)).view(t, self.q_size)
+            attn = ctx.paged_prefill_wrapper.run(q, ctx.kv_pool.cache(self.layer_id),
+                                                 kv_cache_sf=ctx.kv_pool.scales(self.layer_id)).view(t, self.q_size)
         else:
             self.ragged.plan([t], q.device)
             attn = self.ragged.run(q, k, v)
@@ -102,7 +103,7 @@ class Attention:
     def decode(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
         q, k, v, gate = self._qkv(x, ctx.positions, x_q)
         ctx.kv_pool.write(self.layer_id, ctx.out_pages, k, v)
-        attn = ctx.decode_wrapper.run(q, ctx.kv_pool.cache(self.layer_id))
+        attn = ctx.decode_wrapper.run(q, ctx.kv_pool.cache(self.layer_id), kv_cache_sf=ctx.kv_pool.scales(self.layer_id))
         return self._finish(attn.view(x.shape[0], self.q_size), gate)
 
     def forward(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:

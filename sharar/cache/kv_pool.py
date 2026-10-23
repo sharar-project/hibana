@@ -23,7 +23,19 @@ KV_DTYPE = torch.float8_e4m3fn
 
 class KvPool:
     def __init__(self, num_pages: int, device: torch.device, page_size: int = 1, layer_ids: list[int] | None = None, dtype: torch.dtype = KV_DTYPE,
-                 target: Target | None = None, padding_rows: int = 0):
+                 target: Target | None = None, padding_rows: int = 0, rounding: tuple | None = None, nvfp4: bool = False):
+        """rounding: (key, value) functions every write passes K and V through (an accuracy screen of a smaller
+        format in a wider pool, `kernels/kv_fp4.SIMULATED`). nvfp4: K and V as NVFP4 (`SHARAR_KV_FORMAT=nvfp4`): two
+        E2M1 codes a byte, [pages, page_size, heads, head_dim / 2] uint8, and an E4M3 scale per 16 values, a page
+        aux row per layer (`k_sf.<layer>`, `v_sf.<layer>`: the prefix cache and the SSD tier carry them with the
+        page); FlashInfer writes them (`nvfp4_quantize_append_paged_kv_cache_with_slot_mapping`, global scale 1, the
+        arithmetic of `kernels/kv_fp4.nvfp4_round`) and its fa2 attention reads them (`scales`)."""
+        self.rounding = rounding
+        self.nvfp4 = nvfp4
+        if nvfp4:
+            if page_size != 1:
+                raise ValueError("the NVFP4 KV pool has one token a page")
+            dtype = torch.uint8
         self.target = target or DEFAULT_TARGET
         self.num_pages = num_pages
         self.page_size = page_size
@@ -34,7 +46,7 @@ class KvPool:
         # Write-only pages past the allocatable ones, one per padded row of a CUDA graph (`padding_pages`).
         self.padding_rows = padding_rows
         self.padding_pages = torch.arange(num_pages, num_pages + padding_rows, dtype=torch.int32, device=device)
-        shape = (num_pages + padding_rows, page_size, self.num_kv_heads, self.head_dim)
+        shape = (num_pages + padding_rows, page_size, self.num_kv_heads, self.head_dim // 2 if nvfp4 else self.head_dim)
         self.k = {i: torch.zeros(shape, dtype=dtype, device=device) for i in self.layer_ids}
         self.v = {i: torch.zeros(shape, dtype=dtype, device=device) for i in self.layer_ids}
         # Per-page rows that belong to a token like its K/V and travel with the page
@@ -43,6 +55,13 @@ class KvPool:
         self.page_aux: dict[str, torch.Tensor] = {}
         # Simple free list; page 0 is reserved as the dummy page for padded batch rows.
         self._free = list(range(num_pages - 1, 0, -1))
+        self._scales = {}
+        if nvfp4:
+            sf = (self.num_kv_heads, self.head_dim // 16)
+            for i in self.layer_ids:
+                self._scales[i] = tuple(self.register_page_aux(f"{t}_sf.{i}", sf, torch.float8_e4m3fn).view(-1, page_size, *sf)
+                                        for t in ("k", "v"))
+            self._one = torch.ones((), dtype=torch.float32, device=device)  # the global scale, a tensor for graph capture
 
     @property
     def free_count(self) -> int:
@@ -51,7 +70,8 @@ class KvPool:
     @property
     def row_bytes(self) -> int:
         """Bytes one token holds: K and V of every layer plus its page aux rows."""
-        kv = 2 * len(self.layer_ids) * self.num_kv_heads * self.head_dim * self.k[self.layer_ids[0]].element_size()
+        first = self.k[self.layer_ids[0]]
+        kv = 2 * len(self.layer_ids) * first[0].numel() * first.element_size()  # a page's rows (NVFP4: packed codes)
         return kv + sum(t[0].numel() * t.element_size() for t in self.page_aux.values())
 
     @property
@@ -101,8 +121,19 @@ class KvPool:
         """Write [T, H, D] bf16 K/V for tokens whose (page, offset) are given
         with page_size 1: pages[t] is the token's page."""
         assert self.page_size == 1
+        if self.nvfp4:
+            from flashinfer.page import nvfp4_quantize_append_paged_kv_cache_with_slot_mapping as append
+            append(k.contiguous(), v.contiguous(), pages, (self.k[layer_id], self.v[layer_id]), self._scales[layer_id],
+                   self._one, self._one)
+            return
+        if self.rounding is not None:
+            k, v = self.rounding[0](k), self.rounding[1](v)
         self.k[layer_id][pages, 0] = k.to(self.dtype)
         self.v[layer_id][pages, 0] = v.to(self.dtype)
 
     def cache(self, layer_id: int) -> tuple[torch.Tensor, torch.Tensor]:
         return self.k[layer_id], self.v[layer_id]
+
+    def scales(self, layer_id: int) -> tuple[torch.Tensor, torch.Tensor] | None:
+        """The layer's (key, value) NVFP4 scales for FlashInfer's `kv_cache_sf`; None for an FP8 or BF16 pool."""
+        return self._scales.get(layer_id)

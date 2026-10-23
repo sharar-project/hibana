@@ -55,7 +55,7 @@ same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (defau
 | Draft precision | 27B: FP8; Flash-Next: BF16 (MTP), FP8 (DFlash2) | `SHARAR_DRAFT_PRECISION=bf16` for the 27B publisher's precision |
 | Draft checkpoint | the publisher's pinned draft | `sharar serve --draft DIR` or `SHARAR_DRAFT=/dir`: a DFlash2 checkpoint of the same architecture, trained on the served target's features |
 | Accepted state | reconstruction | `SHARAR_VERIFY_STATE` |
-| Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
+| Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K; 4.5 GiB as NVFP4) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
 | Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:4,4:4`, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark), else `16:3`; Flash-Next DFlash2 `fast`: `2:7,4:7`, `throughput`: MTP's | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC` and `SHARAR_MAX_BATCH`, a limit between buckets verifying what the bucket it pads to does). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
 | Adaptive draft depth (MTP and DFlash2) | Flash-Next `fast` with MTP: on, 0.14 (0.2 on two Sparks); DFlash2: off | `SHARAR_SPEC_STEP_COST` (0 = the fixed depth): each request drafts as deep as its own recent acceptance pays for, up to the batch bucket's depth ([MTP](flashnext.md#the-mtp-draft), [DFlash2](flashnext.md#the-dflash2-draft)) |
 | Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext` | `sharar serve --port`, `SHARAR_PORT` / `SHARAR_SERVICE` |
@@ -67,6 +67,24 @@ same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (defau
 
 For MTP on the 27B, use `SHARAR_PROPOSER=mtp SHARAR_SPEC=3 SHARAR_DRAFT_PRECISION=bf16`. `SHARAR_PROPOSER` is `mtp`
 or `dflash2`.
+
+### NVFP4 KV
+
+`SHARAR_KV_FORMAT=nvfp4` (the 27B's `fast` and `throughput` on one Spark) stores K and V as NVFP4: two E2M1 codes a
+byte and an E4M3 scale per 16 values, 4.5 bits a value where FP8 takes 8, so the same memory holds 16/9 the tokens:
+longer contexts or more requests at once, more cached prefixes, and 44% fewer bytes read back from the SSD tier.
+FlashInfer writes them (`nvfp4_quantize_append_paged_kv_cache_with_slot_mapping`, global scale 1) and its `fa2`
+attention reads them; the scales are per-page rows (`KvPool.page_aux`), so the prefix cache and the SSD tier carry them
+with each page, and an SSD store keeps its KV format in its identity.
+
+- **Speed.** Steady-state rounds of the 27B `fast`: within 1% of FP8 at 10K (one and four requests) and at 64K with one
+  request, 6% slower at 64K with four (146.0 against 154.6 ms): `fa2` unpacks the codes on the SMs, which the halved
+  bytes do not yet pay for.
+- **Accuracy.** Teacher-forced 256 tokens after 32K, 64K and 96K-token prompts against BF16 KV: mean KL 0.0063 where
+  FP8 KV's is 0.0039, flat along the generation; argmax agreement 95.7-99.6% (FP8 96.1-99.6%). The lossy gate's
+  in-process layers on its short prompts: KL 0.0055 against a floor of 0.0047, tokens a round unchanged.
+- **Screen.** `sim-fp4` (and `sim-k8v4`, `sim-bf16`) keep a BF16 pool and round every write through NVFP4 the way
+  FlashInfer's writer does (`kernels/kv_fp4.nvfp4_round`, bitwise its arithmetic), to measure a format without its kernels.
 
 ## Serving profiles
 
@@ -80,6 +98,7 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 | Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | Flash-Next top-3 within 2.0 (DFlash2 top-2 within 1.0); the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
 | Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next also its routed experts) | off | on | on |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next only | as fast |
+| NVFP4 KV cache (`SHARAR_KV_FORMAT`, [below](#nvfp4-kv)) | FP8 | the 27B on one Spark: NVFP4; Flash-Next and two Sparks FP8 | as fast |
 | Budgeted expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_BUDGET`) | off | Flash-Next: keep 4, budget 12:64 | as fast |
 | Optimized QSA prefill kernels (`SHARAR_QSA_PREFILL_BACKEND`) | off (original) | Flash-Next: auto (where eligible: SM121, one or two Sparks, through 32K) | as fast |
 | Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
