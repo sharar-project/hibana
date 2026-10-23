@@ -94,8 +94,7 @@ def pinned_snapshots(s: Settings) -> list[tuple[Path, str, str]]:
         from sharar.model import qwen38_config as c
     out = [(s.model_cache, c.MODEL_ID, c.MODEL_REVISION)]
     if s.parallel_draft and s.draft_dir is None:
-        from sharar.model.qwen38_config import DRAFT_PINS
-        out.append((s.hf_cache, *DRAFT_PINS[s.proposer]))
+        out.append((s.hf_cache, *c.DRAFT_PINS[s.proposer]))  # the target's own drafter
     return out
 
 

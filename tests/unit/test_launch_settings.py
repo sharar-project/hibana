@@ -307,3 +307,13 @@ def test_profile_depths_stay_within_a_lower_batch_limit(env):
             s = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": proposer, "SHARAR_MAX_BATCH": batch})
             assert s.get("SHARAR_SPEC_DEPTHS") == depths, (profile, batch, proposer)
 
+
+
+def test_preflight_fetches_the_targets_own_drafter(env):
+    from sharar.launch.preflight import pinned_snapshots
+    from sharar.model import qwen38_config
+    from sharar.model.flashnext import config as flashnext_config
+    for target, config in (("27b", qwen38_config), ("flashnext", flashnext_config)):
+        s = resolve(env, target, "fast", overrides={"SHARAR_PROPOSER": "dflash2"})
+        assert pinned_snapshots(s)[-1][1:] == config.DRAFT_PINS["dflash2"], target
+    assert len(pinned_snapshots(resolve(env, "flashnext", "fast"))) == 1  # MTP: the checkpoint's own head
