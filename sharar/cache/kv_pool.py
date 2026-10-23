@@ -23,7 +23,10 @@ KV_DTYPE = torch.float8_e4m3fn
 
 class KvPool:
     def __init__(self, num_pages: int, device: torch.device, page_size: int = 1, layer_ids: list[int] | None = None, dtype: torch.dtype = KV_DTYPE,
-                 target: Target | None = None, padding_rows: int = 0):
+                 target: Target | None = None, padding_rows: int = 0, rounding: tuple | None = None):
+        """rounding: (key, value) functions every write passes K and V through (an accuracy screen of a smaller
+        format in a wider pool, `kernels/kv_fp4.SIMULATED`)."""
+        self.rounding = rounding
         self.target = target or DEFAULT_TARGET
         self.num_pages = num_pages
         self.page_size = page_size
@@ -101,6 +104,8 @@ class KvPool:
         """Write [T, H, D] bf16 K/V for tokens whose (page, offset) are given
         with page_size 1: pages[t] is the token's page."""
         assert self.page_size == 1
+        if self.rounding is not None:
+            k, v = self.rounding[0](k), self.rounding[1](v)
         self.k[layer_id][pages, 0] = k.to(self.dtype)
         self.v[layer_id][pages, 0] = v.to(self.dtype)
 
