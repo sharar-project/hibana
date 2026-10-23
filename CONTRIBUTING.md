@@ -38,8 +38,8 @@ workload content and checksums (`tools/gate/workloads/`, `profiling/workloads/`,
 
 The modules on the real 27B share one load (the session fixture `qwen38` in `tests/gpu/conftest.py`), run last,
 and build their executors on it with bounded pools: 35,000 KV pages and 12 recurrent slots. Keep the memory guard active for the run (`uv run python -m sharar.launch.guard --pid PID`). The loader
-requires 40 GiB `MemAvailable`: a 24 GiB allowance based on the measured 21.3 GiB
-streaming-load peak plus the 16 GiB host floor. Runtime separately checks the
+requires a 24 GiB allowance of `MemAvailable` above the host floor (30 GiB at the default 6), based on the measured 21.3 GiB
+streaming-load peak. Runtime separately checks the
 prospective pool/draft budget before allocation.
 Performance measurements need exclusive GPU use. The check command does not
 stop or replace a running service.

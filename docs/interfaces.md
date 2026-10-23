@@ -161,7 +161,7 @@ import with `slot=` naming the new slot, and restoration projects only draft K/V
 
 Pass `SpecConfig` to `Executor` at startup to reserve draft weight/KV/feature costs and verify buffers before the
 optional target cache is sized (`cache/spec_budget.py`). Adapter bytes include reserved feature-cache capacity, not
-current CUDA allocations; graph, activation and slack reserves are estimates. The host floor is 16 GiB.
+current CUDA allocations; graph, first-use and activation bytes are measured estimates (`cache/ledger.after_plan_bytes`). The pools leave the 6 GiB host floor (`SHARAR_HOST_FLOOR_GIB`) for the OS and other programs.
 
 ## Engine and HTTP ownership
 
