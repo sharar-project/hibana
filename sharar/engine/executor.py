@@ -22,6 +22,7 @@ from sharar.engine.sampler import InvalidRequest, Sampler, SamplingParams
 from sharar.cache.kv_pool import KV_DTYPE, KvPool
 from sharar.cache.ledger import Ledger
 from sharar.cache.radix import RadixCache
+from sharar.cache.snapshot import GRID
 from sharar.cache.request_state import StateManager
 from sharar.engine.contracts import ProposerContext, Proposer
 from sharar.engine.profile import ServingProfile
@@ -29,10 +30,6 @@ from sharar.engine.upload import upload
 from sharar.cache.state_pool import StatePool
 if TYPE_CHECKING:
     from sharar.model.qwen38 import Qwen38
-
-CHECKPOINT_INTERVAL = 2048  # GDN snapshots inside long prefills (multiple of 64)
-MAX_CHUNK_CHECKPOINTS = 16  # chunk-end snapshots per prompt; longer prompts space them wider
-CHECKPOINT_TAIL = 8192  # chunk ends this close to the prompt end are always snapshotted
 
 
 @dataclass
@@ -80,20 +77,25 @@ class Executor:
             return future + sum(after_plan_bytes(max_batch).values()), extra_page
 
         from sharar.cache.ledger import after_plan_bytes
-        # the slots the plan is first sized for: its target of 96, or a slot and a snapshot per running request
-        guess = num_slots or max(96, 2 * max_batch + 1)
+        # the state slots an SSD restore can lock beyond the running requests' (the startup slot floor counts them)
+        restore_slots = 0
+        if cfg.ssd and use_cache:
+            from sharar.cache.ssd import RESTORE_SLOTS as restore_slots
+        # the slots the plan is first sized for: its target of 96, or the slot floor
+        guess = num_slots or max(96, 2 * max_batch + 1 + restore_slots)
         future, extra_page = after_pools(guess)
         plan = None
         planned_pages = num_pages is None
         if num_pages is None or num_slots is None:
             plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future, extra_page_bytes=extra_page,
-                                    state_bytes_per_slot=state_bytes)
+                                    state_bytes_per_slot=state_bytes, restore_slots=restore_slots)
             if num_slots is None and plan.state_slots > guess:
                 # more slots than the drafter was budgeted for (DFlash2 keeps a feature window per slot): budget the
                 # plan's slots and plan again; the larger budget can only give fewer slots, which it still covers
                 future, extra_page = after_pools(plan.state_slots)
                 plan = self.ledger.plan(max_running=max_batch, context_len=max_context, future_bytes=future,
-                                        extra_page_bytes=extra_page, state_bytes_per_slot=state_bytes)
+                                        extra_page_bytes=extra_page, state_bytes_per_slot=state_bytes,
+                                        restore_slots=restore_slots)
             num_pages = num_pages or plan.kv_tokens
             num_slots = num_slots or plan.state_slots
         num_pages, num_slots = all_reduce_min(num_pages, num_slots)  # tensor-parallel ranks admit and evict alike
@@ -141,8 +143,6 @@ class Executor:
         self.ledger.record_cuda_allocated("state_pool")
         cache = RadixCache(self.kv_pool, self.state_pool, self.device) if use_cache else None
         self.state = StateManager(self.kv_pool, self.state_pool, cache)
-        if max_batch > 4:  # a snapshot must not hold the slot a wide batch's next request needs
-            self.state.admission_slots = max_batch
         self.sampler = Sampler(self.device)
         self.max_batch = max_batch
         self._ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=self.device)
@@ -286,6 +286,10 @@ class Executor:
             return False
         return self.state.can_admit(prompt_ids, reserve_tokens)
 
+    def prefetch(self, prompt_ids: list[int], reserve_tokens: int = 0) -> bool:
+        """The queue head's SSD restore, before `can_admit` (`StateManager.prefetch`): False while it is still reading."""
+        return self.state.prefetch(prompt_ids, reserve_tokens)
+
     def admission_reserve(self, req: Request, limit: int) -> int:
         padding = self.spec.k if self.spec is not None and (req.params.greedy or not self.spec.proposer.requirements.greedy_only) else 0
         return min(limit, req.params.max_new_tokens - len(req.output_ids) + padding)
@@ -294,6 +298,11 @@ class Executor:
         if self.cache is None:
             return None
         stats = self.cache.stats()
+        proposer = self.spec.proposer if self.spec is not None else None
+        if proposer is not None and hasattr(proposer, "cache_hits"):
+            # resumes whose drafter found the matched snapshot's metadata (hits) or not (fallbacks: MTP drafts on from a
+            # stand-in row, DFlash2 stops drafting)
+            stats['draft_resumes'] = {'hits': proposer.cache_hits, 'fallbacks': proposer.cache_fallbacks}
         features = self.spec.proposer.feature_cache if self.spec is not None and self.spec.proposer.requirements.capabilities.checkpoint_cache else None
         if features is not None:
             stats['draft_features'] = {'entries': len(features.entries), 'bytes': features.bytes,
@@ -397,9 +406,8 @@ class Executor:
     def release(self, req: Request) -> None:
         if req.released:
             return
-        if self.spec is not None:
-            self.spec.proposer.prepare_release(req)
-        self.state.release(req)
+        # the drafter attaches its metadata to the reply end (the request's own slot) before the tree owns it
+        self.state.release(req, attach=self.spec.proposer.prepare_release if self.spec is not None else None)
         if self.spec is not None:
             self.spec.proposer.release(req)
 
@@ -426,50 +434,77 @@ class Executor:
         last_page_len = torch.ones(1, dtype=torch.int32)
         self.attention.paged_prefill(self._paged_prefill, qo_indptr, kv_indptr, prefix_pages, last_page_len, causal=False)
 
-    def _checkpoint_positions(self, start: int, end: int, total: int) -> list[int]:
-        """Absolute positions aligned to this forward's 64-token GDN chunks.
-        Snapshot near each CHECKPOINT_INTERVAL, plus the last local boundary
-        before the prompt end so an identical prompt re-sent later recomputes at
-        most 64 tokens (the last token is never served from cache: its logits
-        are needed)."""
-        if self.cache is None:
-            return []
-        first = (start // CHECKPOINT_INTERVAL + 1) * CHECKPOINT_INTERVAL
-        positions = [start + ((p - start + 63) // 64) * 64 for p in range(first, end, CHECKPOINT_INTERVAL)]
-        positions = [p for p in positions if start < p < end]
-        last = start + ((total - start - 1) // 64) * 64
-        if start < last < end and last not in positions:
-            positions.append(last)
-        return sorted(positions)
+    def _checkpoint_positions(self, req: Request, start: int, end: int) -> list[tuple[int, bool]]:
+        """The snapshots the prefill forward [start, end) of req's prompt places, as (position, spare), in the order
+        their slots are allocated (`StateManager.prefill_checkpoints`): the message boundary and the last chunk end,
+        then the branching point, then a spare chunk end. A position inside the forward sits on the forward's own
+        64-token grid (the GDN kernels snapshot at the end of a 64-token chunk of the forward); a chunk's end is a copy
+        of the request's slot after the forward (`_chunk_checkpoint`).
 
-    def _chunk_checkpoint(self, req: Request, start: int, end: int) -> None:
-        """Snapshot the state at the end of a prefill chunk that crosses a
-        checkpoint interval. Chunks end on CHECKPOINT_INTERVAL multiples, where
-        `_checkpoint_positions` (positions inside a forward) never lands, so
-        without this a chunked prompt is resumable only near its end. At most
-        MAX_CHUNK_CHECKPOINTS per prompt: a 262K prompt snapshots every 16K
-        rather than holding 128 slots of 144 MiB, plus every chunk end in the
-        last CHECKPOINT_TAIL tokens, where a changed final message diverges.
-        Call after the forward and before the proposer ingests it, so draft
-        features attach at `end`."""
+        - Chunk end (SGLang's one state per forward, mamba_last_track_seqlen): the forward that ends the prompt
+          snapshots its last grid point strictly before the prompt's end, so the same prompt sent again resumes there; an
+          earlier chunk snapshots its own end, spare unless it is the prompt's last (the last forward places no grid
+          point of its own before the end) or the next forward would have to place the message boundary or the
+          branching point at its own start.
+        - Message boundary: the start of the prompt's last message (`SamplingParams.message_boundary`, from the chat
+          API; 0 for a raw prompt), where the conversation's next turn departs from it.
+        - Branching point (`req.branching_seqlen`, SGLang's mamba_branching_seqlen): the KV match's end where it ran a
+          grid past the matched snapshot, in the forward that contains it: the next request sharing that prefix resumes
+          there.
+        Nothing while the cache flushes, or for a request that is not cached."""
+        if self.cache is None or self.cache.flushing or not req.cache_enabled or not req.cacheable:
+            return []
         n = req.prefill_len
-        if self.cache is None or end >= n:
-            return
-        interval = CHECKPOINT_INTERVAL * max(1, -(-n // (CHECKPOINT_INTERVAL * MAX_CHUNK_CHECKPOINTS)))
-        if end // interval > start // interval or n - end <= CHECKPOINT_TAIL:
-            self.state.checkpoint(req, end, copy=True)
+        targets = [t for t in (req.params.message_boundary, req.branching_seqlen) if 0 < t < n]
+        points: dict[int, list] = {}  # position -> [spare, allocation rank]
+
+        def place(position: int, spare: bool, rank: int) -> None:
+            if position in points:
+                points[position] = [points[position][0] and spare, min(points[position][1], rank)]
+            else:
+                points[position] = [spare, rank]
+
+        for rank, target in ((0, req.params.message_boundary), (1, req.branching_seqlen)):
+            if 0 < target < n and start <= target < end:
+                p = start + (target - start) // GRID * GRID
+                if p > start:
+                    place(p, False, rank)
+        if end >= n:
+            p = start + (n - 1 - start) // GRID * GRID
+            if p > start:
+                place(p, False, 0)
+        else:
+            needed = n - end <= GRID or any(end <= t < end + GRID for t in targets)  # it stands for a not-spare point
+            place(end, not needed, 0 if needed else 2)
+        return [(p, spare) for p, (spare, _) in sorted(points.items(), key=lambda item: (item[1][1], -item[0]))]
+
+    def _chunk_checkpoint(self, req: Request, end: int) -> None:
+        """Copy the request's slot into the snapshot planned at the end of the chunk it just prefilled, if there is one:
+        after the forward, before the proposer ingests the chunk, so draft metadata attaches at `end`."""
+        snap = req.private.get(end)
+        if snap is not None:
+            self.state_pool.copy_slot(req.slot, snap.slot)
 
     def prefill(self, req: Request, max_tokens: int | None = None) -> int | None:
-        batch = self._prepare_single_prefill(req, max_tokens)
-        out = self.model.forward(batch.ids, batch.context)
-        debug_sync("after prefill forward", [req])
-        return self._finish_prefill(batch, out)
+        try:
+            batch = self._prepare_single_prefill(req, max_tokens)
+            out = self.model.forward(batch.ids, batch.context)
+            debug_sync("after prefill forward", [req])
+            return self._finish_prefill(batch, out)
+        except BaseException:
+            self.state.discard_private(req)  # its snapshots were never written: none outlives the failed step
+            raise
 
     def prefill_batch(self, chunks: list[tuple[Request, int]]) -> None:
-        batch = self._prepare_prefill(chunks)
-        out = self.model.forward(batch.ids, batch.context)
-        debug_sync("after batched prefill forward", [r for r, _ in chunks])
-        self._finish_prefill(batch, out)
+        try:
+            batch = self._prepare_prefill(chunks)
+            out = self.model.forward(batch.ids, batch.context)
+            debug_sync("after batched prefill forward", [r for r, _ in chunks])
+            self._finish_prefill(batch, out)
+        except BaseException:
+            for req, _ in chunks:  # every row's, not only the one the scheduler retracts
+                self.state.discard_private(req)
+            raise
 
     def _prepare_single_prefill(self, req: Request, max_tokens: int | None) -> PrefillBatch:
         """Prefill up to `max_tokens` of the remaining prompt (all of it by
@@ -499,9 +534,10 @@ class Executor:
         if start:
             self._plan_paged_prefill(req.pages[:start], t)
             ctx.paged_prefill_wrapper = self._paged_prefill
-        for _, pos, slot in self.state.prefill_checkpoints([(req, self._checkpoint_positions(start, end, n))]):
-            ctx.checkpoint_positions.append(pos)
-            ctx.checkpoint_slots.append(slot)
+        for _, pos, slot in self.state.prefill_checkpoints([(req, self._checkpoint_positions(req, start, end))]):
+            if pos < end:  # inside the forward: the kernels write it (the chunk's end is copied after the forward)
+                ctx.checkpoint_positions.append(pos)
+                ctx.checkpoint_slots.append(slot)
         if self._features_wanted() is not None:
             ctx.feature_request = self._features_wanted()
         if self.extras is not None:
@@ -521,7 +557,6 @@ class Executor:
         for si, (req, n_new) in enumerate(chunks):
             start = req.prefill_pos
             end = start + n_new
-            total = req.prefill_len
             ids_list += req.prefill_ids[start:end]
             pos_list += list(range(start, end))
             page_list.append(req.pages[start:end])
@@ -531,8 +566,10 @@ class Executor:
             seq_slots.append(req.slot)
             prefix_lens.append(start)
             seq_lens.append(n_new)
-            boundaries.append((req, self._checkpoint_positions(start, end, total)))
-        checkpoints = self.state.prefill_checkpoints(boundaries)
+            boundaries.append((req, self._checkpoint_positions(req, start, end)))
+        # inside each row's forward only: the kernels write those (each chunk's end is copied after the forward)
+        checkpoints = [(row, pos, slot) for row, pos, slot in self.state.prefill_checkpoints(boundaries)
+                       if pos < prefix_lens[row] + seq_lens[row]]
         d = self.device
         ctx = ForwardContext(
             mode="prefill", kv_pool=self.kv_pool, state_pool=self.state_pool,
@@ -572,19 +609,17 @@ class Executor:
             tokens = self.sampler.sample(logits, [r.params for r in done], [r.generator for r in done],
                                          sample_masks(done, logits.shape[-1])).tolist()
         for req, n_new in chunks:
-            self._chunk_checkpoint(req, req.prefill_pos, req.prefill_pos + n_new)
+            self._chunk_checkpoint(req, req.prefill_pos + n_new)
         if self.spec is not None:
             for i, (req, n_new) in enumerate(chunks):
                 rows = {"norm": out["norm"][cu[i]:cu[i + 1]]}
                 if "features" in out:
                     rows["features"] = {lid: value[cu[i]:cu[i + 1]] for lid, value in out["features"].items()}
                 self.spec.ingest_prefill(req, req.prefill_ids[req.prefill_pos:req.prefill_pos + n_new], req.prefill_pos, rows)
-        for i, (req, n_new) in enumerate(chunks):
-            self.state.commit_prefill(req, req.prefill_pos + n_new)
-        for i in finishing:
-            req = chunks[i][0]
-            self.state.checkpoint(req, req.prefill_len, copy=True)
-            self.state.cache_prompt(req)
+        for req, n_new in chunks:  # the drafter ingested every row's chunk: each row's snapshots go in, its lock moves
+            end = req.prefill_pos + n_new
+            self.state.commit_prefill(req, end)
+            self.state.checkpoint(req, end)
         if self.timing:  # benchmarks: wall time to completion; serving keeps the GPU queue full
             torch.cuda.synchronize()
         elapsed = time.perf_counter() - started
@@ -601,17 +636,14 @@ class Executor:
         end = start + t
         new_ids = req.prefill_ids[start:end]
         self.state.commit_prefill(req, end)
-        self._chunk_checkpoint(req, start, end)
+        self._chunk_checkpoint(req, end)
         if self.spec is not None:
             self.spec.ingest_prefill(req, new_ids, start, out)
+        self.state.checkpoint(req, end)  # the drafter ingested the chunk: its snapshots go in, the lock moves
         token = None
         if end == n:
             logits = self.model.logits(out["norm"][-1:])
             token = int(self.sampler.sample(logits, [req.params], [req.generator], sample_masks([req], logits.shape[-1])).item())
-            # Allocate the immutable endpoint before the proposer attaches its
-            # features; the active committed slot continues advancing in decode.
-            self.state.checkpoint(req, n, copy=True)
-            self.state.cache_prompt(req)
             if self.spec is not None:
                 self.spec.start(req, token)
         if self.timing:
