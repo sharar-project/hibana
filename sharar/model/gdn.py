@@ -20,7 +20,7 @@ from sharar.kernels.fla.chunk import chunk_gated_delta_rule
 from sharar.kernels.fla.fused_gdn_gating import fused_gdn_gating
 from sharar.kernels.fla.fused_recurrent import fused_recurrent_gated_delta_rule_packed_decode
 from sharar.kernels.fla.fused_sigmoid_gating_recurrent import fused_sigmoid_gating_delta_rule_update
-from sharar.kernels.fla.layernorm_gated import rms_norm_gated
+from sharar.kernels.fla.layernorm_gated import rms_norm_gated, rms_norm_gated_quant
 from sharar.kernels.fp8_quant import quant_fp8
 from sharar.kernels.ssm_window import materialize, quantize, window_commit, window_verify
 from sharar.kernels.verify_conv import verify_convolve
@@ -117,6 +117,9 @@ class GatedDeltaNet:
             from sharar.kernels.verify_norm import verify_gated_norm
             normalized = verify_gated_norm(core, z, self.norm_weight, self.eps, self.head_v_dim)
             return quant_fp8(normalized.reshape(t, self.value_dim), self.out.input_scale)
+        if z.stride(-1) == 1:  # the gated norm writes the out projection's FP8 input itself (the two passes' arithmetic)
+            return rms_norm_gated_quant(x=core.reshape(t, self.value_dim), weight=self.norm_weight, z=z, scale=self.out.input_scale,
+                                        eps=self.eps, group_size=self.head_v_dim, activation="swish")
         core = rms_norm_gated(
             x=core.reshape(t, self.value_dim), weight=self.norm_weight, z=z,
             eps=self.eps, group_size=self.head_v_dim, activation="swish",
