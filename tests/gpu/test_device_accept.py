@@ -164,5 +164,8 @@ def test_stop_tokens_and_budget_cut_identically(runtime):
 def test_pools_are_clean_after_device_rounds(runtime):
     ex, prompts = runtime
     run_rounds(ex, prompts[:4], [SamplingParams(max_new_tokens=20, ignore_eos=True)] * 4, rounds=6, device_accept=True)
+    # the prompts' chunk-end snapshots stay cached (unlocked) after release; nothing else may hold pages or slots
+    assert ex.cache.stats()["locks"]["total"] == 0
+    ex.flush_cache()
     assert ex.kv_pool.free_count == 35000 - 1 and ex.state_pool.free_count == 12 - 1
     assert ex.spec.stats()['rounds'] > 0

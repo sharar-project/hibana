@@ -319,6 +319,11 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(re.fullmatch(r"[0-9]+(\.[0-9]+)?", values.get("SHARAR_SSD_GIB", "200")) is not None, "SHARAR_SSD_GIB must be a number of GiB")
     _check(re.fullmatch(r"[0-9]+(\.[0-9]+)?", values.get("SHARAR_HOST_FLOOR_GIB", "6")) is not None,
            "SHARAR_HOST_FLOOR_GIB must be a number of GiB")
+    guard_kib = values.get("SHARAR_MIN_AVAILABLE_KIB", "")
+    # the pools leave only the floor free, so a guard at or above it (main's 16 GiB) stops the server after warmup
+    _check(guard_kib == "" or (guard_kib.isdigit() and int(guard_kib) < float(values.get("SHARAR_HOST_FLOOR_GIB", "6")) * 2**20),
+           "SHARAR_MIN_AVAILABLE_KIB must be a KiB count below the host floor (SHARAR_HOST_FLOOR_GIB, 6 GiB by default): "
+           "the guard acts under what the pools leave free")
     _check(values.get("SHARAR_TRACES_MAX_MIB", "32768").isdigit() and int(values.get("SHARAR_TRACES_MAX_MIB", "32768")) > 0,
            "SHARAR_TRACES_MAX_MIB must be a positive integer")
     if not {**user, **(overrides or {})}.get("SHARAR_DRAFT_PRECISION") and not (
