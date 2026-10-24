@@ -176,7 +176,10 @@ adaptive draft depth. It is read when the proposer is built; off, nothing change
 
 Inspect `sharar status`, `sharar logs` (detached servers), `/health` and `/get_server_info` for status.
 The latter reports draft precision, scheduler settings, KV/state geometry and
-cache statistics. `cache.draft_features` reports retained features and fallbacks.
+cache statistics: locks by owner, snapshots (spare and not), evictions by reason, pruned dead-KV nodes, full
+re-prefills, resumes from a branching point, the evictable totals, and the drafters' resume hits and fallbacks
+(`cache.draft_resumes`; [cache design](cache_design.md#protection-and-eviction)); `cache.draft_features` reports
+retained DFlash2 features.
 At 96 slots, the 27B's DFlash2 feature retention reserves up to 1,900 MiB before planning
 KV (Flash-Next's, half as wide, half that). The pools take what is available at startup beyond the floor, the prefill
 reserve and a 4 GiB margin. No host-memory tier sits below them: on unified

@@ -2,8 +2,8 @@
 
 The GB10 has one physical memory for the OS, every program and the GPU. At startup Sharar sizes its two pools, the
 KV pool and the state pool, from what is available, so that everything it allocates leaves the host floor free
-(`cache/ledger.py`, `engine/executor.py`). The cache policy decides what the pools hold; see the cache design doc
-for its terms (KV page, state slot, live state, snapshot, hold).
+(`cache/ledger.py`, `engine/executor.py`). The cache policy decides what the pools hold; see the
+[cache design](cache_design.md#glossary) for its terms (KV page, state slot, snapshot, lock, spare).
 
 ## Terms
 
@@ -16,12 +16,14 @@ for its terms (KV page, state slot, live state, snapshot, hold).
   alone.
 - **Pools**: the KV pool (KV pages) and the state pool (state slots), allocated once at startup.
 - **Minimum pools**: KV pages for one request at the maximum context, or for `SHARAR_MAX_BATCH` requests sharing 32K
-  tokens, whichever is more; and 2 x `SHARAR_MAX_BATCH` + 1 state slots, for each running request's live state and at
-  most one private snapshot, plus slot 0. The server does not start without them.
+  tokens, whichever is more; and the slot floor, 2 x `SHARAR_MAX_BATCH` + 1 state slots, for each running request's
+  own slot and the snapshot its lock keeps, plus slot 0, and with the SSD tier one more, for the restore that can lock a
+  slot for a queued request. The server does not start without them: with them admission never waits for a slot a
+  running request holds, and a prefill's private snapshots, which live only inside its step, take what is left.
 - **Slot share**: how the memory beyond the minimum pools splits between state slots and KV pages, by what one cached
-  conversation costs: the snapshots the tree keeps for it (`CACHED_SNAPSHOTS` = 3: resume point, prompt end, reply
-  end) against its 32K tokens of KV pages. About 17% state slots with INT8 state, 34% with FP32; at least 96 state
-  slots, and never more than 60% of that memory.
+  conversation costs: the snapshots the tree keeps for it (`CACHED_SNAPSHOTS` = 3: its message boundary, its prompt's
+  last chunk end and its reply end) against its 32K tokens of KV pages. About 17% state slots with INT8 state, 34%
+  with FP32; at least 96 state slots, and never more than 60% of that memory.
 - **Post-plan allocations** (`ledger.after_plan_bytes`; `after_plan_gib` in `/get_server_info`; the server log's
   "counted after the pools" line): what Sharar allocates after the pools, counted by size:
   - workspaces: FlashInfer's decode, prefill and verify workspaces, as allocated;

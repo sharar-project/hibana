@@ -6,7 +6,7 @@ structural types in `engine/contracts.py` (which imports no GPU backend), not a 
 | Boundary | Owner | Consumers |
 |---|---|---|
 | `ExecutionBackend` | Executor executes steps and owns graph/workspace setup | Scheduler chooses admissions, chunks, decode and retraction |
-| `RequestState` / `StateManager` | Request page/slot ownership, cache loans, reservations and processed prefix | Executor and shared verifier |
+| `RequestState` / `StateManager` | Request page/slot ownership, the request's cache lock, reservations and processed prefix | Executor and shared verifier |
 | `Proposer` | Draft weights/KV, readiness, pending tokens, retained features and draft graphs | Shared speculative driver |
 | `ForwardResult` / `FeatureRequest` | Target computes logits inputs and only requested features | Prefill driver and verifier deliver features to the proposer |
 
@@ -43,18 +43,27 @@ After prefill or successful decode, the last emitted token is pending. Both targ
 describe exactly `prompt_ids + output_ids[:-1]`. That length is `committed_len`. A cache entry may publish only that
 same prefix and its matching snapshot.
 
-- `can_admit(prompt_ids, reserve_tokens)` takes actual prefill IDs, including replayed output history. It budgets
-  the uncached suffix plus reserve while temporarily protecting the matching path. The probe counts no cache hits;
-  admission follows on the same owner thread.
-- `admit` secures state capacity before locking a matched prefix, allocates the request's suffix and slot, and
-  copies the matched recurrent snapshot. Allocation failure returns the slot and cache loan. Prompt pages are
-  reserved before prefill has processed them.
-- `prefill_checkpoints` gives each row its latest interior boundary first, then reserves earlier intervals
-  round-robin. `checkpoint` may recycle only that request's older completed snapshots; destinations beyond
-  `committed_len` are pending kernel writes and cannot be recycled. An exact prompt-end copy preserves the latest
-  interior boundary needed by identical retries. `commit_prefill` publishes the successfully processed extent.
-- `cache_prompt`, with an SSD tier, moves the prompt's whole blocks past the matched prefix into the cache once it
-  is prefilled, locked for the request, and queues them for backup; `page_ids` marks those pages -1 (the cache's).
+- `can_admit(prompt_ids, reserve_tokens)` takes actual prefill IDs, including replayed output history, and is pure:
+  it evicts, restores and allocates nothing. It budgets the uncached suffix plus reserve (the scheduler adds the
+  running requests' outstanding decode reserve) against the free and evictable KV, and a slot against the free and
+  evictable slots, while a probe lock (`RadixCache._lock_node`) keeps the candidate's own match out of the evictable
+  totals. The probe counts no cache hits; admission follows on the same owner thread, one request at a time.
+- `prefetch(prompt_ids, reserve_tokens)`, for the queue head before `can_admit`, starts its SSD restore when the
+  restore fits by the same count; False while one is reading.
+- `admit` matches, takes the request's one lock (`req.lock`, a `radix.TreeLock`) at the matched node before it
+  evicts anything for the request's own slot (`req.slot`) or pages, allocates them, and copies the matched recurrent
+  snapshot into that slot. Allocation failure returns the slot and the lock. Prompt pages are reserved before prefill
+  has processed them.
+- `prefill_checkpoints` allocates the private snapshots (`req.private`) each row's forward places
+  (`Executor._checkpoint_positions`: message boundary and last chunk end, then branching point, then a spare chunk
+  end), round-robin over the rows; a spare one takes only a free slot or a spare snapshot's, and none takes a locked
+  one. `commit_prefill` publishes the successfully processed extent; `discard_private` frees a failed forward's
+  destinations on every row.
+- `checkpoint(req, up_to)`, after each prefill chunk the drafter has ingested, inserts the prompt up to the deepest
+  written private snapshot with every one of them, then moves the lock there (lock the new node, unlock the old one,
+  nothing allocated in between) and frees the request's previous spare chunk end; `page_ids` marks the pages the
+  cache took -1, and pages the tree already had are swapped for the tree's. With an SSD tier the inserted blocks, and
+  the not-spare snapshots' tails, are queued for backup. `req.private` is empty between scheduler steps.
 - `reserve(requests, width)` attaches one disjoint pending reservation per request. `step_pages` borrows committed
   pages plus the reservation. Callers may write through these views; they do not acquire ownership.
 - `commit(req, count, ssm=..., conv=...)` copies the verify snapshot after input `count-1`, keeps exactly `count`
@@ -64,14 +73,17 @@ same prefix and its matching snapshot.
   The serving failure path terminates its tickets and releases them.
 - `retract` drops physical resources. Executor preserves emitted history, remaining budget, RNG and stream cursor,
   and replays that history on admission.
-- `release` is idempotent. It transfers a valid prefix into the cache or frees the request's suffix, slot and
-  checkpoints, then unlocks the borrowed prefix and the prompt `cache_prompt` locked (retract does too). A flush
-  defers reclamation until the last loan returns.
+- `release(req, attach=None)` is idempotent. It transfers a valid prefix into the cache, its own slot as the reply
+  end (`attach`, the proposer's `prepare_release`, puts its metadata in that snapshot first), or frees the request's
+  suffix and slot, then ends the lock. `retract` ends the lock without inserting; what was checkpointed stays cached.
+  A flush defers reclamation until the last lock ends.
 
-When only recurrent capacity is exhausted, the radix cache can drop an unlocked interior snapshot and its draft
-metadata while keeping KV pages and newer resume points (`snapshot_evictions`); this returns a slot to the
-allocator, not physical DRAM. A snapshot attached to an existing node brings its own metadata; a discarded duplicate
-keeps the existing one.
+When only recurrent capacity is exhausted, the radix cache takes unlocked snapshots by `get_priority` (spare ones
+first, then the least recently used): an unlocked leaf goes whole, any other node keeps its KV pages and loses only its
+snapshot and draft metadata (`snapshot_evictions`); this returns a slot to the allocator, not physical DRAM. A
+duplicate snapshot at an occupied position keeps the existing one and frees its own slot. `StateManager.check` asserts
+the lock counts, the evictable totals, one lock per request, and that every slot and page has one owner
+([cache design](cache_design.md#protection-and-eviction)).
 
 The runtime is single-threaded at this boundary and calls are ordered on its CUDA stream; callbacks must not free or
 reuse buffers on another stream. This is an ownership transaction, not a CUDA exception rollback. Replace the cache
@@ -147,16 +159,20 @@ lattice on the device with the same candidate rank and tie rules.
 
 ## Draft cache and memory
 
-Radix auxiliary metadata is keyed by target/draft revisions, feature schema, layout, window and the draft checkpoint
-source, so a checkpoint served with `--draft` never reuses another draft's payloads. Metadata follows the exact node
-endpoint, never another node's retained pages. Stale, evicted or foreign metadata makes the draft unready and the
-request decodes plainly without reading uninitialized KV.
+Drafter metadata lives only in a `Snapshot`'s `auxiliary` dict, keyed by target/draft revisions, feature schema,
+layout, window and the draft checkpoint source, so a checkpoint served with `--draft` never reuses another draft's
+payloads. The drafter writes it into a prefill forward's private snapshots at ingest and into the reply end at
+release (`prepare_release(req, snapshot)`), and reads the matched snapshot's (`req.match`) at the first prefill chunk,
+which the request's lock keeps until then. Metadata follows the exact node endpoint, never another node's retained
+pages. A missing or foreign MTP row (an SSD store written without it) is replaced by a stand-in, one approximate draft
+KV row, and the request keeps drafting; a missing DFlash2 window makes the draft unready and the request decodes
+plainly. Either is counted in `cache.draft_resumes.fallbacks`.
 
 MTP retains endpoint target norms and writes all teacher-forced committed draft KV, including the bonus input on
 full acceptance. DFlash2 owns private KV rings and its radix entries hold projected-feature handles:
 `CheckpointFeatureCache` reserves one feature window per usable recurrent slot and `StatePool.free()` invalidates a
 slot's handle before recycling it, so every path that frees the slot reclaims its features. At release, endpoint
-features belong to the committed slot being transferred, not the duplicate prompt-end checkpoint; SSD-tier codecs
+features belong to the request's own slot being transferred, the reply end; SSD-tier codecs
 import with `slot=` naming the new slot, and restoration projects only draft K/V from the saved features.
 
 Pass `SpecConfig` to `Executor` at startup to reserve draft weight/KV/feature costs and verify buffers before the
@@ -211,7 +227,7 @@ reference for reconstruction (`tests/gpu/test_lifecycle.py`).
 |---|---|
 | Termination | First-token EOS/length requests reach release. Queued cancellation becomes terminal and is published even when the scheduler is idle. Completion, cancellation and release are idempotent. |
 | Speculative commit | Accepted output is truncated at the budget/EOS before the GDN/conv snapshot is selected and KV pages are kept. `committed_len` names the prefix the state and KV represent; cache insertion rejects a mismatched label. |
-| Flush | Invalidated entries are hidden at once; pinned pages and snapshots stay until their last reader releases them, and insertion is bypassed while the flush drains. `/flush_cache` acknowledges invalidation; `flush_pending` reports retained readers. |
+| Flush | Invalidated entries are hidden at once; locked pages and snapshots stay until their last lock ends, and placement and insertion are bypassed while the flush drains. `/flush_cache` acknowledges invalidation; `flush_pending` reports retained locks. |
 | Retraction | Readmission replays prompt plus emitted output and keeps output IDs, stream cursor, first-token time, output budget and RNG state; replay samples only the next new token. |
 | Sampling | Each seeded request owns its generator; identical seeds never share one. |
 | Accounting | Decode counts use actual output deltas; speculative counts exclude candidates discarded by stopping; tokens per round excludes the first prefill token. |
