@@ -78,5 +78,10 @@ class AcceptedState:
         return sum(t.numel() * t.element_size() for t in (self.raw_k, self.raw_v, self.gates, self.betas))
 
     def run(self, pool, slots, counts):
-        """Write only StateManager-authorized committed slots, on the caller's stream."""
-        reconstruct(pool.ssm_all, self.raw_k, self.raw_v, self.gates, self.betas, slots, counts)
+        """Write only StateManager-authorized committed slots, on the caller's stream, with the arithmetic of the verify
+        recurrence that filled the ring (`model/gdn.py`: the CUDA kernel where it applies)."""
+        from sharar.kernels import gdn_verify
+        if gdn_verify.supports(self.raw_k, self.raw_v, pool.ssm_all):
+            gdn_verify.commit(pool.ssm_all, self.raw_k, self.raw_v, self.gates, self.betas, slots, counts)
+        else:
+            reconstruct(pool.ssm_all, self.raw_k, self.raw_v, self.gates, self.betas, slots, counts)

@@ -720,16 +720,26 @@ def _mul_ftz(a, b):
 
 
 @triton.jit
-def _silu_mul_quant_groups_kernel(GU, Q, S, stride_gu, I: tl.constexpr, GB: tl.constexpr):
+def _silu_mul_quant_groups_kernel(GU, Q, S, stride_gu, I: tl.constexpr, GB: tl.constexpr, PAIRS: tl.constexpr,
+                                  TORCH_CHAIN: tl.constexpr):
     # quant_groups_kernel's arithmetic as nvcc --use_fast_math compiles it: s = max(amax * (1/448), 1e-12),
     # q = e4m3(x * rcp.approx.ftz(s)) with mul.ftz; tests/gpu/test_flashnext_fused.py checks the bits
     t = tl.program_id(0)
     grp = tl.program_id(1) * GB + tl.arange(0, GB)
     cols = grp[:, None] * 32 + tl.arange(0, 32)[None, :]
     mask = cols < I
-    g = tl.load(GU + t * stride_gu + cols, mask=mask, other=0.0).to(tl.float32)
-    u = tl.load(GU + t * stride_gu + I + cols, mask=mask, other=0.0).to(tl.float32)
-    x = (g * _sigmoid(g) * u).to(tl.bfloat16).to(tl.float32)
+    if PAIRS:  # gate and up interleaved in blocks of PAIRS columns: output column c is gate column c's block's
+        gcol = (cols // PAIRS) * (2 * PAIRS) + cols % PAIRS
+        ucol = gcol + PAIRS
+    else:
+        gcol = cols
+        ucol = cols + I
+    g = tl.load(GU + t * stride_gu + gcol, mask=mask, other=0.0).to(tl.float32)
+    u = tl.load(GU + t * stride_gu + ucol, mask=mask, other=0.0).to(tl.float32)
+    if TORCH_CHAIN:  # ops.silu_and_mul: F.silu rounded to BF16, then the BF16 product
+        x = (_silu_torch(g).to(tl.bfloat16).to(tl.float32) * u).to(tl.bfloat16).to(tl.float32)
+    else:
+        x = (g * _sigmoid(g) * u).to(tl.bfloat16).to(tl.float32)
     amax = tl.max(tl.abs(x), 1)
     s = tl.maximum(_mul_ftz(amax, tl.full(amax.shape, 1.0 / 448.0, tl.float32)), 1.0e-12)
     inv = _rcp_approx_ftz(s)
@@ -737,15 +747,18 @@ def _silu_mul_quant_groups_kernel(GU, Q, S, stride_gu, I: tl.constexpr, GB: tl.c
     tl.store(Q + t * I + cols, _mul_ftz(x, inv[:, None]).to(tl.float8e4nv), mask=mask)
 
 
-def silu_mul_quant_groups(gu: torch.Tensor):
-    """`w3.quant_groups(silu_mul(gu))` in one launch, bit for bit: gu bf16 [M, 2I] -> (e4m3 [M, I], fp32 scales [M, I/32])."""
+def silu_mul_quant_groups(gu: torch.Tensor, pairs: int = 0, torch_chain: bool = False):
+    """`w3.quant_groups(silu_mul(gu))` in one launch, bit for bit: gu bf16 [M, 2I] -> (e4m3 [M, I], fp32 scales [M, I/32]).
+    `pairs`: gate and up interleaved in blocks of that many columns (`ops.silu_and_mul(gu, pairs)`); `torch_chain`: the
+    product as `ops.silu_and_mul` rounds it (F.silu to BF16, then the product), the 27B MLP's 3-bit decode input."""
     m, n = gu.shape
     i = n // 2
-    assert i % 32 == 0 and gu.stride(1) == 1
+    assert i % 32 == 0 and gu.stride(1) == 1 and (not pairs or (pairs % 32 == 0 and i % pairs == 0))
     q = torch.empty((m, i), dtype=torch.float8_e4m3fn, device=gu.device)
     s = torch.empty((m, i // 32), dtype=torch.float32, device=gu.device)
     gb = 8
-    _silu_mul_quant_groups_kernel[(m, triton.cdiv(i // 32, gb))](gu, q, s, gu.stride(0), i, GB=gb, num_warps=2)
+    _silu_mul_quant_groups_kernel[(m, triton.cdiv(i // 32, gb))](gu, q, s, gu.stride(0), i, GB=gb, PAIRS=pairs,
+                                                                   TORCH_CHAIN=torch_chain, num_warps=2)
     return q, s
 
 

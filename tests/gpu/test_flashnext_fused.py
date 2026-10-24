@@ -323,3 +323,14 @@ def test_silu_mul_quant_groups_bitwise(m, inter):
         q, s = w3.quant_groups(fk.silu_mul(gu))
         q2, s2 = fk.silu_mul_quant_groups(gu)
         assert torch.equal(q.view(torch.uint8), q2.view(torch.uint8)) and torch.equal(s, s2)
+
+
+@pytest.mark.parametrize("m", [1, 16, 64, 128])
+def test_silu_mul_quant_groups_pairs_torch_chain_bitwise(m):
+    """The 27B MLP's 3-bit decode input: gate/up interleaved in blocks of 64, the product rounded as ops.silu_and_mul."""
+    from sharar.kernels import ops, w3
+    for seed in range(3):
+        gu = _act_input(m, 2 * 17408, seed, outliers=seed % 2 == 1)
+        q, s = w3.quant_groups(ops.silu_and_mul(gu, 64))
+        q2, s2 = fk.silu_mul_quant_groups(gu, 64, torch_chain=True)
+        assert torch.equal(q.view(torch.uint8), q2.view(torch.uint8)) and torch.equal(s, s2)

@@ -14,7 +14,7 @@ import torch
 
 from sharar.target import QWEN38, Target
 from sharar.engine.context import ForwardContext
-from sharar.kernels import ops, stable
+from sharar.kernels import gdn_verify, ops, stable
 from sharar.kernels.conv1d import causal_conv1d_fn, causal_conv1d_update
 from sharar.kernels.fla.chunk import chunk_gated_delta_rule
 from sharar.kernels.fla.fused_gdn_gating import fused_gdn_gating
@@ -271,7 +271,8 @@ class GatedDeltaNet:
             return window_verify(window.layout, window.layer[self.layer_id], q, k, v, a, b, self.A_log, self.dt_bias,
                                  ctx.seq_slots, s_len, ring["ring_k"], ring["ring_u"], ring["ring_g"],
                                  norm=self._window_norm(z))
-        core = fused_sigmoid_gating_delta_rule_update(
+        recurrence = gdn_verify.verify if gdn_verify.supports(k, v, ssm_states) else fused_sigmoid_gating_delta_rule_update
+        core = recurrence(
             A_log=self.A_log, dt_bias=self.dt_bias, softplus_beta=1.0, softplus_threshold=20.0,
             q=q, k=k, v=v, a=a, b=b,
             initial_state_source=ssm_states, initial_state_indices=ctx.seq_slots,
