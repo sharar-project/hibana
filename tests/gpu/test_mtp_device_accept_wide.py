@@ -63,4 +63,7 @@ def test_wide_bucket_device_round_matches_host_round(runtime, batch, rounds):
 def test_wide_bucket_pools_are_clean_after_device_rounds(runtime):
     ex, prompts = runtime
     run_rounds(ex, prompts, [SamplingParams(max_new_tokens=20, ignore_eos=True)] * 8, rounds=6, device_accept=True)
+    # the prompts' chunk-end snapshots stay cached (unlocked) after release; nothing else may hold pages or slots
+    assert ex.cache.stats()["locks"]["total"] == 0
+    ex.flush_cache()
     assert ex.kv_pool.free_count == 35000 - 1 and ex.state_pool.free_count == 24 - 1
