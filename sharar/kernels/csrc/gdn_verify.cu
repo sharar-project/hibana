@@ -98,12 +98,17 @@ __device__ __forceinline__ void store_row(T* __restrict__ dst, const float (&h)[
 constexpr int PITCH = K + 4;
 
 __device__ __forceinline__ void load_rows(float (&h)[K], const float* __restrict__ rows, float* tile, int lane) {
+  float4 next[8];  // the next pass's pieces, in flight while this pass's go through the tile
+#pragma unroll
+  for (int i = 0; i < 8; ++i) next[i] = __ldcs(reinterpret_cast<const float4*>(rows + i * K) + lane);
 #pragma unroll
   for (int pass = 0; pass < 4; ++pass) {
 #pragma unroll
-    for (int i = 0; i < 8; ++i)
-      *reinterpret_cast<float4*>(tile + i * PITCH + 4 * lane) =
-          __ldcs(reinterpret_cast<const float4*>(rows + (pass * 8 + i) * K) + lane);
+    for (int i = 0; i < 8; ++i) *reinterpret_cast<float4*>(tile + i * PITCH + 4 * lane) = next[i];
+    if (pass < 3) {
+#pragma unroll
+      for (int i = 0; i < 8; ++i) next[i] = __ldcs(reinterpret_cast<const float4*>(rows + ((pass + 1) * 8 + i) * K) + lane);
+    }
     __syncwarp();
     if ((lane >> 3) == pass) {
       const float* r = tile + (lane & 7) * PITCH;
@@ -267,7 +272,7 @@ struct CommitParams {
 };
 
 __global__ void __launch_bounds__(THREADS) commit_kernel(const CommitParams p) {
-  __shared__ __align__(16) float sk[K];
+  __shared__ __align__(16) float sk[TB][K];
   __shared__ __align__(16) float tiles[THREADS / 32][8 * PITCH];
   const int r = blockIdx.x, lh = blockIdx.y, layer = lh / p.HV, hv = lh % p.HV, head = hv / (p.HV / p.H);
   const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, row = threadIdx.x;
@@ -277,18 +282,22 @@ __global__ void __launch_bounds__(THREADS) commit_kernel(const CommitParams p) {
   load_rows(h, p.state + layer * p.state_layer + slot * p.state_slot + (static_cast<int64_t>(hv) * V + 32 * warp) * K,
             tiles[warp], lane);
   const int64_t lb = static_cast<int64_t>(layer) * p.B + r;
-  for (int t = 0; t < count; ++t) {
-    if (warp == 0) {
-      const uint2 raw = *reinterpret_cast<const uint2*>(p.raw_k + ((lb * p.H + head) * p.S + t) * K + 4 * lane);
+  for (int t0 = 0; t0 < count; t0 += TB) {
+    const int tn = min(TB, count - t0);
+    // warp w normalizes the keys of tokens w, w + 4, ... (the verify's `l2norm4`), then every lane runs them in turn
+    for (int j = warp; j < tn; j += THREADS / 32) {
+      const uint2 raw = *reinterpret_cast<const uint2*>(p.raw_k + ((lb * p.H + head) * p.S + t0 + j) * K + 4 * lane);
       const __nv_bfloat162* r2 = reinterpret_cast<const __nv_bfloat162*>(&raw);
       float x[4] = {__low2float(r2[0]), __high2float(r2[0]), __low2float(r2[1]), __high2float(r2[1])};
       l2norm4(x);
-      *reinterpret_cast<float4*>(sk + 4 * lane) = make_float4(x[0], x[1], x[2], x[3]);
+      *reinterpret_cast<float4*>(sk[j] + 4 * lane) = make_float4(x[0], x[1], x[2], x[3]);
     }
-    const int64_t gi = (lb * p.HV + hv) * p.S + t;
-    const float v = __bfloat162float(p.raw_v[gi * V + row]);
     __syncthreads();
-    step(h, sk, __expf(p.gates[gi]), v, p.betas[gi]);
+#pragma unroll 1
+    for (int j = 0; j < tn; ++j) {
+      const int64_t gi = (lb * p.HV + hv) * p.S + t0 + j;
+      step(h, sk[j], __expf(p.gates[gi]), __bfloat162float(p.raw_v[gi * V + row]), p.betas[gi]);
+    }
     __syncthreads();
   }
   float* dst = p.inplace ? p.out + layer * p.state_layer + slot * p.state_slot + (static_cast<int64_t>(hv) * V + 32 * warp) * K
