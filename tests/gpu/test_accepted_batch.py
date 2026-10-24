@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from sharar.cache.snapshot import Snapshot
+
 from sharar.engine.contracts import VerifiedFeatures
 from sharar.engine.sampler import SamplingParams
 from sharar.proposers.parallel import DraftState
@@ -109,7 +111,7 @@ def test_real_projections_against_fp32_oracle_and_private_ring_boundaries(runtim
             p.features[slot, :min(p.window, start + count)].fill_(.25)
             reqs.append(SimpleNamespace(proposer_state=DraftState(slot, end=start, pending=77),
                         committed_len=start + count, finished=row % 2 == 0, cache_enabled=True,
-                        checkpoints={start + count: checkpoint_slots[row]}, cache_auxiliary={}))
+                        private={start + count: Snapshot(checkpoint_slots[row], start + count)}))
         for keys, values in p.caches:
             keys[guards] = -37
             values[guards] = 37
@@ -130,7 +132,7 @@ def test_real_projections_against_fp32_oracle_and_private_ring_boundaries(runtim
         for req, tokens in zip(reqs, emitted):
             assert req.proposer_state.end == req.committed_len
             assert req.proposer_state.pending == (None if req.finished else tokens[-1])
-            handle = req.cache_auxiliary[req.committed_len][p.cache_identity]
+            handle = req.private[req.committed_len].auxiliary[p.cache_identity]
             start, end, retained = p.feature_cache.get(handle)
             ring = torch.arange(start, end, device='cuda') % p.window
             assert torch.equal(retained, p.features[req.proposer_state.slot, ring])

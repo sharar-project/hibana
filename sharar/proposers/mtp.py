@@ -18,7 +18,6 @@ class MtpState:
     last_hidden: torch.Tensor | None = None
     pending_token: int | None = None
     pending_hidden: torch.Tensor | None = None
-    valid_prefix: bool = True
 
 
 def draft_argmax(head, hidden: torch.Tensor) -> torch.Tensor:
@@ -90,16 +89,18 @@ class MtpProposer:
         norm_rows = result["norm"]
         n, end = len(new_ids), start + len(new_ids)
         if start and state.last_hidden is None:
-            cached = req.match.node.auxiliary.get(self.cache_identity) if req.match is not None else None
+            # The snapshot the request resumed from: its lock keeps it (and this row) until this chunk is ingested.
+            snap = req.match.snapshot if req.match is not None else None
+            cached = snap.auxiliary.get(self.cache_identity) if snap is not None else None
             if cached is not None and cached[0] == start:
                 state.last_hidden, state.draft_pos = cached[1], start
                 self.cache_hits += 1
             else:
-                state.valid_prefix = False
+                # No row for the resume position (a snapshot from an SSD store written without it): the chunk's own
+                # first row stands in for it, so one draft KV row is approximate and the request keeps drafting.
+                state.last_hidden, state.draft_pos = norm_rows[0], start
                 self.cache_fallbacks += 1
         first = max(1, start)
-        if start > 0 and state.last_hidden is None:
-            first = start + 1
         if first < end:
             toks = torch.tensor(new_ids[first - start:], dtype=torch.int64, device=self.context.device)
             if first == start:
@@ -116,13 +117,11 @@ class MtpProposer:
         self._checkpoint(req, start, end, norm_rows)
 
     def _checkpoint(self, req, start, end, norm_rows):
-        state = self._state(req)
-        # Interior state checkpoints plus only the latest end feature.
-        req.cache_auxiliary = {p: value for p, value in req.cache_auxiliary.items() if p in req.checkpoints}
-        if state.valid_prefix:
-            for position in (*req.checkpoints, end):
-                if start < position <= end:
-                    req.cache_auxiliary[position] = {self.cache_identity: (position, norm_rows[position - start - 1].clone())}
+        """The row each of this prefill forward's snapshots (the request's private ones, in (start, end]) resumes the
+        draft from: the final-norm row of the position before it."""
+        for position, snap in getattr(req, "private", {}).items():
+            if start < position <= end:
+                snap.auxiliary[self.cache_identity] = (position, norm_rows[position - start - 1].clone())
 
     def start(self, req, token):
         state = self._state(req)
@@ -130,7 +129,7 @@ class MtpProposer:
         state.pending_hidden = state.last_hidden.unsqueeze(0)
 
     def ready(self, req):
-        return isinstance(req.proposer_state, MtpState) and req.proposer_state.valid_prefix and req.proposer_state.pending_token is not None
+        return isinstance(req.proposer_state, MtpState) and req.proposer_state.pending_token is not None
 
     def propose(self, requests, pages, inputs, *, graphs, depth=None):
         """[batch, depth] drafts, one sequential head step each (depth: the round's verify depth, else k)."""
@@ -182,7 +181,7 @@ class MtpProposer:
             state = self._state(req)
             count = len(tokens)
             if (not 1 <= count <= self.k + 1 or state.pending_token is None
-                    or state.pending_hidden is None or not state.valid_prefix
+                    or state.pending_hidden is None
                     or state.draft_pos != req.committed_len - count
                     or features.norm is None or features.norm.shape[0] <= row
                     or features.norm.shape[1] < count):
@@ -211,7 +210,6 @@ class MtpProposer:
         # be target-conditioned, including the fully accepted bonus input.
         self.head.write_kv(inputs, hidden, positions, req.pages[start:end])
         state.last_hidden = norm[-1].clone()
-        self._checkpoint(req, start, end, norm)
         state.pending_token = None if req.finished else int(emitted[-1])
         state.pending_hidden = None if req.finished else features.norm[row, len(emitted) - 1:len(emitted)]
         state.draft_pos = req.committed_len
@@ -233,7 +231,7 @@ class MtpProposer:
         if not 1 <= len(requests) <= self.context.max_batch:
             raise ValueError("invalid MTP feedback batch")
         states = [self._state(req) for req in requests]
-        if any(s.pending_token is None or s.pending_hidden is None or not s.valid_prefix or s.draft_pos != req.committed_len
+        if any(s.pending_token is None or s.pending_hidden is None or s.draft_pos != req.committed_len
                for s, req in zip(states, requests)):
             raise ValueError("MTP feedback does not follow the pending input")
         self._feedback_buffers()["pending"][:len(requests)].copy_(torch.cat([s.pending_hidden for s in states]))
@@ -261,7 +259,7 @@ class MtpProposer:
         fb["last"][:b].copy_(rows[torch.arange(b, device=starts.device), (counts - 1).clamp(min=0)])
 
     def accepted_publish(self, requests, emitted):
-        """The host half of `_accepted` after the device feedback pass landed: pending input, checkpoints."""
+        """The host half of `_accepted` after the device feedback pass landed: the pending input."""
         fb = self._feedback_buffers()
         last = fb["last"][:len(requests)].clone()  # the buffers belong to the next round's pass
         for i, (req, tokens) in enumerate(zip(requests, emitted)):
@@ -270,7 +268,6 @@ class MtpProposer:
             if not 1 <= count <= self.k + 1 or state.draft_pos != req.committed_len - count:
                 raise ValueError("MTP feedback does not follow the pending input")
             state.last_hidden = last[i]
-            self._checkpoint(req, req.committed_len - count, req.committed_len, fb["rows"][i, :count])
             state.pending_token = None if req.finished else int(tokens[-1])
             state.pending_hidden = None if req.finished else last[i:i + 1]
             state.draft_pos = req.committed_len
@@ -278,8 +275,13 @@ class MtpProposer:
     def release(self, req):
         req.proposer_state = None
 
-    def prepare_release(self, req):
-        pass  # features are retained at checkpoint creation/accepted commit
+    def prepare_release(self, req, snapshot):
+        """The row the reply end (`snapshot`, the request's own slot at its committed length) resumes the draft from:
+        the final-norm row of the position before it, the last one the request committed."""
+        state = req.proposer_state
+        if isinstance(state, MtpState) and state.last_hidden is not None and state.draft_pos == snapshot.position:
+            # its own copy: last_hidden can be a row of a round's [batch, hidden] buffer, which the snapshot would pin
+            snapshot.auxiliary[self.cache_identity] = (snapshot.position, state.last_hidden.clone())
 
     def capture_graphs(self, log=None, depths=None):
         """One draft step's graphs serve every depth (`depths`, the verify graphs' pairs, needs nothing more)."""

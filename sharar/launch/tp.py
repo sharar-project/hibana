@@ -197,7 +197,7 @@ def serve(s: Settings, w3: Path | None, log=print) -> int:
 
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
-    guard.start_thread(log=log, stop=lambda: on_signal(signal.SIGTERM, None))
+    guard.start_thread(log=log, stop=lambda: on_signal(signal.SIGTERM, None), floor=guard.guard_kib(s.values))
     starts: list[float] = []
     while True:
         mirror(peer_host)

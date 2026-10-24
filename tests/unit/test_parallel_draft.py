@@ -75,7 +75,7 @@ def test_prospective_draft_budget_reduces_optional_cache_before_allocation(monke
     control = book.plan(state_slot_target=1000)
     draft = book.plan(future_bytes=10 * 2**30, extra_page_bytes=4096, state_slot_target=1000)
     assert draft.kv_tokens < control.kv_tokens and draft.state_slots < control.state_slots
-    assert draft.reserved_bytes == control.reserved_bytes + 10 * 2**30
+    assert draft.after_pools_bytes == control.after_pools_bytes + 10 * 2**30
 
 
 def test_a_draft_takes_its_mask_token_and_taps_from_its_checkpoint(tmp_path):

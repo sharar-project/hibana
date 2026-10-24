@@ -13,10 +13,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from sharar.launch import guard
 from sharar.launch.settings import Settings
 
 HEADROOM = 10 * 2**30  # left free after a download: logs, JIT caches, stored prefixes
-MIN_AVAILABLE_KIB = 40 * 2**20  # the measured streaming-load peak plus the 16 GiB host floor
+LOAD_PEAK_KIB = 24 * 2**20  # the streaming load's measured MemAvailable drop, with margin (qwen38_config.WEIGHT_LOAD_PEAK_BYTES)
 
 
 class PreflightError(RuntimeError):
@@ -31,8 +32,10 @@ def meminfo() -> dict[str, int]:
     return out
 
 
-def check_host() -> dict[str, str]:
-    """One NVIDIA GB10 (SM 12.1), driver 580+, about 128 GB unified memory and 40 GiB of it available."""
+def check_host(floor_kib: int | None = None) -> dict[str, str]:
+    """One NVIDIA GB10 (SM 12.1), driver 580+, about 128 GB unified memory, and the load's 24 GiB available above
+    the host floor (`floor_kib`, default `guard.floor_kib()`: 30 GiB in all at the default 6 GiB floor)."""
+    need = LOAD_PEAK_KIB + (guard.floor_kib() if floor_kib is None else floor_kib)
     if platform.machine() != "aarch64":
         raise PreflightError("host architecture must be aarch64 (a DGX Spark)")
     if shutil.which("nvidia-smi") is None:
@@ -49,8 +52,8 @@ def check_host() -> dict[str, str]:
     mem = meminfo()
     if mem["MemTotal"] < 120_000_000:
         raise PreflightError("at least 120 GB host memory is required")
-    if mem["MemAvailable"] < MIN_AVAILABLE_KIB:
-        raise PreflightError(f"at least 40 GiB must be available before the model loads (have {mem['MemAvailable'] // 2**20} GiB); "
+    if mem["MemAvailable"] < need:
+        raise PreflightError(f"at least {need // 2**20} GiB must be available before the model loads (have {mem['MemAvailable'] // 2**20} GiB); "
                              "something else is using the memory")
     if not Path("/usr/local/cuda/bin/nvcc").is_file():
         raise PreflightError("the CUDA 13 toolkit is missing from /usr/local/cuda (DGX OS ships it): the GB10 kernels compile on first use")

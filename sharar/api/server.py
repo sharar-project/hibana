@@ -10,6 +10,8 @@ every step. All GPU work stays on the engine thread.
 from __future__ import annotations
 
 import asyncio
+import bisect
+import contextlib
 import dataclasses
 import json
 import time
@@ -22,6 +24,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from jinja2 import TemplateError
 
 from sharar import target as targets
+from sharar.cache.ledger import after_plan_bytes
 from sharar.distributed import get_tp_info
 from sharar.api import messages as messages_api
 from sharar.api import refusal_guard
@@ -39,6 +42,19 @@ from sharar.tokenizer import SnapshotTokenizer
 
 
 MAX_CHOICES = 16  # n per chat request: the scheduler queues what exceeds four running
+
+
+def _memory_gib() -> dict:
+    """What the process holds beyond the ledger's pools: PyTorch's allocated and reserved bytes, now and at their peak
+    (reserved only grows: freed blocks stay cached), and the process's resident host memory."""
+    import os
+    import torch
+    gib = lambda v: round(v / 2**30, 2)  # noqa: E731
+    with open("/proc/self/statm") as f:
+        rss = int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    return {"allocated": gib(torch.cuda.memory_allocated()), "reserved": gib(torch.cuda.memory_reserved()),
+            "max_allocated": gib(torch.cuda.max_memory_allocated()), "max_reserved": gib(torch.cuda.max_memory_reserved()),
+            "rss": gib(rss)}
 
 
 def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, describe: dict, grammars: Grammars | None = None) -> FastAPI:
@@ -128,10 +144,19 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             if finished:
                 return ids, detok.text, reason
 
-    def _chat_prompt(messages: list[dict], tools: list | None, thinking: bool, kwargs: dict) -> tuple[list[int], bool]:
-        """Render and encode a chat. Returns (ids, whether the output starts inside a thinking block)."""
-        rendered = tmpl.render(fold_system_messages(_tool_arguments_as_objects(messages)), enable_thinking=thinking, tools=tools, **kwargs)
-        return tok.encode(rendered), thinking and rendered.rstrip().endswith("<think>")
+    def _chat_prompt(messages: list[dict], tools: list | None, thinking: bool, kwargs: dict,
+                     boundary: bool = True) -> tuple[list[int], bool, int]:
+        """Render and encode a chat. Returns (ids, whether the output starts inside a thinking block, and with
+        `boundary` the token position where its last message starts: `SamplingParams.message_boundary`, 0 if unknown).
+        The boundary costs one more render, of the conversation without its last message, and no second encode."""
+        folded = fold_system_messages(_tool_arguments_as_objects(messages))
+        head = ""  # rendered before the full prompt: the template's last render is the one tests and logs look at
+        if boundary and len(folded) > 1:
+            with contextlib.suppress(Exception):  # a template that rejects a partial conversation: no boundary
+                head = tmpl.render(folded[:-1], add_generation_prompt=False, enable_thinking=thinking, tools=tools, **kwargs)
+        rendered = tmpl.render(folded, enable_thinking=thinking, tools=tools, **kwargs)
+        ids, at = _message_boundary(tok, rendered, head)
+        return ids, thinking and rendered.rstrip().endswith("<think>"), at
 
     async def _submit(ids: list[int], params) -> Ticket:
         try:
@@ -370,7 +395,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         messages, stopped = _guard(messages, body)
         if stopped is not None:
             return _chat_stopped(body, refusal_guard.stop_message(stopped))
-        ids, in_reasoning = _chat_prompt(messages, tools, thinking, kwargs)
+        ids, in_reasoning, boundary = _chat_prompt(messages, tools, thinking, kwargs)
         # Without max_tokens (or max_completion_tokens) a reply may run to the end of the context window, as in the
         # OpenAI API, vLLM and SGLang: a fixed default cut off clients that leave it unset (Aider) mid-thought.
         limit = describe.get("context_length", targets.DEFAULT_TARGET.context_length)
@@ -379,6 +404,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             # defaults). OpenCode sends no sampling fields; greedy thinking looped to max_tokens in its runs.
             body = {**body, "temperature": 1.0}
         params = _sampling_from(body, max_default=max(1, limit - len(ids)))
+        params.message_boundary = boundary
         if spec is not None:
             params.constraint = await asyncio.to_thread(_constraint, spec, tools, in_reasoning)
         stop = _stops(body)
@@ -503,7 +529,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         except EngineUnavailable:
             return error(503, "overloaded_error", "engine unavailable")
 
-    def _messages_prompt(body: dict, choice: str) -> tuple[messages_api.MessagesRequest, list[dict] | None, list[int], bool]:
+    def _messages_prompt(body: dict, choice: str, boundary: bool = True) -> tuple[messages_api.MessagesRequest, list[dict] | None, list[int], bool, int]:
         req = messages_api.parse_request(body)
         req.messages, req.stopped = _guard(req.messages, body)
         kwargs, thinking = _template_kwargs(body)
@@ -511,10 +537,10 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             thinking = req.thinking
         tools = None if choice == "none" else req.tools
         try:
-            ids, in_reasoning = _chat_prompt(req.messages, tools, thinking, kwargs)
+            ids, in_reasoning, at = _chat_prompt(req.messages, tools, thinking, kwargs, boundary)
         except TemplateError as exc:
             raise InvalidRequest(f"the conversation cannot be rendered: {exc}")
-        return req, tools, ids, in_reasoning
+        return req, tools, ids, in_reasoning, at
 
     @app.post("/v1/messages")
     async def messages(http: HttpRequest):
@@ -534,7 +560,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         max_tokens = body.get("max_tokens")
         if max_tokens is None:
             raise InvalidRequest("max_tokens is required")
-        req, tools, ids, in_reasoning = _messages_prompt(body, choice)
+        req, tools, ids, in_reasoning, boundary = _messages_prompt(body, choice)
         messages_stats["server_tools_ignored"] += req.ignored_tools
         if req.stopped is not None:
             return _messages_stopped(body, model, refusal_guard.stop_message(req.stopped))
@@ -548,6 +574,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         # chat defaults). Claude Code sends no sampling fields; greedy thinking looped to max_tokens in its sessions.
         sampling.setdefault("temperature", 1.0)
         params = _sampling_from({**sampling, "max_tokens": max_tokens})
+        params.message_boundary = boundary
         if forced is not None:
             if not tools:
                 raise InvalidRequest("a tool_choice that requires a call needs tools")
@@ -618,7 +645,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     async def count_tokens(http: HttpRequest):
         async def count(body: dict, http: HttpRequest):
             # A forced tool_choice does not change the prompt.
-            _, _, ids, _ = _messages_prompt(body, messages_api.tool_choice(body))
+            _, _, ids, _, _ = _messages_prompt(body, messages_api.tool_choice(body), boundary=False)
             return {"input_tokens": len(ids)}
         return await _messages_errors(count, http)
 
@@ -629,6 +656,23 @@ def _text_of(content) -> str:
     if isinstance(content, list):
         return "".join(part.get("text", "") for part in content if isinstance(part, dict))
     return content if isinstance(content, str) else ""
+
+
+def _message_boundary(tok, rendered: str, head: str) -> tuple[list[int], int]:
+    """Encode `rendered` and find where its last message starts: the token at which `head` (the render of the
+    conversation without its last message) ends. With a tokenizer that reports offsets (`encode_with_offsets`), the token
+    that starts exactly where the head ends, from the one encode; otherwise the head encoded on its own, if
+    its tokens are a prefix of the prompt's. 0 when the head is not a prefix of the rendered text or no token starts
+    where it ends."""
+    with_offsets = getattr(tok, "encode_with_offsets", None)
+    if not head or len(head) >= len(rendered) or not rendered.startswith(head):
+        return tok.encode(rendered), 0
+    if with_offsets is not None:
+        ids, offsets = with_offsets(rendered)
+        i = bisect.bisect_left([start for start, _ in offsets], len(head))
+        return ids, i if 0 < i < len(ids) and offsets[i][0] == len(head) else 0
+    ids, prefix = tok.encode(rendered), list(tok.encode(head))
+    return ids, len(prefix) if 0 < len(prefix) < len(ids) and list(ids[:len(prefix)]) == prefix else 0
 
 
 def fold_system_messages(messages: list[dict]) -> list[dict]:
@@ -794,6 +838,8 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "kv_pages": ex.kv_pool.num_pages,
         "state_slots": ex.state_pool.num_slots,
         "ledger_gib": {k: round(v / 2**30, 2) for k, v in ex.ledger.entries.items()},
+        "memory_gib": _memory_gib(),
+        "after_plan_gib": {k: round(v / 2**30, 2) for k, v in after_plan_bytes(ex.max_batch).items()},
         "speculative": {"algorithm": ex.spec.proposer.requirements.name, "num_draft_tokens": spec,
                         "depths_by_batch": ex.spec.depth_policy.depths,
                         "adaptive_step_cost": getattr(ex.spec.depth_policy, "step_cost", None),  # None: fixed depth

@@ -138,33 +138,39 @@ def run(ex, ids, output: Path):
                              'committed_len': req.committed_len}
     try:
         ex.flush_cache()
+        # Every run but the last starts cold: all are admitted before the cold run's checkpoint puts its snapshot in
+        # the tree, and none of the others is cached itself. The final prompt snapshot cannot serve its own last token:
+        # the boundary is the prompt's last chunk end, its last 64-token grid point before the end.
         cold = request(ids)
-        forward('cold', cold)
-        # The final prompt snapshot cannot serve its own last token.
-        boundary = max(p for p in cold.checkpoints if p < len(ids))
-        checkpoint = cold.checkpoints[boundary]
-        cached_ssm = ex.state_pool.ssm_all[:, checkpoint].clone()
-        cached_conv = ex.state_pool.conv_all[:, checkpoint].clone()
+        boundary = max(p for p, spare in ex._checkpoint_positions(cold, 0, len(ids)) if not spare)
+        live, rounded, restored = request(ids), request(ids), request(ids)
+        for req in (live, rounded, restored):
+            req.cache_enabled = False
 
-        live = request(ids)
         ex.prefill(live, boundary)
         prefix_ssm = ex.state_pool.ssm_all[:, live.slot].clone()
         prefix_conv = ex.state_pool.conv_all[:, live.slot].clone()
-        state_rows = []
-        for i, layer in enumerate(ex.state_pool.layer_ids):
-            state_rows.append({'layer': layer, 'checkpoint_vs_live_ssm': difference(cached_ssm[i], prefix_ssm[i]),
-                               'checkpoint_vs_live_conv': difference(cached_conv[i], prefix_conv[i])})
         forward('live_split', live)
 
-        rounded = request(ids)
         ex.prefill(rounded, boundary)
         ex.state_pool.ssm_all[:, rounded.slot].copy_(prefix_ssm.to(torch.bfloat16).float())
         ex.state_pool.conv_all[:, rounded.slot].copy_(prefix_conv)
         forward('rounded_live_split', rounded)
 
+        forward('cold', cold)
+        node = ex.cache.node_at(ids[:boundary])
+        assert node is not None and node.snapshot is not None and cold.lock is not None and cold.lock.node is node, \
+            "the cold run's last chunk end is in the tree, locked by it"
+        checkpoint = node.snapshot.slot
+        cached_ssm = ex.state_pool.ssm_all[:, checkpoint].clone()
+        cached_conv = ex.state_pool.conv_all[:, checkpoint].clone()
+        state_rows = []
+        for i, layer in enumerate(ex.state_pool.layer_ids):
+            state_rows.append({'layer': layer, 'checkpoint_vs_live_ssm': difference(cached_ssm[i], prefix_ssm[i]),
+                               'checkpoint_vs_live_conv': difference(cached_conv[i], prefix_conv[i])})
+
         # A manual checkpoint restore uses the cold run's exact KV and state,
         # without matching, locking or ownership transfer through the radix.
-        restored = request(ids)
         for lid in ex.kv_pool.layer_ids:
             ex.kv_pool.k[lid][restored.pages[:boundary]] = ex.kv_pool.k[lid][cold.pages[:boundary]]
             ex.kv_pool.v[lid][restored.pages[:boundary]] = ex.kv_pool.v[lid][cold.pages[:boundary]]

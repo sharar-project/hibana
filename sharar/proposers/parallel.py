@@ -145,32 +145,35 @@ class ParallelProposer:
         self.model.context_kv(hidden, positions, self.caches, state.slot * self.pitch + ring)
         state.end = start + len(hidden)
 
-    def _save(self, req, position, *, slot=None):
+    def _save(self, req, snap):
+        """Keep the feature window ending at `snap`'s position for it (a handle in `snap.auxiliary`, bound to its slot,
+        so the window moves and dies with the slot): one of this prefill forward's snapshots (the request's private
+        ones), or at release the reply end (the request's own slot)."""
         state = self._state(req)
-        if not state.valid or not req.cache_enabled:
+        if snap is None or not state.valid or not req.cache_enabled or state.end != snap.position:
             return
-        req.cache_auxiliary = {p: value for p, value in req.cache_auxiliary.items() if p in req.checkpoints}
+        position = snap.position
         start = max(0, position - self.window)
-        if slot is None:
-            slot = req.checkpoints.get(position, getattr(req, 'slot', None))
-        # Prompt completion and release can save the same immutable prefix.
-        # Reuse its live handle so a duplicate window does not evict another
-        # checkpoint's features while the target snapshot is still cached.
-        handle = req.cache_auxiliary.get(position, {}).get(self.cache_identity)
+        # A window already saved for this span and slot keeps its handle, so a
+        # duplicate does not evict another snapshot's features.
+        handle = snap.auxiliary.get(self.cache_identity)
         cached = self.feature_cache.get(handle)
         same_slot = (not isinstance(self.feature_cache, CheckpointFeatureCache)
-                     or self.feature_cache.slots.get(slot) == handle)
+                     or self.feature_cache.slots.get(snap.slot) == handle)
         if cached is not None and cached[:2] == (start, position) and same_slot:
             return
         ring = torch.arange(start, position, device=self.context.device) % self.window
-        handle = self.feature_cache.put(start, position, self.features[state.slot, ring], slot=slot)
+        handle = self.feature_cache.put(start, position, self.features[state.slot, ring], slot=snap.slot)
         if handle is not None:
-            req.cache_auxiliary[position] = {self.cache_identity: handle}
+            snap.auxiliary[self.cache_identity] = handle
+        else:
+            snap.auxiliary.pop(self.cache_identity, None)
 
     def ingest_prefill(self, req, ids, start, result):
         state = self._state(req)
         if start and state.end == 0:
-            handle = req.match.node.auxiliary.get(self.cache_identity) if req.match is not None else None
+            # The snapshot the request resumed from: its lock keeps it (and its window) until this chunk is ingested.
+            handle = req.match.snapshot.auxiliary.get(self.cache_identity) if req.match is not None else None
             cached = self.feature_cache.get(handle)
             if cached is not None and cached[1] == start:
                 self._write(state, cached[0], cached[2])
@@ -180,7 +183,7 @@ class ParallelProposer:
                 self.cache_fallbacks += 1
         end = start + len(ids)
         # Split at snapshot boundaries before the ring overwrites their history.
-        bounds = sorted({p for p in req.checkpoints if start < p < end} | {end})
+        bounds = sorted({p for p in req.private if start < p < end} | {end})
         projected = self.model.project_features(result['features'])
         offset = start
         for limit in bounds:
@@ -188,14 +191,13 @@ class ParallelProposer:
             # window is needed at this boundary; absolute RoPE positions stay.
             left = max(offset, limit - self.window)
             self._write(state, left, projected[left - start:limit - start])
-            if limit in req.checkpoints:
-                self._save(req, limit)
+            if limit in req.private:
+                self._save(req, req.private[limit])
             offset = limit
 
     def start(self, req, token):
         state = self._state(req)
         state.pending = token
-        self._save(req, state.end)  # prompt snapshot (also used by one-token primers)
 
     def ready(self, req):
         state = req.proposer_state
@@ -284,7 +286,7 @@ class ParallelProposer:
         if features.layers is None or any(features.layers[lid].ndim != 3 or features.layers[lid].shape[0] != len(requests)
                                          or features.layers[lid].shape[1] < max(counts) for lid in self.model.features):
             raise ValueError('accepted features do not cover the committed rows')
-        if len(requests) == 1 or any(count > self.window or any(start < p < req.committed_len for p in req.checkpoints)
+        if len(requests) == 1 or any(count > self.window or any(start < p < req.committed_len for p in req.private)
                                      for req, start, count in zip(requests, starts, counts)):
             for row, (req, tokens) in enumerate(zip(requests, emitted)):
                 self._accepted(req, tokens, features, row)
@@ -302,8 +304,8 @@ class ParallelProposer:
         self.model.context_kv(hidden, positions, self.caches, pages)
         for req, state, tokens in zip(requests, states, emitted):
             state.end = req.committed_len
-            if state.end in req.checkpoints:
-                self._save(req, state.end)
+            if state.end in req.private:
+                self._save(req, req.private[state.end])
             state.pending = None if req.finished else tokens[-1]
 
     # ---- device-resident acceptance (engine/accept_graphs.py) ----
@@ -319,7 +321,7 @@ class ParallelProposer:
         if (any(not isinstance(s, DraftState) or not s.valid or s.end != req.committed_len or s.end < 0
                 for s, req in zip(states, requests))
                 or len({s.slot for s in states}) != len(states)
-                or any(any(req.committed_len < p < req.committed_len + self.k + 1 for p in req.checkpoints) for req in requests)):
+                or any(any(req.committed_len < p < req.committed_len + self.k + 1 for p in req.private) for req in requests)):
             raise ValueError('accepted rows do not follow private draft prefixes')
         return [req.committed_len for req in requests], [s.slot for s in states]
 
@@ -351,26 +353,25 @@ class ParallelProposer:
             if not isinstance(state, DraftState) or not 1 <= len(tokens) <= self.k + 1 or state.end + len(tokens) != req.committed_len:
                 raise ValueError('accepted rows do not follow private draft prefixes')
             state.end = req.committed_len
-            if state.end in req.checkpoints:
-                self._save(req, state.end)
+            if state.end in req.private:
+                self._save(req, req.private[state.end])
             state.pending = None if req.finished else tokens[-1]
 
     def _accepted(self, req, emitted, features, row):
         count = len(emitted)
         start = req.committed_len - count
         if (self.feedback_graphs is not None and self._feedback_enabled and count in self.feedback_graphs.graphs
-                and not any(start < point < req.committed_len for point in req.checkpoints)):
+                and not any(start < point < req.committed_len for point in req.private)):
             self.feedback_graphs.run(req, emitted, features, row)
             return
         self.ingest_prefill(req, emitted, req.committed_len - count,
                             {'features': {lid: rows[row, :count] for lid, rows in features.layers.items()}})
         self._state(req).pending = None if req.finished else emitted[-1]
 
-    def prepare_release(self, req):
+    def prepare_release(self, req, snapshot):
         if isinstance(req.proposer_state, DraftState) and req.cacheable and req.reservation is None:
-            # StateManager transfers the committed slot at the endpoint and
-            # frees any duplicate endpoint checkpoint before radix insertion.
-            self._save(req, req.committed_len, slot=req.slot)
+            # StateManager inserts the request's own slot as the reply end (`snapshot`): its window goes with it.
+            self._save(req, snapshot)
 
     def release(self, req):
         if isinstance(req.proposer_state, DraftState):

@@ -34,7 +34,7 @@ def test_feedback_graphs_match_eager_and_keep_inputs_alive():
     for index, count in enumerate((16, 1, 3, 8, 2, 15, 4, 16, 1)):
         slot, start = index % 4 + 1, 10015 + index * 27
         state = SimpleNamespace(slot=slot, end=start, pending=-1)
-        req = SimpleNamespace(committed_len=start+count, proposer_state=state, checkpoints={}, finished=index==8)
+        req = SimpleNamespace(committed_len=start+count, proposer_state=state, private={}, finished=index==8)
         values = {lid:torch.randn(1, 16, 5120, dtype=torch.bfloat16, device='cuda') for lid in layers}
         emitted = list(range(200, 200+count))
         graphs.run(req, emitted, SimpleNamespace(layers=values), 0)

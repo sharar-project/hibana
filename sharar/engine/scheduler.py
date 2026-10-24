@@ -202,9 +202,18 @@ class Scheduler:
                         self.metrics.ttfts.append(req.ttft)
 
     def _admit(self) -> None:
+        """Admit from the queue head, one request at a time (FIFO): its SSD restore first (`prefetch`, where the
+        executor has one), then the pure check, then admission. The check budgets the head's own decode reserve and every
+        admitted request's outstanding one (SGLang's PrefillAdder: each may still generate up to `reserve_tokens`), so
+        a new request does not take the pages the running ones are about to decode into."""
+        prefetch = getattr(self.ex, "prefetch", None)  # not in ExecutionBackend: test executors lack it
         while self.queue and len(self.prefilling) + len(self.running) < self.cfg.max_running:
             req = self.queue[0]
-            reserve = self.ex.admission_reserve(req, self.cfg.reserve_tokens)
+            limit = self.cfg.reserve_tokens
+            reserve = self.ex.admission_reserve(req, limit) + sum(
+                self.ex.admission_reserve(r, limit) for r in (*self.prefilling, *self.running) if not r.finished)
+            if prefetch is not None and not prefetch(req.prefill_ids, reserve):
+                break  # its stored prefix is still coming back from the SSD
             if not self.ex.can_admit(req.prefill_ids, reserve):
                 break
             self.ex.admit(req.prompt_ids, req.params, req)

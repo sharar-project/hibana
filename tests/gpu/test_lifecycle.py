@@ -262,9 +262,12 @@ def test_unaligned_prefill_checkpoint_and_draft_cache_restore(setup, batched):
         ex.prefill(r, 1910 - 5 * i)
     ex.prefill_batch([(r, r.prefill_len - r.prefill_pos) for r in reqs])
     for i, r in enumerate(reqs):
+        # the first chunk's end (1910 - 5i, spare) and then the last chunk end on the second forward's own grid went
+        # into the tree as the request's lock moved; nothing is private between forwards
         start = 1910 - 5 * i
-        assert all((p - start) % 64 == 0 for p in r.checkpoints if p < len(ids))
-        assert all(torch.isfinite(ex.state_pool.ssm_all[:, slot]).all() for slot in r.checkpoints.values())
+        last = r.lock.node.snapshot
+        assert not last.spare and last.position > start and (last.position - start) % 64 == 0 and not r.private
+        assert torch.isfinite(ex.state_pool.ssm_all[:, last.slot]).all()
     ex.decode_step(reqs)
     assert all(r.finished and r.committed_len == 2173 for r in reqs)
     for r in reqs:

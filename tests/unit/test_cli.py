@@ -23,7 +23,7 @@ def home(monkeypatch, tmp_path):
     monkeypatch.setenv("SHARAR_HF_CACHE", str(tmp_path / "hf"))
     monkeypatch.setattr(ctl, "server_info", lambda port: None)
     monkeypatch.setattr(service, "running", lambda unit: False)
-    monkeypatch.setattr(preflight, "check_host", lambda: {"gpu": "GB10", "memory": "128 GiB"})
+    monkeypatch.setattr(preflight, "check_host", lambda floor_kib=None: {"gpu": "GB10", "memory": "128 GiB"})
     monkeypatch.setattr(preflight, "ensure_snapshots", lambda s, log=print, fetch=True: [])
     monkeypatch.setattr(preflight, "ensure_w3", lambda s, log=print, fetch=True: tmp_path / "w3" if s.get("SHARAR_W3_DECODE") == "1" else None)
     from sharar.launch import lxcfs
@@ -99,6 +99,13 @@ def test_cache_reports_the_gpu_cache_and_the_ssd_tier(home, monkeypatch, capsys)
     out = capsys.readouterr().out
     assert out.startswith("qwen38: serving") and "600 of 1,000 KV tokens cached" in out
     assert "4 prefixes, 1.5 of 200 GiB in /tmp/sharar-ssd; 2 restores (9,000 tokens)" in out
+    info["scheduler"]["cache"].update(locks={"total": 3, "request": 2, "restore": 1}, snapshots={"spare": 4, "not_spare": 7},
+                                      evicted={"slots": {"spare": 5, "not_spare": 1}, "kv": {"not_spare": 2}},
+                                      pruned=5, full_reprefills=1, branching_resumes=2,
+                                      draft_resumes={"hits": 9, "fallbacks": 0})
+    assert cli.main(["cache"]) == 0
+    assert ("locks: 3 (2 requests, 1 SSD restores); snapshots: 7 + 4 spare, 8 evicted; 5 dead-KV nodes pruned, "
+            "1 full re-prefills, 2 resumes at a branching point; drafter resumes 9 hits, 0 fallbacks") in capsys.readouterr().out
     del info["scheduler"]["cache"]["ssd"]
     assert cli.main(["cache"]) == 0 and "on in the settings but not running" in capsys.readouterr().out
 

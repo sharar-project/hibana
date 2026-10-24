@@ -1,10 +1,15 @@
-"""Feature ownership follows real target-slot and radix lifecycle operations."""
+"""Feature ownership follows real target-slot and radix lifecycle operations.
+
+Updated from main (no prompt-end copy; drafter metadata in `Snapshot.auxiliary`): a request's windows are bound to its
+private snapshots inside a prefill step, and to its own slot, the reply end, at release (`prepare_release`)."""
 from types import SimpleNamespace
 
 import pytest
 import torch
 
+from sharar.cache.snapshot import Snapshot
 from sharar.engine.sampler import SamplingParams
+from tests.unit.test_radix import snaps
 from sharar.proposers.parallel import CheckpointFeatureCache, DraftState, ParallelProposer
 from tests.unit.test_runtime_safety import tiny_executor
 
@@ -53,43 +58,52 @@ def test_reject_unowned_slot_and_oversize_before_replacing_features(monkeypatch)
 
 
 def seed(ex, p, ids):
+    """A prefilled one-token request (four tokens place no snapshot of their own) whose draft ring reached its end."""
     req = ex.admit(ids, SamplingParams(max_new_tokens=1))
     ex.prefill(req)
     req.proposer_state = DraftState(0, end=req.committed_len)
-    p._save(req, req.committed_len)
     return req
 
 
-def test_release_moves_endpoint_features_to_committed_slot_and_discards_duplicate(monkeypatch):
+def release(ex, p, req):
+    """`Executor.release`: the drafter attaches its window to the reply end; returns that handle."""
+    handles = []
+
+    def attach(r, snapshot):
+        p.prepare_release(r, snapshot)
+        handles.append(snapshot.auxiliary.get(p.cache_identity))
+    ex.state.release(req, attach=attach)
+    return handles[0] if handles else None
+
+
+def test_release_binds_the_reply_end_window_to_its_slot_and_a_duplicate_frees_its_own(monkeypatch):
     ex, p, features = setup(monkeypatch)
     ids = [1, 2, 3, 4]
     req = seed(ex, p, ids)
-    duplicate_slot = req.checkpoints[4]
-    old = req.cache_auxiliary[4][p.cache_identity]
-    assert features.slots[duplicate_slot] == old
-    p.prepare_release(req)
-    endpoint = req.cache_auxiliary[4][p.cache_identity]
-    assert features.slots[req.slot] == endpoint and endpoint != old
-    ex.state.release(req)
-    assert features.get(old) is None
+    slot = req.slot
+    endpoint = release(ex, p, req)
     match = ex.cache.match(ids, touch=False)
-    assert match.node.auxiliary[p.cache_identity] == endpoint
+    assert match.length == 4 and match.snapshot_slot == slot and features.slots[slot] == endpoint
+    assert match.snapshot.auxiliary[p.cache_identity] == endpoint
     assert torch.equal(features.get(endpoint)[2], p.features[0])
     # A duplicate radix insertion frees the incoming slot and its features,
     # preserving the existing snapshot and its own matching payload.
     req = seed(ex, p, ids)
-    p.prepare_release(req)
-    incoming = req.cache_auxiliary[4][p.cache_identity]
-    ex.state.release(req)
-    assert features.get(incoming) is None and features.get(endpoint) is not None
+    incoming = release(ex, p, req)
+    assert incoming != endpoint and features.get(incoming) is None and features.get(endpoint) is not None
     ex.flush_cache()
     assert features.bytes == 0 and not features.entries
 
 
 @pytest.mark.parametrize('action', ['cancel', 'retract', 'failed'])
 def test_unpublished_request_cleanup_releases_features(monkeypatch, action):
+    """A window bound to one of a request's private snapshots (inside a prefill step) goes with it when the request
+    goes without being cached."""
     ex, p, features = setup(monkeypatch)
-    req = seed(ex, p, [1, 2, 3, 4])
+    req = ex.admit([1, 2, 3, 4], SamplingParams(max_new_tokens=1))
+    slot = ex.state_pool.alloc()
+    req.private[3] = Snapshot(slot, 3)
+    req.private[3].auxiliary[p.cache_identity] = features.put(0, 3, p.features[0, :3], slot=slot)
     assert features.bytes
     if action == 'retract':
         ex.state.retract(req)
@@ -104,10 +118,9 @@ def test_unpublished_request_cleanup_releases_features(monkeypatch, action):
 def test_locked_prefix_keeps_features_through_flush_until_reader_releases(monkeypatch):
     ex, p, features = setup(monkeypatch)
     req = seed(ex, p, [1, 2, 3, 4])
-    p.prepare_release(req)
-    ex.state.release(req)
+    release(ex, p, req)
     reader = ex.admit([1, 2, 3, 4, 5], SamplingParams(max_new_tokens=1))
-    handle = reader.match.node.auxiliary[p.cache_identity]
+    handle = reader.match.snapshot.auxiliary[p.cache_identity]
     ex.flush_cache()
     assert ex.cache.flushing and features.get(handle) is not None
     reader.cacheable = False
@@ -121,8 +134,8 @@ def test_interior_snapshot_eviction_drops_its_features_only(monkeypatch):
     first, last = ex.state_pool.alloc(), ex.state_pool.alloc()
     a = features.put(0, 2, p.features[0, :2], slot=first)
     b = features.put(0, 4, p.features[0], slot=last)
-    ex.cache.insert([1, 2, 3, 4], ex.kv_pool.alloc(4), {2: first, 4: last},
-                    {2: {p.cache_identity: a}, 4: {p.cache_identity: b}})
+    ex.cache.insert([1, 2, 3, 4], ex.kv_pool.alloc(4), snaps({2: first, 4: last},
+                    {2: {p.cache_identity: a}, 4: {p.cache_identity: b}}))
     ex.cache.evict(need_slots=14)
     assert features.get(a) is None and features.get(b) is not None
     assert ex.cache.cached_tokens == 4 and features.bytes == 32
@@ -148,29 +161,38 @@ def test_prospective_budget_accounts_for_each_recurrent_feature_window(monkeypat
     assert large - small == 19 * 2048 * 5120 * 2
 
 
-def test_prompt_endpoint_features_survive_subsequent_decode_and_branch(monkeypatch):
+def test_a_last_chunk_end_window_survives_decode_and_release(monkeypatch):
+    """Updated from main (the prompt-end copy is gone): the window bound to the prompt's last chunk end (64, placed by
+    its forward and saved at ingest) stays with that snapshot through decoding and the reply end's own window."""
     from sharar.engine.contracts import FeatureRequest
     ex, p, features = setup(monkeypatch)
-    req = ex.admit([1, 2, 3, 4], SamplingParams(max_new_tokens=2))
+    prompt = list(range(1, 71))
+    req = ex.admit(prompt, SamplingParams(max_new_tokens=2))
     req.proposer_state = DraftState(0)
     p.requirements = SimpleNamespace(features=FeatureRequest())
-    def ingest(req, ids, start, result):
+
+    def ingest(req, ids, start, result):  # what ParallelProposer.ingest_prefill does at each of the forward's snapshots
+        for position in sorted(req.private):
+            req.proposer_state.end = position
+            p._save(req, req.private[position])
         req.proposer_state.end = start + len(ids)
     ex.spec = SimpleNamespace(proposer=p, ingest_prefill=ingest, start=p.start, k=1)
     ex.prefill(req)
-    endpoint = req.cache_auxiliary[4][p.cache_identity]
-    assert features.slots[req.checkpoints[4]] == endpoint
+    node = req.lock.node
+    assert node.depth == 64 and not req.private
+    endpoint = node.snapshot.auxiliary[p.cache_identity]
+    assert features.slots[node.snapshot.slot] == endpoint
     saved = features.get(endpoint)[2].clone()
     ex.state.reserve([req], 1)
     ex.state.commit(req, 1)
     req.push(77)
     req.proposer_state.end = req.committed_len
     p.features.add_(10)
-    p.prepare_release(req)
-    ex.state.release(req)
-    match = ex.cache.match([1, 2, 3, 4], touch=False)
-    assert match.node.auxiliary[p.cache_identity] == endpoint
+    reply = release(ex, p, req)
+    match = ex.cache.match(prompt, touch=False)
+    assert match.length == 64 and match.snapshot.auxiliary[p.cache_identity] == endpoint
     assert features.slots[match.snapshot_slot] == endpoint
     assert torch.equal(features.get(endpoint)[2], saved)
+    assert reply != endpoint and features.get(reply) is not None
     ex.flush_cache()
     assert features.bytes == 0

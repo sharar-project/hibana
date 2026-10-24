@@ -3,49 +3,61 @@
 The tiered radix tree (`radix.py`) is the only record of what is on disk;
 `ssd_store.py` only stores objects. This module moves data between them:
 
-- Backup. A request's prompt, in whole blocks, enters the tree as soon as it
-  is prefilled (`StateManager.cache_prompt`), and its whole sequence once it
-  finishes. Each time, for at least `min_tokens`, `backup()` queues each of its full KV blocks
-  (`store.block` tokens) not yet stored, so a long prompt's blocks go out while
-  the request decodes. At the finish it also queues the tails at the
-  sequence's resume points (its end and its prompt's end) for a write-through:
-  a snapshot the GPU cache later drops for want of state slots stays
-  restorable. `step()` (every engine loop iteration) gathers queued tails,
+- Backup. A request's prompt enters the tree at each of its prefill
+  checkpoints (`StateManager.checkpoint`: chunk ends, its message boundary,
+  its branching point, its last chunk end), and its whole sequence once it
+  finishes. Each time, for at least `min_tokens`, `backup()` queues each of
+  its full KV blocks (`store.block` tokens) not yet stored, so a long prompt's
+  blocks go out while it still prefills and decodes, and a write-through tail
+  at each non-spare snapshot it placed (message boundary, last chunk end,
+  branching point) and, at the finish, at its reply end: a snapshot the GPU
+  cache later drops for want of state slots stays restorable. A spare chunk
+  end gets no tail. `step()` (every engine loop iteration) gathers queued tails,
   then queued blocks, from the pool pages and slots into pinned host memory,
   up to `step_bytes` while no request is prefilling and as much as staging
   takes while one is, blocks leaving room for one tail within `staging_bytes`
   in flight, and hands them to the store's writer threads.
-  An object larger than that limit goes out alone. Gathers that eviction, a
-  restore or shutdown need at once wait for room. `step()` skips a queued
-  tail whose snapshot the GPU cache dropped first.
+  An object larger than that limit goes out alone. Gathers that eviction under
+  KV pressure, a restore or shutdown need at once wait for room; slot pressure
+  never waits (`dropping_snapshot`: a non-spare snapshot's queued tail goes out
+  first only if staging has room now). `step()` skips a queued tail whose
+  snapshot the GPU cache dropped first.
 - Eviction. Before the tree frees an L1 leaf's pages it calls `evicting()`,
   which gathers every queued block touching the leaf and, for a leaf of at
   least `min_tokens` with a snapshot, writes its tail (its last partial block,
   the GDN snapshot at its end, the pool's per-slot aux and the drafter
-  payload) unless a write-through already did, waiting for staging room for
-  the tail if it must. The tree then keeps the leaf SSD-only instead of
-  deleting it.
-- Restore. At admission the tier finds the deepest ready tail past the L1
-  prefix (first finishing its writes if it was evicted moments ago) and
-  streams the blocks past the KV still in L1, then the tail, through a host
-  buffer the GPU reads in place, in two halves of `chunk_bytes`: a small
-  thread pool reads one chunk with O_DIRECT into one half while the GPU
-  scatters the previous chunk from the other straight into fresh pages and a
-  slot. Admission's path, `restore_async()`, does not wait for it: it takes
-  the pages and a slot, locks the path, and a worker thread reads while the
-  engine keeps serving everyone else, scattering each chunk as it lands (one
-  kernel launch, `_RowCopy`) and the request waiting in the queue.
+  payload) unless a write-through already did, under KV pressure waiting for
+  staging room for the tail if it must. The tree then keeps the leaf SSD-only
+  instead of deleting it.
+- Restore. The queue head's prefetch (`restore_async()`, from
+  `StateManager.prefetch`, before admission's pure check) finds the deepest
+  ready tail past the L1 prefix (first finishing its writes if it was evicted
+  moments ago). It starts only if the restored KV, the rest of the prompt and
+  the decode reserve, and two slots, are free or evictable by admission's own
+  count (`RadixCache.fits`), with the request's L1 match and the stored node
+  locked first. It takes the pages and a slot, locks the stored node
+  (`RadixCache.lock`, the restore job its owner), and streams the blocks past
+  the KV still in L1, then the tail, through a host buffer the GPU reads in
+  place, in two halves of `chunk_bytes`: a worker thread reads one chunk with
+  O_DIRECT (a small pool in parallel) into one half while the engine keeps
+  serving everyone else and scatters the previous chunk from the other
+  straight into the fresh pages and slot (one kernel launch, `_RowCopy`).
   Once the reads landed on every rank, `step()` imports the tail's state and
-  inserts the path back into L1, held until the request is admitted.
-  `restore()` does the same with the engine waiting (a caller outside
-  admission). When the GPU
+  inserts the path back into L1 (a non-spare snapshot), still locked by the
+  job until its request takes its own lock (the request first, then the job
+  unlocks), HOLD_STEPS pass, or the request is cancelled (`release`). A
+  landed restore counts as locked in admission's totals and in the pool plan's
+  slot floor (`RESTORE_SLOTS`): no other restore starts while one waits for
+  its request. `restore()` does the same with the engine waiting (admission's
+  own call, for callers without the prefetch). When the GPU
   cache dropped only a snapshot and kept its pages, the restore reads only the
   tail: its state goes into a slot and the pages stay where they are. The
   chunk size, not the restore, bounds the buffer, so the pool plan reserves a
   constant (`memory_bound`).
 - Budget. Completed writes count against `budget_bytes`; over it, `step()`
   deletes the least recently used SSD-only leaves, then the stored copies of
-  GPU-resident nodes.
+  GPU-resident nodes. A node left with nothing to resume from (a lost or failed
+  tail, deleted copies) is pruned as dead KV (`RadixCache._prune`).
 
 Only the engine thread calls this module or touches the tree; the store's
 writers report back through completions that `step()` drains.
@@ -75,6 +87,7 @@ import threading
 import torch
 
 from sharar.cache.radix import Node, RadixCache, SsdHit, SsdRef
+from sharar.cache.snapshot import Snapshot
 from sharar.cache.ssd_store import SEG_ALIGN, Header, SsdStore, _pad, _seg_pad, block_hash, tail_hash
 from sharar.distributed import all_reduce_min, common_values
 
@@ -82,7 +95,10 @@ MIB = 2**20
 GIB = 2**30
 STAGING_BYTES = 512 * MIB  # host copies of backups in flight to the writers
 CHUNK_BYTES = 256 * MIB  # each half of the restore staging buffer
-HOLD_STEPS = 1000  # a landed asynchronous restore keeps its path locked this many engine steps at most for its request
+HOLD_STEPS = 1000  # a landed asynchronous restore locks its node this many engine steps at most for its request
+# State slots restores lock beyond the running requests' own (the pool plan's slot floor, `Ledger.plan`): one restore
+# reads at a time, and none starts while a landed one waits for its request, which then locks that slot itself.
+RESTORE_SLOTS = 1
 
 
 @dataclass(eq=False)
@@ -92,15 +108,15 @@ class _Restore:
     matched: int  # the L1 match before it
     l1: int  # the KV before this is still in L1
     r: int  # the resume point it restores to
-    node: Node  # the path's last node, locked with its ancestors until the restore is done (or its request admitted)
+    node: Node  # the path's last node, locked (`lock`) until the restore is done (or its request admitted)
     resident: list  # the pages of the path's L1 prefix
     parts: list
     plan: tuple
-    pages: torch.Tensor
-    page_ids: list[int]
-    slot: int
-    dst: torch.Tensor  # the pages as int64 indices, for the scatter
     t0: float
+    pages: torch.Tensor | None = None  # fresh pages for the KV it reads
+    page_ids: list[int] | None = None
+    slot: int = -1  # a fresh slot for the tail's state
+    dst: torch.Tensor | None = None  # the pages as int64 indices, for the scatter
     future: object = None
     result: tuple | None = None
     orphan: bool = False  # its request is gone: it lands in the cache, held by nobody
@@ -108,6 +124,8 @@ class _Restore:
     issued: list = field(default_factory=list)  # per chunk, set once its scatter is queued on the GPU
     freed: dict = field(default_factory=dict)  # chunk -> CUDA event: its scatter has read its half
     t_put: float = 0.0  # the engine thread's time issuing the scatter
+    lock: object = None  # the restore's `radix.TreeLock` on `node`, the job its owner
+    lock_kind = "restore"  # `radix.owner_kind`
 
 
 class Staging:
@@ -321,7 +339,9 @@ class SsdTier:
         # asynchronous restores (`restore_async`): one at a time; a worker thread reads, the engine thread scatters
         self._worker = ThreadPoolExecutor(1, thread_name_prefix="sharar-ssd-restore")
         self._job: _Restore | None = None  # the restore in flight
-        self._held: list = []  # (ids, node, since) of landed restores, their paths locked until their requests are admitted
+        self._held: list = []  # (job, since) of landed restores, locking their nodes until their requests are admitted
+        self._tail_nodes: dict[str, Node] = {}  # tails in flight: key -> the node they are for (pruned if the write fails)
+        self._orphans: list[Node] = []  # nodes whose stored tail was lost or failed: pruned at the next step (`_trim`)
         self._staging_free = None  # an event: the last restore's state import has read the staging buffer
         self._steps = 0  # engine steps (`step` calls), the same count on every rank
         self.async_restores = self.restore_wait_steps = 0
@@ -391,12 +411,13 @@ class SsdTier:
 
     # ---- backup ----
     def backup(self, cache: RadixCache, ids: list[int], resume_points: tuple[int, ...] = ()) -> None:
-        """Queue the full blocks of a sequence that just entered the tree, and the tail at the last of
-        `resume_points` (lengths where the tree holds a snapshot of it: its end, its prompt's end) for a
-        write-through. A conversation's next turn extends its end, so that tail is the one restores use; the
-        prompt end's snapshot (about 144 MiB on the 27B in FP32) is written only if eviction meets it as a leaf,
-        so a request that regenerates from the same prompt may prefill its last turn again. Queued, not copied
-        now: a snapshot is large, and `step()` keeps the copies within the staging limit."""
+        """Queue the full blocks of a sequence that just entered the tree, and a tail at each of `resume_points`
+        (lengths where the tree holds a snapshot of it) for a write-through: a prompt's non-spare snapshots at its
+        checkpoints (`StateManager.checkpoint`: message boundary, last chunk end, branching point) and a finished
+        sequence's reply end at its release. A conversation's next turn, or the same prompt sent again, resumes at
+        one of those, so those tails are the ones restores use; a spare chunk end (about 144 MiB on the 27B in FP32)
+        gets none. Queued, not copied now: a snapshot is large, and `step()` keeps the copies within the staging
+        limit."""
         if len(ids) < self.min_tokens or cache.flushing:
             return
         anchor, pos = cache.root, 0
@@ -408,9 +429,9 @@ class SsdTier:
         if pos != len(ids):
             return
         self._queue_blocks(anchor, ids)
-        for end in sorted(set(resume_points))[-1:]:
+        for end in sorted(set(resume_points)):
             node = self._ending_at(anchor, end)
-            if (end >= self.min_tokens and node is not None and node.snapshot_slot is not None
+            if (end >= self.min_tokens and node is not None and node.snapshot is not None
                     and (node.tail is None or node.tail.nbytes < 0)):
                 self.through.append((node, end))
 
@@ -619,7 +640,7 @@ class SsdTier:
         return n is node
 
     # ---- eviction ----
-    def evicting(self, cache: RadixCache, leaf: Node) -> bool:
+    def evicting(self, cache: RadixCache, leaf: Node, wait: bool = True) -> bool:
         """The tree calls this before it frees an L1 leaf's pages. Gathers the
         queued blocks of its whole path while its pages exist, in one batch (a
         leaf kept without them could not be restored, and its parent would wait
@@ -640,7 +661,9 @@ class SsdTier:
         and the next turn would prefill all of it again. Background block backups
         leave room for one tail, but the leaf's own queued blocks, copied just
         before it, or a write-through tail can take that room. Shutdown
-        (`patient`) waits for blocks too, so every cached prefix is persisted."""
+        (`patient`) waits for blocks too, so every cached prefix is persisted.
+        Without `wait` (slot pressure, which takes only a leaf with no children)
+        nothing waits: a tail without room now is not written."""
         t0 = time.perf_counter()
         end = leaf.depth
         missing, node = end // self.block, leaf
@@ -653,16 +676,19 @@ class SsdTier:
         for item in self.queue:  # gather the queued blocks of its whole path now: kept, it needs every one of them
             (pending if self._touches(item, leaf, 0, end) else keep).append(item)
         self.queue = keep
-        wait = self.patient or bool(leaf.children)  # stored descendants need this leaf's blocks
-        done = self._gather_blocks(pending, wait=wait)
+        patient = self.patient or bool(leaf.children)  # stored descendants need this leaf's blocks
+        done = self._gather_blocks(pending, wait=patient)
         self.forced += done
         copied = done == len(pending)  # else no staging room: its pages are about to go, so its blocks cannot be stored
         if not copied:  # the ancestors keep their pages: their blocks stay queued, or their refs would look pending forever
             start = end - len(leaf.key)
             self.queue.extendleft(reversed([(leaf.parent, e, h, p) for _, e, h, p in pending[done:] if e <= start]))
         written = leaf.tail is not None and leaf.tail.nbytes >= 0  # written through already: its snapshot may be gone
-        due = not leaf.children and leaf.snapshot_slot is not None and end >= self.min_tokens
-        keep = copied and (written or (due and self._write_tail(leaf, end, wait=True)))
+        # a true leaf's tail is due; one with SSD-only descendants needs none, unless it is not spare (where a turn
+        # that departs before those descendants resumes: its write-through may still be queued)
+        due = (leaf.snapshot is not None and end >= self.min_tokens
+               and (not leaf.children or not leaf.snapshot.spare))
+        keep = copied and (written or (due and self._write_tail(leaf, end, wait=wait)))
         if not keep and (written or due):
             self.evict_dropped += 1
         if not keep and not leaf.children:
@@ -672,6 +698,39 @@ class SsdTier:
         self.evict_max = max(self.evict_max, spent)
         return keep
 
+    def dropping_snapshot(self, cache: RadixCache, node: Node) -> None:
+        """Slot pressure is about to take `node`'s snapshot and keep its KV. A non-spare snapshot (a message boundary,
+        a last chunk end, a branching point) whose tail still waits in the write-through queue gets it written now if
+        staging has room now: once the slot is free, the tail could never be written. Slot pressure never waits for the
+        writers, so without room the point is dropped on purpose (`step()` counts it in `tails_through_dropped`), as is
+        a spare snapshot's queued tail (a reply end's)."""
+        end = node.depth
+        if (not node.snapshot.spare and end >= self.min_tokens and (node.tail is None or node.tail.nbytes < 0)
+                and any(n is node for n, _ in self.through)):
+            if self._write_tail(node, end, wait=False):
+                self.tails_through += 1
+        self.fence()
+
+    def pruning(self, node: Node) -> None:
+        """The tree deletes `node` as dead KV (`RadixCache._prune`): its stored objects go with it."""
+        self._discard_node(node)
+
+    def owned_slots(self) -> list[tuple[str, int]]:
+        """The state slot the restore in flight fills (`RadixCache.check`): neither free nor any node's yet."""
+        return [("restore", self._job.slot)] if self._job is not None else []
+
+    def owned_pages(self) -> list[int]:
+        """The KV pages the restore in flight fills (`StateManager.check`): neither free nor any node's yet."""
+        return list(self._job.page_ids) if self._job is not None else []
+
+    def live_jobs(self) -> list:
+        """The restores whose locks may be in the tree: the one in flight and the landed ones (`RadixCache.check`)."""
+        return [job for job, _ in self._held] + ([self._job] if self._job is not None else [])
+
+    def pending_prune(self) -> list[Node]:
+        """Nodes whose tail was lost or failed since the last step: `_trim` prunes them (`RadixCache.check`)."""
+        return list(self._orphans)
+
     def clean(self, leaf: Node) -> bool:
         """Whether evicting `leaf` needs no copy now: its full blocks are on the SSD or already copied out, and so is
         its tail if it holds a snapshot worth one. The tree evicts clean leaves first (least recently used among
@@ -679,8 +738,9 @@ class SsdTier:
         end = leaf.depth
         if end < self.min_tokens:
             return True  # never stored: dropping it costs nothing
-        if not leaf.children and leaf.snapshot_slot is not None and (leaf.tail is None or leaf.tail.nbytes < 0):
-            return False  # a true leaf's tail is due; one with SSD-only descendants needs none (`evicting`)
+        if (leaf.snapshot is not None and (not leaf.children or not leaf.snapshot.spare)
+                and (leaf.tail is None or leaf.tail.nbytes < 0)):
+            return False  # its tail is due (`evicting`)
         start = end - len(leaf.key)
         for e in range((start // self.block + 1) * self.block, end + 1, self.block):
             ref = leaf.blocks.get(e)
@@ -714,11 +774,12 @@ class SsdTier:
         pending = self._pending_ref("tail", key.hex())
         if pending is not None:
             leaf.tail = pending
+            self._tail_nodes[key.hex()] = leaf
             return True
         cuda = self.device.type == "cuda"
-        state = self._state(leaf.snapshot_slot)
+        state = self._state(leaf.snapshot.slot)
         scalars = {}
-        for identity, value in leaf.auxiliary.items():
+        for identity, value in leaf.snapshot.auxiliary.items():
             codec = self.codecs.get(identity)
             payload = codec[0](value) if codec is not None else None
             if payload is None:
@@ -737,6 +798,7 @@ class SsdTier:
             tokens, segs, _ = got
             segs += [(name, _to_host(t, cuda)) for name, t in state]
             leaf.tail = SsdRef(key.hex())
+            self._tail_nodes[key.hex()] = leaf
             self._submit("tail", key, last, whole, tokens, segs, leaf.tail, scalars,
                          held=self._tail_sizes(end - whole, [t for _, t in state]))
         self.tails += 1
@@ -814,6 +876,9 @@ class SsdTier:
         for kind, key, ok, nbytes in self._completions():
             ref, staged = self.inflight.pop((kind, key))
             self.staged -= staged
+            node = self._tail_nodes.pop(key, None) if kind == "tail" else None
+            if node is not None and not ok:
+                self._orphans.append(node)  # nothing to resume from there now, perhaps: `_trim` prunes it
             if (kind, key) in self.doomed:
                 self.doomed.discard((kind, key))
                 if ok:
@@ -826,6 +891,9 @@ class SsdTier:
             self._failed_tail |= kind == "tail" and not ok
 
     def _trim(self, cache: RadixCache) -> None:
+        orphans, self._orphans = self._orphans, []
+        for node in orphans:  # a lost or failed tail: the node may be dead KV now
+            cache._prune(node)
         if self._failed_tail:  # a full disk: no restore can use an SSD-only leaf without a tail
             while (dead := cache.ssd_candidate(unusable=True)) is not None:
                 self._drop_leaf(cache, dead)
@@ -837,6 +905,7 @@ class SsdTier:
             self._discard_node(victim)
             victim.blocks.clear()
             victim.tail = None
+            cache._prune(victim)  # its tail was all it could resume from: dead KV now
 
     def _drop_leaf(self, cache: RadixCache, node: Node) -> None:
         self._discard_node(node)
@@ -855,7 +924,7 @@ class SsdTier:
             if node.tail is not None and node.tail.nbytes >= 0:  # eviction wrote it meanwhile, or backup queued it twice
                 self.through.popleft()
                 continue
-            if node.snapshot_slot is None:  # the GPU cache dropped it before there was room
+            if node.snapshot is None:  # the GPU cache dropped it before there was room
                 self.through.popleft()
                 self.through_dropped += 1
                 continue
@@ -938,24 +1007,26 @@ class SsdTier:
         job.future = self._worker.submit(self._read, job)
         self._drive(job)
         job.result = job.future.result()
-        restored = self._finish(cache, job, hold=False)
+        restored = self._finish(cache, job, keep=False)
         self.restore_blocked_seconds += time.perf_counter() - t0
         return restored
 
     def restore_async(self, cache: RadixCache, ids: list[int], reserve: int = 0) -> bool:
-        """Admission's question for the request with ids: True when it can go ahead (nothing worth restoring, or its
-        restore has landed and holds the path in L1 until `release`), False while a restore is in flight: its own,
-        started here if it needs one, or another one holding the staging buffer. A worker thread reads, and the engine
-        thread scatters each chunk as it lands while it keeps serving everyone else; `step()` finishes the restore
-        once it landed on every rank. Every rank asks alike (the trees are the same), so every rank starts the same restores."""
+        """The queue head's prefetch, before admission's pure check (`StateManager.prefetch`): True when the request
+        with ids can be checked now (nothing worth restoring, no room for a restore, another restore's landed path still
+        waiting for its request, or its own restore has landed and locks the path in L1 until `release`), False while a
+        restore is in flight: its own, started here if it needs one, or another one holding the staging buffer. A
+        worker thread reads, and the engine thread scatters each chunk as it lands while it keeps serving everyone
+        else; `step()` finishes the restore once it landed on every rank. Every rank asks alike (the trees are the
+        same), so every rank starts the same restores."""
         if self._landed(ids) is not None:
             return True
         job = self._job
         if job is not None and job.ids == ids:
             self.restore_wait_steps += 1
             return False
-        if not self._worth(cache, ids):
-            return True
+        if self._held or not self._worth(cache, ids):
+            return True  # at most one restore locks a slot for its request (`RESTORE_SLOTS`)
         if job is not None:
             self.restore_wait_steps += 1
             return False  # one restore at a time: they share the staging buffer and the drive
@@ -969,11 +1040,12 @@ class SsdTier:
         return job is None
 
     def release(self, cache: RadixCache, ids: list[int]) -> None:
-        """The request a landed restore held its path for was admitted (it holds the path itself now) or is gone."""
-        for i, (held, node, _) in enumerate(self._held):
-            if held == ids:
+        """The request a landed restore locked its node for was admitted (its own lock, taken first, is there now) or
+        is gone."""
+        for i, (job, _) in enumerate(self._held):
+            if job.ids == ids:
                 del self._held[i]
-                cache.lock(node, -1)
+                cache.unlock(job.lock)
                 return
         if self._job is not None and self._job.ids == ids:
             self._job.orphan = True  # it still lands in the cache, held by nobody
@@ -990,7 +1062,7 @@ class SsdTier:
                 pass
 
     def _landed(self, ids: list[int]):
-        return next((node for held, node, _ in self._held if held == ids), None)
+        return next((job.node for job, _ in self._held if job.ids == ids), None)
 
     def _worth(self, cache: RadixCache, ids: list[int]) -> bool:
         """Whether ids has an SSD resume point worth reading (counting writes still in flight)."""
@@ -999,42 +1071,44 @@ class SsdTier:
         return hit is not None and hit.length - m.length >= self.min_hit
 
     def _begin(self, cache: RadixCache, ids: list[int], reserve: int) -> "_Restore | None":
-        """Plan a restore and take what it needs: the path, locked (its L1 prefix stays resident; eviction, the disk
-        budget and flush leave its stored nodes alone), and fresh pages and a slot. None when there is nothing worth
-        restoring or no room."""
+        """Plan a restore and take what it needs: a lock on the stored node it reads (its L1 prefix stays resident;
+        eviction, the disk budget and flush leave its stored nodes alone), and fresh pages and a slot. It starts only
+        when the restored KV, the rest of ids and `reserve` pages, and two slots (the restored snapshot's and its
+        request's own), are free or evictable (`RadixCache.fits`), counted with the request's L1 match and the stored
+        node locked: admission's own count, so the restore never evicts its request's resume point, and the request
+        is not then refused for what its restore took. None when there is nothing worth restoring or no room."""
         m = cache.match(ids, touch=False)
         hit = self._settle_for(cache, ids, m.length)
         if hit is None or hit.length - m.length < self.min_hit:
             return None
         l1, r = hit.l1_end, hit.length  # L1 still holds the KV before l1 (at least the matched prefix): read only [l1, r)
         whole = r // self.block * self.block
-        node = hit.path[-1]
-        cache.lock(node, 1)
-        pages = page_ids = None
-        try:
-            need = len(ids) - l1 + reserve  # the restored KV, the rest of ids and the reserve
-            cache.evict(need_pages=need, need_slots=2)  # one slot for the restored path, one spare for the request itself
-            if self.kv_pool.free_count < need or self.state_pool.free_count < 2:
-                cache.lock(node, -1)
-                return None
-            parts = [("kv", ref, end - self.block, max(end - self.block, l1), min(end, whole)) for end, ref in hit.blocks]
-            parts = [p for p in parts if p[3] < p[4]] + [("tail", hit.tail, whole, max(whole, l1), r)]
-            plan = self._plan_chunks(parts)
-            if 2 * plan[2] > self._staging.nbytes:  # an object larger than a half: every rank plans from the same sizes
-                self.restore_fails += 1
-                cache.lock(node, -1)
-                return None
-            pages, page_ids = self.kv_pool.alloc_with_ids(r - l1)
-            slot = self.state_pool.alloc()
-        except BaseException:
-            if pages is not None:
-                self.kv_pool.free_ids(page_ids)
-            cache.lock(node, -1)
-            raise
-        resident = [n.pages for n in hit.path if n.in_l1]  # a prefix of the path
-        return _Restore(ids=ids, matched=m.length, l1=l1, r=r, node=node, resident=resident, parts=parts, plan=plan,
-                        pages=pages, page_ids=page_ids, slot=slot, dst=pages.to(torch.int64), t0=time.perf_counter(),
-                        issued=[threading.Event() for _ in plan[3]])
+        parts = [("kv", ref, end - self.block, max(end - self.block, l1), min(end, whole)) for end, ref in hit.blocks]
+        parts = [p for p in parts if p[3] < p[4]] + [("tail", hit.tail, whole, max(whole, l1), r)]
+        plan = self._plan_chunks(parts)
+        if 2 * plan[2] > self._staging.nbytes:  # an object larger than a half: every rank plans from the same sizes
+            self.restore_fails += 1
+            return None
+        job = _Restore(ids=ids, matched=m.length, l1=l1, r=r, node=hit.path[-1], resident=[], parts=parts, plan=plan,
+                       t0=time.perf_counter(), issued=[threading.Event() for _ in plan[3]])
+        need = len(ids) - l1 + reserve  # the restored KV, the rest of ids and the reserve
+        with cache._lock_node(m.node):  # the request's own L1 resume point is not evicted for its restore
+            job.lock = cache.lock(job.node, owner=job)
+            try:
+                if not cache.fits(need, 2):
+                    cache.unlock(job.lock)
+                    return None
+                cache.evict(need_pages=need, need_slots=2)
+                job.pages, job.page_ids = self.kv_pool.alloc_with_ids(r - l1)
+                job.slot = self.state_pool.alloc()
+            except BaseException:
+                if job.page_ids is not None:
+                    self.kv_pool.free_ids(job.page_ids)
+                cache.unlock(job.lock)
+                raise
+        job.resident = [n.pages for n in hit.path if n.in_l1]  # a prefix of the path, locked
+        job.dst = job.pages.to(torch.int64)
+        return job
 
     def _read(self, job: "_Restore"):
         """The worker thread: read the restore's objects chunk by chunk with O_DIRECT into the two halves of the
@@ -1116,10 +1190,10 @@ class SsdTier:
             except queue.Empty:
                 pass
 
-    def _finish(self, cache: RadixCache, job: "_Restore", hold: bool) -> int:
+    def _finish(self, cache: RadixCache, job: "_Restore", keep: bool) -> int:
         """On every rank at the same point, once the reads landed everywhere: import the tail's state if every rank
-        read every object intact, insert the path into L1 and, with `hold`, keep it locked for its request. Returns
-        the tokens restored."""
+        read every object intact, insert the path into L1 with the restored snapshot (not spare: a request asked for
+        it) and, with `keep`, keep it locked for its request. Returns the tokens restored."""
         t0 = time.perf_counter()
         tail, lost, nbytes, t_read = job.result
         t_put = job.t_put
@@ -1133,8 +1207,8 @@ class SsdTier:
                     self._staging_free = torch.cuda.Event()
                     self._staging_free.record()  # the next restore's reads wait for this import before refilling it
                 ids, l1, r = job.ids, job.l1, job.r
-                new_start = cache.insert(ids[:r], torch.cat([*job.resident, job.pages]), {r: job.slot}, {r: aux},
-                                         page_ids=[-1] * l1 + job.page_ids)
+                new_start = cache.insert(ids[:r], torch.cat([*job.resident, job.pages]),
+                                         [Snapshot(job.slot, r, auxiliary=aux)], page_ids=[-1] * l1 + job.page_ids)
                 if new_start > l1:  # another request brought part of the path back meanwhile: those pages are duplicates
                     self.kv_pool.free_ids(job.page_ids[:new_start - l1])
                 inserted = True
@@ -1147,10 +1221,10 @@ class SsdTier:
             if not inserted:
                 self.kv_pool.free_ids(job.page_ids)
                 self.state_pool.free(job.slot)
-            if inserted and hold and not job.orphan:
-                self._held.append((job.ids, job.node, self._steps))
+            if inserted and keep and not job.orphan:
+                self._held.append((job, self._steps))
             else:
-                cache.lock(job.node, -1)
+                cache.unlock(job.lock)  # and, after a lost tail, prunes what has nothing to resume from now
         if not inserted:
             return 0
         total = time.perf_counter() - job.t0
@@ -1161,13 +1235,13 @@ class SsdTier:
         self.restore_bytes += nbytes
         self.restore_read_seconds += t_read
         self.restore_put_seconds += t_put
-        if hold:
+        if keep:
             self.restore_blocked_seconds += time.perf_counter() - t0 + job.t_put
         if self.trace:
             self._trace({"tokens": job.r - job.matched, "kv_tokens": job.r - job.l1, "bytes": nbytes, "objects": len(job.parts),
                          "read_ms": round(1000 * t_read, 1), "read_gbps": round(nbytes / max(t_read, 1e-9) / 1e9, 2),
                          "scatter_ms": round(1000 * t_put, 1), "total_ms": round(1000 * total, 1),
-                         "e2e_gbps": round(nbytes / max(total, 1e-9) / 1e9, 2), "async": hold})
+                         "e2e_gbps": round(nbytes / max(total, 1e-9) / 1e9, 2), "async": keep})
         return job.r - job.matched
 
     def _poll(self, cache: RadixCache) -> None:
@@ -1179,31 +1253,31 @@ class SsdTier:
             if self._min_over_ranks("restore", [int(done)])[0]:
                 self._job = None
                 job.result = job.future.result()
-                self._finish(cache, job, hold=True)
-        while self._held and self._steps - self._held[0][2] > HOLD_STEPS:  # its request never came for it (counted in
-            _, node, _ = self._held.pop(0)  # steps, which every rank takes alike, so every rank lets go at the same one)
-            cache.lock(node, -1)
+                self._finish(cache, job, keep=True)
+        while self._held and self._steps - self._held[0][1] > HOLD_STEPS:  # its request never came for it (counted in
+            job, _ = self._held.pop(0)  # steps, which every rank takes alike, so every rank lets go at the same one)
+            cache.unlock(job.lock)
 
     def _join(self, cache: RadixCache) -> None:
         """Wait for the in-flight restore and finish it (every rank calls this at the same point)."""
         job, self._job = self._job, None
         self._drive(job)
         job.result = job.future.result()
-        self._finish(cache, job, hold=True)
+        self._finish(cache, job, keep=True)
 
     def abort(self, cache: RadixCache) -> None:
         """Before a flush or at shutdown: wait for the in-flight restore's reads, return its pages and slot without
-        inserting anything, and let go of every held path. Every rank does the same, with no agreement needed."""
+        inserting anything, and end every restore's lock. Every rank does the same, with no agreement needed."""
         job, self._job = self._job, None
         if job is not None:
             self._drive(job, scatter=False)
             job.future.result()
             self.kv_pool.free_ids(job.page_ids)
             self.state_pool.free(job.slot)
-            cache.lock(job.node, -1)
+            cache.unlock(job.lock)
         while self._held:
-            _, node, _ = self._held.pop()
-            cache.lock(node, -1)
+            held, _ = self._held.pop()
+            cache.unlock(held.lock)
 
     def _trace(self, row: dict) -> None:
         import json

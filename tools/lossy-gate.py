@@ -81,7 +81,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))  # this checkout's sharar (the launcher resolver is standard-library only)
-from sharar.launch import lxcfs, preflight  # noqa: E402
+from sharar.launch import guard, lxcfs, preflight  # noqa: E402
 from sharar.launch import settings as launch  # noqa: E402
 WORKLOAD = REPO / "tools" / "gate" / "workloads" / "lossy_v1.json"
 WORKER = REPO / "tools" / "gate" / "lossy_gate.py"
@@ -90,7 +90,7 @@ EVALS_ENV: dict | None = None  # sharar-eval's environment (evals_env), set by m
 VENV = Path(os.environ.get("UV_PROJECT_ENVIRONMENT") or REPO / ".venv")  # the project's environment (uv sync)
 PROTOCOL = 3  # bump when a step's meaning changes (it keys the baseline cache); 3: arms resolved by sharar.launch
 CHUNK, FLOOR_CHUNK = 64, 32
-FLOOR_GIB = 16.0  # the memory guard's floor (sharar/launch/guard.py)
+GUARD_GIB = guard.guard_kib() / 2**20  # where the memory guard acts: half the host floor (the pools are planned to leave the floor)
 BLOCK = 64  # layer-1 bootstrap unit: consecutive continuation positions
 PROFILE_NAMES = launch.PROFILE_NAMES
 # EngineConfig fields the served arm must report exactly as the in-process arm installed them.
@@ -279,8 +279,8 @@ def watch(proc: subprocess.Popen, deadline: float, trace, label: str, stop) -> i
         if trace:
             trace.write(json.dumps({"phase": label, "t": round(time.time(), 1), "available_gib": round(avail, 2)}) + "\n")
             trace.flush()
-        if avail < FLOOR_GIB or time.monotonic() > deadline:
-            log(f"{label}: {'memory floor' if avail < FLOOR_GIB else 'time limit'} reached; stopping")
+        if avail < GUARD_GIB or time.monotonic() > deadline:
+            log(f"{label}: {'memory guard threshold' if avail < GUARD_GIB else 'time limit'} reached; stopping")
             stop()
             proc.wait(timeout=120)
             return -1
@@ -361,7 +361,7 @@ class Served:
             self.proc = subprocess.Popen(self.command, env=self.env, cwd=REPO, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
         deadline = time.monotonic() + 1200
         while not health(self.url):
-            if not self.running() or time.monotonic() > deadline or available_gib() < FLOOR_GIB:
+            if not self.running() or time.monotonic() > deadline or available_gib() < GUARD_GIB:
                 self.stop()
                 raise RuntimeError(f"{self.label}: server did not come up; see {self.dir / 'server.log'}")
             time.sleep(5)

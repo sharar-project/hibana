@@ -15,5 +15,10 @@ class SnapshotTokenizer:
         # The chat template already carries every special token, so never add any.
         return self._tok.encode(text, add_special_tokens=False).ids
 
+    def encode_with_offsets(self, text: str) -> tuple[list[int], list[tuple[int, int]]]:
+        """`encode`, and each token's (start, end) character span in `text`."""
+        enc = self._tok.encode(text, add_special_tokens=False)
+        return enc.ids, enc.offsets
+
     def decode(self, ids: list[int], skip_special_tokens: bool = False) -> str:
         return self._tok.decode(ids, skip_special_tokens=skip_special_tokens)

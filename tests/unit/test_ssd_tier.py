@@ -6,14 +6,16 @@ headers alone, a corrupt object is a miss, and the budget deletes least
 recently used SSD-only leaves."""
 import dataclasses
 import json
+import random
 import threading
 
 import pytest
 import torch
 
 from sharar.cache.kv_pool import KvPool
-from sharar.cache.radix import RadixCache
+from sharar.cache.radix import RadixCache, owner_kind
 from sharar.cache.request_state import StateManager
+from sharar.cache.snapshot import Snapshot
 from sharar.cache.ssd import SsdTier
 from sharar.cache import ssd, ssd_store
 from sharar.cache.ssd_store import BLOCK, SsdStore, memory_backed
@@ -21,6 +23,7 @@ from sharar.cache.state_pool import StatePool
 from sharar.engine.request import Request
 from sharar.engine.sampler import SamplingParams
 from sharar.target import DEFAULT_TARGET
+from tests.unit.test_radix import snaps
 
 CPU = torch.device("cpu")
 IDENTITY = {"target": "tiny", "revision": "r1"}
@@ -76,9 +79,14 @@ def release(cache, tier, kv, sp, feats, ids, seed):
     fill(kv, sp, pages, slot, seed)
     before = snapshot(kv, sp, pages, slot)
     feats["h"] = (3, 9, torch.randn(4, 2, generator=torch.Generator().manual_seed(seed)))
-    cache.insert(ids, pages, {len(ids): slot}, {len(ids): {DRAFT: "h"}}, page_ids=page_ids)
+    cache.insert(ids, pages, snaps({len(ids): slot}, {len(ids): {DRAFT: "h"}}, spare=True), page_ids=page_ids)
     tier.backup(cache, ids)
     return before
+
+
+def drop_snapshot(cache, sp, node):
+    """As slot pressure's snapshot-only eviction leaves a node (its pages kept): no slot to write a tail from."""
+    sp.free(cache._take_snapshot(node).slot)
 
 
 def settle(cache, tier):
@@ -224,8 +232,7 @@ def test_a_leaf_whose_tail_is_stored_stays_restorable_without_its_snapshot(tmp_p
     settle(cache, tier)
     assert cache.ssd_nodes == 1 and tier.restore(cache, IDS + [7]) == len(IDS) and cache.ssd_nodes == 0
     node = cache.root.children[IDS[0]]
-    sp.free(node.snapshot_slot)  # as snapshot-only eviction leaves it: no slot to write a tail from
-    node.snapshot_slot = None
+    drop_snapshot(cache, sp, node)
     used, prefixes = tier.used, tier.prefixes
     evict_all(cache, kv)
     settle(cache, tier)
@@ -515,10 +522,12 @@ def test_tensor_parallel_a_restart_lists_only_prefixes_every_rank_stored(tmp_pat
     assert sum(1 for h, _ in tier2.store.scan() if h.kind == "tail") == 1  # rebuild deleted `other`'s tail and blocks
 
 
-def test_only_the_answer_end_is_written_through(tmp_path):
-    """A finished request writes through the tail at its end, which its conversation's next turn extends, and not
-    the one at its prompt's end (about 144 MiB more per request on the 27B). The trade-off: when the tree drops that
-    interior snapshot for want of state slots, a request ending at the prompt prefills again."""
+def test_a_tail_is_written_through_at_each_resume_point_it_is_given_and_the_spare_end_goes_first(tmp_path):
+    """Updated from main (main wrote through only the end's tail, never the prompt end's). `backup` writes a tail
+    through at each of its resume points: the caller gives a prompt's non-spare snapshots (its last chunk end here)
+    and, at release, the reply end. Slot pressure then takes the spare reply end first (a leaf: whole, demoted with
+    its tail), then the last chunk end's snapshot alone (its only child is on the SSD), which still restores from
+    its tail."""
     cache, tier, kv, sp, feats = engine(tmp_path)
     prompt_end, n = 2 * BLOCK + 10, len(IDS)
     pages, page_ids = kv.alloc_with_ids(n)
@@ -530,21 +539,24 @@ def test_only_the_answer_end_is_written_through(tmp_path):
     sp.aux["ple_conv"][p_slot] = torch.randn(5, generator=g)
     before = snapshot(kv, sp, pages[:prompt_end], p_slot)
     feats["h"] = (3, 9, torch.randn(4, 2, generator=g))
-    cache.insert(IDS, pages, {prompt_end: p_slot, n: n_slot}, {prompt_end: {DRAFT: "h"}, n: {DRAFT: "h"}}, page_ids=page_ids)
+    cache.insert(IDS, pages, two_snapshots(prompt_end, p_slot, n, n_slot), page_ids=page_ids)
     tier.backup(cache, IDS, (n, prompt_end))
     settle(cache, tier)
     (head,) = cache.root.children.values()
     (leaf,) = head.children.values()
-    assert tier.tails_through == 1 and head.tail is None and leaf.tail.ready and head.depth == prompt_end
-    cache.evict(need_slots=sp.free_count + 1)  # slots short, pages ample: only the interior snapshot goes
-    assert head.snapshot_slot is None and head.in_l1 and leaf.in_l1 and cache.snapshot_evictions == 1
+    assert tier.tails_through == 2 and head.tail.ready and leaf.tail.ready and head.depth == prompt_end
+    cache.evict(need_slots=sp.free_count + 1)  # slots short, pages ample: the spare reply end goes first, whole
+    assert head.snapshot_slot is not None and head.in_l1 and not leaf.in_l1 and leaf.tail.ready
+    assert cache.match(IDS[:prompt_end] + [7]).length == prompt_end  # the last chunk end still resumes from L1
+    cache.evict(need_slots=sp.free_count + 1)  # then its snapshot alone: its only child is on the SSD
+    assert head.snapshot_slot is None and head.in_l1 and cache.snapshot_evictions == 1
     assert cache.match(IDS[:prompt_end] + [7]).length == 0
-    assert tier.restore(cache, IDS[:prompt_end] + [7]) == 0  # no tail there: the request prefills
-    assert tier.restore(cache, IDS + [7]) == 0 and cache.match(IDS + [7]).length == len(IDS)  # the end is still in L1
-    del before
+    assert tier.restore(cache, IDS[:prompt_end] + [7]) == prompt_end  # its tail alone: its pages are still in L1
+    assert same(restored(cache, kv, sp, IDS[:prompt_end]), before)
+    assert tier.restore(cache, IDS + [7]) == 0  # the end is 27 tokens past it: under min_hit, prefilled instead
     evict_all(cache, kv)
     settle(cache, tier)
-    assert tier.tails == 1  # the end's tail, written through: nothing twice, and none for the snapshot-less prompt end
+    assert tier.tails == 2  # each written once
 
 
 def test_write_through_stays_within_the_staging_limit_and_skips_a_snapshot_dropped_meanwhile(tmp_path):
@@ -561,14 +573,13 @@ def test_write_through_stays_within_the_staging_limit_and_skips_a_snapshot_dropp
         fill(kv, sp, pages, slot, seed=30 + i)
         befores.append(snapshot(kv, sp, pages, slot))
         feats["h"] = (3, 9, torch.randn(4, 2, generator=torch.Generator().manual_seed(30 + i)))
-        cache.insert(ids, pages, {len(ids): slot}, {len(ids): {DRAFT: "h"}}, page_ids=page_ids)
+        cache.insert(ids, pages, snaps({len(ids): slot}, {len(ids): {DRAFT: "h"}}, spare=True), page_ids=page_ids)
         tier.backup(cache, ids, (len(ids),))
     assert tier.staged == 0 and tier.tails_through == 0  # backup copies nothing as the requests finish
     tier.step(cache)
     assert tier.tails_through == 1 and len(tier.inflight) == 1
     third = cache.root.children[prefixes[2][0]]
-    sp.free(third.snapshot_slot)  # as snapshot-only eviction leaves it, while its write waits for room
-    third.snapshot_slot = None
+    drop_snapshot(cache, sp, third)  # while its write waits for room
     for _ in range(100):
         tier.store.wait()
         tier.step(cache)
@@ -639,7 +650,7 @@ def test_the_disk_budget_drops_gpu_resident_copies_and_eviction_can_back_them_up
     before = release(cache, tier, kv, sp, feats, IDS, seed=42)
     if split:
         cut = BLOCK + 10  # one block spans parent and child; another lies entirely in the parent
-        cache.insert(IDS[:cut], cache.match(IDS).pages[:cut], {cut: sp.alloc()})
+        cache.insert(IDS[:cut], cache.match(IDS).pages[:cut], snaps({cut: sp.alloc()}, spare=True))
     tier.backup(cache, IDS, (len(IDS),))
     free = kv.free_count, sp.free_count
     settle(cache, tier)
@@ -713,7 +724,7 @@ def test_serving_eviction_waits_for_room_for_a_tail_instead_of_dropping_a_stored
     settle(cache, tier)  # its blocks are stored; its tail is not
     other = [t + 20000 for t in LONG]
     release(cache, tier, kv, sp, feats, other, seed=45)
-    cache.lock(cache.node_at(other), 1)
+    cache.lock(cache.node_at(other), owner="test")
     tier.step(cache)  # another prefix's backups fill the staging buffer
     tier.staging_bytes = tier.staged
     evict_all(cache, kv)
@@ -756,7 +767,8 @@ def test_an_incompatible_tensor_layout_is_a_miss_before_scatter_or_import(tmp_pa
 
 
 def _two_resume_points(cache, tier, kv, sp, feats, prompt_end):
-    """IDS with snapshots at prompt_end and at its end, released with both as resume points."""
+    """IDS with snapshots at prompt_end and at its end, released: the end written through (the reply end's tail), the
+    snapshot at prompt_end a spare chunk end, which gets none (updated from main, where it was the prompt-end copy)."""
     n = len(IDS)
     pages, page_ids = kv.alloc_with_ids(n)
     p_slot, n_slot = sp.alloc(), sp.alloc()
@@ -767,9 +779,25 @@ def _two_resume_points(cache, tier, kv, sp, feats, prompt_end):
     sp.aux["ple_conv"][p_slot] = torch.randn(5, generator=g)
     at_prompt, at_end = snapshot(kv, sp, pages[:prompt_end], p_slot), snapshot(kv, sp, pages, n_slot)
     feats["h"] = (3, 9, torch.randn(4, 2, generator=g))
-    cache.insert(IDS, pages, {prompt_end: p_slot, n: n_slot}, {prompt_end: {DRAFT: "h"}, n: {DRAFT: "h"}}, page_ids=page_ids)
-    tier.backup(cache, IDS, (n, prompt_end))
+    cache.insert(IDS, pages, two_snapshots(prompt_end, p_slot, n, n_slot, spare=True), page_ids=page_ids)
+    tier.backup(cache, IDS, (n,))
     return at_prompt, at_end
+
+
+def two_snapshots(prompt_end, p_slot, n, n_slot, spare=False):
+    """A released request's snapshot at prompt_end (its last chunk end, or with `spare` an earlier chunk end) and its
+    reply end (spare), each with the drafter's payload."""
+    return [Snapshot(p_slot, prompt_end, {DRAFT: "h"}, spare=spare), Snapshot(n_slot, n, {DRAFT: "h"}, spare=True)]
+
+
+def drop_interior(cache, sp):
+    """Slot pressure takes the interior snapshot while the reply end past it is locked (a request continuing the
+    conversation): the node keeps its pages."""
+    (head,) = cache.root.children.values()
+    (leaf,) = head.children.values()
+    with cache._lock_node(leaf):
+        cache.evict(need_slots=sp.free_count + 1)
+    return head, leaf
 
 
 def _rows(tier):
@@ -790,7 +818,7 @@ def test_a_snapshot_dropped_while_its_pages_stay_restores_from_its_tail_alone(tm
     tier.store.wait()
     tier.step(cache)
     assert head.tail.ready  # the prompt-end tail is on the SSD
-    cache.evict(need_slots=sp.free_count + 1)
+    drop_interior(cache, sp)
     assert head.snapshot_slot is None and head.in_l1
     free = kv.free_count
     assert tier.restore(cache, IDS[:prompt_end] + [7]) == prompt_end
@@ -807,10 +835,8 @@ def test_a_restore_reads_only_the_kv_past_what_l1_still_holds(tmp_path):
     prompt_end, n = 2 * BLOCK + 10, len(IDS)
     _, at_end = _two_resume_points(cache, tier, kv, sp, feats, prompt_end)
     settle(cache, tier)
-    cache.evict(need_slots=sp.free_count + 1)  # the interior snapshot goes
+    head, leaf = drop_interior(cache, sp)  # the interior snapshot goes
     cache.evict(need_pages=kv.free_count + 1)  # then the leaf: demoted, its tail already written
-    (head,) = cache.root.children.values()
-    (leaf,) = head.children.values()
     assert head.in_l1 and head.snapshot_slot is None and not leaf.in_l1
     assert cache.match(IDS + [7]).length == 0
     free = kv.free_count
@@ -837,7 +863,7 @@ def test_pages_beside_the_kv_travel_with_it(tmp_path):
     fill(kv, sp, pages, slot, seed=21)
     draft[pages.to(torch.int64)] = torch.randn((len(IDS), 2, 4), generator=torch.Generator().manual_seed(21)).to(torch.bfloat16)
     want = draft[pages.to(torch.int64)].clone()
-    cache.insert(IDS, pages, {len(IDS): slot}, page_ids=page_ids)
+    cache.insert(IDS, pages, snaps({len(IDS): slot}, spare=True), page_ids=page_ids)
     tier.backup(cache, IDS)
     settle(cache, tier)
     evict_all(cache, kv)
@@ -898,10 +924,11 @@ def land(cache, tier, ids, reserve=0, limit=200):
 
 
 def locks(cache):
+    """Every node's lock count (`lock_ref`: the locks at or below it)."""
     out, stack = [], list(cache.root.children.values())
     while stack:
         n = stack.pop()
-        out.append(n.lock)
+        out.append(n.lock_ref)
         stack.extend(n.children.values())
     return out
 
@@ -927,7 +954,7 @@ def test_an_asynchronous_restore_lands_byte_exact_and_holds_its_path_until_admis
     assert same(restored(cache, kv, sp, ids), before)
     evict_all(cache, kv)  # held for its request: eviction cannot take it before admission
     assert cache.match(ids + [7]).length == len(ids)
-    cache.release(ids + [7])  # admitted (the request's match holds it now) or gone
+    cache.release(ids + [7])  # admitted (the request holds it now) or gone
     assert not any(locks(cache))
     evict_all(cache, kv)
     assert cache.match(ids + [7]).length == 0
@@ -961,7 +988,7 @@ def test_the_disk_budget_keeps_the_tail_a_restore_reads_alone(tmp_path, monkeypa
     tier.through.clear()  # as if eviction had met the prompt end as a leaf and written its tail
     assert tier._write_tail(head, prompt_end, wait=True)
     settle(cache, tier)
-    cache.evict(need_slots=sp.free_count + 1)
+    drop_interior(cache, sp)
     assert head.snapshot_slot is None and head.in_l1 and head.tail.ready
     gate, read = threading.Event(), tier.store.read_into
     monkeypatch.setattr(tier.store, "read_into", lambda *a: (gate.wait(10), read(*a))[1])
@@ -977,7 +1004,10 @@ def test_the_disk_budget_keeps_the_tail_a_restore_reads_alone(tmp_path, monkeypa
     assert not any(locks(cache))
 
 
-def test_a_second_restore_waits_for_the_staging_buffer(tmp_path):
+def test_a_second_restore_waits_for_the_first_and_for_its_request(tmp_path):
+    """One restore at a time reads (they share the staging buffer), and none starts while a landed one still locks a
+    slot for its request (`ssd.RESTORE_SLOTS`, in the slot floor): another request asking meanwhile goes ahead without
+    one. Once the first request took its own lock, the next restore starts."""
     cache, tier, kv, sp, feats = engine(tmp_path)
     second = [t + 20000 for t in IDS]
     one = release(cache, tier, kv, sp, feats, IDS, seed=5)
@@ -988,9 +1018,11 @@ def test_a_second_restore_waits_for_the_staging_buffer(tmp_path):
     assert not cache.restore_async(IDS + [7])
     assert not cache.restore_async(second + [7]) and tier.async_restores == 1  # waits: one restore at a time
     land(cache, tier, IDS + [7])
+    assert cache.restore_async(second + [7]) and tier.async_restores == 1  # the landed one waits for its request
+    cache.release(IDS + [7])  # its request locked it itself
     land(cache, tier, second + [7])
+    assert tier.async_restores == 2
     assert same(restored(cache, kv, sp, IDS), one) and same(restored(cache, kv, sp, second), two)
-    cache.release(IDS + [7])
     cache.release(second + [7])
     assert not any(locks(cache))
 
@@ -1052,17 +1084,33 @@ def test_a_synchronous_restore_finishes_the_one_in_flight_first(tmp_path):
 
 
 
-# ---- a prompt's blocks go out while its request decodes ----
+# ---- a prompt's blocks, and its last chunk end's tail, go out while its request decodes ----
 
 def prefilled(state, kv, sp, ids, seed):
-    """Admit a request for ids, prefill all of it and sample its first token."""
+    """Admit a request for ids and prefill all of it in one forward as the executor does: the forward writes the
+    snapshots it places (`Executor._checkpoint_positions`: the prompt's last chunk end S), and once the chunk is in
+    the prompt up to S goes into the tree and the request's lock moves there (`StateManager.checkpoint`); then sample
+    its first token."""
+    from sharar.engine.executor import Executor
+    ex = Executor.__new__(Executor)
+    ex.state = state
     req = Request(prompt_ids=list(ids), params=SamplingParams(max_new_tokens=4))
     state.admit(req, req.prompt_ids)
+    n = req.prefill_len
+    planned = state.prefill_checkpoints([(req, ex._checkpoint_positions(req, req.prefix_len, n))])
     fill(kv, sp, req.pages[req.prefix_len:], req.slot, seed)
-    state.commit_prefill(req, req.prefill_len)
-    state.cache_prompt(req)
+    for _, _, slot in planned:  # the forward writes the state there (here: the same random state as the request's)
+        sp.copy_slot(req.slot, slot)
+    state.commit_prefill(req, n)
+    state.checkpoint(req, n)
     req.push(7)
     return req
+
+
+def anchor(n, start=0):
+    """Where one forward from `start` places a prompt's last chunk end S: its last grid point before n (0: none)."""
+    s = start + (n - 1 - start) // 64 * 64
+    return s if s > start else 0
 
 
 def owned_by_cache(kv, free, n):
@@ -1071,20 +1119,27 @@ def owned_by_cache(kv, free, n):
 
 
 def test_a_prefilled_prompt_is_backed_up_before_its_request_finishes(tmp_path):
+    """Updated from main (`cache_prompt` is gone): the checkpoint after the forward, not a second lock, puts the prompt
+    up to S in the tree, and its whole blocks and S's tail go out while the request still runs; the pages past S stay
+    the request's until release."""
     cache, tier, kv, sp, feats = engine(tmp_path)
     state, free = StateManager(kv, sp, cache), kv.free_count
-    ids = list(range(5000, 5000 + 3 * BLOCK))  # whole blocks only: the last one ends at the last prompt token
+    ids = list(range(5000, 5000 + 3 * BLOCK))  # whole blocks: S = 3 * BLOCK - 64, past the second block
     req = prefilled(state, kv, sp, ids, seed=1)
-    assert req.prompt_node is cache.node_at(ids) and req.prompt_node.lock == 1 and req.page_ids == [-1] * len(ids)
+    s = anchor(len(ids))
+    assert s == 3 * BLOCK - 64 and req.lock.node is cache.node_at(ids[:s]) and req.lock.node.state_lock_ref == 1
+    assert len(cache.locks()) == 1 and req.page_ids[:s] == [-1] * s and -1 not in req.page_ids[s:]
+    assert not req.private
+    state.check()
     settle(cache, tier)
-    assert tier.backed_blocks == 3  # written while the request still runs
+    assert tier.backed_blocks == 2 and tier.tails_through == 1  # S's blocks and tail, written while the request runs
     evict_all(cache, kv)
-    assert cache.node_at(ids).in_l1  # its request holds it
+    assert cache.node_at(ids[:s]).in_l1 and cache.node_at(ids[:s]).snapshot is not None  # its request holds it
     before = snapshot(kv, sp, req.pages, req.slot)
     state.release(req)
     assert not any(locks(cache)) and owned_by_cache(kv, free, len(ids))
     settle(cache, tier)
-    assert tier.backed_blocks == 3 and tier.tails_through == 1  # only the tail at the release, no block written twice
+    assert tier.backed_blocks == 3 and tier.tails_through == 2  # the last block and the end's tail; nothing twice
     evict_all(cache, kv)
     assert tier.restore(cache, ids + [7]) == len(ids)
     assert same(restored(cache, kv, sp, ids), before)
@@ -1097,31 +1152,278 @@ def test_a_later_turn_hands_over_only_the_prompt_past_its_cached_prefix(tmp_path
     state.release(first)
     ids = first.prompt_ids + first.output_ids + list(range(9000, 9000 + 3 * BLOCK))
     req = prefilled(state, kv, sp, ids, seed=2)
-    assert req.prefix_len == BLOCK + 10 and req.prompt_node is cache.node_at(ids[:4 * BLOCK])
-    assert req.page_ids[:3 * BLOCK - 10] == [-1] * (3 * BLOCK - 10) and -1 not in req.page_ids[3 * BLOCK - 10:]
+    p = BLOCK + 10
+    s = anchor(len(ids), start=p)
+    assert req.prefix_len == p and req.lock.node is cache.node_at(ids[:s]) and len(cache.locks()) == 1
+    assert req.page_ids[:s - p] == [-1] * (s - p) and -1 not in req.page_ids[s - p:]
     state.release(req)
     assert not any(locks(cache)) and owned_by_cache(kv, free, len(ids))
     settle(cache, tier)
     assert tier.backed_blocks == 4
 
 
-def test_a_retracted_request_leaves_its_prompt_cached_and_a_duplicate_frees_its_own_copy(tmp_path):
+def test_a_retracted_request_leaves_its_prompt_cached_to_its_resume_point_and_a_retry_resumes_there(tmp_path):
+    """Updated from main: retraction keeps what the request checkpointed (the prompt up to S), so its retry resumes at
+    S (main kept the prompt's whole blocks without a snapshot: the retry prefilled again)."""
     cache, tier, kv, sp, feats = engine(tmp_path)
     state, free = StateManager(kv, sp, cache), kv.free_count
     ids = list(range(5000, 5000 + 3 * BLOCK + 37))
+    s = anchor(len(ids))
     req = prefilled(state, kv, sp, ids, seed=1)
     state.retract(req)
-    assert req.prompt_node is None and not any(locks(cache))
-    assert owned_by_cache(kv, free, 3 * BLOCK)  # the cache keeps the prompt's whole blocks; the request freed the rest
-    again = prefilled(state, kv, sp, ids, seed=1)  # those blocks are cached already: its own copies stay its own
-    assert again.prompt_node is cache.node_at(ids[:3 * BLOCK]) and -1 not in again.page_ids
+    assert req.lock is None and not any(locks(cache))
+    assert owned_by_cache(kv, free, s)  # the cache keeps the prompt to S; the request freed the rest
+    again = prefilled(state, kv, sp, ids, seed=1)  # resumes at S, and places no snapshot of its own past it
+    assert again.prefix_len == s and again.lock.node is cache.node_at(ids[:s]) and len(cache.locks()) == 1
     state.release(again)
     assert not any(locks(cache)) and owned_by_cache(kv, free, len(ids))
 
 
-def test_without_an_ssd_tier_the_request_keeps_its_prompt_until_it_finishes(tmp_path):
+def test_a_second_copy_checkpointed_onto_a_cached_snapshot_reads_the_trees_pages(tmp_path):
+    """Two requests prefill the same prompt side by side. The second checkpoint finds S cached already: its snapshot
+    copy is freed, its lock joins the first's at the same node, and its own copies of [0, S) are freed now, the
+    request reading the tree's (SGLang's checkpoint repoints the request the same way)."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    state, free = StateManager(kv, sp, cache), kv.free_count
+    ids = list(range(5000, 5000 + 3 * BLOCK + 37))
+    s = anchor(len(ids))
+    a = Request(prompt_ids=list(ids), params=SamplingParams(max_new_tokens=4))
+    state.admit(a, a.prompt_ids)  # admitted before the other prefilled: both prefill all of it
+    b = prefilled(state, kv, sp, ids, seed=1)
+    slots, pages = sp.free_count, kv.free_count
+    state.prefill_checkpoints([(a, [(s, False)])])
+    state.commit_prefill(a, a.prefill_len)
+    state.checkpoint(a, a.prefill_len)
+    assert a.lock.node is b.lock.node and a.lock.node.state_lock_ref == 2 and sp.free_count == slots
+    assert a.page_ids[:s] == [-1] * s and kv.free_count == pages + s
+    assert torch.equal(a.pages[:s], cache.path_pages(a.lock.node))
+    state.check()
+    for r in (a, b):
+        r.cacheable = False
+        state.release(r)
+    assert not any(locks(cache)) and owned_by_cache(kv, free, s)
+
+
+def test_without_an_ssd_tier_the_checkpoint_still_publishes_the_prompt_to_its_last_chunk_end(tmp_path):
     cache, tier, kv, sp, feats = engine(tmp_path)
     cache.ssd = None
     state = StateManager(kv, sp, cache)
-    req = prefilled(state, kv, sp, list(range(5000, 5000 + 3 * BLOCK)), seed=1)
-    assert req.prompt_node is None and -1 not in req.page_ids and cache.cached_tokens == 0
+    ids = list(range(5000, 5000 + 3 * BLOCK))
+    s = anchor(len(ids))
+    req = prefilled(state, kv, sp, ids, seed=1)
+    assert req.lock.node is cache.node_at(ids[:s]) and cache.cached_tokens == s and req.page_ids[:s] == [-1] * s
+    assert -1 not in req.page_ids[s:]
+
+
+# ---- restores, resume tails and dead KV under pressure ----
+
+def test_a_landed_restore_keeps_its_snapshot_under_slot_pressure_until_its_request_is_admitted(tmp_path):
+    """A landed restore locks the restored node: slot pressure takes every other snapshot, even once another request's
+    longer path makes the node interior, and leaves that one (and its drafter payload). Admission takes the request's
+    own lock there first, then the restore's ends: the node is never unlocked."""
+    cache, tier, kv, sp, feats, before = stored(tmp_path)
+    ids = IDS + [7]  # the queued request's prompt
+    land(cache, tier, ids[:-1])  # as `can_admit` asks for it
+    node = cache.match(ids, touch=False).node
+    assert node.depth == len(IDS) and node.state_lock_ref == 1 and [owner_kind(l.owner) for l in cache.locks()] == ["restore"]
+    drafter = dict(node.snapshot.auxiliary)
+    # A request admitted earlier with the same prefix publishes a longer path through the restored node.
+    extra = IDS + [11, 12, 13, 14]
+    pages, page_ids = kv.alloc_with_ids(len(extra))
+    slot = sp.alloc()
+    kv.free_ids(page_ids[:cache.insert(extra, pages, snaps({len(extra): slot}, spare=True), page_ids=page_ids)])
+    assert node.children and node.state_lock_ref == 1
+    cache.evict(need_slots=sp.num_slots)  # slot pressure takes every snapshot it can
+    assert slot in sp._free and node.snapshot is not None and node.snapshot.auxiliary == drafter
+    assert not cache.node_at(extra).in_l1  # the longer path's leaf went whole: stored, so demoted, not deleted
+    assert same(restored(cache, kv, sp, IDS), before)
+    order, inc, dec = [], cache.inc_lock_ref, cache.dec_lock_ref
+    cache.inc_lock_ref = lambda n: (order.append(+1) if n is node else None, inc(n))[1]
+    cache.dec_lock_ref = lambda n: (order.append(-1) if n is node else None, dec(n))[1]
+    state = StateManager(kv, sp, cache)
+    req = Request(prompt_ids=ids, params=SamplingParams(max_new_tokens=4))
+    state.admit(req, req.prompt_ids)
+    assert order == [1, -1], "the request's lock comes first, then the restore's ends"
+    assert req.prefix_len == len(IDS) and req.lock.node is node and node.state_lock_ref == 1 and len(cache.locks()) == 1
+    assert torch.equal(sp.ssm_all[:, req.slot], sp.ssm_all[:, node.snapshot.slot])
+    state.check()
+    req.cacheable = False
+    state.release(req)
+    assert not any(locks(cache))
+
+
+def test_a_pending_tail_is_written_before_slot_pressure_takes_its_snapshot(tmp_path):
+    """A primed prompt (one output token) leaves its last chunk end S, whose tail its checkpoint queued for a
+    write-through, and its reply end E, a spare leaf below S. Slot pressure before the tier's next step takes E first
+    (whole: its tail written as it goes, since staging has room) and then S, whose only child is now on the SSD: only
+    its snapshot goes, and its tail is written first, from its slot (`dropping_snapshot`), instead of the queued write
+    finding the slot gone. Re-sending the prompt restores it at S."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    state = StateManager(kv, sp, cache)
+    ids = list(range(5000, 5000 + 3 * BLOCK + 37))
+    s = anchor(len(ids))
+    req = prefilled(state, kv, sp, ids, seed=1)
+    assert [e for _, e in tier.through] == [s]
+    state.release(req)
+    snode = cache.node_at(ids[:s])
+    cache.evict(need_slots=sp.num_slots)  # no tier step in between: E's and S's writes are both still queued
+    assert snode.tail is not None and tier.through_dropped == 0
+    settle(cache, tier)
+    assert snode.tail.ready and cache.match(ids[:-1], touch=False).length == 0
+    assert tier.restore(cache, ids[:-1]) == s
+
+
+def test_an_interior_snapshot_writes_its_pending_tail_before_it_goes(tmp_path):
+    """The same with S interior (a locked path continues past it): slot pressure takes only S's snapshot and keeps its
+    pages; the write-through still queued for it goes out first (`SsdTier.dropping_snapshot`)."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    state = StateManager(kv, sp, cache)
+    ids = list(range(5000, 5000 + 3 * BLOCK + 37))
+    s = anchor(len(ids))
+    req = prefilled(state, kv, sp, ids, seed=1)
+    state.release(req)
+    snode = cache.node_at(ids[:s])
+    (leaf,) = snode.children.values()
+    with cache._lock_node(leaf):
+        cache.evict(need_slots=sp.num_slots)
+        assert snode.snapshot is None and snode.in_l1 and snode.tail is not None and tier.through_dropped == 0
+    settle(cache, tier)
+    assert snode.tail.ready
+
+
+def test_dead_kv_goes_when_the_disk_budget_deletes_the_tail_it_resumed_from(tmp_path):
+    """A node whose snapshot slot pressure took kept its pages for its stored tail alone. When the disk budget deletes
+    that copy, nothing can resume there: the node is dead KV and goes (`RadixCache._prune`)."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    free = kv.free_count
+    pages, page_ids = kv.alloc_with_ids(len(IDS))
+    slot = sp.alloc()
+    fill(kv, sp, pages, slot, seed=9)
+    cache.insert(IDS, pages, snaps({len(IDS): slot}), page_ids=page_ids)
+    tier.backup(cache, IDS)
+    (node,) = cache.root.children.values()
+    assert tier._write_tail(node, len(IDS), wait=True)
+    settle(cache, tier)
+    drop_snapshot(cache, sp, node)
+    assert node.tail.ready and node.in_l1 and not node.children and not cache._dead(node)
+    tier.budget = 0  # the budget deletes the copies of resident nodes: the tail goes, and with it the node
+    tier.step(cache)
+    assert cache.pruned == 1 and not cache.root.children and kv.free_count == free and cache.cached_tokens == 0
+
+
+def test_dead_kv_goes_when_a_tail_write_fails(tmp_path, monkeypatch):
+    """A resident node waiting on its tail write (its snapshot already taken) is dead once that write fails."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    free = kv.free_count
+    pages, page_ids = kv.alloc_with_ids(len(IDS))
+    slot = sp.alloc()
+    fill(kv, sp, pages, slot, seed=4)
+    cache.insert(IDS, pages, snaps({len(IDS): slot}), page_ids=page_ids)
+    (node,) = cache.root.children.values()
+    real = tier.store._write
+
+    def full_disk(header, tensors, buf):
+        if header.kind == "tail":
+            raise OSError(28, "No space left on device")
+        return real(header, tensors, buf)
+    monkeypatch.setattr(tier.store, "_write", full_disk)
+    assert tier._write_tail(node, len(IDS), wait=True)
+    drop_snapshot(cache, sp, node)
+    assert not cache._dead(node)  # its tail is on its way
+    tier.store.wait()
+    tier._finish_writes()
+    assert node.tail.nbytes < 0 and cache._dead(node) and tier.pending_prune() == [node]
+    tier.step(cache)
+    assert not cache.root.children and kv.free_count == free and cache.pruned == 1
+
+
+# ---- queued backups and pruning ----
+
+def test_queued_backups_survive_the_pruning_of_their_nodes(tmp_path):
+    """Blocks queued for a path whose node is then pruned as dead KV (its snapshot gone, nothing below it, no tail)
+    are dropped when their turn comes: never gathered from pages that went back to the pool and may hold another
+    path's KV by then."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    free = kv.free_count, sp.free_count
+    pages, page_ids = kv.alloc_with_ids(len(IDS))
+    slot = sp.alloc()
+    fill(kv, sp, pages, slot, seed=7)
+    cache.insert(IDS, pages, snaps({len(IDS): slot}), page_ids=page_ids)
+    tier.backup(cache, IDS)
+    (node,) = cache.root.children.values()
+    assert len(tier.queue) == 2 and all(item[0] is node for item in tier.queue)
+    drop_snapshot(cache, sp, node)
+    cache._prune(node)  # dead KV: its pages go back while its blocks are still queued
+    assert not cache.root.children and (kv.free_count, sp.free_count) == free
+    other, other_ids = kv.alloc_with_ids(len(IDS))  # another path takes the pages
+    settle(cache, tier)
+    assert not tier.queue and tier.backed_blocks == 0 and not tier.inflight and tier.used == 0
+    kv.free_ids(other_ids)
+    cache.check()
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_randomized_tier_operations_keep_the_trees_invariants(tmp_path, seed):
+    """Inserts sharing prefixes, backups with and without resume points, locks, slot and KV pressure, pruning and tier
+    steps in random order, on small pools: after every operation `RadixCache.check` holds (counters, evictable totals,
+    candidate sets, slot ownership, no dead KV but what the tier prunes next), with backups queued throughout."""
+    rng = random.Random(seed)
+    cache, tier, kv, sp, feats = engine(tmp_path / str(seed), pages=3 * BLOCK * 4, slots=10)
+    bases = [list(range(1000 * b, 1000 * b + 2 * BLOCK)) for b in range(3)]
+    locks, owner = [], object()
+    for _ in range(200):
+        op = rng.random()
+        if op < 0.35:
+            ids = rng.choice(bases)[:rng.randint(BLOCK, 2 * BLOCK)] + [50_000 + rng.randrange(1000) for _ in range(rng.randint(1, BLOCK))]
+            cache.evict(need_pages=len(ids), need_slots=2)
+            if kv.free_count < len(ids) or sp.free_count < 2:
+                continue
+            pages, page_ids = kv.alloc_with_ids(len(ids))
+            cuts = sorted({rng.randint(1, len(ids) - 1), len(ids)})
+            snapshots = [Snapshot(sp.alloc(), p, spare=rng.random() < 0.5) for p in cuts]
+            new_start = cache.insert(ids, pages, snapshots, page_ids=page_ids)
+            kv.free_ids(page_ids[:new_start])
+            tier.backup(cache, ids, tuple(p for p in cuts if rng.random() < 0.5))
+        elif op < 0.5 and cache.evictable_snapshots:
+            node = rng.choice(list(cache.evictable_snapshots))
+            locks.append(cache.lock(node, owner=owner))
+        elif op < 0.6 and locks:
+            cache.unlock(locks.pop(rng.randrange(len(locks))))
+        elif op < 0.75:
+            cache.evict(need_slots=sp.free_count + rng.randint(1, 3))
+        elif op < 0.85:
+            cache.evict(need_pages=kv.free_count + rng.randint(1, BLOCK))
+        else:
+            tier.step(cache)
+        cache.check([owner], owned_slots=tier.owned_slots(), pending_prune=tier.pending_prune())
+    for lock in locks:
+        cache.unlock(lock)
+    settle(cache, tier)
+    cache.check(owned_slots=tier.owned_slots(), pending_prune=tier.pending_prune())
+
+
+def test_the_scheduler_head_admits_without_a_synchronous_restore_while_another_restore_holds_the_slot(tmp_path):
+    """A retraction can put request B at the queue head while head A's landed restore still holds the one restore slot:
+    the prefetch lets B go ahead without a restore (RESTORE_SLOTS), and admission must not read B's prefix from the SSD
+    on the engine thread instead (every decode would wait for it). A direct caller's admission still restores."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    second = [t + 20000 for t in IDS]
+    release(cache, tier, kv, sp, feats, IDS, seed=5)
+    release(cache, tier, kv, sp, feats, second, seed=6)
+    settle(cache, tier)
+    evict_all(cache, kv)
+    settle(cache, tier)
+    state = StateManager(kv, sp, cache)
+    a_ids, b_ids = IDS + [7, 8], second + [7, 8]
+    assert not state.prefetch(a_ids)
+    land(cache, tier, a_ids[:-1], reserve=1)
+    assert tier._held
+    assert state.prefetch(b_ids) and state.can_admit(b_ids)
+    restores = tier.restores
+    b = Request(prompt_ids=b_ids, params=SamplingParams(max_new_tokens=4))
+    state.admit(b, b_ids)
+    assert tier.restores == restores and b.prefix_len == 0 and len(tier._held) == 1  # no read; A's hold stays
+    state.release(b)
+    a = Request(prompt_ids=a_ids, params=SamplingParams(max_new_tokens=4))
+    state.admit(a, a_ids)  # not prefetched: a direct caller's admission
+    assert a.prefix_len == len(IDS) and not tier._held

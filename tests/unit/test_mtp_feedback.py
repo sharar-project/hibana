@@ -1,9 +1,13 @@
-"""Feedback must cover exactly the processed inputs, with owned cache endpoints."""
+"""Feedback must cover exactly the processed inputs, with owned cache endpoints.
+
+Updated from main (drafter metadata in `Snapshot.auxiliary`): decoding places no snapshot, so feedback writes no rows;
+the reply end gets the row its release inserts (`prepare_release`), an owned copy of the last committed one."""
 from types import SimpleNamespace
 
 import pytest
 import torch
 
+from sharar.cache.snapshot import Snapshot
 from sharar.engine.contracts import ProposerContext, VerifiedFeatures
 from sharar.proposers.mtp import MtpProposer, MtpState
 
@@ -21,9 +25,10 @@ def test_feedback_token_hidden_alignment_and_stopped_rows(counts):
         requests.append(SimpleNamespace(proposer_state=MtpState(draft_pos=start, pending_token=50 + row,
                         pending_hidden=torch.full((1, 2), -1. - row)), committed_len=start + count,
                         finished=row % 2 == 0, pages=torch.arange(512).int() + row * 512,
-                        checkpoints={start + 1: 1}, cache_auxiliary={}))
+                        private={}))
     proposer.accepted_batch(requests, outputs, VerifiedFeatures(norm))
     assert len(calls) == len(counts)
+    ends = []
     for row, (req, count, args) in enumerate(zip(requests, counts, calls)):
         tokens, hidden, positions, pages = args
         start = 7 + row * 10
@@ -34,11 +39,14 @@ def test_feedback_token_hidden_alignment_and_stopped_rows(counts):
         state = req.proposer_state
         assert state.draft_pos == req.committed_len
         assert state.pending_token == (None if req.finished else outputs[row][-1])
-        for position, entry in req.cache_auxiliary.items():
-            assert torch.equal(entry[proposer.cache_identity][1], norm[row, position - start - 1])
-    saved = requests[0].cache_auxiliary[requests[0].committed_len][proposer.cache_identity][1].clone()
+        end = Snapshot(9, req.committed_len)
+        proposer.prepare_release(req, end)
+        assert end.auxiliary[proposer.cache_identity][0] == req.committed_len
+        assert torch.equal(end.auxiliary[proposer.cache_identity][1], norm[row, count - 1])
+        ends.append(end)
+    saved = ends[0].auxiliary[proposer.cache_identity][1].clone()
     norm.zero_()
-    assert torch.equal(requests[0].cache_auxiliary[requests[0].committed_len][proposer.cache_identity][1], saved)
+    assert torch.equal(ends[0].auxiliary[proposer.cache_identity][1], saved)
 
 
 class _RowHead:
@@ -71,7 +79,7 @@ def test_device_feedback_matches_host_feedback(counts):
             req = SimpleNamespace(proposer_state=MtpState(draft_pos=start, pending_token=50 + row,
                                   pending_hidden=torch.full((1, 2), -1. - row, dtype=torch.bfloat16)), committed_len=start,
                                   finished=row == 1, pages=torch.arange(512).int() + 1 + row * 512,
-                                  checkpoints={start + 2: 1}, cache_auxiliary={})
+                                  private={})
             tokens += [50 + row] + drafts
             pages.append(req.pages[start:start + s] if count else torch.zeros(s, dtype=torch.int32))
             if count:
@@ -99,8 +107,9 @@ def test_device_feedback_matches_host_feedback(counts):
         assert (sh.pending_hidden is None) == (sd.pending_hidden is None)
         if sh.pending_hidden is not None:
             assert torch.equal(sh.pending_hidden, sd.pending_hidden)
-        assert h.cache_auxiliary.keys() == d.cache_auxiliary.keys()
-        for position in h.cache_auxiliary:
-            (ph, rh), = h.cache_auxiliary[position].values()
-            (pd, rd), = d.cache_auxiliary[position].values()
-            assert ph == pd and torch.equal(rh, rd)
+        eh, ed = Snapshot(1, h.committed_len), Snapshot(2, d.committed_len)
+        proposer.prepare_release(h, eh)
+        proposer.prepare_release(d, ed)
+        (ph, rh), = eh.auxiliary.values()
+        (pd, rd), = ed.auxiliary.values()
+        assert ph == pd == h.committed_len and torch.equal(rh, rd)

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from sharar.cache.snapshot import Snapshot
 from sharar.engine.contracts import ProposerContext, VerifiedFeatures
 from sharar.proposers.parallel import DraftState, FeatureCache, ParallelProposer
 
@@ -39,8 +40,8 @@ def setup(batch, checkpoint=False):
     emitted = [[100 + i] * count for i, count in enumerate(counts)]
     requests = [SimpleNamespace(proposer_state=DraftState(slot, end=start, pending=17),
                 committed_len=start + count, finished=i % 2 == 0, cache_enabled=True,
-                checkpoints={start + count: 1, **({start + 2: 2} if checkpoint and count > 2 else {})},
-                cache_auxiliary={})
+                private={start + count: Snapshot(1, start + count),
+                         **({start + 2: Snapshot(2, start + 2)} if checkpoint and count > 2 else {})})
                 for i, (slot, start, count) in enumerate(zip([4, 1, 3, 2], starts, counts))]
     layers = {lid: torch.full((batch, 8, 3), float('nan')) for lid in p.model.features}
     for lid, values in layers.items():
@@ -66,10 +67,12 @@ def test_batched_rows_match_sequential_oracle_and_preserve_endpoints(batch, chec
     for req, expected in zip(requests, control_reqs):
         assert req.proposer_state == expected.proposer_state
         assert req.proposer_state.pending == (None if req.finished else emitted[requests.index(req)][-1])
-        assert req.cache_auxiliary.keys() == expected.cache_auxiliary.keys()
-        for position, handles in req.cache_auxiliary.items():
+        saved = {q: s.auxiliary for q, s in req.private.items() if s.auxiliary}
+        oracles = {q: s.auxiliary for q, s in expected.private.items() if s.auxiliary}
+        assert saved.keys() == oracles.keys()
+        for position, handles in saved.items():
             cached = p.feature_cache.get(handles[p.cache_identity])
-            oracle = control.feature_cache.get(expected.cache_auxiliary[position][p.cache_identity])
+            oracle = control.feature_cache.get(oracles[position][p.cache_identity])
             assert cached[:2] == oracle[:2]
             assert torch.equal(cached[2], oracle[2])
     # Graph/output buffers may be overwritten after feedback; rings/cache own data.
@@ -116,4 +119,4 @@ def test_feedback_graph_dispatch_preserves_interior_checkpoint_fallback(enabled,
         assert not calls
         assert p.model.projections == 1
         assert reqs[1].proposer_state.end == reqs[1].committed_len
-        assert reqs[1].committed_len in reqs[1].cache_auxiliary
+        assert reqs[1].private[reqs[1].committed_len].auxiliary

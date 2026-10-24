@@ -14,7 +14,7 @@ speculative scratch capacity.
 | `POST /v1/completions` | Text completions |
 | `POST /generate` | Native text or token-ID input, output IDs and request metadata |
 | `POST /v1/tokenize` | Token counting/encoding |
-| `POST /flush_cache` | Invalidate reusable prefixes; active loans drain safely |
+| `POST /flush_cache` | Invalidate reusable prefixes; locked prefixes drain safely |
 | `GET /v1/models` | Supported model |
 | `GET /health` | Engine availability |
 | `GET /get_server_info` | Serving profile, scheduler, cache and speculation statistics |
@@ -29,7 +29,7 @@ speculative scratch capacity.
 | `max_tokens` / `max_completion_tokens` | Requested output budget |
 | `temperature`, `top_p`, `top_k`, `seed` | Validated sampling parameters. An omitted `temperature` is OpenAI's 1.0 (with top_p 0.95 and top_k 20, the models' own generation config); send `temperature: 0` for greedy. OpenCode sends no sampling fields, and greedy thinking looped until `max_tokens` in its runs. `/v1/completions` and `/generate` keep greedy as their default |
 | `stop` | A nonempty string or list of nonempty stop strings |
-| `n` | 1 to 16 choices (non-streaming). The prompt is prefilled once by a one-token primer and published to the prefix cache; the n samples resume from it (at most 64 tokens re-prefilled each) and decode side by side, up to the batch size at a time. With a `seed`, choice i uses seed + i; use a temperature above 0 for distinct choices |
+| `n` | 1 to 16 choices (non-streaming). The prompt is prefilled once by a one-token primer and published to the prefix cache; the n samples resume at its last chunk end (at most 64 tokens re-prefilled each) and decode side by side, up to the batch size at a time. With a `seed`, choice i uses seed + i; use a temperature above 0 for distinct choices |
 | `chat_template_kwargs.enable_thinking` | Thinking defaults to true; false disables it |
 | `reasoning_effort` | `low`, `medium`, `high` select the template's reasoning instruction (`low`, `medium`, `xhigh`; `high` and `max` map to `xhigh`, the default); unknown values keep the default; `chat_template_kwargs.reasoning_effort` takes precedence |
 | `tools` | Tool schemas passed to the template; generated calls are parsed |
@@ -62,6 +62,11 @@ Queue saturation returns 429. An unavailable engine returns 503; a stream
 already in progress reports an SSE error. Client disconnects cancel their
 requests. Cache flush acknowledges invalidation; locked storage may remain
 until its readers finish, reported by `flush_pending`.
+
+The chat routes (`/v1/chat/completions`, `/v1/messages`) also tell the prefix cache where the prompt's last message
+starts (`SamplingParams.message_boundary`, from one more render of the conversation without it). Each prefill places
+a snapshot there, on its 64-token grid: the conversation's next turn keeps the messages before the last one, often
+not its last tokens. Raw prompts (`/generate`, `/v1/completions`) report none.
 
 ## Refused tool calls
 

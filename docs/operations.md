@@ -27,11 +27,11 @@ cache from FlashInfer's, constrained to the tested versions in `constraints/`. `
 the lock, so after `git pull` the next `uv run sharar serve` uses the new code and packages (a running server keeps
 the code it started with).
 
-`sharar serve` resolves the settings (below), checks the host (one GB10, driver, 40 GiB available), downloads
+`sharar serve` resolves the settings (below), checks the host (one GB10, driver, 24 GiB available above the host floor), downloads
 missing snapshots, keeps the 3-bit checkpoint on its pinned revision, prints what it will serve, and runs the server
-in its own process with the memory guard as a thread: when `MemAvailable` stays under 16 GiB for six seconds it stops
-the server (SIGTERM, then SIGKILL after 15 s), before unified memory pages the weights. The scheduler already holds
-new admissions under that floor. `--detach` runs the same command as the user systemd service `sharar-qwen38` or
+in its own process with the memory guard as a thread: when `MemAvailable` stays under half the host floor for six seconds it
+stops the server (SIGTERM, then SIGKILL after 15 s), before unified memory pages the weights. The scheduler already holds
+new admissions under that threshold. `--detach` runs the same command as the user systemd service `sharar-qwen38` or
 `sharar-flashnext`, logging to `$SHARAR_RESULTS/logs/<service>.log` (the previous run's is `.log.1`); `sharar stop`
 sends it SIGTERM, so it drains and, with the SSD tier on, stores its cached prefixes. Automatic KV capacity depends
 on available memory.
@@ -179,10 +179,13 @@ adaptive draft depth. It is read when the proposer is built; off, nothing change
 
 Inspect `sharar status`, `sharar logs` (detached servers), `/health` and `/get_server_info` for status.
 The latter reports draft precision, scheduler settings, KV/state geometry and
-cache statistics. `cache.draft_features` reports retained features and fallbacks.
+cache statistics: locks by owner, snapshots (spare and not), evictions by reason, pruned dead-KV nodes, full
+re-prefills, resumes from a branching point, the evictable totals, and the drafters' resume hits and fallbacks
+(`cache.draft_resumes`; [cache design](cache_design.md#protection-and-eviction)); `cache.draft_features` reports
+retained DFlash2 features.
 At 96 slots, the 27B's DFlash2 feature retention reserves up to 1,900 MiB before planning
-KV (Flash-Next's, half as wide, half that). The pools take what is available at startup beyond the floor, the prefill
-reserve and a 4 GiB margin. No host-memory tier sits below them: on unified
+KV (Flash-Next's, half as wide, half that). The pools take what is available at startup beyond the host floor and the
+allocations counted after them ([memory_plan.md](memory_plan.md)). No host-memory tier sits below them: on unified
 memory it would hold the same prefixes in the same DRAM.
 
 **SSD tier.** On in every profile (`SHARAR_SSD=0` turns it off), it is the only tier below the GPU pools: an
@@ -194,9 +197,18 @@ restores; `sharar cache` prints the GPU cache and the SSD tier, or with nothing 
 Measure it on a real NVMe: a filesystem on a loop device without direct I/O caps reads near 1 GB/s and serves
 fresh data from the host page cache. How it works: [cache design](cache_design.md).
 
-While host `MemAvailable` is under the 16 GiB floor the scheduler holds new
+While host `MemAvailable` is under half the host floor the scheduler holds new
 admissions (`floor_holds` in `/get_server_info`) so running requests can
 finish and release memory before the memory guard has to act.
+
+**Host floor.** The MemAvailable Sharar leaves for the OS and other programs (a client, an agent, the page cache):
+6 GiB, `SHARAR_HOST_FLOOR_GIB` to change it. The pools get everything else, once Sharar's own allocations after them
+are counted: the drafter, the SSD tier's staging, FlashInfer's workspaces, the CUDA graphs, the GPU memory the first
+prefill takes outside PyTorch, and the activation blocks PyTorch keeps cached (the server log's "counted after the
+pools" line; `/get_server_info`'s `after_plan_gib`). Admission holds, and the memory guard stops the server, only under
+half the floor, when other programs have used more than it left them (`SHARAR_HOST_FLOOR_GIB` moves both; main's
+`SHARAR_MIN_AVAILABLE_KIB` is retired). Preflight wants the 24 GiB load peak above the floor. `/get_server_info` also reports `memory_gib`:
+PyTorch's allocated and reserved bytes, now and at their peak, and the process's resident memory. Terms and measurements: [memory_plan.md](memory_plan.md).
 
 ## Development
 

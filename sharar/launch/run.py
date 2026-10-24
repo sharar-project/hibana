@@ -59,7 +59,7 @@ def serve(args) -> int:
     if args.detach:
         argv = [a for a in sys.argv[1:] if a not in ("--detach", "-d")]
         try:
-            preflight.check_host()
+            preflight.check_host(guard.floor_kib(s.values))
             preflight.ensure_snapshots(s)  # downloads show here, not in the service's log
             preflight.ensure_w3(s)
             service.start(s.service, [*argv, "--no-fetch"], s.log_file(), f"Sharar {s.target}")
@@ -70,7 +70,7 @@ def serve(args) -> int:
     if ctl.server_info(str(s.port)) is not None:
         sys.exit(f"sharar serve: something already serves {s.url} (sharar stop, or stop the server in its terminal)")
     try:
-        host = preflight.check_host()
+        host = preflight.check_host(guard.floor_kib(s.values))
         missing = preflight.ensure_snapshots(s, fetch=not args.no_fetch)
         if missing:
             raise preflight.PreflightError(f"missing from the model cache: {', '.join(missing)}")
@@ -85,7 +85,7 @@ def serve(args) -> int:
         from sharar.launch import tp
         return tp.serve(s, w3)
     install_env({**s.engine_env(w3), **engine_runtime_env()})
-    guard.start_thread()
+    guard.start_thread(floor=guard.guard_kib(s.values))
     from sharar.cli import engine_parser, run_engine
     parser = engine_parser()
     return run_engine(parser.parse_args(s.engine_args()), parser)
@@ -162,6 +162,14 @@ def cache(args) -> int:
         return 0
     print(f"  GPU: {cache['cached_tokens']:,} of {info.get('kv_pages', 0):,} KV tokens cached; "
           f"{cache['hits']:,} hits, {cache['misses']:,} misses, {cache['evictions']:,} evictions")
+    if "locks" in cache:  # the cache policy's own counters (cache/radix.py `stats`)
+        locks, snaps, drafts = cache["locks"], cache.get("snapshots", {}), cache.get("draft_resumes")
+        evicted = sum(n for by_spare in cache.get("evicted", {}).values() for n in by_spare.values())
+        print(f"  locks: {locks.get('total', 0)} ({locks.get('request', 0)} requests, {locks.get('restore', 0)} SSD "
+              f"restores); snapshots: {snaps.get('not_spare', 0):,} + {snaps.get('spare', 0):,} spare, {evicted:,} "
+              f"evicted; {cache.get('pruned', 0):,} dead-KV nodes pruned, {cache.get('full_reprefills', 0):,} full "
+              f"re-prefills, {cache.get('branching_resumes', 0):,} resumes at a branching point"
+              + (f"; drafter resumes {drafts['hits']:,} hits, {drafts['fallbacks']:,} fallbacks" if drafts else ""))
     ssd = cache.get("ssd")
     if ssd is None:
         print("  SSD: " + ("on in the settings but not running (the server log says why)" if cfg.get("ssd") else "off (SHARAR_SSD=1 turns it on)"))

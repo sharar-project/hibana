@@ -7,7 +7,7 @@ tree only through the SSD tier's eviction or a flush."""
 import torch
 
 from sharar.cache.radix import RadixCache, SsdRef
-from tests.unit.test_radix import FakePool
+from tests.unit.test_radix import FakePool, snaps
 
 B = 4  # tokens per block in these tests
 
@@ -16,7 +16,7 @@ class FakeSsd:
     def __init__(self, keep=True):
         self.keep, self.flushes = keep, 0
 
-    def evicting(self, cache, leaf):
+    def evicting(self, cache, leaf, wait=True):
         return self.keep
 
     def clean(self, leaf):
@@ -31,6 +31,12 @@ class FakeSsd:
     def abort(self, cache):
         pass
 
+    def dropping_snapshot(self, cache, node):
+        pass
+
+    def pruning(self, node):
+        pass
+
 
 def make(keep=True):
     kv, st = FakePool(1000), FakePool(20)
@@ -41,7 +47,7 @@ def make(keep=True):
 
 def cached(cache, kv, st, ids):
     pages = kv.alloc(len(ids))
-    cache.insert(ids, pages, {len(ids): st.alloc_slot()}, page_ids=pages.tolist())
+    cache.insert(ids, pages, snaps({len(ids): st.alloc_slot()}), page_ids=pages.tolist())
 
 
 def on_ssd(node, ends, tail=True):
@@ -75,7 +81,7 @@ def test_insert_promotes_ssd_only_nodes_back_into_l1():
     on_ssd(node, [4, 8])
     cache.evict(need_pages=kv.free_count + 10)
     pages = kv.alloc(10)
-    new_start = cache.insert(ids, pages, {10: st.alloc_slot()}, page_ids=pages.tolist())
+    new_start = cache.insert(ids, pages, snaps({10: st.alloc_slot()}), page_ids=pages.tolist())
     assert new_start == 0 and node.in_l1 and node.pages.tolist() == pages.tolist() and cache.promotions == 1
     assert cache.match(ids + [99]).length == 10 and node.blocks  # still on the SSD too
 
@@ -139,7 +145,7 @@ def test_eviction_takes_a_stored_leaf_before_an_older_unstored_one():
     newer.last_access = older.last_access + 1
     cache.ssd.clean = lambda leaf: leaf is newer
     evicted = []
-    cache.ssd.evicting = lambda c, leaf: evicted.append(leaf) or True
+    cache.ssd.evicting = lambda c, leaf, wait=True: evicted.append(leaf) or True
     cache.evict(need_pages=kv.free_count + 1)
     assert evicted == [newer]
     cache.evict(need_pages=kv.free_count + 1)

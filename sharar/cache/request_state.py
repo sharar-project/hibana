@@ -1,21 +1,38 @@
-"""The ownership boundary for request KV, recurrent state and cache loans.
+"""The ownership boundary for request KV, recurrent state and the request's cache lock.
 
 Kernels may write through supplied tensor views. Only StateManager transfers
 ownership, advances the processed prefix, or returns request resources.
+
+A request's life in the prefix cache (docs/cache_design.md, "Protection and eviction"):
+- `can_admit` decides without changing anything: the candidate's uncached suffix, its decode reserve and the running
+  requests' outstanding reserve against the free and evictable KV, and a slot of its own against the free and evictable
+  slots, with its own match held by a probe lock so it is not counted as evictable (FIFO, one request at a time);
+- `admit` matches the prompt and locks the matched node (`req.lock`, a `radix.TreeLock`) before it evicts anything for
+  the request's own slot (`req.slot`) and pages; the matched snapshot is copied into that slot, and the drafter reads its
+  metadata at the first prefill chunk (`req.match`);
+- each prefill forward writes the snapshots `Executor._checkpoint_positions` places into the request's private
+  snapshots (`req.private`, allocated by `prefill_checkpoints`). Once the drafter ingested the chunk,
+  `checkpoint(req, up_to)` inserts them into the tree and moves the lock to the deepest (lock the new node, then unlock
+  the old one), so `req.private` is empty between scheduler steps;
+- `release` inserts the whole sequence with the request's own slot as the reply end, then unlocks; `retract` unlocks
+  without inserting, so a retry resumes at the last checkpoint.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import torch
+
+from sharar.cache.snapshot import GRID, Snapshot
 
 if TYPE_CHECKING:
     from sharar.engine.request import Request
     from sharar.cache.kv_pool import KvPool
     from sharar.cache.state_pool import StatePool
-    from sharar.cache.radix import Match, Node, RadixCache
+    from sharar.cache.radix import Match, RadixCache, TreeLock
 
 
 @dataclass
@@ -27,52 +44,52 @@ class Reservation:
 
 @dataclass(eq=False, kw_only=True)
 class RequestState:
-    slot: int = -1
+    slot: int = -1  # the request's own state slot: the state after committed_len tokens; the reply end at release
     pages: torch.Tensor | None = None
-    prefix_len: int = 0  # borrowed, locked prefix; the rest is request-owned
+    prefix_len: int = 0  # the matched prefix, the cache's; the rest is request-owned until checkpointed
     committed_len: int = 0  # prefix represented by both KV and recurrent state
-    match: Match | None = None
-    checkpoints: dict[int, int] = field(default_factory=dict)
+    match: Match | None = None  # what admission resumed from, for the drafter's first chunk (cleared by `checkpoint`)
+    branching_seqlen: int = 0  # Match.branching_seqlen while prefilling: where its branching point goes (0: none)
+    lock: TreeLock | None = None  # the request's one lock: its matched node, then its deepest checkpoint (None: nothing)
+    private: dict[int, Snapshot] = field(default_factory=dict)  # this forward's snapshots by position (empty between steps)
     reservation: Reservation | None = None
     page_ids: list[int] = field(default_factory=list)  # host ids of the pages after prefix_len (-1: the cache owns it)
-    prompt_node: Node | None = None  # where `cache_prompt` ended the prompt in the cache; locked until release
     cacheable: bool = True
     cache_enabled: bool = False
     released: bool = False
-    cache_auxiliary: dict[int, dict] = field(default_factory=dict)
 
 
 class StateManager:
-    # Wide batches (the throughput profile): prefill snapshots never take the recurrent slots that
-    # admitting up to `admission_slots` live requests needs (0: snapshots take any free slot, as at batch four).
-    admission_slots = 0
-    live = 0  # admitted requests that still own a slot
-
     def __init__(self, kv_pool: KvPool, state_pool: StatePool, cache: RadixCache | None = None):
         self.kv = kv_pool
         self.recurrent = state_pool
         self.cache = cache
-
+        self.requests: dict[int, Request] = {}  # admitted requests still owning resources, by id(): for `check`
+        self._prefetched: list[int] | None = None  # the ids `prefetch` last answered for: their restore is the scheduler's
 
     def can_admit(self, ids: list[int], reserve: int = 0) -> bool:
+        """Whether the request with ids can be admitted now. Pure: nothing is evicted, restored or allocated. Its
+        uncached suffix and `reserve` decode pages (its own and, from the scheduler, the running requests' outstanding
+        reserve) must fit in the free and evictable KV, and one slot of its own in the free and evictable slots, while a
+        probe lock keeps its own matched path and snapshot out of the evictable totals (SGLang's _lock_node): `admit`
+        locks them before it evicts. The decision holds for one request at a time, checked and then admitted."""
         if self.cache is None:
             return self.kv.free_count >= len(ids) + reserve and self.recurrent.free_count >= 1
-        # Obtain a private slot before pinning a path that might otherwise own
-        # every state slot. Budget only the uncached suffix and decode reserve.
-        if not self.cache.restore_async(ids[:-1], reserve + 1):  # a stored prefix comes back before it is matched
-            return False  # its reads are still landing; the engine serves everyone else meanwhile
-        self.cache.evict(need_slots=1)
-        match = self.cache.match(ids[:-1], touch=False)
-        self.cache.lock(match.node, 1)
-        try:
-            need = len(ids) - match.length + reserve
-            self.cache.evict(need_pages=need)
-            return self.kv.free_count >= need and self.recurrent.free_count >= 1
-        finally:
-            self.cache.lock(match.node, -1)
+        match = self.cache.match(ids[:-1], touch=False)  # the last token must produce logits
+        with self.cache._lock_node(match.node):
+            return self.cache.fits(len(ids) - match.length + reserve, 1)
+
+    def prefetch(self, ids: list[int], reserve: int = 0) -> bool:
+        """The queue head's SSD restore, before `can_admit` (`SsdTier.restore_async`): False while a stored prefix is
+        still coming back for it (the engine serves everyone else meanwhile), True when the head can be checked now. A
+        restore starts only when its pages and slot, the rest of the prompt and `reserve` fit by the same pure count."""
+        if self.cache is None:
+            return True
+        self._prefetched = ids
+        return self.cache.restore_async(ids[:-1], reserve + 1)
 
     def forget(self, ids: list[int]) -> None:
-        """A queued request is gone: a restore holding its path lets go."""
+        """A queued request is gone: a restore locking its path unlocks."""
         if self.cache is not None:
             self.cache.release(ids[:-1])
 
@@ -83,106 +100,144 @@ class StateManager:
             raise MemoryError(f"KV pool exhausted: need {count}, free {self.kv.free_count}")
 
     def admit(self, req: Request, ids: list[int]) -> None:
+        """Match the cached prefix and lock it for the request before anything is evicted for it: the lock keeps the
+        path's KV and the matched snapshot, which admission copies now and the drafter reads at the first prefill chunk,
+        until `checkpoint` moves it. A landed SSD restore that locked the node for this request unlocks after the
+        request's lock is taken. A failure after the match unlocks."""
         if req.slot >= 0 or req.pages is not None or req.reservation is not None or req.released:
             raise ValueError("request already owns resources or has been released")
-        match, slot, own = None, -1, None
+        cache = self.cache
+        match, lock, slot, own = None, None, -1, None
         try:
-            if self.cache is not None:
-                self.cache.restore(ids[:-1])
-                self.cache.evict(need_slots=1)
-                match = self.cache.match(ids[:-1])  # last token must produce logits
-                if match.length:
-                    self.cache.lock(match.node, 1)
-                else:
-                    match = None
-                self.cache.release(ids[:-1])  # a restore that held this path for the request: the match holds it now
+            if cache is not None:
+                if self._prefetched != ids:  # a direct caller's restore; the scheduler's head was prefetched (it may
+                    cache.restore(ids[:-1])  # go ahead without one while another restore holds the slot: no read here)
+                self._prefetched = None
+                match = cache.match(ids[:-1])  # last token must produce logits
+                lock = cache.lock(match.node, owner=req)
+                cache.release(ids[:-1])  # a landed restore that locked this path for the request: the request's lock now
+                cache.evict(need_pages=len(ids) - match.length, need_slots=1)
             prefix = match.length if match is not None else 0
-            if self.cache is not None:
-                self.cache.evict(need_pages=len(ids) - prefix, need_slots=1)
             slot = self.recurrent.alloc()
-            if match is not None:
-                self.recurrent.copy_slot(match.snapshot_slot, slot)
+            if prefix:
+                self.recurrent.copy_slot(match.snapshot.slot, slot)
             own, own_ids = self.kv.alloc_with_ids(len(ids) - prefix)
-            pages = torch.cat([match.pages, own]) if match is not None else own
+            pages = torch.cat([match.pages, own]) if prefix else own
         except Exception:
             if own is not None:
                 self.kv.free_ids(own_ids)
             if slot >= 0:
                 self.recurrent.free(slot)
-            if match is not None:
-                self.cache.lock(match.node, -1)
+            if cache is not None:
+                cache.unlock(lock)
             raise
-        req.match, req.slot, req.pages = match, slot, pages
+        if cache is not None:
+            if not prefix and match.raw_length >= GRID:
+                cache.full_reprefills += 1  # the tree held its KV, but no snapshot it could resume from
+            if prefix and match.snapshot in cache.branching:
+                cache.branching_resumes += 1
+        req.match = match if prefix else None
+        req.branching_seqlen = match.branching_seqlen if match is not None else 0
+        req.slot, req.pages, req.lock = slot, pages, lock
         req.page_ids = list(own_ids)
-        self.live += 1
-        req.cache_enabled = self.cache is not None
+        req.private = {}
+        self.requests[id(req)] = req
+        req.cache_enabled = cache is not None
         req.prefix_len = req.committed_len = req.prefill_pos = prefix
 
-    def checkpoint(self, req: Request, position: int, *, copy: bool = False) -> int | None:
-        if self.cache is None:
+    def _private_snapshot(self, req: Request, position: int, spare: bool) -> int | None:
+        """A private snapshot at `position` for the coming forward: its slot, or None when there is none to take. A
+        spare one takes only a free slot or a spare snapshot's; any other one the lowest-priority unlocked snapshot's
+        (`radix.get_priority`). A locked snapshot is never taken."""
+        if position in req.private:
+            return req.private[position].slot
+        if self.recurrent.free_count < 1:
+            self.cache.evict(need_slots=1, spare_only=spare)
+        if self.recurrent.free_count < 1:
             return None
-        if position in req.checkpoints:
-            return req.checkpoints[position]
-        keep = max(0, self.admission_slots - self.live)  # slots the next admissions need
-        if self.recurrent.free_count <= keep:
-            self.cache.evict(need_slots=keep + 1)
-        if self.recurrent.free_count <= keep:
-            # Only recycle this request's completed snapshots. Positions beyond
-            # committed_len are destinations of the upcoming forward; reusing
-            # them would alias two kernel writes. Cache loans are never ours.
-            candidates = [p for p in req.checkpoints if p <= req.committed_len and p < position]
-            if copy and candidates:
-                # An exact prompt-end copy must not displace the last interior
-                # boundary needed by an identical retry (which needs logits).
-                candidates = [p for p in candidates if p != max(req.checkpoints)]
-            if not candidates:
-                return None
-            oldest = min(candidates)
-            self.recurrent.free(req.checkpoints.pop(oldest))
-            req.cache_auxiliary.pop(oldest, None)
         slot = self.recurrent.alloc()
-        req.checkpoints[position] = slot
-        if copy:
-            self.recurrent.copy_slot(req.slot, slot)
+        req.private[position] = Snapshot(slot, position, spare=spare)
         return slot
 
-    def prefill_checkpoints(self, boundaries: list[tuple[Request, list[int]]]) -> list[tuple[int, int, int]]:
-        """Reserve (row, position, slot), giving each row its latest boundary first.
-
-        Then fill earlier intervals round-robin. The fixed pool bounds retention;
-        allocation cannot let one long prompt consume every row's endpoint.
-        """
-        priorities = [positions[-1:] + positions[:-1] for _, positions in boundaries]
+    def prefill_checkpoints(self, boundaries: list[tuple[Request, list[tuple[int, bool]]]]) -> list[tuple[int, int, int]]:
+        """Allocate the private snapshots each row's forward places ((position, spare), from
+        `Executor._checkpoint_positions`, in each row's own order: the message boundary and the last chunk end, then
+        the branching point, then a spare chunk end), round-robin over the rows, so one long prompt cannot take every
+        row's slots. Returns (row, position, slot) for each one allocated; a slot may be missing (none to take)."""
+        if self.cache is None or self.cache.flushing:
+            return []
         planned = []
-        for rank in range(max(map(len, priorities), default=0)):
-            for row, ((req, _), positions) in enumerate(zip(boundaries, priorities)):
+        for rank in range(max((len(p) for _, p in boundaries), default=0)):
+            for row, (req, positions) in enumerate(boundaries):
                 if rank < len(positions):
-                    pos = positions[rank]
-                    slot = self.checkpoint(req, pos)
+                    pos, spare = positions[rank]
+                    slot = self._private_snapshot(req, pos, spare)
                     if slot is not None:
                         planned.append((row, pos, slot))
         return planned
+
+    def discard_private(self, req: Request) -> None:
+        """A forward failed: the private snapshots it would have written are never written, on every row of it."""
+        for snap in req.private.values():
+            self.recurrent.free(snap.slot)
+        req.private = {}
 
     def commit_prefill(self, req: Request, end: int) -> None:
         if not req.committed_len <= end <= len(req.pages):
             raise ValueError("prefill commit outside owned pages")
         req.prefill_pos = req.committed_len = end
 
-    def cache_prompt(self, req: Request) -> None:
-        """With an SSD tier, hand the cache the prompt's whole blocks as soon as the prompt is prefilled, locked for the
-        request, and queue them for backup: the tier writes them while the request decodes instead of after it
-        finishes, so eviction finds them stored. A prompt's KV is final once it is prefilled, a drafter's stored pages
-        included (`stored_pages`): decoding writes only the positions after it."""
-        end = self.cache.backup_span(req.prefill_len) if self.cache is not None and req.cacheable else 0
-        if end <= req.prefix_len:
+    def checkpoint(self, req: Request, up_to: int) -> None:
+        """Insert the request's prefix up to its deepest written private snapshot at or before `up_to`, with every
+        written one, and move its lock there: after each prefill chunk the drafter has ingested
+        (`Executor._finish_*prefill`, both paths), and at release (the whole sequence, with the reply end). A private
+        snapshot is written once the forward that fills it has committed (position <= committed_len); any other one is
+        freed, so nothing private outlives the step. The request's own pages become the cache's where the tree had
+        none; where the tree had the span already (another request's copy), the request reads the tree's pages from now
+        on and frees its own. With an SSD tier, the prefix's whole blocks and the non-spare snapshots' tails are queued
+        for a write-through. Then the lock moves, with nothing allocated or evicted in between: lock the new node, unlock
+        the old one. Last, the request's previous spare chunk end goes (one spare chunk end per request in the tree).
+        Nothing is inserted while the cache flushes, or for a request that may not be cached."""
+        req.match = None  # the drafter read it at the first chunk
+        private, req.private = req.private, {}
+        limit = min(up_to, req.committed_len)
+        written = sorted((s for p, s in private.items() if p <= limit), key=lambda s: s.position)
+        for snap in private.values():
+            if snap.position > limit:
+                self.recurrent.free(snap.slot)
+        cache = self.cache
+        if cache is None or cache.flushing or not req.cacheable or not req.cache_enabled or not written:
+            for snap in written:
+                self.recurrent.free(snap.slot)
             return
-        ids = req.prefill_ids[:end]
+        p = written[-1].position
+        seq = (req.prompt_ids + req.output_ids)[:p]
+        bp = req.branching_seqlen
+        for snap in written:  # the one serving as its branching point: resumes from it are counted (`cache_stats`)
+            if bp and snap.position <= bp < snap.position + GRID:
+                cache.branching.add(snap)
         owned = [-1] * req.prefix_len + req.page_ids
-        new_start = min(self.cache.insert(ids, req.pages[:end], {}, page_ids=owned[:end]), end)
-        req.page_ids[new_start - req.prefix_len:end - req.prefix_len] = [-1] * (end - new_start)  # the cache's from now on
-        req.prompt_node = self.cache.node_at(ids)
-        self.cache.lock(req.prompt_node, 1)
-        self.cache.backup(ids)
+        new_start = min(cache.insert(seq, req.pages[:p], written, page_ids=owned[:p]), p)
+        node = cache.node_at(seq)
+        assert node is not None and node.snapshot is not None, "a checkpoint ends at a snapshot"
+        lo = req.prefix_len
+        dup = [q for q in req.page_ids[:new_start - lo] if q >= 0]
+        if dup:  # the tree had part of [lo, new_start) already: read its pages (locked below) and free the duplicates
+            req.pages = torch.cat([cache.path_pages(node)[:new_start], req.pages[new_start:]])
+            self.kv.free_ids(dup)
+            req.page_ids[:new_start - lo] = [-1] * (new_start - lo)
+        req.page_ids[new_start - lo:p - lo] = [-1] * (p - new_start)  # the cache's from now on
+        cache.backup(seq, tuple(s.position for s in written if not s.spare))
+        old = req.lock
+        if old is not None and old.node is node:
+            return
+        superseded = old.node if old is not None else None
+        assert superseded is None or _below(node, superseded), "a lock moves down its request's own path"
+        req.lock = cache.lock(node, owner=req)
+        cache.unlock(old)
+        if (superseded is not None and superseded.snapshot is not None and superseded.snapshot.spare
+                and superseded.state_lock_ref == 0):
+            cache.evict_snapshot(superseded, "superseded")
 
     def reserve(self, requests: list[Request], width: int) -> torch.Tensor:
         if width < 1 or any(r.reservation is not None or r.finished for r in requests):
@@ -326,65 +381,102 @@ class StateManager:
             req.reservation = None
 
     def retract(self, req: Request) -> None:
+        """Give everything back without inserting: the lock ends, and the request's own pages and slot are freed. What
+        it checkpointed stays in the tree, so its retry resumes at its last checkpoint."""
         self.rollback(req)
         self._drop(req)
         req.prefix_len = req.committed_len = req.prefill_pos = 0
 
-    def release(self, req: Request) -> None:
+    def release(self, req: Request, attach: Callable[[Request, Snapshot], None] | None = None) -> None:
+        """Finish a request: its whole sequence (prompt and reply, but its last token) goes into the tree with the
+        request's own slot as the reply end (a spare snapshot; `attach`, the drafter's `prepare_release`, puts its
+        metadata in it first), the reply end's SSD tail is queued for a write-through, then the lock ends."""
         if req.released:
             return
         if req.reservation is not None:
             # In-place decode could have partially advanced a slot on failure.
             req.cacheable = False
             self.rollback(req)
-        cached = False
-        if (self.cache is not None and not self.cache.flushing and req.cacheable
-                and req.slot >= 0 and req.pages is not None and req.prefill_done):
-            cached = self._insert(req)
-        self._drop(req, cached=cached)
+        n = len(req.prompt_ids) + max(0, len(req.output_ids) - 1)  # the whole sequence but its last token
+        if (self.cache is not None and not self.cache.flushing and req.cacheable and req.cache_enabled
+                and req.slot >= 0 and req.pages is not None and req.prefill_done
+                and req.committed_len == n and n and len(req.pages) >= n):
+            end = Snapshot(req.slot, n, spare=True)  # the reply end
+            if attach is not None:
+                attach(req, end)
+            req.private[n], req.slot = end, -1
+            self.checkpoint(req, n)
+            self.cache.backup((req.prompt_ids + req.output_ids[:-1]), (n,))
+        self._drop(req)
         req.released = True
 
-    def _drop(self, req: Request, *, cached: bool = False) -> None:
+    def _drop(self, req: Request) -> None:
+        """The lock ends (after `checkpoint`, which needs the locked path); what the request still owns goes back."""
+        self.requests.pop(id(req), None)
+        if self.cache is not None:
+            self.cache.unlock(req.lock)  # and prunes what it left dead
+        req.lock = req.match = None
+        if req.pages is not None:
+            self.kv.free_ids([p for p in req.page_ids if p >= 0])  # host ids: no device read-back
         if req.slot >= 0:
-            self.live -= 1
-        if req.match is not None:
-            self.cache.lock(req.match.node, -1)
-            req.match = None
-        if req.prompt_node is not None:
-            self.cache.lock(req.prompt_node, -1)
-            req.prompt_node = None
-        if not cached:
-            if req.pages is not None:
-                self.kv.free_ids([p for p in req.page_ids if p >= 0])  # host ids: no device read-back
-            if req.slot >= 0:
-                self.recurrent.free(req.slot)
-            for slot in req.checkpoints.values():
-                self.recurrent.free(slot)
-        req.pages, req.slot, req.checkpoints = None, -1, {}
+            self.recurrent.free(req.slot)
+        self.discard_private(req)
+        req.pages, req.slot = None, -1
         req.page_ids = []
-        req.cache_auxiliary = {}
-
-    def _insert(self, req: Request) -> bool:
-        ids = req.prompt_ids + req.output_ids[:-1]
-        n = len(ids)
-        if req.committed_len != n or not n or len(req.pages) < n:
-            return False
-        snapshots = {n: req.slot, **{p: s for p, s in req.checkpoints.items() if p < n}}
-        for p, slot in req.checkpoints.items():
-            if p >= n:
-                self.recurrent.free(slot)
-        ids_full = [-1] * req.prefix_len + req.page_ids  # -1: cache-owned pages (never freed here)
-        new_start = self.cache.insert(ids, req.pages[:n], snapshots, req.cache_auxiliary, page_ids=ids_full[:n])
-        if new_start > req.prefix_len:
-            self.kv.free_ids([p for p in ids_full[req.prefix_len:new_start] if p >= 0])
-        if len(req.pages) > n:
-            self.kv.free_ids(ids_full[n:])
-        req.page_ids = []  # ownership moved to the cache
-        # With an SSD tier, back up its full KV blocks and its resume points: its end and, if snapshotted, its prompt's end.
-        prompt_end = req.prefill_len if req.prefill_len in snapshots else n
-        self.cache.backup(ids, (n, prompt_end))
-        return True
 
     def flush(self) -> None:
         if self.cache is not None:
             self.cache.flush()
+
+    def check(self) -> None:
+        """The cache's invariants (`RadixCache.check`) with what the running requests own, between scheduler steps:
+        - no request owns a private snapshot (they live only inside a prefill step);
+        - each request has at most its one lock, its own, on its own sequence's path, no deeper than its progress;
+        - a request reads the tree's pages exactly up to its lock (`page_ids` -1 there) and owns every page after;
+        - every KV page has exactly one owner: a tree node, a request, a reservation, an SSD restore, or the free list."""
+        cache = self.cache
+        if cache is None:
+            return
+        ssd = cache.ssd
+        owned_slots, pages = [], Counter()
+        mine = Counter(id(lock.owner) for lock in cache.locks() if id(lock.owner) in self.requests)
+        for key, req in self.requests.items():
+            assert not req.private, ("a private snapshot outlived its forward", sorted(req.private))
+            if req.slot >= 0:
+                owned_slots.append(("request", req.slot))
+            assert mine.get(key, 0) == (req.lock is not None), ("a request with other than its one lock", mine.get(key, 0))
+            depth = 0
+            if req.lock is not None:
+                node = req.lock.node
+                assert req.lock.owner is req and node.snapshot is not None, "a request's lock sits at a snapshot"
+                depth = node.depth
+                assert req.prefix_len <= depth <= max(req.committed_len, req.prefix_len), "a lock past the request's progress"
+                seq = (req.prompt_ids + req.output_ids)[:depth]
+                assert cache.node_at(seq) is node, "a lock off its request's own path"
+                assert torch.equal(req.pages[:depth].cpu(), cache.path_pages(node).cpu()), "a request reads other pages than its lock's"
+            if req.pages is not None:
+                shared = depth - req.prefix_len if req.lock is not None else 0
+                assert req.page_ids[:shared] == [-1] * shared and -1 not in req.page_ids[shared:], \
+                    ("a request owns pages up to its lock, or not past it", shared)
+                pages.update(p for p in req.page_ids if p >= 0)
+            if req.reservation is not None:
+                pages.update(req.reservation.ids)
+        for n in cache._walk(l1_only=True):
+            pages.update(n.page_ids if n.page_ids is not None else n.pages.tolist())
+        if ssd is not None:
+            pages.update(ssd.owned_pages())
+        both = pages + Counter(self.kv._free)
+        assert all(c == 1 for c in both.values()), ("a KV page with two owners", sorted(p for p, c in both.items() if c > 1)[:8])
+        assert set(both) == set(range(1, self.kv.num_pages)), \
+            ("a KV page with no owner", sorted(set(range(1, self.kv.num_pages)) - set(both))[:8])
+        cache.check([*self.requests.values(), *(ssd.live_jobs() if ssd is not None else [])],
+                    owned_slots + (ssd.owned_slots() if ssd is not None else []),
+                    ssd.pending_prune() if ssd is not None else ())
+
+
+def _below(node, ancestor) -> bool:
+    """Whether `ancestor` is on node's path (node itself excluded)."""
+    n = node.parent
+    while n is not None and n is not ancestor:
+        n = n.parent
+    return n is ancestor

@@ -89,6 +89,5 @@ def budget(spec, batch, *, cache_slots=96, target=None):
         fixed += (batch + cache_slots + 2) * window * cfg['hidden_size'] * 2
         fixed += cfg['num_hidden_layers'] * (batch + 1) * (window + spec.depth + 1) * 2 * cfg['num_key_value_heads'] * cfg['head_dim'] * 2
         fixed += weights + 2 * largest + 128 * 2**20 * max(1, -(-batch // 32))  # the draft attention's workspace
-    # Graph/workspace growth and allocator slack kept separate from live tensors.
-    fixed += 2 * GIB
+    # CUDA graphs, workspaces and cached activation blocks are counted once, by `ledger.after_plan_bytes`.
     return fixed, page_bytes
