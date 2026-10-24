@@ -2,6 +2,7 @@
 
     sharar serve 27b                 # Qwen3.8-27B on 127.0.0.1:30001, in the foreground (Ctrl-C stops it)
     sharar serve flashnext --detach  # Qwen3.8-Flash-Next on :30004 as a background service (sharar stop, sharar logs -f)
+    sharar serve nemotron            # Nemotron-3.5-Super (120B-A12B, NVFP4) on :30005, one Spark
     sharar serve 27b --tp 2          # tensor-parallel on two DGX Sparks
     sharar chat                      # chat with whichever target is serving
     sharar launch claude             # Claude Code (or opencode, aider) set up for the serving target
@@ -23,15 +24,15 @@ from sharar.launch.settings import PROFILE_NAMES, TARGET_CHOICES
 
 PROFILE_HELP = {"exact": "the target's own distribution: exact acceptance, no lossy weight copies (benchmarks)",
                 "fast": "the default: every measured speed option, lossy ones included (docs/operations.md#serving-profiles)",
-                "throughput": "fast with more requests at once (27B 16, Flash-Next 128) for evals and many agents"}
+                "throughput": "fast with more requests at once (27B 16, Flash-Next 128, Nemotron 16) for evals and many agents"}
 
 
 def add_engine_args(p: argparse.ArgumentParser) -> None:
     """`sharar engine`: the server itself, with every setting explicit (what `sharar serve` and the ranks run)."""
     p.add_argument("--target", default=None, help="pinned serving target (default: SHARAR_TARGET, else qwen38)")
     p.add_argument("--host", default=None, help="default: 127.0.0.1")
-    p.add_argument("--port", type=int, default=None, help="default: the target's, as `sharar serve` (27B 30001, Flash-Next 30004)")
-    p.add_argument("--proposer", choices=("mtp", "dflash2"), default=None, help="default: the target's (27B dflash2, Flash-Next mtp)")
+    p.add_argument("--port", type=int, default=None, help="default: the target's, as `sharar serve` (27B 30001, Flash-Next 30004, Nemotron 30005)")
+    p.add_argument("--proposer", choices=("mtp", "dflash2"), default=None, help="default: the target's (27B dflash2, Flash-Next and Nemotron mtp)")
     p.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default=None, help="default: reconstruct")
     p.add_argument("--draft-precision", choices=("bf16", "fp8"), default=None, help="parallel draft matrix precision (default: the target's)")
     p.add_argument("--spec", type=int, default=None, help="draft tokens per round (0 = off; default: SHARAR_SPEC, else the proposer's validated depth)")
@@ -165,7 +166,7 @@ def engine_parser() -> argparse.ArgumentParser:
     return p
 
 
-def add_target(p: argparse.ArgumentParser, help: str = "27b (Qwen3.8-27B) or flashnext (Qwen3.8-Flash-Next)") -> None:
+def add_target(p: argparse.ArgumentParser, help: str = "27b (Qwen3.8-27B), flashnext (Qwen3.8-Flash-Next) or nemotron (Nemotron-3.5-Super)") -> None:
     p.add_argument("target", nargs="?", choices=TARGET_CHOICES, metavar="TARGET", help=help)
 
 
@@ -174,13 +175,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     p = sub.add_parser("serve", help="serve a model (in the foreground; --detach for a background service)")
-    add_target(p, "27b or flashnext (default: SHARAR_TARGET, else 27b)")
+    add_target(p, "27b, flashnext or nemotron (default: SHARAR_TARGET, else 27b)")
     g = p.add_mutually_exclusive_group()
     for name in PROFILE_NAMES:
         g.add_argument(f"--{name}", dest="profile", action="store_const", const=name, help=PROFILE_HELP[name])
     p.add_argument("-d", "--detach", action="store_true", help="run as a user systemd service (sharar stop | status | logs)")
     p.add_argument("--tp", type=int, choices=(1, 2), default=1, help="2: tensor-parallel on two DGX Sparks (docs/tensor-parallel.md)")
-    p.add_argument("--port", type=int, default=None, help="default: 30001 for the 27B, 30004 for Flash-Next")
+    p.add_argument("--port", type=int, default=None, help="default: 30001 for the 27B, 30004 for Flash-Next, 30005 for Nemotron")
     p.add_argument("--host", default=None, help="default: 127.0.0.1")
     p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request (default 262144)")
     p.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: the profile's)")
@@ -283,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in ("chat", "launch", "verify"):
         s = run.serving(args.target)
         if s is None:
-            sys.exit("nothing is serving: sharar serve 27b (or flashnext) first")
+            sys.exit("nothing is serving: sharar serve 27b (or flashnext, nemotron) first")
         if args.command == "chat":
             return ctl.cmd_chat(args, s)
         if args.command == "launch":

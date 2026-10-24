@@ -112,6 +112,20 @@ class CalibratedWeights:
         fc2 = self._load(w2, (hi - lo) * hidden, inter, device, ExpertParallel(experts, hidden))
         return W3Experts.from_stacked(fc1, fc2, hi - lo, base=lo)
 
+    @staticmethod
+    def latent_expert_names(block: str) -> list[str]:
+        """Nemotron's entries for a latent MoE block (`layers.N` of the trunk, or `mtp`): up and down."""
+        return [f"{block}.experts.w1", f"{block}.experts.w2"]
+
+    def load_latent_experts(self, block: str, experts: int, inter: int, latent: int, device):
+        """Nemotron's 3-bit experts of `block` (`layers.N` or `mtp`): fc1 = up [E x inter, latent] in the checkpoint's
+        row order and fc2 = down [E x latent, inter], stacked over all experts (one Spark: no expert parallelism). Each
+        matrix carries its own codebook (a sparse down projection may take one with a zero level)."""
+        from sharar.kernels.w3_moe import W3Experts
+        w1, w2 = self.latent_expert_names(block)
+        return W3Experts.from_stacked(self._load(w1, experts * inter, latent, device), self._load(w2, experts * latent, inter, device),
+                                      experts, own_fc2_codebook=True)
+
     def _load(self, name: str, out_features: int, in_features: int, device, shard: Shard = REPLICATED):
         from sharar.kernels.w3 import W3Weight, _codebook, lut_of
         entry = self.weights[name]

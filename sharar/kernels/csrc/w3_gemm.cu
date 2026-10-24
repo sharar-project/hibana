@@ -11,8 +11,9 @@
 // FP32. Weights stream once per launch with evict-first loads, two chunks
 // in flight per warp, so the kernel is bound by the weight stream at 16
 // through 64 activation rows. Small N splits K across blocks; the last block
-// of a column reduces the FP32 partials. Namespace `moe` runs the same streaming loop over Flash-Next's routed
-// experts held in this format (grouped by expert, rows gathered; sharar/kernels/w3_moe.py).
+// of a column reduces the FP32 partials. Namespace `moe` runs the same streaming loop over routed experts held in
+// this format (grouped by expert, rows gathered; sharar/kernels/w3_moe.py): Flash-Next's gated SiLU experts and
+// Nemotron's non-gated ReLU^2 latent experts, one template over the geometry.
 
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
@@ -615,27 +616,49 @@ void launch(torch::Tensor y, torch::Tensor ws, torch::Tensor counters, torch::Te
 
 }  // namespace wide
 
-// ------------------------------------------------------------------ three-bit routed experts (Flash-Next)
+// ------------------------------------------------------------------ three-bit routed experts
 //
-// The experts in this format (sharar/kernels/w3_moe.py): per expert one W3 matrix for fc1 (1280 x 2560, rows
-// reordered so each 32-row block is sixteen up rows then the sixteen matching gate rows) and one for fc2
-// (2560 x 640). Any row count, four launches, shapes fixed by M (graph-capturable, no host sync, no atomics in
-// any sum):
+// The experts in this format (sharar/kernels/w3_moe.py), two geometries (`FlashNextShape`, `NemotronShape`):
+// - Flash-Next, gated: per expert one W3 matrix for fc1 (1280 x 2560, rows reordered so each 32-row block is sixteen
+//   up rows then the sixteen matching gate rows) and one for fc2 (2560 x 640); h = silu(gate) * up.
+// - Nemotron, non-gated: fc1 is up alone (2688 x 1024, the latent width in), fc2 1024 x 2688; h = relu(up)^2. A warp's
+//   32 fc1 rows are then one 32-group of h, quantized in registers (no shared tile).
+// Any row count, four launches, shapes fixed by M (graph-capturable, no host sync, no atomics in any sum):
 //   prep     block 0: the plan. The distinct experts of the M x top-k selection in ascending id, and the pairs
 //            (row * top-k + k) sorted by (expert, pair), in CSR form: slot d is expert exp[d] with pairs
 //            order[start[d] .. start[d + 1]). Up to kOrderInKernel pairs it sorts them itself; beyond that the
 //            caller passes the stable sort. Blocks 1..M: x -> E4M3 per (row, 32-group), as `quant_groups`.
-//   fc1      grid (1280 / 128, min(pairs, 512)): one block per 128 rows of one selected expert (blocks past the
+//   fc1      grid (fc1 rows / 128, min(pairs, 512)): one block per 128 rows of one selected expert (blocks past the
 //            distinct count exit). The W3 GEMM's streaming loop with the expert's rows gathered as the A operand,
 //            in passes of at most 64 rows (the weights stream once per pass; wide calls: one block per pass of at
 //            most kWide rows). Epilogue: h = bf16(silu(bf16 gate)
-//            * bf16 up) for the block's 64 intermediate columns, then E4M3 per (pair, 32-group) into hq / hs.
-//   fc2      grid (2560 / 128, min(pairs, 512)): the same loop over each pair's quantized h; FP32 y per pair (BF16 when
+//            * bf16 up) for the block's 64 intermediate columns (non-gated: bf16(relu(bf16 up)^2), 128 columns), then
+//            E4M3 per (pair, 32-group) into hq / hs.
+//   fc2      grid (H / 128, min(pairs, 512)): the same loop over each pair's quantized h; FP32 y per pair (BF16 when
 //            the caller asks for its pairs in BF16: half the traffic of the widest tensor of a prefill call).
 //   combine  out[r] = bf16(sum_k w[r, k] * y[r, k]) in selection order.
 namespace moe {
 
-constexpr int kE = 512, kMaxTopk = 10, kH = 2560, kI = 640, kPass = 64, kOrderInKernel = 640;
+// Programmatic dependent launch (Nemotron's decode calls, `run`): a kernel may start under the previous one's tail; it
+// reads what that one wrote only after `grid_wait`. Each kernel lets the next start (`grid_launch`, or its exit) only
+// when its own work is done: a dependent launched early parks its blocks at `grid_wait`, and the decode fc2's 176 to
+// 2,000 parked blocks would take the SM slots fc1's later waves need.
+// Both are no-ops in a kernel launched without the attribute.
+__device__ __forceinline__ void grid_wait() { asm volatile("griddepcontrol.wait;\n" ::: "memory"); }
+__device__ __forceinline__ void grid_launch() { asm volatile("griddepcontrol.launch_dependents;\n" ::: "memory"); }
+
+constexpr int kE = 512, kPass = 64, kOrderInKernel = 640;
+// A layer's experts: H the width fc1 reads and fc2 writes, I the intermediate, TOPK the most experts a row names.
+struct FlashNextShape {
+  static constexpr int H = 2560, I = 640, TOPK = 10;
+  static constexpr bool GATED = true;  // fc1 rows: up and gate (2 I), h = silu(gate) * up
+  static constexpr int N1 = 2 * I;      // fc1 rows per expert
+};
+struct NemotronShape {
+  static constexpr int H = 1024, I = 2688, TOPK = 22;
+  static constexpr bool GATED = false;  // fc1 rows: up alone (I), h = relu(up)^2
+  static constexpr int N1 = I;
+};
 // Wide calls (`gemm_pass_kernel`) run passes of up to kWide pairs: one expansion of an expert's codes then feeds up to
 // seven row tiles, and an expert with 65-112 pairs (about 80 in a 4,096-row call) takes one pass instead of two. The
 // same bits as kPass passes. 112 against 96 and 128 on real experts: 128 spills too many registers.
@@ -657,16 +680,17 @@ struct Params {
   int* plan;
   int* work;    // wide calls: one (slot, first pair) per pass, else null
   int* order;   // [pairs] sorted by (expert, pair)
-  uint8_t* xq;  // [M, kH] e4m3
-  float* xs;    // [M, kH / 32]
-  uint8_t* hq;  // [pairs, kI] e4m3
-  float* hs;    // [pairs, kI / 32]
-  float* y;     // [pairs, kH]
-  __nv_bfloat16* yb;  // [pairs, kH] instead of y when the pairs are returned in BF16, else null
+  uint8_t* xq;  // [M, H] e4m3
+  float* xs;    // [M, H / 32]
+  uint8_t* hq;  // [pairs, I] e4m3
+  float* hs;    // [pairs, I / 32]
+  float* y;     // [pairs, H]
+  __nv_bfloat16* yb;  // [pairs, H] instead of y when the pairs are returned in BF16, else null
   __nv_bfloat16* out;
-  uint32_t lut_lo, lut_hi;
+  uint32_t lut_lo, lut_hi;    // fc1's codebook (two PRMT sources)
+  uint32_t lut2_lo, lut2_hi;  // fc2's (the same as fc1's unless the layer's fc2 has its own)
   int M;
-  int topk;       // experts per row: ids and weights are [M, topk], 1 <= topk <= kMaxTopk
+  int topk;       // experts per row: ids and weights are [M, topk], 1 <= topk <= S::TOPK
   uint32_t row_magic;  // pair q's row is q / topk = __umulhi(q, row_magic) (row_of): no runtime division in the passes
   int e_lo, e_n;  // this rank's experts: ids e_lo .. e_lo + e_n - 1, stored from index 0 (expert parallel; else 0, 512)
   bool sort;      // block 0 sorts the pairs (else `order` is given)
@@ -683,9 +707,11 @@ __device__ __forceinline__ int local_expert(const Params& p, int id) {
   return e >= 0 && e < p.e_n ? e : -1;
 }
 
+template <class S>
 __global__ void __launch_bounds__(512) prep_kernel(const Params p) {
+  grid_wait();
   if (blockIdx.x > 0) {
-    if (threadIdx.x < 256) quant_groups_row(p.x, p.xq, p.xs, kH, blockIdx.x - 1);
+    if (threadIdx.x < 256) quant_groups_row(p.x, p.xq, p.xs, S::H, blockIdx.x - 1);
     return;
   }
   __shared__ int count[kE], slot[kE], start[kE + 1];
@@ -875,9 +901,11 @@ __device__ __forceinline__ void group_staged(float (&acc)[MT][4][4], const uint3
 // STAGED: the activations come through shared memory (`Staged`, wide calls), else per-lane loads (decode).
 // R: the rows `st` holds (kPass, or kWide in wide calls); hsm may share its memory, which the epilogue writes only
 // after every warp is done with the staged activations.
-template <bool FC1, int MT, bool STAGED, int R = kPass>
+template <class S, bool FC1, int MT, bool STAGED, int R = kPass>
 __device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], Staged<R>* st, int e, const int* __restrict__ list, int rows) {
-  constexpr int N = FC1 ? 2 * kI : kH, K = FC1 ? kH : kI, KC = K / kChunk, XT = STAGED ? 1 : MT;
+  constexpr int kH = S::H, kI = S::I;
+  constexpr int N = FC1 ? S::N1 : kH, K = FC1 ? kH : kI, KC = K / kChunk, XT = STAGED ? 1 : MT;
+  const uint32_t lut_lo = FC1 ? p.lut_lo : p.lut2_lo, lut_hi = FC1 ? p.lut_hi : p.lut2_hi;
   static_assert(MT * 16 <= R && R <= kWarps * 32, "a pass stages at most one row per thread");
   const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3, tid = threadIdx.x;
   const uint8_t* xbase = FC1 ? p.xq : p.hq;
@@ -968,16 +996,17 @@ __device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], S
       const uint8_t* sb = reinterpret_cast<const uint8_t*>(sl);
       cp_async_wait1();
       __syncthreads();
-      group_staged<MT, 0>(acc, wd, sb, st->a[slot], st->s[slot], lane, p.lut_lo, p.lut_hi);
-      group_staged<MT, 1>(acc, wd, sb, st->a[slot], st->s[slot], lane, p.lut_lo, p.lut_hi);
-      group_staged<MT, 2>(acc, wd, sb, st->a[slot], st->s[slot], lane, p.lut_lo, p.lut_hi);
-      group_staged<MT, 3>(acc, wd, sb, st->a[slot], st->s[slot], lane, p.lut_lo, p.lut_hi);
+      group_staged<MT, 0>(acc, wd, sb, st->a[slot], st->s[slot], lane, lut_lo, lut_hi);
+      group_staged<MT, 1>(acc, wd, sb, st->a[slot], st->s[slot], lane, lut_lo, lut_hi);
+      group_staged<MT, 2>(acc, wd, sb, st->a[slot], st->s[slot], lane, lut_lo, lut_hi);
+      group_staged<MT, 3>(acc, wd, sb, st->a[slot], st->s[slot], lane, lut_lo, lut_hi);
       __syncthreads();
       stage(cc + 2, slot);
     }
   } else {
   load(0, w[0], s[0]);
   load(1, w[1], s[1]);
+  if constexpr (!STAGED && !FC1) grid_wait();  // decode fc2: the first weights in flight under fc1's tail, then fc1's h
   if constexpr (STAGED) {
     stage(0, 0);
     stage(1, 1);
@@ -995,18 +1024,18 @@ __device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], S
         if constexpr (STAGED) {
           cp_async_wait1();  // chunk cc's group is complete (cc + 1's may still be in flight)
           __syncthreads();
-          group_staged<MT, 0>(acc, wd, sb, st->a[slot], st->s[slot], lane, p.lut_lo, p.lut_hi);
-          group_staged<MT, 1>(acc, wd, sb, st->a[slot], st->s[slot], lane, p.lut_lo, p.lut_hi);
-          group_staged<MT, 2>(acc, wd, sb, st->a[slot], st->s[slot], lane, p.lut_lo, p.lut_hi);
-          group_staged<MT, 3>(acc, wd, sb, st->a[slot], st->s[slot], lane, p.lut_lo, p.lut_hi);
+          group_staged<MT, 0>(acc, wd, sb, st->a[slot], st->s[slot], lane, lut_lo, lut_hi);
+          group_staged<MT, 1>(acc, wd, sb, st->a[slot], st->s[slot], lane, lut_lo, lut_hi);
+          group_staged<MT, 2>(acc, wd, sb, st->a[slot], st->s[slot], lane, lut_lo, lut_hi);
+          group_staged<MT, 3>(acc, wd, sb, st->a[slot], st->s[slot], lane, lut_lo, lut_hi);
           __syncthreads();  // every warp is done with buffer `slot` before chunk cc + 2 lands in it
           stage(cc + 2, slot);
         } else {
           const int k0 = cc * kChunk;
-          group_rows<MT, 0>(acc, wd, sb, xr, xg, k0, t, p.lut_lo, p.lut_hi);
-          group_rows<MT, 1>(acc, wd, sb, xr, xg, k0, t, p.lut_lo, p.lut_hi);
-          group_rows<MT, 2>(acc, wd, sb, xr, xg, k0, t, p.lut_lo, p.lut_hi);
-          group_rows<MT, 3>(acc, wd, sb, xr, xg, k0, t, p.lut_lo, p.lut_hi);
+          group_rows<MT, 0>(acc, wd, sb, xr, xg, k0, t, lut_lo, lut_hi);
+          group_rows<MT, 1>(acc, wd, sb, xr, xg, k0, t, lut_lo, lut_hi);
+          group_rows<MT, 2>(acc, wd, sb, xr, xg, k0, t, lut_lo, lut_hi);
+          group_rows<MT, 3>(acc, wd, sb, xr, xg, k0, t, lut_lo, lut_hi);
         }
       }
     }
@@ -1033,6 +1062,40 @@ __device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], S
       }
     return;
   }
+  if constexpr (!S::GATED) {
+    // fc1, non-gated: a warp's 32 rows are 32 intermediate columns, one 32-group of h. Row m's group lives in the
+    // four lanes t of its g (eight values each): its maximum by two shuffles, then E4M3 straight from registers.
+    // The arithmetic of the gated path's shared-tile quantization: the same scale, the same conversions.
+    const int col = blockIdx.x * kBlockRows + warp * 32;
+#pragma unroll
+    for (int mt = 0; mt < MT; ++mt)
+#pragma unroll
+      for (int half = 0; half < 2; ++half) {
+        const int m = mt * 16 + g + 8 * half;
+        float h[4][2], amax = 0.f;
+#pragma unroll
+        for (int nt = 0; nt < 4; ++nt)
+#pragma unroll
+          for (int i = 0; i < 2; ++i) {
+            const float u = fmaxf(bf16r(acc[mt][nt][2 * half + i] * rs[nt * 8 + 2 * t + i]), 0.f);
+            h[nt][i] = bf16r(u * u);
+            amax = fmaxf(amax, h[nt][i]);
+          }
+        amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 1));
+        amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 2));
+        if (m < rows) {
+          const int q = __ldg(list + m);
+          const float sc = fmaxf(amax * (1.f / 448.f), 1e-12f), inv = 1.f / sc;
+          if (t == 0) p.hs[static_cast<size_t>(q) * (kI / 32) + col / 32] = sc;
+          uint8_t* dst = p.hq + static_cast<size_t>(q) * kI + col + 2 * t;
+#pragma unroll
+          for (int nt = 0; nt < 4; ++nt)
+            *reinterpret_cast<__nv_fp8x2_storage_t*>(dst + nt * 8) =
+                __nv_cvt_float2_to_fp8x2(make_float2(h[nt][0] * inv, h[nt][1] * inv), __NV_SATFINITE, __NV_E4M3);
+        }
+      }
+    return;
+  } else {
   // fc1: columns 0..15 of a warp's block are up rows, 16..31 the matching gate rows; the block holds 64
   // intermediate columns (two 32-groups) of every row, quantized per (pair, group) once all warps wrote them.
 #pragma unroll
@@ -1072,28 +1135,30 @@ __device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], S
     dst[1] = make_uint4(packed[4], packed[5], packed[6], packed[7]);
   }
   __syncthreads();  // hsm is reused by the next pass
+  }
 }
 
 // fc1 (FC1) or fc2 for 128 weight rows of one selected expert: blockIdx.y the distinct slot, blockIdx.x the row block.
 // MTMAX 1 serves calls of at most 16 rows (one pass, and the register budget of one row tile: a wider variant in
 // the same kernel costs decode about 15% in occupancy), 4 everything else.
-template <bool FC1, int MTMAX>
+template <class S, bool FC1, int MTMAX>
 __global__ void __launch_bounds__(kWarps * 32) gemm_kernel(const Params p) {
   const int d = blockIdx.y;
+  if (FC1 || MTMAX > 1) grid_wait();  // the plan (prep); a decode fc2 reads it under fc1's tail: prep completed first
   if (d >= __ldg(p.plan)) return;
   const int e = __ldg(p.plan + kPlanExp + d), s0 = __ldg(p.plan + kPlanStart + d), n = __ldg(p.plan + kPlanStart + d + 1) - s0;
-  __shared__ float hsm[FC1 ? MTMAX * 16 : 1][kPass + 1];
+  __shared__ float hsm[FC1 && S::GATED ? MTMAX * 16 : 1][kPass + 1];
   if constexpr (MTMAX == 1) {
-    pass<FC1, 1, false, kPass>(p, hsm, nullptr, e, p.order + s0, n);
+    pass<S, FC1, 1, false, kPass>(p, hsm, nullptr, e, p.order + s0, n);
   } else {
     __shared__ Staged<kPass> st;
     for (int base = 0; base < n; base += kPass) {
       const int rows = min(kPass, n - base);
       const int* list = p.order + s0 + base;
-      if (rows <= 16) pass<FC1, 1, true>(p, hsm, &st, e, list, rows);
-      else if (rows <= 32) pass<FC1, 2, true>(p, hsm, &st, e, list, rows);
-      else if (rows <= 48) pass<FC1, 3, true>(p, hsm, &st, e, list, rows);
-      else pass<FC1, 4, true>(p, hsm, &st, e, list, rows);
+      if (rows <= 16) pass<S, FC1, 1, true>(p, hsm, &st, e, list, rows);
+      else if (rows <= 32) pass<S, FC1, 2, true>(p, hsm, &st, e, list, rows);
+      else if (rows <= 48) pass<S, FC1, 3, true>(p, hsm, &st, e, list, rows);
+      else pass<S, FC1, 4, true>(p, hsm, &st, e, list, rows);
     }
   }
 }
@@ -1104,15 +1169,15 @@ __global__ void __launch_bounds__(kWarps * 32) gemm_kernel(const Params p) {
 // Per pair the arithmetic is `gemm_kernel`'s, so the bits are the same. The epilogue's tile shares memory with
 // the staged activations (two blocks an SM, as with kPass passes). (Eight-warp blocks that run two passes on one set
 // of weight loads give the same bits too, but one block per SM loses more to latency than it saves.)
-template <bool FC1, int MT>
+template <class S, bool FC1, int MT>
 __device__ __forceinline__ void wide_pass(const Params& p, float (*hsm)[kPass + 1], Staged<kWide>* st, int e, const int* list, int rows) {
   if constexpr (MT * 16 < kWide) {
-    if (rows > MT * 16) return wide_pass<FC1, MT + 1>(p, hsm, st, e, list, rows);
+    if (rows > MT * 16) return wide_pass<S, FC1, MT + 1>(p, hsm, st, e, list, rows);
   }
-  pass<FC1, MT, true, kWide>(p, hsm, st, e, list, rows);
+  pass<S, FC1, MT, true, kWide>(p, hsm, st, e, list, rows);
 }
 
-template <bool FC1>
+template <class S, bool FC1>
 __global__ void __launch_bounds__(kWarps * 32) gemm_pass_kernel(const Params p) {
   const int w = blockIdx.y;
   if (w >= __ldg(p.plan + kPlanWork)) return;
@@ -1122,13 +1187,17 @@ __global__ void __launch_bounds__(kWarps * 32) gemm_pass_kernel(const Params p) 
   const int* list = p.order + s0 + base;
   __shared__ union Smem {
     Staged<kWide> st;
-    float hsm[FC1 ? kWide : 1][kPass + 1];
+    float hsm[FC1 && S::GATED ? kWide : 1][kPass + 1];
   } sm;
   Staged<kWide>* st = &sm.st;
-  wide_pass<FC1, 1>(p, sm.hsm, st, e, list, rows);
+  wide_pass<S, FC1, 1>(p, sm.hsm, st, e, list, rows);
 }
 
+template <class S>
 __global__ void __launch_bounds__(256) combine_kernel(const Params p) {
+  constexpr int kH = S::H, kMaxTopk = S::TOPK;
+  grid_wait();
+  grid_launch();
   const int idx = blockIdx.x * 256 + threadIdx.x;
   if (idx >= p.M * kH) return;
   const int r = idx / kH, col = idx - r * kH;
@@ -1142,6 +1211,86 @@ __global__ void __launch_bounds__(256) combine_kernel(const Params p) {
       v += __ldg(p.weights + r * p.topk + k) * p.y[static_cast<size_t>(r * p.topk + k) * kH + col];
   p.out[idx] = __float2bfloat16_rn(v);
 }
+
+template <class S>
+torch::Tensor run(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, torch::Tensor order,
+                  torch::Tensor planes13, torch::Tensor scales13, torch::Tensor row13,
+                  torch::Tensor planes2, torch::Tensor scales2, torch::Tensor row2, int64_t lut, int64_t lut2, int64_t e_lo,
+                  int64_t wide_rows, int64_t pairs, bool allow_pdl) {
+  constexpr int kH = S::H, kI = S::I, kN1 = S::N1;
+  const int M = x.size(0), topk = ids.dim() == 2 ? ids.size(1) : 0, P = M * topk;
+  TORCH_CHECK(ids.dim() == 2 && ids.dtype() == at::kInt && ids.is_contiguous() && ids.size(0) == M && topk >= 1 && topk <= S::TOPK,
+              "ids must be int32 [M, k] with 1 <= k <= ", S::TOPK);
+  TORCH_CHECK(weights.dtype() == at::kFloat && weights.is_contiguous() && weights.sizes() == ids.sizes(), "weights must be fp32 [M, k] like ids");
+  const bool sort = P <= kOrderInKernel;
+  TORCH_CHECK(sort ? order.numel() == 0 : (order.dtype() == at::kInt && order.is_contiguous() && order.numel() == P),
+              "order: empty up to 640 pairs, else the int32 stable sort of the ids");
+  TORCH_CHECK(planes13.dtype() == at::kUInt32 && planes2.dtype() == at::kUInt32 && scales13.dtype() == at::kByte && scales2.dtype() == at::kByte);
+  const int64_t E = planes13.size(0);
+  TORCH_CHECK(E >= 1 && e_lo >= 0 && e_lo + E <= kE, "at most 512 experts");
+  TORCH_CHECK(planes13.numel() == E * kN1 * kH * 3 / 32 && planes2.numel() == E * kH * kI * 3 / 32, "expert planes");
+  TORCH_CHECK(scales13.numel() == E * kN1 * kH / 32 && scales2.numel() == E * kH * kI / 32, "expert scales");
+  TORCH_CHECK(row13.numel() == E * kN1 && row2.numel() == E * kH, "row scales");
+  auto i32 = x.options().dtype(at::kInt), u8 = x.options().dtype(at::kByte), f32 = x.options().dtype(at::kFloat);
+  auto plan = torch::empty({kPlanWords + 1}, i32);
+  const int slots = std::min<int64_t>(P, E);
+  const bool wide = M >= wide_rows;
+  const int work_cap = slots + (P + kWide - 1) / kWide;  // sum over slots of ceil(n / kWide) <= slots + P / kWide
+  auto work = wide ? torch::empty({2 * work_cap}, i32) : torch::Tensor();
+  auto sorted = sort ? torch::empty({P}, i32) : order;
+  auto xq = torch::empty({M, kH}, u8);
+  auto xs = torch::empty({M, kH / 32}, f32);
+  auto hq = torch::empty({P, kI}, u8);
+  auto hs = torch::empty({P, kI / 32}, f32);
+  auto y = torch::empty({pairs == 2 ? 0 : P, kH}, f32);
+  auto yb = pairs == 2 ? torch::empty({P, kH}, x.options()) : torch::Tensor();
+  auto out = torch::empty({M, kH}, x.options());
+  Params p{(const __nv_bfloat16*)x.data_ptr(), (const int*)ids.data_ptr(), (const float*)weights.data_ptr(),
+           (const uint4*)planes13.data_ptr(), (const uint4*)scales13.data_ptr(), (const uint4*)planes2.data_ptr(), (const uint4*)scales2.data_ptr(),
+           (const float*)row13.data_ptr(), (const float*)row2.data_ptr(), (int*)plan.data_ptr(),
+           wide ? (int*)work.data_ptr() : nullptr, (int*)sorted.data_ptr(),
+           (uint8_t*)xq.data_ptr(), (float*)xs.data_ptr(), (uint8_t*)hq.data_ptr(), (float*)hs.data_ptr(), (float*)y.data_ptr(),
+           pairs == 2 ? (__nv_bfloat16*)yb.data_ptr() : nullptr,
+           (__nv_bfloat16*)out.data_ptr(),
+           static_cast<uint32_t>(lut & 0xFFFFFFFFu), static_cast<uint32_t>(static_cast<uint64_t>(lut) >> 32),
+           static_cast<uint32_t>(lut2 & 0xFFFFFFFFu), static_cast<uint32_t>(static_cast<uint64_t>(lut2) >> 32), M, topk,
+           topk == 1 ? 0u : static_cast<uint32_t>(0xFFFFFFFFu / topk + 1), static_cast<int>(e_lo), static_cast<int>(E), sort};
+  cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
+  // Nemotron's decode calls chain their four launches (and the small-call kernels around them, `nemotron_moe.cu`) by
+  // programmatic dependent launch; the arithmetic is the same either way
+  const bool pdl = allow_pdl && !S::GATED && M <= 16;
+  auto launch = [&](void (*kernel)(const Params), dim3 grid, dim3 block) {
+    cudaLaunchConfig_t cfg = {};
+    cfg.gridDim = grid;
+    cfg.blockDim = block;
+    cfg.stream = stream;
+    cudaLaunchAttribute attr[1];
+    attr[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+    attr[0].val.programmaticStreamSerializationAllowed = 1;
+    cfg.attrs = attr;
+    cfg.numAttrs = pdl ? 1 : 0;
+    C10_CUDA_CHECK(cudaLaunchKernelEx(&cfg, kernel, p));
+  };
+  launch(prep_kernel<S>, M + 1, 512);
+  if (M <= 16) {
+    launch(gemm_kernel<S, true, 1>, dim3(kN1 / kBlockRows, slots), kWarps * 32);
+    launch(gemm_kernel<S, false, 1>, dim3(kH / kBlockRows, slots), kWarps * 32);
+  } else if (wide) {
+    gemm_pass_kernel<S, true><<<dim3(kN1 / kBlockRows, work_cap), kWarps * 32, 0, stream>>>(p);
+    gemm_pass_kernel<S, false><<<dim3(kH / kBlockRows, work_cap), kWarps * 32, 0, stream>>>(p);
+  } else {
+    gemm_kernel<S, true, 4><<<dim3(kN1 / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
+    gemm_kernel<S, false, 4><<<dim3(kH / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
+  }
+  if (pairs) {  // the caller sums them (flashnext_fused.moe_combine_pairs: this combine's arithmetic, fused with the next step)
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    return pairs == 2 ? yb : y;
+  }
+  launch(combine_kernel<S>, (M * kH + 255) / 256, 256);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return out;
+}
+
 
 }  // namespace moe
 
@@ -1203,77 +1352,33 @@ std::vector<torch::Tensor> quant_groups(torch::Tensor x) {
   return {out, scale};
 }
 
-// Routed experts in the three-bit format for x [M, 2560] bf16, ids [M, k] int32, weights [M, k] fp32 (k <= 10) -> bf16
-// [M, 2560] (the routed sum; no shared expert). The weights hold experts e_lo .. e_lo + E - 1 (all 512, or one
+
+// Routed experts in the three-bit format for x [M, H] bf16, ids [M, k] int32, weights [M, k] fp32 -> bf16 [M, H] (the
+// routed sum; no shared expert). Two geometries, told apart by x's width and fc1's rows per expert: Flash-Next's gated
+// experts (H 2560, fc1 [up; gate] 1280 rows, k <= 10) and Nemotron's ReLU^2 latent experts (H 1024, fc1 up 2688 rows,
+// k <= 22). `lut` is fc1's codebook, `lut2` fc2's (Flash-Next: the same). The weights hold experts e_lo .. e_lo + E - 1 (all 512, or one
 // rank's range under expert parallelism): pairs routed elsewhere are skipped, and the result is this rank's partial
-// sum. With `pairs` 1, the FP32 output of every (row, k) pair [M * k, 2560] instead, unsummed (rows of pairs routed
+// sum. With `pairs` 1, the FP32 output of every (row, k) pair [M * k, H] instead, unsummed (rows of pairs routed
 // elsewhere are not written); with `pairs` 2 the same in BF16. `wide_rows`: from this many rows each pass of up to kWide pairs gets its own block (`gemm_pass_kernel`; the same bits).
 // `order`: when there are more than 640 pairs, this rank's pairs stably sorted by expert first (int32 [M * k],
 // the others after them), else empty (the prep kernel sorts them). An id outside e_lo .. e_lo + E - 1 (another rank's
 // expert, or 512 and above: none) adds no pair, whatever its weight.
 torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, torch::Tensor order,
                      torch::Tensor planes13, torch::Tensor scales13, torch::Tensor row13,
-                     torch::Tensor planes2, torch::Tensor scales2, torch::Tensor row2, int64_t lut, int64_t e_lo,
-                     int64_t wide_rows, int64_t pairs) {
+                     torch::Tensor planes2, torch::Tensor scales2, torch::Tensor row2, int64_t lut, int64_t lut2, int64_t e_lo,
+                     int64_t wide_rows, int64_t pairs, bool pdl) {
   using namespace moe;
-  const int M = x.size(0), topk = ids.dim() == 2 ? ids.size(1) : 0, P = M * topk;
-  TORCH_CHECK(M >= 1, "w3_moe: no rows");
+  TORCH_CHECK(x.dim() == 2 && x.size(0) >= 1, "w3_moe: x must be [M, H] with M >= 1");
   TORCH_CHECK(pairs >= 0 && pairs <= 2, "pairs: 0 (the sum), 1 (FP32 pairs) or 2 (BF16 pairs)");
-  TORCH_CHECK(x.is_cuda() && x.dtype() == at::kBFloat16 && x.is_contiguous() && x.size(1) == kH, "x must be contiguous bf16 [M, 2560]");
-  TORCH_CHECK(ids.dim() == 2 && ids.dtype() == at::kInt && ids.is_contiguous() && ids.size(0) == M && topk >= 1 && topk <= kMaxTopk,
-              "ids must be int32 [M, k] with 1 <= k <= 10");
-  TORCH_CHECK(weights.dtype() == at::kFloat && weights.is_contiguous() && weights.sizes() == ids.sizes(), "weights must be fp32 [M, k] like ids");
-  const bool sort = P <= kOrderInKernel;
-  TORCH_CHECK(sort ? order.numel() == 0 : (order.dtype() == at::kInt && order.is_contiguous() && order.numel() == P),
-              "order: empty up to 640 pairs, else the int32 stable sort of the ids");
-  TORCH_CHECK(planes13.dtype() == at::kUInt32 && planes2.dtype() == at::kUInt32 && scales13.dtype() == at::kByte && scales2.dtype() == at::kByte);
-  const int64_t E = planes13.size(0);
-  TORCH_CHECK(E >= 1 && e_lo >= 0 && e_lo + E <= kE, "at most 512 experts");
-  TORCH_CHECK(planes13.numel() == E * 2 * kI * kH * 3 / 32 && planes2.numel() == E * kH * kI * 3 / 32, "expert planes");
-  TORCH_CHECK(scales13.numel() == E * 2 * kI * kH / 32 && scales2.numel() == E * kH * kI / 32, "expert scales");
-  TORCH_CHECK(row13.numel() == E * 2 * kI && row2.numel() == E * kH, "row scales");
-  auto i32 = x.options().dtype(at::kInt), u8 = x.options().dtype(at::kByte), f32 = x.options().dtype(at::kFloat);
-  auto plan = torch::empty({kPlanWords + 1}, i32);
-  const int slots = std::min<int64_t>(P, E);
-  const bool wide = M >= wide_rows;
-  const int work_cap = slots + (P + kWide - 1) / kWide;  // sum over slots of ceil(n / kWide) <= slots + P / kWide
-  auto work = wide ? torch::empty({2 * work_cap}, i32) : torch::Tensor();
-  auto sorted = sort ? torch::empty({P}, i32) : order;
-  auto xq = torch::empty({M, kH}, u8);
-  auto xs = torch::empty({M, kH / 32}, f32);
-  auto hq = torch::empty({P, kI}, u8);
-  auto hs = torch::empty({P, kI / 32}, f32);
-  auto y = torch::empty({pairs == 2 ? 0 : P, kH}, f32);
-  auto yb = pairs == 2 ? torch::empty({P, kH}, x.options()) : torch::Tensor();
-  auto out = torch::empty({M, kH}, x.options());
-  Params p{(const __nv_bfloat16*)x.data_ptr(), (const int*)ids.data_ptr(), (const float*)weights.data_ptr(),
-           (const uint4*)planes13.data_ptr(), (const uint4*)scales13.data_ptr(), (const uint4*)planes2.data_ptr(), (const uint4*)scales2.data_ptr(),
-           (const float*)row13.data_ptr(), (const float*)row2.data_ptr(), (int*)plan.data_ptr(),
-           wide ? (int*)work.data_ptr() : nullptr, (int*)sorted.data_ptr(),
-           (uint8_t*)xq.data_ptr(), (float*)xs.data_ptr(), (uint8_t*)hq.data_ptr(), (float*)hs.data_ptr(), (float*)y.data_ptr(),
-           pairs == 2 ? (__nv_bfloat16*)yb.data_ptr() : nullptr,
-           (__nv_bfloat16*)out.data_ptr(),
-           static_cast<uint32_t>(lut & 0xFFFFFFFFu), static_cast<uint32_t>(static_cast<uint64_t>(lut) >> 32), M, topk,
-           topk == 1 ? 0u : static_cast<uint32_t>(0xFFFFFFFFu / topk + 1), static_cast<int>(e_lo), static_cast<int>(E), sort};
-  cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
-  prep_kernel<<<M + 1, 512, 0, stream>>>(p);
-  if (M <= 16) {
-    gemm_kernel<true, 1><<<dim3(2 * kI / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
-    gemm_kernel<false, 1><<<dim3(kH / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
-  } else if (wide) {
-    gemm_pass_kernel<true><<<dim3(2 * kI / kBlockRows, work_cap), kWarps * 32, 0, stream>>>(p);
-    gemm_pass_kernel<false><<<dim3(kH / kBlockRows, work_cap), kWarps * 32, 0, stream>>>(p);
-  } else {
-    gemm_kernel<true, 4><<<dim3(2 * kI / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
-    gemm_kernel<false, 4><<<dim3(kH / kBlockRows, slots), kWarps * 32, 0, stream>>>(p);
-  }
-  if (pairs) {  // the caller sums them (flashnext_fused.moe_combine_pairs: this combine's arithmetic, fused with the next step)
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
-    return pairs == 2 ? yb : y;
-  }
-  combine_kernel<<<(M * kH + 255) / 256, 256, 0, stream>>>(p);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
-  return out;
+  TORCH_CHECK(x.is_cuda() && x.dtype() == at::kBFloat16 && x.is_contiguous(), "x must be contiguous bf16");
+  TORCH_CHECK(planes13.dim() >= 2 && row13.dim() == 2, "experts: planes [E, N/32, ...], row scales [E, N]");
+  const int64_t width = x.size(1), fc1 = row13.size(1);
+  if (width == FlashNextShape::H && fc1 == FlashNextShape::N1)
+    return run<FlashNextShape>(x, ids, weights, order, planes13, scales13, row13, planes2, scales2, row2, lut, lut2, e_lo, wide_rows, pairs, pdl);
+  if (width == NemotronShape::H && fc1 == NemotronShape::N1)
+    return run<NemotronShape>(x, ids, weights, order, planes13, scales13, row13, planes2, scales2, row2, lut, lut2, e_lo, wide_rows, pairs, pdl);
+  TORCH_CHECK(false, "w3_moe: no expert geometry with x width ", width, " and ", fc1, " fc1 rows per expert");
+  return torch::Tensor();
 }
 
 // The wide kernel; `config` = MT * 1000 + WM * 100 + WN * 10 + STAGES (sharar/kernels/w3.py WIDE).
@@ -1308,7 +1413,7 @@ torch::Tensor w3_gemm_wide(torch::Tensor x, torch::Tensor x_scale, torch::Tensor
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("w3_moe", &w3_moe, "routed experts in the 3-bit format, any row count (SM120/121)");
+  m.def("w3_moe", &w3_moe, "routed experts in the 3-bit format (Flash-Next gated, Nemotron ReLU^2), any row count (SM120/121)");
   m.def("quant_groups", &quant_groups, "per-(row, 32-group) e4m3 quantization of a bf16 matrix");
   m.def("w3_gemm", &w3_gemm, "3-bit (or 2-bit) weight, e4m3 activation tensor-core GEMM for M <= 64 (SM120/121)");
   m.def("w3_gemm_wide", &w3_gemm_wide, "the 3-bit GEMM with activations staged in shared memory, any M (SM120/121)");

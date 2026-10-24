@@ -1,7 +1,7 @@
 # Engine architecture
 
-One GB10 (or two, tensor-parallel), two pinned targets (Qwen3.8-27B and Qwen3.8-Flash-Next), one target per
-process. The contracts between the parts are in [interfaces](interfaces.md).
+One GB10 (or two, tensor-parallel), three pinned targets (Qwen3.8-27B, Qwen3.8-Flash-Next and, on one Spark,
+Nemotron-3.5-Super), one target per process. The contracts between the parts are in [interfaces](interfaces.md).
 
 ## Layout
 
@@ -58,18 +58,18 @@ benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) th
 
 ## Capability matrix
 
-| Capability | 27B | Flash-Next |
-|---|---|---|
-| Served drafter | DFlash2, k=15 | MTP, k=4 (in `fast` up to 8, chosen per request), 2-bit draft head |
-| Other drafters | MTP (BF16, unfused) | DFlash2, k=9 (`exact` 7, `throughput` 4), FP8, on one Spark (`SHARAR_PROPOSER=dflash2`) |
-| CUDA graphs: decode, verify, draft | yes | yes, dense and sparse-selecting variants |
-| Device-resident acceptance | opt-in | on in `fast` and `throughput` |
-| Exact / relaxed / sampled acceptance | yes | yes |
-| Constrained output (JSON schema, forced tool calls) | yes | yes |
-| Calibrated 3-bit weights | layers and draft (decode copies) | trunk (decode copies) and routed experts (the only copy) |
-| Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk; 3-bit routed experts (NVFP4 in `exact`; split by expert on two Sparks) |
-| Prefix cache, SSD tier, 262K context | yes | yes (sparse attention past 2,048 tokens) |
-| Tensor parallel on two Sparks | yes | yes |
+| Capability | 27B | Flash-Next | Nemotron ([details](nemotron.md)) |
+|---|---|---|---|
+| Served drafter | DFlash2, k=15 | MTP, k=4 (in `fast` up to 8, chosen per request), 2-bit draft head | its MTP head, k=3 (`fast` 5 for one request, 4 for two to four), 2-bit draft head |
+| Other drafters | MTP (BF16, unfused) | DFlash2, k=9 (`exact` 7, `throughput` 4), FP8, on one Spark (`SHARAR_PROPOSER=dflash2`) | none |
+| CUDA graphs: decode, verify, draft | yes | yes, dense and sparse-selecting variants | yes |
+| Device-resident acceptance | opt-in | on in `fast` and `throughput` | on in `fast` and `throughput` |
+| Exact / relaxed / sampled acceptance | yes | yes | yes |
+| Constrained output (JSON schema, forced tool calls) | yes | yes | not yet checked |
+| Calibrated 3-bit weights | layers and draft (decode copies) | trunk (decode copies) and routed experts (the only copy) | none yet |
+| Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk; 3-bit routed experts (NVFP4 in `exact`; split by expert on two Sparks) | the checkpoint's: NVFP4 experts, FP8 Mamba/attention/head projections, BF16 router and latent projections |
+| Prefix cache, SSD tier, 262K context | yes | yes (sparse attention past 2,048 tokens) | yes (Mamba-2 state as the GDN's) |
+| Tensor parallel on two Sparks | yes | yes | no |
 
 ## Repository boundaries
 

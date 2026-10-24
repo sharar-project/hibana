@@ -91,10 +91,8 @@ def download(cache: Path, repo: str, revision: str, log=print) -> None:
 
 def pinned_snapshots(s: Settings) -> list[tuple[Path, str, str]]:
     """(cache, repo, revision) of the target's checkpoint and, for a parallel draft served from the pinned snapshot, its draft."""
-    if s.target == "flashnext":
-        from sharar.model.flashnext import config as c
-    else:
-        from sharar.model import qwen38_config as c
+    from sharar.launch.settings import model_config
+    c = model_config(s.target)
     out = [(s.model_cache, c.MODEL_ID, c.MODEL_REVISION)]
     if s.parallel_draft and s.draft_dir is None:
         out.append((s.hf_cache, *c.DRAFT_PINS[s.proposer]))  # the target's own drafter

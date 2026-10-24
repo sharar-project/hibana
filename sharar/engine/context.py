@@ -46,6 +46,7 @@ class ForwardContext:
     seq_lens: list[int] = field(default_factory=list)  # new tokens per seq
     checkpoint_seqs: list[int] = field(default_factory=list)  # sequence index of each checkpoint
     gdn_plan: GdnPrefillPlan | None = field(default=None, init=False, repr=False)
+    mamba_plan: object = field(default=None, init=False, repr=False)  # kernels.mamba2.Mamba2PrefillPlan (Nemotron)
 
     # speculative verify: k+1 tokens per sequence; GDN runs the recurrent
     # kernel from the committed state without updating it, recording the state

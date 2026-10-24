@@ -53,24 +53,39 @@ class TargetHead:
         return self.logits_fn(x).topk(k, dim=-1)
 
 
+def _weight_scale(lin) -> torch.Tensor | None:
+    """An FP8 head's one weight scale: a `TrunkLinear`'s `scale` (Flash-Next; None when it is BF16) or an
+    `Fp8Linear`'s `weight_scale` (Nemotron's checkpoint head, which also carries a static input scale)."""
+    return lin.scale if hasattr(lin, "scale") else lin.weight_scale
+
+
+def _head_rows(lin, ids: torch.Tensor):
+    """The rows `ids` of a head, as the same kind of linear (an `Fp8Linear` keeps its static input scale)."""
+    from sharar.model.flashnext.linear import TrunkLinear
+    if isinstance(lin, TrunkLinear):
+        return TrunkLinear(lin.weight[ids].contiguous(), lin.scale)
+    import dataclasses
+    return dataclasses.replace(lin, weight=lin.weight[ids].contiguous(), w3=None)
+
+
 class ShortlistHead:
-    """The rows `ids` of an FP8 lm_head (`TrunkLinear`; every row when `ids` is None), as they are
+    """The rows `ids` of an FP8 lm_head (Flash-Next's `TrunkLinear` or Nemotron's `Fp8Linear`; every row when `ids` is
+    None), as they are
     or as a 3-bit (`fmt="w3"`) or 2-bit (`"w2"`) copy; with `rescore` > 1 the copy's logits only pick
     that many candidates and the target head's own FP8 rows choose among them."""
 
     rows_changed = True
 
     def __init__(self, lm_head, ids: torch.Tensor | None = None, fmt: str = "fp8", rescore: int = 0):
-        from sharar.model.flashnext.linear import TrunkLinear
         if fmt not in FORMATS:
             raise ValueError(f"draft head format must be fp8, w3 or w2, not {fmt!r}")
-        if not hasattr(lm_head, "weight") or lm_head.weight.dim() != 2:
-            raise ValueError("a shortlist draft head reads rows of a TrunkLinear lm_head (Flash-Next); the 27B's NVFP4 head is not supported yet")
+        if not hasattr(lm_head, "weight") or lm_head.weight.dim() != 2 or lm_head.weight.dtype == torch.uint8:
+            raise ValueError("a shortlist draft head reads rows of an FP8 lm_head (Flash-Next, Nemotron); the 27B's NVFP4 head is not supported yet")
         self.fmt = fmt
         self.ids = None if ids is None else ids.to(lm_head.weight.device, torch.int64).unique(sorted=True)
         if fmt != "fp8" and self.ids is not None:
             self.ids = _pad_rows(self.ids, 128)
-        rows = lm_head if self.ids is None else TrunkLinear(lm_head.weight[self.ids].contiguous(), lm_head.scale)
+        rows = lm_head if self.ids is None else _head_rows(lm_head, self.ids)
         self.head, self.w3 = (None, pack_head(rows, fmt)) if fmt != "fp8" else (rows, None)
         # Shortlist: the low-bit logits pick `rescore` candidates and the target head's own FP8 rows
         # (already resident) choose among them, so the pick is the full head's whenever its
@@ -116,7 +131,8 @@ class ShortlistHead:
         if self.rescore:
             cand, exact = self._shortlist(flat, logits, max(self.rescore, k))
             values, order = exact.topk(k, dim=-1)
-            scale = self.source.scale.float().reshape(()) if self.source.scale is not None else 1.0
+            scale = _weight_scale(self.source)
+            scale = scale.float().reshape(()) if scale is not None else 1.0
             values, ids = (values * scale).to(torch.bfloat16), cand.gather(-1, order)
         else:
             values, local = logits.topk(k, dim=-1)
@@ -139,11 +155,12 @@ def _pad_rows(ids: torch.Tensor, multiple: int) -> torch.Tensor:
 
 
 def pack_head(lin, fmt: str = "w3", rows_per_chunk: int = 16384):
-    """3-bit (`w3`) or 2-bit (`w2`: four levels, fitted group scales) copy of an FP8 `TrunkLinear` [N, K],
-    dequantized a slice at a time (the whole lm_head in FP32 would be a 2.5 GB temporary)."""
+    """3-bit (`w3`) or 2-bit (`w2`: four levels, fitted group scales) copy of an FP8 head [N, K] (`TrunkLinear` or
+    `Fp8Linear`), dequantized a slice at a time (the whole lm_head in FP32 would be a 2.5 GB temporary)."""
     from sharar.kernels import w3
     codebook, fit = ("lloyd2", True) if fmt == "w2" else (w3.DEFAULT_CODEBOOK, False)
-    parts = [w3.pack((lin.weight[r0:r0 + rows_per_chunk].float() * lin.scale.float()) if lin.scale is not None
+    scale = _weight_scale(lin)
+    parts = [w3.pack((lin.weight[r0:r0 + rows_per_chunk].float() * scale.float()) if scale is not None
                      else lin.weight[r0:r0 + rows_per_chunk].float(), codebook, fit_scales=fit)
              for r0 in range(0, lin.out_features, rows_per_chunk)]
     if len(parts) == 1:

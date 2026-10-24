@@ -206,7 +206,7 @@ def gptq_batched(weight: torch.Tensor, hessian: torch.Tensor, levels, ratios, da
     effective = scales.float() * row_scale[..., None]
     work = weight.clone()
     codes = torch.empty((c, n, k), dtype=torch.int32, device=weight.device)
-    key = (c, n, weight.device)
+    key = (c, n, weight.device, tuple(levels))  # the captured block holds its codebook
     if key not in _BLOCKS:
         _BLOCKS[key] = _BatchedBlock(c, n, levels, weight.device)
     block = _BLOCKS[key]

@@ -44,10 +44,12 @@ CANARIES = {
 }
 
 
-def random_ids(n: int, seed: int) -> list[int]:
+def random_ids(n: int, seed: int, vocab: int = 248_320) -> list[int]:
     rng = random.Random(seed)
-    # Stay below the special-token range and inside the trained vocabulary.
-    return [rng.randrange(0, 200_000) for _ in range(n)]
+    # Stay inside the trained vocabulary: the 27B's below its special-token range, a smaller vocabulary's past its
+    # first 1,000 ids (Nemotron's control tokens).
+    low, high = (0, 200_000) if vocab > 200_000 else (1000, vocab)
+    return [rng.randrange(low, high) for _ in range(n)]
 
 
 def build_prompts(snap: Path) -> dict[str, list[int]]:

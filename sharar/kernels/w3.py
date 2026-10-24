@@ -61,6 +61,9 @@ CODEBOOKS = {
     "lloyd": (-3.5, -2.25, -1.25, -0.40625, 0.40625, 1.25, 2.25, 3.5),
     # two-bit: the Gaussian Lloyd-Max levels (0.453, 1.510 sigma) scaled to 1.5 and rounded to E4M3
     "lloyd2": (-1.5, -0.4375, 0.4375, 1.5),
+    # eight levels with a zero, for sparse matrices (Nemotron's early down projections are up to 94% exact zeros in
+    # the NVFP4 checkpoint, which Lloyd's levels cannot hold: relative error 0.40 against 0.124 with these)
+    "zero8": (-3.5, -2.5, -1.5, -0.625, 0.0, 0.875, 2.0, 3.5),
 }
 # Per-group scale multipliers `pack(fit_scales=True)` tries (the least squared error wins): with four levels,
 # scaling the largest to the group's maximum wastes them on one outlier.

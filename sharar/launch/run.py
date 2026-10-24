@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from sharar.launch import ctl, guard, preflight, service
-from sharar.launch.settings import Settings, resolve
+from sharar.launch.settings import SERVED, Settings, resolve
 
 
 def engine_runtime_env() -> dict[str, str]:
@@ -92,7 +92,7 @@ def serve(args) -> int:
 
 
 def stop(args) -> int:
-    targets = [args.target] if args.target else ["27b", "flashnext"]
+    targets = [args.target] if args.target else list(SERVED)
     stopped = False
     for name in targets:
         s = resolve(name)
@@ -111,7 +111,7 @@ def serving(target: str | None = None) -> Settings | None:
     """The named target, else whichever target answers on its port (the 27B first)."""
     if target:
         return resolve(target)
-    for name in ("27b", "flashnext"):
+    for name in SERVED:
         s = resolve(name)
         if ctl.server_info(str(s.port)) is not None:
             return s
@@ -120,7 +120,7 @@ def serving(target: str | None = None) -> Settings | None:
 
 def status(args) -> int:
     any_up = False
-    for name in ([args.target] if args.target else ["27b", "flashnext"]):
+    for name in ([args.target] if args.target else SERVED):
         s = resolve(name)
         info = ctl.server_info(str(s.port))
         how = "a detached service" if service.running(s.service) else "the foreground"
@@ -139,7 +139,7 @@ def status(args) -> int:
         traces = (info.get("scheduler") or {}).get("traces") or info.get("traces")
         print(f"  traces: {traces['records']} recorded, {traces['bytes'] / 2**20:.0f} MiB" if traces else "  traces: off")
     if not any_up:
-        print("nothing is serving (sharar serve 27b, or flashnext)")
+        print("nothing is serving (sharar serve 27b, flashnext or nemotron)")
     return 0
 
 

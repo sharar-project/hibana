@@ -70,7 +70,7 @@ def budget(spec, batch, *, cache_slots=96, target=None):
     fixed = verify_bytes(batch, spec.depth + 1, spec.state_strategy, t)
     page_bytes = 0
     if spec.name == 'mtp':
-        weights, largest = tensor_bytes(t.snapshot_dir(), 'mtp.')
+        weights, largest = tensor_bytes(t.snapshot_dir(), 'language_model.mtp.' if t.family == 'nemotron' else 'mtp.')
         if t.family == 'flashnext':
             # The expert tensors (most of the bytes) are stored FP8 and loaded one expert at a time.
             weights, largest = weights // 2, 4 * 2**20

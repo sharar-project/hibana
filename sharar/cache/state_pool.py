@@ -1,12 +1,13 @@
-"""Conv and SSM state slots for the 48 Gated DeltaNet layers.
+"""Conv and SSM state slots for the recurrent layers (the 48 Gated DeltaNet layers on the 27B, Nemotron's 40 Mamba-2).
 
 Every request owns one committed slot. Scratch slots are reserved for
 speculative verification. Acceptance either copies a retained
 snapshot or reconstructs directly into validated private slots. The tensors are per layer so the
 kernels' `initial_state_indices` address the slot directly.
 
-The recurrent state is FP32 [HV, V, K] per layer and slot, or, with a quantized `SsmFormat` (int8, int4), one byte row
-per layer and slot that holds the per-window quantized state (`cache/ssm_format.py`; typed views in `window`).
+The recurrent state is FP32 [HV, V, K] per layer and slot (FP16 with a Mamba-2 target's `fp16` / `fp16-rn` format), or,
+with a quantized GDN `SsmFormat` (int8, int4), one byte row per layer and slot that holds the per-window quantized
+state (`cache/ssm_format.py`; typed views in `window`).
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ class StatePool:
     def __init__(self, num_slots: int, device: torch.device, num_scratch: int = 0, target: Target | None = None,
                  ssm_format: SsmFormat = FP32):
         t = self.target = target or DEFAULT_TARGET
+        ssm_format.check(t)
         self.ssm_format = ssm_format
         self.num_slots = num_slots
         self.device = device
@@ -40,7 +42,7 @@ class StatePool:
         if layout is None:
             self.ssm_all = torch.zeros(
                 (n_layers, total, t.linear_num_value_heads, t.linear_value_head_dim, t.linear_key_head_dim),
-                dtype=torch.float32,
+                dtype=ssm_format.dtype,
                 device=device,
             )
             self.window = None

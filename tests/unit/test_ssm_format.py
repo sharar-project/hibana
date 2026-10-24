@@ -1,4 +1,4 @@
-"""The quantized recurrent-state formats (cache/ssm_format.py): sizes, views and slot semantics without a GPU."""
+"""The recurrent-state formats (cache/ssm_format.py): sizes, views and slot semantics without a GPU."""
 from math import prod
 
 import pytest
@@ -7,7 +7,7 @@ import torch
 from sharar.cache.ssm_format import FP32, SsmFormat, WindowLayout
 from sharar.cache.state_pool import StatePool
 from sharar.engine.config import EngineConfig
-from sharar.target import DEFAULT_TARGET
+from sharar.target import DEFAULT_TARGET, FLASHNEXT, NEMOTRON
 
 
 def test_fp32_is_the_targets_state():
@@ -98,3 +98,31 @@ def test_spec_decoder_requires_the_ring_for_a_quantized_pool():
     proposer = SimpleNamespace(k=3)
     with pytest.raises(ValueError, match="reconstruct"):
         SpecDecoder(ex, proposer, "snapshots")
+
+
+def test_fp16_is_nemotrons_and_halves_its_state():
+    t = NEMOTRON
+    sr, rn = SsmFormat("fp16"), SsmFormat("fp16-rn")
+    assert sr.stochastic and not rn.stochastic and not sr.quantized and sr.layout(t) is None
+    assert (sr.describe(), rn.describe(), FP32.describe()) == ("fp16-sr", "fp16-rn", "fp32")
+    assert sr.dtype == rn.dtype == torch.float16 and FP32.dtype == torch.float32 and SsmFormat("int8").dtype is None
+    conv = t.conv_dim * t.conv_state_len * 2 * len(t.gdn_layer_ids)
+    assert sr.state_bytes_per_slot(t) - conv == (FP32.state_bytes_per_slot(t) - conv) // 2
+    assert sr.state_bytes_per_slot(t) / 2 ** 20 == pytest.approx(82.3, abs=0.1)  # 162.3 MiB in FP32
+    pool = StatePool(3, torch.device("cpu"), target=t, ssm_format=sr)
+    assert pool.ssm_all.dtype == torch.float16 and pool.window is None and pool.bytes_per_slot == sr.state_bytes_per_slot(t)
+    assert SsmFormat.from_config(EngineConfig.from_env({"SHARAR_SSM_STATE": "fp16-rn"})) == rn
+
+
+def test_formats_stay_on_their_recurrence():
+    """FP16 is Mamba-2's (the GDN targets keep their FP32 pools, bit-identical), the windows the GDN's."""
+    for gdn in (DEFAULT_TARGET, FLASHNEXT):
+        for kind in ("fp16", "fp16-rn"):
+            with pytest.raises(ValueError, match="Mamba-2"):
+                SsmFormat(kind).state_bytes_per_slot(gdn)
+            with pytest.raises(ValueError, match="Mamba-2"):
+                StatePool(2, torch.device("cpu"), target=gdn, ssm_format=SsmFormat(kind))
+        assert StatePool(2, torch.device("cpu"), target=gdn).ssm_all.dtype == torch.float32
+    for kind in ("int8", "int4"):
+        with pytest.raises(ValueError, match="GDN"):
+            SsmFormat(kind).state_bytes_per_slot(NEMOTRON)

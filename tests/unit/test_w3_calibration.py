@@ -35,6 +35,27 @@ def test_gptq_reduces_error_on_correlated_inputs():
 
 
 
+def test_act_order_keeps_the_layout_and_helps_outlier_inputs():
+    """Static-group act order: the same group scales and stored column order, lower error with a few loud channels."""
+    generator = torch.Generator().manual_seed(29)
+    x = torch.randn(2048, 256, generator=generator)
+    x[:, 1::2] = x[:, ::2] * .8 + x[:, 1::2] * .2
+    x[:, torch.randperm(256, generator=generator)[:6]] *= 30  # outlier input channels, scattered over the groups
+    weight = torch.randn(128, 256, generator=generator) * .1
+    covariance = x.T @ x / len(x)
+    plain, _ = quantize(weight, covariance, capture=False)
+    ordered, report = quantize(weight, covariance, capture=False, act_order=True)
+    assert torch.equal(ordered.scales, plain.scales) and torch.equal(ordered.row_scale, plain.row_scale)
+    error = lambda p: (x @ (w3.dequantize(p) - weight).T).square().mean()  # noqa: E731
+    assert error(ordered) < error(plain) and report["act_order"]
+    # the codes go back to the stored column order: under a diagonal covariance no error flows between columns, so
+    # any visiting order (here a shuffled one) must give the in-order codes
+    diagonal = torch.diag(torch.rand(256, generator=generator) + .5)
+    shuffled, _ = quantize(weight, diagonal, capture=False, act_order=True)
+    in_order, _ = quantize(weight, diagonal, capture=False)
+    assert torch.equal(shuffled.planes, in_order.planes)
+
+
 def test_unbias_restores_the_row_gain_without_changing_codes():
     """The MSE-optimal codes shrink each row; `unbias` scales it back through the row scale only."""
     generator = torch.Generator().manual_seed(23)

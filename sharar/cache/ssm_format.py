@@ -1,10 +1,16 @@
-"""How the Gated DeltaNet recurrent state is stored in a `StatePool` slot.
+"""How the recurrent state (Gated DeltaNet or Mamba-2) is stored in a `StatePool` slot.
 
 `fp32` (the default) keeps each layer's state as the kernels compute it: [HV, V, K] FP32 per slot, 3 MiB per
-layer on both targets. `int8` and `int4` are LeapQuant (arXiv 2609.38166): per-window recurrent-state
-quantization to 8 or 4 bits.
+layer on the GDN targets, 4 MiB on Nemotron's Mamba layers. `int8` and `int4` are LeapQuant (arXiv 2609.38166):
+per-window recurrent-state quantization to 8 or 4 bits, GDN targets only.
 
-A quantized layer state is a boundary state plus the committed tokens since it:
+`fp16` and `fp16-rn` (Mamba-2 targets only) store the same [HV, V, K] tensor in FP16, half the bytes every decode,
+verify and accept step streams and every snapshot, copy and SSD-tier record holds (Nemotron: 162 -> 82 MiB a slot);
+the kernels compute in FP32 and round on every store (`kernels/mamba2.py`). `fp16` rounds stochastically (unbiased:
+a small update that round-to-nearest would drop survives in expectation), as NVIDIA's own vLLM recipe for
+Nemotron-3.5 on DGX Spark does; `fp16-rn` rounds to nearest, the comparison arm.
+
+A quantized (GDN) layer state is a boundary state plus the committed tokens since it:
 
     S = Gamma_{1:n} * (C . dequant(Z) . B + K~ U~^T) + sum_j Gamma_{j+1:n} k_j u_j^T
 
@@ -33,7 +39,9 @@ from math import prod
 import torch
 
 ALIGN = 256
-BITS = {"int8": 8, "int4": 4}
+BITS = {"int8": 8, "int4": 4}  # GDN window formats
+FP16 = {"fp16": True, "fp16-rn": False}  # Mamba-2 FP16 storage -> stochastic rounding
+MAMBA_FAMILIES = ("nemotron",)
 
 
 def _aligned(nbytes: int) -> int:
@@ -98,8 +106,8 @@ class SsmFormat:
     rank: int | None = None  # compensator tokens (None: the paper's 4, or 8 at 4 bits)
 
     def __post_init__(self):
-        if self.kind not in ("fp32", *BITS):
-            raise ValueError(f"SHARAR_SSM_STATE must be fp32, int8 or int4, not {self.kind!r}")
+        if self.kind not in ("fp32", *BITS, *FP16):
+            raise ValueError(f"SHARAR_SSM_STATE must be fp32, int8, int4, fp16 or fp16-rn, not {self.kind!r}")
         if self.rank is None:
             object.__setattr__(self, "rank", 8 if self.kind == "int4" else 4)
         if self.window not in (8, 16, 32):
@@ -113,10 +121,32 @@ class SsmFormat:
 
     @property
     def quantized(self) -> bool:
-        return self.kind != "fp32"
+        """A GDN window format (int8, int4)."""
+        return self.kind in BITS
+
+    @property
+    def stochastic(self) -> bool:
+        return FP16.get(self.kind, False)
+
+    @property
+    def dtype(self) -> torch.dtype | None:
+        """The pool's state dtype for an unquantized format."""
+        return None if self.quantized else torch.float16 if self.kind in FP16 else torch.float32
 
     def describe(self) -> str:
-        return f"{self.kind}:w{self.window}:r{self.rank}" if self.quantized else "fp32"
+        if self.quantized:
+            return f"{self.kind}:w{self.window}:r{self.rank}"
+        return {"fp16": "fp16-sr", "fp16-rn": "fp16-rn"}.get(self.kind, "fp32")
+
+    def check(self, target) -> None:
+        """Reject a format the target's recurrence does not implement (FP16 is Mamba-2's, the windows GDN's)."""
+        mamba = target.family in MAMBA_FAMILIES
+        if self.kind in FP16 and not mamba:
+            raise ValueError(f"SHARAR_SSM_STATE={self.kind} stores a Mamba-2 state; {target.name}'s GDN state "
+                             "is fp32, int8 or int4")
+        if self.quantized and mamba:
+            raise ValueError(f"SHARAR_SSM_STATE={self.kind} is a GDN format; {target.name}'s Mamba-2 state is "
+                             "fp32, fp16 or fp16-rn")
 
     def layout(self, target) -> WindowLayout | None:
         if not self.quantized:
@@ -126,11 +156,15 @@ class SsmFormat:
                             BITS[self.kind])
 
     def state_bytes_per_slot(self, target) -> int:
-        """Conv window plus recurrent state over every GDN layer."""
-        layout = self.layout(target)
-        if layout is None:
+        """Conv window plus recurrent state over every recurrent layer."""
+        self.check(target)
+        if self.kind == "fp32":
             return target.state_bytes_per_slot
         conv = target.conv_dim * target.conv_state_len * 2
+        layout = self.layout(target)
+        if layout is None:  # FP16
+            state = target.linear_num_value_heads * target.linear_value_head_dim * target.linear_key_head_dim * 2
+            return (conv + state) * len(target.gdn_layer_ids)
         return (conv + layout.nbytes) * len(target.gdn_layer_ids)
 
 
