@@ -203,8 +203,8 @@ finish and release memory before the memory guard has to act.
 are counted: the drafter, the SSD tier's staging, FlashInfer's workspaces, the CUDA graphs, the GPU memory the first
 prefill takes outside PyTorch, and the activation blocks PyTorch keeps cached (the server log's "counted after the
 pools" line; `/get_server_info`'s `after_plan_gib`). Admission holds, and the memory guard stops the server, only under
-half the floor, when other programs have used more than it left them (`SHARAR_MIN_AVAILABLE_KIB` moves the guard's
-threshold alone). Preflight wants the 24 GiB load peak above the floor. `/get_server_info` also reports `memory_gib`:
+half the floor, when other programs have used more than it left them (`SHARAR_HOST_FLOOR_GIB` moves both; main's
+`SHARAR_MIN_AVAILABLE_KIB` is retired). Preflight wants the 24 GiB load peak above the floor. `/get_server_info` also reports `memory_gib`:
 PyTorch's allocated and reserved bytes, now and at their peak, and the process's resident memory. Terms and measurements: [memory_plan.md](memory_plan.md).
 
 ## Development

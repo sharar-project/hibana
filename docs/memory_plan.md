@@ -12,8 +12,8 @@ KV pool and the state pool, from what is available, so that everything it alloca
   allocations are counted. Preflight also wants the 24 GiB load peak above it.
 - **Guard threshold**: half the host floor (3 GiB by default). Under it other programs have used more than the floor
   left them: admission holds (`floor_holds` in `/get_server_info`), and after three samples in a row (6 s) the memory
-  guard stops the server (SIGTERM, then a kill 15 s later). `SHARAR_MIN_AVAILABLE_KIB` moves the guard's threshold
-  alone.
+  guard stops the server (SIGTERM, then a kill 15 s later). `SHARAR_HOST_FLOOR_GIB` moves both; main's
+  `SHARAR_MIN_AVAILABLE_KIB` is retired, and the launcher refuses it.
 - **Pools**: the KV pool (KV pages) and the state pool (state slots), allocated once at startup.
 - **Minimum pools**: KV pages for one request at the maximum context, or for `SHARAR_MAX_BATCH` requests sharing 32K
   tokens, whichever is more; and the slot floor, 2 x `SHARAR_MAX_BATCH` + 1 state slots, for each running request's

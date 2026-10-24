@@ -28,8 +28,8 @@ def floor_kib(values=os.environ) -> int:
 
 
 def guard_kib(values=os.environ) -> int:
-    """Where the guard acts, in KiB: SHARAR_MIN_AVAILABLE_KIB, else half the host floor."""
-    return int(values.get("SHARAR_MIN_AVAILABLE_KIB") or floor_kib(values) // 2)
+    """Where the guard acts, in KiB: half the host floor."""
+    return floor_kib(values) // 2
 
 
 def available_kib() -> int:
