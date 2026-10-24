@@ -44,6 +44,10 @@ def host_floor_bytes() -> int:
 # allocated. Neither grew with requests, context or prefill.
 FIRST_USE_BYTES = int(2.25 * GIB)
 ACTIVATION_BYTES = 1 * GIB
+# MemAvailable moves between the plan's read and the checks after each allocation against a fresh read (the page
+# cache; on two Sparks each rank reads its own and every rank takes the smallest plan): left unplanned so those checks
+# do not fail on a few MB of drift (Flash-Next --throughput --tp 2: "needs 55.1 GiB, have 55.1 GiB" on rank 1)
+PLAN_SLACK_BYTES = GIB // 4
 
 
 def graph_bytes(max_batch: int) -> int:
@@ -144,7 +148,7 @@ class Ledger:
         kv_bytes_per_token = self.target.kv_bytes_per_token
         state_bytes_per_slot = state_bytes_per_slot or self.target.state_bytes_per_slot
         available = mem_available_bytes()
-        budget = available - self.floor_bytes - future_bytes
+        budget = available - self.floor_bytes - future_bytes - PLAN_SLACK_BYTES
         page_bytes = kv_bytes_per_token + extra_page_bytes
         shared = SHARED_CONTEXT * min(max_running, SHARED_REQUESTS) // max_running
         must_tokens = max(context_len, max_running * min(context_len, shared))
