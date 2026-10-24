@@ -401,7 +401,7 @@ class Executor:
             return None
         from sharar.kernels.verify_attn_cuda import prefix_plan
         sms = torch.cuda.get_device_properties(self.device).multi_processor_count
-        return prefix_plan(new_tokens, prefix_lens, kv_indices, pool.num_kv_heads * 6, pool.num_kv_heads, sms)
+        return prefix_plan(new_tokens, prefix_lens, kv_indices, self.target.num_attention_heads, pool.num_kv_heads, sms)
 
     def _plan_paged_prefill(self, prefix_pages: torch.Tensor, new_tokens: int) -> None:
         # Host index pointers: FlashInfer's plan() reads them on the CPU, so

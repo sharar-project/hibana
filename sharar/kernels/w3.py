@@ -253,6 +253,30 @@ def _module():
 
 
 _WORKSPACE: dict[torch.device, tuple[torch.Tensor, torch.Tensor]] = {}
+# Split-K factor per (N, K, rows): profiling/w3_bench.py on GB10. More blocks help the weight stream
+# at 16 rows; at 64 rows the partial-sum traffic and the tensor-core work per block argue for fewer splits.
+SPLITS: dict[tuple[int, int, int], int] = {  # (N, K, rows) -> splits
+    (5120, 17408, 16): 8, (5120, 17408, 32): 2, (5120, 17408, 64): 2,
+    (10240, 5120, 16): 1, (10240, 5120, 32): 1, (10240, 5120, 64): 1,
+    (6144, 5120, 16): 1, (6144, 5120, 32): 1, (6144, 5120, 64): 2,
+    (5120, 6144, 16): 2, (5120, 6144, 32): 2, (5120, 6144, 64): 2,
+    (14336, 5120, 16): 1, (14336, 5120, 32): 1, (14336, 5120, 64): 1,
+    (4096, 5120, 16): 4, (4096, 5120, 32): 4, (4096, 5120, 64): 2,
+    (5120, 4096, 16): 4, (5120, 4096, 32): 1, (5120, 4096, 64): 2,
+}
+SPLIT_TARGET = {16: 192, 32: 96, 64: 48}  # blocks (4 warps, 128 rows) a launch should reach before K stays whole
+
+
+def splits_for(n: int, k: int, m: int = 16) -> int:
+    rows = 16 if m <= 16 else 32 if m <= 32 else 64
+    if (n, k, rows) in SPLITS:
+        return SPLITS[(n, k, rows)]
+    blocks, chunks, splits = n // 128, k // CHUNK, 1
+    while blocks * splits < SPLIT_TARGET[rows] and chunks % (2 * splits) == 0 and splits < 8:
+        splits *= 2
+    return splits
+
+
 # The wide kernel per (N, K) and row bucket (48: 33-48 rows, 64: 49-64, 128: more): (config, splits), config =
 # MT * 1000 + WM * 100 + WN * 10 + STAGES (csrc/w3_gemm.cu `wide`), or None for the narrow kernel. Fastest of the
 # compiled configurations and splits on GB10 with the weights cycled through more than L2 holds (the 128 bucket:
@@ -294,28 +318,6 @@ def wide_for(n: int, k: int, m: int) -> tuple[int, int] | None:
     while blocks * splits < 40 and chunks % (2 * splits) == 0 and splits < 4:
         splits *= 2
     return 8144, splits
-# Split-K factor per (N, K, rows): profiling/w3_bench.py on GB10. More blocks help the weight stream
-# at 16 rows; at 64 rows the partial-sum traffic and the tensor-core work per block argue for fewer splits.
-SPLITS: dict[tuple[int, int, int], int] = {  # (N, K, rows) -> splits
-    (5120, 17408, 16): 8, (5120, 17408, 32): 2, (5120, 17408, 64): 2,
-    (10240, 5120, 16): 1, (10240, 5120, 32): 1, (10240, 5120, 64): 1,
-    (6144, 5120, 16): 1, (6144, 5120, 32): 1, (6144, 5120, 64): 2,
-    (5120, 6144, 16): 2, (5120, 6144, 32): 2, (5120, 6144, 64): 2,
-    (14336, 5120, 16): 1, (14336, 5120, 32): 1, (14336, 5120, 64): 1,
-    (4096, 5120, 16): 4, (4096, 5120, 32): 4, (4096, 5120, 64): 2,
-    (5120, 4096, 16): 4, (5120, 4096, 32): 1, (5120, 4096, 64): 2,
-}
-SPLIT_TARGET = {16: 192, 32: 96, 64: 48}  # blocks (4 warps, 128 rows) a launch should reach before K stays whole
-
-
-def splits_for(n: int, k: int, m: int = 16) -> int:
-    rows = 16 if m <= 16 else 32 if m <= 32 else 64
-    if (n, k, rows) in SPLITS:
-        return SPLITS[(n, k, rows)]
-    blocks, chunks, splits = n // 128, k // CHUNK, 1
-    while blocks * splits < SPLIT_TARGET[rows] and chunks % (2 * splits) == 0 and splits < 8:
-        splits *= 2
-    return splits
 
 
 def _workspace(device: torch.device, floats: int, blocks: int) -> tuple[torch.Tensor, torch.Tensor]:
