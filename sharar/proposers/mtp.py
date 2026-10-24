@@ -280,7 +280,8 @@ class MtpProposer:
         the final-norm row of the position before it, the last one the request committed."""
         state = req.proposer_state
         if isinstance(state, MtpState) and state.last_hidden is not None and state.draft_pos == snapshot.position:
-            snapshot.auxiliary[self.cache_identity] = (snapshot.position, state.last_hidden)
+            # its own copy: last_hidden can be a row of a round's [batch, hidden] buffer, which the snapshot would pin
+            snapshot.auxiliary[self.cache_identity] = (snapshot.position, state.last_hidden.clone())
 
     def capture_graphs(self, log=None, depths=None):
         """One draft step's graphs serve every depth (`depths`, the verify graphs' pairs, needs nothing more)."""
