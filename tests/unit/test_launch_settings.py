@@ -345,3 +345,7 @@ def test_host_floor_setting(env, tmp_path):
     for bad in ("4G", "-8"):
         with pytest.raises(ValueError, match="SHARAR_HOST_FLOOR_GIB"):
             resolve(env, "flashnext", overrides={"SHARAR_HOST_FLOOR_GIB": bad})
+    assert resolve(env, "flashnext", overrides={"SHARAR_MIN_AVAILABLE_KIB": str(2 * 2**20)}).values["SHARAR_MIN_AVAILABLE_KIB"]
+    for bad in (str(16 * 2**20), str(6 * 2**20), "3G"):  # main's 16 GiB guard floor, the floor itself, not a count
+        with pytest.raises(ValueError, match="SHARAR_MIN_AVAILABLE_KIB"):
+            resolve(env, "flashnext", overrides={"SHARAR_MIN_AVAILABLE_KIB": bad})
