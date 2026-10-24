@@ -65,6 +65,7 @@ class StateManager:
         self.recurrent = state_pool
         self.cache = cache
         self.requests: dict[int, Request] = {}  # admitted requests still owning resources, by id(): for `check`
+        self._prefetched: list[int] | None = None  # the ids `prefetch` last answered for: their restore is the scheduler's
 
     def can_admit(self, ids: list[int], reserve: int = 0) -> bool:
         """Whether the request with ids can be admitted now. Pure: nothing is evicted, restored or allocated. Its
@@ -84,6 +85,7 @@ class StateManager:
         restore starts only when its pages and slot, the rest of the prompt and `reserve` fit by the same pure count."""
         if self.cache is None:
             return True
+        self._prefetched = ids
         return self.cache.restore_async(ids[:-1], reserve + 1)
 
     def forget(self, ids: list[int]) -> None:
@@ -108,7 +110,9 @@ class StateManager:
         match, lock, slot, own = None, None, -1, None
         try:
             if cache is not None:
-                cache.restore(ids[:-1])  # a direct caller's restore; nothing once the scheduler's prefetch landed one
+                if self._prefetched != ids:  # a direct caller's restore; the scheduler's head was prefetched (it may
+                    cache.restore(ids[:-1])  # go ahead without one while another restore holds the slot: no read here)
+                self._prefetched = None
                 match = cache.match(ids[:-1])  # last token must produce logits
                 lock = cache.lock(match.node, owner=req)
                 cache.release(ids[:-1])  # a landed restore that locked this path for the request: the request's lock now

@@ -1400,3 +1400,30 @@ def test_randomized_tier_operations_keep_the_trees_invariants(tmp_path, seed):
         cache.unlock(lock)
     settle(cache, tier)
     cache.check(owned_slots=tier.owned_slots(), pending_prune=tier.pending_prune())
+
+
+def test_the_scheduler_head_admits_without_a_synchronous_restore_while_another_restore_holds_the_slot(tmp_path):
+    """A retraction can put request B at the queue head while head A's landed restore still holds the one restore slot:
+    the prefetch lets B go ahead without a restore (RESTORE_SLOTS), and admission must not read B's prefix from the SSD
+    on the engine thread instead (every decode would wait for it). A direct caller's admission still restores."""
+    cache, tier, kv, sp, feats = engine(tmp_path)
+    second = [t + 20000 for t in IDS]
+    release(cache, tier, kv, sp, feats, IDS, seed=5)
+    release(cache, tier, kv, sp, feats, second, seed=6)
+    settle(cache, tier)
+    evict_all(cache, kv)
+    settle(cache, tier)
+    state = StateManager(kv, sp, cache)
+    a_ids, b_ids = IDS + [7, 8], second + [7, 8]
+    assert not state.prefetch(a_ids)
+    land(cache, tier, a_ids[:-1], reserve=1)
+    assert tier._held
+    assert state.prefetch(b_ids) and state.can_admit(b_ids)
+    restores = tier.restores
+    b = Request(prompt_ids=b_ids, params=SamplingParams(max_new_tokens=4))
+    state.admit(b, b_ids)
+    assert tier.restores == restores and b.prefix_len == 0 and len(tier._held) == 1  # no read; A's hold stays
+    state.release(b)
+    a = Request(prompt_ids=a_ids, params=SamplingParams(max_new_tokens=4))
+    state.admit(a, a_ids)  # not prefetched: a direct caller's admission
+    assert a.prefix_len == len(IDS) and not tier._held
