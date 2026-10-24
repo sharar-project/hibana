@@ -43,7 +43,8 @@ KV pool and the state pool, from what is available, so that everything it alloca
 ## Measured
 
 One Spark (spark-ec65, 117 GiB available), Flash-Next, default `--throughput` (max batch 128, INT8 state, SSD tier
-on), this branch on main's cache policy, 2026-10-23:
+on, FP8 KV: measured before NVFP4 KV became the default, which holds more pages in the same memory), this branch on
+main's cache policy, 2026-10-23:
 
 | | Counted | Actual |
 |---|---|---|
