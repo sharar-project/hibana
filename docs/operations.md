@@ -70,9 +70,10 @@ or `dflash2`.
 
 ### NVFP4 KV
 
-`SHARAR_KV_FORMAT=nvfp4` (the 27B's `fast` and `throughput` on one Spark) stores K and V as NVFP4: two E2M1 codes a
-byte and an E4M3 scale per 16 values, 4.5 bits a value where FP8 takes 8, so the same memory holds 16/9 the tokens:
-longer contexts or more requests at once, more cached prefixes, and 44% fewer bytes read back from the SSD tier.
+`SHARAR_KV_FORMAT=nvfp4` (`fast` and `throughput` on one Spark, both targets) stores K and V as NVFP4: two E2M1 codes
+a byte and an E4M3 scale per 16 values, 4.5 bits a value where FP8 takes 8. The same memory holds 16/9 the 27B's tokens
+and about 1.4x Flash-Next's (its BF16 index keys keep their size): longer contexts or more requests at once, more
+cached prefixes, and fewer bytes read back from the SSD tier.
 FlashInfer writes them (`nvfp4_quantize_append_paged_kv_cache_with_slot_mapping`, global scale 1) and its `fa2`
 attention reads them; the scales are per-page rows (`KvPool.page_aux`), so the prefix cache and the SSD tier carry them
 with each page, and an SSD store keeps its KV format in its identity.
@@ -89,8 +90,17 @@ requests), at `fa2`'s precision or better against exact attention; up to 8 rows 
 - **Accuracy.** Teacher-forced 256 tokens after 32K, 64K and 96K-token prompts against BF16 KV: mean KL 0.0063 where
   FP8 KV's is 0.0039, flat along the generation; argmax agreement 95.7-99.6% (FP8 96.1-99.6%). The lossy gate's
   in-process layers on its short prompts: KL 0.0055 against a floor of 0.0047, tokens a round unchanged.
+- **Flash-Next.** Its sparse attention (`kernels/qsa/attention.py`) reads the codes with the hardware's E2M1
+  conversion (two codes an instruction), one multiply by the scale and FP16 operands: on a 64K prompt's own page
+  selections at or under FP8's time from one row to an 8K prefill chunk. Teacher-forced 256 tokens after 32K, 64K and
+  96K-token prompts against BF16 KV: mean KL 0.0084 where FP8's is 0.0059, flat along the generation; argmax agreement
+  93.8-98.4% (FP8 96.1-99.6%).
+  Steady-state rounds of `fast` within 1% of FP8 or faster (10K and 64K, one and four requests), the first token of a
+  64K prompt 18.9 s with either. The lossy gate's in-process layers against FP8 on its 28 prompts: KL 0.0054 against
+  a floor of 0.0043, argmax agreement 97.5% (the floor's), tokens a round x0.998 [0.968, 1.027].
 - **Screen.** `sim-fp4` (and `sim-k8v4`, `sim-bf16`) keep a BF16 pool and round every write through NVFP4 the way
-  FlashInfer's writer does (`kernels/kv_fp4.nvfp4_round`, bitwise its arithmetic), to measure a format without its kernels.
+  FlashInfer's writer does (`kernels/kv_fp4.nvfp4_round`, bitwise its arithmetic), to measure a format without its
+  kernels; either target, without the SSD tier.
 
 ## Serving profiles
 
@@ -104,7 +114,7 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 | Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | Flash-Next top-3 within 2.0 (DFlash2 top-2 within 1.0); the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
 | Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next also its routed experts) | off | on | on |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next only | as fast |
-| NVFP4 KV cache (`SHARAR_KV_FORMAT`, [below](#nvfp4-kv)) | FP8 | the 27B on one Spark: NVFP4; Flash-Next and two Sparks FP8 | as fast |
+| NVFP4 KV cache (`SHARAR_KV_FORMAT`, [below](#nvfp4-kv)) | FP8 | one Spark: NVFP4 (both targets); two Sparks FP8 | as fast |
 | Budgeted expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_BUDGET`) | off | Flash-Next: keep 4, budget 12:64 | as fast |
 | Optimized QSA prefill kernels (`SHARAR_QSA_PREFILL_BACKEND`) | off (original) | Flash-Next: auto (where eligible: SM121, one or two Sparks, through 32K) | as fast |
 | Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |

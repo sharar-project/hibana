@@ -29,6 +29,63 @@ def test_sparse_attention_matches_torch():
         torch.testing.assert_close(out[r].float(), want, atol=2e-2, rtol=2e-2)
 
 
+@pytest.mark.parametrize("heads,kv_heads", [(24, 2), (12, 1)])
+@pytest.mark.parametrize("rows", [3, 40, 600])
+def test_sparse_attention_over_nvfp4_matches_torch(heads, kv_heads, rows):
+    """The NVFP4 pool (SHARAR_KV_FORMAT=nvfp4, FlashInfer's writer): the kernel against exact attention over the values
+    the codes and scales hold, to the BF16 kernel's own rounding."""
+    from flashinfer.page import nvfp4_quantize_append_paged_kv_cache_with_slot_mapping as write
+    from sharar.kernels.kv_fp4 import nvfp4_round
+    from sharar.kernels.qsa import sparse_attention
+    g = torch.Generator(device="cuda").manual_seed(rows)
+    pages, dim, width = 3000, 256, 2051
+    kb = torch.randn(pages, kv_heads, dim, generator=g, device="cuda").to(torch.bfloat16)
+    vb = torch.randn(pages, kv_heads, dim, generator=g, device="cuda").to(torch.bfloat16)
+    k4 = torch.zeros(pages, 1, kv_heads, dim // 2, dtype=torch.uint8, device="cuda")
+    v4 = torch.zeros_like(k4)
+    ks = torch.zeros(pages, 1, kv_heads, dim // 16, dtype=torch.float8_e4m3fn, device="cuda")
+    vs = torch.zeros_like(ks)
+    one = torch.ones((), device="cuda")
+    write(kb, vb, torch.arange(pages, dtype=torch.int32, device="cuda"), (k4, v4), (ks, vs), one, one)
+    q = (2 * torch.randn(rows, heads, dim, generator=g, device="cuda")).to(torch.bfloat16)
+    counts = torch.randint(1, width + 1, (rows,), generator=g, device="cuda").to(torch.int32)
+    sel = torch.full((rows, width), -1, dtype=torch.int32, device="cuda")
+    for r in range(rows):
+        sel[r, : counts[r]] = torch.randperm(pages, generator=g, device="cuda")[: counts[r]].to(torch.int32)
+    out = sparse_attention(q, k4[:, 0], v4[:, 0], sel, counts, dim ** -0.5, scales=(ks[:, 0], vs[:, 0]))
+    kq, vq = nvfp4_round(kb).float(), nvfp4_round(vb).float()
+    for r in range(0, rows, max(1, rows // 40)):
+        idx = sel[r, : counts[r]].long()
+        k = kq[idx].repeat_interleave(heads // kv_heads, dim=1)
+        v = vq[idx].repeat_interleave(heads // kv_heads, dim=1)
+        p = torch.softmax(torch.einsum("hd,nhd->hn", q[r].float(), k) * dim ** -0.5, dim=-1)
+        torch.testing.assert_close(out[r].float(), torch.einsum("hn,nhd->hd", p, v), atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.parametrize("fmt", ["fp8", "nvfp4"])
+def test_sparse_attention_past_the_grid_limit_is_the_same_in_parts(fmt):
+    """More rows x KV heads than a grid's second dimension holds (one 64K prompt prefilled whole): the launches split."""
+    from sharar.kernels.qsa import sparse_attention
+    g = torch.Generator(device="cuda").manual_seed(2)
+    pages, rows, width, dim = 4096, 40000, 32, 256
+    if fmt == "fp8":
+        k = torch.randn(pages, 2, dim, generator=g, device="cuda").to(torch.float8_e4m3fn)
+        v, scales = k.clone(), None
+    else:
+        k = torch.randint(0, 256, (pages, 2, dim // 2), generator=g, device="cuda", dtype=torch.uint8)
+        v = k.clone()
+        sf = torch.full((pages, 2, dim // 16), 0.25, device="cuda").to(torch.float8_e4m3fn)
+        scales = (sf, sf.clone())
+    q = torch.randn(rows, 24, dim, generator=g, device="cuda").to(torch.bfloat16)
+    sel = torch.randint(0, pages, (rows, width), generator=g, device="cuda", dtype=torch.int32)
+    counts = torch.full((rows,), width, dtype=torch.int32, device="cuda")
+    whole = sparse_attention(q, k, v, sel, counts, dim ** -0.5, scales=scales)
+    half = rows // 2
+    parts = torch.cat([sparse_attention(q[:half], k, v, sel[:half], counts[:half], dim ** -0.5, scales=scales),
+                       sparse_attention(q[half:], k, v, sel[half:], counts[half:], dim ** -0.5, scales=scales)])
+    torch.testing.assert_close(whole, parts, atol=0, rtol=0)
+
+
 def _indexer(hidden, budget, ratio, device):
     from sharar.model.flashnext.indexer import FlashNextIndexer
     g = torch.Generator(device=device).manual_seed(1)

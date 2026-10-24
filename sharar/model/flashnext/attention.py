@@ -64,7 +64,8 @@ class FlashNextAttention(Attention):
         if selected is None:  # every row sees at most the budget: the dense path is exact
             if ctx.mode == "decode":
                 ctx.kv_pool.write(self.layer_id, token_pages, k, v)
-                attn = ctx.decode_wrapper.run(q, ctx.kv_pool.cache(self.layer_id)).view(x.shape[0], self.q_size)
+                attn = ctx.decode_wrapper.run(q, ctx.kv_pool.cache(self.layer_id),
+                                              kv_cache_sf=ctx.kv_pool.scales(self.layer_id)).view(x.shape[0], self.q_size)
             else:
                 attn = self._prefill_attention(q, k, v, ctx)
             return self._finish(attn, gate)
@@ -75,9 +76,13 @@ class FlashNextAttention(Attention):
         ctx.kv_pool.write(self.layer_id, token_pages, k, v)
         k_pool, v_pool = ctx.kv_pool.cache(self.layer_id)
         n = k_pool.shape[0] * k_pool.shape[1]
-        attn = sparse_attention(q, k_pool.view(n, self.num_kv_heads, self.head_dim), v_pool.view(n, self.num_kv_heads, self.head_dim),
+        row = k_pool.shape[-1]  # head_dim, or half of it for NVFP4 codes
+        scales = ctx.kv_pool.scales(self.layer_id)
+        if scales is not None:
+            scales = tuple(sf.view(n, self.num_kv_heads, self.head_dim // 16) for sf in scales)
+        attn = sparse_attention(q, k_pool.view(n, self.num_kv_heads, row), v_pool.view(n, self.num_kv_heads, row),
                                 *selected, self.head_dim ** -0.5,
-                                optimized_prefill=getattr(ctx.extras,"qsa_optimized_prefill",False))
+                                optimized_prefill=getattr(ctx.extras,"qsa_optimized_prefill",False), scales=scales)
         return self._finish(attn.view(q.shape[0], self.q_size), gate)
 
     @property
