@@ -82,8 +82,11 @@ Verification of more than 8 rows a request (the 27B's graphs) runs a GB10 kernel
 [kernels/csrc/verify_attn.cu](../sharar/kernels/csrc/verify_attn.cu): one block a request, KV head and chunk of the
 context, the codes converted to FP16 once a tile in shared memory, both products on the FP16 tensor cores, the chunks
 merged by their log-sum-exps. At 16 rows it takes 1.3-1.55x less time than `fa2` over the same cache (1.9x with eight
-requests), at `fa2`'s precision or better against exact attention; up to 8 rows `fa2` is faster and serves.
-`SHARAR_VERIFY_ATTENTION=fa2` turns it off.
+requests), at `fa2`'s precision or better against exact attention; up to 8 rows `fa2` is faster and serves. Two warps
+of each block load and convert the tiles while six compute. A 27B prefill against a cached prefix of at least 1,024
+tokens runs the same tiles without the causal mask, 128 (token, head) rows a block, and merges the chunk's own causal
+attention (FlashInfer's ragged prefill) into its output: 1.6-1.7x less time than `fa2` and `merge_state` over 8-20K
+prefixes, so a 32K prompt prefills in 11.8 s instead of 14.0. `SHARAR_VERIFY_ATTENTION=fa2` turns both off.
 
 - **Speed.** Steady-state rounds of the 27B `fast` against `fa2` over NVFP4: 64K 77.6 against 83.0 ms with one request,
   137.7 against 155.6 ms with four (FP8 KV's 146.0); within 2% at 10K.
