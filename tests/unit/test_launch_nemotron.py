@@ -33,11 +33,23 @@ def test_exact_is_the_target_alone(env):
     assert args[args.index("--spec") + 1] == "3" and args[args.index("--accept-default") + 1] == "off"
 
 
-@pytest.mark.parametrize("profile", ["exact", "fast", "throughput"])
-def test_no_profile_asks_for_what_the_checkpoint_lacks(env, profile):
-    s = resolve(env, profile)
+def test_exact_serves_the_checkpoint_alone(env):
+    s = resolve(env, "exact")
     assert s.get("SHARAR_W3_DECODE") == "0" and preflight.ensure_w3(s, fetch=False) is None and not s.warnings
-    assert s.engine_env(None)["SHARAR_W3_DECODE"] == "0"
+
+
+@pytest.mark.parametrize("profile", ["fast", "throughput"])
+def test_the_3bit_copies_are_calibrated_only(env, tmp_path, profile):
+    s = resolve(env, profile)
+    assert s.get("SHARAR_W3_DECODE") == "1"
+    assert preflight.ensure_w3(s, fetch=False) is None and "NVFP4 experts and FP8 trunk" in s.warnings[0]
+    assert s.engine_env(None)["SHARAR_W3_DECODE"] == "0"  # no checkpoint: never the nearest-rounded copies
+    current = s.w3_root / "nemotron-current"
+    current.mkdir(parents=True)
+    (current / "manifest.json").write_text("{}")
+    s = resolve(env, profile)
+    assert preflight.ensure_w3(s, fetch=False) == current.resolve() and not s.warnings
+    assert s.engine_env(current)["SHARAR_W3_DECODE"] == "1"
 
 
 def test_fast_alone_shares_experts_and_halves_the_state(env):

@@ -119,7 +119,8 @@ def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
 
     SHARAR_W3_CHECKPOINT=auto (the default) serves w3-checkpoints/<target>-current and keeps that link on the
     target's pinned published revision (weights/w3_checkpoint.fetch: a new pin downloads, a local calibration stays
-    with a note). Without one Flash-Next serves its FP8 trunk and the 27B nearest-rounded copies."""
+    with a note). Without one Flash-Next serves its FP8 trunk, Nemotron its NVFP4 experts and FP8 trunk, and the 27B
+    nearest-rounded copies."""
     if s.get("SHARAR_W3_DECODE", "0") != "1":
         return None
     chosen = s.get("SHARAR_W3_CHECKPOINT", "auto")
@@ -142,6 +143,9 @@ def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
     if s.target == "flashnext":
         s.warnings.append("no calibrated 3-bit checkpoint: serving the FP8 trunk, about 24% slower single-stream than "
                           f"{s.profile} with it")
+    elif s.target == "nemotron":
+        s.warnings.append("no calibrated 3-bit checkpoint: serving the NVFP4 experts and FP8 trunk, about a third slower "
+                          f"single-stream than {s.profile} with it")
     else:
         s.warnings.append("no calibrated 3-bit checkpoint: nearest-rounded copies (about 2 GSM8K points and 8% tokens per "
                           "round below calibrated)")

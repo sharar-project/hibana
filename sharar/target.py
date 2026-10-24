@@ -324,7 +324,7 @@ def _nemotron() -> Target:
         prefill_chunk=c.PREFILL_CHUNK, solo_prefill_chunk=c.SOLO_PREFILL_CHUNK,
         num_experts=c.NUM_EXPERTS, experts_per_token=c.EXPERTS_PER_TOKEN, moe_intermediate_size=c.MOE_INTERMEDIATE_SIZE,
         shared_expert_intermediate_size=c.SHARED_EXPERT_INTERMEDIATE_SIZE, mtp_layers=c.MTP_LAYERS,
-        stop_token_ids=c.STOP_TOKEN_IDS,
+        stop_token_ids=c.STOP_TOKEN_IDS, w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION,
     )
 
 

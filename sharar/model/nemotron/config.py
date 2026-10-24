@@ -21,6 +21,12 @@ MODEL_ID = "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
 MODEL_REVISION = "6aae0d6d0285e561bbb72efa10ba1425d41ebddc"
 MODEL_CACHE_KEY = "models--nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
 MODEL_ARCHITECTURE = "NemotronH_Omni_Reasoning_V3"
+# Calibrated 3-bit copies (GPTQ trunk projections and routed experts), Flash-Next's arrangement: fetched on serve into
+# $SHARAR_RESULTS/w3-checkpoints/nemotron-<revision> and linked as nemotron-current. Private until the redistribution
+# terms of the NVFP4 export are checked. Unset until published: `fast` then serves a local nemotron-current link, or
+# the NVFP4 experts and FP8 trunk with a warning.
+W3_REPO: str | None = None
+W3_REVISION: str | None = None
 PREFIX = "language_model"
 
 STOP_TOKEN_IDS = (11, 2)  # <|im_end|>, </s> (generation_config.json)

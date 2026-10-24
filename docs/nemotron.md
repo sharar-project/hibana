@@ -20,8 +20,9 @@ FP8 GEMVs for the Mamba and attention projections and the head, FP32 router logi
 after the load (78 s from the page cache); the KV cache is small (8 attention layers, 4 KiB a token in FP8) and a
 request's recurrent state is 160 MiB (FP32; 80 MiB in FP16). GPTQ-calibrated 3-bit copies of the trunk (Mamba,
 attention and lm_head projections) and of the routed experts load beside the checkpoint with `SHARAR_W3_DECODE=1` and
-`SHARAR_W3_CHECKPOINT=<dir>` (`kernels/w3_moe.py` for the experts); no profile turns them on until a checkpoint is
-published.
+`SHARAR_W3_CHECKPOINT=<dir>` (`kernels/w3_moe.py` for the experts). `fast` and `throughput` turn them on and serve
+`w3-checkpoints/nemotron-current` ([where it comes from](w3-calibration.md#where-the-served-copies-come-from)); without
+one they serve the NVFP4 experts and FP8 trunk, about a third slower at one request.
 
 ## Package
 
@@ -43,7 +44,7 @@ The profiles (`nemotron_defaults` in `sharar/launch/settings.py`):
 | Profile | Settings |
 |---|---|
 | `exact` | MTP depth 3, exact acceptance, FP32 Mamba state, every token's 22 experts |
-| `fast` | relaxed acceptance (top 3 within 2.0 logits, greedy and sampled), device-resident acceptance, 2-bit draft head, depth 5 at one request and 4 at two to four, FP16 Mamba state with stochastic rounding, expert sharing `SHARAR_MOE_KEEP=12` `SHARAR_MOE_BUDGET=48:128` |
+| `fast` | both 3-bit copies, relaxed acceptance (top 3 within 2.0 logits, greedy and sampled), device-resident acceptance, 2-bit draft head, depth 5 at one request and 4 at two to four, FP16 Mamba state with stochastic rounding, expert sharing `SHARAR_MOE_KEEP=12` `SHARAR_MOE_BUDGET=48:128` |
 | `throughput` | `fast` up to 16 requests, depth 3 past four, without the sharing and the FP16 state (ungated at 5-16 requests) |
 
 Expert sharing (`moe.py`, `route_budget`): a verify call's rows share the experts they read. Each row is guaranteed
@@ -60,7 +61,7 @@ Measured on spark-9931 (h2h median, `tools/h2h-pr.py`, greedy; tok/s at one requ
 | `fast` before sharing and FP16 state | 54.6 | 92.5 |
 | + both 3-bit copies | 81.0 | 132.7 |
 | + floor 16, no cap | 92.3 | 150.9 |
-| + floor 12, cap 48:128, FP16 state (`fast` with both 3-bit copies) | 102.5 | 185.2 |
+| + floor 12, cap 48:128, FP16 state (`fast`) | 102.5 | 185.2 |
 
 GSM8K-300, paired against `exact` (97.7%): the last row 97.7% (+0.0 pp [-1.6, +1.6], Spark 3), `fast` with NVFP4
 experts and this sharing 97.3% (-0.3 pp), `fast` without sharing 97.0% (-0.7 pp, Spark 3). Tighter caps per request

@@ -43,7 +43,7 @@ diagnostics, not held-out quality evidence.
 
 The profiles that use 3-bit copies (`fast`, `throughput`)
 serve `$SHARAR_RESULTS/w3-checkpoints/<target>-current` (`qwen38-current`,
-`flashnext-current`). Every `sharar serve` (one Spark or two) keeps that link on the target's published
+`flashnext-current`, `nemotron-current`). Every `sharar serve` (one Spark or two) keeps that link on the target's published
 checkpoint, pinned by revision in the target's config (`W3_REPO`, `W3_REVISION`)
 (`python -m sharar.weights.w3_checkpoint fetch`; `HF_TOKEN` is passed through for a private repository):
 
@@ -54,7 +54,9 @@ checkpoint, pinned by revision in the target's config (`W3_REPO`, `W3_REVISION`)
 
 Both targets have one: Flash-Next's (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`: the 3-bit trunk and the GPTQ
 routed experts) and the 27B's (`yemara/Qwen3.8-27B-NVFP4-sharar-w3`, GPTQ from the FP8 release on the `bc7984f`
-inputs). To serve a new calibration, point the link at its directory or set
+inputs). Nemotron's (the GPTQ trunk projections and routed experts) is not published yet: its `W3_REPO` is unset,
+so `fast` serves a local `nemotron-current` link, or the NVFP4 experts and FP8 trunk with a warning. To serve a new
+calibration, point the link at its directory or set
 `SHARAR_W3_CHECKPOINT=/path/to/calibrated-w3`.
 
 The loader checks the target revision, projection coverage, dimensions, dtypes

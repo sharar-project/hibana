@@ -141,14 +141,15 @@ def nemotron_defaults(profile: str) -> dict[str, str]:
     # depth 5 for one request, 4 for two to four: relaxed acceptance makes deeper drafts pay (DEPTHS_NOTE)
     p.update(SHARAR_ACCEPT_DEFAULT="3:2.0", SHARAR_ACCEPT_DEFAULT_SAMPLED="1", SHARAR_DEVICE_ACCEPT="1",
              SHARAR_SPEC="5", SHARAR_SPEC_DEPTHS="2:4,4:4")
-    # Calibrated 3-bit copies (SHARAR_W3_DECODE with SHARAR_W3_CHECKPOINT: the trunk's FP8 projections, then the
-    # routed experts) join here once a Nemotron W3 checkpoint is published and gated; until then "0" above.
+    # Calibrated 3-bit copies of the trunk's FP8 projections and of the routed experts (w3-checkpoints/nemotron-current;
+    # without one the launcher serves the NVFP4 experts and FP8 trunk): GSM8K-300 +0.0 pp (experts) and -0.7 pp (trunk)
+    # alone, h2h 54.6 -> 81.0 tok/s at one request together before sharing.
     # Budgeted expert selection (model/nemotron/moe.py): each verify row keeps its top 12 of 22 experts, other rows'
     # choices ride along, and a call reads at most 48 distinct experts per request, 128 in all (of the 512): about 39%
     # fewer experts per MoE block at one and four requests. FP16-SR state: half the state traffic of replay and verify.
     # h2h on spark-9931 with both 3-bit copies: 102.5 tok/s at one request (floor 16 uncapped 92.3, no sharing 79.5),
     # 185 at four; GSM8K-300 within noise of exact with NVFP4 experts (-0.3 pp) and with the 3-bit stack (+0.0 pp).
-    p.update(SHARAR_MOE_KEEP="12", SHARAR_MOE_BUDGET="48:128", SHARAR_SSM_STATE="fp16")
+    p.update(SHARAR_W3_DECODE="1", SHARAR_MOE_KEEP="12", SHARAR_MOE_BUDGET="48:128", SHARAR_SSM_STATE="fp16")
     if profile == "throughput":
         # 5-16 requests are ungated for both: a 128-expert cap over 16 requests' verify rows is untested
         p.update(SHARAR_MAX_BATCH="16", SHARAR_SPEC_DEPTHS="2:4,4:4,16:3", SHARAR_MOE_KEEP="0", SHARAR_SSM_STATE="fp32")  # TPUT_NOTE
@@ -269,8 +270,8 @@ class Settings:
             env["SHARAR_FLASHNEXT_CACHE"] = str(self.model_cache)
         if w3_checkpoint is not None:
             env["SHARAR_W3_CHECKPOINT"] = str(w3_checkpoint)
-        elif env.get("SHARAR_W3_DECODE") == "1" and self.target == "flashnext":
-            env["SHARAR_W3_DECODE"] = "0"  # Flash-Next's 3-bit copies are calibrated only
+        elif env.get("SHARAR_W3_DECODE") == "1" and self.target in ("flashnext", "nemotron"):
+            env["SHARAR_W3_DECODE"] = "0"  # their 3-bit copies are calibrated only
         if self.warnings:
             env["SHARAR_W3_WARNING"] = "; ".join(self.warnings)
         if self.ssd is not None:
