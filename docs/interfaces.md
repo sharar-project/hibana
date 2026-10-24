@@ -201,8 +201,9 @@ target's outputs are the same and the committed recurrent state is bitwise the h
 stop/budget-truncated accepted prefix from untouched committed state, and writes directly into the private committed
 slots authorized by `StateManager.commit_reconstructed`, which validates counts, verified width, unique non-dummy
 slots and convolution bounds before any mutation. Each kernel program reads its whole K-by-V tile before overwriting
-it. On FP32 pools the verify recurrence and the replay are the CUDA pair of `kernels/gdn_verify.py`, one arithmetic,
-so the committed state is the verify's own bit for bit (the vendored Triton pair serves other shapes). A failure after mutation marks every affected request uncacheable, and a post-write `MemoryError` is not
+it. On the 27B's FP32 pools the verify recurrence and the replay are the CUDA pair of `kernels/gdn_verify.py`, one
+arithmetic, so the committed state is the verify's own bit for bit (Flash-Next and other shapes keep the vendored Triton
+pair). A failure after mutation marks every affected request uncacheable, and a post-write `MemoryError` is not
 retried, so no retry reuses partially advanced state. `snapshots` retains every FP32 verify state and is the test
 reference for reconstruction (`tests/gpu/test_lifecycle.py`).
 

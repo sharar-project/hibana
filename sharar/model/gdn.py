@@ -39,6 +39,7 @@ def _window(ctx):
 
 
 class GatedDeltaNet:
+    cuda_verify = True  # the CUDA verify recurrence on FP32 pools (kernels/gdn_verify.py); Flash-Next keeps the Triton pair
     fused_window_norm = True  # the window kernel ends with this layer's gated RMS norm and FP8 out-projection input
 
     def __init__(self, w: SnapshotWeights, prefix: str, layer_id: int, device: torch.device, target: Target = QWEN38):
@@ -274,7 +275,8 @@ class GatedDeltaNet:
             return window_verify(window.layout, window.layer[self.layer_id], q, k, v, a, b, self.A_log, self.dt_bias,
                                  ctx.seq_slots, s_len, ring["ring_k"], ring["ring_u"], ring["ring_g"],
                                  norm=self._window_norm(z))
-        recurrence = gdn_verify.verify if gdn_verify.supports(k, v, ssm_states) else fused_sigmoid_gating_delta_rule_update
+        cuda = self.cuda_verify and gdn_verify.supports(k, v, ssm_states)
+        recurrence = gdn_verify.verify if cuda else fused_sigmoid_gating_delta_rule_update
         core = recurrence(
             A_log=self.A_log, dt_bias=self.dt_bias, softplus_beta=1.0, softplus_threshold=20.0,
             q=q, k=k, v=v, a=a, b=b,

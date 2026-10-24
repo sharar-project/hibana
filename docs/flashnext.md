@@ -120,8 +120,8 @@ draft and feedback graphs, device-resident acceptance, and retained features thr
   32-35 ms a round from depth 3 to 15, 3-bit experts, drafting a whole block), so a deeper round guarantees each
   checked token fewer of its own experts (2 x cap / rows). The depths are caps that keep MTP's floor of 3: `fast` checks
   at most 9 for one request and 7 for two to four (`SHARAR_SPEC=9`, `SHARAR_SPEC_DEPTHS=2:7,4:7`); `throughput` drafts as
-  MTP, 4 and 3 from 16 requests (from 16, depth 5 decoded 9-10% slower than 3: its verification passed the 64 rows the
-  3-bit copies served then; and the verify buffers hold every request slot at the deepest depth, 1.7 GiB at 4 and 3.4 at 9
+  MTP, 4 and 3 from 16 requests (from 16, depth 5 decoded 9-10% slower than 3: its verification passes the 64 rows the
+  3-bit copies serve; and the verify buffers hold every request slot at the deepest depth, 1.7 GiB at 4 and 3.4 at 9
   for 128 requests); `exact`, which reads every expert, drafts 7 (unmeasured). On the h2h prompts, greedy at `fast`'s
   top-2 within 1.0, the drafter emits 2.8 tokens a round at depth 3, 3.6 at 7 and 3.9 at 9, counting the first d
   drafts of a 10-row block (at 9: math 6.1, structured 5.7, code 5.4; chat 3.2, prose 2.7, multilingual 2.6).

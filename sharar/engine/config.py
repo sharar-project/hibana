@@ -77,7 +77,7 @@ class EngineConfig:
     cuda_arch: str = "12.1a"                  # SHARAR_CUDA_ARCH for the JIT-built CUDA kernels
     tp_allreduce: str = "rdma"                # SHARAR_TP_ALLREDUCE: rdma (the one-shot for decode-sized all-reduces between two ranks) or nccl (every one on NCCL, as vLLM)
     # --- weights and numerics
-    w3_decode: bool = False                   # SHARAR_W3_DECODE: 3-bit decode copies for calls of <= 128 rows (the 27B's layers and FP8 draft, Flash-Next's trunk)
+    w3_decode: bool = False                   # SHARAR_W3_DECODE: 3-bit decode copies for calls of <= 128 rows (the 27B's layers and FP8 draft; Flash-Next's trunk <= 64)
     w3_checkpoint: str | None = None          # SHARAR_W3_CHECKPOINT: the target's calibrated copies (required on Flash-Next; the 27B rounds to nearest without)
     w3_warning: str | None = None             # SHARAR_W3_WARNING: why the launcher serves without the profile's calibrated copies
     stable_numerics: bool = False             # SHARAR_STABLE_NUMERICS: M-invariant prefill kernels

@@ -19,7 +19,8 @@ lookup, so expansion costs under two integer instructions per weight and
 the kernel is bound by the weight stream at 16 to 32 activation rows. From
 33 rows a second kernel (`w3_gemm_wide`) stages the activations in shared
 memory and feeds eight row tiles per warp from one expansion; `WIDE` picks
-it and its tiling per shape and row count.
+it and its tiling per shape and row count (the 27B's projections and draft; Flash-Next's trunk stays on the narrow
+kernel, at most NARROW_ROWS rows).
 
 Activations are E4M3: the engine's static-scale projection inputs as they
 are, BF16 MLP inputs quantized per row and 32-group by `quant_groups` (the
@@ -292,16 +293,6 @@ WIDE: dict[tuple[int, int], dict[int, tuple[int, int] | None]] = {
     (14336, 5120): {48: (2244, 1), 64: None, 128: (4142, 1)},
     (4096, 5120): {48: (2144, 4), 64: (2144, 4), 128: (8144, 1)},
     (5120, 4096): {48: (2244, 1), 64: (2244, 1), 128: (8144, 1)},
-    # Flash-Next: lm_head, GDN in_qkv / PLE key, in_z, out and attention o, attention qkv, shared expert gate_up and
-    # down, PLE value
-    (248320, 2560): {48: (2144, 1), 64: (4142, 1), 128: (8183, 1)},
-    (10240, 2560): {48: None, 64: (4143, 1), 128: (8183, 1)},
-    (6144, 2560): {48: (4144, 1), 64: (4144, 1), 128: (8144, 1)},
-    (2560, 6144): {48: (4143, 4), 64: (4143, 4), 128: (8183, 4)},
-    (13312, 2560): {48: (2144, 1), 64: (2144, 1), 128: (4143, 1)},
-    (1280, 2560): {48: (2244, 4), 64: (2144, 4), 128: (2144, 4)},
-    (2560, 640): {48: (2144, 1), 64: (2144, 1), 128: (2144, 1)},
-    (2560, 2560): {48: (2244, 2), 64: (2144, 1), 128: (2144, 1)},
 }
 
 

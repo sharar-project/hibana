@@ -10,7 +10,7 @@ import torch
 @pytest.mark.parametrize('steps', [1, 2, 4, 5, 8, 16])
 @pytest.mark.parametrize('graphs', [False, True])
 @pytest.mark.parametrize('impl', ['triton', 'cuda'])
-def test_reconstruct_every_accepted_prefix(batch, steps, graphs, impl, monkeypatch):
+def test_reconstruct_every_accepted_prefix(batch, steps, graphs, impl):
     """The ring commit (`AcceptedState.run`) and the oracle replay against the verify recurrence's own states, bit for bit:
     the vendored Triton pair and the CUDA pair (`kernels/gdn_verify.py`, which the engine runs on FP32 pools)."""
     from sharar.kernels import gdn_verify
@@ -21,13 +21,12 @@ def test_reconstruct_every_accepted_prefix(batch, steps, graphs, impl, monkeypat
         fused_sigmoid_gating_delta_rule_update, reconstruct = gdn_verify.verify, gdn_verify.commit
     else:
         fused_sigmoid_gating_delta_rule_update, reconstruct = triton_verify, accepted_state.reconstruct
-        monkeypatch.setattr(gdn_verify, 'supports', lambda *args: False)  # AcceptedState.run commits with the Triton replay
     torch.manual_seed(1907 + batch + steps)
     layers, h, hv, k, v = 2, 16, 48, 128, 128
     state = torch.randn((layers, 7, hv, v, k), device='cuda') * .1
     initial = state.clone()
     pool = SimpleNamespace(ssm_all=state, layer_ids=list(range(layers)))
-    replay = AcceptedState(pool, 4, steps, h)
+    replay = AcceptedState(pool, 4, steps, h, cuda=impl == 'cuda')
     retained = (replay.raw_k, replay.raw_v, replay.gates, replay.betas)
     assert replay.bytes == sum(t.numel() * t.element_size() for t in retained)
     assert not hasattr(replay, 'final')

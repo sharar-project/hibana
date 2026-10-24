@@ -41,10 +41,10 @@ TARGET_SETTINGS = {
 #             each token keeps its top 4, fewer in wide forwards; one Spark: 1 / 4 requests +2 / +8% over keep 5 + reuse
 #             5), and Flash-Next's
 #             optimized QSA prefill kernels where eligible (SHARAR_QSA_PREFILL_BACKEND=auto: RULER v2 32K equal)
-#   throughput  fast with more requests decoded together: the 27B 16 (depth per round from the row budget; verifications
-#             of more than 128 rows run the original weights), Flash-Next 128 with its 3-bit experts (64 with NVFP4
-#             experts), three drafts at sixteen requests (measured when the 3-bit copies served at most 64 rows: four
-#             above, where wider batches exceeded 64 rows at any depth, and three measured no faster there)
+#   throughput  fast with more requests decoded together: the 27B 16 (full depth; batches of nine or more verify on the
+#             original weights), Flash-Next 128 with its 3-bit experts (64 with NVFP4
+#             experts), three drafts at sixteen requests so their verification stays within the 64 rows Flash-Next's
+#             3-bit copies serve (four above: wider batches exceed 64 rows at any depth, and three measured no faster there)
 PROFILE_NAMES = ("exact", "fast", "throughput")
 
 
@@ -107,7 +107,7 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
             # at 32-128 requests a verified row costs ~0.5 ms (one Spark, 3-bit experts) and depth 3 beat 4 in steady
             # state (32: 523 vs 516 tok/s, 64: 795 vs 783, 128: 1003 vs 974); NVFP4 experts and two Sparks are unmeasured
             # DFlash2 drafts as MTP here: from 16 requests depth 5 decoded 9-10% slower than 3 (one Spark, 3-bit
-            # experts, 8K and 32K prompts), its verification then past the 64 rows the 3-bit copies served then; and the
+            # experts, 8K and 32K prompts), its verification then past the 64 rows the 3-bit copies serve; and the
             # verify buffers hold every request slot at the deepest depth (128 requests: 1.7 GiB at 4, 3.4 at 9)
             p["SHARAR_SPEC_DEPTHS"] = "16:3,32:3,64:3,128:3" if flashnext_experts == "w3" and tp == 1 else "16:3"
         # the 8-bit GDN state pays with many requests; `fast` keeps FP32: no gain at one request, slower prefill

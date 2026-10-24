@@ -13,6 +13,8 @@ from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 
 
 class FlashNextGdn(GatedDeltaNet):
+    cuda_verify = False  # the vendored Triton verify recurrence and replay
+
     def __init__(self, w, prefix: str, layer_id: int, device: torch.device, target, precision: str):  # noqa: D107
         self.layer_id = layer_id
         self.device = device
