@@ -161,6 +161,9 @@ __global__ void __launch_bounds__(kWarps * 32) w3_gemm_kernel(
   };
   load(c_begin, w[0], s[0]);
   if (c_begin + 1 < c_end) load(c_begin + 1, w[1], s[1]);
+  // programmatic dependent launch: the weights (constant) stream in while the producer of x finishes
+  asm volatile("griddepcontrol.wait;" ::: "memory");
+  asm volatile("griddepcontrol.launch_dependents;");
 
   for (int c = c_begin; c < c_end; c += 2) {
 #pragma unroll
@@ -328,16 +331,34 @@ __global__ void __launch_bounds__(256) quant_groups_kernel(const __nv_bfloat16* 
   quant_groups_row(x, out, scale, K, blockIdx.x);
 }
 
+// Launch with programmatic stream serialization: the kernel may start while the previous one in the stream runs, and
+// fences on it with `griddepcontrol.wait` before touching anything that kernel writes (the GEMMs read their constant
+// weights first). A kernel launched this way must execute griddepcontrol.wait.
+template <typename... Params, typename... Args>
+cudaError_t launch_dependent(void (*kernel)(Params...), dim3 grid, dim3 block, size_t smem, Args... args) {
+  cudaLaunchConfig_t config{};
+  config.gridDim = grid;
+  config.blockDim = block;
+  config.dynamicSmemBytes = smem;
+  config.stream = c10::cuda::getCurrentCUDAStream();
+  cudaLaunchAttribute attr[1];
+  attr[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+  attr[0].val.programmaticStreamSerializationAllowed = 1;
+  config.attrs = attr;
+  config.numAttrs = 1;
+  return cudaLaunchKernelEx(&config, kernel, static_cast<Params>(args)...);
+}
+
 template <int MT, bool XG, bool ROW_TILES = false, int P = 3>
 void launch(torch::Tensor y, torch::Tensor ws, torch::Tensor counters, torch::Tensor x, torch::Tensor x_scale, int x_scale_stride,
             torch::Tensor planes, torch::Tensor scales, torch::Tensor row_scale, uint32_t lut_lo, uint32_t lut_hi,
             int M, int N, int K, int splits) {
   const dim3 grid((N / kBlockRows) * (ROW_TILES ? 2 : 1), splits);
-  w3_gemm_kernel<MT, XG, ROW_TILES, P><<<grid, kWarps * 32, 0, c10::cuda::getCurrentCUDAStream()>>>(
+  C10_CUDA_CHECK(launch_dependent(w3_gemm_kernel<MT, XG, ROW_TILES, P>, grid, dim3(kWarps * 32), 0,
       reinterpret_cast<__nv_bfloat16*>(y.data_ptr()), static_cast<float*>(ws.data_ptr()), static_cast<int*>(counters.data_ptr()),
       static_cast<const uint8_t*>(x.data_ptr()), static_cast<const float*>(x_scale.data_ptr()), x_scale_stride,
       static_cast<const uint4*>(planes.data_ptr()), static_cast<const uint4*>(scales.data_ptr()),
-      static_cast<const float*>(row_scale.data_ptr()), lut_lo, lut_hi, M, N, K, (K / kChunk) / splits);
+      static_cast<const float*>(row_scale.data_ptr()), lut_lo, lut_hi, M, N, K, (K / kChunk) / splits));
 }
 
 // ------------------------------------------------------------------ wide calls (33 to 128 rows and beyond)
@@ -411,17 +432,20 @@ __global__ void __launch_bounds__(WM * WN * 32, 1) w3_wide_kernel(
   y += static_cast<size_t>(row0) * N;
   const int nb0 = col_block * WN;
 
-  auto load = [&](int c, int stage) {
+  auto load_w = [&](int c, int stage) {
+    const uint32_t st = sbase + stage * kStage;
+    for (int u = threadIdx.x; u < WN * kWWords; u += kThreads) {
+      const int b = u / kWWords, i = u % kWWords;
+      cp_async16_stream(st + kABytes + u * 16, i < 96 ? planes + (static_cast<size_t>(nb0 + b) * KC + c) * 96 + i
+                                                      : scales + (static_cast<size_t>(nb0 + b) * KC + c) * kScaleWords + (i - 96));
+    }
+  };
+  auto load_a = [&](int c, int stage) {
     const uint32_t st = sbase + stage * kStage;
     for (int u = threadIdx.x; u < BM * 8; u += kThreads) {
       const int r = u >> 3, k16 = u & 7;
       const bool ok = r < M;  // rows past the call read zeros
       cp_async16(st + r * kChunk + ((k16 ^ (r & 7)) << 4), x + static_cast<size_t>(ok ? r : 0) * K + c * kChunk + k16 * 16, ok);
-    }
-    for (int u = threadIdx.x; u < WN * kWWords; u += kThreads) {
-      const int b = u / kWWords, i = u % kWWords;
-      cp_async16_stream(st + kABytes + u * 16, i < 96 ? planes + (static_cast<size_t>(nb0 + b) * KC + c) * 96 + i
-                                                      : scales + (static_cast<size_t>(nb0 + b) * KC + c) * kScaleWords + (i - 96));
     }
     if (XG) {
       for (int r = threadIdx.x; r < BM; r += kThreads) {
@@ -429,6 +453,10 @@ __global__ void __launch_bounds__(WM * WN * 32, 1) w3_wide_kernel(
         cp_async16(st + kABytes + kWBytes + r * 16, x_scale + static_cast<size_t>(ok ? r : 0) * G + c * 4, ok);
       }
     }
+  };
+  auto load = [&](int c, int stage) {
+    load_a(c, stage);
+    load_w(c, stage);
   };
 
   float acc[MT][4][4];
@@ -439,9 +467,16 @@ __global__ void __launch_bounds__(WM * WN * 32, 1) w3_wide_kernel(
 #pragma unroll
       for (int i = 0; i < 4; ++i) acc[mt][nt][i] = 0.f;
 
+  // programmatic dependent launch: the first chunks' weights (constant) are in flight before the wait for the producer
+  // of x and its scales; the first commit group holds them all
+#pragma unroll
+  for (int s = 0; s < STAGES - 1; ++s)
+    if (c_begin + s < c_end) load_w(c_begin + s, s);
+  asm volatile("griddepcontrol.wait;" ::: "memory");
+  asm volatile("griddepcontrol.launch_dependents;");
 #pragma unroll
   for (int s = 0; s < STAGES - 1; ++s) {
-    if (c_begin + s < c_end) load(c_begin + s, s);
+    if (c_begin + s < c_end) load_a(c_begin + s, s);
     cp_commit();
   }
   // ldmatrix: lanes 0-7 / 8-15 address rows 0-7 / 8-15 of a tile's first 16 bytes of the group, lanes 16-31 its second
@@ -571,12 +606,11 @@ void launch(torch::Tensor y, torch::Tensor ws, torch::Tensor counters, torch::Te
   }();
   (void)sized;
   const dim3 grid(N / (WN * 32) * ((M + BM - 1) / BM), splits);
-  kernel<<<grid, WM * WN * 32, smem, c10::cuda::getCurrentCUDAStream()>>>(
+  C10_CUDA_CHECK(launch_dependent(kernel, grid, dim3(WM * WN * 32), smem,
       reinterpret_cast<__nv_bfloat16*>(y.data_ptr()), static_cast<float*>(ws.data_ptr()), static_cast<int*>(counters.data_ptr()),
       static_cast<const uint8_t*>(x.data_ptr()), static_cast<const float*>(x_scale.data_ptr()), x_scale_stride,
       static_cast<const uint4*>(planes.data_ptr()), static_cast<const uint4*>(scales.data_ptr()),
-      static_cast<const float*>(row_scale.data_ptr()), lut_lo, lut_hi, M, N, K, (K / kChunk) / splits);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+      static_cast<const float*>(row_scale.data_ptr()), lut_lo, lut_hi, M, N, K, (K / kChunk) / splits));
 }
 
 }  // namespace wide
