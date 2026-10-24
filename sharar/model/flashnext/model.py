@@ -193,7 +193,7 @@ class FlashNext:
 
     def attach_calibrated(self, calibrated, log=print) -> str:
         """Calibrated 3-bit decode copies (sharar/weights/flashnext_w3_calibrate.py) over the FP8 trunk, by `linears()` name;
-        calls of at most 64 rows then read them (`TrunkLinear.__call__`), prefill keeps the FP8 weights. The routed
+        calls of at most 128 rows then read them (`TrunkLinear.__call__`), prefill keeps the FP8 weights. The routed
         experts' entries (`layers.N.experts.*`) were loaded with the layers, or skipped."""
         if self.precision != "fp8":
             raise ValueError("calibrated 3-bit trunk copies go over the FP8 trunk (SHARAR_FLASHNEXT_TRUNK=fp8)")

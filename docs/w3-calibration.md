@@ -3,7 +3,7 @@
 The 3-bit decode copies store each weight as one of eight levels of an E4M3 codebook, with an E4M3 scale per
 32 weights and a per-row multiplier: `3.25 + 32/K` bits per weight for input width `K`. Inside the kernel, codes
 expand to FP8, multiply FP8 activations and accumulate in FP32; activations are not 3-bit. The copies serve
-calls of at most 64 rows (decode and verification); larger calls use the original NVFP4/FP8 weights, which stay
+calls of at most 128 rows (decode and verification); larger calls use the original NVFP4/FP8 weights, which stay
 resident. On the 27B they cover 304 target matrices (MLP `gate_up` and `down` in all 64 layers, GDN `in_qkv`,
 `in_z`, `out`, attention `qkv`, `o`) plus 20 in the DFlash2 drafter (nearest-rounded at load, not calibrated);
 on Flash-Next, the trunk and the routed experts (below), and the 20 of its DFlash2 drafter when it serves one. Coverage and dispatch: `sharar/weights/w3_checkpoint.py`, `sharar/kernels/ops.py`,
