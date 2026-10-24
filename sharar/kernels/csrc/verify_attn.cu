@@ -29,8 +29,10 @@ namespace {
 constexpr int D = 256;              // head_dim
 constexpr int G = 6;                // query heads a KV head
 constexpr int WARPS = 6;            // 16 queries each: 96 = 16 rows x 6 heads
-constexpr int THREADS = WARPS * 32;
 constexpr int PREFIX_WARPS = 8;     // prefill against a prefix: 128 (token, head) rows a block
+// verify: two more warps load and convert while the six compute (a layer over 64K contexts: 2.45 -> 2.29 ms at four
+// requests, 10.1 -> 9.1 at sixteen; the six compute warps leave two partitions half idle, so the tensor work stays the bound)
+constexpr int VERIFY_PRODUCERS = 2;
 constexpr int BN = 32;              // pages a tile
 constexpr int STAGES = 3;           // raw tiles: two in flight while one converts (the pipeline needs three)
 constexpr int F4ROW = D / 2 + D / 16;  // an NVFP4 row: 128 bytes of codes, then 16 E4M3 scales
@@ -100,9 +102,11 @@ struct Params {
   const int32_t* blocks;    // prefix_attn: [blocks, 2] each block's sequence and first flattened (token, head) row
 };
 
-template <int W, bool PREFIX>
-__global__ void __launch_bounds__(W * 32, 1) split_kernel(const Params p) {
-  constexpr int THREADS = W * 32;
+// W warps compute (16 queries each); PW more warps, when given, load and convert the tiles while they do
+template <int W, int PW, bool PREFIX>
+__global__ void __launch_bounds__((W + PW) * 32, 1) split_kernel(const Params p) {
+  constexpr int MOVERS = (PW ? PW : W) * 32;  // the threads that load and convert
+  constexpr int FIRST = PW ? W * 32 : 0;      // the first of them
   extern __shared__ __align__(16) uint8_t smem[];
   // raw K and V stages [STAGES][BN][F4ROW], then the FP16 K and V tiles [2][BN][HROW]
   uint8_t* ks = smem;
@@ -130,7 +134,9 @@ __global__ void __launch_bounds__(W * 32, 1) split_kernel(const Params p) {
     head[h] = kvh * G + m % G;
     live[h] = row[h] < n_rows;
   }
-  const bool warp_live = (row0 + warp * 16) / G < n_rows;  // a warp whose queries are all past the rows only loads
+  const bool mover = threadIdx.x >= FIRST;
+  // a compute warp whose queries are all past the rows only loads (with PW, producer warps compute nothing)
+  const bool warp_live = warp < W && (row0 + warp * 16) / G < n_rows;
 
   // Q in FP16 A fragments (m16n8k16): k-step c holds dims 16 c + 2 t, + 1 (regs 0, 1) and + 8, + 9 (regs 2, 3)
   uint32_t qa[D / 16][4];
@@ -162,7 +168,7 @@ __global__ void __launch_bounds__(W * 32, 1) split_kernel(const Params p) {
   const uint8_t* vbase = p.v + static_cast<int64_t>(kvh) * (D / 2);
   auto load = [&](int stage, int start) {
     // BN rows of 8 chunks of codes and one of scales, for K and V
-    for (int i = threadIdx.x; i < BN * 9; i += THREADS) {
+    for (int i = threadIdx.x - FIRST; i < BN * 9; i += MOVERS) {
       const int r = i / 9, c = i % 9;
       const int tok = start + r;
       const bool ok = tok < hi;
@@ -179,7 +185,7 @@ __global__ void __launch_bounds__(W * 32, 1) split_kernel(const Params p) {
   // A tile's K and V to FP16 (exact) into tile buffer cb, once for every warp
   auto convert = [&](int stage, int cb) {
     // a block of 16 values (one scale) a step
-    for (int i = threadIdx.x; i < BN * (D / 16) * 2; i += THREADS) {
+    for (int i = threadIdx.x - FIRST; i < BN * (D / 16) * 2; i += MOVERS) {
       const bool isv = i >= BN * (D / 16);
       const int j = isv ? i - BN * (D / 16) : i;
       const int r = j / (D / 16), blk = j % (D / 16);
@@ -281,22 +287,39 @@ __global__ void __launch_bounds__(W * 32, 1) split_kernel(const Params p) {
     }
   };
   // The pipeline: STAGES - 1 raw tiles in flight; each iteration converts tile it + 1 while it computes tile it,
-  // one barrier an iteration (it publishes tile it's conversion and frees tile it - 1's raw stage and buffer)
+  // one barrier an iteration (it publishes tile it's conversion and frees tile it - 1's raw stage and buffer). With
+  // producer warps the movers wait for their own copies (one named barrier among them) and the compute warps never do.
+  if (mover) {
 #pragma unroll
-  for (int i = 0; i < STAGES - 1; ++i) {
-    if (i < tiles) load(i, lo + i * BN);
-    cp_commit();
+    for (int i = 0; i < STAGES - 1; ++i) {
+      if (i < tiles) load(i, lo + i * BN);
+      cp_commit();
+    }
+    cp_wait<STAGES - 2>();
+    if (PW) asm volatile("bar.sync 1, %0;" :: "n"(MOVERS));
   }
-  cp_wait<STAGES - 2>();
-  __syncthreads();
-  if (tiles > 0) convert(0, 0);
+  if (!PW) __syncthreads();
+  if (mover && tiles > 0) convert(0, 0);
   for (int it = 0; it < tiles; ++it) {
-    cp_wait<STAGES - 3 < 0 ? 0 : STAGES - 3>();  // tile it + 1's raw rows (and tile it's)
-    __syncthreads();
-    if (it + STAGES - 1 < tiles) load((it + STAGES - 1) % STAGES, lo + (it + STAGES - 1) * BN);
-    cp_commit();
-    if (it + 1 < tiles) convert((it + 1) % STAGES, (it + 1) & 1);
-    compute(it & 1, lo + it * BN);
+    if (PW) {
+      __syncthreads();  // tile it's conversion is published; tile it - 1's buffer and raw stage are free
+      if (mover) {
+        if (it + STAGES - 1 < tiles) load((it + STAGES - 1) % STAGES, lo + (it + STAGES - 1) * BN);
+        cp_commit();
+        cp_wait<STAGES - 2>();  // tile it + 1's raw rows
+        asm volatile("bar.sync 1, %0;" :: "n"(MOVERS));
+        if (it + 1 < tiles) convert((it + 1) % STAGES, (it + 1) & 1);
+      } else {
+        compute(it & 1, lo + it * BN);
+      }
+    } else {
+      cp_wait<STAGES - 3 < 0 ? 0 : STAGES - 3>();  // tile it + 1's raw rows (and tile it's)
+      __syncthreads();
+      if (it + STAGES - 1 < tiles) load((it + STAGES - 1) % STAGES, lo + (it + STAGES - 1) * BN);
+      cp_commit();
+      if (it + 1 < tiles) convert((it + 1) % STAGES, (it + 1) & 1);
+      compute(it & 1, lo + it * BN);
+    }
   }
   if (!warp_live) return;
   // the chunk's normalized output and log-sum-exp (base 2) a query
@@ -360,14 +383,14 @@ Params params(torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tensor k
                 static_cast<int>(k.size(2)), static_cast<int>(splits), static_cast<float>(sm_scale * 1.4426950408889634), blocks};
 }
 
-template <int W, bool PREFIX>
+template <int W, int PW, bool PREFIX>
 void launch(const Params& p, unsigned blocks, unsigned kvh, cudaStream_t stream) {
   static const bool sized = [] {  // once, before any graph capture
-    C10_CUDA_CHECK(cudaFuncSetAttribute(split_kernel<W, PREFIX>, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM));
+    C10_CUDA_CHECK(cudaFuncSetAttribute(split_kernel<W, PW, PREFIX>, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM));
     return true;
   }();
   (void)sized;
-  split_kernel<W, PREFIX><<<dim3(blocks, kvh, static_cast<unsigned>(p.splits)), W * 32, SMEM, stream>>>(p);
+  split_kernel<W, PW, PREFIX><<<dim3(blocks, kvh, static_cast<unsigned>(p.splits)), (W + PW) * 32, SMEM, stream>>>(p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -378,7 +401,7 @@ void verify_attn(torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tenso
                  torch::Tensor out, double sm_scale, int64_t splits) {
   const Params p = params(q, k, v, ksf, vsf, kv_indptr, kv_indices, qo_indptr, o, lse, sm_scale, splits, nullptr);
   auto stream = at::cuda::getCurrentCUDAStream();
-  launch<WARPS, false>(p, static_cast<unsigned>(qo_indptr.numel() - 1), static_cast<unsigned>(k.size(2)), stream);
+  launch<WARPS, VERIFY_PRODUCERS, false>(p, static_cast<unsigned>(qo_indptr.numel() - 1), static_cast<unsigned>(k.size(2)), stream);
   merge_kernel<<<dim3(static_cast<unsigned>(q.size(0)), static_cast<unsigned>(q.size(1))), 128, 0, stream>>>(
       o.data_ptr<float>(), lse.data_ptr<float>(), reinterpret_cast<__nv_bfloat16*>(out.data_ptr()), static_cast<int>(splits),
       out.stride(0), static_cast<int>(q.size(1)), nullptr, nullptr);
@@ -394,7 +417,7 @@ void prefix_attn(torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tenso
                            extra_lse->dtype() == torch::kFloat && extra_o->numel() == q.numel()), "prefix_attn: the new rows' output");
   const Params p = params(q, k, v, ksf, vsf, kv_indptr, kv_indices, qo_indptr, o, lse, sm_scale, splits, blocks.data_ptr<int32_t>());
   auto stream = at::cuda::getCurrentCUDAStream();
-  launch<PREFIX_WARPS, true>(p, static_cast<unsigned>(blocks.size(0)), static_cast<unsigned>(k.size(2)), stream);
+  launch<PREFIX_WARPS, 0, true>(p, static_cast<unsigned>(blocks.size(0)), static_cast<unsigned>(k.size(2)), stream);
   merge_kernel<<<dim3(static_cast<unsigned>(q.size(0)), static_cast<unsigned>(q.size(1))), 128, 0, stream>>>(
       o.data_ptr<float>(), lse.data_ptr<float>(), reinterpret_cast<__nv_bfloat16*>(out.data_ptr()), static_cast<int>(splits),
       out.stride(0), static_cast<int>(q.size(1)), extra_o ? reinterpret_cast<const __nv_bfloat16*>(extra_o->data_ptr()) : nullptr,
