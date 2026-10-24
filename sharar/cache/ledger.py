@@ -26,8 +26,7 @@ STATE_BYTES_PER_SLOT = DEFAULT_TARGET.state_bytes_per_slot
 # guaranteed and split between them: 16 requests are guaranteed 8K each.
 SHARED_CONTEXT = 32768
 # Snapshots the tree keeps for one cached conversation, which sizes the state slots' share of spare memory: its
-# resume point, prompt end and reply end. Set by the cache policy (docs/cache_design.md): 2 if it drops the
-# prompt-end copy where a message boundary puts the resume point next to the prompt end.
+# message boundary, its prompt's last chunk end and its reply end (the cache policy, docs/cache_design.md).
 CACHED_SNAPSHOTS = 3
 SHARED_REQUESTS = 4
 
@@ -124,20 +123,24 @@ class Ledger:
         extra_page_bytes: int = 0,
         state_bytes_per_slot: int | None = None,
         cached_prompt_tokens: int = SHARED_CONTEXT,
+        restore_slots: int = 0,
     ) -> Plan:
         """Size the pools from what is available now: everything but the floor and `future_bytes`, what Sharar
         allocates after the pools (the drafter, the SSD tier's staging, and `after_plan_bytes`: workspaces, CUDA
         graphs, the first prefill's allocations outside PyTorch, cached activations).
 
         Guarantees KV pages for one request at `context_len` or `max_running` requests at `SHARED_CONTEXT` (above
-        `SHARED_REQUESTS` requests, the same total split between them), whichever is more, and two committed state
-        slots per running request (its live state and at most one private snapshot, the prompt-end copy, plus the dummy
-        slot 0). The rest goes to
+        `SHARED_REQUESTS` requests, the same total split between them), whichever is more, and the startup slot floor:
+        two state slots per running request (its own slot and the snapshot its lock keeps), the dummy slot 0, and
+        `restore_slots`, what an SSD restore can lock beyond those (`ssd.RESTORE_SLOTS`). With that floor admission
+        never waits for a slot a running request holds, and private snapshots, which live only inside a prefill step,
+        take what is left. The rest goes to
         prefix-cache capacity. Admission budgets each request's actual tokens, so a long request and shorter ones share
         the pool and a request that does not fit waits.
 
         Prefix-cache capacity is split by what one cached conversation costs: its KV pages and the snapshots the tree
-        keeps for it (`CACHED_SNAPSHOTS`: its resume point, prompt end and reply end), at `cached_prompt_tokens` (32K)
+        keeps for it (`CACHED_SNAPSHOTS`: its message boundary, its prompt's last chunk end and its reply end), at
+        `cached_prompt_tokens` (32K)
         a conversation. With the 3-bit experts' INT8 state that is about 17% state slots and 83% KV pages; with FP32
         state about 34% state slots. `state_slot_target` stays a minimum (the 4-request profiles keep 96
         slots), and slots never take more than 60% of the spare memory. The KV pool has no token cap unless
@@ -152,9 +155,9 @@ class Ledger:
         shared = SHARED_CONTEXT * min(max_running, SHARED_REQUESTS) // max_running
         must_tokens = max(context_len, max_running * min(context_len, shared))
         must_kv = must_tokens * page_bytes
-        # per running request its live state and at most one private snapshot (the prompt-end copy), +1 dummy slot 0:
-        # with only one per request, warmup (four live requests and their snapshots) ran out of slots where memory was tight
-        must_slots = 2 * max_running + 1
+        # the slot floor: per running request its own slot and the snapshot its lock keeps, the dummy slot 0, and what an
+        # SSD restore can lock beyond those
+        must_slots = 2 * max_running + 1 + restore_slots
         must_state = must_slots * state_bytes_per_slot
         if budget < must_kv + must_state:
             raise MemoryError(
