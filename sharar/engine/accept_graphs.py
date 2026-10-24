@@ -72,10 +72,15 @@ class AcceptGraphs:
     def _static(self, b: int) -> dict:
         d, k, s = self.device, self.k, self.s
         pin = d.type == "cuda"
+        meta = torch.full((b, META), -1, dtype=torch.int64, device=d)
+        # rows as a padded row reads them (budget, start and ring slot 0, no stop ids) until a round fills them: the
+        # capture's eager warm-up runs the feedback on them, and a start or ring slot of -1 scatters the draft's K/V
+        # before the start of its cache
+        meta[:, :3] = 0
         return {
             "y": torch.zeros((b, k), dtype=torch.int64, device=d),
             "relax": torch.zeros((2, b), dtype=torch.float32, device=d),
-            "meta": torch.full((b, META), -1, dtype=torch.int64, device=d),
+            "meta": meta,
             "host_relax": torch.zeros((2, b), dtype=torch.float32, pin_memory=pin),
             "host_meta": torch.full((b, META), -1, dtype=torch.int64, pin_memory=pin),
             # y [k] | z [s] | accepted | count | flags [k]

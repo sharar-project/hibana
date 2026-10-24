@@ -91,7 +91,11 @@ class SpecDecoder:
                 from sharar.kernels.ssm_window import WindowState as Replay
             else:
                 from sharar.kernels.fla.accepted_state import AcceptedState as Replay
-            self.replay = Replay(executor.state_pool, n, self.steps, executor.target.linear_num_key_heads)
+            if Replay.__name__ == "AcceptedState":  # the commit replays with the arithmetic the model's verify uses
+                cuda = any(getattr(layer.mixer, "cuda_verify", False) for layer in getattr(executor.model, "layers", ()))
+                self.replay = Replay(executor.state_pool, n, self.steps, executor.target.linear_num_key_heads, cuda=cuda)
+            else:
+                self.replay = Replay(executor.state_pool, n, self.steps, executor.target.linear_num_key_heads)
             self.inter_ssm_all, self.inter_ssm = None, {}
         else:
             self.inter_ssm_all = torch.zeros((len(layer_ids), n, self.steps, *ssm_shape), dtype=torch.float32, device=self.device)

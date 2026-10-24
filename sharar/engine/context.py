@@ -55,6 +55,9 @@ class ForwardContext:
     # the 27B's verification over many rows a sequence: (qo_indptr, kv_indptr, kv_indices, splits), the graph's index
     # buffers (FlashInfer's plan fills them) for kernels/verify_attn_cuda.verify_attention; None: FlashInfer's
     verify_attention: tuple | None = None
+    # a prefill's prefix attention on kernels/csrc/verify_attn.cu (`prefix_attention`): its index buffers and splits; None:
+    # FlashInfer's planned paged prefill (`paged_prefill_wrapper`)
+    prefix_attention: tuple | None = None
     inter_ssm: dict = field(default_factory=dict)  # layer -> [num_scratch, steps, HV, V, K] fp32
     verify_conv_windows: dict = field(default_factory=dict)  # layer -> [max_batch, steps, dim, 3] bf16 buffer the layer fills
     verify_replay: dict = field(default_factory=dict)  # optional compact GDN recurrence inputs

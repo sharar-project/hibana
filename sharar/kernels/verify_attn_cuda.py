@@ -1,4 +1,5 @@
-"""The 27B's verify attention on SM121 over an NVFP4 KV cache (csrc/verify_attn.cu), compiled on first use."""
+"""The 27B's verify attention, and a prefill's attention to its cached prefix, on SM121 over an NVFP4 KV cache
+(csrc/verify_attn.cu), compiled on first use."""
 import functools
 import hashlib
 import os
@@ -28,4 +29,39 @@ def verify_attention(q, cache, scales, kv_indptr, kv_indices, qo_indptr, sm_scal
     lse = torch.empty((tokens, qh, splits), dtype=torch.float32, device=q.device)
     out = torch.empty_like(q) if out is None else out
     module().verify_attn(q, k, v, *scales, kv_indptr, kv_indices, qo_indptr, o, lse, out, sm_scale, splits)
+    return out
+
+
+PREFIX_ROWS = 128  # flattened (token, head) rows a prefix block takes (csrc/verify_attn.cu PREFIX_WARPS x 16)
+
+
+def prefix_plan(new_tokens: list[int], prefix_lens: list[int], kv_indices: torch.Tensor, heads: int, kv_heads: int,
+                sms: int) -> tuple:
+    """Device buffers for `prefix_attention` of a prefill's sequences (`new_tokens` rows each, `prefix_lens` cached pages
+    each, `kv_indices` the prefixes' pages laid end to end): (qo_indptr, kv_indptr, kv_indices, blocks, splits). Splits
+    of the prefix keep about two blocks a multiprocessor in flight."""
+    group = heads // kv_heads
+    qo, kv, blocks = [0], [0], []
+    for seq, (n, start) in enumerate(zip(new_tokens, prefix_lens)):
+        blocks += [(seq, r) for r in range(0, n * group, PREFIX_ROWS)] if start else []
+        qo.append(qo[-1] + n)
+        kv.append(kv[-1] + start)
+    splits = max(1, min(8, -(-2 * sms // max(1, len(blocks) * kv_heads)), -(-max(prefix_lens) // 256)))
+    d = kv_indices.device
+    as_dev = lambda x: torch.tensor(x, dtype=torch.int32).to(d, non_blocking=True)  # noqa: E731
+    return as_dev(qo), as_dev(kv), kv_indices.to(torch.int32), as_dev(blocks).reshape(-1, 2), splits
+
+
+def prefix_attention(q, cache, scales, plan, sm_scale: float, new_out=None, new_lse=None):
+    """A prefill's rows q [tokens, 24, 256] BF16 against their sequences' cached NVFP4 prefixes (`prefix_plan`), merged
+    with their own causal attention (`new_out` [tokens, 24, 256] BF16, `new_lse` [tokens, 24] base-2 log-sum-exp, as
+    FlashInfer's ragged prefill returns them) when given. Returns [tokens, 24, 256] BF16."""
+    qo_indptr, kv_indptr, kv_indices, blocks, splits = plan
+    k, v = cache
+    tokens, qh, d = q.shape
+    o = torch.empty((tokens, qh, splits, d), dtype=torch.float32, device=q.device)
+    lse = torch.full((tokens, qh, splits), float("-inf"), dtype=torch.float32, device=q.device)  # rows without a prefix
+    out = torch.empty_like(q)
+    module().prefix_attn(q, k, v, *scales, kv_indptr, kv_indices, qo_indptr, blocks, o, lse, out, sm_scale, splits,
+                         None if new_out is None else new_out.contiguous(), None if new_lse is None else new_lse.contiguous())
     return out

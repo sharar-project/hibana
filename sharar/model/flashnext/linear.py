@@ -72,7 +72,7 @@ class TrunkLinear:
         if self.w3 is None:
             return False
         from sharar.kernels import w3
-        return rows <= w3.MAX_ROWS
+        return rows <= w3.NARROW_ROWS  # Flash-Next's trunk keeps the narrow kernel's 64 rows (the wide kernel is the 27B's)
 
     def __call__(self, x: torch.Tensor, act: int = 0, amax_parts: torch.Tensor | None = None) -> torch.Tensor:
         """y = act(x) @ W^T. `act` (`flashnext_fused.ACT_*`) applies SiLU, or SiLU-mul to a [gate | up] input of

@@ -56,7 +56,7 @@ same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (defau
 | Draft checkpoint | the publisher's pinned draft | `sharar serve --draft DIR` or `SHARAR_DRAFT=/dir`: a DFlash2 checkpoint of the same architecture, trained on the served target's features |
 | Accepted state | reconstruction | `SHARAR_VERIFY_STATE` |
 | Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K; 4.5 GiB as NVFP4) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
-| Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:4,4:4`, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark), else `16:3`; Flash-Next DFlash2 `fast`: `2:7,4:7`, `throughput`: MTP's | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC` and `SHARAR_MAX_BATCH`, a limit between buckets verifying what the bucket it pads to does). The 3-bit copies serve calls of at most 64 rows, so wider verifications run the original weights |
+| Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:4,4:4`, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark), else `16:3`; Flash-Next DFlash2 `fast`: `2:7,4:7`, `throughput`: MTP's | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC` and `SHARAR_MAX_BATCH`, a limit between buckets verifying what the bucket it pads to does). The 3-bit copies serve calls of at most 128 rows on the 27B and 64 on Flash-Next, so wider verifications run the original weights |
 | Adaptive draft depth (MTP and DFlash2) | Flash-Next `fast` with MTP: on, 0.14 (0.2 on two Sparks); DFlash2: off | `SHARAR_SPEC_STEP_COST` (0 = the fixed depth): each request drafts as deep as its own recent acceptance pays for, up to the batch bucket's depth ([MTP](flashnext.md#the-mtp-draft), [DFlash2](flashnext.md#the-dflash2-draft)) |
 | Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext` | `sharar serve --port`, `SHARAR_PORT` / `SHARAR_SERVICE` |
 | Request traces | off | `sharar serve --traces` (in `$SHARAR_RESULTS/traces`) or `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
@@ -82,8 +82,11 @@ Verification of more than 8 rows a request (the 27B's graphs) runs a GB10 kernel
 [kernels/csrc/verify_attn.cu](../sharar/kernels/csrc/verify_attn.cu): one block a request, KV head and chunk of the
 context, the codes converted to FP16 once a tile in shared memory, both products on the FP16 tensor cores, the chunks
 merged by their log-sum-exps. At 16 rows it takes 1.3-1.55x less time than `fa2` over the same cache (1.9x with eight
-requests), at `fa2`'s precision or better against exact attention; up to 8 rows `fa2` is faster and serves.
-`SHARAR_VERIFY_ATTENTION=fa2` turns it off.
+requests), at `fa2`'s precision or better against exact attention; up to 8 rows `fa2` is faster and serves. Two warps
+of each block load and convert the tiles while six compute. A 27B prefill against a cached prefix of at least 1,024
+tokens runs the same tiles without the causal mask, 128 (token, head) rows a block, and merges the chunk's own causal
+attention (FlashInfer's ragged prefill) into its output: 1.6-1.7x less time than `fa2` and `merge_state` over 8-20K
+prefixes, so a 32K prompt prefills in 11.8 s instead of 14.0. `SHARAR_VERIFY_ATTENTION=fa2` turns both off.
 
 - **Speed.** Steady-state rounds of the 27B `fast` against `fa2` over NVFP4: 64K 77.6 against 83.0 ms with one request,
   137.7 against 155.6 ms with four (FP8 KV's 146.0); within 2% at 10K.
@@ -122,8 +125,8 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 
 Relaxed acceptance accepts a drafted token the target ranks within its top-k and within a logit margin of its
 argmax, so outputs are no longer the target's exact greedy continuation; a request can pin exact acceptance with
-`accept_top_k: 1` ([API](api.md)). The 3-bit copies (3.25 bits per weight, a tensor-core kernel for calls of at
-most 64 rows) cover the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resident) and Flash-Next's trunk and FP8 DFlash2 draft; Flash-Next's
+`accept_top_k: 1` ([API](api.md)). The 3-bit copies (3.25 bits per weight, tensor-core kernels for calls of at
+most 128 rows on the 27B, 64 on Flash-Next) cover the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resident) and Flash-Next's trunk and FP8 DFlash2 draft; Flash-Next's
 3-bit routed experts replace the NVFP4 ones at every row count (17 GiB less resident). The 27B's lm_head keeps its
 original format; Flash-Next's has a 3-bit copy, read by calls of at most 64 rows (decode, verify and DFlash2's draft
 projection). Speculative decoding itself, the Flash-Next 2-bit draft head, FP8/NVFP4

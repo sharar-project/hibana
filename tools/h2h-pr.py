@@ -89,9 +89,9 @@ URL = ""
 class Server:
     """`sharar serve <target> --<profile>` from one checkout, in its own process group; stopped with SIGTERM (Ctrl-C)."""
 
-    def __init__(self, tree: Path, target: str, profile: str, port: int, logfile: Path, env: dict):
+    def __init__(self, tree: Path, target: str, profile: str, port: int, logfile: Path, env: dict, tp: int = 1):
         self.cmd = [str(VENV / "bin" / "python"), "-u", "-m", "sharar", "serve", target, f"--{profile}", "--port", str(port),
-                    "--no-fetch"]
+                    "--no-fetch", "--tp", str(tp)]
         self.tree, self.logfile, self.env = tree, logfile, env
         self.proc = None
 
@@ -179,6 +179,7 @@ def main() -> int:
     ap.add_argument("--warmup-s", type=float, default=30.0)
     ap.add_argument("--duration-s", type=float, default=60.0)
     ap.add_argument("--port", type=int, default=30100)
+    ap.add_argument("--tp", type=int, choices=(1, 2), default=1, help="2: serve both arms on two Sparks")
     ap.add_argument("--evals", type=Path, default=Path(os.environ["SHARAR_EVALS"]) if os.environ.get("SHARAR_EVALS") else None,
                     help="a sharar-eval checkout to run instead of the eval extra (default: SHARAR_EVALS, else the extra)")
     ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
@@ -200,6 +201,9 @@ def main() -> int:
     run = results / "reviews" / f"{dt.date.today():%Y-%m-%d}-h2h-{args.name or refs['pr'][:12]}"
     trees = run / "trees"
     trees.mkdir(parents=True, exist_ok=True)
+    if args.tp == 2:  # `sharar serve --tp 2` mirrors each arm's checkout to the same path on the peer
+        from sharar.launch import tp
+        tp.ssh(tp.peer(env), f"mkdir -p {trees}", check=True)
     labels = {"base": f"{args.base} {refs['base'][:9]}", "pr": f"{args.pr} {refs['pr'][:9]}"}
     for arm, sha in refs.items():
         tree = trees / arm
@@ -225,7 +229,7 @@ def main() -> int:
                 ssd = run / f"{arm}-{profile}-r{rep}.ssd"
                 shutil.rmtree(ssd, ignore_errors=True)
                 with gpu_lock(lock, f"{arm} {profile} r{rep}"), Server(trees / arm, target, profile, args.port, run / f"{arm}-{profile}-r{rep}.server.log",
-                                                                       {**env, "SHARAR_SSD_DIR": str(ssd)}) as s:
+                                                                       {**env, "SHARAR_SSD_DIR": str(ssd)}, args.tp) as s:
                     (run / f"{arm}-{profile}-r{rep}.server.json").write_text(json.dumps(s.info, indent=1) + "\n")
                     log(f"{arm} ({labels[arm]}) {profile} r{rep}: serving")
                     hlog = run / f"{arm}-{profile}-r{rep}.h2h.log"
@@ -239,7 +243,7 @@ def main() -> int:
                 shutil.rmtree(ssd, ignore_errors=True)
                 done.touch()
                 log(f"{arm} {profile} r{rep}: done")
-    md = (f"**h2h, {target}, one Spark** ({args.repeats} repeat{'s' if args.repeats > 1 else ''}, base then PR): "
+    md = (f"**h2h, {target}, {'two Sparks' if args.tp == 2 else 'one Spark'}** ({args.repeats} repeat{'s' if args.repeats > 1 else ''}, base then PR): "
           f"base `{labels['base']}`, PR `{labels['pr']}`. tok/s: 1 request = median decode tok/s over h2h's {args.categories} "
           f"prompts (one at a time); more = aggregate tok/s of that many closed-loop streams over {args.duration_s:.0f} s after "
           f"{args.warmup_s:.0f} s. Thinking off, up to 1,024 tokens, natural stops; greedy / t07 = T 0.7 (top-p 0.95, top-k 20).\n\n"

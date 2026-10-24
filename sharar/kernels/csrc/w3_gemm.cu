@@ -161,6 +161,9 @@ __global__ void __launch_bounds__(kWarps * 32) w3_gemm_kernel(
   };
   load(c_begin, w[0], s[0]);
   if (c_begin + 1 < c_end) load(c_begin + 1, w[1], s[1]);
+  // programmatic dependent launch: the weights (constant) stream in while the producer of x finishes
+  asm volatile("griddepcontrol.wait;" ::: "memory");
+  asm volatile("griddepcontrol.launch_dependents;");
 
   for (int c = c_begin; c < c_end; c += 2) {
 #pragma unroll
@@ -328,17 +331,289 @@ __global__ void __launch_bounds__(256) quant_groups_kernel(const __nv_bfloat16* 
   quant_groups_row(x, out, scale, K, blockIdx.x);
 }
 
+// Launch with programmatic stream serialization: the kernel may start while the previous one in the stream runs, and
+// fences on it with `griddepcontrol.wait` before touching anything that kernel writes (the GEMMs read their constant
+// weights first). A kernel launched this way must execute griddepcontrol.wait.
+template <typename... Params, typename... Args>
+cudaError_t launch_dependent(void (*kernel)(Params...), dim3 grid, dim3 block, size_t smem, Args... args) {
+  cudaLaunchConfig_t config{};
+  config.gridDim = grid;
+  config.blockDim = block;
+  config.dynamicSmemBytes = smem;
+  config.stream = c10::cuda::getCurrentCUDAStream();
+  cudaLaunchAttribute attr[1];
+  attr[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+  attr[0].val.programmaticStreamSerializationAllowed = 1;
+  config.attrs = attr;
+  config.numAttrs = 1;
+  return cudaLaunchKernelEx(&config, kernel, static_cast<Params>(args)...);
+}
+
 template <int MT, bool XG, bool ROW_TILES = false, int P = 3>
 void launch(torch::Tensor y, torch::Tensor ws, torch::Tensor counters, torch::Tensor x, torch::Tensor x_scale, int x_scale_stride,
             torch::Tensor planes, torch::Tensor scales, torch::Tensor row_scale, uint32_t lut_lo, uint32_t lut_hi,
             int M, int N, int K, int splits) {
   const dim3 grid((N / kBlockRows) * (ROW_TILES ? 2 : 1), splits);
-  w3_gemm_kernel<MT, XG, ROW_TILES, P><<<grid, kWarps * 32, 0, c10::cuda::getCurrentCUDAStream()>>>(
+  C10_CUDA_CHECK(launch_dependent(w3_gemm_kernel<MT, XG, ROW_TILES, P>, grid, dim3(kWarps * 32), 0,
       reinterpret_cast<__nv_bfloat16*>(y.data_ptr()), static_cast<float*>(ws.data_ptr()), static_cast<int*>(counters.data_ptr()),
       static_cast<const uint8_t*>(x.data_ptr()), static_cast<const float*>(x_scale.data_ptr()), x_scale_stride,
       static_cast<const uint4*>(planes.data_ptr()), static_cast<const uint4*>(scales.data_ptr()),
-      static_cast<const float*>(row_scale.data_ptr()), lut_lo, lut_hi, M, N, K, (K / kChunk) / splits);
+      static_cast<const float*>(row_scale.data_ptr()), lut_lo, lut_hi, M, N, K, (K / kChunk) / splits));
 }
+
+// ------------------------------------------------------------------ wide calls (33 to 128 rows and beyond)
+//
+// The same arithmetic as `w3_gemm_kernel` with the activations staged in shared memory, for calls where the
+// narrow kernel's per-warp activation fragments (four row tiles from L1, re-read by every warp) limit it. A block
+// is WM x WN warps; warp (wm, wn) owns MT row tiles of 16 (rows wm*MT*16 ..) and the 32 output columns of weight
+// block blockIdx.x*WN + wn. Per 128-k chunk, cp.async stages the block's activation rows (16-byte units XOR-swizzled
+// by row, read by ldmatrix), its warps' plane and scale words and (XG) the activation group scales, STAGES chunks
+// in flight. Each 32-k group's product is scaled once in FP32 exactly as in `group`, in the same group order, so an
+// unsplit call gives the narrow kernel's unsplit bits. Calls with more rows than a block holds take several blocks
+// per column block, adjacent so the later ones read the weights from L2. Measured on GB10 (profiling/w3_bench.py,
+// weights cycled through more than L2 holds): the 27B's projections at 64 rows 48.6 ms a forward against 53.9 for
+// the narrow kernel, at 128 rows 60.7 against 83 for the NVFP4/FP8 weights.
+namespace wide {
+
+__device__ __forceinline__ void cp_async16(uint32_t dst, const void* src, bool valid) {
+  asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(dst), "l"(src), "r"(valid ? 16 : 0));
+}
+// weights are read once per launch: evict them from L2 first
+__device__ __forceinline__ void cp_async16_stream(uint32_t dst, const void* src) {
+  asm volatile("{\n .reg .b64 p;\n createpolicy.fractional.L2::evict_first.b64 p, 1.0;\n"
+               " cp.async.cg.shared.global.L2::cache_hint [%0], [%1], 16, p;\n}\n" :: "r"(dst), "l"(src));
+}
+__device__ __forceinline__ void cp_commit() { asm volatile("cp.async.commit_group;\n" ::); }
+template <int N> __device__ __forceinline__ void cp_wait() { asm volatile("cp.async.wait_group %0;\n" :: "n"(N)); }
+__device__ __forceinline__ void ldmatrix_x4(uint32_t (&r)[4], uint32_t addr) {
+  asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
+               : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(addr));
+}
+__device__ __forceinline__ uint4 lds128(uint32_t addr) {
+  uint4 v;
+  asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];\n" : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w) : "r"(addr));
+  return v;
+}
+__device__ __forceinline__ float lds32f(uint32_t addr) {
+  float v;
+  asm volatile("ld.shared.f32 %0, [%1];\n" : "=f"(v) : "r"(addr));
+  return v;
+}
+// `expand` with the sub-step at run time: the group loop stays rolled (unrolled, its live fragments spilled)
+__device__ __forceinline__ uint32_t expand_at(int s, uint32_t p0, uint32_t p1, uint32_t p2, uint32_t lo, uint32_t hi) {
+  const uint32_t r = rot(s);
+  return prmt(lo, hi, (rotr(p0, r) & 0x1111u) | (rotr(p1, r) & 0x2222u) | (rotr(p2, r) & 0x4444u));
+}
+
+constexpr int kWWords = 3 * 32 + kScaleWords;  // uint4 per 32-row weight block and chunk: planes, then scales
+
+template <int MT, int WM, int WN, bool XG>
+constexpr int stage_bytes() { return WM * MT * 16 * kChunk + WN * kWWords * 16 + (XG ? WM * MT * 16 * 16 : 0); }
+
+template <int MT, int WM, int WN, bool XG, int STAGES>
+__global__ void __launch_bounds__(WM * WN * 32, 1) w3_wide_kernel(
+    __nv_bfloat16* __restrict__ y, float* __restrict__ ws, int* __restrict__ counters,
+    const uint8_t* __restrict__ x, const float* __restrict__ x_scale, const int x_scale_stride,
+    const uint4* __restrict__ planes, const uint4* __restrict__ scales, const float* __restrict__ row_scale,
+    const uint32_t lut_lo, const uint32_t lut_hi, const int M_all, const int N, const int K, const int chunks_per_split) {
+  constexpr int BM = WM * MT * 16, kThreads = WM * WN * 32;
+  constexpr int kABytes = BM * kChunk, kWBytes = WN * kWWords * 16, kStage = stage_bytes<MT, WM, WN, XG>();
+  extern __shared__ __align__(128) uint8_t smem[];
+  const uint32_t sbase = static_cast<uint32_t>(__cvta_generic_to_shared(smem));
+
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
+  const int wm = warp / WN, wn = warp % WN;
+  const int KC = K / kChunk, G = K / 32;
+  const int c_begin = blockIdx.y * chunks_per_split, c_end = c_begin + chunks_per_split;
+  const int tiles = (M_all + BM - 1) / BM, row0 = (blockIdx.x % tiles) * BM, col_block = blockIdx.x / tiles;
+  const int M = min(BM, M_all - row0);
+  x += static_cast<size_t>(row0) * K;
+  x_scale += XG ? static_cast<size_t>(row0) * G : static_cast<size_t>(row0) * x_scale_stride;
+  y += static_cast<size_t>(row0) * N;
+  const int nb0 = col_block * WN;
+
+  auto load_w = [&](int c, int stage) {
+    const uint32_t st = sbase + stage * kStage;
+    for (int u = threadIdx.x; u < WN * kWWords; u += kThreads) {
+      const int b = u / kWWords, i = u % kWWords;
+      cp_async16_stream(st + kABytes + u * 16, i < 96 ? planes + (static_cast<size_t>(nb0 + b) * KC + c) * 96 + i
+                                                      : scales + (static_cast<size_t>(nb0 + b) * KC + c) * kScaleWords + (i - 96));
+    }
+  };
+  auto load_a = [&](int c, int stage) {
+    const uint32_t st = sbase + stage * kStage;
+    for (int u = threadIdx.x; u < BM * 8; u += kThreads) {
+      const int r = u >> 3, k16 = u & 7;
+      const bool ok = r < M;  // rows past the call read zeros
+      cp_async16(st + r * kChunk + ((k16 ^ (r & 7)) << 4), x + static_cast<size_t>(ok ? r : 0) * K + c * kChunk + k16 * 16, ok);
+    }
+    if (XG) {
+      for (int r = threadIdx.x; r < BM; r += kThreads) {
+        const bool ok = r < M;
+        cp_async16(st + kABytes + kWBytes + r * 16, x_scale + static_cast<size_t>(ok ? r : 0) * G + c * 4, ok);
+      }
+    }
+  };
+  auto load = [&](int c, int stage) {
+    load_a(c, stage);
+    load_w(c, stage);
+  };
+
+  float acc[MT][4][4];
+#pragma unroll
+  for (int mt = 0; mt < MT; ++mt)
+#pragma unroll
+    for (int nt = 0; nt < 4; ++nt)
+#pragma unroll
+      for (int i = 0; i < 4; ++i) acc[mt][nt][i] = 0.f;
+
+  // programmatic dependent launch: the first chunks' weights (constant) are in flight before the wait for the producer
+  // of x and its scales; the first commit group holds them all
+#pragma unroll
+  for (int s = 0; s < STAGES - 1; ++s)
+    if (c_begin + s < c_end) load_w(c_begin + s, s);
+  asm volatile("griddepcontrol.wait;" ::: "memory");
+  asm volatile("griddepcontrol.launch_dependents;");
+#pragma unroll
+  for (int s = 0; s < STAGES - 1; ++s) {
+    if (c_begin + s < c_end) load_a(c_begin + s, s);
+    cp_commit();
+  }
+  // ldmatrix: lanes 0-7 / 8-15 address rows 0-7 / 8-15 of a tile's first 16 bytes of the group, lanes 16-31 its second
+  const uint32_t a_row = (wm * MT * 16 + (lane & 7) + ((lane >> 3) & 1) * 8) * kChunk;
+  const int a_half = lane >> 4, xrow = wm * MT * 16 + g;
+
+  for (int c = c_begin; c < c_end; ++c) {
+    const int it = c - c_begin, stage = it % STAGES;
+    cp_wait<STAGES - 2>();
+    __syncthreads();
+    if (c + STAGES - 1 < c_end) load(c + STAGES - 1, (it + STAGES - 1) % STAGES);
+    cp_commit();
+    const uint32_t st = sbase + stage * kStage, wbase = st + kABytes + wn * kWWords * 16, xbase = st + kABytes + kWBytes;
+    uint32_t wd[12], sw[8];
+#pragma unroll
+    for (int i = 0; i < 3; ++i) {
+      const uint4 v = lds128(wbase + (i * 32 + lane) * 16);
+      wd[4 * i] = v.x; wd[4 * i + 1] = v.y; wd[4 * i + 2] = v.z; wd[4 * i + 3] = v.w;
+    }
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+      const uint4 v = lds128(wbase + (96 + 2 * t + i) * 16);
+      sw[4 * i] = v.x; sw[4 * i + 1] = v.y; sw[4 * i + 2] = v.z; sw[4 * i + 3] = v.w;
+    }
+#pragma unroll 1
+    for (int C = 0; C < 4; ++C) {
+      uint32_t b[4][2];
+      float s0[4], s1[4];
+#pragma unroll
+      for (int nt = 0; nt < 4; ++nt) {
+        b[nt][0] = expand_at(2 * C, wd[3 * nt], wd[3 * nt + 1], wd[3 * nt + 2], lut_lo, lut_hi);
+        b[nt][1] = expand_at(2 * C + 1, wd[3 * nt], wd[3 * nt + 1], wd[3 * nt + 2], lut_lo, lut_hi);
+        // scale bytes (nt * 4 + C) * 2 + {0, 1}: one E4M3 pair to FP16 in one conversion
+        const uint32_t pair = ((C >> 1 ? sw[nt * 2 + 1] : sw[nt * 2]) >> ((C & 1) * 16)) & 0xFFFFu;
+        uint32_t h2;
+        asm("cvt.rn.f16x2.e4m3x2 %0, %1;\n" : "=r"(h2) : "h"(static_cast<unsigned short>(pair)));
+        const float2 f = __half22float2(*reinterpret_cast<const __half2*>(&h2));
+        s0[nt] = f.x;
+        s1[nt] = f.y;
+      }
+#pragma unroll
+      for (int mt = 0; mt < MT; ++mt) {
+        uint32_t a[4];
+        ldmatrix_x4(a, st + a_row + mt * 16 * kChunk + (((2 * C + a_half) ^ (lane & 7)) << 4));
+        float xa = 1.f, xb = 1.f;
+        if (XG) {
+          xa = lds32f(xbase + ((xrow + mt * 16) * 4 + C) * 4);
+          xb = lds32f(xbase + ((xrow + mt * 16 + 8) * 4 + C) * 4);
+        }
+#pragma unroll
+        for (int nt = 0; nt < 4; ++nt) {
+          float d[4];
+          mma_e4m3(d, a, b[nt][0], b[nt][1]);
+          acc[mt][nt][0] = fmaf(d[0], s0[nt] * xa, acc[mt][nt][0]);
+          acc[mt][nt][1] = fmaf(d[1], s1[nt] * xa, acc[mt][nt][1]);
+          acc[mt][nt][2] = fmaf(d[2], s0[nt] * xb, acc[mt][nt][2]);
+          acc[mt][nt][3] = fmaf(d[3], s1[nt] * xb, acc[mt][nt][3]);
+        }
+      }
+    }
+  }
+  cp_wait<0>();
+
+  const int n_base = (nb0 + wn) * 32;
+  float rs[4][2];
+#pragma unroll
+  for (int nt = 0; nt < 4; ++nt) {
+    rs[nt][0] = row_scale[n_base + nt * 8 + 2 * t];
+    rs[nt][1] = row_scale[n_base + nt * 8 + 2 * t + 1];
+  }
+  const bool split = gridDim.y > 1;
+#pragma unroll
+  for (int mt = 0; mt < MT; ++mt) {
+#pragma unroll
+    for (int half = 0; half < 2; ++half) {
+      const int m = wm * MT * 16 + mt * 16 + g + half * 8;
+      if (m < M) {
+        const float xs = XG ? 1.f : x_scale[m * x_scale_stride];
+#pragma unroll
+        for (int nt = 0; nt < 4; ++nt) {
+          const int n = n_base + nt * 8 + 2 * t;
+          const float v0 = acc[mt][nt][2 * half] * rs[nt][0] * xs;
+          const float v1 = acc[mt][nt][2 * half + 1] * rs[nt][1] * xs;
+          if (split) {
+            __stcg(reinterpret_cast<float2*>(ws + (static_cast<size_t>(blockIdx.y) * M_all + row0 + m) * N + n), make_float2(v0, v1));
+          } else {
+            *reinterpret_cast<__nv_bfloat162*>(y + static_cast<size_t>(m) * N + n) = __floats2bfloat162_rn(v0, v1);
+          }
+        }
+      }
+    }
+  }
+  if (!split) return;
+  // the last split block of this (row tile, column block) sums the partials in split order
+  __shared__ int last;
+  __threadfence();
+  __syncthreads();
+  if (threadIdx.x == 0) last = atomicAdd(counters + blockIdx.x, 1) == static_cast<int>(gridDim.y) - 1;
+  __syncthreads();
+  if (!last) return;
+  __threadfence();
+  constexpr int BN = WN * 32;
+  const int col0 = col_block * BN;
+  for (int idx = threadIdx.x; idx < M * (BN / 2); idx += kThreads) {
+    const int m = idx / (BN / 2), n = col0 + (idx % (BN / 2)) * 2;
+    float2 sum = make_float2(0.f, 0.f);
+    for (int sp = 0; sp < static_cast<int>(gridDim.y); ++sp) {
+      const float2 v = __ldcg(reinterpret_cast<const float2*>(ws + (static_cast<size_t>(sp) * M_all + row0 + m) * N + n));
+      sum.x += v.x;
+      sum.y += v.y;
+    }
+    *reinterpret_cast<__nv_bfloat162*>(y + static_cast<size_t>(m) * N + n) = __floats2bfloat162_rn(sum.x, sum.y);
+  }
+  if (threadIdx.x == 0) counters[blockIdx.x] = 0;
+}
+
+template <int MT, int WM, int WN, int STAGES, bool XG>
+void launch(torch::Tensor y, torch::Tensor ws, torch::Tensor counters, torch::Tensor x, torch::Tensor x_scale, int x_scale_stride,
+            torch::Tensor planes, torch::Tensor scales, torch::Tensor row_scale, uint32_t lut_lo, uint32_t lut_hi,
+            int M, int N, int K, int splits) {
+  constexpr int BM = WM * MT * 16, smem = STAGES * stage_bytes<MT, WM, WN, XG>();
+  static_assert(smem <= 101376, "more shared memory than an SM120 block may use");
+  auto kernel = w3_wide_kernel<MT, WM, WN, XG, STAGES>;
+  static const bool sized = [&] {  // once per instantiation, before any graph capture
+    C10_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
+    return true;
+  }();
+  (void)sized;
+  const dim3 grid(N / (WN * 32) * ((M + BM - 1) / BM), splits);
+  C10_CUDA_CHECK(launch_dependent(kernel, grid, dim3(WM * WN * 32), smem,
+      reinterpret_cast<__nv_bfloat16*>(y.data_ptr()), static_cast<float*>(ws.data_ptr()), static_cast<int*>(counters.data_ptr()),
+      static_cast<const uint8_t*>(x.data_ptr()), static_cast<const float*>(x_scale.data_ptr()), x_scale_stride,
+      static_cast<const uint4*>(planes.data_ptr()), static_cast<const uint4*>(scales.data_ptr()),
+      static_cast<const float*>(row_scale.data_ptr()), lut_lo, lut_hi, M, N, K, (K / kChunk) / splits));
+}
+
+}  // namespace wide
 
 // ------------------------------------------------------------------ three-bit routed experts (Flash-Next)
 //
@@ -1001,9 +1276,41 @@ torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, 
   return out;
 }
 
+// The wide kernel; `config` = MT * 1000 + WM * 100 + WN * 10 + STAGES (sharar/kernels/w3.py WIDE).
+torch::Tensor w3_gemm_wide(torch::Tensor x, torch::Tensor x_scale, torch::Tensor planes, torch::Tensor scales, torch::Tensor row_scale,
+                           int64_t lut, int64_t config, int64_t splits, torch::Tensor ws, torch::Tensor counters) {
+  TORCH_CHECK(x.is_cuda() && x.dtype() == at::kFloat8_e4m3fn && x.is_contiguous(), "x must be a contiguous e4m3 CUDA matrix");
+  TORCH_CHECK(x_scale.dtype() == at::kFloat && x_scale.is_contiguous() && row_scale.dtype() == at::kFloat, "scales must be contiguous fp32");
+  TORCH_CHECK(planes.dtype() == at::kUInt32 && scales.dtype() == at::kByte && ws.dtype() == at::kFloat && counters.dtype() == at::kInt);
+  const int M = x.size(0), K = x.size(1), N = row_scale.size(0);
+  TORCH_CHECK(M >= 1 && N % kBlockRows == 0 && K % kChunk == 0, "N must be a multiple of 128 and K of 128");
+  TORCH_CHECK(planes.numel() == static_cast<int64_t>(N / 32) * (K / kChunk) * kPlaneWords * 4, "the wide kernel takes three-bit planes");
+  TORCH_CHECK(scales.numel() == static_cast<int64_t>(N / 32) * (K / kChunk) * kScaleWords * 16, "scales layout mismatch");
+  TORCH_CHECK(splits >= 1 && (K / kChunk) % splits == 0, "splits must divide the chunk count");
+  const bool grouped = x_scale.numel() == static_cast<int64_t>(M) * (K / 32) && K > 32;
+  const int x_scale_stride = x_scale.numel() == 1 ? 0 : 1;
+  TORCH_CHECK(grouped || x_scale_stride == 0 || x_scale.numel() == M, "x_scale must be a scalar, one per row or one per row and 32-group");
+  auto y = torch::empty({M, N}, x.options().dtype(at::kBFloat16));
+  const uint32_t lut_lo = static_cast<uint32_t>(lut & 0xFFFFFFFFu), lut_hi = static_cast<uint32_t>(static_cast<uint64_t>(lut) >> 32);
+#define W3_WIDE(MT, WM, WN, ST) if (config == MT * 1000 + WM * 100 + WN * 10 + ST) { \
+    const int bm = WM * MT * 16, bn = WN * 32; \
+    TORCH_CHECK(N % bn == 0, "N must be a multiple of the block's columns"); \
+    TORCH_CHECK(splits == 1 || (ws.numel() >= splits * static_cast<int64_t>(M) * N && \
+                                counters.numel() >= static_cast<int64_t>(N / bn) * ((M + bm - 1) / bm)), "workspace too small"); \
+    if (grouped) wide::launch<MT, WM, WN, ST, true>(y, ws, counters, x, x_scale, x_scale_stride, planes, scales, row_scale, lut_lo, lut_hi, M, N, K, static_cast<int>(splits)); \
+    else wide::launch<MT, WM, WN, ST, false>(y, ws, counters, x, x_scale, x_scale_stride, planes, scales, row_scale, lut_lo, lut_hi, M, N, K, static_cast<int>(splits)); \
+    return y; }
+  W3_WIDE(2, 1, 4, 4) W3_WIDE(2, 2, 4, 4) W3_WIDE(4, 1, 2, 4) W3_WIDE(4, 1, 4, 2) W3_WIDE(4, 1, 4, 3) W3_WIDE(4, 1, 4, 4)
+  W3_WIDE(4, 2, 4, 3) W3_WIDE(8, 1, 4, 4) W3_WIDE(8, 1, 8, 3)
+#undef W3_WIDE
+  TORCH_CHECK(false, "unknown wide configuration ", config);
+  return y;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("w3_moe", &w3_moe, "routed experts in the 3-bit format, any row count (SM120/121)");
   m.def("quant_groups", &quant_groups, "per-(row, 32-group) e4m3 quantization of a bf16 matrix");
   m.def("w3_gemm", &w3_gemm, "3-bit (or 2-bit) weight, e4m3 activation tensor-core GEMM for M <= 64 (SM120/121)");
+  m.def("w3_gemm_wide", &w3_gemm_wide, "the 3-bit GEMM with activations staged in shared memory, any M (SM120/121)");
   m.def("quant_rows", &quant_rows, "per-row e4m3 quantization of a bf16 matrix");
 }

@@ -61,10 +61,11 @@ def reconstruct(initial, raw_k, raw_v, gates, betas, slots, counts, out=None):
 class AcceptedState:
     """One bounded verify window, independent of cache capacity or proposer."""
 
-    def __init__(self, pool, batch, steps, key_heads):
+    def __init__(self, pool, batch, steps, key_heads, cuda: bool = False):
         layers, _, hv, v, k = pool.ssm_all.shape
         device = pool.ssm_all.device
         self.batch, self.steps = batch, steps
+        self.cuda = cuda  # the model's GDN layers verify with kernels/gdn_verify.py: commit with its replay
         self.raw_k = torch.empty((layers, batch, key_heads, steps, k), dtype=torch.bfloat16, device=device)
         self.raw_v = torch.empty((layers, batch, hv, steps, v), dtype=torch.bfloat16, device=device)
         self.gates = torch.empty((layers, batch, hv, steps), dtype=torch.float32, device=device)
@@ -78,5 +79,10 @@ class AcceptedState:
         return sum(t.numel() * t.element_size() for t in (self.raw_k, self.raw_v, self.gates, self.betas))
 
     def run(self, pool, slots, counts):
-        """Write only StateManager-authorized committed slots, on the caller's stream."""
-        reconstruct(pool.ssm_all, self.raw_k, self.raw_v, self.gates, self.betas, slots, counts)
+        """Write only StateManager-authorized committed slots, on the caller's stream, with the arithmetic of the verify
+        recurrence that filled the ring (`model/gdn.py`: the CUDA kernel where the model uses it)."""
+        from sharar.kernels import gdn_verify
+        if self.cuda and gdn_verify.supports(self.raw_k, self.raw_v, pool.ssm_all):
+            gdn_verify.commit(pool.ssm_all, self.raw_k, self.raw_v, self.gates, self.betas, slots, counts)
+        else:
+            reconstruct(pool.ssm_all, self.raw_k, self.raw_v, self.gates, self.betas, slots, counts)

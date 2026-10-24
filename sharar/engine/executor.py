@@ -31,6 +31,8 @@ from sharar.cache.state_pool import StatePool
 if TYPE_CHECKING:
     from sharar.model.qwen38 import Qwen38
 
+PREFIX_ATTENTION_MIN = 1024  # cached prefix pages from which a 27B prefill's prefix attention runs verify_attn.cu
+
 
 @dataclass
 class PrefillBatch:
@@ -424,6 +426,20 @@ class Executor:
         self.state.forget(req.prefill_ids)
 
     # ---- steps ----
+    def _prefix_attention(self, new_tokens: list[int], prefix_lens: list[int], kv_indices: torch.Tensor) -> tuple | None:
+        """The 27B's prefill against an NVFP4 prefix of at least PREFIX_ATTENTION_MIN pages on kernels/csrc/verify_attn.cu
+        (2,048 rows: 1.6x FlashInfer's fa2 and merge over an 8K prefix, 1.7x over 20K; below 1K pages fa2 is as fast):
+        its plan, or None for FlashInfer."""
+        from sharar.engine.config import current
+        pool = self.kv_pool
+        if (current().verify_attention != "auto" or self.extras is not None or max(prefix_lens) < PREFIX_ATTENTION_MIN
+                or not getattr(pool, "nvfp4", False) or (pool.num_kv_heads, pool.head_dim) != (4, 256)
+                or self.target.num_attention_heads != 24):
+            return None
+        from sharar.kernels.verify_attn_cuda import prefix_plan
+        sms = torch.cuda.get_device_properties(self.device).multi_processor_count
+        return prefix_plan(new_tokens, prefix_lens, kv_indices, self.target.num_attention_heads, pool.num_kv_heads, sms)
+
     def _plan_paged_prefill(self, prefix_pages: torch.Tensor, new_tokens: int) -> None:
         # Host index pointers: FlashInfer's plan() reads them on the CPU, so
         # device tensors would cost a synchronization per plan.
@@ -530,8 +546,10 @@ class Executor:
             prefix_pages=req.pages[:start] if start else None,
         )
         if start:
-            self._plan_paged_prefill(req.pages[:start], t)
-            ctx.paged_prefill_wrapper = self._paged_prefill
+            ctx.prefix_attention = self._prefix_attention([t], [start], req.pages[:start])
+            if ctx.prefix_attention is None:
+                self._plan_paged_prefill(req.pages[:start], t)
+                ctx.paged_prefill_wrapper = self._paged_prefill
         for _, pos, slot in self.state.prefill_checkpoints([(req, self._checkpoint_positions(req, start, end))]):
             if pos < end:  # inside the forward: the kernels write it (the chunk's end is copied after the forward)
                 ctx.checkpoint_positions.append(pos)
@@ -581,9 +599,11 @@ class Executor:
             checkpoint_seqs=[i for i, _, _ in checkpoints],
         )
         if any(prefix_lens):
-            self.attention.paged_prefill(self._paged_prefill, torch.tensor(cu, dtype=torch.int32), torch.tensor(kv_indptr, dtype=torch.int32),
-                                         torch.cat(kv_indices), torch.ones(len(chunks), dtype=torch.int32), causal=False)
-            ctx.paged_prefill_wrapper = self._paged_prefill
+            ctx.prefix_attention = self._prefix_attention(seq_lens, prefix_lens, torch.cat(kv_indices))
+            if ctx.prefix_attention is None:
+                self.attention.paged_prefill(self._paged_prefill, torch.tensor(cu, dtype=torch.int32), torch.tensor(kv_indptr, dtype=torch.int32),
+                                             torch.cat(kv_indices), torch.ones(len(chunks), dtype=torch.int32), causal=False)
+                ctx.paged_prefill_wrapper = self._paged_prefill
         ids = upload(ids_list, torch.int64, d)
         if self._features_wanted() is not None:
             ctx.feature_request = self._features_wanted()
