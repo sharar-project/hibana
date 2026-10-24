@@ -8,6 +8,7 @@ from sharar.cache.ledger import CACHED_SNAPSHOTS, GIB, SHARED_CONTEXT, Ledger
 from sharar.target import DEFAULT_TARGET
 
 FLOOR = ledger_mod.host_floor_bytes()  # the host floor the plans leave (SHARAR_HOST_FLOOR_GIB)
+LEFT = FLOOR + ledger_mod.PLAN_SLACK_BYTES  # what a plan leaves unplanned: the floor and the slack for later reads
 
 
 def test_profile_accepts_the_native_context_and_nothing_beyond():
@@ -25,11 +26,11 @@ def plan(monkeypatch, context_len, available_gib=90):
 
 def test_default_profile_plan(monkeypatch):
     # The 32K profile guarantees four full requests (and two slots each, plus the dummy); everything but the floor
-    # goes to the pools (nothing is allocated after them here), split by what a cached 32K prompt costs (its pages and
+    # (and the slack) goes to the pools (nothing is allocated after them here), split by what a cached 32K prompt costs (its pages and
     # two snapshots), with 96 slots at least; pages take the rest, uncapped.
     kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
     got = plan(monkeypatch, 32768)
-    budget = 90 * GIB - FLOOR
+    budget = 90 * GIB - LEFT
     must = 4 * 32768 * kv
     spare = budget - must - 9 * state
     share = CACHED_SNAPSHOTS * state / (CACHED_SNAPSHOTS * state + SHARED_CONTEXT * kv)
@@ -85,7 +86,7 @@ def test_long_context_guarantees_one_request_not_four(monkeypatch):
     assert got.kv_tokens >= MAX_CONTEXT
     # Four full 262K requests (32 GiB of KV) would not be required up front.
     assert 4 * MAX_CONTEXT * DEFAULT_TARGET.kv_bytes_per_token > 30 * GIB
-    tight = plan(monkeypatch, MAX_CONTEXT, available_gib=FLOOR // GIB + 16)
+    tight = plan(monkeypatch, MAX_CONTEXT, available_gib=LEFT / GIB + 16)
     assert tight.kv_tokens >= MAX_CONTEXT
 
 
@@ -93,7 +94,7 @@ def test_intermediate_contexts_guarantee_the_larger_of_the_two(monkeypatch):
     kv = DEFAULT_TARGET.kv_bytes_per_token
     assert plan(monkeypatch, 65536).kv_tokens >= max(65536, 4 * SHARED_CONTEXT)
     with pytest.raises(MemoryError):
-        plan(monkeypatch, MAX_CONTEXT, available_gib=FLOOR // GIB + (MAX_CONTEXT * kv) // GIB - 1)
+        plan(monkeypatch, MAX_CONTEXT, available_gib=LEFT / GIB + (MAX_CONTEXT * kv) // GIB - 1)
 
 
 def test_wide_batches_split_the_shared_guarantee(monkeypatch):
@@ -112,7 +113,7 @@ def test_a_tight_budget_gives_the_caches_all_that_is_left(monkeypatch):
     allocated after the pools counted, there is no margin to take, and the caches get all of it."""
     kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
     must = 4 * 32768 * kv + 9 * state
-    available = FLOOR + must + 3 * GIB  # 3 GiB left after the guarantees
+    available = LEFT + must + 3 * GIB  # 3 GiB left after the guarantees
     got = plan(monkeypatch, 32768, available_gib=available / GIB)
     assert got.state_slots == min(96, 9 + int(3 * GIB * 0.6) // state) > 9
 
@@ -122,6 +123,6 @@ def test_the_guaranteed_slots_cover_each_request_and_its_prompt_end_snapshot(mon
     requests with a snapshot each), so a start that fits works, and one that does not fails at planning."""
     kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
     must = 4 * 32768 * kv + 9 * state
-    assert plan(monkeypatch, 32768, available_gib=(FLOOR + must) / GIB).state_slots == 9
+    assert plan(monkeypatch, 32768, available_gib=(LEFT + must) / GIB).state_slots == 9
     with pytest.raises(MemoryError):
-        plan(monkeypatch, 32768, available_gib=(FLOOR + must - 2 * state) / GIB)
+        plan(monkeypatch, 32768, available_gib=(LEFT + must - 2 * state) / GIB)
