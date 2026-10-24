@@ -120,8 +120,18 @@ class Target:
     @property
     def kv_bytes_per_token(self) -> int:
         kv = 2 * self.num_kv_heads * self.head_dim * self.kv_bytes_per_element * len(self.attention_layer_ids)
-        # A sparse-attention indexer keeps a raw and a compressed BF16 index key per token and layer.
-        return kv + (2 * self.indexer_head_dim * 2 * len(self.attention_layer_ids) if self.indexer_budget else 0)
+        return kv + self.index_bytes_per_token
+
+    @property
+    def nvfp4_kv_bytes_per_token(self) -> int:
+        """`kv_bytes_per_token` with K and V as NVFP4 (`SHARAR_KV_FORMAT=nvfp4`): half a byte a value and an E4M3 scale
+        per 16, 9/16 of FP8's; the index keys stay BF16."""
+        return 2 * self.num_kv_heads * self.head_dim * 9 // 16 * len(self.attention_layer_ids) + self.index_bytes_per_token
+
+    @property
+    def index_bytes_per_token(self) -> int:
+        """A sparse-attention indexer keeps a raw and a compressed BF16 index key per token and layer."""
+        return 2 * self.indexer_head_dim * 2 * len(self.attention_layer_ids) if self.indexer_budget else 0
 
     @property
     def conv_dim(self) -> int:

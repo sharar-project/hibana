@@ -60,7 +60,8 @@ prompt's first prefill chunk starts reading the rows of the rest of the prompt i
 `indexer.py` implements Qwen Sparse Attention: every token's raw index key and each completed group's compressed
 key live in its KV page (`KvPool.page_aux`, so they follow pages through the prefix cache and the
 SSD tier). A row past the budget scores the visible groups, keeps the top 512 plus its pending tail and
-attends over those pages through the vendored sparse kernel (`kernels/qsa/attention.py`). Below the budget the dense path
+attends over those pages through the vendored sparse kernel (`kernels/qsa/attention.py`; an NVFP4 KV pool through
+its NVFP4 variant, [operations.md](operations.md#nvfp4-kv)). Below the budget the dense path
 runs unchanged.
 
 Decode and verification replay CUDA graphs at every context length. Inside the budget the dense graphs run with

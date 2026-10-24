@@ -83,23 +83,24 @@ class Executor:
         if type(num_pages) is not int or num_pages < 2 or type(num_slots) is not int or num_slots < 2:
             raise ValueError("pools need at least one usable entry plus the reserved dummy entry")
         kv_dtype, rounding, nvfp4 = KV_DTYPE, None, False
+        kv_token_bytes = self.target.kv_bytes_per_token
         if cfg.kv_format == "nvfp4":
-            # 4.5 bits a value (codes and scales) where FP8 takes 8: the same memory holds 16/9 the tokens
-            if self.target.name != "qwen38":
-                raise ValueError("SHARAR_KV_FORMAT=nvfp4 serves the 27B (Flash-Next's sparse attention reads FP8)")
+            # 4.5 bits a value (codes and scales) where FP8 takes 8: the memory planned for FP8 pages holds more of
+            # them (the 27B 16/9; Flash-Next ~1.4, its BF16 index keys unchanged)
             nvfp4 = True
+            kv_token_bytes = self.target.nvfp4_kv_bytes_per_token
             if planned_pages and not cfg.kv_pool_tokens:
-                num_pages = num_pages * 16 // 9
+                num_pages = num_pages * (self.target.kv_bytes_per_token + extra_page) // (kv_token_bytes + extra_page)
         elif cfg.kv_format != "fp8":
             # An accuracy screen: a BF16 pool whose writes round through the screened format, in the FP8 pool's memory
             from sharar.kernels.kv_fp4 import SIMULATED
             if cfg.kv_format not in SIMULATED:
                 raise ValueError(f"SHARAR_KV_FORMAT must be fp8 or one of {', '.join(SIMULATED)}")
-            if self.target.name != "qwen38" or cfg.ssd:
-                raise ValueError("a simulated KV format screens the 27B without the SSD tier (SHARAR_SSD=0)")
+            if cfg.ssd:
+                raise ValueError("a simulated KV format screens a target without the SSD tier (SHARAR_SSD=0)")
             kv_dtype, rounding, num_pages = torch.bfloat16, SIMULATED[cfg.kv_format], num_pages // 2
+            kv_token_bytes *= kv_dtype.itemsize
         from sharar.cache.ledger import check_load_headroom
-        kv_token_bytes = self.target.kv_bytes_per_token * 9 // 16 if nvfp4 else self.target.kv_bytes_per_token * kv_dtype.itemsize
         check_load_headroom(num_pages * (kv_token_bytes + extra_page) + num_slots * state_bytes + future + 8 * 2**30)
         # One write-only page per padded graph row: the widest bucket's padding times the widest verify block any
         # proposer may use (speculation can be enabled after construction).

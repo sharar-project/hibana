@@ -21,6 +21,7 @@ def test_default_target_matches_the_pinned_constants():
 def test_derived_bytes_match_the_ledger_and_pool_constants():
     t = QWEN38
     assert t.kv_bytes_per_token == ledger.KV_BYTES_PER_TOKEN == 2 * 4 * 256 * 16
+    assert t.nvfp4_kv_bytes_per_token * 16 == t.kv_bytes_per_token * 9  # codes and scales: 4.5 bits a value
     assert t.state_bytes_per_slot == ledger.STATE_BYTES_PER_SLOT
     assert (t.conv_dim, t.conv_state_len) == (state_pool.CONV_DIM, state_pool.CONV_STATE_LEN) == (10240, 3)
     # The production server reports these verify buffers for k=15 at batch four.
@@ -42,5 +43,6 @@ def test_flashnext_target_geometry():
     assert len(t.attention_layer_ids) == 12 and len(t.gdn_layer_ids) == 36 and t.attention_layer_ids[:2] == [3, 7]
     assert (t.conv_dim, t.conv_state_len) == (QWEN38.conv_dim, QWEN38.conv_state_len)  # the GDN geometry is the 27B's
     assert t.kv_bytes_per_token == 2 * 2 * 256 * 12 + 2 * 128 * 2 * 12 and t.rotary_dim == 64  # FP8 K/V plus BF16 raw and compressed index keys
+    assert t.nvfp4_kv_bytes_per_token == 2 * 2 * 256 * 12 * 9 // 16 + 2 * 128 * 2 * 12  # the index keys stay BF16
     assert (t.num_experts, t.experts_per_token, t.moe_intermediate_size) == (512, 10, 640)
     assert t.ple_layer_ids == (2,) and t.hc_count == 4 and t.indexer_budget == 2048

@@ -95,11 +95,11 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
         elif profile == "fast":  # adaptive depth: h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
             # two Sparks: 0.14 drafted chat and prose too deep (-12%, -7% against depth 4); 0.2 keeps them within noise
             p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14" if tp == 1 else "0.2", SHARAR_SPEC_DEPTHS="2:4,4:4")
-    if not flashnext and profile != "exact" and tp == 1:
-        # NVFP4 KV (cache/kv_pool.py): 4.5 bits a value where FP8 takes 8, so the same memory holds 16/9 the tokens
-        # (long contexts and concurrent requests, more cached prefixes, 44% fewer bytes read back from the SSD).
-        # Decode and verify within 1% of FP8 at 10K, 6% slower at 64K with 4 requests (fa2 unpacks the codes);
-        # teacher-forced at 32K-96K its divergence from BF16 KV is 1.6x FP8's, flat along the generation.
+    if profile != "exact" and tp == 1:
+        # NVFP4 KV (cache/kv_pool.py): 4.5 bits a value where FP8 takes 8, so the same memory holds more tokens (the
+        # 27B 16/9, Flash-Next ~1.4 beside its BF16 index keys): long contexts and concurrent requests, more cached
+        # prefixes, fewer bytes read back from the SSD. The 27B: teacher-forced at 32K-96K its divergence from BF16
+        # KV is 1.6x FP8's; rounds within 2% of FP8 at 10K and 6% faster at 64K with 4 requests (verify_attn.cu).
         p["SHARAR_KV_FORMAT"] = "nvfp4"
     if profile == "throughput":
         p["SHARAR_MAX_BATCH"] = ("128" if flashnext_experts == "w3" else "64") if flashnext else "16"
@@ -311,7 +311,6 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     kv_format = values.get("SHARAR_KV_FORMAT", "fp8")
     _check(kv_format in ("fp8", "nvfp4", "sim-fp4", "sim-k8v4", "sim-bf16"),
            "SHARAR_KV_FORMAT must be fp8 or nvfp4 (sim-fp4, sim-k8v4, sim-bf16: the accuracy screen)")
-    _check(kv_format == "fp8" or name != "flashnext", "SHARAR_KV_FORMAT=nvfp4 serves the 27B: Flash-Next's sparse attention reads FP8")
     _check(kv_format == "fp8" or tp == 1, "SHARAR_KV_FORMAT=nvfp4 is unmeasured on two Sparks: serve FP8 KV tensor-parallel")
     _check(values.get("SHARAR_DRAFT_VOCAB", "0").isdigit(), "SHARAR_DRAFT_VOCAB must be a row count (0 = the full lm_head)")
     _check(values.get("SHARAR_SSD", "0") in ("0", "1"), "SHARAR_SSD must be 0 or 1")
