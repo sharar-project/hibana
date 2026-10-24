@@ -131,7 +131,7 @@ class RadixCache:
         self.root = Node(key=[], pages=torch.empty(0, dtype=torch.int32, device=device), parent=None)
         self._locks: dict[TreeLock, None] = {}  # every live lock, in the order taken
         # The evictable totals and candidates (dicts as ordered sets: every rank iterates them alike).
-        self._evictable_tokens = self._protected_tokens = 0  # L1 KV tokens with lock_ref == 0 / > 0
+        self._evictable_tokens = 0  # L1 KV tokens with lock_ref == 0 (the rest of `cached_tokens` is protected)
         self._protected_snapshots = 0  # L1 snapshots with state_lock_ref > 0
         self._spare_snapshots = 0  # L1 snapshots marked spare (for `stats`, every engine step: no walk)
         self.evictable_leaves: dict[Node, None] = {}  # L1 nodes with lock_ref 0 and no L1 child: KV pressure's candidates
@@ -191,9 +191,7 @@ class RadixCache:
             for n in used:
                 n.last_access = now
             best_node.snapshot.last_access = now
-            if best_node.snapshot.spare:  # a request needs it after all
-                best_node.snapshot.spare = False
-                self._spare_snapshots -= 1
+            self._unspare(best_node.snapshot)  # a request needs it after all
             self.hits += 1
         return Match(best_len, pages, best_node.snapshot, best_node, raw, branching)
 
@@ -328,7 +326,6 @@ class RadixCache:
             if node.lock_ref == 0:
                 if node.in_l1:
                     self._evictable_tokens -= len(node.key)
-                    self._protected_tokens += len(node.key)
                 self.evictable_leaves.pop(node, None)
             node.lock_ref += 1
             node = node.parent
@@ -344,7 +341,6 @@ class RadixCache:
             assert node.lock_ref >= 0, "unbalanced lock"
             if node.lock_ref == 0:
                 if node.in_l1:
-                    self._protected_tokens -= len(node.key)
                     self._evictable_tokens += len(node.key)
                 self._update_leaf(node)
             node = node.parent
@@ -355,7 +351,7 @@ class RadixCache:
         return self._evictable_tokens
 
     def protected_size(self) -> int:
-        return self._protected_tokens
+        return self.cached_tokens - self._evictable_tokens
 
     def state_evictable_size(self) -> int:
         """L1 snapshots no lock sits on: slot pressure can free each one's slot."""
@@ -381,9 +377,7 @@ class RadixCache:
         """A new node, or an SSD-only one promoted, now holds pages."""
         n = len(node.key)
         self.cached_tokens += n
-        if node.lock_ref:
-            self._protected_tokens += n
-        else:
+        if not node.lock_ref:
             self._evictable_tokens += n
         self.evictable_leaves.pop(node.parent, None)
         self._update_leaf(node)
@@ -408,6 +402,12 @@ class RadixCache:
             else:
                 del self.evictable_snapshots[node]
         return snap
+
+    def _unspare(self, snap: Snapshot) -> None:
+        """A snapshot a request needs is no longer spare."""
+        if snap.spare:
+            snap.spare = False
+            self._spare_snapshots -= 1
 
     def _free_slot(self, snap: Snapshot) -> None:
         """Give a snapshot's slot back (after the SSD tier's copies that may read it) and mark it dead."""
@@ -481,9 +481,8 @@ class RadixCache:
                     self._set_snapshot(node, snap)
                 else:  # a duplicate: the tree keeps its own, which another request may be reading
                     old = node.snapshot
-                    if old.spare and not snap.spare:
-                        old.spare = False
-                        self._spare_snapshots -= 1
+                    if not snap.spare:
+                        self._unspare(old)
                     old.last_access = max(old.last_access, snap.last_access)
                     if snap in self.branching:
                         self.branching.add(old)
@@ -784,8 +783,8 @@ class RadixCache:
             if not self.flushing:
                 assert n in pending or not self._dead(n), ("dead KV left in the tree", n.depth)
         assert all(n in seen for n in locked), "a lock on a node that left the tree"
-        assert (evictable, protected) == (self._evictable_tokens, self._protected_tokens), \
-            ("KV totals out of date", evictable, protected, self._evictable_tokens, self._protected_tokens)
+        assert (evictable, protected) == (self._evictable_tokens, self.protected_size()), \
+            ("KV totals out of date", evictable, protected, self._evictable_tokens, self.protected_size())
         assert evictable + protected == self.cached_tokens, ("cached_tokens out of date", self.cached_tokens)
         assert leaves == set(self.evictable_leaves), "evictable_leaves out of date"
         assert unlocked_snaps == set(self.evictable_snapshots), "evictable_snapshots out of date"
@@ -811,7 +810,7 @@ class RadixCache:
                "snapshots": {"spare": self._spare_snapshots, "not_spare": snapshots - self._spare_snapshots},
                "evicted": evicted, "pruned": self.pruned, "full_reprefills": self.full_reprefills,
                "branching_resumes": self.branching_resumes,
-               "evictable": {"kv_tokens": self._evictable_tokens, "kv_tokens_protected": self._protected_tokens,
+               "evictable": {"kv_tokens": self._evictable_tokens, "kv_tokens_protected": self.protected_size(),
                              "snapshots": len(self.evictable_snapshots), "snapshots_protected": self._protected_snapshots}}
         if self.ssd is not None:
             out["ssd"] = {"nodes": self.ssd_nodes, "demotions": self.demotions,

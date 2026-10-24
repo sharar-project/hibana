@@ -20,7 +20,7 @@ from sharar.engine.grammar import sample_masks
 from sharar.engine.sampling_rng import request_seed
 from sharar.engine.sampler import InvalidRequest, Sampler, SamplingParams
 from sharar.cache.kv_pool import KV_DTYPE, KvPool
-from sharar.cache.ledger import Ledger
+from sharar.cache.ledger import Ledger, after_plan_bytes
 from sharar.cache.radix import RadixCache
 from sharar.cache.snapshot import GRID
 from sharar.cache.request_state import StateManager
@@ -76,7 +76,6 @@ class Executor:
             # and what this executor allocates after the pools: workspaces, CUDA graphs, first-use allocations, activations
             return future + sum(after_plan_bytes(max_batch).values()), extra_page
 
-        from sharar.cache.ledger import after_plan_bytes
         # the state slots an SSD restore can lock beyond the running requests' (the startup slot floor counts them)
         restore_slots = 0
         if cfg.ssd and use_cache:
@@ -201,7 +200,6 @@ class Executor:
         from sharar.cache.ledger import check_load_headroom
         fixed, per_page = budget(SpecConfig(proposer, k, state_strategy, draft_precision, draft_dir), self.max_batch,
                                  cache_slots=self.state_pool.num_slots, target=self.target)
-        from sharar.cache.ledger import after_plan_bytes
         after = after_plan_bytes(self.max_batch)
         check_load_headroom(fixed + per_page * self.kv_pool.num_pages + after["graphs"] + after["first_use"] + after["activations"])
         context = ProposerContext(self.device, self.max_batch, self.max_context)
@@ -455,7 +453,7 @@ class Executor:
         if self.cache is None or self.cache.flushing or not req.cache_enabled or not req.cacheable:
             return []
         n = req.prefill_len
-        targets = [t for t in (req.params.message_boundary, req.branching_seqlen) if 0 < t < n]
+        targets = [(rank, t) for rank, t in ((0, req.params.message_boundary), (1, req.branching_seqlen)) if 0 < t < n]
         points: dict[int, list] = {}  # position -> [spare, allocation rank]
 
         def place(position: int, spare: bool, rank: int) -> None:
@@ -464,8 +462,8 @@ class Executor:
             else:
                 points[position] = [spare, rank]
 
-        for rank, target in ((0, req.params.message_boundary), (1, req.branching_seqlen)):
-            if 0 < target < n and start <= target < end:
+        for rank, target in targets:
+            if start <= target < end:
                 p = start + (target - start) // GRID * GRID
                 if p > start:
                     place(p, False, rank)
@@ -474,7 +472,7 @@ class Executor:
             if p > start:
                 place(p, False, 0)
         else:
-            needed = n - end <= GRID or any(end <= t < end + GRID for t in targets)  # it stands for a not-spare point
+            needed = n - end <= GRID or any(end <= t < end + GRID for _, t in targets)  # it stands for a not-spare point
             place(end, not needed, 0 if needed else 2)
         return [(p, spare) for p, (spare, _) in sorted(points.items(), key=lambda item: (item[1][1], -item[0]))]
 

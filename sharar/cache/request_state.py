@@ -394,7 +394,7 @@ class StateManager:
             # In-place decode could have partially advanced a slot on failure.
             req.cacheable = False
             self.rollback(req)
-        n = len(req.prompt_ids) + len(req.output_ids[:-1])  # the whole sequence but its last token
+        n = len(req.prompt_ids) + max(0, len(req.output_ids) - 1)  # the whole sequence but its last token
         if (self.cache is not None and not self.cache.flushing and req.cacheable and req.cache_enabled
                 and req.slot >= 0 and req.pages is not None and req.prefill_done
                 and req.committed_len == n and n and len(req.pages) >= n):

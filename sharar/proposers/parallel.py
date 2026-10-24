@@ -154,9 +154,8 @@ class ParallelProposer:
             return
         position = snap.position
         start = max(0, position - self.window)
-        # Prompt completion and release can save the same immutable prefix.
-        # Reuse its live handle so a duplicate window does not evict another
-        # checkpoint's features while the target snapshot is still cached.
+        # A window already saved for this span and slot keeps its handle, so a
+        # duplicate does not evict another snapshot's features.
         handle = snap.auxiliary.get(self.cache_identity)
         cached = self.feature_cache.get(handle)
         same_slot = (not isinstance(self.feature_cache, CheckpointFeatureCache)

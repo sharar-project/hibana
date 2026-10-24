@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Mapping
 
 from sharar.hardware.gb10 import HOST_FLOOR_KIB
+from sharar.launch.guard import floor_kib
 
 
 def _flag(env: Mapping[str, str], name: str, default: bool = False) -> bool:
@@ -170,7 +171,7 @@ class EngineConfig:
             spec_depths=_str(e, "SHARAR_SPEC_DEPTHS"),
             spec_step_cost=float(_str(e, "SHARAR_SPEC_STEP_COST") or 0.0),
             draft_dir=_str(e, "SHARAR_DRAFT"),
-            host_floor_gib=float(_str(e, "SHARAR_HOST_FLOOR_GIB") or HOST_FLOOR_KIB / 2**20),
+            host_floor_gib=floor_kib(e) / 2**20,
             draft_vocab=_int(e, "SHARAR_DRAFT_VOCAB", 0),
             draft_head=_str(e, "SHARAR_DRAFT_HEAD", "fp8"),
             draft_head_rescore=_int(e, "SHARAR_DRAFT_HEAD_RESCORE", 16 if e.get("SHARAR_DRAFT_HEAD") == "w2" else 8),

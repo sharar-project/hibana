@@ -339,7 +339,7 @@ class SsdTier:
         # asynchronous restores (`restore_async`): one at a time; a worker thread reads, the engine thread scatters
         self._worker = ThreadPoolExecutor(1, thread_name_prefix="sharar-ssd-restore")
         self._job: _Restore | None = None  # the restore in flight
-        self._held: list = []  # (ids, job, since) of landed restores, locking their nodes until their requests are admitted
+        self._held: list = []  # (job, since) of landed restores, locking their nodes until their requests are admitted
         self._tail_nodes: dict[str, Node] = {}  # tails in flight: key -> the node they are for (pruned if the write fails)
         self._orphans: list[Node] = []  # nodes whose stored tail was lost or failed: pruned at the next step (`_trim`)
         self._staging_free = None  # an event: the last restore's state import has read the staging buffer
@@ -725,7 +725,7 @@ class SsdTier:
 
     def live_jobs(self) -> list:
         """The restores whose locks may be in the tree: the one in flight and the landed ones (`RadixCache.check`)."""
-        return [job for _, job, _ in self._held] + ([self._job] if self._job is not None else [])
+        return [job for job, _ in self._held] + ([self._job] if self._job is not None else [])
 
     def pending_prune(self) -> list[Node]:
         """Nodes whose tail was lost or failed since the last step: `_trim` prunes them (`RadixCache.check`)."""
@@ -1042,8 +1042,8 @@ class SsdTier:
     def release(self, cache: RadixCache, ids: list[int]) -> None:
         """The request a landed restore locked its node for was admitted (its own lock, taken first, is there now) or
         is gone."""
-        for i, (held, job, _) in enumerate(self._held):
-            if held == ids:
+        for i, (job, _) in enumerate(self._held):
+            if job.ids == ids:
                 del self._held[i]
                 cache.unlock(job.lock)
                 return
@@ -1062,7 +1062,7 @@ class SsdTier:
                 pass
 
     def _landed(self, ids: list[int]):
-        return next((job.node for held, job, _ in self._held if held == ids), None)
+        return next((job.node for job, _ in self._held if job.ids == ids), None)
 
     def _worth(self, cache: RadixCache, ids: list[int]) -> bool:
         """Whether ids has an SSD resume point worth reading (counting writes still in flight)."""
@@ -1222,7 +1222,7 @@ class SsdTier:
                 self.kv_pool.free_ids(job.page_ids)
                 self.state_pool.free(job.slot)
             if inserted and keep and not job.orphan:
-                self._held.append((job.ids, job, self._steps))
+                self._held.append((job, self._steps))
             else:
                 cache.unlock(job.lock)  # and, after a lost tail, prunes what has nothing to resume from now
         if not inserted:
@@ -1254,8 +1254,8 @@ class SsdTier:
                 self._job = None
                 job.result = job.future.result()
                 self._finish(cache, job, keep=True)
-        while self._held and self._steps - self._held[0][2] > HOLD_STEPS:  # its request never came for it (counted in
-            _, job, _ = self._held.pop(0)  # steps, which every rank takes alike, so every rank lets go at the same one)
+        while self._held and self._steps - self._held[0][1] > HOLD_STEPS:  # its request never came for it (counted in
+            job, _ = self._held.pop(0)  # steps, which every rank takes alike, so every rank lets go at the same one)
             cache.unlock(job.lock)
 
     def _join(self, cache: RadixCache) -> None:
@@ -1276,7 +1276,7 @@ class SsdTier:
             self.state_pool.free(job.slot)
             cache.unlock(job.lock)
         while self._held:
-            _, held, _ = self._held.pop()
+            held, _ = self._held.pop()
             cache.unlock(held.lock)
 
     def _trace(self, row: dict) -> None:

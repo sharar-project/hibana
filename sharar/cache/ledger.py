@@ -38,12 +38,6 @@ def host_floor_bytes() -> int:
     return int(current().host_floor_gib * GIB)
 
 
-def emergency_bytes() -> int:
-    """Half the host floor: under it other programs have used more than the plan left them, admission holds and the
-    memory guard stops the server."""
-    return host_floor_bytes() // 2
-
-
 # What Sharar allocates after the pools are planned, counted so that the plan leaves the floor free. Measured on
 # Flash-Next, one Spark, SHARAR_MAX_BATCH=64: the first prefill takes 2.12 GiB of GPU memory outside PyTorch (the
 # driver's per-process count; never freed), and PyTorch keeps 0.87 GiB of activation blocks cached beyond what is
@@ -177,7 +171,7 @@ class Ledger:
         return Plan(kv_tokens=kv_tokens, state_slots=state_slots, after_pools_bytes=future_bytes)
 
     def above_floor(self) -> bool:
-        """Whether host MemAvailable is above half the floor (`emergency_bytes`); under it admission holds."""
+        """Whether host MemAvailable is above half the floor; under it admission holds (and the memory guard acts)."""
         return mem_available_bytes() >= self.floor_bytes // 2
 
     def check_floor(self) -> int:
