@@ -74,7 +74,9 @@ def test_device_round_matches_host_round(runtime, batch, relaxed, rounds):
     batch 3), so outputs are compared up to the first round whose counts differ.
     The first round depends only on the shared prefill and always agrees; the drift
     can start from the second (batch 3 since the CuTe GDN prefill: one
-    request accepts 15 drafts on the device, 14 on the host)."""
+    request accepts 15 drafts on the device, 14 on the host). A relaxed request can also accept a different draft
+    with the same count once the drafts drift (the target ranks both within its top-k: seen at 12 rounds, batch 3,
+    round 3), so its outputs are compared through its first round only."""
     ex, prompts = runtime
     assert hasattr(ex.spec.verify_graphs, 'accept'), 'device accept graphs were not captured'
     params = [SamplingParams(max_new_tokens=48, ignore_eos=True, accept_top_k=2 if relaxed and i % 2 == 0 else 1,
@@ -85,11 +87,11 @@ def test_device_round_matches_host_round(runtime, batch, relaxed, rounds):
     same_chunks = chunks_d == chunks_h
     agree = next((j for j, (a, b) in enumerate(zip(chunks_d, chunks_h)) if a != b), min(len(chunks_d), len(chunks_h)))
     for i, (out_d, out_h) in enumerate(zip(device[0], host[0])):
-        if same_chunks:
-            assert out_d == out_h, (batch, relaxed, rounds, i)
-        else:
-            n = 1 + sum(c[i] for c in chunks_h[:agree])  # the prefill token plus the rounds before the first moved boundary
-            assert out_d[:n] == out_h[:n], (batch, relaxed, rounds, i, agree)
+        # the prefill token plus the rounds before the first moved boundary; a relaxed request's first round
+        n = len(out_h) if same_chunks else 1 + sum(c[i] for c in chunks_h[:agree])
+        if params[i].accept_top_k > 1:
+            n = min(n, 1 + chunks_h[0][i])
+        assert out_d[:n] == out_h[:n], (batch, relaxed, rounds, i, agree)
     assert chunks_d[0] == chunks_h[0], (chunks_d, chunks_h)
     if same_chunks:
         assert [f[:3] for f in device[2]] == [f[:3] for f in host[2]]
