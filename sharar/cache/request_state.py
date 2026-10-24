@@ -357,7 +357,6 @@ class StateManager:
         return [r.reservation.full_pages if count == len(r.reservation.ids) and r.reservation.full_pages is not None
                 else torch.cat([r.pages, r.reservation.pages[:count]]) for r, count in zip(requests, counts)]
 
-
     def _publish(self, req, count, pages) -> None:
         self.kv.free_ids(req.reservation.ids[count:])
         req.page_ids += req.reservation.ids[:count]

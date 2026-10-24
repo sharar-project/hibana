@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import contextlib
 import dataclasses
 import json
 import time
@@ -41,7 +42,6 @@ from sharar.tokenizer import SnapshotTokenizer
 
 
 MAX_CHOICES = 16  # n per chat request: the scheduler queues what exceeds four running
-
 
 
 def _memory_gib() -> dict:
@@ -152,10 +152,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         folded = fold_system_messages(_tool_arguments_as_objects(messages))
         head = ""  # rendered before the full prompt: the template's last render is the one tests and logs look at
         if boundary and len(folded) > 1:
-            try:
+            with contextlib.suppress(Exception):  # a template that rejects a partial conversation: no boundary
                 head = tmpl.render(folded[:-1], add_generation_prompt=False, enable_thinking=thinking, tools=tools, **kwargs)
-            except Exception:  # a template that rejects a partial conversation: no boundary
-                head = ""
         rendered = tmpl.render(folded, enable_thinking=thinking, tools=tools, **kwargs)
         ids, at = _message_boundary(tok, rendered, head)
         return ids, thinking and rendered.rstrip().endswith("<think>"), at
