@@ -162,6 +162,14 @@ def cache(args) -> int:
         return 0
     print(f"  GPU: {cache['cached_tokens']:,} of {info.get('kv_pages', 0):,} KV tokens cached; "
           f"{cache['hits']:,} hits, {cache['misses']:,} misses, {cache['evictions']:,} evictions")
+    if "locks" in cache:  # the cache policy's own counters (cache/radix.py `stats`)
+        locks, snaps, drafts = cache["locks"], cache.get("snapshots", {}), cache.get("draft_resumes")
+        evicted = sum(n for by_spare in cache.get("evicted", {}).values() for n in by_spare.values())
+        print(f"  locks: {locks.get('total', 0)} ({locks.get('request', 0)} requests, {locks.get('restore', 0)} SSD "
+              f"restores); snapshots: {snaps.get('not_spare', 0):,} + {snaps.get('spare', 0):,} spare, {evicted:,} "
+              f"evicted; {cache.get('pruned', 0):,} dead-KV nodes pruned, {cache.get('full_reprefills', 0):,} full "
+              f"re-prefills, {cache.get('branching_resumes', 0):,} resumes at a branching point"
+              + (f"; drafter resumes {drafts['hits']:,} hits, {drafts['fallbacks']:,} fallbacks" if drafts else ""))
     ssd = cache.get("ssd")
     if ssd is None:
         print("  SSD: " + ("on in the settings but not running (the server log says why)" if cfg.get("ssd") else "off (SHARAR_SSD=1 turns it on)"))
