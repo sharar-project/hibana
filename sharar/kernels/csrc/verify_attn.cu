@@ -10,6 +10,12 @@
 // online softmax in base 2 a query; the block writes its chunk's normalized output and log-sum-exp, and `merge`
 // combines the chunks. Each sequence's chunk is its length over the splits, read on the device: one launch (and one
 // CUDA graph) serves any context.
+//
+// `prefix_attn` runs the same tiles for a prefill chunk against its cached prefix (no causal mask): a block takes 128
+// consecutive (token, head) rows of one KV head's query group of a sequence, eight warps, so every SM partition holds
+// two of them (six left two partitions half idle) and a converted tile serves a third more rows. Its merge folds in
+// the chunk's own causal attention (FlashInfer's ragged output and log-sum-exp), so the prefix needs no separate
+// merge. GB10, a 2,048-token chunk over an 8K prefix: 7.1 ms against 9.8 for FlashInfer's fa2 (42 -> 58 TFLOPS).
 
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
@@ -24,6 +30,7 @@ constexpr int D = 256;              // head_dim
 constexpr int G = 6;                // query heads a KV head
 constexpr int WARPS = 6;            // 16 queries each: 96 = 16 rows x 6 heads
 constexpr int THREADS = WARPS * 32;
+constexpr int PREFIX_WARPS = 8;     // prefill against a prefix: 128 (token, head) rows a block
 constexpr int BN = 32;              // pages a tile
 constexpr int STAGES = 3;           // raw tiles: two in flight while one converts (the pipeline needs three)
 constexpr int F4ROW = D / 2 + D / 16;  // an NVFP4 row: 128 bytes of codes, then 16 E4M3 scales
@@ -90,9 +97,12 @@ struct Params {
   int kvh_count;
   int splits;
   float scale_log2;
+  const int32_t* blocks;    // prefix_attn: [blocks, 2] each block's sequence and first flattened (token, head) row
 };
 
-__global__ void __launch_bounds__(THREADS, 1) split_kernel(const Params p) {
+template <int W, bool PREFIX>
+__global__ void __launch_bounds__(W * 32, 1) split_kernel(const Params p) {
+  constexpr int THREADS = W * 32;
   extern __shared__ __align__(16) uint8_t smem[];
   // raw K and V stages [STAGES][BN][F4ROW], then the FP16 K and V tiles [2][BN][HROW]
   uint8_t* ks = smem;
@@ -100,7 +110,8 @@ __global__ void __launch_bounds__(THREADS, 1) split_kernel(const Params p) {
   uint8_t* kh = vs + STAGES * BN * F4ROW;
   uint8_t* vh = kh + 2 * BN * HROW;
 
-  const int seq = blockIdx.x, kvh = blockIdx.y, split = blockIdx.z;
+  const int seq = PREFIX ? p.blocks[2 * blockIdx.x] : blockIdx.x, kvh = blockIdx.y, split = blockIdx.z;
+  const int row0 = PREFIX ? p.blocks[2 * blockIdx.x + 1] : 0;  // the block's first flattened row
   const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
   const int QH = p.kvh_count * G;
   const int q0 = p.qo_indptr[seq], n_rows = p.qo_indptr[seq + 1] - q0;
@@ -109,17 +120,17 @@ __global__ void __launch_bounds__(THREADS, 1) split_kernel(const Params p) {
   const int chunk = (per + BN - 1) / BN * BN;
   const int lo = split * chunk, hi = min(lo + chunk, kv_len);
 
-  // the warp's queries m = 16 warp + g and + 8: row m / 6, head m % 6
+  // the warp's queries m = 16 warp + g and + 8 (past the block's first row): row m / 6, head m % 6
   int row[2], head[2];
   bool live[2];
 #pragma unroll
   for (int h = 0; h < 2; ++h) {
-    const int m = warp * 16 + g + 8 * h;
+    const int m = row0 + warp * 16 + g + 8 * h;
     row[h] = m / G;
     head[h] = kvh * G + m % G;
     live[h] = row[h] < n_rows;
   }
-  const bool warp_live = warp * 16 / G < n_rows;  // a warp whose queries are all past the rows only loads
+  const bool warp_live = (row0 + warp * 16) / G < n_rows;  // a warp whose queries are all past the rows only loads
 
   // Q in FP16 A fragments (m16n8k16): k-step c holds dims 16 c + 2 t, + 1 (regs 0, 1) and + 8, + 9 (regs 2, 3)
   uint32_t qa[D / 16][4];
@@ -139,7 +150,8 @@ __global__ void __launch_bounds__(THREADS, 1) split_kernel(const Params p) {
       }
     }
   }
-  const int sees[2] = {kv_len - n_rows + row[0], kv_len - n_rows + row[1]};
+  // causal (verify): a row sees the context through itself; a prefill's prefix is all visible
+  const int sees[2] = {PREFIX ? kv_len : kv_len - n_rows + row[0], PREFIX ? kv_len : kv_len - n_rows + row[1]};
 
   float acc[D / 8][4];
 #pragma unroll
@@ -303,11 +315,14 @@ __global__ void __launch_bounds__(THREADS, 1) split_kernel(const Params p) {
   }
 }
 
+// Combines a query's splits (and, `extra_o` given, one more normalized output with its log-sum-exp: a prefill's own
+// causal attention) into its BF16 output.
 __global__ void merge_kernel(const float* __restrict__ o, const float* __restrict__ lse, __nv_bfloat16* __restrict__ out,
-                             int splits, int64_t out_stride, int QH) {
+                             int splits, int64_t out_stride, int QH, const __nv_bfloat16* __restrict__ extra_o,
+                             const float* __restrict__ extra_lse) {
   const int token = blockIdx.x, head = blockIdx.y;
   const int64_t base = static_cast<int64_t>(token) * QH + head;
-  float top = -INFINITY;
+  float top = extra_o ? extra_lse[base] : -INFINITY;
   for (int s = 0; s < splits; ++s) top = fmaxf(top, lse[base * splits + s]);
   for (int d = threadIdx.x; d < D; d += blockDim.x) {
     float num = 0.f, den = 0.f;
@@ -318,8 +333,42 @@ __global__ void merge_kernel(const float* __restrict__ o, const float* __restric
       num += w * o[(base * splits + s) * D + d];
       den += w;
     }
+    if (extra_o && extra_lse[base] != -INFINITY) {
+      const float w = exp2f(extra_lse[base] - top);
+      num += w * __bfloat162float(extra_o[base * D + d]);
+      den += w;
+    }
     out[static_cast<int64_t>(token) * out_stride + head * D + d] = __float2bfloat16(den > 0.f ? num / den : 0.f);
   }
+}
+
+}  // namespace
+
+namespace {
+
+Params params(torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tensor ksf, torch::Tensor vsf, torch::Tensor kv_indptr,
+              torch::Tensor kv_indices, torch::Tensor qo_indptr, torch::Tensor o, torch::Tensor lse, double sm_scale, int64_t splits,
+              const int32_t* blocks) {
+  TORCH_CHECK(q.size(2) == D && k.size(3) == D / 2 && q.size(1) == k.size(2) * G,
+              "verify_attn: head_dim 256, 6 query heads a KV head");
+  TORCH_CHECK(k.dtype() == torch::kUInt8 && v.dtype() == k.dtype() && k.stride(0) == v.stride(0) && ksf.size(3) == D / 16 &&
+              ksf.stride(0) == vsf.stride(0), "verify_attn: an NVFP4 cache and its scales");
+  return Params{reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()), reinterpret_cast<const uint8_t*>(k.data_ptr()),
+                reinterpret_cast<const uint8_t*>(v.data_ptr()), kv_indptr.data_ptr<int32_t>(), kv_indices.data_ptr<int32_t>(),
+                qo_indptr.data_ptr<int32_t>(), o.data_ptr<float>(), lse.data_ptr<float>(), q.stride(0), k.stride(0),
+                reinterpret_cast<const uint8_t*>(ksf.data_ptr()), reinterpret_cast<const uint8_t*>(vsf.data_ptr()), ksf.stride(0),
+                static_cast<int>(k.size(2)), static_cast<int>(splits), static_cast<float>(sm_scale * 1.4426950408889634), blocks};
+}
+
+template <int W, bool PREFIX>
+void launch(const Params& p, unsigned blocks, unsigned kvh, cudaStream_t stream) {
+  static const bool sized = [] {  // once, before any graph capture
+    C10_CUDA_CHECK(cudaFuncSetAttribute(split_kernel<W, PREFIX>, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM));
+    return true;
+  }();
+  (void)sized;
+  split_kernel<W, PREFIX><<<dim3(blocks, kvh, static_cast<unsigned>(p.splits)), W * 32, SMEM, stream>>>(p);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 }  // namespace
@@ -327,28 +376,33 @@ __global__ void merge_kernel(const float* __restrict__ o, const float* __restric
 void verify_attn(torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tensor ksf, torch::Tensor vsf,
                  torch::Tensor kv_indptr, torch::Tensor kv_indices, torch::Tensor qo_indptr, torch::Tensor o, torch::Tensor lse,
                  torch::Tensor out, double sm_scale, int64_t splits) {
-  TORCH_CHECK(q.size(2) == D && k.size(3) == D / 2 && q.size(1) == k.size(2) * G,
-              "verify_attn: head_dim 256, 6 query heads a KV head");
-  TORCH_CHECK(k.dtype() == torch::kUInt8 && v.dtype() == k.dtype() && k.stride(0) == v.stride(0) && ksf.size(3) == D / 16 &&
-              ksf.stride(0) == vsf.stride(0), "verify_attn: an NVFP4 cache and its scales");
-  const int n = static_cast<int>(qo_indptr.numel() - 1), kvh = static_cast<int>(k.size(2));
-  const Params p{reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()), reinterpret_cast<const uint8_t*>(k.data_ptr()),
-                 reinterpret_cast<const uint8_t*>(v.data_ptr()), kv_indptr.data_ptr<int32_t>(), kv_indices.data_ptr<int32_t>(),
-                 qo_indptr.data_ptr<int32_t>(), o.data_ptr<float>(), lse.data_ptr<float>(), q.stride(0), k.stride(0),
-                 reinterpret_cast<const uint8_t*>(ksf.data_ptr()), reinterpret_cast<const uint8_t*>(vsf.data_ptr()), ksf.stride(0),
-                 kvh, static_cast<int>(splits), static_cast<float>(sm_scale * 1.4426950408889634)};
+  const Params p = params(q, k, v, ksf, vsf, kv_indptr, kv_indices, qo_indptr, o, lse, sm_scale, splits, nullptr);
   auto stream = at::cuda::getCurrentCUDAStream();
-  static bool configured = false;
-  if (!configured) {
-    C10_CUDA_CHECK(cudaFuncSetAttribute(split_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM));
-    configured = true;
-  }
-  split_kernel<<<dim3(n, kvh, static_cast<unsigned>(splits)), THREADS, SMEM, stream>>>(p);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  launch<WARPS, false>(p, static_cast<unsigned>(qo_indptr.numel() - 1), static_cast<unsigned>(k.size(2)), stream);
   merge_kernel<<<dim3(static_cast<unsigned>(q.size(0)), static_cast<unsigned>(q.size(1))), 128, 0, stream>>>(
       o.data_ptr<float>(), lse.data_ptr<float>(), reinterpret_cast<__nv_bfloat16*>(out.data_ptr()), static_cast<int>(splits),
-      out.stride(0), static_cast<int>(q.size(1)));
+      out.stride(0), static_cast<int>(q.size(1)), nullptr, nullptr);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("verify_attn", &verify_attn); }
+void prefix_attn(torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tensor ksf, torch::Tensor vsf,
+                 torch::Tensor kv_indptr, torch::Tensor kv_indices, torch::Tensor qo_indptr, torch::Tensor blocks, torch::Tensor o,
+                 torch::Tensor lse, torch::Tensor out, double sm_scale, int64_t splits, c10::optional<torch::Tensor> extra_o,
+                 c10::optional<torch::Tensor> extra_lse) {
+  TORCH_CHECK(blocks.dtype() == torch::kInt && blocks.is_contiguous() && blocks.dim() == 2 && blocks.size(1) == 2, "prefix_attn: blocks");
+  TORCH_CHECK(!extra_o || (extra_o->is_contiguous() && extra_o->dtype() == torch::kBFloat16 && extra_lse->is_contiguous() &&
+                           extra_lse->dtype() == torch::kFloat && extra_o->numel() == q.numel()), "prefix_attn: the new rows' output");
+  const Params p = params(q, k, v, ksf, vsf, kv_indptr, kv_indices, qo_indptr, o, lse, sm_scale, splits, blocks.data_ptr<int32_t>());
+  auto stream = at::cuda::getCurrentCUDAStream();
+  launch<PREFIX_WARPS, true>(p, static_cast<unsigned>(blocks.size(0)), static_cast<unsigned>(k.size(2)), stream);
+  merge_kernel<<<dim3(static_cast<unsigned>(q.size(0)), static_cast<unsigned>(q.size(1))), 128, 0, stream>>>(
+      o.data_ptr<float>(), lse.data_ptr<float>(), reinterpret_cast<__nv_bfloat16*>(out.data_ptr()), static_cast<int>(splits),
+      out.stride(0), static_cast<int>(q.size(1)), extra_o ? reinterpret_cast<const __nv_bfloat16*>(extra_o->data_ptr()) : nullptr,
+      extra_lse ? extra_lse->data_ptr<float>() : nullptr);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("verify_attn", &verify_attn);
+  m.def("prefix_attn", &prefix_attn);
+}

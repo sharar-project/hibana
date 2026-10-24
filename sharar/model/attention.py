@@ -74,7 +74,14 @@ class Attention:
         t = q.shape[0]
         if ctx is None or ctx.mode == "prefill":
             self.ragged.plan(ctx.seq_lens if ctx is not None and ctx.batched else [t], q.device)
-            if ctx is not None and ctx.paged_prefill_wrapper is not None:
+            if ctx is not None and ctx.prefix_attention is not None:
+                # the cached prefix on kernels/csrc/verify_attn.cu, merged there with the new rows' causal attention
+                from sharar.kernels.verify_attn_cuda import prefix_attention
+                new_out, new_lse = self.ragged.run_return_lse(q, k, v)
+                attn = prefix_attention(q.view(t, self.num_heads, self.head_dim), ctx.kv_pool.cache(self.layer_id),
+                                        ctx.kv_pool.scales(self.layer_id),
+                                        ctx.prefix_attention, self.head_dim ** -0.5, new_out, new_lse)
+            elif ctx is not None and ctx.paged_prefill_wrapper is not None:
                 from flashinfer.cascade import merge_state
 
                 new_out, new_lse = self.ragged.run_return_lse(q, k, v)
