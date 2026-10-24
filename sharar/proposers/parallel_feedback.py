@@ -50,6 +50,6 @@ class FeedbackGraphs:
         self.metadata.copy_(metadata, non_blocking=True)
         self.graphs[count].replay()
         state.end = req.committed_len
-        if state.end in req.checkpoints:
-            p._save(req, state.end)
+        if state.end in req.private:
+            p._save(req, req.private[state.end])
         state.pending = None if req.finished else emitted[-1]
