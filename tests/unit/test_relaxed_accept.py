@@ -34,7 +34,7 @@ class WrongDraft:
     def release(self, req):
         pass
 
-    def prepare_release(self, req):
+    def prepare_release(self, req, snapshot):
         pass
 
     def capture_graphs(self, log=None):

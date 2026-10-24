@@ -14,7 +14,7 @@ from sharar.engine.scheduler import Scheduler
 from sharar.engine.spec import SpecDecoder
 from sharar.engine.contracts import VerifiedFeatures
 from sharar.cache.request_state import StateManager, Reservation
-from tests.unit.test_radix import make
+from tests.unit.test_radix import make, snaps
 from tests.unit.test_scheduler import FakeExecutor
 
 
@@ -154,15 +154,15 @@ def test_flush_preserves_active_prefix_until_last_release():
     cache, kv, st = make()
     pages = kv.alloc(4)
     slot = st.alloc_slot()
-    cache.insert([1, 2, 3, 4], pages, {4: slot})
+    cache.insert([1, 2, 3, 4], pages, snaps({4: slot}))
     match = cache.match([1, 2, 3, 4, 5])
-    cache.lock(match.node, 2)
+    first, second = cache.lock(match.node, owner="a"), cache.lock(match.node, owner="b")
     cache.flush()
     assert not set(pages.tolist()) & set(kv._free)
     assert slot not in st._free
     assert cache.match([1, 2, 3, 4, 5]).length == 0
-    cache.lock(match.node, -1)
+    cache.unlock(first)
     assert not set(pages.tolist()) & set(kv._free)
-    cache.lock(match.node, -1)
+    cache.unlock(second)
     assert len(kv._free) == 999 and len(st._free) == 19
     assert cache.cached_tokens == 0

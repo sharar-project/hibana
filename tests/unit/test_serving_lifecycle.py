@@ -190,25 +190,30 @@ def test_mtp_bonus_and_cached_prefix_never_read_unwritten_draft_kv(monkeypatch):
         assert r.spec_emitted == 12
         ex.release(r)
     assert proposer.cache_hits == 1 and proposer.cache_fallbacks == 0
-    # Missing/foreign schema keeps the target hit but uses ordinary decode.
+    # A missing or foreign row (an SSD store written without it) keeps the target hit, and the draft goes on from a
+    # stand-in row: one approximate draft KV row, every one written. Updated from main, where it stopped drafting.
     match = ex.cache.match([7] * 69)
-    match.node.auxiliary.clear()
+    match.snapshot.auxiliary.clear()
     r = ex.admit([7] * 70, SamplingParams(max_new_tokens=3))
     ex.prefill(r)
-    assert r.prefix_len > 0 and not proposer.ready(r)
+    assert r.prefix_len > 0 and proposer.ready(r) and proposer.cache_fallbacks == 1
     while not r.finished:
         ex.decode_step([r])
-    assert r.spec_rounds == 0 and r.output_ids == [7] * 3
+        assert torch.isfinite(kv[r.pages[1:r.committed_len].long()]).all()
+    assert r.spec_rounds > 0 and r.output_ids == [7] * 3
     ex.release(r)
     ex.flush_cache()
     assert ex.kv_pool.free_count == 1024
 
 
 def test_prefill_checkpoints_align_to_each_forward_not_absolute_positions(monkeypatch):
+    """Updated from main (placement): the forward that ends a prompt places one snapshot, its last chunk end, the last
+    point of its own 64-token grid before the end (main also placed a 2,048-token grid)."""
     ex = tiny_executor(monkeypatch, cache=True)
-    assert ex._checkpoint_positions(1910, 2172, 2172) == [2102, 2166]
-    assert ex._checkpoint_positions(0, 2172, 2172) == [2048, 2112]
+    req = SimpleNamespace(prefill_len=2172, branching_seqlen=0, cache_enabled=True, cacheable=True, params=SamplingParams())
+    assert ex._checkpoint_positions(req, 1910, 2172) == [(2166, False)]
+    assert ex._checkpoint_positions(req, 0, 2172) == [(2112, False)]
     for start in range(1900, 2050):
-        positions = ex._checkpoint_positions(start, 2172, 2172)
+        positions = [p for p, _ in ex._checkpoint_positions(req, start, 2172)]
         assert all(start < p < 2172 and (p - start) % 64 == 0 for p in positions)
         assert not positions or 2172 - positions[-1] <= 64

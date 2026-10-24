@@ -368,27 +368,24 @@ def test_http_error_finishes_stream_or_returns_503(monkeypatch, stream, endpoint
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("reserve", [0, 8])
-def test_wide_batch_snapshots_leave_admission_slots(monkeypatch, reserve):
-    # A short prompt keeps its own slot plus two prefill snapshots (the last 64-token boundary and
-    # the prompt end). At batch four the spare slots cover them; a wide batch reserves the
-    # slots its next admissions need, so snapshots degrade instead of exhausting the pool.
+def test_a_wide_batch_below_the_slot_floor_degrades_its_snapshots_instead_of_failing(monkeypatch):
+    """Updated from main (admission reserve removed). Eight running requests on 15 usable slots, under the slot floor
+    of 2 x 8 + 1: each keeps its own slot and the snapshot its lock sits on (its prompt's last chunk end, 64), and a
+    prefill destination takes only a free slot or an unlocked snapshot's. So the eighth request's forward finds none
+    and places nothing, every request runs, and main's prompt-end copies, which exhausted the pool at the fifth
+    request without the reserve, are gone."""
     ex = tiny_executor(monkeypatch, cache=True)
     ex.max_batch = 8
-    ex.state.admission_slots = reserve
     live = []
-    def admit_all():
-        for i in range(8):
-            r = ex.admit([i + 1] * 70, SamplingParams(max_new_tokens=8))
-            ex.prefill(r)
-            live.append(r)
-    if not reserve:
-        with pytest.raises(MemoryError, match="state pool"):
-            admit_all()
-        assert len(live) == 5 and all(len(r.checkpoints) == 2 for r in live)
-        return
-    admit_all()
-    assert ex.state.live == 8 and len(live[0].checkpoints) == 2 and not live[-1].checkpoints
+    for i in range(8):
+        r = ex.admit([i + 1] * 70, SamplingParams(max_new_tokens=8))
+        ex.prefill(r)
+        live.append(r)
+        assert not r.private
+    assert len(ex.state.requests) == 8 and ex.state_pool.free_count == 0
+    assert all(r.lock is not None and r.lock.node.depth == 64 for r in live[:7]) and live[-1].lock is None
+    ex.state.check()
     for r in live:
         ex.release(r)
-    assert ex.state.live == 0
+    assert not ex.state.requests and not ex.cache.locks()
+    ex.state.check()

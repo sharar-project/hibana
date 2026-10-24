@@ -52,7 +52,7 @@ class NGramProposer:
     def release(self, req):
         req.proposer_state = None
 
-    def prepare_release(self, req):
+    def prepare_release(self, req, snapshot):
         pass
 
     def capture_graphs(self, log=None):

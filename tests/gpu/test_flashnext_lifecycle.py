@@ -146,9 +146,9 @@ def stored_rows(ex, pages: torch.Tensor) -> list[torch.Tensor]:
 
 
 def test_a_prompt_backed_up_once_prefilled_restores_the_kv_it_had_at_the_finish(runtime):
-    """The SSD tier writes a prompt's whole blocks as soon as it is prefilled, before the request decodes. After
-    eviction, a restore brings back the target's and the MTP draft layer's KV exactly as the finished request left
-    them: decoding writes no prompt position."""
+    """The SSD tier writes a prompt's whole blocks up to its last chunk end S, and S's tail, as soon as the prompt is
+    prefilled (its checkpoint), before the request decodes. After eviction, a restore brings back the target's and the
+    MTP draft layer's KV exactly as the finished request left them: decoding writes no prompt position."""
     from sharar.engine.prompts import random_ids
     ex, _ = runtime
     ex.flush_cache()
@@ -158,16 +158,17 @@ def test_a_prompt_backed_up_once_prefilled_restores_the_kv_it_had_at_the_finish(
     ids = random_ids(3 * tier.block, 21)  # whole blocks only: the last one ends at the last prompt token
     req = ex.admit(ids, SamplingParams(max_new_tokens=12))
     ex.prefill(req)
-    assert req.prompt_node is ex.cache.node_at(ids) and len(tier.queue) == 3
-    settle(ex)  # the prompt's blocks are on the SSD before its first decode step
-    assert tier.backed_blocks == 3
+    s = len(ids) - 64  # S: the last 64-token grid point before the prompt's end
+    assert req.lock.node is ex.cache.node_at(ids[:s]) and len(tier.queue) == 2 and len(tier.through) == 1
+    settle(ex)  # the blocks before S and S's tail are on the SSD before its first decode step
+    assert tier.backed_blocks == 2 and tier.tails_through == 1
     while not req.finished:
         ex.decode_step([req])
     seq = req.prompt_ids + req.output_ids[:-1]
     at_finish = stored_rows(ex, req.pages[:len(seq)])
     ex.release(req)
     settle(ex)
-    assert tier.backed_blocks == 3  # the release wrote only the tail
+    assert tier.backed_blocks == 3  # the release wrote the block past S's last whole one, and the end's tail
     ex.cache.evict(need_pages=ex.kv_pool.num_pages)  # demote every leaf to the SSD tier
     assert ex.cache.match(seq, touch=False).length == 0
     assert ex.cache.restore(seq + [ids[0]]) == len(seq)

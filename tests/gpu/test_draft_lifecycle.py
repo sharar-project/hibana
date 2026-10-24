@@ -84,7 +84,9 @@ def test_long_batched_prefill_retains_each_rows_endpoint(draft_runtime):
     reqs = [ex.admit([100 + i] + (tape * 16)[:8189], SamplingParams(max_new_tokens=8, ignore_eos=True))
             for i in range(4)]
     ex.prefill_batch([(r, len(r.prompt_ids)) for r in reqs])
-    endpoints = [r.checkpoints[8128] for r in reqs]
+    # each row's last chunk end (8128: the last 64-token grid point before the end), locked in the tree
+    assert all(r.lock.node.depth == 8128 for r in reqs)
+    endpoints = [r.lock.node.snapshot.slot for r in reqs]
     assert len(set(endpoints)) == 4 and not set(endpoints) & {r.slot for r in reqs}
     while active := [r for r in reqs if not r.finished]:
         ex.decode_step(active)
@@ -109,10 +111,11 @@ def test_branch_from_prompt_end_keeps_draft_after_longer_completion(draft_runtim
     # endpoint cannot conceal a missing feature window at the prompt boundary.
     branch_ids = ids + [(seed.output_ids[0] + 1) % config.VOCAB_SIZE, 42]
     match = ex.cache.match(branch_ids[:-1], touch=False)
-    assert match.length == len(ids)
-    handle = match.node.auxiliary[p.cache_identity]
+    last = (len(ids) - 1) // 64 * 64  # the prompt's last chunk end (updated from main: no prompt-end copy)
+    assert match.length == last
+    handle = match.snapshot.auxiliary[p.cache_identity]
     assert p.feature_cache.slots[match.snapshot_slot] == handle
-    assert p.feature_cache.get(handle)[1] == len(ids)
+    assert p.feature_cache.get(handle)[1] == last
     results = [ex.generate(branch_ids, SamplingParams(max_new_tokens=16, ignore_eos=True)) for _ in range(2)]
     assert all(r.spec_rounds > 0 for r in results)
     assert results[0].output_ids == results[1].output_ids

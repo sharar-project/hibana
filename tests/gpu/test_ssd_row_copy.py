@@ -13,6 +13,7 @@ import torch
 from sharar.cache import ssd
 from sharar.cache.kv_pool import KvPool
 from sharar.cache.radix import RadixCache
+from sharar.cache.snapshot import Snapshot
 from sharar.cache.ssd import MIB, SsdTier
 from sharar.cache.ssd_store import BLOCK, SsdStore, _seg_pad
 from sharar.cache.state_pool import StatePool
@@ -116,7 +117,7 @@ def stored(build, ids, chunk_bytes, narrow=False):
     pages, page_ids = kv.alloc_with_ids(len(ids))
     fill(tier, pages, seed=1)
     before = rows(tier, pages)
-    cache.insert(ids, pages, {len(ids): sp.alloc()}, page_ids=page_ids)
+    cache.insert(ids, pages, [Snapshot(sp.alloc(), len(ids), spare=True)], page_ids=page_ids)
     tier.backup(cache, ids)
     settle(cache, tier)
     cache.evict(need_pages=kv.num_pages, need_slots=sp.num_slots)
@@ -164,10 +165,13 @@ def test_a_restore_with_part_of_its_path_in_l1_starts_inside_a_block(engine):
     pages, page_ids = kv.alloc_with_ids(n)
     fill(tier, pages, seed=2)
     before = rows(tier, pages)
-    cache.insert(IDS, pages, {prompt_end: sp.alloc(), n: sp.alloc()}, page_ids=page_ids)
+    cache.insert(IDS, pages, [Snapshot(sp.alloc(), prompt_end), Snapshot(sp.alloc(), n, spare=True)],
+                 page_ids=page_ids)
     tier.backup(cache, IDS, (n, prompt_end))
     settle(cache, tier)
-    cache.evict(need_slots=sp.free_count + 1)  # the interior snapshot goes
+    (leaf,) = cache.root.children[IDS[0]].children.values()
+    with cache._lock_node(leaf):  # the reply end is locked (a request continues it): only the interior snapshot goes
+        cache.evict(need_slots=sp.free_count + 1)
     cache.evict(need_pages=kv.free_count + 1)  # then the leaf: demoted, its tail already written
     settle(cache, tier)
     (head,) = cache.root.children.values()
@@ -183,7 +187,7 @@ def test_a_backup_writes_the_payload_a_torch_gather_writes(engine, narrow):
     cache, tier, kv, sp = engine(256 * MIB, narrow)
     pages, page_ids = kv.alloc_with_ids(len(IDS))
     fill(tier, pages, seed=3)
-    cache.insert(IDS, pages, {len(IDS): sp.alloc()}, page_ids=page_ids)
+    cache.insert(IDS, pages, [Snapshot(sp.alloc(), len(IDS), spare=True)], page_ids=page_ids)
     (node,) = cache.root.children.values()
     spans = [(0, BLOCK), (2 * BLOCK, 3 * BLOCK), (5 * BLOCK, 6 * BLOCK)]  # apart, then a partial span alone
     with tier._copying():
