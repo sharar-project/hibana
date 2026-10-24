@@ -41,10 +41,10 @@ TARGET_SETTINGS = {
 #             each token keeps its top 4, fewer in wide forwards; one Spark: 1 / 4 requests +2 / +8% over keep 5 + reuse
 #             5), and Flash-Next's
 #             optimized QSA prefill kernels where eligible (SHARAR_QSA_PREFILL_BACKEND=auto: RULER v2 32K equal)
-#   throughput  fast with more requests decoded together: the 27B 16 (full depth; batches of five or more verify on
-#             the original weights, GSM8K x1.74), Flash-Next 128 with its 3-bit experts (64 with NVFP4 experts), three
-#             drafts at sixteen requests so their verification stays within the 64 rows the 3-bit copies serve (four
-#             above: wider batches exceed 64 rows at any depth, and three measured no faster there)
+#   throughput  fast with more requests decoded together: the 27B 16 (full depth; batches of nine or more verify on the
+#             original weights), Flash-Next 128 with its 3-bit experts (64 with NVFP4
+#             experts), three drafts at sixteen requests so their verification stays within the 64 rows Flash-Next's
+#             3-bit copies serve (four above: wider batches exceed 64 rows at any depth, and three measured no faster there)
 PROFILE_NAMES = ("exact", "fast", "throughput")
 
 

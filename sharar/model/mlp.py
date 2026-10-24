@@ -34,8 +34,12 @@ class Mlp:
         gate_up = ops.nvfp4_linear(x, self.gate_up, prequantized=prequantized)
         pairs = self.gate_up.pairs
         if ops.w3_decode(self.down, gate_up.shape[0]):
-            # 3-bit decode: keep the SiLU product in BF16, no NVFP4 activation quantization
-            return ops.nvfp4_linear(ops.silu_and_mul(gate_up, pairs), self.down)
+            # 3-bit decode: the SiLU product in BF16 quantized per 32-group for the 3-bit GEMM, in one launch (the bits of
+            # silu_and_mul and quant_groups); no NVFP4 activation quantization
+            from sharar.kernels import w3
+            from sharar.kernels.flashnext_fused import silu_mul_quant_groups
+            x_q, x_scale = silu_mul_quant_groups(gate_up, pairs, torch_chain=True)
+            return w3.w3_linear(x_q, self.down.w3, x_scale)
         if self.fused_silu_quant:
             # Compute in FP32, preserve the BF16 product boundary, then pack
             # directly to NVFP4 without a materialized activation tensor.

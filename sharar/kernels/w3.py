@@ -1,4 +1,4 @@
-"""Three-bit decode weights: an eight-entry E4M3 codebook, an E4M3 scale per 32 weights, and a tensor-core GEMM for up to 64 rows.
+"""Three-bit decode weights: an eight-entry E4M3 codebook, an E4M3 scale per 32 weights, and tensor-core GEMMs for up to 128 rows.
 
 Format (`W3Weight`): for W [N, K], groups of 32 along K. Each weight is a
 3-bit code into `codebook` (eight E4M3 values, the default the Lloyd-Max
@@ -16,7 +16,11 @@ word per plane whose bit (4j + b + rot(s)) mod 32 is bit b of the weight at
 row 8*tile + g, k = 16*s + 4*t + j. The kernel turns the three words into
 E4M3 B-fragment bytes with three rotates, three masked ORs and one PRMT
 lookup, so expansion costs under two integer instructions per weight and
-the kernel is bound by the weight stream at 16 to 64 activation rows.
+the kernel is bound by the weight stream at 16 to 32 activation rows. From
+33 rows a second kernel (`w3_gemm_wide`) stages the activations in shared
+memory and feeds eight row tiles per warp from one expansion; `WIDE` picks
+it and its tiling per shape and row count (the 27B's projections and draft; Flash-Next's trunk stays on the narrow
+kernel, at most NARROW_ROWS rows).
 
 Activations are E4M3: the engine's static-scale projection inputs as they
 are, BF16 MLP inputs quantized per row and 32-group by `quant_groups` (the
@@ -45,7 +49,8 @@ def enabled() -> bool:
     """SHARAR_W3_DECODE: serve calls of at most MAX_ROWS rows from the 3-bit copies."""
     from sharar.engine.config import current
     return current().w3_decode
-MAX_ROWS = 64
+MAX_ROWS = 128
+NARROW_ROWS = 64  # the narrow kernel's limit (four row tiles per warp)
 GROUP = 32
 CHUNK = 128
 FP8_MAX = 448.0
@@ -273,6 +278,39 @@ def splits_for(n: int, k: int, m: int = 16) -> int:
     return splits
 
 
+# The wide kernel per (N, K) and row bucket (48: 33-48 rows, 64: 49-64, 128: more): (config, splits), config =
+# MT * 1000 + WM * 100 + WN * 10 + STAGES (csrc/w3_gemm.cu `wide`), or None for the narrow kernel. Fastest of the
+# compiled configurations and splits on GB10 with the weights cycled through more than L2 holds (the 128 bucket:
+# least total time over 80, 96, 112 and 128 rows). At 33-64 rows it is 2-10% faster than the narrow kernel on the
+# large matrices and 20-40% on the small ones; up to 32 rows the narrow kernel's weight stream wins.
+WIDE: dict[tuple[int, int], dict[int, tuple[int, int] | None]] = {
+    # the 27B: MLP gate_up, down; GDN in_qkv, in_z (and attention o), out; attention qkv; DFlash2 draft q, o
+    (34816, 5120): {48: None, 64: (4143, 1), 128: (8183, 1)},
+    (5120, 17408): {48: None, 64: (2244, 1), 128: (8183, 2)},
+    (10240, 5120): {48: None, 64: (4143, 1), 128: (8183, 1)},
+    (6144, 5120): {48: (2244, 1), 64: (4144, 1), 128: (4243, 1)},
+    (5120, 6144): {48: (2244, 1), 64: (4124, 1), 128: (4243, 1)},
+    (14336, 5120): {48: (2244, 1), 64: None, 128: (4142, 1)},
+    (4096, 5120): {48: (2144, 4), 64: (2144, 4), 128: (8144, 1)},
+    (5120, 4096): {48: (2244, 1), 64: (2244, 1), 128: (8144, 1)},
+}
+
+
+def wide_for(n: int, k: int, m: int) -> tuple[int, int] | None:
+    """(config, splits) of the wide kernel for an [m, k] x [k, n] call, or None for the narrow kernel."""
+    if m <= 32:
+        return None
+    if (n, k) in WIDE:
+        return WIDE[(n, k)][48 if m <= 48 else 64 if m <= 64 else 128]
+    if m <= NARROW_ROWS:
+        return None
+    # other shapes: eight row tiles per warp, K split until the launch fills the GPU about once
+    blocks, chunks, splits = (n // 128) * -(-m // 128), k // CHUNK, 1
+    while blocks * splits < 40 and chunks % (2 * splits) == 0 and splits < 4:
+        splits *= 2
+    return 8144, splits
+
+
 def _workspace(device: torch.device, floats: int, blocks: int) -> tuple[torch.Tensor, torch.Tensor]:
     ws, counters = _WORKSPACE.get(device, (None, None))
     if ws is None or ws.numel() < floats or counters.numel() < blocks:
@@ -297,7 +335,8 @@ def quant_groups(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def w3_linear(x: torch.Tensor, w3: W3Weight, x_scale: torch.Tensor | None = None, splits: int | None = None) -> torch.Tensor:
-    """y = x @ W^T for x [M, K] in BF16 (quantized per row here) or E4M3 with its static scale; M <= MAX_ROWS. Returns BF16 [M, N]."""
+    """y = x @ W^T for x [M, K] in BF16 (quantized per row and 32-group here) or E4M3 with its scale; M <= MAX_ROWS.
+    Returns BF16 [M, N]."""
     m, k = x.shape
     n = w3.out_features
     if m > MAX_ROWS or k != w3.in_features:
@@ -308,6 +347,16 @@ def w3_linear(x: torch.Tensor, w3: W3Weight, x_scale: torch.Tensor | None = None
         x_q, scale = x, x_scale
     else:
         x_q, scale = quant_groups(x)
+    wide = wide_for(n, k, m) if w3.bits == 3 and splits is None else None
+    if wide is not None:
+        config, parts = wide
+        rows = 16 * (config // 1000) * (config // 100 % 10)
+        ws, counters = _workspace(x.device, parts * m * n if parts > 1 else 0, (n // 64) * -(-m // rows))
+        return _module().w3_gemm_wide(x_q, scale, w3.planes, w3.scales, w3.row_scale, w3.lut, config, parts, ws, counters)
+    if m > NARROW_ROWS:  # two-bit copies: the narrow kernel in parts
+        tail = None if scale.numel() == 1 else scale
+        return torch.cat([w3_linear(x_q[i:i + NARROW_ROWS], w3, scale if tail is None else tail[i:i + NARROW_ROWS], splits)
+                          for i in range(0, m, NARROW_ROWS)])
     splits = splits or splits_for(n, k, m)
     ws, counters = _workspace(x.device, splits * m * n if splits > 1 else 0, n // 128)
     return _module().w3_gemm(x_q, scale, w3.planes, w3.scales, w3.row_scale, w3.lut, splits, ws, counters)

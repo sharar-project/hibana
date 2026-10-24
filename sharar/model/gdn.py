@@ -14,13 +14,13 @@ import torch
 
 from sharar.target import QWEN38, Target
 from sharar.engine.context import ForwardContext
-from sharar.kernels import ops, stable
+from sharar.kernels import gdn_verify, ops, stable
 from sharar.kernels.conv1d import causal_conv1d_fn, causal_conv1d_update
 from sharar.kernels.fla.chunk import chunk_gated_delta_rule
 from sharar.kernels.fla.fused_gdn_gating import fused_gdn_gating
 from sharar.kernels.fla.fused_recurrent import fused_recurrent_gated_delta_rule_packed_decode
 from sharar.kernels.fla.fused_sigmoid_gating_recurrent import fused_sigmoid_gating_delta_rule_update
-from sharar.kernels.fla.layernorm_gated import rms_norm_gated
+from sharar.kernels.fla.layernorm_gated import rms_norm_gated, rms_norm_gated_quant
 from sharar.kernels.fp8_quant import quant_fp8
 from sharar.kernels.ssm_window import materialize, quantize, window_commit, window_verify
 from sharar.kernels.verify_conv import verify_convolve
@@ -39,6 +39,7 @@ def _window(ctx):
 
 
 class GatedDeltaNet:
+    cuda_verify = True  # the CUDA verify recurrence on FP32 pools (kernels/gdn_verify.py); Flash-Next keeps the Triton pair
     fused_window_norm = True  # the window kernel ends with this layer's gated RMS norm and FP8 out-projection input
 
     def __init__(self, w: SnapshotWeights, prefix: str, layer_id: int, device: torch.device, target: Target = QWEN38):
@@ -117,6 +118,9 @@ class GatedDeltaNet:
             from sharar.kernels.verify_norm import verify_gated_norm
             normalized = verify_gated_norm(core, z, self.norm_weight, self.eps, self.head_v_dim)
             return quant_fp8(normalized.reshape(t, self.value_dim), self.out.input_scale)
+        if z.stride(-1) == 1:  # the gated norm writes the out projection's FP8 input itself (the two passes' arithmetic)
+            return rms_norm_gated_quant(x=core.reshape(t, self.value_dim), weight=self.norm_weight, z=z, scale=self.out.input_scale,
+                                        eps=self.eps, group_size=self.head_v_dim, activation="swish")
         core = rms_norm_gated(
             x=core.reshape(t, self.value_dim), weight=self.norm_weight, z=z,
             eps=self.eps, group_size=self.head_v_dim, activation="swish",
@@ -271,7 +275,9 @@ class GatedDeltaNet:
             return window_verify(window.layout, window.layer[self.layer_id], q, k, v, a, b, self.A_log, self.dt_bias,
                                  ctx.seq_slots, s_len, ring["ring_k"], ring["ring_u"], ring["ring_g"],
                                  norm=self._window_norm(z))
-        core = fused_sigmoid_gating_delta_rule_update(
+        cuda = self.cuda_verify and gdn_verify.supports(k, v, ssm_states)
+        recurrence = gdn_verify.verify if cuda else fused_sigmoid_gating_delta_rule_update
+        core = recurrence(
             A_log=self.A_log, dt_bias=self.dt_bias, softplus_beta=1.0, softplus_threshold=20.0,
             q=q, k=k, v=v, a=a, b=b,
             initial_state_source=ssm_states, initial_state_indices=ctx.seq_slots,

@@ -9,15 +9,24 @@ import torch
 @pytest.mark.parametrize('batch', [1, 2, 3, 4])
 @pytest.mark.parametrize('steps', [1, 2, 4, 5, 8, 16])
 @pytest.mark.parametrize('graphs', [False, True])
-def test_reconstruct_every_accepted_prefix(batch, steps, graphs):
-    from sharar.kernels.fla.accepted_state import AcceptedState, reconstruct
-    from sharar.kernels.fla.fused_sigmoid_gating_recurrent import fused_sigmoid_gating_delta_rule_update
+@pytest.mark.parametrize('impl', ['triton', 'cuda'])
+def test_reconstruct_every_accepted_prefix(batch, steps, graphs, impl):
+    """The ring commit (`AcceptedState.run`) and the oracle replay against the verify recurrence's own states, bit for bit:
+    the vendored Triton pair and the CUDA pair (`kernels/gdn_verify.py`, which the engine runs on FP32 pools)."""
+    from sharar.kernels import gdn_verify
+    from sharar.kernels.fla.accepted_state import AcceptedState
+    from sharar.kernels.fla import accepted_state
+    from sharar.kernels.fla.fused_sigmoid_gating_recurrent import fused_sigmoid_gating_delta_rule_update as triton_verify
+    if impl == 'cuda':
+        fused_sigmoid_gating_delta_rule_update, reconstruct = gdn_verify.verify, gdn_verify.commit
+    else:
+        fused_sigmoid_gating_delta_rule_update, reconstruct = triton_verify, accepted_state.reconstruct
     torch.manual_seed(1907 + batch + steps)
     layers, h, hv, k, v = 2, 16, 48, 128, 128
     state = torch.randn((layers, 7, hv, v, k), device='cuda') * .1
     initial = state.clone()
     pool = SimpleNamespace(ssm_all=state, layer_ids=list(range(layers)))
-    replay = AcceptedState(pool, 4, steps, h)
+    replay = AcceptedState(pool, 4, steps, h, cuda=impl == 'cuda')
     retained = (replay.raw_k, replay.raw_v, replay.gates, replay.betas)
     assert replay.bytes == sum(t.numel() * t.element_size() for t in retained)
     assert not hasattr(replay, 'final')

@@ -34,6 +34,8 @@ def _layer_norm_fwd_1pass_kernel(
     HAS_Z: tl.constexpr,
     ACTIVATION: tl.constexpr,
     USE_GDC: tl.constexpr = False,
+    QUANT: tl.constexpr = False,  # Y is E4M3: the BF16 output divided by Scale and clamped (fp8_quant.quant_fp8)
+    Scale=None,
 ):
     if USE_GDC:
         tl.extra.cuda.gdc_wait()
@@ -91,7 +93,12 @@ def _layer_norm_fwd_1pass_kernel(
             y *= tl.sigmoid(z)
 
     # Write output
-    tl.store(Y_base, y, mask=mask)
+    if QUANT:
+        q = y.to(tl.bfloat16).to(tl.float32) / tl.load(Scale)
+        q = tl.minimum(tl.maximum(q, -448.0), 448.0)
+        tl.store(Y_base, q.to(tl.float8e4nv), mask=mask)
+    else:
+        tl.store(Y_base, y, mask=mask)
 
     if USE_GDC:
         tl.extra.cuda.gdc_launch_dependents()
@@ -121,6 +128,7 @@ def _layer_norm_fwd(
     z=None,
     group_size=None,
     activation: str = "swish",
+    quant_scale=None,
 ):
     M, N = x.shape
     if group_size is None:
@@ -133,7 +141,7 @@ def _layer_norm_fwd(
         assert z.shape == (M, N)
     assert weight.shape == (N,)
     assert weight.stride(-1) == 1
-    out = torch.empty_like(x)
+    out = torch.empty_like(x) if quant_scale is None else torch.empty(x.shape, dtype=torch.float8_e4m3fn, device=x.device)
     assert out.stride(-1) == 1
     rstd = torch.empty((ngroups * M,), dtype=torch.float32, device=x.device)
     # Less than 64KB per feature: enqueue fused kernel
@@ -166,6 +174,8 @@ def _layer_norm_fwd(
             HAS_Z=z is not None,
             num_warps=num_warps,
             ACTIVATION=activation,
+            QUANT=quant_scale is not None,
+            Scale=quant_scale,
             **pdl_kwargs,
         )
     return out, rstd
@@ -202,3 +212,12 @@ def rms_norm_gated(
         activation=activation,
     )
     return y.reshape(x_shape_og)
+
+
+def rms_norm_gated_quant(*, x, weight, z, scale, eps=1e-6, group_size=None, activation: str = "swish"):
+    """`quant_fp8(rms_norm_gated(...), scale)` in one pass: x, z [M, N] -> E4M3 [M, N] (the BF16 norm output divided by the
+    static `scale` and clamped), so the BF16 output never goes to memory. The same arithmetic; compiled together, a few
+    BF16 roundings in millions fall on the other side of a tie."""
+    assert x.dim() == 2 and z is not None and z.shape == x.shape and x.stride(-1) == 1 and z.stride(-1) == 1
+    out, _ = _layer_norm_fwd(x, weight.contiguous(), eps, z=z, group_size=group_size, activation=activation, quant_scale=scale)
+    return out

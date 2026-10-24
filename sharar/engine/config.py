@@ -77,7 +77,7 @@ class EngineConfig:
     cuda_arch: str = "12.1a"                  # SHARAR_CUDA_ARCH for the JIT-built CUDA kernels
     tp_allreduce: str = "rdma"                # SHARAR_TP_ALLREDUCE: rdma (the one-shot for decode-sized all-reduces between two ranks) or nccl (every one on NCCL, as vLLM)
     # --- weights and numerics
-    w3_decode: bool = False                   # SHARAR_W3_DECODE: 3-bit decode copies for calls of <= 64 rows (the 27B's layers and FP8 draft, Flash-Next's trunk)
+    w3_decode: bool = False                   # SHARAR_W3_DECODE: 3-bit decode copies for calls of <= 128 rows (the 27B's layers and FP8 draft; Flash-Next's trunk <= 64)
     w3_checkpoint: str | None = None          # SHARAR_W3_CHECKPOINT: the target's calibrated copies (required on Flash-Next; the 27B rounds to nearest without)
     w3_warning: str | None = None             # SHARAR_W3_WARNING: why the launcher serves without the profile's calibrated copies
     stable_numerics: bool = False             # SHARAR_STABLE_NUMERICS: M-invariant prefill kernels
@@ -113,7 +113,7 @@ class EngineConfig:
     ssd_writers: int = 4                      # SHARAR_SSD_WRITERS: the store's writer threads (at least 1)
     ssd_staging_mib: int = 512                # SHARAR_SSD_STAGING_MIB: backup copies in flight to the writers
     ssd_chunk_mib: int = 256                  # SHARAR_SSD_CHUNK_MIB: each half of the restore staging buffer
-    verify_attention: str = "auto"            # SHARAR_VERIFY_ATTENTION: auto (the 27B's graph-bound verification of more than 8 rows a sequence over an NVFP4 cache on kernels/csrc/verify_attn.cu) or fa2 (FlashInfer everywhere)
+    verify_attention: str = "auto"            # SHARAR_VERIFY_ATTENTION: auto (the 27B's graph-bound verification of more than 8 rows a sequence, and its prefill against a cached prefix of at least 1K tokens, over an NVFP4 cache on kernels/csrc/verify_attn.cu) or fa2 (FlashInfer everywhere)
     kv_format: str = "fp8"                    # SHARAR_KV_FORMAT: fp8 (the pool), nvfp4 (4.5 bits a value: the 27B 16/9 the tokens, Flash-Next ~1.4 beside its BF16 index keys; cache/kv_pool.py), or an accuracy screen: sim-fp4 / sim-k8v4 / sim-bf16 (a BF16 pool whose writes round through NVFP4; kernels/kv_fp4.py)
     kv_pool_tokens: int | None = None         # SHARAR_KV_POOL_TOKENS: a fixed KV pool size, e.g. to compare the SSD tier on and off; unset: planned
     # --- traces
