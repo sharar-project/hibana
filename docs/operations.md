@@ -29,9 +29,9 @@ the code it started with).
 
 `sharar serve` resolves the settings (below), checks the host (one GB10, driver, 24 GiB available above the host floor), downloads
 missing snapshots, keeps the 3-bit checkpoint on its pinned revision, prints what it will serve, and runs the server
-in its own process with the memory guard as a thread: when `MemAvailable` stays under the host floor for six seconds it
+in its own process with the memory guard as a thread: when `MemAvailable` stays under half the host floor for six seconds it
 stops the server (SIGTERM, then SIGKILL after 15 s), before unified memory pages the weights. The scheduler already holds
-new admissions under that floor. `--detach` runs the same command as the user systemd service `sharar-qwen38` or
+new admissions under that threshold. `--detach` runs the same command as the user systemd service `sharar-qwen38` or
 `sharar-flashnext`, logging to `$SHARAR_RESULTS/logs/<service>.log` (the previous run's is `.log.1`); `sharar stop`
 sends it SIGTERM, so it drains and, with the SSD tier on, stores its cached prefixes. Automatic KV capacity depends
 on available memory.
@@ -181,8 +181,8 @@ re-prefills, resumes from a branching point, the evictable totals, and the draft
 (`cache.draft_resumes`; [cache design](cache_design.md#protection-and-eviction)); `cache.draft_features` reports
 retained DFlash2 features.
 At 96 slots, the 27B's DFlash2 feature retention reserves up to 1,900 MiB before planning
-KV (Flash-Next's, half as wide, half that). The pools take what is available at startup beyond the floor, the prefill
-reserve and a 4 GiB margin. No host-memory tier sits below them: on unified
+KV (Flash-Next's, half as wide, half that). The pools take what is available at startup beyond the host floor and the
+allocations counted after them ([memory_plan.md](memory_plan.md)). No host-memory tier sits below them: on unified
 memory it would hold the same prefixes in the same DRAM.
 
 **SSD tier.** On in every profile (`SHARAR_SSD=0` turns it off), it is the only tier below the GPU pools: an
