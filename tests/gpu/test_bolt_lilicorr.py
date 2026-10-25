@@ -16,8 +16,8 @@ def numerics(**extra):
         kv_format='fp8', ssm_state='fp32', **extra))
 
 
-@pytest.fixture(scope='module')
-def runtime():
+@pytest.fixture(scope='module', params=('bf16', 'fp8'))
+def runtime(request):
     from sharar.api.chat_template import ChatTemplate
     from sharar.cache.spec_budget import SpecConfig
     from sharar.engine.executor import Executor
@@ -32,7 +32,7 @@ def runtime():
     if not (draft_snapshot('dflash2', None, NEMOTRON_BOLT) / 'model.safetensors').is_file():
         pytest.skip('pinned Bolt LiLiCorr snapshot is not cached')
     start_thread()
-    with numerics():
+    with numerics(bolt_experts=request.param):
         model = Bolt(snap)
         ex = Executor(model, num_pages=8192, num_slots=24, max_batch=2, max_context=4096,
                       spec_config=SpecConfig('dflash2', 7, 'reconstruct', 'bf16'))

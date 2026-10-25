@@ -44,11 +44,44 @@ def test_profiles_keep_native_weights_and_use_pinned_lilicorr(tmp_path, profile,
     assert (s.target, s.port, s.service, s.spec) == ("bolt", 30006, "sharar-bolt", 7)
     assert s.get("SHARAR_W3_DECODE") == s.get("SHARAR_MOE_KEEP") == s.get("SHARAR_DEVICE_ACCEPT") == "0"
     assert s.get("SHARAR_SSM_STATE") == "fp32"
+    assert s.get("SHARAR_BOLT_EXPERTS") == "bf16"
     assert s.parallel_draft and s.proposer == 'dflash2'
     assert settings.model_config(s.target) is config
     assert preflight.pinned_snapshots(s) == [(s.hf_cache, config.MODEL_ID, config.MODEL_REVISION),
                                              (s.hf_cache, *config.DRAFT_PINS['dflash2'])]
     assert preflight.ensure_w3(s, fetch=False) is None
+
+
+@pytest.mark.parametrize("backend", ["bf16", "fp8"])
+def test_expert_backend_override_and_engine_report(tmp_path, backend):
+    from sharar.engine.config import EngineConfig
+    env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
+    s = settings.resolve("bolt", "fast", env=env, overrides={"SHARAR_BOLT_EXPERTS": backend})
+    assert EngineConfig.from_env(s.values).describe()["bolt_experts"] == backend
+    for value in ("auto", "iq2", "FP8"):
+        with pytest.raises(ValueError, match="SHARAR_BOLT_EXPERTS"):
+            settings.resolve("bolt", env=env, overrides={"SHARAR_BOLT_EXPERTS": value})
+        with pytest.raises(ValueError, match="SHARAR_BOLT_EXPERTS"):
+            EngineConfig(bolt_experts=value)
+
+
+def test_ssd_identity_separates_bf16_and_fp8_experts():
+    from types import SimpleNamespace as NS
+    from sharar.cache.ssd_store import root_hash
+    from sharar.engine.executor import Executor
+    ex = Executor.__new__(Executor)
+    ex.target = NEMOTRON_BOLT
+    ex.state_pool = NS(bytes_per_slot=NEMOTRON_BOLT.state_bytes_per_slot, ssm_format=NS(kind="fp32"))
+    ex.kv_pool = NS(nvfp4=False)
+    ex.model = NS(arithmetic_identity=None)
+    bf16 = ex._cache_identity()
+    assert "arithmetic" not in bf16
+    ex.model.arithmetic_identity = {"iq2_experts": "fp8", "kernel": "revision-a"}
+    fp8 = ex._cache_identity()
+    assert fp8["arithmetic"]["iq2_experts"] == "fp8"
+    assert root_hash(bf16) != root_hash(fp8)
+    ex.model.arithmetic_identity = {"iq2_experts": "fp8", "kernel": "revision-b"}
+    assert root_hash(fp8) != root_hash(ex._cache_identity())
 
 
 def test_bolt_rejects_unsupported_drafter_and_parallelism(tmp_path):

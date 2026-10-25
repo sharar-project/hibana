@@ -43,10 +43,15 @@ class BoltMoe:
             raise ValueError(f"{prefix}: encoded expert shapes differ from the pinned Puzzle block")
         if self.router.shape != (self.experts, BOLT.hidden) or self.bias.shape != (self.experts,):
             raise ValueError(f"{prefix}: router shape differs from the pinned Puzzle block")
+        self.iq2 = None
+        if current().bolt_experts == "fp8":
+            from sharar.kernels import iq2_moe
+            self.iq2 = iq2_moe.pack_experts(self.w1, self.w2)
+            del self.w1, self.w2
 
     @property
     def expert_bytes(self):
-        return self.w1.numel() + self.w2.numel()
+        return self.iq2.bytes if self.iq2 is not None else self.w1.numel() + self.w2.numel()
 
     @property
     def bytes(self):
@@ -62,9 +67,15 @@ class BoltMoe:
         if ctx is not None and ctx.mode in ("decode", "verify"):
             slots, steps = (ctx.slots, 1) if ctx.mode == "decode" else (ctx.seq_slots, ctx.verify_steps)
         ids, weights, latent = route_topk(fused, self.bias, self.topk, BOLT.latent, slots, steps, repeat=False)
-        up = ggml_bf16.matmul(latent, self.w1, "IQ2_XXS", ids=ids, repeat_input=True, relu2=True)
-        pairs = ggml_bf16.matmul(up, self.w2, "IQ2_XXS", ids=ids)
-        routed = ggml_bf16.combine(pairs, weights, BOLT.route_scale)
+        if self.iq2 is not None:
+            from sharar.kernels import iq2_moe
+            # Temporary workspace belongs to this call. The graph allocator reuses
+            # it between layers; retaining one per layer would multiply scratch by 40.
+            routed = iq2_moe.moe(self.iq2, latent, ids, weights * BOLT.route_scale)
+        else:
+            up = ggml_bf16.matmul(latent, self.w1, "IQ2_XXS", ids=ids, repeat_input=True, relu2=True)
+            pairs = ggml_bf16.matmul(up, self.w2, "IQ2_XXS", ids=ids)
+            routed = ggml_bf16.combine(pairs, weights, BOLT.route_scale)
         shared = self.shared_down(self.shared_up(x, relu2=True))
         return self.fc2(routed) + shared
 
@@ -90,6 +101,11 @@ class Bolt(Nemotron):
         if get_tp_info().size != 1:
             raise ValueError("Bolt serves on one Spark")
         cfg = current()
+        self.bolt_experts = cfg.bolt_experts
+        self.arithmetic_identity = None
+        if cfg.bolt_experts == "fp8":
+            from sharar.kernels.iq2_moe import _source_revision
+            self.arithmetic_identity = {"iq2_experts": "fp8", "kernel": _source_revision()}
         if cfg.w3_decode or cfg.moe_keep or cfg.moe_budget or cfg.moe_floors or cfg.moe_tau or cfg.moe_extra:
             raise ValueError("Bolt uses the checkpoint's packed weights and all nine routed experts; disable W3 and expert pruning")
         if cfg.kv_format not in ("fp8", "sim-bf16"):

@@ -326,6 +326,9 @@ class Executor:
             identity["ssm_state"] = self.state_pool.ssm_format.describe()
         if getattr(self.kv_pool, "nvfp4", False):  # FP8 records keep their identity
             identity["kv_format"] = "nvfp4"
+        arithmetic = getattr(self.model, "arithmetic_identity", None)
+        if arithmetic is not None:
+            identity["arithmetic"] = arithmetic
         return identity
 
     def enable_ssd_tier(self, log=None) -> None:

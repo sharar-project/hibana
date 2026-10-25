@@ -19,6 +19,9 @@ target, chosen at launch (`sharar serve TARGET`, `SHARAR_TARGET`); nothing is di
 constraints are in `hardware/gb10.py` and serving limits in `engine/profile.py`. Kernels take their shapes from the
 tensors and the target, but are validated only for the pinned targets.
 
+A model whose arithmetic changes stored prefixes may expose a JSON-compatible `arithmetic_identity` value.
+The executor includes it in the SSD store identity; `None` preserves the target's existing identity.
+
 A target adds a `Target` instance (family-specific facts are optional fields, absent for the 27B), a loader in
 `target.load_model` under its `Target.family`, and a model package whose forward honors `ForwardResult`; the
 scheduler, state manager, radix cache, verifier and proposer contracts do not change. Every model implements

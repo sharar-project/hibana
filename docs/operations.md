@@ -1,9 +1,11 @@
 # Operate Sharar
 
-`sharar serve bolt` serves the packed Nemotron 3.5 Bolt text model on port 30006. Its profiles currently share
+`sharar serve bolt` serves the packed Nemotron 3.5 Bolt text model on port 30006. Its profiles share
 native weights, full top-9 routing, FP32 Mamba state, FP8 KV and SSD caching. The pinned companion LiLiCorr
 checkpoint drafts seven tokens through the parallel DFlash proposer, with exact target verification;
-`--spec 0` selects ordinary decode. See [Bolt](bolt.md) for formats, limits and validation.
+`--spec 0` selects ordinary decode. `SHARAR_BOLT_EXPERTS=fp8` selects the grouped native IQ2 routed-expert
+kernel with FP8 activations for evaluation; the profiles keep BF16 activations by default. See [Bolt](bolt.md)
+for formats, limits and validation.
 
 ## Prerequisites
 

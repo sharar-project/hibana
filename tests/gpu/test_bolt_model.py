@@ -19,13 +19,14 @@ def snapshot():
         pytest.skip(str(exc))
 
 
-@pytest.fixture(scope="module")
-def model(snapshot):
+@pytest.fixture(scope="module", params=("bf16", "fp8"))
+def model(snapshot, request):
     from sharar.launch.guard import start_thread
     from sharar.model.bolt.model import Bolt
     start_thread()
     with config.using(config.current().replace(target="bolt", w3_decode=False, moe_keep=0, moe_budget=0,
-                                               moe_floors=None, moe_tau=0, moe_extra=0, ssd=False, kv_format="sim-bf16")):
+                                               moe_floors=None, moe_tau=0, moe_extra=0, ssd=False, kv_format="sim-bf16",
+                                               bolt_experts=request.param)):
         model = Bolt(snapshot, log=lambda msg: print(msg, flush=True))
     yield model
     del model
@@ -45,6 +46,19 @@ def reference(snapshot):
 
 def cosine(a, b):
     return torch.nn.functional.cosine_similarity(a.float().flatten(), b.float().flatten(), 0).item()
+
+
+def test_experts_own_one_packed_copy(model):
+    from sharar.model.bolt.config import BOLT
+    for layer in model.layers:
+        if layer.kind != "moe":
+            continue
+        block = layer.mixer
+        assert block.expert_bytes == 2 * block.experts * block.inter * (BOLT.latent // 256) * 66
+        if model.bolt_experts == "fp8":
+            assert block.iq2 is not None and not hasattr(block, "w1") and not hasattr(block, "w2")
+        else:
+            assert block.iq2 is None
 
 
 @pytest.mark.parametrize("text", [None, "The capital of France is"])

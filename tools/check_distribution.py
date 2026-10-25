@@ -41,6 +41,7 @@ def main():
         wheel = next(artifacts.glob('*.whl'))
         required = ['sharar/kernels/csrc/fp8_gemv.cu', 'sharar/kernels/csrc/w3_gemm.cu',
                     'sharar/kernels/csrc/ple_gather.cpp', 'sharar/kernels/csrc/ggml_gemm.cu',
+                    'sharar/kernels/csrc/ggml_codec.cuh', 'sharar/kernels/csrc/iq2_moe.cu',
                     'sharar/kernels/qsa/csrc/query_prep.cu',
                     'sharar/kernels/qsa/csrc/compression.cu',
                     'sharar/kernels/qsa/csrc/topk_pages.cu',

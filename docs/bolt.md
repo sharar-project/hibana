@@ -39,9 +39,14 @@ does not quantize activations. NVFP4's global gain multiplies the FP32 accumulat
 to BF16. IQ2 routed calls select experts using device ids; invalid ids on padded graph rows produce zero.
 The weighted sum is accumulated in FP32 and rounded to BF16 before the latent output projection.
 
-The first implementation uses one tensor-core tile per routed pair and output tile, including a padded row
-tile for small calls. It prioritizes a working weight-only baseline; it does not yet group tokens by expert
-to reuse weight reads during prefill. The optional FP8-compute GGML experiments remain separate from serving.
+The default BF16 path uses one tensor-core tile per routed pair and output tile, including a padded row tile
+for small calls. `SHARAR_BOLT_EXPERTS=fp8` selects `kernels/iq2_moe.py`: GPU grouping, grouped up/down projections,
+fused ReLU² and intermediate quantization, and an FP32 weighted combination. The checkpoint's IQ2 bytes
+are losslessly retiled at load and replace the original expert buffers. Activations use E4M3 with FP32 scales
+per 32 values; the down-projection pairs stay FP32 until the weighted sum rounds to BF16. This changes the
+arithmetic. The shared expert, latent, attention, Mamba and vocabulary projections keep the BF16 path.
+Temporary scratch belongs to each call and is reused between layers by the graph allocator. SSD cache
+identities distinguish the two expert arithmetic modes.
 
 Loaded model allocations are about 21.2 GiB before request pools and graphs. One FP32 Mamba slot costs
 162.34 MiB across the 40 recurrent blocks; FP8 KV costs 4 KiB per token across eight attention blocks.
@@ -49,9 +54,10 @@ The launcher and ledger budget the pools separately. The checkpoint's 24GB name 
 
 ## Profiles and limits
 
-`exact`, `fast` and `throughput` currently share the same conservative defaults: native weights, all nine routed
-experts, FP32 Mamba state, FP8 KV, up to four active requests and the SSD tier. There is no calibrated W3 copy
-or expert pruning. FP16 Mamba storage is available through the shared runtime but is not a Bolt default.
+Every profile uses native weights, all nine routed experts, FP32 Mamba state, FP8 KV, up to four active
+requests and the SSD tier. `SHARAR_BOLT_EXPERTS=bf16|fp8` selects the routed-expert arithmetic; the profiles
+default to `bf16` while the FP8 option is evaluated. There is no calibrated W3 copy or expert pruning.
+FP16 Mamba storage is available through the shared runtime but is not a Bolt default.
 
 This pin has no built-in MTP head. The pinned companion
 `nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-LiLiCorr` at `449d24140160b8e51871bfc0f0a7338abf640aa1`
