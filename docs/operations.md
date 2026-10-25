@@ -1,11 +1,12 @@
 # Operate Sharar
 
-`sharar serve bolt` serves the packed Nemotron 3.5 Bolt text model on port 30006. Its profiles share
-native weights, full top-9 routing, FP32 Mamba state, FP8 KV and SSD caching. The pinned companion LiLiCorr
-checkpoint drafts seven tokens through the parallel DFlash proposer, with exact target verification;
-`--spec 0` selects ordinary decode. `SHARAR_BOLT_EXPERTS=fp8` selects the grouped native IQ2 routed-expert
-kernel with FP8 activations for evaluation; the profiles keep BF16 activations by default. See [Bolt](bolt.md)
-for formats, limits and validation.
+`sharar serve bolt` serves the packed Nemotron 3.5 Bolt text model on port 30006 on b12x's GEMMs and fused MoE.
+`exact` serves the checkpoint encodings, all nine routed experts and FP32 Mamba state; `fast` and `throughput` add
+the calibrated 3-bit copies (a local calibration: `w3-checkpoints/bolt-current` or `SHARAR_W3_CHECKPOINT`), the int8
+Mamba state and expert sharing. Every profile serves FP8 KV and SSD caching, and the pinned companion LiLiCorr
+checkpoint drafts seven tokens through the parallel DFlash proposer with exact target verification; `--spec 0`
+selects ordinary decode. `SHARAR_BOLT_EXPERTS=fp8` selects the grouped native IQ2 routed-expert kernel with FP8
+activations. See [Bolt](bolt.md) for formats, measurements, limits and validation.
 
 ## Prerequisites
 
@@ -120,15 +121,15 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 
 | Knob | exact | fast (default) | throughput |
 |---|---|---|---|
-| Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-3 within 2.0 logits; Flash-Next DFlash2 top-2 within 1.0 | as fast |
+| Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-3 within 2.0 logits; Flash-Next DFlash2 top-2 within 1.0; Bolt off | as fast |
 | Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | Flash-Next top-3 within 2.0 (DFlash2 top-2 within 1.0); the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
-| Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next and Nemotron also the routed experts) | off | on | on |
+| Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next and Nemotron also the routed experts; Bolt's trunk and vocabulary head) | off | on | on |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next and Nemotron | as fast |
 | NVFP4 KV cache (`SHARAR_KV_FORMAT`, [below](#nvfp4-kv)) | FP8 | one Spark: NVFP4 (the 27B and Flash-Next; Nemotron serves FP8 only); two Sparks FP8 | as fast |
-| Budgeted expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_BUDGET`) | off | Flash-Next: keep 4, budget 12:64; Nemotron: keep 12, budget 48:128 | as fast |
+| Budgeted expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_BUDGET`) | off | Flash-Next: keep 4, budget 12:64; Nemotron: keep 12, budget 48:128; Bolt: keep 4, budget 16:48 | as fast |
 | Optimized QSA prefill kernels (`SHARAR_QSA_PREFILL_BACKEND`) | off (original) | Flash-Next: auto (where eligible: SM121, one or two Sparks, through 32K) | as fast |
 | Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
-| Reduced recurrent state (`SHARAR_SSM_STATE`) | off (FP32) | Nemotron: FP16 with stochastic rounding; else FP32 | 8-bit GDN state; Nemotron FP16 with stochastic rounding |
+| Reduced recurrent state (`SHARAR_SSM_STATE`) | off (FP32) | Nemotron: FP16 with stochastic rounding; Bolt: int8; else FP32 | 8-bit GDN state; Nemotron FP16 with stochastic rounding; Bolt int8 |
 
 Relaxed acceptance accepts a drafted token the target ranks within its top-k and within a logit margin of its
 argmax, so outputs are no longer the target's exact greedy continuation; a request can pin exact acceptance with
