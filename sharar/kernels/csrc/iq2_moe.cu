@@ -71,34 +71,53 @@ __device__ __forceinline__ void quant_input(const Params& p, int row) {
 template <class ID, int ROWS>
 __global__ void __launch_bounds__(512) prepare(Params p) {
   if (blockIdx.x != 0) { quant_input(p, blockIdx.x - 1); return; }
-  __shared__ int counts[kExperts], starts[kExperts];
-  const int tid = threadIdx.x, pairs = p.M * p.topk;
+  // One thread per expert: block-wide exclusive scans of the pair and work-item counts give each expert its first
+  // row and first work item, so the worklist (in expert order) and the stable pair order are written in parallel.
+  // Decode-sized routes are read once, into shared memory.
+  constexpr int kCached = 2048;
+  __shared__ int counts[kExperts], warp_rows[16], warp_tasks[16];
+  __shared__ short cached[kCached];
+  const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, pairs = p.M * p.topk;
+  const bool use_cache = pairs <= kCached;
   counts[tid] = 0;
   __syncthreads();
   for (int q = tid; q < pairs; q += 512) {
     const int e = local_expert<ID>(p, q);
+    if (use_cache) cached[q] = static_cast<short>(e);
     if (e >= 0) atomicAdd(counts + e, 1);
   }
   __syncthreads();
-  if (tid == 0) {
-    int offset = 0, task = 0;
-    for (int e = 0; e < p.E; ++e) {
-      starts[e] = offset;
-      for (int r = 0; r < counts[e]; r += ROWS) {
-        p.work[3 * task] = e;
-        p.work[3 * task + 1] = offset + r;
-        p.work[3 * task + 2] = min(ROWS, counts[e] - r);
-        ++task;
-      }
-      offset += counts[e];
+  const int n = counts[tid], tasks = (n + ROWS - 1) / ROWS;
+  int rows = n, items = tasks;  // inclusive scans within the warp
+#pragma unroll
+  for (int d = 1; d < 32; d <<= 1) {
+    const int r = __shfl_up_sync(0xffffffffu, rows, d), t = __shfl_up_sync(0xffffffffu, items, d);
+    if (lane >= d) { rows += r; items += t; }
+  }
+  if (lane == 31) { warp_rows[warp] = rows; warp_tasks[warp] = items; }
+  __syncthreads();
+  if (warp == 0) {  // inclusive scans of the 16 warp totals
+    int r = lane < 16 ? warp_rows[lane] : 0, t = lane < 16 ? warp_tasks[lane] : 0;
+#pragma unroll
+    for (int d = 1; d < 16; d <<= 1) {
+      const int rr = __shfl_up_sync(0xffffffffu, r, d), tt = __shfl_up_sync(0xffffffffu, t, d);
+      if (lane >= d) { r += rr; t += tt; }
     }
-    *p.count = task;
+    if (lane < 16) { warp_rows[lane] = r; warp_tasks[lane] = t; }
   }
   __syncthreads();
-  if (tid < p.E && counts[tid]) {
-    int position = starts[tid];
+  const int start = rows - n + (warp ? warp_rows[warp - 1] : 0);
+  const int first = items - tasks + (warp ? warp_tasks[warp - 1] : 0);
+  for (int r = 0; r < tasks; ++r) {
+    p.work[3 * (first + r)] = tid;
+    p.work[3 * (first + r) + 1] = start + r * ROWS;
+    p.work[3 * (first + r) + 2] = min(ROWS, n - r * ROWS);
+  }
+  if (tid == 0) *p.count = warp_tasks[15];
+  if (n) {
+    int position = start;
     for (int q = 0; q < pairs; ++q)
-      if (local_expert<ID>(p, q) == tid) p.order[position++] = q;
+      if ((use_cache ? cached[q] : local_expert<ID>(p, q)) == tid) p.order[position++] = q;
   }
 }
 
