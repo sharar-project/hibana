@@ -95,9 +95,6 @@ class Target:
     recurrence: str = "gdn"
     # The checkpoint's prefix of the in-checkpoint MTP layers' tensors (`cache/spec_budget.py`).
     mtp_prefix: str = "mtp."
-    # Resident MTP weight bytes relative to the checkpoint, and its largest staged tensor when streamed.
-    mtp_weight_divisor: int = 1
-    mtp_load_tensor_bytes: int | None = None
     # The first ordinary-text token id: random warm-up prompts draw from it up (below it a vocabulary keeps control ids).
     first_text_token: int = 0
     # Restrict cache formats when a target's attention implements only a subset (None: the shared pool's formats).
@@ -317,7 +314,6 @@ def _flashnext() -> Target:
         indexer_budget=c.INDEXER_BUDGET, indexer_compress_ratio=c.INDEXER_COMPRESS_RATIO,
         indexer_n_heads=c.INDEXER_N_HEADS, indexer_head_dim=c.INDEXER_HEAD_DIM, mtp_layers=c.MTP_LAYERS,
         w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION, draft_pins=tuple((name, *pin) for name, pin in c.DRAFT_PINS.items()),
-        mtp_weight_divisor=2, mtp_load_tensor_bytes=4 * 2**20,
     )
 
 

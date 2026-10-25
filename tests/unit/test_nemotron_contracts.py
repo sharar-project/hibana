@@ -1,12 +1,11 @@
 """Startup dispatch, memory accounting and calibration resume without a GPU backend."""
 import json
-import struct
 import sys
 from types import SimpleNamespace
 
 import pytest
 
-from sharar.cache.spec_budget import tensor_bytes, verify_bytes
+from sharar.cache.spec_budget import verify_bytes
 from sharar.engine.contracts import ProposerContext
 from sharar.target import NEMOTRON
 from tests.ngram_proposer import NGramProposer
@@ -34,18 +33,7 @@ def test_verify_budget_includes_both_mamba_groups_and_shared_positions():
     # Two requests, four verified inputs, forty layers: BF16 x|B|C, FP32 dt/dA,
     # one shared int32 position per input, plus BF16 three-token convolution windows.
     assert verify_bytes(2, 4, "reconstruct", NEMOTRON) == 26_542_112
-    assert verify_bytes(2, 4, "snapshots", NEMOTRON, state_itemsize=2) == 690_749_440
-    assert verify_bytes(2, 4, "snapshots", NEMOTRON, state_itemsize=4) == 1_361_838_080
-
-
-def test_mtp_budget_reads_only_indexed_shards(tmp_path):
-    name = NEMOTRON.mtp_prefix + "weight"
-    header = json.dumps({name: {"dtype": "F32", "shape": [4], "data_offsets": [0, 16]}}).encode()
-    (tmp_path / "mtp.safetensors").write_bytes(struct.pack("<Q", len(header)) + header + bytes(16))
-    (tmp_path / "unrelated.safetensors").write_bytes(b"not a header")
-    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {
-        name: "mtp.safetensors", "language_model.backbone.weight": "unrelated.safetensors"}}))
-    assert tensor_bytes(tmp_path, NEMOTRON.mtp_prefix) == (16, 16)
+    assert verify_bytes(2, 4, "snapshots", NEMOTRON) == 1_361_838_080
 
 
 @pytest.mark.parametrize("kv", ["nvfp4", "sim-fp4", "sim-k8v4", "sim-bf16"])

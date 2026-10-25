@@ -29,16 +29,11 @@ class SpecConfig:
 
 
 def tensor_bytes(snapshot, prefix=''):
-    """Safetensors headers only: no tensor materialization or backend import. With a `prefix` and an index, only the
-    shards the index names for it."""
+    """Safetensors headers only: no tensor materialization or backend import."""
     total, largest = 0, 0
     shards = sorted(snapshot.glob('*.safetensors'))
     if not shards:
         raise FileNotFoundError(f'no *.safetensors under {snapshot}: download the pinned checkpoint into the model cache')
-    index = snapshot / 'model.safetensors.index.json'
-    if prefix and index.is_file():
-        weight_map = json.loads(index.read_text())['weight_map']
-        shards = sorted({snapshot / shard for name, shard in weight_map.items() if name.startswith(prefix)})
     for shard in shards:
         with shard.open('rb') as stream:
             header = json.loads(stream.read(struct.unpack('<Q', stream.read(8))[0]))
@@ -53,12 +48,10 @@ def tensor_bytes(snapshot, prefix=''):
     return total, largest
 
 
-def verify_bytes(batch, steps, strategy, target=None, state_itemsize=4):
-    """The verify buffers: every step's state in the pool's dtype (`state_itemsize`; snapshots) or the accepted-state
-    replay's inputs (reconstruct), plus the convolution windows."""
+def verify_bytes(batch, steps, strategy, target=None):
     t = target or DEFAULT_TARGET
     layers = len(t.gdn_layer_ids)
-    ssm = layers * batch * t.linear_num_value_heads * t.linear_value_head_dim * t.linear_key_head_dim * state_itemsize
+    ssm = layers * batch * t.linear_num_value_heads * t.linear_value_head_dim * t.linear_key_head_dim * 4
     conv = layers * batch * steps * t.conv_dim * t.conv_state_len * 2
     if strategy == 'snapshots':
         return ssm * steps + conv
@@ -69,19 +62,20 @@ def verify_bytes(batch, steps, strategy, target=None, state_itemsize=4):
     return compact + conv
 
 
-def budget(spec, batch, *, cache_slots=96, target=None, state_itemsize=4):
+def budget(spec, batch, *, cache_slots=96, target=None):
     """Return fixed future bytes and extra bytes per target KV page.
 
     Header-derived weights, exact persistent tensor shapes, plus explicit
     bounded load/graph/activation reserves. Reserves are not claimed allocations.
     """
     t = target or DEFAULT_TARGET
-    fixed = verify_bytes(batch, spec.depth + 1, spec.state_strategy, t, state_itemsize)
+    fixed = verify_bytes(batch, spec.depth + 1, spec.state_strategy, t)
     page_bytes = 0
     if spec.name == 'mtp':
         weights, largest = tensor_bytes(t.snapshot_dir(), t.mtp_prefix)
-        weights //= t.mtp_weight_divisor
-        largest = t.mtp_load_tensor_bytes or largest
+        if t.family == 'flashnext':
+            # The expert tensors (most of the bytes) are stored FP8 and loaded one expert at a time.
+            weights, largest = weights // 2, 4 * 2**20
         fixed += weights + 2 * largest + 128 * 2**20
         page_bytes = 2 * t.num_kv_heads * t.head_dim * 2
     elif spec.name == 'dflash2':

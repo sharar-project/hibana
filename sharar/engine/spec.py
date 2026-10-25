@@ -99,7 +99,7 @@ class SpecDecoder:
                 self.replay = AcceptedState(executor.state_pool, n, self.steps, executor.target.linear_num_key_heads, cuda=cuda)
             self.inter_ssm_all, self.inter_ssm = None, {}
         else:
-            self.inter_ssm_all = torch.zeros((len(layer_ids), n, self.steps, *ssm_shape), dtype=executor.state_pool.ssm_all.dtype, device=self.device)
+            self.inter_ssm_all = torch.zeros((len(layer_ids), n, self.steps, *ssm_shape), dtype=torch.float32, device=self.device)
             self.inter_ssm = {lid: self.inter_ssm_all[j] for j, lid in enumerate(layer_ids)}
         self.conv_windows_all = torch.zeros((len(layer_ids), n, self.steps, *conv_shape), dtype=torch.bfloat16, device=self.device)
         self.conv_windows = {lid: self.conv_windows_all[j] for j, lid in enumerate(layer_ids)}

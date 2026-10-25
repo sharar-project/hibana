@@ -74,8 +74,7 @@ class Executor:
             future, extra_page = 0, 0
             if spec_config is not None:
                 from sharar.cache.spec_budget import budget
-                future, extra_page = budget(spec_config, max_batch, cache_slots=cache_slots, target=self.target,
-                                            state_itemsize=(self.ssm_format.dtype or torch.float32).itemsize)
+                future, extra_page = budget(spec_config, max_batch, cache_slots=cache_slots, target=self.target)
             if cfg.ssd:  # the SSD tier pins its staging buffers in the DRAM the pools come from: plan around them
                 from sharar.cache.ssd import SsdTier
                 future += SsdTier.memory_bound(self.target, cfg.ssd_block_tokens, extra_page, **cfg.ssd_buffers)
@@ -205,8 +204,7 @@ class Executor:
         from sharar.cache.spec_budget import SpecConfig, budget
         from sharar.cache.ledger import check_load_headroom
         fixed, per_page = budget(SpecConfig(proposer, k, state_strategy, draft_precision, draft_dir), self.max_batch,
-                                 cache_slots=self.state_pool.num_slots, target=self.target,
-                                 state_itemsize=(self.ssm_format.dtype or torch.float32).itemsize)
+                                 cache_slots=self.state_pool.num_slots, target=self.target)
         after = after_plan_bytes(self.max_batch)
         check_load_headroom(fixed + per_page * self.kv_pool.num_pages + after["graphs"] + after["first_use"] + after["activations"])
         context = ProposerContext(self.device, self.max_batch, self.max_context)

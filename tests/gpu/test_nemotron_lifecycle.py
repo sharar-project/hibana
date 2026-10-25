@@ -38,8 +38,7 @@ def test_mtp_reconstruction_commits_real_batches(model, state_format):
         ex = Executor(loaded, num_pages=4096, num_slots=8, max_batch=2, max_context=512,
                       spec_config=SpecConfig("mtp", 3, "reconstruct"))
         ex.capture_graphs(log=print)
-        assert ex.spec.bytes == verify_bytes(2, 4, "reconstruct", NEMOTRON,
-                                             state_itemsize=ex.state_pool.ssm_all.element_size())
+        assert ex.spec.bytes == verify_bytes(2, 4, "reconstruct", NEMOTRON)
         before = ex.kv_pool.free_count, ex.state_pool.free_count
         for graphs in (False, True):
             ex.use_graphs = graphs
