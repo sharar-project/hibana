@@ -134,8 +134,8 @@ def run_engine(args, parser) -> int:
         parser.error(f"--max-batch must be in [1, {MAX_BATCH}]")
     spec_depths = args.spec_depths if args.spec_depths is not None else cfg.spec_depths
     target = args.target or cfg.target
-    if target == "bolt" and args.spec:
-        parser.error("Bolt has no in-checkpoint MTP; use --spec 0")
+    if target == "bolt" and args.spec and (args.proposer != "dflash2" or not 1 <= args.spec <= 7):
+        parser.error("Bolt has no in-checkpoint MTP; use LiLiCorr DFlash2 at depth 1..7, or --spec 0")
     if args.tp > 1:
         family = targets.get(target).family
         if family not in ("qwen38", "flashnext"):

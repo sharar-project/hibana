@@ -33,16 +33,18 @@ class ParallelGraphs:
                     paged_kv_indptr_buf=st['kv'], paged_kv_indices_buf=st['indices'],
                     paged_kv_last_page_len_buf=st['last'])
                 self.static[batch, depth] = st
+                if getattr(p.model, 'uses_context_anchor', False):
+                    st['anchor_features'] = torch.zeros((batch, p.model.hidden), dtype=torch.bfloat16, device=device)
                 p._plan(st['wrapper'], [torch.arange(i * s, (i + 1) * s, device=device) for i in range(batch)], batch, s)
                 def forward(st=st):
                     st['hidden'] = p.model.forward(st['tokens'], st['positions'], st['pages'], p.caches, st['wrapper'])[:, 1:]
-                    st['candidates'], st['scores'] = p.model.selector(st['hidden'], st['tokens'][:, 0])
+                    st['candidates'], st['scores'] = p.select(st['hidden'], st['tokens'][:, 0], st.get('anchor_features'))
                 self.graphs[batch, depth] = graph_set.capture(self.pool, forward)
                 if log:
                     log(f'  captured {p.name} backbone/projection graph for batch {batch}, depth {depth}')
             greedy_lattice(st['candidates'], st['scores'])  # its steps are a compile-time constant: compiled here, not mid-serving
 
-    def run(self, tokens, positions, pages, histories):
+    def run(self, tokens, positions, pages, histories, *, anchor_features=None):
         p, (batch, s) = self.proposer, tokens.shape
         depth = s - 1
         if depth not in self.sizes:
@@ -52,6 +54,9 @@ class ParallelGraphs:
         st['tokens'][:batch].copy_(tokens)
         st['positions'][:batch * s].copy_(positions)
         st['pages'][:batch * s].copy_(pages)
+        if 'anchor_features' in st:
+            st['anchor_features'].zero_()
+            st['anchor_features'][:batch].copy_(anchor_features)
         padded = list(histories)
         if size > batch:
             st['tokens'][batch:].zero_()

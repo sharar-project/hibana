@@ -35,8 +35,8 @@ TARGET_SETTINGS = {
     # lm_head, its top 16 rescored by the FP8 rows (lossless: acceptance checks every draft against the target)
     "nemotron": {"SHARAR_SERVICE": "sharar-nemotron", "SHARAR_PORT": "30005", "SHARAR_PROPOSER": "mtp",
                  "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_HEAD": "w2"},
-    "bolt": {"SHARAR_SERVICE": "sharar-bolt", "SHARAR_PORT": "30006", "SHARAR_PROPOSER": "mtp",
-             "SHARAR_SPEC": "0", "SHARAR_VERIFY_STATE": "reconstruct"},
+    "bolt": {"SHARAR_SERVICE": "sharar-bolt", "SHARAR_PORT": "30006", "SHARAR_PROPOSER": "dflash2",
+             "SHARAR_DRAFT": "pinned", "SHARAR_DRAFT_PRECISION": "bf16", "SHARAR_VERIFY_STATE": "reconstruct"},
 }
 
 # The serving profiles: the default of every speed/fidelity knob a setting does not fix.
@@ -65,8 +65,8 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
         if profile not in PROFILE_NAMES:
             raise ValueError(f"unknown serving profile {profile!r}")
         # Checkpoint-native weights, full top-9 routing and FP32 state in every profile.
-        # The pin has no MTP; the separate LiLiCorr drafter is not yet integrated.
-        return {"SHARAR_SPEC": "0", "SHARAR_W3_DECODE": "0", "SHARAR_ACCEPT_DEFAULT": "off",
+        # The companion LiLiCorr draft has seven trained candidate slots and exact target verification.
+        return {"SHARAR_SPEC": "7", "SHARAR_W3_DECODE": "0", "SHARAR_ACCEPT_DEFAULT": "off",
                 "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_DEVICE_ACCEPT": "0", "SHARAR_MAX_BATCH": "4",
                 "SHARAR_SSM_STATE": "fp32", "SHARAR_KV_FORMAT": "fp8", "SHARAR_SSD": "1",
                 "SHARAR_MOE_KEEP": "0", "SHARAR_MOE_BUDGET": "0"}
@@ -396,7 +396,9 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
         values["SHARAR_DRAFT_PRECISION"] = "bf16"  # the target's FP8 draft applies when its parallel draft runs
     precision, proposer, spec = values.get("SHARAR_DRAFT_PRECISION"), values["SHARAR_PROPOSER"], int(values.get("SHARAR_SPEC", "15"))
     if name == "bolt":
-        _check(spec == 0, "Bolt has no in-checkpoint MTP; its companion drafter is not yet supported (SHARAR_SPEC=0)")
+        _check(spec == 0 or (proposer == "dflash2" and 1 <= spec <= 7),
+               "Bolt has no in-checkpoint MTP; use LiLiCorr DFlash2 at depth 1..7, or SHARAR_SPEC=0")
+        _check(precision == "bf16", "Bolt LiLiCorr uses its published W4A16/BF16 draft weights")
         _check(values.get("SHARAR_W3_DECODE", "0") == "0", "Bolt serves its native packed weights (SHARAR_W3_DECODE=0)")
         _check(kv_format in ("fp8", "sim-bf16"), "Bolt supports FP8 KV or sim-bf16 for parity")
     _check(proposer in ("mtp", "dflash2"), f"SHARAR_PROPOSER must be mtp or dflash2 (got {proposer!r})")

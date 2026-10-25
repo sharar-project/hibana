@@ -173,6 +173,9 @@ class ParallelDraftModel:
     def _finish_conv(self, hidden, coefficients, name):
         return convolve(hidden, coefficients, self.weights[name + '.base_kernel'][1])
 
+    def attend(self, query, cache, attention, layer):
+        return attention.run(query, cache)
+
     def forward(self, tokens, positions, pages, caches, attention):
         """Static noise-block forward. attention is a planned FlashInfer wrapper."""
         batch, steps = tokens.shape
@@ -188,7 +191,7 @@ class ParallelDraftModel:
             k = rms(k.view(-1, self.kv_heads, self.head_dim), self.weights[p + 'self_attn.k_norm.weight'])
             q = rotate(q, positions, self.cos, self.sin)
             rotate_and_cache(k, v.view(-1, self.kv_heads, self.head_dim), positions, self.cos, self.sin, caches[layer], pages)
-            attended = attention.run(q, caches[layer]).reshape(batch, steps, self.heads * self.head_dim)
+            attended = self.attend(q, caches[layer], attention, layer).reshape(batch, steps, self.heads * self.head_dim)
             projected = self._linear(attended, p + 'self_attn.o_proj.weight')
             hidden = residual + self._finish_conv(projected, coefficients, p + 'attention_conv')
             residual = hidden

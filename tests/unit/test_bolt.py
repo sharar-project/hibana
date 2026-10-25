@@ -38,24 +38,38 @@ def test_block_metadata_takes_precedence_and_is_validated(tmp_path, field, value
 
 @pytest.mark.parametrize("profile", settings.PROFILE_NAMES)
 @pytest.mark.parametrize("name", ["bolt", "nemotron-bolt"])
-def test_profiles_keep_native_weights_all_experts_and_no_mtp(tmp_path, profile, name):
+def test_profiles_keep_native_weights_and_use_pinned_lilicorr(tmp_path, profile, name):
     env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
     s = settings.resolve(name, profile, env=env)
-    assert (s.target, s.port, s.service, s.spec) == ("bolt", 30006, "sharar-bolt", 0)
+    assert (s.target, s.port, s.service, s.spec) == ("bolt", 30006, "sharar-bolt", 7)
     assert s.get("SHARAR_W3_DECODE") == s.get("SHARAR_MOE_KEEP") == s.get("SHARAR_DEVICE_ACCEPT") == "0"
     assert s.get("SHARAR_SSM_STATE") == "fp32"
-    assert not s.parallel_draft
+    assert s.parallel_draft and s.proposer == 'dflash2'
     assert settings.model_config(s.target) is config
-    assert preflight.pinned_snapshots(s) == [(s.hf_cache, config.MODEL_ID, config.MODEL_REVISION)]
+    assert preflight.pinned_snapshots(s) == [(s.hf_cache, config.MODEL_ID, config.MODEL_REVISION),
+                                             (s.hf_cache, *config.DRAFT_PINS['dflash2'])]
     assert preflight.ensure_w3(s, fetch=False) is None
 
 
 def test_bolt_rejects_unsupported_drafter_and_parallelism(tmp_path):
     env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
     with pytest.raises(ValueError, match="no in-checkpoint MTP"):
-        settings.resolve("bolt", env=env, overrides={"SHARAR_SPEC": "3"})
+        settings.resolve("bolt", env=env, overrides={"SHARAR_SPEC": "3", "SHARAR_PROPOSER": "mtp"})
     with pytest.raises(ValueError, match="one Spark"):
         settings.resolve("bolt", env=env, tp=2)
+
+
+def test_bolt_lilicorr_depth_limits_and_plain_decode(tmp_path):
+    env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
+    for depth in (1, 3, 7):
+        assert settings.resolve('bolt', env=env, overrides={'SHARAR_SPEC': str(depth)}).spec == depth
+    with pytest.raises(ValueError, match='depth 1..7'):
+        settings.resolve('bolt', env=env, overrides={'SHARAR_SPEC': '8'})
+    with pytest.raises(ValueError, match='published W4A16/BF16'):
+        settings.resolve('bolt', env=env, overrides={'SHARAR_DRAFT_PRECISION': 'fp8'})
+    plain = settings.resolve('bolt', env=env, overrides={'SHARAR_SPEC': '0'})
+    assert not plain.parallel_draft
+    assert preflight.pinned_snapshots(plain) == [(plain.hf_cache, config.MODEL_ID, config.MODEL_REVISION)]
 
 
 def test_bolt_accepts_mamba_state_storage(tmp_path):

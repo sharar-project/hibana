@@ -1,8 +1,9 @@
 # Operate Sharar
 
 `sharar serve bolt` serves the packed Nemotron 3.5 Bolt text model on port 30006. Its profiles currently share
-native weights, full top-9 routing, FP32 Mamba state, FP8 KV, SSD caching and no speculation. The pin has no MTP
-head. See [Bolt](bolt.md) for formats, limits and validation.
+native weights, full top-9 routing, FP32 Mamba state, FP8 KV and SSD caching. The pinned companion LiLiCorr
+checkpoint drafts seven tokens through the parallel DFlash proposer, with exact target verification;
+`--spec 0` selects ordinary decode. See [Bolt](bolt.md) for formats, limits and validation.
 
 ## Prerequisites
 

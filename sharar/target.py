@@ -347,6 +347,7 @@ def _bolt() -> Target:
                    moe_intermediate_size=0, mtp_layers=0, w3_repo=None, w3_revision=None,
                    prefill_chunk=c.PREFILL_CHUNK, solo_prefill_chunk=0,
                    weight_load_peak_bytes=c.WEIGHT_LOAD_PEAK_BYTES,
+                   draft_pins=tuple((name, *pin) for name, pin in c.DRAFT_PINS.items()),
                    moe_block_specs=tuple((i, e, width, 9) for i, e, width in c.MOE_SPECS))
 
 

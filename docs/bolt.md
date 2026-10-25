@@ -8,6 +8,8 @@ the normal launcher. The C-RADIO vision encoder and projector are not loaded.
 ```bash
 sharar serve bolt
 sharar serve bolt --exact
+sharar serve bolt --spec 3  # a shorter prefix of LiLiCorr's seven trained slots
+sharar serve bolt --spec 0 # ordinary decode
 sharar chat bolt
 ```
 
@@ -51,8 +53,18 @@ The launcher and ledger budget the pools separately. The checkpoint's 24GB name 
 experts, FP32 Mamba state, FP8 KV, up to four active requests and the SSD tier. There is no calibrated W3 copy
 or expert pruning. FP16 Mamba storage is available through the shared runtime but is not a Bolt default.
 
-This pin has no built-in MTP head. Speculation defaults to zero and an enabled MTP is rejected before loading.
-The companion LiLiCorr/DFlash model needs a separate proposer integration. Tensor parallel and image/video
+This pin has no built-in MTP head. The pinned companion
+`nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-LiLiCorr` at `449d24140160b8e51871bfc0f0a7338abf640aa1`
+uses the parallel DFlash proposer (`dflash2` in Sharar), sharing the target's embeddings and vocabulary head.
+All profiles default to seven draft tokens with exact target verification; `--spec N` selects 1–7 and
+`--spec 0` turns speculation off. Longer drafts and MTP are rejected. The draft keeps its published NVFP4/BF16
+weights (`--draft-precision bf16`); the precision name refers to its activations and floating-point matrices.
+
+The five-layer draft uses six target feature taps, block-local grouped convolutions, RoPE and 1,024-token
+sliding attention with learned virtual sinks. The two-layer LiLiCorr head scores transitions between eight
+candidates per position; sampled proposals carry the actual conditional probabilities to the target verifier.
+Draft features and projected KV follow the parallel adapter's request, prefix-cache and SSD lifecycle. Shorter
+drafts use the learned slot prefix without resizing parameters. Tensor parallel and image/video
 inputs are not implemented for this target. BF16 KV (`SHARAR_KV_FORMAT=sim-bf16`, with SSD off) is available for
 numerical parity; packed NVFP4 KV is not enabled.
 
@@ -62,9 +74,12 @@ numerical parity; packed NVFP4 KV is not enabled.
 pairs, padded rows, ReLU² and CUDA graph replay. `tests/gpu/test_bolt_model.py` checks all 88 residual outputs
 and logits against the independent PyTorch reference, the heterogeneous MoE blocks against Transformers,
 chunked prefill, prefix reuse, graph decode and exact Mamba-state restoration from the SSD tier.
+`tests/gpu/test_lilicorr.py` checks the published packed correlator against an independent unpacked reference,
+trained slot prefixes, graph replay and virtual-sink attention. The Bolt LiLiCorr integration checks generation,
+acceptance, target feature taps and continuation through the cache lifecycle.
 
 ```bash
-SHARAR_RUN_GPU=1 uv run pytest tests/gpu/test_bolt_kernels.py tests/gpu/test_bolt_model.py
+SHARAR_RUN_GPU=1 uv run pytest tests/gpu/test_bolt_kernels.py tests/gpu/test_bolt_model.py tests/gpu/test_lilicorr.py tests/gpu/test_bolt_lilicorr.py
 uv run python tools/evaluate.py --target bolt --profile exact --suite quick --name bolt
 ```
 

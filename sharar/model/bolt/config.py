@@ -16,6 +16,8 @@ MODEL_CACHE_KEY = "models--nvidia--NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB"
 MODEL_ARCHITECTURE = "NemotronH_Omni_Reasoning_V3"
 STOP_TOKEN_IDS = (11, 2)
 W3_REPO = W3_REVISION = None
+DRAFT_PINS = {'dflash2': ('nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-LiLiCorr',
+                         '449d24140160b8e51871bfc0f0a7338abf640aa1')}
 PREFILL_CHUNK = 2048
 # Packed tensors plus a staged MoE block, tokenizer/runtime and load temporaries.
 WEIGHT_LOAD_PEAK_BYTES = 28 * 2**30
