@@ -274,7 +274,7 @@ def test_flashnext_serves_dflash2_on_request(env, profile):
     assert s.get("SHARAR_SPEC_DEPTHS") == {"exact": "", "fast": "2:7,4:7", "throughput": "16:3,32:3,64:3,128:3"}[profile]
     assert s.get("SHARAR_ACCEPT_DEFAULT") == {"exact": "off", "fast": "2:1.0", "throughput": "2:1.0"}[profile]  # MTP keeps 3:2.0
     assert s.get("SHARAR_SPEC") == {"exact": "7", "fast": "9", "throughput": "4"}[profile]
-    assert s.get("SHARAR_SPEC_POLICY") == ("" if profile == "exact" else "budget")
+    assert s.get("SHARAR_SPEC_POLICY") == ""  # adaptive verification on request (padded graphs)
     mtp = resolve(env, "flashnext", profile)
     assert mtp.get("SHARAR_SPEC_POLICY") == ""
     assert (mtp.proposer, mtp.get("SHARAR_DRAFT_PRECISION")) == ("mtp", "bf16") and not mtp.parallel_draft
@@ -347,15 +347,17 @@ def test_host_floor_setting(env, tmp_path):
 
 
 def test_adaptive_verification_for_dflash2_outside_exact(env):
-    # DFlash2 (the 27B's own drafter, Flash-Next's on request) verifies what its drafts' scores pay for in `fast` and
-    # `throughput`, on one Spark or two; `exact` keeps the fixed depth so its runs repeat; MTP keeps its own policy
+    # the 27B's DFlash2 verifies what its drafts' scores pay for in `fast` and `throughput`, on one Spark or two;
+    # Flash-Next's DFlash2 on request (SHARAR_SPEC_POLICY=budget); `exact` keeps the fixed depth; MTP keeps its own
     for tp in (1, 2):
         for profile in ("fast", "throughput"):
             assert launch.profile_defaults(profile, "qwen38", tp=tp)["SHARAR_SPEC_POLICY"] == "budget"
-            assert launch.profile_defaults(profile, "flashnext", tp=tp, proposer="dflash2")["SHARAR_SPEC_POLICY"] == "budget"
+            assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "flashnext", tp=tp, proposer="dflash2")
             assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "flashnext", tp=tp)
             assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "qwen38", tp=tp, proposer="mtp")
         assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults("exact", "qwen38", tp=tp)
     assert resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "fixed"}).get("SHARAR_SPEC_POLICY") == "fixed"
+    assert resolve(env, "flashnext", "fast", overrides={"SHARAR_PROPOSER": "dflash2", "SHARAR_SPEC_POLICY": "budget"}).get(
+        "SHARAR_SPEC_POLICY") == "budget"
     with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY"):
         resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "auto"})

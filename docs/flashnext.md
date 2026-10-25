@@ -113,9 +113,11 @@ draft and feedback graphs, device-resident acceptance, and retained features thr
 - **Taps.** The drafter reads layers 5, 15, 25, 35 and 45, each the FP32 mean of the four hyper streams leaving the
   layer (`flashnext_fused.stream_mean`), as the publisher's SGLang capture defines them. Its rows go through the
   lm_head alone (`FlashNext.head_logits`), not the mixer, which reads hyper streams.
-- **Depth.** `fast` and `throughput` draft the whole block each round and verify what its scores pay for
-  ([adaptive verification](operations.md#adaptive-verification-dflash2)): one depth for the batch, padded graphs at
-  every candidate depth up to the cap, with the pinned draft's own calibration (held-out AUC 0.872). Under budgeted
+- **Depth.** With `SHARAR_SPEC_POLICY=budget`, `fast` and `throughput` draft the whole block each round and verify
+  what its scores pay for ([adaptive verification](operations.md#adaptive-verification-dflash2)): one depth for the
+  batch, padded graphs at every candidate depth up to the bucket's cap, with the pinned draft's own calibration
+  (fitted under top-2 within 1.0, held-out AUC 0.868). It is off by default: within the caps its rows cost little,
+  and verifying fewer lost tokens (4 requests -6.5%, larger batches equal). Under budgeted
   expert selection a verify forward reads its cap's experts whatever its rows (one request: 32-35 ms a round from
   depth 3 to 15, 3-bit experts), so a deeper round guarantees each checked token fewer of its own experts
   (2 x cap / rows). The depth tables stay as caps per batch bucket, so the policy verifies at or below them: `fast`
