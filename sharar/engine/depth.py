@@ -211,9 +211,23 @@ class RowBudget:
         needed = b * (depth + 1) + bucket - b  # the bucket's padded sequences take a row each
         return next(r for r in self.budgets[bucket] if r >= needed)
 
+    # A saving smaller than this (ms, or this share of the full round) is timing noise: one request on Flash-Next verifies
+    # 1 or 9 drafts in 16.6-18.1 ms (not even monotone), and verifying fewer there lost 4% of the tokens for no shorter round
+    NOISE_MS, NOISE_SHARE = 1.0, 0.03
+
     def cost(self, bucket: int, rows: int, sampled: bool = False) -> float:
-        """Expected ms of a round: the verify graph and the fitted rest."""
-        return self.costs[bucket, rows] + self.overhead.get((bucket, sampled), 0.0)
+        """Expected ms of a round: the verify graph and the fitted rest. Rows saving less than the noise floor against
+        the bucket's full verification cost as much as it, so the rule verifies every draft where rows are free."""
+        rest = self.overhead.get((bucket, sampled), 0.0)
+        full = self.costs.get((bucket, self.full_rows(bucket)))
+        own = self.costs[bucket, rows]
+        if full is not None and full - own < max(self.NOISE_MS, self.NOISE_SHARE * (full + rest)):
+            own = max(own, full)
+        return own + rest
+
+    def full_rows(self, bucket: int) -> int:
+        """The rows a bucket's full verification takes: every request at the cap."""
+        return self.budgets[bucket][-1] if self.packed else bucket * (self.depth + 1)
 
     def expected_tokens(self, depth: int, sampled: bool = False) -> float:
         """Tokens a request emits per round at `depth` from past rounds: 1 + sum_{j<=depth} P(at least j accepted)."""

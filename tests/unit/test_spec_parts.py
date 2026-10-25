@@ -302,3 +302,19 @@ def test_tensor_parallel_ranks_learn_the_same_round_times_at_the_same_round(monk
         decoder._round_timings.append((1, 16, Event(0.0), Event(30.0 + i), 5, False))
         assert len(learned) == (every if i > every else 0)
     assert learned == [(1, 16, 31.0 + i) for i in range(every)]
+
+
+def test_row_budget_verifies_every_draft_where_rows_are_free():
+    """A saving under the noise floor (1 ms, 3% of the round) is no saving: Flash-Next's one request verifies 1 to 9
+    drafts in 16.6-18.1 ms, so unsure drafts still all verify there; a wide bucket's rows cost real time."""
+    from sharar.engine.depth import RowBudget
+    policy = RowBudget(9, (1, 8), candidates=range(1, 10))
+    for d in range(1, 10):
+        policy.costs[1, d + 1] = 16.6 + 0.17 * d
+        policy.costs[8, 8 * (d + 1)] = 20.0 + 0.5 * 8 * (d + 1)  # 0.5 ms a row
+    for key in ((1, False), (8, False)):
+        policy.overhead[key] = 20.0
+    unsure = torch.full((8, 9), 0.4)
+    assert policy.allot(_requests(1), unsure[:1], 9) == ([9], 10)
+    limits, _ = policy.allot(_requests(8), unsure, 9)
+    assert limits[0] < 9
