@@ -213,15 +213,18 @@ target's outputs are the same and the committed recurrent state is bitwise the h
 ## Recurrent retention
 
 `reconstruct` is the default (`--verify-state`, `SHARAR_VERIFY_STATE`), and a quantized recurrent state
-(`SHARAR_SSM_STATE=int8/int4`) requires it. It retains compact recurrence inputs, replays exactly the
+(`SHARAR_SSM_STATE=int8/int4`, GDN or Mamba-2) requires it. It retains compact recurrence inputs, replays exactly the
 stop/budget-truncated accepted prefix from untouched committed state, and writes directly into the private committed
 slots authorized by `StateManager.commit_reconstructed`, which validates counts, verified width, unique non-dummy
 slots and convolution bounds before any mutation. Each kernel program reads its whole K-by-V tile before overwriting
 it. On the 27B's FP32 pools the verify recurrence and the replay are the CUDA pair of `kernels/gdn_verify.py`, one
 arithmetic, so the committed state is the verify's own bit for bit (Flash-Next and other shapes keep the vendored Triton
 pair). A failure after mutation marks every affected request uncacheable, and a post-write `MemoryError` is not
-retried, so no retry reuses partially advanced state. `snapshots` retains every FP32 verify state and is the test
-reference for reconstruction (`tests/gpu/test_lifecycle.py`).
+retried, so no retry reuses partially advanced state. `snapshots` retains every verify state (in the pool's dtype)
+and is the test reference for reconstruction (`tests/gpu/test_lifecycle.py`). An FP16 Mamba-2 state
+(`SHARAR_SSM_STATE=fp16_sr`, Nemotron) works with both: verify rounds its running state after every step
+exactly as decode stores it, with the same stochastic-rounding bits (keyed on the token position and layer, never on
+the slot or batch), so snapshots, replays and decode stay bitwise equal within the format.
 
 ## Failure and lifecycle invariants
 

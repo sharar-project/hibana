@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import torch
@@ -48,6 +48,10 @@ class Executor:
 
     def __init__(self, model: Qwen38, num_pages: int | None = None, num_slots: int | None = None, max_batch: int = 4, use_cache: bool = True, log=None, max_context: int | None = None, spec_config=None):
         self.target: Target = model.target
+        from sharar.engine.config import current
+        if self.target.kv_formats is not None and current().kv_format not in self.target.kv_formats:
+            raise ValueError(f"{self.target.name} supports SHARAR_KV_FORMAT=" + ", ".join(self.target.kv_formats)
+                             + f" only ({current().kv_format} is not supported for it yet)")
         max_context = self.target.context_length if max_context is None else max_context
         self.profile = ServingProfile(max_context=max_context, max_batch=max_batch, chunk_size=self.target.prefill_chunk,
                                       solo_chunk_size=self.target.solo_prefill_chunk)
@@ -60,8 +64,7 @@ class Executor:
         self.ledger = Ledger(target=self.target)
         self.ledger.record_cuda_allocated("weights")
         from sharar.cache.ssm_format import SsmFormat
-        from sharar.engine.config import current
-        self.ssm_format = SsmFormat.from_config(current())  # GDN recurrent state storage (SHARAR_SSM_STATE)
+        self.ssm_format = SsmFormat.from_config(current())  # recurrent state storage (SHARAR_SSM_STATE)
         state_bytes = self.ssm_format.state_bytes_per_slot(self.target)
         cfg = current()
 
@@ -254,7 +257,8 @@ class Executor:
         vocab = self.target.vocab_size
         if any(type(t) is not int or not 0 <= t < vocab for t in prompt_ids):
             raise InvalidRequest(f"token IDs must be integers in [0, {vocab})")
-        if not isinstance(params.stop_token_ids, (tuple, list)) or any(type(t) is not int or not 0 <= t < vocab for t in params.stop_token_ids):
+        stops = self.target.stop_token_ids if params.stop_token_ids is None else params.stop_token_ids
+        if not isinstance(stops, (tuple, list)) or any(type(t) is not int or not 0 <= t < vocab for t in stops):
             raise InvalidRequest("invalid stop token ID")
         if len(prompt_ids) + params.max_new_tokens > self.max_context:
             raise InvalidRequest(f"prompt plus output budget exceeds context limit {self.max_context}")
@@ -266,8 +270,12 @@ class Executor:
 
     def admit(self, prompt_ids: list[int], params: SamplingParams, req: Request | None = None) -> Request:
         self.validate_request(prompt_ids, params)
+        if params.stop_token_ids is None:
+            params = replace(params, stop_token_ids=self.target.stop_token_ids)
         if req is None:
             req = Request(prompt_ids=list(prompt_ids), params=params)
+        else:
+            req.params = params
         if req.generator is None and not params.greedy:
             req.generator = self.sampler.generator(params.seed)
             req.rng_seed = request_seed(params.seed)
@@ -322,7 +330,7 @@ class Executor:
                     "kv_bytes_per_token": t.kv_bytes_per_token, "state_bytes_per_slot": self.state_pool.bytes_per_slot,
                     "stable_numerics": "1" if current().stable_numerics else "0",
                     **({"tensor_parallel": f"{tp.rank}/{tp.size}"} if tp.size > 1 else {})}  # a rank's records hold its heads
-        if self.state_pool.window is not None:  # FP32 records keep their identity
+        if self.state_pool.ssm_format.kind != "fp32":  # FP32 records keep their identity
             identity["ssm_state"] = self.state_pool.ssm_format.describe()
         if getattr(self.kv_pool, "nvfp4", False):  # FP8 records keep their identity
             identity["kv_format"] = "nvfp4"
@@ -676,12 +684,13 @@ class Executor:
         initialization (b12x module load, cuDNN handles, Triton compiles)."""
         from sharar.engine.prompts import random_ids
 
+        text = (self.target.first_text_token, self.target.vocab_size)  # the ids random prompts draw from
         params = SamplingParams(max_new_tokens=1)
-        a = self.admit(random_ids(300, 11), params)
+        a = self.admit(random_ids(300, 11, *text), params)
         self.prefill(a, max_tokens=256)  # chunk 1
         self.prefill(a)  # chunk 2 with prefix
-        b = self.admit(random_ids(40, 12), params)
-        c = self.admit(random_ids(70, 13), params)
+        b = self.admit(random_ids(40, 12, *text), params)
+        c = self.admit(random_ids(70, 13, *text), params)
         self.prefill_batch([(b, 40), (c, 70)])
         for r in (a, b, c):
             self.release(r)
@@ -692,8 +701,8 @@ class Executor:
             # does not pay the lazy kernel loads of the verify/accept path. The
             # random prompts can emit EOS; ignore it so every step keeps four live rows.
             spec_params = SamplingParams(max_new_tokens=12 if self.max_batch <= 4 else 64, ignore_eos=True)
-            d = self.admit(random_ids(50, 14), spec_params)
-            e = self.admit(random_ids(60, 15), spec_params)
+            d = self.admit(random_ids(50, 14, *text), spec_params)
+            e = self.admit(random_ids(60, 15, *text), spec_params)
             self.prefill(d)
             self.prefill(e)
             self.decode_step([d])
@@ -703,7 +712,7 @@ class Executor:
                 if self.max_batch < size:
                     break
                 while len(live) < size:
-                    r = self.admit(random_ids(55 + 10 * (len(live) - 2), 14 + len(live)), spec_params)
+                    r = self.admit(random_ids(55 + 10 * (len(live) - 2), 14 + len(live), *text), spec_params)
                     self.prefill(r)
                     live.append(r)
                 self.decode_step(live)
@@ -712,7 +721,7 @@ class Executor:
             # One sampled round per path, so the first sampled request does not compile the sampled-speculation
             # kernels (kernels/sampled_verify.py, the sampled lattice walk).
             sampled = SamplingParams(max_new_tokens=12, ignore_eos=True, temperature=1.0, top_k=20, top_p=0.95, seed=0)
-            f = self.admit(random_ids(50, 30), sampled)
+            f = self.admit(random_ids(50, 30, *text), sampled)
             self.prefill(f)
             self.decode_step([f])
             self.release(f)

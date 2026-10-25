@@ -171,7 +171,7 @@ def test_service_start_composes_systemd_run(home, monkeypatch, tmp_path):
 def test_stop_status_and_logs_follow_what_is_serving(home, monkeypatch, capsys):
     stopped = []
     monkeypatch.setattr(service, "stop", lambda unit: stopped.append(unit) or unit == "sharar-flashnext")
-    assert cli.main(["stop"]) == 0 and stopped == ["sharar-qwen38", "sharar-flashnext"]
+    assert cli.main(["stop"]) == 0 and stopped == ["sharar-qwen38", "sharar-flashnext", "sharar-nemotron"]
     assert "stopped sharar-flashnext" in capsys.readouterr().out
     monkeypatch.setattr(ctl, "server_info", lambda port: {"config": {"profile": "fast"}, "tp_size": 1, "context_length": 262144,
                                                            "max_running_requests": 4} if port == "30004" else None)

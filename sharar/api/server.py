@@ -35,7 +35,7 @@ from sharar.api.parsers.tools import TOOL_CALL_START, has_tool_call, parse_tool_
 from sharar.api.validation import _output_spec, _sampling_from, _stops, _template_kwargs
 from sharar.engine.loop import EngineUnavailable, Ticket, EngineLoop
 from sharar.engine.grammar import Grammars
-from sharar.engine.sampler import InvalidRequest, SamplingParams
+from sharar.engine.sampler import InvalidRequest
 from sharar.engine.scheduler import QueueFull, Scheduler
 from sharar.tokenizer import SnapshotTokenizer
 
@@ -94,7 +94,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         """The request's Constraint (engine/grammar.py); compiling runs off the event loop."""
         if grammar_builder[0] is None:
             grammar_builder[0] = Grammars.from_tokenizer(tok._tok, describe.get("vocab_size", targets.DEFAULT_TARGET.vocab_size),
-                                                         SamplingParams().stop_token_ids)
+                                                         targets.get(describe.get("target")).stop_token_ids)
         g, (kind, arg), armed = grammar_builder[0], spec, not in_reasoning
         try:
             constraint = (g.tool_call(tools or [], arg, armed) if kind == "tool_call" else
@@ -807,7 +807,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     sched = Scheduler(ex, cfg)
     if not get_tp_info().is_primary():
         log(f"tensor-parallel rank {get_tp_info().rank}: serving the primary rank's requests")
-        engine = EngineLoop(sched, Grammars.from_tokenizer(tok._tok, served.vocab_size, SamplingParams().stop_token_ids))
+        engine = EngineLoop(sched, Grammars.from_tokenizer(tok._tok, served.vocab_size, served.stop_token_ids))
         engine.start()
         engine.thread.join()
         _persist_prefixes(ex, engine, log)
@@ -853,7 +853,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "gdn_backend": current().gdn_prefill if current().gdn_prefill != "auto" else
                        "triton" if ex.ssm_format.quantized or current().stable_numerics else "cute",
         "kv_cache_dtype": "float8_e4m3fn",
-        "mamba_ssm_dtype": "float32" if not ex.ssm_format.quantized else ex.ssm_format.describe(),
+        "mamba_ssm_dtype": "float32" if ex.ssm_format.kind == "fp32" else ex.ssm_format.describe(),
         "traces": {"dir": str(sink.directory), "max_mib": traces_max_mib} if sink is not None else None,
     }
     engine = EngineLoop(sched)

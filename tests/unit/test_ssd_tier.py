@@ -1094,7 +1094,7 @@ def prefilled(state, kv, sp, ids, seed):
     from sharar.engine.executor import Executor
     ex = Executor.__new__(Executor)
     ex.state = state
-    req = Request(prompt_ids=list(ids), params=SamplingParams(max_new_tokens=4))
+    req = Request(prompt_ids=list(ids), params=SamplingParams(max_new_tokens=4, stop_token_ids=()))
     state.admit(req, req.prompt_ids)
     n = req.prefill_len
     planned = state.prefill_checkpoints([(req, ex._checkpoint_positions(req, req.prefix_len, n))])
@@ -1187,7 +1187,7 @@ def test_a_second_copy_checkpointed_onto_a_cached_snapshot_reads_the_trees_pages
     state, free = StateManager(kv, sp, cache), kv.free_count
     ids = list(range(5000, 5000 + 3 * BLOCK + 37))
     s = anchor(len(ids))
-    a = Request(prompt_ids=list(ids), params=SamplingParams(max_new_tokens=4))
+    a = Request(prompt_ids=list(ids), params=SamplingParams(max_new_tokens=4, stop_token_ids=()))
     state.admit(a, a.prompt_ids)  # admitted before the other prefilled: both prefill all of it
     b = prefilled(state, kv, sp, ids, seed=1)
     slots, pages = sp.free_count, kv.free_count
@@ -1241,7 +1241,7 @@ def test_a_landed_restore_keeps_its_snapshot_under_slot_pressure_until_its_reque
     cache.inc_lock_ref = lambda n: (order.append(+1) if n is node else None, inc(n))[1]
     cache.dec_lock_ref = lambda n: (order.append(-1) if n is node else None, dec(n))[1]
     state = StateManager(kv, sp, cache)
-    req = Request(prompt_ids=ids, params=SamplingParams(max_new_tokens=4))
+    req = Request(prompt_ids=ids, params=SamplingParams(max_new_tokens=4, stop_token_ids=()))
     state.admit(req, req.prompt_ids)
     assert order == [1, -1], "the request's lock comes first, then the restore's ends"
     assert req.prefix_len == len(IDS) and req.lock.node is node and node.state_lock_ref == 1 and len(cache.locks()) == 1
@@ -1420,10 +1420,10 @@ def test_the_scheduler_head_admits_without_a_synchronous_restore_while_another_r
     assert tier._held
     assert state.prefetch(b_ids) and state.can_admit(b_ids)
     restores = tier.restores
-    b = Request(prompt_ids=b_ids, params=SamplingParams(max_new_tokens=4))
+    b = Request(prompt_ids=b_ids, params=SamplingParams(max_new_tokens=4, stop_token_ids=()))
     state.admit(b, b_ids)
     assert tier.restores == restores and b.prefix_len == 0 and len(tier._held) == 1  # no read; A's hold stays
     state.release(b)
-    a = Request(prompt_ids=a_ids, params=SamplingParams(max_new_tokens=4))
+    a = Request(prompt_ids=a_ids, params=SamplingParams(max_new_tokens=4, stop_token_ids=()))
     state.admit(a, a_ids)  # not prefetched: a direct caller's admission
     assert a.prefix_len == len(IDS) and not tier._held

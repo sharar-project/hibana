@@ -114,7 +114,7 @@ def test_verify_rows_are_masked_so_acceptance_stops_at_a_forbidden_draft(grammar
 
 
 def test_push_advances_the_grammar_and_finishes_on_a_forbidden_token(grammars):
-    req = Request(prompt_ids=[1], params=SamplingParams(max_new_tokens=50, constraint=grammars.json_schema(SCHEMA, armed=True)))
+    req = Request(prompt_ids=[1], params=SamplingParams(max_new_tokens=50, stop_token_ids=(), constraint=grammars.json_schema(SCHEMA, armed=True)))
     req.push(ID['{"'])
     assert not req.finished
     req.push(ID['Paris'])
