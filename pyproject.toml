@@ -32,7 +32,7 @@ gb10 = [
   "torch==2.13.0+cu130",
   "flashinfer-python==0.6.17",
   "flashinfer-jit-cache==0.6.17+cu130",
-  "b12x==1.5.0",  # Bolt's NVFP4 W4A16 projections (model/bolt/linear.py)
+  "b12x==1.5.0",  # Bolt's projections and routed experts (model/bolt/linear.py, kernels/b12x_iq2_moe.py)
   "triton==3.7.1",
   "einops==0.8.2",
   "ninja==1.13.2",  # first-use builds of the CUDA kernels

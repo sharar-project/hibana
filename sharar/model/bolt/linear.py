@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import torch
 
 from sharar.kernels import w3
+from sharar.model.bolt import tuning
 from sharar.weights.ggml import dequantize
 from sharar.weights.modelopt import swizzle_block_scales, unpack_fp4, unswizzle_block_scales
 
@@ -86,7 +87,6 @@ class PackedLinear:
         query = blockscaled.BlockscaledQuery(recipe=recipe, num_tokens=rows.capacity, in_features=self.in_features,
                                              padded_in_features=self.in_features, out_features=self.out_features,
                                              activation_mode="a16", **extra)
-        from sharar.model.bolt import tuning
         device = self.b12x.values.device
         exact = tuple(m for m in sorted(set(rows.exact)) if m < rows.capacity)
         # a row count with a measured launch config (`tuning.py`) gets its own plan; the rest take b12x's heuristic

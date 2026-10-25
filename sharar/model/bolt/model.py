@@ -7,7 +7,9 @@ and NVFP4 Mamba projections run b12x's BF16-activation GEMMs (`linear.py`). No M
 
 from __future__ import annotations
 
+import hashlib
 import time
+from importlib.metadata import version
 from pathlib import Path
 
 import torch
@@ -15,12 +17,13 @@ import torch
 from sharar.distributed import get_tp_info
 from sharar.engine.config import current
 from sharar.kernels import ggml_bf16, ops
+from sharar.model.bolt import tuning
 from sharar.model.bolt.config import BOLT
 from sharar.model.bolt.linear import PackedLinear, PlanRows, graph_rows
 from sharar.model.nemotron.attention import NemotronAttention
 from sharar.model.nemotron.mamba import NemotronMamba
 from sharar.model.nemotron.model import BACKBONE, Block, Nemotron, drop_page_cache
-from sharar.model.nemotron.moe import route_budget, route_topk
+from sharar.model.nemotron.moe import NemotronMoe, route_budget, route_topk
 from sharar.model.nemotron.norm import RMSNorm
 from sharar.weights.safetensors import SnapshotWeights
 
@@ -76,7 +79,6 @@ class BoltMoe:
     def fallback(self, rows: int, steps: int) -> int:
         """`NemotronMoe.fallback`'s guarantee when the floors' union exceeds the cap: cap / rows, at least
         min(SHARE_MIN, keep) and below the floor; 0 without a cap or when that is the floor itself."""
-        from sharar.model.nemotron.moe import NemotronMoe
         if not self.budget:
             return 0
         cap = min(self.budget, self.per_request * (rows // steps)) if self.per_request else self.budget
@@ -92,8 +94,8 @@ class BoltMoe:
         if ctx is not None and ctx.mode in ("decode", "verify"):
             slots, steps = (ctx.slots, 1) if ctx.mode == "decode" else (ctx.seq_slots, ctx.verify_steps)
         if self.keep and slots is not None:
-            # a dropped slot names the row's own top expert at weight 0 (`repeat`): b12x's fused MoE reads id E (no
-            # expert) in a real row as garbage, and that row's output with it (padded rows' outputs are discarded)
+            # a dropped slot names the row's own top expert at weight 0 (`repeat`): with id E (no expert) in real rows,
+            # served generations broke down at once (padded rows carry id E, their outputs discarded)
             ids, weights, latent = route_budget(fused, self.bias, self.topk, BOLT.latent, self.keep, self.budget, slots,
                                                 steps, per_request=self.per_request, repeat=True,
                                                 fallback=self.fallback(fused.shape[0], steps))
@@ -136,17 +138,15 @@ class Bolt(Nemotron):
             raise ValueError("Bolt serves on one Spark")
         cfg = current()
         self.bolt_experts = cfg.bolt_experts
-        from importlib.metadata import version
-        # the SSD store keys recurrent state by the arithmetic that produced it: b12x's linears, and the expert backend
-        import hashlib
-        from sharar.model.bolt import tuning
-        launch = hashlib.sha256(repr(sorted(tuning.CONFIGS.items())).encode()).hexdigest()[:16]  # split-K orders the sums
+        # the SSD store keys recurrent state by the arithmetic that produced it: b12x's linears and their launch
+        # configurations (split-K orders the sums), the expert backend and expert sharing
+        launch = hashlib.sha256(repr(sorted(tuning.CONFIGS.items())).encode()).hexdigest()[:16]
         self.arithmetic_identity = {"linears": f"b12x {version('b12x')}", "launch_configs": launch,
                                     "iq2_experts": cfg.bolt_experts}
         if cfg.bolt_experts == "fp8":
             from sharar.kernels.iq2_moe import _source_revision
             self.arithmetic_identity["kernel"] = _source_revision()
-        if cfg.moe_keep:  # shared experts change which experts a decode or verify call sums
+        if cfg.moe_keep:
             self.arithmetic_identity["moe_sharing"] = f"{cfg.moe_keep}:{cfg.moe_budget_per_request}:{cfg.moe_budget}"
         calibrated = None
         if cfg.w3_decode:
