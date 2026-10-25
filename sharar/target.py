@@ -67,6 +67,9 @@ class Target:
     experts_per_token: int = 0
     moe_intermediate_size: int = 0
     shared_expert_intermediate_size: int = 0
+    # Latent routed experts (0 = experts read the full hidden stream).
+    moe_latent_size: int = 0
+    routed_scaling_factor: float = 1.0
     # Hyper-connections (0 = plain residual stream).
     hc_count: int = 0
     hc_lowrank: int = 0
@@ -92,8 +95,13 @@ class Target:
     recurrence: str = "gdn"
     # The checkpoint's prefix of the in-checkpoint MTP layers' tensors (`cache/spec_budget.py`).
     mtp_prefix: str = "mtp."
+    # Resident MTP weight bytes relative to the checkpoint, and its largest staged tensor when streamed.
+    mtp_weight_divisor: int = 1
+    mtp_load_tensor_bytes: int | None = None
     # The first ordinary-text token id: random warm-up prompts draw from it up (below it a vocabulary keeps control ids).
     first_text_token: int = 0
+    # Restrict cache formats when a target's attention implements only a subset (None: the shared pool's formats).
+    kv_formats: tuple[str, ...] | None = None
 
     def __post_init__(self):
         if len(self.layer_types) != self.num_layers or any(t not in ("full_attention", "linear_attention", "moe") for t in self.layer_types):
@@ -309,6 +317,7 @@ def _flashnext() -> Target:
         indexer_budget=c.INDEXER_BUDGET, indexer_compress_ratio=c.INDEXER_COMPRESS_RATIO,
         indexer_n_heads=c.INDEXER_N_HEADS, indexer_head_dim=c.INDEXER_HEAD_DIM, mtp_layers=c.MTP_LAYERS,
         w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION, draft_pins=tuple((name, *pin) for name, pin in c.DRAFT_PINS.items()),
+        mtp_weight_divisor=2, mtp_load_tensor_bytes=4 * 2**20,
     )
 
 
@@ -333,6 +342,8 @@ def _nemotron() -> Target:
         shared_expert_intermediate_size=c.SHARED_EXPERT_INTERMEDIATE_SIZE, mtp_layers=c.MTP_LAYERS,
         stop_token_ids=c.STOP_TOKEN_IDS, w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION,
         recurrence="mamba2", mtp_prefix=f"{c.PREFIX}.mtp.", first_text_token=c.FIRST_TEXT_TOKEN,
+        moe_latent_size=c.MOE_LATENT_SIZE, routed_scaling_factor=c.ROUTED_SCALING_FACTOR,
+        kv_formats=("fp8",),
     )
 
 

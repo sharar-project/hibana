@@ -52,10 +52,10 @@ checkpoint, pinned by revision in the target's config (`W3_REPO`, `W3_REVISION`)
 - a link to any other directory is a local calibration: it stays, and the serve prints a note with the command that
   switches to the published copies (`fetch --target T --root R --switch`).
 
-Both targets have one: Flash-Next's (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`: the 3-bit trunk and the GPTQ
+Every target has one: Flash-Next's (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`: the 3-bit trunk and the GPTQ
 routed experts) and the 27B's (`yemara/Qwen3.8-27B-NVFP4-sharar-w3`, GPTQ from the FP8 release on the `bc7984f`
-inputs). Nemotron's (the GPTQ trunk projections and routed experts) is not published yet: its `W3_REPO` is unset,
-so `fast` serves a local `nemotron-current` link, or the NVFP4 experts and FP8 trunk with a warning. To serve a new
+inputs), and Nemotron's (`shadowpa0327/NVIDIA-Nemotron-3.5-Super-NVFP4-sharar-w3`: the GPTQ trunk projections and
+routed experts; private), which its `fast` and `throughput` require: without one they refuse to start. To serve a new
 calibration, point the link at its directory or set
 `SHARAR_W3_CHECKPOINT=/path/to/calibrated-w3`.
 

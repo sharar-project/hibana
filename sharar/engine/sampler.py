@@ -24,7 +24,7 @@ class SamplingParams:
     top_k: int = 20
     top_p: float = 0.95
     seed: int | None = None
-    stop_token_ids: tuple[int, ...] | None = None  # None: the served target's (`Target.stop_token_ids`, Executor.validate_request)
+    stop_token_ids: tuple[int, ...] | None = None  # None: the served target's (`Target.stop_token_ids`, Executor.admit)
     ignore_eos: bool = False
     trace: bool = True  # may this request be written to the opt-in trace sink
     # Relaxed speculative acceptance: a drafted token is also accepted when the

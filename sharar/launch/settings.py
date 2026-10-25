@@ -25,8 +25,9 @@ SERVED = ("27b", "flashnext", "nemotron")  # one name per target, in the order `
 
 # What each target serves when nothing else says so (port, service, drafter: the SHARAR_* keys), and what the launcher
 # knows of it: `recurrence` (`Target.recurrence`, the formats of SSM_STATES; default gdn), `w3_missing` (what the
-# 3-bit profiles serve without a calibrated checkpoint), `w3_calibrated_only` (no nearest-rounded copies then) and
-# `fp8_kv_only` (its attention writes the FP8 pool only).
+# 3-bit profiles serve without a calibrated checkpoint), `w3_calibrated_only` (no nearest-rounded copies then),
+# `w3_required` (no fallback: the 3-bit profiles refuse to start without one) and `fp8_kv_only` (its attention writes
+# the FP8 pool only).
 TARGET_SETTINGS = {
     "qwen38": {"SHARAR_SERVICE": "sharar-qwen38", "SHARAR_PORT": "30001", "SHARAR_PROPOSER": "dflash2", "SHARAR_SPEC": "15",
                "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_PRECISION": "fp8",
@@ -39,8 +40,7 @@ TARGET_SETTINGS = {
     # lm_head, its top 16 rescored by the FP8 rows (lossless: acceptance checks every draft against the target)
     "nemotron": {"SHARAR_SERVICE": "sharar-nemotron", "SHARAR_PORT": "30005", "SHARAR_PROPOSER": "mtp",
                  "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_HEAD": "w2", "recurrence": "mamba2",
-                 "w3_calibrated_only": True, "fp8_kv_only": True,
-                 "w3_missing": "serving the NVFP4 experts and FP8 trunk, about a third slower single-stream than {profile} with it"},
+                 "w3_calibrated_only": True, "w3_required": True, "fp8_kv_only": True},
 }
 # The recurrent-state formats each recurrence stores (SHARAR_SSM_STATE, cache/ssm_format.py): the GDN's per-window
 # integer formats, Mamba-2's FP16 with stochastic rounding.
@@ -151,7 +151,7 @@ def nemotron_defaults(profile: str) -> dict[str, str]:
     p.update(SHARAR_ACCEPT_DEFAULT="3:2.0", SHARAR_ACCEPT_DEFAULT_SAMPLED="1", SHARAR_DEVICE_ACCEPT="1",
              SHARAR_SPEC="5", SHARAR_SPEC_DEPTHS="2:4,4:4", SHARAR_W3_DECODE="1")
     if profile == "throughput":  # up to 16 requests, depth 3 past four; fast's sharing and FP16 state are ungated there
-        p.update(SHARAR_MAX_BATCH="16", SHARAR_SPEC_DEPTHS="2:4,4:4,16:3")
+        p.update(SHARAR_MAX_BATCH="16", SHARAR_SPEC_DEPTHS="2:4,4:4,16:3", SHARAR_MOE_KEEP="0", SHARAR_SSM_STATE="fp32")
         return p
     # expert sharing (model/nemotron/moe.py: each verify row keeps its top 12 experts, a call reads at most 48 a request
     # and 128 in all) and the FP16 Mamba state with stochastic rounding, gated together against exact (GSM8K-300 97.7%

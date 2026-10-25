@@ -708,12 +708,19 @@ def plan_prefill(seq_lens, prefix_lens, slots, device, checkpoints=(), chunk: in
     return Mamba2PrefillPlan(starts[-1], seq_lens, len(dest), len(ends), *views)
 
 
+@dataclass
+class SideInputs:
+    """A prefill forward's side input (`ctx.extras`): the plan its first Mamba layer makes for the rest."""
+    plan: Mamba2PrefillPlan | None = None
+
+
 def prepare_prefill(ctx: ForwardContext | None, tokens: int, device) -> Mamba2PrefillPlan:
-    """The prefill plan of a forward context, made by its first Mamba layer and kept in the context's model side input
-    (`ctx.extras`: Nemotron has no other, `forward_extras()` is None) for the rest, as `model/gdn_plan.py` reads it."""
-    plan = ctx.extras if ctx is not None and isinstance(ctx.extras, Mamba2PrefillPlan) else None
-    if plan is not None:
-        return plan
+    """The immutable prefill plan in the model's side inputs, shared by every recurrent layer."""
+    if ctx is not None:
+        if ctx.extras is None:  # stand-alone parity forwards use the same side input as the executor
+            ctx.extras = SideInputs()
+        if ctx.extras.plan is not None:
+            return ctx.extras.plan
     if ctx is not None and ctx.batched:
         lengths, prefixes = list(ctx.seq_lens), list(ctx.seq_prefix_lens)
         slots = ctx.seq_slots.to(torch.int32)
@@ -729,7 +736,7 @@ def prepare_prefill(ctx: ForwardContext | None, tokens: int, device) -> Mamba2Pr
             checkpoints.append((i, pos - prefixes[i], slot))
     plan = plan_prefill(lengths, prefixes, slots, device, checkpoints)
     if ctx is not None:
-        ctx.extras = plan
+        ctx.extras.plan = plan
     return plan
 
 

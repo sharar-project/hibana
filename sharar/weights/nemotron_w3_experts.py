@@ -173,6 +173,26 @@ def prefix_of(name: str) -> str:
     return MTP_PREFIX if name == "mtp" else f"{LAYER_PREFIX}.{name.split('.')[1]}.mixer"
 
 
+def fit_identity(args, revision: str, source_identity: str | None) -> dict:
+    """Every input that determines an expert fit, checked before any resumed files are changed."""
+    from sharar.kernels.w3_moe import RATIOS
+    from sharar.weights.w3_checkpoint import sha256
+    return {"method": "gptq", "target_revision": revision,
+            "capture_sha256": sha256(args.activations / "capture.json"),
+            "codebooks": args.codebooks.split(","), "chunk": args.chunk, "choice_every": CHOICE_EVERY,
+            "scale_grid": list(RATIOS), "damping": args.damping, "min_tokens": args.min_tokens,
+            "prior_tokens": args.prior_tokens, "source": source_identity}
+
+
+def check_progress(path: Path, identity: dict) -> dict:
+    if not path.is_file():
+        return {}
+    previous = json.loads(path.read_text())
+    if previous.get("identity") != identity:
+        raise SystemExit(f"{path.parent} holds another fit (other settings or capture): use a new output")
+    return previous["weights"]
+
+
 @torch.no_grad()
 def fit(args) -> None:
     from sharar.kernels import w3, w3_moe
@@ -187,7 +207,13 @@ def fit(args) -> None:
     source = CalibratedWeights(args.source, revision=NEMOTRON.model_revision) if args.source else None
     if source is not None and any(".experts." in n for n in source.weights):
         raise SystemExit("the source checkpoint already carries experts")
+    if args.output.exists():
+        raise SystemExit("refusing to overwrite a finished calibration")
     partial = args.output.with_name(args.output.name + ".partial")
+    capture_meta = json.loads((args.activations / "capture.json").read_text())
+    identity = fit_identity(args, NEMOTRON.model_revision, source.identity if source else None)
+    progress = partial / "progress.json"
+    previous = check_progress(progress, identity)
     weights = {}
     partial.mkdir(parents=True, exist_ok=True)
     for name, entry in (source.weights.items() if source else ()):  # trunk entries unchanged, verified on the way
@@ -197,19 +223,9 @@ def fit(args) -> None:
             if sha256(dst) != entry["sha256"]:
                 raise SystemExit(f"checksum mismatch copying {name}")
         weights[name] = entry
-    capture_meta = json.loads((args.activations / "capture.json").read_text())
-    # what the fitted matrices depend on: a resume continues only the same fit
-    identity = {"capture": capture_meta["inputs_sha256"], "rows": capture_meta["rows"], "codebooks": args.codebooks,
-                "chunk": args.chunk, "damping": args.damping, "min_tokens": args.min_tokens,
-                "prior_tokens": args.prior_tokens, "source": source.identity if source else None}
-    progress = partial / "progress.json"
-    if progress.is_file():  # resume: blocks finished in an interrupted run (entries re-verified)
-        previous = json.loads(progress.read_text())
-        if previous.get("identity") != identity:
-            raise SystemExit(f"{partial} holds another fit (other settings or capture): remove it or use a new output")
-        for name, entry in previous["weights"].items():
-            if (partial / entry["file"]).is_file() and sha256(partial / entry["file"]) == entry["sha256"]:
-                weights[name] = entry
+    for name, entry in previous.items():
+        if (partial / entry["file"]).is_file() and sha256(partial / entry["file"]) == entry["sha256"]:
+            weights[name] = entry
 
     dev = torch.device("cuda")
     w = SnapshotWeights(NEMOTRON.snapshot_dir())
@@ -342,7 +358,9 @@ def fit(args) -> None:
                                   E * n, k, levels, w3.lut_of(levels))
             entry = f"{name}.experts.{key}"
             weights[entry] = dict(save_weight(partial / f"{entry}.safetensors", stacked), experts=E)
-        progress.write_text(json.dumps({"identity": identity, "weights": weights}))
+        temporary = progress.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"identity": identity, "weights": weights}))
+        temporary.replace(progress)
         st.update({k: round((v[0] / v[1]) ** 0.5, 5) if v[1] else None for k, v in err.items()})
         st["peak_gib"] = round(torch.cuda.max_memory_allocated() / 2**30, 2)
         st["seconds"] = round(time.perf_counter() - block_started, 1)
@@ -353,7 +371,7 @@ def fit(args) -> None:
         torch.cuda.empty_cache()
         print(f"{name}: " + ", ".join(f"{k} {v}" for k, v in st.items() if v is not None) + f" ({time.perf_counter() - started:.0f}s)", flush=True)
 
-    if any(f"{n}.experts.w1" not in weights for n in names):
+    if any(f"{n}.experts.{key}" not in weights for n in names for key in ("w1", "w2")):
         print("partial run: no manifest written", flush=True)
         return
     keys = sorted({k for s in stats.values() for k in s if k.startswith(("cheap_", "gptq_")) and s[k] is not None})

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import torch
@@ -48,6 +48,9 @@ class Executor:
 
     def __init__(self, model: Qwen38, num_pages: int | None = None, num_slots: int | None = None, max_batch: int = 4, use_cache: bool = True, log=None, max_context: int | None = None, spec_config=None):
         self.target: Target = model.target
+        from sharar.engine.config import current
+        if self.target.kv_formats is not None and current().kv_format not in self.target.kv_formats:
+            raise ValueError(f"{self.target.name} supports SHARAR_KV_FORMAT=" + ", ".join(self.target.kv_formats))
         max_context = self.target.context_length if max_context is None else max_context
         self.profile = ServingProfile(max_context=max_context, max_batch=max_batch, chunk_size=self.target.prefill_chunk,
                                       solo_chunk_size=self.target.solo_prefill_chunk)
@@ -60,7 +63,6 @@ class Executor:
         self.ledger = Ledger(target=self.target)
         self.ledger.record_cuda_allocated("weights")
         from sharar.cache.ssm_format import SsmFormat
-        from sharar.engine.config import current
         self.ssm_format = SsmFormat.from_config(current())  # recurrent state storage (SHARAR_SSM_STATE)
         state_bytes = self.ssm_format.state_bytes_per_slot(self.target)
         cfg = current()
@@ -251,14 +253,13 @@ class Executor:
     # ---- lifecycle ----
     def validate_request(self, prompt_ids: list[int], params: SamplingParams) -> None:
         params.validate()
-        if params.stop_token_ids is None:
-            params.stop_token_ids = self.target.stop_token_ids
         if not isinstance(prompt_ids, list) or not prompt_ids:
             raise InvalidRequest("prompt must be a non-empty token list")
         vocab = self.target.vocab_size
         if any(type(t) is not int or not 0 <= t < vocab for t in prompt_ids):
             raise InvalidRequest(f"token IDs must be integers in [0, {vocab})")
-        if not isinstance(params.stop_token_ids, (tuple, list)) or any(type(t) is not int or not 0 <= t < vocab for t in params.stop_token_ids):
+        stops = self.target.stop_token_ids if params.stop_token_ids is None else params.stop_token_ids
+        if not isinstance(stops, (tuple, list)) or any(type(t) is not int or not 0 <= t < vocab for t in stops):
             raise InvalidRequest("invalid stop token ID")
         if len(prompt_ids) + params.max_new_tokens > self.max_context:
             raise InvalidRequest(f"prompt plus output budget exceeds context limit {self.max_context}")
@@ -270,8 +271,12 @@ class Executor:
 
     def admit(self, prompt_ids: list[int], params: SamplingParams, req: Request | None = None) -> Request:
         self.validate_request(prompt_ids, params)
+        if params.stop_token_ids is None:
+            params = replace(params, stop_token_ids=self.target.stop_token_ids)
         if req is None:
             req = Request(prompt_ids=list(prompt_ids), params=params)
+        else:
+            req.params = params
         if req.generator is None and not params.greedy:
             req.generator = self.sampler.generator(params.seed)
             req.rng_seed = request_seed(params.seed)

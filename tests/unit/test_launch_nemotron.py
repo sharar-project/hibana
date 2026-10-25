@@ -39,11 +39,11 @@ def test_exact_serves_the_checkpoint_alone(env):
 
 
 @pytest.mark.parametrize("profile", ["fast", "throughput"])
-def test_the_3bit_copies_are_calibrated_only(env, tmp_path, profile):
+def test_the_3bit_profiles_need_the_calibrated_copies(env, tmp_path, profile):
     s = resolve(env, profile)
     assert s.get("SHARAR_W3_DECODE") == "1"
-    assert preflight.ensure_w3(s, fetch=False) is None and "NVFP4 experts and FP8 trunk" in s.warnings[0]
-    assert s.engine_env(None)["SHARAR_W3_DECODE"] == "0"  # no checkpoint: never the nearest-rounded copies
+    with pytest.raises(preflight.PreflightError, match="calibrated 3-bit copies"):
+        preflight.ensure_w3(s, fetch=False)  # no checkpoint: no fallback
     current = s.w3_root / "nemotron-current"
     current.mkdir(parents=True)
     (current / "manifest.json").write_text("{}")
@@ -86,9 +86,9 @@ def test_preflight_checks_the_pinned_snapshot(env, tmp_path):
     assert launch.model_config("nemotron") is nemotron
 
 
-def test_fp8_kv_only(env):
+@pytest.mark.parametrize("kv", ["nvfp4", "sim-fp4", "sim-k8v4", "sim-bf16"])
+def test_fp8_kv_only(env, kv):
     """The attention's fused K/V writer serves the FP8 pool: the NVFP4 cache and the accuracy screens are refused."""
-    for kv in ("nvfp4", "sim-fp4"):
-        with pytest.raises(ValueError, match="FP8 KV cache only"):
-            resolve({**env, "SHARAR_KV_FORMAT": kv}, "fast")
+    with pytest.raises(ValueError, match="FP8 KV cache only"):
+        resolve({**env, "SHARAR_KV_FORMAT": kv}, "fast")
     assert resolve(env, "fast").get("SHARAR_KV_FORMAT", "fp8") == "fp8"

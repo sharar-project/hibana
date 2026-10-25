@@ -23,8 +23,8 @@ FP32 router logits. 66.4 GiB of weights are resident after the load (78 s from t
 GPTQ-calibrated 3-bit copies of the trunk (Mamba, attention and lm_head projections) and of the routed experts load
 beside the checkpoint with `SHARAR_W3_DECODE=1` and `SHARAR_W3_CHECKPOINT=<dir>` (`kernels/w3_moe.py` for the
 experts). `fast` and `throughput` turn them on and serve
-`w3-checkpoints/nemotron-current` ([where it comes from](w3-calibration.md#nemotron)); without one they serve the
-NVFP4 experts and FP8 trunk, about a third slower at one request. A checkpoint that carries the routed experts serves
+`w3-checkpoints/nemotron-current` ([where it comes from](w3-calibration.md#nemotron)); without one they refuse to
+start (`exact` serves the checkpoint's NVFP4 experts and FP8 trunk). A checkpoint that carries the routed experts serves
 them as the only expert copy, at every call size (the MTP head's load with the drafter).
 
 ## Package
@@ -62,7 +62,7 @@ Measured (Sharar, spark-9931; h2h median, `tools/h2h-pr.py`, greedy; tok/s) and 
 | `exact` | 45.9 | 79.8 | 97.7% |
 | `fast` | 102.5 | 185.2 | 97.7% (+0.0 pp, [-1.6, +1.6]) |
 
-## Conventions that cost a day
+## Checkpoint conventions
 
 - The checkpoint is the omni model: every text weight sits under `language_model.` (`language_model.backbone.layers.N`,
   `language_model.mtp.layers.N`), and `config.json` holds the text model under `llm_config`, not `text_config`.
@@ -75,7 +75,5 @@ Measured (Sharar, spark-9931; h2h median, `tools/h2h-pr.py`, greedy; tok/s) and 
   7e-4 to 1.6e-3 apart and BF16 logits change the top-22 set of 9-22% of rows.
 - The routing weights come from the plain sigmoid, the bias only steers the choice; `routed_scaling_factor` (5) rides
   in fc2's dequantization scale.
-- The MTP head's hidden is the target's output after `norm_f`, and its output is taken after its own final layernorm:
-  with the hidden before `norm_f` depth-1 agreement falls from 93.9% to 40%, and with the draft's output before the
-  final layernorm depth 2 falls to 8%.
+- The MTP head consumes the target's output after `norm_f` and feeds back its output after its own final layernorm.
 - Attention has no positional encoding at all; nothing reads `rope_theta`.

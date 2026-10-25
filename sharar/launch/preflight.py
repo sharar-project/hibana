@@ -118,8 +118,8 @@ def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
 
     SHARAR_W3_CHECKPOINT=auto (the default) serves w3-checkpoints/<target>-current and keeps that link on the
     target's pinned published revision (weights/w3_checkpoint.fetch: a new pin downloads, a local calibration stays
-    with a note). Without one Flash-Next serves its FP8 trunk, Nemotron its NVFP4 experts and FP8 trunk, and the 27B
-    nearest-rounded copies."""
+    with a note). Without one Flash-Next serves its FP8 trunk and the 27B nearest-rounded copies; Nemotron refuses
+    to start (`w3_required`)."""
     if s.get("SHARAR_W3_DECODE", "0") != "1":
         return None
     chosen = s.get("SHARAR_W3_CHECKPOINT", "auto")
@@ -139,6 +139,10 @@ def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
                 ("serving the one in " + current.name if (current / "manifest.json").is_file() else "none to serve"))
     if (current / "manifest.json").is_file():
         return current.resolve()
+    if TARGET_SETTINGS[s.target].get("w3_required"):
+        raise PreflightError(f"{s.profile} serves {s.target}'s calibrated 3-bit copies and none is available: fetch them "
+                             f"(python -m sharar.weights.w3_checkpoint fetch --target {s.target} --root {s.w3_root}), set "
+                             "SHARAR_W3_CHECKPOINT, or serve --exact")
     s.warnings.append("no calibrated 3-bit checkpoint: " + TARGET_SETTINGS[s.target]["w3_missing"].format(profile=s.profile)
                       + "; calibrate with docs/w3-calibration.md or set SHARAR_W3_CHECKPOINT")
     return None

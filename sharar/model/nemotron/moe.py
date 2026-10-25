@@ -10,35 +10,14 @@ NemotronHMoE, which the snapshot's omni model wraps) for post-norm rows x:
 
 so the weighting happens in latent space before fc2, and the shared expert sees x, not the latent.
 
-Formats and fusions:
-- Router and fc1_latent both read x: one BF16 GEMM over their concatenated rows [512 + 1024, 4096] with an FP32 output.
-  FP32 logits matter: a block's 22nd and 23rd choice scores sit a median 7e-4 to 1.6e-3 apart, and BF16 logits change
-  the top-22 set of 9-22% of rows. The routing kernel reads the logits and also casts the latent half to BF16 for the
-  experts, so the cast costs no launch.
-- Routed experts (NVFP4), by call size: Sharar's kernels (below) up to SMALL_ROWS rows, beyond them FlashInfer's b12x
-  SM12x MoE (`kernels/b12x_moe.py`, the non-gated ReLU² activation) on the same tensors: fc1 is up_proj alone
-  ([E, 2688, 512] packed), block scales swizzled per expert (Flash-Next's SM120 interleave). Every expert of a block
-  carries the same input scales, so the one per-layer activation scale (Flash-Next's convention, the largest
-  expert's) is exactly the checkpoint's. routed_scaling_factor rides in the fc2 dequantization scale, so the routing
-  weights are plain renormalized ones (route_budget's pick kernel writes those). b12x is not deterministic: calls past
-  16 rows (prefill chunks, wide verify forwards) differ run to run (a prompt's teacher-forced logprobs by up to 1.5).
-  The 3-bit experts serve every size deterministically.
-- Shared expert: the checkpoint's NVFP4 through Sharar's NVFP4 linear (`ops.nvfp4_linear`), ReLU² in place between.
-- fc2_latent: BF16, as shipped, as an addmm onto the shared expert's output (the block's sum in the GEMM epilogue).
-- 3-bit routed experts (`w3=`, with SHARAR_W3_DECODE when the W3 checkpoint carries this block's experts): the only
-  expert copy (the NVFP4 experts are not loaded), every call, decode to prefill, through `kernels/w3_moe.py`'s ReLU^2
-  geometry (E4M3 activations per 32-group, GPTQ-calibrated codes, `weights/nemotron_w3_experts.py`).
-  routed_scaling_factor is folded into fc2's row scales at load; padded and unfilled slots name no expert (id 512),
-  which the kernel skips. Calls of at most SMALL_ROWS rows keep the small-call kernels below for everything but the
-  routed sum (`nemotron_moe.w3_block`: router, shared up, w3_moe on the router's BF16 latent and ids, then fc2_latent
-  plus the shared down).
+The router and fc1_latent share one BF16 GEMM with FP32 output: the 22nd/23rd choice gap can be 7e-4, so
+BF16 logits change the selected experts. Routed experts stay NVFP4 (small-call kernels up to 16 rows, b12x beyond)
+or load as calibrated 3-bit matrices at every call size. The shared expert stays NVFP4; fc2_latent is BF16 and its
+addmm epilogue adds the shared output. The routed scaling factor is folded into fc2's scales once at load.
 
-Calls of at most SMALL_ROWS rows (decode, verify, the MTP head's draft steps) run the block through Sharar's own kernels
-(`kernels/nemotron_moe.py`) instead, on the same tensors: the router|fc1 GEMV, the routing kernel below, then four
-launches (prep: the call's experts and pairs, the latent and x quantized; up: routed and shared, relu² and the NVFP4
-quantization in the epilogue; down: routed, summed per row; out: fc2_latent plus the shared expert's down), each
-streaming its weights once, every distinct expert once for all of its pairs, with programmatic dependent launches so
-a kernel's weight stream starts under the previous one's tail.
+Small calls use `kernels/nemotron_moe.py`: router, up, down and out, with programmatic dependent launches. The
+3-bit path keeps these kernels around `w3_moe` for the routed sum. NVFP4 b12x is nondeterministic; 3-bit experts
+are deterministic at every size.
 
 Routing for decode and verify forwards follows Flash-Next (`model/flashnext/moe.py`): a CUDA graph's padded rows (dummy
 state slot 0) take row 0's top expert at weight 0, which reads no further expert (3-bit experts: no expert, id 512).
@@ -60,7 +39,6 @@ import triton.language as tl
 from sharar.kernels.flashnext_fused import _or
 from triton.language.extra import libdevice
 
-from sharar.model.nemotron import config as c
 
 @triton.jit
 def _sigmoid_exact(x):
@@ -383,7 +361,8 @@ class NemotronMoe:
 
         self.device = device
         self.hidden, self.experts, self.topk = target.hidden_size, target.num_experts, target.experts_per_token
-        self.inter, self.latent = target.moe_intermediate_size, c.MOE_LATENT_SIZE
+        self.inter, self.latent = target.moe_intermediate_size, target.moe_latent_size
+        self.routed_scaling = target.routed_scaling_factor
         router = w.get(f"{prefix}.gate.weight").to(device)  # [E, H] bf16
         fc1 = w.get(f"{prefix}.fc1_latent_proj.weight").to(device)  # [L, H] bf16
         self.gate_fc1 = torch.cat([router, fc1]).contiguous()  # [E + L, H]: one GEMM for both readers of x
@@ -404,7 +383,7 @@ class NemotronMoe:
                 raise ValueError(f"{prefix}: 3-bit experts of the wrong geometry")
             # routed_scaling_factor in fc2's row scales (a scaled copy: the loaded experts stay as stored), as NVFP4's
             # alpha carries it
-            self.w3 = dataclasses.replace(w3, row2=w3.row2 * c.ROUTED_SCALING_FACTOR)
+            self.w3 = dataclasses.replace(w3, row2=w3.row2 * self.routed_scaling)
             # calls of at most SMALL_ROWS rows keep the small-call kernels around w3_moe (`small`): no NVFP4 experts
             none = torch.empty(0, dtype=torch.uint8, device=device)
             self.w1 = self.s1 = self.w2 = self.s2 = none
@@ -424,7 +403,7 @@ class NemotronMoe:
         # quant_scales: fc1 input quantization (1 / scale), block scales, dequantization alphas per expert; the
         # routed scaling factor joins fc2's alpha
         self.quant_scales = [1.0 / in1, self.s1, in1 * nv["g1"], 1.0 / in2, self.s2,
-                             in2 * nv["g2"] * c.ROUTED_SCALING_FACTOR]
+                             in2 * nv["g2"] * self.routed_scaling]
         one = lambda v: torch.as_tensor(v, dtype=torch.float32, device=device).reshape(1).contiguous()  # noqa: E731
         su, sd = self.shared_up, self.shared_down
         # the small-call kernels' scales: routed alphas [E], activation global scales, the shared expert's
@@ -433,7 +412,7 @@ class NemotronMoe:
                              one(su.input_scale_inv), one(sd.input_scale_inv)]
         # calls past SMALL_ROWS rows: FlashInfer's b12x MoE on the same tensors
         from sharar.kernels.b12x_moe import B12xExperts
-        self.b12x = B12xExperts(self.w1, self.s1, nv["g1"], in1, self.w2, self.s2, nv["g2"], in2, c.ROUTED_SCALING_FACTOR)
+        self.b12x = B12xExperts(self.w1, self.s1, nv["g1"], in1, self.w2, self.s2, nv["g2"], in2, self.routed_scaling)
         self._small = self._small_weights()
 
     def small_weights(self) -> list[torch.Tensor]:
@@ -561,7 +540,7 @@ class NemotronMoe:
         s = fused[:, :self.experts].sigmoid()
         ids = torch.topk(s + self.bias, self.topk, dim=-1).indices
         wt = s.gather(1, ids)
-        wt = wt / (wt.sum(-1, keepdim=True) + 1e-20) * c.ROUTED_SCALING_FACTOR
+        wt = wt / (wt.sum(-1, keepdim=True) + 1e-20) * self.routed_scaling
         lat = fused[:, self.experts:]
         if quantize_activations:
             lat = lat.bfloat16().float()

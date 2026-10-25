@@ -25,7 +25,6 @@ from sharar.engine.config import current
 from sharar.engine.context import ForwardContext, scratch_prefill_context
 from sharar.engine.contracts import ForwardResult
 from sharar.kernels import ops
-from sharar.model.nemotron import config as c
 from sharar.model.nemotron.attention import NemotronAttention
 from sharar.model.nemotron.config import PREFIX
 from sharar.model.nemotron.mamba import NemotronMamba
@@ -50,16 +49,14 @@ def load_latent_experts(calibrated, block: str, target: Target, device):
     checkpoint's row order and fc2 = down [E x latent, inter], stacked over all experts (one Spark: no expert
     parallelism); each matrix with its own codebook."""
     from sharar.kernels.w3_moe import W3Experts
-    e, inter, latent = target.num_experts, target.moe_intermediate_size, c.MOE_LATENT_SIZE
+    e, inter, latent = target.num_experts, target.moe_intermediate_size, target.moe_latent_size
     w1, w2 = latent_expert_names(block)
     return W3Experts.from_stacked(calibrated._load(w1, e * inter, latent, device), calibrated._load(w2, e * latent, inter, device), e)
 
 
 def drop_page_cache(snap: Path) -> None:
-    """Tell the kernel the checkpoint's shards are not needed again: everything is on the device by now. The load leaves
-    ~30 GiB of them cached, and /proc/meminfo's MemAvailable (what the memory plan sizes the pools from) counts only
-    part of a hot page cache as available, so a served engine otherwise plans against ~9 GiB less than it has (measured
-    on the GB10: evicting the shards raised MemAvailable from 103.6 to 112.0 GiB with the model unloaded)."""
+    """Advise away the loaded shards: reclaiming the hot page cache restores about 9 GiB of MemAvailable on GB10,
+    which the memory planner sizes the pools from."""
     import os
     for shard in snap.glob("model-*.safetensors"):
         fd = os.open(shard, os.O_RDONLY)
@@ -110,7 +107,7 @@ def w3_expert_blocks(calibrated, kinds) -> set[int]:
 def w3_expert_saving(target: Target, blocks: int) -> int:
     """Resident bytes 3-bit latent experts save against NVFP4 over `blocks` blocks (codes, group and row scales against
     E2M1 codes and E4M3 per-16 block scales)."""
-    i, lat = target.moe_intermediate_size, c.MOE_LATENT_SIZE
+    i, lat = target.moe_intermediate_size, target.moe_latent_size
     weights = 2 * i * lat
     nvfp4 = weights // 2 + weights // 16
     w3 = weights * 3 // 8 + weights // 32 + (i + lat) * 4
@@ -224,8 +221,8 @@ class Nemotron:
         return calibrated.identity
 
     def forward_extras(self):
-        """No side inputs beyond the ForwardContext."""
-        return None
+        from sharar.model.nemotron.extras import NemotronExtras
+        return NemotronExtras()
 
     def register_pages(self, kv_pool) -> None:
         """No per-page rows beyond K/V."""
@@ -235,6 +232,9 @@ class Nemotron:
 
     @torch.inference_mode()
     def forward(self, input_ids: torch.Tensor, ctx: ForwardContext, capture: bool = False) -> ForwardResult:
+        if ctx.mode == "prefill":
+            from sharar.kernels.mamba2 import prepare_prefill
+            prepare_prefill(ctx, input_ids.shape[0], self.device)
         hidden = torch.nn.functional.embedding(input_ids, self.embed)
         ctx.capture = capture
         out: dict = {"input_ids": input_ids, "positions": ctx.positions}
