@@ -50,6 +50,8 @@ def main():
         with zipfile.ZipFile(wheel) as archive:
             for name in required:
                 assert archive.read(name) == (root / name).read_bytes(), f'missing or changed wheel asset: {name}'
+            notices = [name for name in archive.namelist() if name.endswith('/THIRD_PARTY_NOTICES.md')]
+            assert len(notices) == 1 and archive.read(notices[0]) == (root / 'THIRD_PARTY_NOTICES.md').read_bytes()
         installed = work / 'installed'
         run([sys.executable, '-m', 'pip', 'install', '--no-index', '--no-deps', '--target', str(installed), str(wheel)], cwd=work)
         env = {**os.environ, 'PYTHONPATH': str(installed), 'CUDA_VISIBLE_DEVICES': ''}
