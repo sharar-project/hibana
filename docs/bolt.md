@@ -78,7 +78,9 @@ within 1.0 (`SHARAR_ACCEPT_DEFAULT_SAMPLED=1`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_TH
 Paired against `exact` (GSM8K 1,319 and GPQA Diamond 198, thinking off): the 3-bit copies -0.5 / -2.5 points
 (p 0.27 / 0.56), with the int8 state +0.1 / +1.5 (p 1.0 / 0.76); MMLU-Pro (first 1,000) with the 3-bit copies
 -0.1 points; `fast` (with expert sharing) -0.5 / -2.0 (p 0.34 / 0.64). The 3-bit copies answer GPQA at length
-(4.0K against 3.1K tokens an item; `fast` 4.2K). Relaxed verification
+(4.0K against 3.1K tokens an item; `fast` 4.2K). Thinking on (greedy, 32,768-token cap), the 3-bit copies against
+the checkpoint encodings score GPQA 74.2% against 73.7% at 4% more tokens (15.4K against 14.8K an item) and GSM8K
+(first 300) 97.3% against 96.3%. Relaxed verification
 at top-3 within 2.0 is not a profile default: against the 3-bit copies with the int8 state it costs GPQA 8.6 points
 (p 0.02; answers 27% longer, 29 more at the 8,192-token cap) at an unchanged GSM8K.
 
