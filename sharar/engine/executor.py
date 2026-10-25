@@ -50,7 +50,8 @@ class Executor:
         self.target: Target = model.target
         from sharar.engine.config import current
         if self.target.kv_formats is not None and current().kv_format not in self.target.kv_formats:
-            raise ValueError(f"{self.target.name} supports SHARAR_KV_FORMAT=" + ", ".join(self.target.kv_formats))
+            raise ValueError(f"{self.target.name} supports SHARAR_KV_FORMAT=" + ", ".join(self.target.kv_formats)
+                             + f" only ({current().kv_format} is not supported for it yet)")
         max_context = self.target.context_length if max_context is None else max_context
         self.profile = ServingProfile(max_context=max_context, max_batch=max_batch, chunk_size=self.target.prefill_chunk,
                                       solo_chunk_size=self.target.solo_prefill_chunk)

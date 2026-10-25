@@ -140,11 +140,10 @@ def block1():
     """Block 1 of the pinned checkpoint twice: NVFP4 experts and (nearest-rounded, Lloyd/zero8) 3-bit ones."""
     import gc
     from sharar.model.nemotron.moe import NemotronMoe, load_experts
-    from sharar.model.nemotron.reference import find_snapshot
     from sharar.target import NEMOTRON
     from sharar.weights.safetensors import SnapshotWeights
     try:
-        snap = find_snapshot()
+        snap = NEMOTRON.snapshot_dir()
     except FileNotFoundError as exc:
         pytest.skip(str(exc))
     w = SnapshotWeights(snap)

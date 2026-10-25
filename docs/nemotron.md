@@ -38,7 +38,6 @@ them as the only expert copy, at every call size (the MTP head's load with the d
 | `moe.py` | the latent MoE block: fused router and `fc1_latent` GEMM, the routing kernels, budgeted expert selection |
 | `mtp.py` | `NemotronMtpHead`: the checkpoint's MTP layer for the `mtp` proposer |
 | `norm.py` | plain RMSNorm (weight, not Gemma's 1 + w) |
-| `reference.py` | the plain-torch reference the GPU tests compare against |
 
 ## Serving
 
@@ -53,7 +52,8 @@ The profiles (`nemotron_defaults` in `sharar/launch/settings.py`):
 Expert sharing (`moe.py`, `route_budget`): a verify call's rows share the experts they read. Each row is guaranteed
 its top `KEEP` experts; the call then reads at most `P` distinct experts per request and `CAP` in all, filled by
 summed routing weight, and every row also takes its other top-22 experts that the call reads anyway (free riders).
-The KV cache is FP8 (`SHARAR_KV_FORMAT=fp8`, the only format the attention's fused K/V writer serves).
+The KV cache is FP8 only: NVFP4 KV (`SHARAR_KV_FORMAT=nvfp4`) and the `sim-*` screens are not supported yet (the
+attention's fused K/V writer serves the FP8 pool), and the launcher and the executor refuse them.
 
 Measured (Sharar, spark-9931; h2h median, `tools/h2h-pr.py`, greedy; tok/s) and GSM8K-300 paired against `exact`:
 

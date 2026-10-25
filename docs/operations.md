@@ -70,7 +70,7 @@ or `dflash2`.
 
 ### NVFP4 KV
 
-`SHARAR_KV_FORMAT=nvfp4` (`fast` and `throughput` on one Spark, both targets) stores K and V as NVFP4: two E2M1 codes
+`SHARAR_KV_FORMAT=nvfp4` (`fast` and `throughput` on one Spark, the 27B and Flash-Next; not supported on Nemotron yet) stores K and V as NVFP4: two E2M1 codes
 a byte and an E4M3 scale per 16 values, 4.5 bits a value where FP8 takes 8. The same memory holds 16/9 the 27B's tokens
 and about 1.4x Flash-Next's (its BF16 index keys keep their size): longer contexts or more requests at once, more
 cached prefixes, and fewer bytes read back from the SSD tier.

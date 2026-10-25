@@ -366,7 +366,7 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(kv_format in ("fp8", "nvfp4", "sim-fp4", "sim-k8v4", "sim-bf16"),
            "SHARAR_KV_FORMAT must be fp8 or nvfp4 (sim-fp4, sim-k8v4, sim-bf16: the accuracy screen)")
     _check(kv_format == "fp8" or tp == 1, "SHARAR_KV_FORMAT=nvfp4 is unmeasured on two Sparks: serve FP8 KV tensor-parallel")
-    _check(kv_format == "fp8" or not TARGET_SETTINGS[name].get("fp8_kv_only"), f"{name} serves an FP8 KV cache only (SHARAR_KV_FORMAT=fp8)")
+    _check(kv_format == "fp8" or not TARGET_SETTINGS[name].get("fp8_kv_only"), f"{name} serves an FP8 KV cache only (SHARAR_KV_FORMAT=fp8): NVFP4 KV is not supported for it yet")
     _check(values.get("SHARAR_DRAFT_VOCAB", "0").isdigit(), "SHARAR_DRAFT_VOCAB must be a row count (0 = the full lm_head)")
     _check(values.get("SHARAR_SSD", "0") in ("0", "1"), "SHARAR_SSD must be 0 or 1")
     block = values.get("SHARAR_SSD_BLOCK_TOKENS", "256")

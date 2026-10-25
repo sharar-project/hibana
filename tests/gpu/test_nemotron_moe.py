@@ -36,10 +36,10 @@ def cos(a, b) -> float:
 
 @pytest.fixture(scope="module")
 def weights():
-    from sharar.model.nemotron.reference import find_snapshot
+    from sharar.target import NEMOTRON
     from sharar.weights.safetensors import SnapshotWeights
     try:
-        snap = find_snapshot()
+        snap = NEMOTRON.snapshot_dir()
     except FileNotFoundError as exc:
         pytest.skip(str(exc))
     return snap, SnapshotWeights(snap)
@@ -85,9 +85,9 @@ def test_reference_matches_transformers(weights, moe):
     from transformers.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
     from transformers.models.nemotron_h.modeling_nemotron_h import NemotronHMoE
     from sharar.kernels.w3_moe import nvfp4_dequant, unswizzle_batched
-    from sharar.model.nemotron.reference import read_json
+    import json
     snap, w = weights
-    cfg = {k: v for k, v in read_json(snap / "config.json")["llm_config"].items() if k != "time_step_limit"}
+    cfg = {k: v for k, v in json.loads((snap / "config.json").read_text())["llm_config"].items() if k != "time_step_limit"}
     with torch.device("meta"):
         hf = NemotronHMoE(NemotronHConfig(**cfg))
     hf = hf.to_empty(device="cuda").bfloat16()

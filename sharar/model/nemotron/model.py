@@ -119,8 +119,6 @@ class Nemotron:
         from sharar.cache.ledger import check_load_headroom
         if get_tp_info().size != 1:
             raise ValueError("Nemotron serves on one Spark")
-        if current().kv_format != "fp8":  # the fused K/V writer (`kernels/nemotron_fused.py`) writes the FP8 pool
-            raise ValueError("Nemotron serves an FP8 KV cache only (SHARAR_KV_FORMAT=fp8)")
         # Calibrated only: nearest rounding's output error on held-out activations is two to four times GPTQ's
         # (docs/w3-calibration.md, Nemotron), so there is no nearest-rounded fallback.
         calibrated = None

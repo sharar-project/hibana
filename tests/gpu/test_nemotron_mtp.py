@@ -48,9 +48,9 @@ def test_shortlist_over_an_fp8linear_picks_as_over_a_trunklinear(fmt, rescore):
 # ---- on the pinned checkpoint -------------------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def snapshot():
-    from sharar.model.nemotron.reference import find_snapshot
+    from sharar.target import NEMOTRON
     try:
-        return find_snapshot()
+        return NEMOTRON.snapshot_dir()
     except FileNotFoundError as exc:
         pytest.skip(str(exc))
 
