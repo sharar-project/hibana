@@ -403,7 +403,9 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
         _check(spec == 0 or (proposer == "dflash2" and 1 <= spec <= 7),
                "Bolt has no in-checkpoint MTP; use LiLiCorr DFlash2 at depth 1..7, or SHARAR_SPEC=0")
         _check(precision == "bf16", "Bolt LiLiCorr uses its published W4A16/BF16 draft weights")
-        _check(values.get("SHARAR_W3_DECODE", "0") == "0", "Bolt serves its native packed weights (SHARAR_W3_DECODE=0)")
+        _check(values.get("SHARAR_W3_DECODE", "0") == "0" or values.get("SHARAR_W3_CHECKPOINT", "auto") != "auto",
+               "Bolt's 3-bit copies are local calibrations (weights/bolt_w3_calibrate.py): SHARAR_W3_DECODE=1 needs "
+               "SHARAR_W3_CHECKPOINT=DIR")
         _check(kv_format in ("fp8", "sim-bf16"), "Bolt supports FP8 KV or sim-bf16 for parity")
     _check(proposer in ("mtp", "dflash2"), f"SHARAR_PROPOSER must be mtp or dflash2 (got {proposer!r})")
     _check(precision != "fp8" or (spec and proposer == "dflash2"), "FP8 draft precision requires enabled DFlash2 speculation")

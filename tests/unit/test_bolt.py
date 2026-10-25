@@ -142,3 +142,13 @@ def test_w3_calibration_names_cover_the_trunk_not_the_shared_experts():
         f"language_model.backbone.layers.{attention}.mixer.{p}_proj" for p in "qkv"]
     with pytest.raises(ValueError):
         calibrate.source_prefixes("layers.1.mixer.shared_up")
+
+
+def test_w3_decode_needs_a_local_calibration(tmp_path):
+    env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
+    with pytest.raises(ValueError, match="SHARAR_W3_CHECKPOINT"):
+        settings.resolve("bolt", "exact", env=env, overrides={"SHARAR_W3_DECODE": "1"})
+    (tmp_path / "w3").mkdir()
+    (tmp_path / "w3" / "manifest.json").write_text("{}")
+    s = settings.resolve("bolt", "exact", env=env, overrides={"SHARAR_W3_DECODE": "1", "SHARAR_W3_CHECKPOINT": str(tmp_path / "w3")})
+    assert preflight.ensure_w3(s, fetch=False) == (tmp_path / "w3").resolve()
