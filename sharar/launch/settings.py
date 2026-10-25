@@ -19,9 +19,10 @@ CHECKOUT = Path(__file__).resolve().parents[2]  # the repository root when shara
 # Canonical target names and the names users type.
 ALIASES = {"27b": "qwen38", "27B": "qwen38", "qwen38": "qwen38", "qwen3.8-27b": "qwen38",
            "flashnext": "flashnext", "flash-next": "flashnext", "Flash-Next": "flashnext",
-           "nemotron": "nemotron", "nemotron-super": "nemotron", "Nemotron": "nemotron"}
-TARGET_CHOICES = ("27b", "flashnext", "nemotron", "qwen38", "flash-next", "nemotron-super")
-SERVED = ("27b", "flashnext", "nemotron")  # one name per target, in the order `status`, `stop` and the clients look
+           "nemotron": "nemotron", "nemotron-super": "nemotron", "Nemotron": "nemotron",
+           "bolt": "bolt", "nemotron-bolt": "bolt"}
+TARGET_CHOICES = ("27b", "flashnext", "nemotron", "bolt", "qwen38", "flash-next", "nemotron-super", "nemotron-bolt")
+SERVED = ("27b", "flashnext", "nemotron", "bolt")  # one name per target, in the order `status`, `stop` and the clients look
 
 # What each target serves when nothing else says so (port, service, drafter).
 TARGET_SETTINGS = {
@@ -34,6 +35,8 @@ TARGET_SETTINGS = {
     # lm_head, its top 16 rescored by the FP8 rows (lossless: acceptance checks every draft against the target)
     "nemotron": {"SHARAR_SERVICE": "sharar-nemotron", "SHARAR_PORT": "30005", "SHARAR_PROPOSER": "mtp",
                  "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_HEAD": "w2"},
+    "bolt": {"SHARAR_SERVICE": "sharar-bolt", "SHARAR_PORT": "30006", "SHARAR_PROPOSER": "mtp",
+             "SHARAR_SPEC": "0", "SHARAR_VERIFY_STATE": "reconstruct"},
 }
 
 # The serving profiles: the default of every speed/fidelity knob a setting does not fix.
@@ -58,6 +61,15 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
                      proposer: str | None = None) -> dict[str, str]:
     """The profile's value for each knob it sets, as SHARAR_* settings, for one Spark or `tp` of them and the drafter
     `proposer` (None: the target's own)."""
+    if target == "bolt":
+        if profile not in PROFILE_NAMES:
+            raise ValueError(f"unknown serving profile {profile!r}")
+        # Checkpoint-native weights, full top-9 routing and FP32 state in every profile.
+        # The pin has no MTP; the separate LiLiCorr drafter is not yet integrated.
+        return {"SHARAR_SPEC": "0", "SHARAR_W3_DECODE": "0", "SHARAR_ACCEPT_DEFAULT": "off",
+                "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_DEVICE_ACCEPT": "0", "SHARAR_MAX_BATCH": "4",
+                "SHARAR_SSM_STATE": "fp32", "SHARAR_KV_FORMAT": "fp8", "SHARAR_SSD": "1",
+                "SHARAR_MOE_KEEP": "0", "SHARAR_MOE_BUDGET": "0"}
     if target == "nemotron":
         return nemotron_defaults(profile)
     flashnext = target == "flashnext"
@@ -164,12 +176,14 @@ def target_name(name: str | None) -> str:
     try:
         return ALIASES[name or "qwen38"]
     except KeyError:
-        raise ValueError(f"unknown target {name!r} (choose 27b, flashnext or nemotron)") from None
+        raise ValueError(f"unknown target {name!r} (choose 27b, flashnext, nemotron or bolt)") from None
 
 
 def model_config(name: str):
     """The target's pinned-checkpoint module (MODEL_ID, MODEL_REVISION, DRAFT_PINS when it has drafters); torch-free."""
-    if name == "flashnext":
+    if name == "bolt":
+        from sharar.model.bolt import config as c
+    elif name == "flashnext":
         from sharar.model.flashnext import config as c
     elif name == "nemotron":
         from sharar.model.nemotron import config as c
@@ -357,7 +371,7 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(values.get("SHARAR_DRAFT_HEAD", "fp8") in ("fp8", "w3", "w2"), "SHARAR_DRAFT_HEAD must be fp8, w3 or w2")
     _check(values.get("SHARAR_QSA_SPARSE_GRAPHS", "1") in ("0", "1"), "SHARAR_QSA_SPARSE_GRAPHS must be 0 or 1")
     _check(values.get("SHARAR_PLE_RESIDENT", "auto") in ("auto", "0"), "SHARAR_PLE_RESIDENT must be auto or 0")
-    ssm_states = ("fp32", "int8", "int4") if name != "nemotron" else ("fp32", "fp16", "fp16-rn")  # Mamba-2: FP16 (stochastic or nearest), not the GDN's windows
+    ssm_states = ("fp32", "fp16", "fp16-rn") if name in ("nemotron", "bolt") else ("fp32", "int8", "int4")
     _check(values.get("SHARAR_SSM_STATE", "fp32") in ssm_states, "SHARAR_SSM_STATE must be " + ", ".join(ssm_states[:-1]) + " or " + ssm_states[-1])
     kv_format = values.get("SHARAR_KV_FORMAT", "fp8")
     _check(kv_format in ("fp8", "nvfp4", "sim-fp4", "sim-k8v4", "sim-bf16"),
@@ -381,6 +395,10 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
             int(values.get("SHARAR_SPEC", "15")) and values["SHARAR_PROPOSER"] == "dflash2"):
         values["SHARAR_DRAFT_PRECISION"] = "bf16"  # the target's FP8 draft applies when its parallel draft runs
     precision, proposer, spec = values.get("SHARAR_DRAFT_PRECISION"), values["SHARAR_PROPOSER"], int(values.get("SHARAR_SPEC", "15"))
+    if name == "bolt":
+        _check(spec == 0, "Bolt has no in-checkpoint MTP; its companion drafter is not yet supported (SHARAR_SPEC=0)")
+        _check(values.get("SHARAR_W3_DECODE", "0") == "0", "Bolt serves its native packed weights (SHARAR_W3_DECODE=0)")
+        _check(kv_format in ("fp8", "sim-bf16"), "Bolt supports FP8 KV or sim-bf16 for parity")
     _check(proposer in ("mtp", "dflash2"), f"SHARAR_PROPOSER must be mtp or dflash2 (got {proposer!r})")
     _check(precision != "fp8" or (spec and proposer == "dflash2"), "FP8 draft precision requires enabled DFlash2 speculation")
     max_context = int(values.get("SHARAR_MAX_CONTEXT") or DEFAULT_CONTEXT)

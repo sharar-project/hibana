@@ -1,5 +1,9 @@
 # Operate Sharar
 
+`sharar serve bolt` serves the packed Nemotron 3.5 Bolt text model on port 30006. Its profiles currently share
+native weights, full top-9 routing, FP32 Mamba state, FP8 KV, SSD caching and no speculation. The pin has no MTP
+head. See [Bolt](bolt.md) for formats, limits and validation.
+
 ## Prerequisites
 
 One NVIDIA GB10 (SM 12.1, a DGX Spark; two for [tensor parallel](tensor-parallel.md)), `aarch64`, about 128 GB

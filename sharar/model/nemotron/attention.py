@@ -24,22 +24,34 @@ from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
 
 
 class NemotronAttention(Attention):
-    def __init__(self, w, prefix: str, layer_id: int, device: torch.device, ragged: ops.RaggedAttention, target):  # noqa: D107
+    def __init__(self, w, prefix: str, layer_id: int, device: torch.device, ragged: ops.RaggedAttention, target,
+                 load_linear=load_fp8_linear):  # noqa: D107
         self.layer_id = layer_id
         self.num_heads = target.num_attention_heads
         self.num_kv_heads = target.num_kv_heads
         self.head_dim = target.head_dim
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
-        self.qkv = load_fp8_linear(w, [f"{prefix}.q_proj", f"{prefix}.k_proj", f"{prefix}.v_proj"], device,
+        self.qkv = load_linear(w, [f"{prefix}.q_proj", f"{prefix}.k_proj", f"{prefix}.v_proj"], device,
                                    ColumnParallel((self.q_size, self.kv_size, self.kv_size)))
-        self.o = load_fp8_linear(w, [f"{prefix}.o_proj"], device, ROW_PARALLEL)
+        self.o = load_linear(w, [f"{prefix}.o_proj"], device, ROW_PARALLEL)
         self.rope = None
         self.ragged = ragged
 
     @property
     def bytes(self) -> int:
         return self.qkv.bytes + self.o.bytes
+
+    def _project(self, x, x_q):
+        return self.qkv(x) if self.qkv.input_scale is None else ops.fp8_linear(x, self.qkv, x_q=x_q)
+
+    def _qkv(self, x, positions, x_q=None):
+        return self._split_qkv(self._project(x, x_q), positions)
+
+    def _finish(self, attn, gate):
+        if self.o.input_scale is None:
+            return self.o(attn)
+        return super()._finish(attn, gate)
 
     def _split_qkv(self, qkv, positions):
         t = qkv.shape[0]
@@ -49,7 +61,7 @@ class NemotronAttention(Attention):
 
     def _project_write(self, x, ctx, pages, x_q):
         """q|k|v projection; K and V written to `pages`; q as a [T, heads, head_dim] view of the projection rows."""
-        qkv = ops.fp8_linear(x, self.qkv, x_q=x_q)
+        qkv = self._project(x, x_q)
         k_cache, v_cache = ctx.kv_pool.cache(self.layer_id)
         write_kv(qkv, pages, k_cache, v_cache, self.q_size, self.kv_size)
         return qkv[:, :self.q_size].view(qkv.shape[0], self.num_heads, self.head_dim)

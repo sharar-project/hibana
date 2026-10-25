@@ -134,6 +134,8 @@ def run_engine(args, parser) -> int:
         parser.error(f"--max-batch must be in [1, {MAX_BATCH}]")
     spec_depths = args.spec_depths if args.spec_depths is not None else cfg.spec_depths
     target = args.target or cfg.target
+    if target == "bolt" and args.spec:
+        parser.error("Bolt has no in-checkpoint MTP; use --spec 0")
     if args.tp > 1:
         family = targets.get(target).family
         if family not in ("qwen38", "flashnext"):
@@ -166,7 +168,7 @@ def engine_parser() -> argparse.ArgumentParser:
     return p
 
 
-def add_target(p: argparse.ArgumentParser, help: str = "27b (Qwen3.8-27B), flashnext (Qwen3.8-Flash-Next) or nemotron (Nemotron-3.5-Super)") -> None:
+def add_target(p: argparse.ArgumentParser, help: str = "27b, flashnext, nemotron (Super) or bolt (Nemotron Bolt)") -> None:
     p.add_argument("target", nargs="?", choices=TARGET_CHOICES, metavar="TARGET", help=help)
 
 

@@ -253,7 +253,7 @@ CATEGORIES = ("chat", "code", "math", "prose", "structured")
 def main() -> int:
     global URL
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
-    ap.add_argument("--target", choices=("flashnext", "27b", "qwen38", "nemotron"), required=True)
+    ap.add_argument("--target", choices=("flashnext", "27b", "qwen38", "nemotron", "bolt"), required=True)
     ap.add_argument("--pr", default=None, help="the branch, commit or ref to measure (with --arm: the one served; default HEAD)")
     ap.add_argument("--arm", action="append", default=[], metavar="NAME=PROFILE[:KEY=VALUE,...]",
                     help="a configuration of the --pr checkout to measure instead of base and PR (repeatable; see above)")

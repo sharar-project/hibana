@@ -155,7 +155,9 @@ def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
 
 def summary(s: Settings, host: dict[str, str], w3: Path | None, tp: int = 1) -> str:
     on = lambda v: "on" if v == "1" else "off"  # noqa: E731
-    if s.proposer == "mtp":
+    if not s.spec:
+        draft = "none"
+    elif s.proposer == "mtp":
         draft = "the model's own MTP head"
     elif s.draft_dir:
         draft = f"checkpoint {s.draft_dir}"

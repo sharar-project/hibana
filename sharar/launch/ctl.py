@@ -39,7 +39,8 @@ def stored_on_disk(directory: Path) -> dict:
 
 HARNESSES = ("claude", "opencode", "aider", "codex", "show")
 ALIASES = {"qwen38": ("qwen3.8-27b", "Qwen3.8-27B"), "flashnext": ("qwen3.8-flash-next", "Qwen3.8-Flash-Next"),
-           "nemotron": ("nemotron-3.5-super", "Nemotron-3.5-Super")}
+           "nemotron": ("nemotron-3.5-super", "Nemotron-3.5-Super"),
+           "bolt": ("nemotron-3.5-bolt", "Nemotron-3.5-Bolt")}
 OUTPUT_TOKENS = 32768  # reply budget the harness configs declare (thinking included); the context is the server's
 
 

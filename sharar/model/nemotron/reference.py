@@ -59,7 +59,7 @@ import json
 import math
 import os
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import torch
@@ -137,17 +137,17 @@ class NemotronConfig:
                   "full_attention": "attention"}
         if c["mlp_hidden_act"] != "relu2" or c["mamba_hidden_act"] != "silu" or c.get("n_shared_experts") != 1:
             raise ValueError("unexpected activation or shared-expert count")
-        if c.get("num_nextn_predict_layers", 0) != 1 or c.get("tie_word_embeddings"):
-            raise ValueError("expected one untied MTP step")
+        if c.get("num_nextn_predict_layers", 0) not in (0, 1) or c.get("tie_word_embeddings"):
+            raise ValueError("expected an untied head with zero or one MTP step")
         return cls(
             hidden=c["hidden_size"], vocab=c["vocab_size"], eps=c["layer_norm_epsilon"],
             block_types=tuple(legacy[t] for t in c["layers_block_type"]),
-            mtp_block_types=tuple(legacy[t] for t in c["mtp_layers_block_type"]),
+            mtp_block_types=tuple(legacy[t] for t in c.get("mtp_layers_block_type", [])),
             heads=c["num_attention_heads"], kv_heads=c["num_key_value_heads"], head_dim=c["head_dim"],
             mamba_heads=c["mamba_num_heads"], mamba_head_dim=c["mamba_head_dim"], n_groups=c["n_groups"],
             d_state=c["ssm_state_size"], conv_kernel=c["conv_kernel"], chunk=c["chunk_size"],
-            time_step_limit=tuple(float(v) for v in c["time_step_limit"]),
-            experts=c["n_routed_experts"], top_k=c["num_experts_per_tok"], moe_inter=c["moe_intermediate_size"],
+            time_step_limit=tuple(float(v["__float__"]) if isinstance(v, dict) else float(v) for v in c["time_step_limit"]),
+            experts=c.get("n_routed_experts", 0), top_k=c.get("num_experts_per_tok", 9), moe_inter=c.get("moe_intermediate_size", 0),
             latent=c["moe_latent_size"], shared_inter=c["moe_shared_expert_intermediate_size"],
             routed_scale=float(c["routed_scaling_factor"]), norm_topk=bool(c["norm_topk_prob"]),
             n_group=c["n_group"], topk_group=c["topk_group"],
@@ -232,12 +232,17 @@ class Linear:
             return self.w.to(dtype)
         if self.kind == "fp8":
             return dequant_fp8(self.w, self.scale).to(dtype)
+        if self.kind in ("IQ2_XXS", "Q8_0"):
+            from sharar.weights.ggml import dequantize
+            return dequantize(self.w, self.kind).to(dtype)
         return dequant_nvfp4(self.w, self.scale, self.scale_2, self.low_nibble_first).to(dtype)
 
     def unscaled(self, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor | None]:
         """(weight without its per-tensor scale, that scale): exact in BF16, since an E4M3 value, and an E2M1 value
         times an E4M3 block scale, have at most 6 significant bits."""
-        if self.kind == "bf16":
+        if self.kind in ("bf16", "IQ2_XXS", "Q8_0"):
+            if self.kind != "bf16":
+                return self.weight(dtype), None
             return self.w.to(dtype), None
         if self.kind == "fp8":
             return self.w.to(dtype), self.scale
@@ -269,6 +274,8 @@ def load_linear(w: SnapshotWeights, prefix: str, device, low_nibble_first: bool 
     """The linear at `prefix` in whatever encoding the checkpoint stored it."""
     weight = w.get(f"{prefix}.weight").to(device)
     if weight.dtype == torch.uint8:
+        if weight.ndim == 3:
+            return Linear({66: "IQ2_XXS", 34: "Q8_0"}[weight.shape[-1]], weight)
         return Linear("nvfp4", weight, w.get(f"{prefix}.weight_scale").to(device),
                       w.get(f"{prefix}.weight_scale_2").float().to(device), low_nibble_first)
     if weight.dtype == torch.float8_e4m3fn:
@@ -456,7 +463,9 @@ class ExpertStore:
         self._staging = torch.empty(0, dtype=torch.uint8)
 
     def _read(self, prefix: str, e: int) -> tuple[Linear, Linear]:
-        names = [f"{prefix}.experts.{e}.{p}" for p in self.PARTS]
+        ggml = f"{prefix}.experts.{e}.up_proj.weight_scale" not in self.w
+        parts = ("up_proj.weight", "down_proj.weight") if ggml else self.PARTS
+        names = [f"{prefix}.experts.{e}.{p}" for p in parts]
         file = self.w._map[names[0]]
         shard = self._shards.get(file) or self._shards.setdefault(file, _Shard(self.w.snap / file))
         entries = [shard.entries[n] for n in names]
@@ -473,6 +482,8 @@ class ExpertStore:
         for dtype, shape, start, end in entries:
             tensors.append(raw[at:at + end - start].view(dtype).view(shape))
             at += end - start
+        if ggml:
+            return Linear("IQ2_XXS", tensors[0]), Linear("IQ2_XXS", tensors[1])
         s2 = [self.w.get(f"{prefix}.experts.{e}.{p}.weight_scale_2").float().to(self.device)
               for p in ("up_proj", "down_proj")]
         return (Linear("nvfp4", tensors[0], tensors[1], s2[0], self.low),
@@ -581,6 +592,12 @@ def moe_mixer(p: MoEParams, x: torch.Tensor, cfg: NemotronConfig, experts: Exper
     for g in range(0, len(chosen), EXPERT_GROUP):
         group = chosen[g:g + EXPERT_GROUP]
         pairs = [experts.get(p.prefix, e) for e in group]
+        if pairs[0][0].kind == "IQ2_XXS":
+            for e, (up, down) in zip(group, pairs):
+                tok, slot = torch.where(ids == e)
+                h = relu2(up(latent[tok], dtype))
+                acc.index_add_(0, tok, down(h, dtype).float() * weights[tok, slot, None])
+            continue
         ups, up_s = dequant_nvfp4_many([u for u, _ in pairs], dtype)
         downs, down_s = dequant_nvfp4_many([d for _, d in pairs], dtype)
         for j, e in enumerate(group):
@@ -623,6 +640,7 @@ class NemotronReference:
                  low_nibble_first: bool = True, time_step_limit: tuple[float, float] | None = None, log=None):
         self.snap = Path(snap) if snap is not None else find_snapshot()
         self.cfg = NemotronConfig.from_snapshot(self.snap)
+        self.block_configs = read_json(self.snap / "config.json")["llm_config"].get("block_configs", [])
         self.device, self.dtype = torch.device(device), dtype
         self.time_step_limit = time_step_limit
         self.w = SnapshotWeights(self.snap)
@@ -639,7 +657,7 @@ class NemotronReference:
             self.embed = self.w.get(f"{TRUNK}.embeddings.weight").to(self.device)
             self.norm_f = self.w.get(f"{TRUNK}.norm_f.weight").to(self.device)
             self.lm_head = load_linear(self.w, "language_model.lm_head", self.device)
-            if mtp:
+            if mtp and self.cfg.mtp_block_types:
                 if self.cfg.mtp_block_types != ("attention", "moe"):
                     raise ValueError(f"unexpected MTP pattern {self.cfg.mtp_block_types}")
                 get = lambda name: self.w.get(f"{MTP}.{name}").to(self.device)  # noqa: E731
@@ -666,10 +684,18 @@ class NemotronReference:
             if state is not None:
                 state.kv[i] = kv
         else:
-            out = moe_mixer(b.mixer, h, self.cfg, self.experts)
+            cfg = self.cfg
+            if self.block_configs:
+                spec = self.block_configs[i]
+                cfg = replace(cfg, experts=spec["n_routed_experts"], top_k=spec["num_experts_per_tok"],
+                              moe_inter=spec["moe_intermediate_size"])
+            out = moe_mixer(b.mixer, h, cfg, self.experts)
         return x + out.to(x.dtype)
 
     def embed_ids(self, ids: torch.Tensor) -> torch.Tensor:
+        if self.embed.ndim == 3:
+            from sharar.weights.ggml import dequantize
+            return dequantize(self.embed[ids.to(self.device)], "Q8_0").to(self.dtype)
         return self.embed[ids.to(self.device)].to(self.dtype)
 
     def logits(self, h: torch.Tensor) -> torch.Tensor:

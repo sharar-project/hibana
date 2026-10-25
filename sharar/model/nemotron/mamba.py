@@ -21,7 +21,7 @@ from sharar.weights.modelopt import load_fp8_linear
 
 
 class NemotronMamba:
-    def __init__(self, w, prefix: str, layer_id: int, device: torch.device, target):  # noqa: D107
+    def __init__(self, w, prefix: str, layer_id: int, device: torch.device, target, load_linear=load_fp8_linear):  # noqa: D107
         self.layer_id = layer_id
         self.index = list(target.gdn_layer_ids).index(layer_id)  # the stochastic rounding's layer key (`ssm_all` row)
         self.device = device
@@ -29,8 +29,8 @@ class NemotronMamba:
         self.params = mamba2.prepare_params(g("conv1d.weight"), g("conv1d.bias"), g("A_log"), g("D"), g("dt_bias"),
                                             g("norm.weight"), target.rms_norm_eps, groups=target.linear_num_key_heads,
                                             state=target.linear_key_head_dim)
-        self.in_proj = load_fp8_linear(w, [f"{prefix}.in_proj"], device)  # [z 8192 | xBC 10240 | dt 128, 4096]
-        self.out_proj = load_fp8_linear(w, [f"{prefix}.out_proj"], device)
+        self.in_proj = load_linear(w, [f"{prefix}.in_proj"], device)  # [z 8192 | xBC 10240 | dt 128, 4096]
+        self.out_proj = load_linear(w, [f"{prefix}.out_proj"], device)
         self.d_inner = self.params.d_inner
         self._scratch = None
 
@@ -58,10 +58,12 @@ class NemotronMamba:
 
     def _out(self, y: torch.Tensor, zxbcdt: torch.Tensor) -> torch.Tensor:
         x_q = mamba2.gated_rmsnorm(y, zxbcdt[:, :self.d_inner], self.params, self.out_proj.input_scale)
+        if self.out_proj.input_scale is None:
+            return self.out_proj(x_q)
         return ops.fp8_linear(None, self.out_proj, x_q=x_q)
 
     def forward(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
-        zxbcdt = ops.fp8_linear(x, self.in_proj, x_q=x_q)
+        zxbcdt = (self.in_proj(x) if self.in_proj.input_scale is None else ops.fp8_linear(x, self.in_proj, x_q=x_q))
         conv, ssm = self._states(ctx)
         rounding = dict(layer=self.index, stochastic=mamba2.state_rounding(ctx.state_pool) == "sr"
                         if ctx is not None and ctx.state_pool is not None else False)

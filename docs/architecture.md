@@ -1,7 +1,7 @@
 # Engine architecture
 
-One GB10 (or two, tensor-parallel), three pinned targets (Qwen3.8-27B, Qwen3.8-Flash-Next and, on one Spark,
-Nemotron-3.5-Super), one target per process. The contracts between the parts are in [interfaces](interfaces.md).
+One GB10 (or two, tensor-parallel), four pinned targets (Qwen3.8-27B, Qwen3.8-Flash-Next and, on one Spark,
+Nemotron-3.5-Super and Bolt), one target per process. The contracts between the parts are in [interfaces](interfaces.md).
 
 ## Layout
 

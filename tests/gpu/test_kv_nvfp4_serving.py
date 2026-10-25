@@ -34,7 +34,11 @@ def runtime(tmp_path_factory, request):
         gc.collect()
         torch.cuda.empty_cache()
         model = targets.load_model(target, snap)
-        ex = Executor(model, log=print, max_batch=4, max_context=32768, spec_config=SpecConfig("dflash2", 15, "reconstruct", "fp8", None))
+        # This checks cache contents, so use the suite's bounded 27B pools.
+        # Planning against all free host memory can leave too little headroom
+        # for the drafter's separate startup check.
+        ex = Executor(model, num_pages=35000, num_slots=12, log=print, max_batch=4, max_context=32768,
+                      spec_config=SpecConfig("dflash2", 15, "reconstruct", "fp8", None))
         assert ex.kv_pool.nvfp4 == (request.param == "nvfp4")
         ex.capture_graphs(log=print)
         ex.warmup(log=print)

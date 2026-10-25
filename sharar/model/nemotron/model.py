@@ -211,7 +211,7 @@ class Nemotron:
 
     @torch.inference_mode()
     def forward(self, input_ids: torch.Tensor, ctx: ForwardContext, capture: bool = False) -> ForwardResult:
-        hidden = torch.nn.functional.embedding(input_ids, self.embed)
+        hidden = self.embed_ids(input_ids)
         ctx.capture = capture
         out: dict = {"input_ids": input_ids, "positions": ctx.positions}
         if capture:
@@ -228,6 +228,9 @@ class Nemotron:
         out["norm"] = normed
         out["pre_norm"] = pre_norm
         return out
+
+    def embed_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.embedding(input_ids, self.embed)
 
     def prefill(self, input_ids: torch.Tensor, capture: bool = False) -> dict:
         """Stand-alone prefill without pools (parity tools)."""
