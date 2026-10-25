@@ -183,3 +183,36 @@ def test_tuned_launch_configs_take_their_own_plan(m):
     weight.prepare(PlanRows(exact=(m, 3)))
     assert set(weight.tuned) == {m}
     torch.testing.assert_close(weight(x), expected, rtol=.016, atol=.03)
+
+
+@pytest.mark.parametrize("m,keep,cap", [(8, 6, 20), (32, 4, 48), (8, 6, 0), (8, 9, 512)])
+def test_expert_sharing_at_bolt_geometry(m, keep, cap):
+    """Super's budgeted routing on Bolt's top 9 of 432 (16 padded lanes): a call reads at most the cap's experts (or
+    the guaranteed ones), every real row keeps its top `keep` first and only set members after, in rank order, at
+    renormalized sigmoid weights, dropped and padded slots at weight 0 on an expert already read; with every top 9 in the set, route_topk's ids and weights."""
+    from sharar.model.nemotron.moe import route_budget, route_topk
+    torch.manual_seed(19)
+    experts, latent, k = 432, 1024, 9
+    fused = torch.randn(m, experts + latent, device="cuda") * 2
+    bias = torch.randn(experts, device="cuda") * .1
+    slots = torch.tensor([1] * (m // 8 - 1) + [0], dtype=torch.int32, device="cuda")  # the last request padded
+    ids, w, lat = route_budget(fused, bias, k, latent, keep, cap, slots, 8, repeat=True)
+    real = m - 8
+    s = fused[:, :experts].sigmoid()
+    order = torch.topk(s + bias, k, dim=-1).indices
+    used = ids[:real][w[:real] > 0].unique()
+    guaranteed = order[:real, :keep].unique()
+    assert len(used) <= max(cap, len(guaranteed)) and torch.isin(guaranteed, used).all()
+    for r in range(real):
+        live = w[r] > 0
+        assert torch.equal(ids[r, :keep].long(), order[r, :keep])
+        picked = ids[r][live].long()
+        pos = [int((order[r] == e).nonzero()) for e in picked.tolist()]
+        assert pos == sorted(pos)
+        torch.testing.assert_close(w[r][live], s[r, picked] / s[r, picked].sum(), rtol=1e-6, atol=1e-7)
+        assert (ids[r][~live] == ids[r, 0]).all()  # the row's top expert, at weight 0
+    assert (w[real:] == 0).all() and (ids[real:] == order[0, 0]).all()
+    assert torch.equal(lat, fused[:, experts:].bfloat16())
+    if cap >= real * k:
+        plain = route_topk(fused, bias, k, latent, slots, 8)
+        assert torch.equal(ids, plain[0]) and torch.equal(w, plain[1])

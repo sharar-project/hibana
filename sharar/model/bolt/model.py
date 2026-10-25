@@ -20,7 +20,7 @@ from sharar.model.bolt.linear import PackedLinear, PlanRows, graph_rows
 from sharar.model.nemotron.attention import NemotronAttention
 from sharar.model.nemotron.mamba import NemotronMamba
 from sharar.model.nemotron.model import BACKBONE, Block, Nemotron, drop_page_cache
-from sharar.model.nemotron.moe import route_topk
+from sharar.model.nemotron.moe import route_budget, route_topk
 from sharar.model.nemotron.norm import RMSNorm
 from sharar.weights.safetensors import SnapshotWeights
 
@@ -43,8 +43,13 @@ class BoltMoe:
             raise ValueError(f"{prefix}: encoded expert shapes differ from the pinned Puzzle block")
         if self.router.shape != (self.experts, BOLT.hidden) or self.bias.shape != (self.experts,):
             raise ValueError(f"{prefix}: router shape differs from the pinned Puzzle block")
+        # expert sharing (SHARAR_MOE_KEEP / SHARAR_MOE_BUDGET), as Super's: each real token keeps its top `keep`, and a
+        # decode or verify call reads at most min(budget, per_request x requests) distinct experts (`route_budget`)
+        cfg = current()
+        self.keep = cfg.moe_keep if cfg.moe_keep < self.topk else 0
+        self.budget, self.per_request = (cfg.moe_budget, cfg.moe_budget_per_request) if self.keep else (0, 0)
         self.iq2 = self.b12x = None
-        backend = current().bolt_experts
+        backend = cfg.bolt_experts
         if backend == "fp8":
             from sharar.kernels import iq2_moe
             self.iq2 = iq2_moe.pack_experts(self.w1, self.w2)
@@ -68,6 +73,16 @@ class BoltMoe:
         """`Block.forward`'s mixer call: the projections read BF16, so the norm's FP8 copy `x_q` goes unread."""
         return self(x, ctx)
 
+    def fallback(self, rows: int, steps: int) -> int:
+        """`NemotronMoe.fallback`'s guarantee when the floors' union exceeds the cap: cap / rows, at least
+        min(SHARE_MIN, keep) and below the floor; 0 without a cap or when that is the floor itself."""
+        from sharar.model.nemotron.moe import NemotronMoe
+        if not self.budget:
+            return 0
+        cap = min(self.budget, self.per_request * (rows // steps)) if self.per_request else self.budget
+        g = max(min(NemotronMoe.SHARE_MIN, self.keep), min(self.keep, cap // rows))
+        return g if g < self.keep else 0
+
     def __call__(self, x, ctx=None):
         x = x.contiguous()
         logits = torch.mm(x, self.router.T, out_dtype=torch.float32)
@@ -76,7 +91,14 @@ class BoltMoe:
         slots, steps = None, 1
         if ctx is not None and ctx.mode in ("decode", "verify"):
             slots, steps = (ctx.slots, 1) if ctx.mode == "decode" else (ctx.seq_slots, ctx.verify_steps)
-        ids, weights, latent = route_topk(fused, self.bias, self.topk, BOLT.latent, slots, steps, repeat=False)
+        if self.keep and slots is not None:
+            # a dropped slot names the row's own top expert at weight 0 (`repeat`): b12x's fused MoE reads id E (no
+            # expert) in a real row as garbage, and that row's output with it (padded rows' outputs are discarded)
+            ids, weights, latent = route_budget(fused, self.bias, self.topk, BOLT.latent, self.keep, self.budget, slots,
+                                                steps, per_request=self.per_request, repeat=True,
+                                                fallback=self.fallback(fused.shape[0], steps))
+        else:
+            ids, weights, latent = route_topk(fused, self.bias, self.topk, BOLT.latent, slots, steps, repeat=False)
         if self.b12x is not None:
             routed = self.b12x(latent, ids, weights * BOLT.route_scale)
         elif self.iq2 is not None:
@@ -124,8 +146,8 @@ class Bolt(Nemotron):
         if cfg.bolt_experts == "fp8":
             from sharar.kernels.iq2_moe import _source_revision
             self.arithmetic_identity["kernel"] = _source_revision()
-        if cfg.moe_keep or cfg.moe_budget:
-            raise ValueError("Bolt uses all nine routed experts; disable expert pruning")
+        if cfg.moe_keep:  # shared experts change which experts a decode or verify call sums
+            self.arithmetic_identity["moe_sharing"] = f"{cfg.moe_keep}:{cfg.moe_budget_per_request}:{cfg.moe_budget}"
         calibrated = None
         if cfg.w3_decode:
             # calibrated only (`weights/bolt_w3_calibrate.py`), as for Super: there is no nearest-rounded fallback
