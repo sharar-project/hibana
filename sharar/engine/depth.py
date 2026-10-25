@@ -193,6 +193,7 @@ class RowBudget:
         self.survival = {s: ([prior * prior_weight] * cap, [prior_weight] * cap) for s in (False, True)}
         self.shift = [0.0] * cap
         self.chosen: Counter = Counter()  # (bucket, depth) -> rounds verified at that depth (padded and one-depth rounds)
+        self.chosen_rows: Counter = Counter()  # (bucket, rows) -> packed rounds that verified that many rows
         self._scored = 0
         self._round = None  # the last scored round's {id(request): its positions' probabilities}
 
@@ -282,6 +283,7 @@ class RowBudget:
             if best_value is None or v > best_value:
                 best, best_value = (rows, extra), v
         rows, extra = best
+        self.chosen_rows[bucket, rows] += 1
         limits = [0] * b
         for _, _, i in gains[:extra]:
             limits[i] += 1

@@ -206,7 +206,9 @@ class SpecDecoder:
                              "tokens_per_ms": {label(b, s): round(v, 3) for (b, s), v in policy.rate.items()},
                              "overhead_ms": {label(b, s): round(v, 3) for (b, s), v in policy.overhead.items()},
                              "depths": {str(b): {str(d): n for (bb, d), n in sorted(policy.chosen.items()) if bb == b}
-                                        for b in sorted({b for b, _ in policy.chosen})}}
+                                        for b in sorted({b for b, _ in policy.chosen})},
+                             "rows": {str(b): {str(r): n for (bb, r), n in sorted(policy.chosen_rows.items()) if bb == b}
+                                      for b in sorted({b for b, _ in policy.chosen_rows})}}
         if self.timing:  # phase split is only meaningful with the synchronizing timers on
             out.update({
                 "draft_ms_per_round": 1000 * self.draft_seconds / r,
