@@ -160,8 +160,8 @@ def nemotron_defaults(profile: str) -> dict[str, str]:
     # and 128 in all), gated together with the FP16 state against exact (GSM8K-300 97.7% each at one to four requests):
     # 102.5 tok/s at one request; at 8 / 16 streams 277 / 353 tok/s against 190 / 239 without
     p.update(SHARAR_MOE_KEEP="12", SHARAR_MOE_BUDGET="48:128")
-    if profile == "throughput":  # up to 16 requests, depth 3 past four
-        p.update(SHARAR_MAX_BATCH="16", SHARAR_SPEC_DEPTHS="2:4,4:4,16:3")
+    if profile == "throughput":  # up to 16 requests, depth 5 to eight (a bucket not named verifies SHARAR_SPEC), 3 past
+        p.update(SHARAR_MAX_BATCH="16", SHARAR_SPEC_DEPTHS="2:4,4:4,8:5,16:3")
     return p
 
 
