@@ -168,3 +168,18 @@ def test_b12x_iq2_moe_matches_reference_replays_and_runs_on_another_thread():
     thread.start()
     thread.join()
     assert close(result["y"], expected(rows, routes, gains))
+
+
+@pytest.mark.parametrize("m", [8, 28])
+def test_tuned_launch_configs_take_their_own_plan(m):
+    """A row count `model/bolt/tuning.py` lists runs its measured configuration and keeps the heuristic's result."""
+    from sharar.model.bolt import tuning
+    from sharar.model.bolt.linear import PlanRows
+    assert tuning.config("nvfp4", 4096, 8192, m) is not None
+    torch.manual_seed(18)
+    weight = matrix("NVFP4", 4096, 8192)
+    x = torch.randn(m, 8192, device="cuda", dtype=torch.bfloat16)
+    expected = (x.float() @ weight.dequantize().T).bfloat16()
+    weight.prepare(PlanRows(exact=(m, 3)))
+    assert set(weight.tuned) == {m}
+    torch.testing.assert_close(weight(x), expected, rtol=.016, atol=.03)

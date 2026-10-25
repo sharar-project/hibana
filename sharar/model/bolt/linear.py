@@ -5,6 +5,7 @@ W4A16 recipe (vLLM's B12xNvFp4W4A16LinearKernel), Q8_0 and IQ2_XXS through the p
 (vLLM's ModelOptBlockQuantLinearMethod). Weights stay in their checkpoint encodings; nothing quantizes activations.
 """
 
+import dataclasses
 from dataclasses import dataclass
 
 import torch
@@ -85,8 +86,19 @@ class PackedLinear:
         query = blockscaled.BlockscaledQuery(recipe=recipe, num_tokens=rows.capacity, in_features=self.in_features,
                                              padded_in_features=self.in_features, out_features=self.out_features,
                                              activation_mode="a16", **extra)
-        self.plan = blockscaled.plan_regimes(query, exact_m=tuple(m for m in sorted(set(rows.exact)) if m < rows.capacity))
-        require_prepared(self.plan, "gemm.blockscaled_precision", self.b12x.values.device)
+        from sharar.model.bolt import tuning
+        device = self.b12x.values.device
+        exact = tuple(m for m in sorted(set(rows.exact)) if m < rows.capacity)
+        # a row count with a measured launch config (`tuning.py`) gets its own plan; the rest take b12x's heuristic
+        self.tuned = {}
+        for m in exact:
+            config = tuning.config(recipe, self.out_features, self.in_features, m)
+            if config is not None:
+                one = dataclasses.replace(query, num_tokens=m, expected_m=m)
+                self.tuned[m] = blockscaled.plan(one, override=blockscaled.BlockscaledConfig(mode="a16", **config))
+                require_prepared(self.tuned[m], "gemm.blockscaled_precision", device)
+        self.plan = blockscaled.plan_regimes(query, exact_m=tuple(m for m in exact if m not in self.tuned))
+        require_prepared(self.plan, "gemm.blockscaled_precision", device)
         self.rows = rows
         if self.quant != "NVFP4":
             self.weight = None
@@ -125,6 +137,7 @@ class PackedLinear:
             if self.plan is None:
                 self.prepare()
             step = self.rows.capacity
-            y = (blockscaled.mm(x2, self.b12x, plan=self.plan) if x2.shape[0] <= step else
+            plan = self.tuned.get(x2.shape[0], self.plan)
+            y = (blockscaled.mm(x2, self.b12x, plan=plan) if x2.shape[0] <= step else
                  torch.cat([blockscaled.mm(x2[i:i + step], self.b12x, plan=self.plan) for i in range(0, x2.shape[0], step)]))
         return (y.relu().square() if relu2 else y).view(*x.shape[:-1], self.out_features)

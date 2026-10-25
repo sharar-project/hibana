@@ -164,7 +164,7 @@ class Bolt(Nemotron):
             for _, lin in self.linears():
                 # the head reads at most the graphs' rows (longer calls chunk): a prefill capacity would hold a
                 # [4096, 131072] workspace
-                lin.prepare(PlanRows(max(rows), rows) if lin is self.lm_head else PlanRows(exact=rows))
+                lin.prepare(PlanRows(2 * max(rows), rows) if lin is self.lm_head else PlanRows(exact=rows))
         finally:
             w.close()
         torch.cuda.synchronize()
