@@ -27,6 +27,7 @@ class Fp8Linear:
     input_scale: torch.Tensor  # [] float32
     alpha: torch.Tensor = None  # [] float32 = input_scale * weight_scale
     w3: object = None  # optional 3-bit decode copy (sharar.kernels.w3.W3Weight)
+    w3_rows: int | None = None  # the most rows a call reads the copy with (None: w3.MAX_ROWS)
     shard: Shard = REPLICATED  # which part of the checkpoint's matrix this rank holds (its 3-bit copy loads the same)
 
     def __post_init__(self):
@@ -62,6 +63,7 @@ class Nvfp4Linear:
     out_features: int
     in_features: int
     w3: object = None  # optional 3-bit decode copy (sharar.kernels.w3.W3Weight)
+    w3_rows: int | None = None  # the most rows a call reads the copy with (None: w3.MAX_ROWS)
     shard: Shard = REPLICATED  # which part of the checkpoint's matrix this rank holds (its 3-bit copy loads the same)
     pairs: int = 0  # an MLP's gate|up interleaved in blocks of this many rows, its 3-bit copy too (`interleave_pairs`); 0: concatenated
 

@@ -49,7 +49,7 @@ def fp4_quantize(x: torch.Tensor, input_scale_inv: torch.Tensor) -> tuple[torch.
 
 def w3_decode(lin, m: int) -> bool:
     """True when this call runs the 3-bit decode copy instead of the NVFP4/FP8 weights."""
-    return lin.w3 is not None and m <= w3.MAX_ROWS and w3.enabled()
+    return lin.w3 is not None and m <= (getattr(lin, "w3_rows", None) or w3.MAX_ROWS) and w3.enabled()
 
 
 def nvfp4_linear(x: torch.Tensor, lin: Nvfp4Linear, prequantized: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:

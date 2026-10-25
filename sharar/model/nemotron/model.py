@@ -188,8 +188,10 @@ class Nemotron:
         if not trunk:
             return calibrated.identity
         loads = [(name, linears[name], linears[name].shard) for name in linears if name in calibrated.weights]
+        from sharar.kernels import w3
         for (_, lin, _), copy in zip(loads, calibrated.load_many(loads)):
-            lin.w3 = copy
+            # the narrow kernel's 64 rows, as measured (the wide kernel's table is the 27B's, as for Flash-Next's trunk)
+            lin.w3, lin.w3_rows = copy, w3.NARROW_ROWS
         torch.cuda.synchronize()
         if log:
             fp8 = [name for name in linears if name not in calibrated.weights]
