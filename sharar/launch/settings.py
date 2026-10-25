@@ -84,14 +84,14 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
              "SHARAR_MOE_KEEP": "0", "SHARAR_MOE_BUDGET": "0", "SHARAR_BOLT_EXPERTS": "b12x"}
         if profile == "exact":
             return p
-        # fast, throughput: the calibrated 3-bit copies of the trunk and vocabulary head (weights/bolt_w3_calibrate.py),
-        # the int8 Mamba state, and relaxed top-3 within 2.0 logits for greedy requests. Over the 22 h2h prompts on
-        # one GB10, mean / four-stream tok/s 86.7 / 169.8 (exact) -> 111.0 / 187.0 (+W3) -> 114.2 / 213.7 (+int8)
-        # -> 146.3 / 262.8 (+relaxed); paired on GSM8K / GPQA against exact, the 3-bit copies with the int8 state
-        # +0.1 / +1.5 points (docs/bolt.md#profiles-and-limits). Expert sharing as Super's fast (model/nemotron/moe.py
-        # route_budget): each token keeps its top 4 experts and a decode or verify call reads at most 16 a request
-        # and 48 in all (at exact verification 114.2 / 213.7 -> 130.7 / 251.6).
-        p.update(SHARAR_W3_DECODE="1", SHARAR_SSM_STATE="int8", SHARAR_ACCEPT_DEFAULT="3:2.0",
+        # fast, throughput: the calibrated 3-bit copies of the trunk and vocabulary head (weights/bolt_w3_calibrate.py)
+        # and the int8 Mamba state; paired on GSM8K / GPQA against exact +0.1 / +1.5 points. Over the 22 h2h prompts on
+        # one GB10, mean / four-stream tok/s 86.7 / 169.8 (exact) -> 111.0 / 187.0 (+W3) -> 114.2 / 213.7 (+int8).
+        # Expert sharing as Super's fast (model/nemotron/moe.py route_budget): each token keeps its top 4 experts and a
+        # decode or verify call reads at most 16 a request and 48 in all (114.2 / 213.7 -> 130.7 / 251.6).
+        # Verification stays exact: relaxed top-3 within 2.0 logits (146.3 / 262.8) cost GPQA 8.6 points (p 0.02;
+        # answers 27% longer, 29 more at the token cap) at an unchanged GSM8K.
+        p.update(SHARAR_W3_DECODE="1", SHARAR_SSM_STATE="int8",
                  SHARAR_MOE_KEEP="4", SHARAR_MOE_BUDGET="16:48")
         return p
     if target == "nemotron":
