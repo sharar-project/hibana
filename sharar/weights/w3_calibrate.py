@@ -44,13 +44,24 @@ def source_weight(reader, prefixes, device):
 
 
 class InputCovariances:
-    def __init__(self, linears):
+    """x^T x of each named projection's input, from `ops.fp8_linear` / `ops.nvfp4_linear` calls. `served_fp8`: an FP8
+    projection's BF16 input counts as the FP8 activation it reads (quantized at its static scale), as its 3-bit copy
+    will. While `holdout` is set, calls add no covariance: `held_out_rows` evenly spaced rows of each call are kept in
+    `held` (BF16), the probes of a held-out sample."""
+
+    held_out_rows = 64
+
+    def __init__(self, linears, served_fp8: bool = False):
         self.names = {id(linear): name for name, linear in linears}
         self.matrices, self.counts, self.probes = {}, {}, {}
         self.originals = {}
+        self.served_fp8, self.holdout, self.held = served_fp8, False, {}
 
     def add(self, name, x):
         x = x.reshape(-1, x.shape[-1]).float()
+        if self.holdout:
+            self.held.setdefault(name, []).append(x[::max(1, len(x) // self.held_out_rows)][:self.held_out_rows].to(torch.bfloat16))
+            return
         if name not in self.matrices:
             self.matrices[name] = torch.zeros((x.shape[-1], x.shape[-1]), device=x.device)
             self.counts[name] = 0
@@ -70,6 +81,9 @@ class InputCovariances:
                 if name is not None:
                     if kind == "fp8_linear" and kwargs.get("x_q") is not None:
                         value = kwargs['x_q'].float() * linear.input_scale.float()
+                    elif kind == "fp8_linear" and self.served_fp8:
+                        from sharar.kernels.fp8_quant import quant_fp8
+                        value = quant_fp8(x.reshape(-1, x.shape[-1]), linear.input_scale).float() * linear.input_scale.float()
                     elif x is not None:
                         value = x
                     else:

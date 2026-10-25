@@ -89,7 +89,7 @@ def test_speculative_rounds_record_proposals_and_targets(accepted):
     target = draft + [50]
     if accepted < 3:
         target[accepted] = 99
-    r = Request([1, 2, 3], SamplingParams(max_new_tokens=20), slot=1, pages=torch.tensor([101, 102, 103]), prefill_pos=3)
+    r = Request([1, 2, 3], SamplingParams(max_new_tokens=20, stop_token_ids=()), slot=1, pages=torch.tensor([101, 102, 103]), prefill_pos=3)
     r.committed_len = 3
     r.push(10)
     r.reservation = Reservation(torch.tensor([104, 105, 106, 107]), [104, 105, 106, 107])
@@ -115,7 +115,7 @@ def test_rows_in_sampled_batches_keep_argmax_only_when_greedy(greedy):
     spec.replay = None
     spec.reset_stats()
     # Rows inside a sampled batch take the per-row path: z is [k+1, V] logits.
-    params = SamplingParams(max_new_tokens=20, temperature=0.0 if greedy else 1.0, top_k=1, top_p=1.0, seed=3)
+    params = SamplingParams(max_new_tokens=20, temperature=0.0 if greedy else 1.0, top_k=1, top_p=1.0, seed=3, stop_token_ids=())
     r = Request([1], params, slot=0, pages=torch.tensor([101]), prefill_pos=1)
     r.generator = torch.Generator().manual_seed(3)
     r.committed_len = 1

@@ -18,17 +18,33 @@ CHECKOUT = Path(__file__).resolve().parents[2]  # the repository root when shara
 
 # Canonical target names and the names users type.
 ALIASES = {"27b": "qwen38", "27B": "qwen38", "qwen38": "qwen38", "qwen3.8-27b": "qwen38",
-           "flashnext": "flashnext", "flash-next": "flashnext", "Flash-Next": "flashnext"}
-TARGET_CHOICES = ("27b", "flashnext", "qwen38", "flash-next")
+           "flashnext": "flashnext", "flash-next": "flashnext", "Flash-Next": "flashnext",
+           "nemotron": "nemotron", "nemotron-super": "nemotron", "Nemotron": "nemotron"}
+TARGET_CHOICES = ("27b", "flashnext", "nemotron", "qwen38", "flash-next", "nemotron-super")
+SERVED = ("27b", "flashnext", "nemotron")  # one name per target, in the order `status`, `stop` and the clients look
 
-# What each target serves when nothing else says so (port, service, drafter).
+# What each target serves when nothing else says so (port, service, drafter: the SHARAR_* keys), and what the launcher
+# knows of it: `recurrence` (`Target.recurrence`, the formats of SSM_STATES; default gdn), `w3_missing` (what the
+# 3-bit profiles serve without a calibrated checkpoint), `w3_calibrated_only` (no nearest-rounded copies then),
+# `w3_required` (no fallback: the 3-bit profiles refuse to start without one) and `fp8_kv_only` (its attention writes
+# the FP8 pool only).
 TARGET_SETTINGS = {
     "qwen38": {"SHARAR_SERVICE": "sharar-qwen38", "SHARAR_PORT": "30001", "SHARAR_PROPOSER": "dflash2", "SHARAR_SPEC": "15",
-               "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_PRECISION": "fp8"},
+               "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_PRECISION": "fp8",
+               "w3_missing": "nearest-rounded copies (about 2 GSM8K points and 8% tokens per round below calibrated)"},
     "flashnext": {"SHARAR_SERVICE": "sharar-flashnext", "SHARAR_PORT": "30004", "SHARAR_PROPOSER": "mtp",
                   "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_PRECISION": "fp8", "SHARAR_DRAFT": "pinned",
-                  "SHARAR_DRAFT_HEAD": "w2", "SHARAR_FLASHNEXT_TRUNK": "fp8"},
+                  "SHARAR_DRAFT_HEAD": "w2", "SHARAR_FLASHNEXT_TRUNK": "fp8", "w3_calibrated_only": True,
+                  "w3_missing": "serving the FP8 trunk, about 24% slower single-stream than {profile} with it"},
+    # its own MTP head (the depth is the profile's), one Spark only; the draft steps read a 2-bit copy of the FP8
+    # lm_head, its top 16 rescored by the FP8 rows (lossless: acceptance checks every draft against the target)
+    "nemotron": {"SHARAR_SERVICE": "sharar-nemotron", "SHARAR_PORT": "30005", "SHARAR_PROPOSER": "mtp",
+                 "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_HEAD": "w2", "recurrence": "mamba2",
+                 "w3_calibrated_only": True, "w3_required": True, "fp8_kv_only": True},
 }
+# The recurrent-state formats each recurrence stores (SHARAR_SSM_STATE, cache/ssm_format.py): the per-window integer
+# formats on both, Mamba-2's FP16 with stochastic rounding.
+SSM_STATES = {"gdn": ("fp32", "int8", "int4"), "mamba2": ("fp32", "fp16_sr", "int8", "int4")}
 
 # The serving profiles: the default of every speed/fidelity knob a setting does not fix.
 #   exact     the target's own distribution: exact acceptance, no lossy weight copies (benchmarks)
@@ -52,6 +68,8 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
                      proposer: str | None = None) -> dict[str, str]:
     """The profile's value for each knob it sets, as SHARAR_* settings, for one Spark or `tp` of them and the drafter
     `proposer` (None: the target's own)."""
+    if target == "nemotron":
+        return nemotron_defaults(profile)
     flashnext = target == "flashnext"
     if profile == "exact":
         p = {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "0", "SHARAR_DEVICE_ACCEPT": "0"}
@@ -126,6 +144,32 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
     return p
 
 
+def nemotron_defaults(profile: str) -> dict[str, str]:
+    """Nemotron-3.5-Super's profiles (one Spark, its MTP head; docs/nemotron.md#serving), Flash-Next's knobs where they
+    apply."""
+    if profile not in PROFILE_NAMES:
+        raise ValueError(f"unknown serving profile {profile!r} (choose from {', '.join(PROFILE_NAMES)})")
+    # exact: depth 3, the best exact depth (one request 38.0 tok/s; depth 4 37.7)
+    p = {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "0",
+         "SHARAR_DEVICE_ACCEPT": "0", "SHARAR_MAX_BATCH": "4", "SHARAR_SPEC": "3", "SHARAR_SSD": "1"}
+    if profile == "exact":
+        return p
+    # relaxed top-3 within 2.0 logits for greedy and sampled requests, device-resident acceptance, depth 5 for one
+    # request and 4 for two to four, and both calibrated 3-bit copies (h2h at one request: 54.6 -> 81.0 tok/s)
+    p.update(SHARAR_ACCEPT_DEFAULT="3:2.0", SHARAR_ACCEPT_DEFAULT_SAMPLED="1", SHARAR_DEVICE_ACCEPT="1",
+             SHARAR_SPEC="5", SHARAR_SPEC_DEPTHS="2:4,4:4", SHARAR_W3_DECODE="1")
+    # the FP16 Mamba state with stochastic rounding (half the state traffic of decode, verify and replay; its rounding
+    # is keyed on token position and layer, so a request's arithmetic does not depend on the batch)
+    p["SHARAR_SSM_STATE"] = "fp16_sr"
+    # expert sharing (model/nemotron/moe.py: each verify row keeps its top 12 experts, a call reads at most 48 a request
+    # and 128 in all), gated together with the FP16 state against exact (GSM8K-300 97.7% each at one to four requests):
+    # 102.5 tok/s at one request; at 8 / 16 streams 277 / 353 tok/s against 190 / 239 without
+    p.update(SHARAR_MOE_KEEP="12", SHARAR_MOE_BUDGET="48:128")
+    if profile == "throughput":  # up to 16 requests, depth 3 past four
+        p.update(SHARAR_MAX_BATCH="16", SHARAR_SPEC_DEPTHS="2:4,4:4,16:3")
+    return p
+
+
 DEFAULT_CONTEXT = 262144
 
 
@@ -133,7 +177,18 @@ def target_name(name: str | None) -> str:
     try:
         return ALIASES[name or "qwen38"]
     except KeyError:
-        raise ValueError(f"unknown target {name!r} (choose 27b or flashnext)") from None
+        raise ValueError(f"unknown target {name!r} (choose 27b, flashnext or nemotron)") from None
+
+
+def model_config(name: str):
+    """The target's pinned-checkpoint module (MODEL_ID, MODEL_REVISION, DRAFT_PINS when it has drafters); torch-free."""
+    if name == "flashnext":
+        from sharar.model.flashnext import config as c
+    elif name == "nemotron":
+        from sharar.model.nemotron import config as c
+    else:
+        from sharar.model import qwen38_config as c
+    return c
 
 
 def config_file(env: dict | None = None) -> Path | None:
@@ -228,8 +283,8 @@ class Settings:
             env["SHARAR_FLASHNEXT_CACHE"] = str(self.model_cache)
         if w3_checkpoint is not None:
             env["SHARAR_W3_CHECKPOINT"] = str(w3_checkpoint)
-        elif env.get("SHARAR_W3_DECODE") == "1" and self.target == "flashnext":
-            env["SHARAR_W3_DECODE"] = "0"  # Flash-Next's 3-bit copies are calibrated only
+        elif env.get("SHARAR_W3_DECODE") == "1" and TARGET_SETTINGS[self.target].get("w3_calibrated_only"):
+            env["SHARAR_W3_DECODE"] = "0"  # no nearest-rounded copies for this target
         if self.warnings:
             env["SHARAR_W3_WARNING"] = "; ".join(self.warnings)
         if self.ssd is not None:
@@ -273,7 +328,7 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     user = {**file_values, **{k: v for k, v in env.items() if k.startswith("SHARAR_")}}
     name = target_name(target or (overrides or {}).get("SHARAR_TARGET") or user.get("SHARAR_TARGET"))
     values: dict[str, str] = {}
-    values.update(TARGET_SETTINGS[name])
+    values.update({k: v for k, v in TARGET_SETTINGS[name].items() if k.startswith("SHARAR_")})
     values.update(overrides or {})
     values.update({k: v for k, v in user.items() if v != "" and k not in (overrides or {})})
     values["SHARAR_TARGET"] = name
@@ -316,11 +371,13 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(values.get("SHARAR_DRAFT_HEAD", "fp8") in ("fp8", "w3", "w2"), "SHARAR_DRAFT_HEAD must be fp8, w3 or w2")
     _check(values.get("SHARAR_QSA_SPARSE_GRAPHS", "1") in ("0", "1"), "SHARAR_QSA_SPARSE_GRAPHS must be 0 or 1")
     _check(values.get("SHARAR_PLE_RESIDENT", "auto") in ("auto", "0"), "SHARAR_PLE_RESIDENT must be auto or 0")
-    _check(values.get("SHARAR_SSM_STATE", "fp32") in ("fp32", "int8", "int4"), "SHARAR_SSM_STATE must be fp32, int8 or int4")
+    ssm_states = SSM_STATES[TARGET_SETTINGS[name].get("recurrence", "gdn")]
+    _check(values.get("SHARAR_SSM_STATE", "fp32") in ssm_states, "SHARAR_SSM_STATE must be " + ", ".join(ssm_states[:-1]) + " or " + ssm_states[-1])
     kv_format = values.get("SHARAR_KV_FORMAT", "fp8")
     _check(kv_format in ("fp8", "nvfp4", "sim-fp4", "sim-k8v4", "sim-bf16"),
            "SHARAR_KV_FORMAT must be fp8 or nvfp4 (sim-fp4, sim-k8v4, sim-bf16: the accuracy screen)")
     _check(kv_format == "fp8" or tp == 1, "SHARAR_KV_FORMAT=nvfp4 is unmeasured on two Sparks: serve FP8 KV tensor-parallel")
+    _check(kv_format == "fp8" or not TARGET_SETTINGS[name].get("fp8_kv_only"), f"{name} serves an FP8 KV cache only (SHARAR_KV_FORMAT=fp8): NVFP4 KV is not supported for it yet")
     _check(values.get("SHARAR_DRAFT_VOCAB", "0").isdigit(), "SHARAR_DRAFT_VOCAB must be a row count (0 = the full lm_head)")
     _check(values.get("SHARAR_SSD", "0") in ("0", "1"), "SHARAR_SSD must be 0 or 1")
     block = values.get("SHARAR_SSD_BLOCK_TOKENS", "256")
@@ -344,7 +401,7 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     max_context = int(values.get("SHARAR_MAX_CONTEXT") or DEFAULT_CONTEXT)
     _check(2 <= max_context <= DEFAULT_CONTEXT, f"SHARAR_MAX_CONTEXT must be in [2, {DEFAULT_CONTEXT}]")
     if tp > 1:
-        _check(name in ("qwen38", "flashnext"), "tensor parallel serves the 27B and Flash-Next")
+        _check(name in ("qwen38", "flashnext"), "tensor parallel serves the 27B and Flash-Next (Nemotron serves on one Spark)")
         _check(not (name == "qwen38" and spec and proposer == "mtp"),
                "the 27B serves tensor-parallel with DFlash2, not MTP")
         _check(not (name == "flashnext" and spec and proposer == "dflash2"),

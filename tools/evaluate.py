@@ -91,7 +91,7 @@ def evals_cmd(python: str, *args: str) -> list[str]:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--target", choices=("flashnext", "qwen38"), required=True)
+    ap.add_argument("--target", choices=("flashnext", "qwen38", "nemotron"), required=True)
     ap.add_argument("--profile", choices=gate.PROFILE_NAMES, default="fast")
     ap.add_argument("--env", action="append", default=[], help="SHARAR_KEY=VALUE override (repeatable)")
     ap.add_argument("--allow-dirty", action="store_true", help="evaluate with uncommitted engine changes (recorded as a hash)")
@@ -168,7 +168,9 @@ def main(argv=None) -> int:
     if args.dry_run:
         print(json.dumps({"run_dir": str(run_dir), "engine": engine, **manifest}, indent=1))
         return 0
-    gate.ensure_venv()
+    if ev["label"] != "eval extra":  # the extra's sync ran in gate.sharar_eval; a checkout's run keeps whatever is installed
+        subprocess.run([gate.shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv"), "sync", "--frozen", "--quiet",
+                        "--inexact"], cwd=REPO, env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(gate.VENV)}, check=True)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
     log(f"{name}: {run_dir}")

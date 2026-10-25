@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from sharar.launch import guard
-from sharar.launch.settings import Settings
+from sharar.launch.settings import TARGET_SETTINGS, Settings, model_config
 
 HEADROOM = 10 * 2**30  # left free after a download: logs, JIT caches, stored prefixes
 LOAD_PEAK_KIB = 24 * 2**20  # the streaming load's measured MemAvailable drop, with margin (qwen38_config.WEIGHT_LOAD_PEAK_BYTES)
@@ -91,10 +91,7 @@ def download(cache: Path, repo: str, revision: str, log=print) -> None:
 
 def pinned_snapshots(s: Settings) -> list[tuple[Path, str, str]]:
     """(cache, repo, revision) of the target's checkpoint and, for a parallel draft served from the pinned snapshot, its draft."""
-    if s.target == "flashnext":
-        from sharar.model.flashnext import config as c
-    else:
-        from sharar.model import qwen38_config as c
+    c = model_config(s.target)
     out = [(s.model_cache, c.MODEL_ID, c.MODEL_REVISION)]
     if s.parallel_draft and s.draft_dir is None:
         out.append((s.hf_cache, *c.DRAFT_PINS[s.proposer]))  # the target's own drafter
@@ -121,7 +118,8 @@ def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
 
     SHARAR_W3_CHECKPOINT=auto (the default) serves w3-checkpoints/<target>-current and keeps that link on the
     target's pinned published revision (weights/w3_checkpoint.fetch: a new pin downloads, a local calibration stays
-    with a note). Without one Flash-Next serves its FP8 trunk and the 27B nearest-rounded copies."""
+    with a note). Without one Flash-Next serves its FP8 trunk and the 27B nearest-rounded copies; Nemotron refuses
+    to start (`w3_required`)."""
     if s.get("SHARAR_W3_DECODE", "0") != "1":
         return None
     chosen = s.get("SHARAR_W3_CHECKPOINT", "auto")
@@ -141,13 +139,12 @@ def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
                 ("serving the one in " + current.name if (current / "manifest.json").is_file() else "none to serve"))
     if (current / "manifest.json").is_file():
         return current.resolve()
-    if s.target == "flashnext":
-        s.warnings.append("no calibrated 3-bit checkpoint: serving the FP8 trunk, about 24% slower single-stream than "
-                          f"{s.profile} with it")
-    else:
-        s.warnings.append("no calibrated 3-bit checkpoint: nearest-rounded copies (about 2 GSM8K points and 8% tokens per "
-                          "round below calibrated)")
-    s.warnings[-1] += "; calibrate with docs/w3-calibration.md or set SHARAR_W3_CHECKPOINT"
+    if TARGET_SETTINGS[s.target].get("w3_required"):
+        raise PreflightError(f"{s.profile} serves {s.target}'s calibrated 3-bit copies and none is available: fetch them "
+                             f"(python -m sharar.weights.w3_checkpoint fetch --target {s.target} --root {s.w3_root}), set "
+                             "SHARAR_W3_CHECKPOINT, or serve --exact")
+    s.warnings.append("no calibrated 3-bit checkpoint: " + TARGET_SETTINGS[s.target]["w3_missing"].format(profile=s.profile)
+                      + "; calibrate with docs/w3-calibration.md or set SHARAR_W3_CHECKPOINT")
     return None
 
 

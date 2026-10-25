@@ -43,7 +43,7 @@ diagnostics, not held-out quality evidence.
 
 The profiles that use 3-bit copies (`fast`, `throughput`)
 serve `$SHARAR_RESULTS/w3-checkpoints/<target>-current` (`qwen38-current`,
-`flashnext-current`). Every `sharar serve` (one Spark or two) keeps that link on the target's published
+`flashnext-current`, `nemotron-current`). Every `sharar serve` (one Spark or two) keeps that link on the target's published
 checkpoint, pinned by revision in the target's config (`W3_REPO`, `W3_REVISION`)
 (`python -m sharar.weights.w3_checkpoint fetch`; `HF_TOKEN` is passed through for a private repository):
 
@@ -52,9 +52,11 @@ checkpoint, pinned by revision in the target's config (`W3_REPO`, `W3_REVISION`)
 - a link to any other directory is a local calibration: it stays, and the serve prints a note with the command that
   switches to the published copies (`fetch --target T --root R --switch`).
 
-Both targets have one: Flash-Next's (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`: the 3-bit trunk and the GPTQ
+Every target has one: Flash-Next's (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`: the 3-bit trunk and the GPTQ
 routed experts) and the 27B's (`yemara/Qwen3.8-27B-NVFP4-sharar-w3`, GPTQ from the FP8 release on the `bc7984f`
-inputs). To serve a new calibration, point the link at its directory or set
+inputs), and Nemotron's (`shadowpa0327/NVIDIA-Nemotron-3.5-Super-NVFP4-sharar-w3`: the GPTQ trunk projections and
+routed experts; private), which its `fast` and `throughput` require: without one they refuse to start. To serve a new
+calibration, point the link at its directory or set
 `SHARAR_W3_CHECKPOINT=/path/to/calibrated-w3`.
 
 The loader checks the target revision, projection coverage, dimensions, dtypes
@@ -112,3 +114,52 @@ The pinned checkpoint's GPTQ fit (`694e279`; relative weight error against the N
 output error 0.072 / 0.120) matched `fast` with NVFP4 experts within noise on MMLU-Pro, GPQA Diamond, GSM8K and
 HumanEval. Serving it replaces the NVFP4 experts (they are not loaded), 17.2 GiB less resident memory.
 
+
+## Nemotron
+
+Nemotron's checkpoint (`nemotron-current`) holds GPTQ copies of the 97 FP8 projections `Nemotron.linears()` lists
+(the 40 Mamba blocks' `in_proj` and `out_proj`, the 8 attention blocks' q|k|v and o, the lm_head) and of every latent
+MoE block's 512 routed experts (the 40 trunk blocks' and the MTP head's). The trunk copies are decode copies (calls of
+at most 64 rows read them, prefill keeps FP8); the experts are the only expert copy, at every call size. Two tools
+write it, `sharar/weights/nemotron_w3_calibrate.py` (trunk) and `sharar/weights/nemotron_w3_experts.py` (experts),
+each a capture through the serving model (FP8 trunk, NVFP4 experts; hold the GPU lock) and a fit from it. Nemotron's
+tokenizer is its own, so the samples are rebuilt from the Qwen targets' sources in its tokenizer and chat template
+(`sharar/weights/nemotron_w3_inputs.py` builds both sets):
+
+```bash
+python3 -m sharar.weights.w3_calibration_inputs --tokenizer SNAP/tokenizer.json --commit bc7984f --output code.json
+# trunk: the coding proxy (64 files) and 80 ShareGPT reasoning traces (48 English, 32 other languages; Flash-Next's
+# `flashnext_expert_inputs generate --thinking`): 144 samples, sha256 edc0bd1d...
+python3 -m sharar.weights.nemotron_w3_inputs --tokenizer SNAP/tokenizer.json --code code.json \
+  --traces answers-sharegpt.json --output nemotron-calibration-inputs.json
+SHARAR_TARGET=nemotron python3 -m sharar.weights.nemotron_w3_calibrate capture --inputs nemotron-calibration-inputs.json --activations ACT
+SHARAR_TARGET=nemotron python3 -m sharar.weights.nemotron_w3_calibrate fit --activations ACT --output TRUNK
+# experts: the coding proxy, 180 ShareGPT reasoning traces (110 English, 70 other) and 250 MMLU / MMLU-Pro validation
+# answers packed into 104 samples: 348 samples, sha256 bba92b75...
+python3 -m sharar.weights.nemotron_w3_inputs --tokenizer SNAP/tokenizer.json --code code.json \
+  --traces answers-sharegpt.json --knowledge answers.json --traces-en 110 --traces-other 70 --knowledge-items 250 \
+  --seed 20261024 --output nemotron-expert-inputs.json
+python3 -m sharar.weights.nemotron_w3_experts capture --inputs nemotron-expert-inputs.json --activations EXPERT_ACT
+python3 -m sharar.weights.nemotron_w3_experts fit --activations EXPERT_ACT --source TRUNK \
+  --output $SHARAR_RESULTS/w3-checkpoints/nemotron-<name>
+ln -sfn nemotron-<name> $SHARAR_RESULTS/w3-checkpoints/nemotron-current
+```
+
+- **Trunk** (`capture`: each sample prefills alone and every projection call adds x^T x, every eighth sample held out
+  as probes; `fit`: no model load, `--resume`): GPTQ as for the 27B (damping 0.01, the Lloyd codebook, 32-weight
+  groups) from the served FP8 matrix (the checkpoint has no wider release), with every upstream block at its served
+  precision. The manifest reports each matrix's relative weight and output error, under the calibration covariance
+  and on the held-out probes, for GPTQ and for nearest rounding; GPTQ's output error is two to four times smaller, so
+  there is no nearest-rounded fallback (`Nemotron` refuses `SHARAR_W3_DECODE=1` without a checkpoint).
+- **Experts** (`capture`: every MoE block's routed latent rows with their top-22 ids and weights, the MTP head's from
+  its teacher-forced depth-1 input; `fit`: about 135 s a block on the GB10, resumable per block, `--deadline` for
+  locked windows; a resume refuses other settings or another capture): per expert H1 = sum g² x xᵀ over its routed
+  rows for up and H2 the same over relu(x upᵀ)² from the NVFP4 up for down, shrunk toward the block's pool (n0 = 256
+  rows), damping 0.01. Each matrix takes the codebook (Lloyd's eight levels, or `zero8` with an exact zero) with the
+  smaller nearest-rounding output error: the checkpoint's NVFP4 down projections carry many exact zeros, so zero8
+  wins them. Experts routed fewer than 16 rows keep that nearest-rounded fit. `--source TRUNK` copies the trunk
+  entries in, verified; only a complete run publishes the manifest.
+
+The 3-bit experts replace the NVFP4 ones (51.9 GiB resident after the load against 66.9 GiB); the trunk copies add
+1.97 GiB beside the 4.9 GiB of FP8 prefill keeps. `fast` serves both, with expert sharing and the FP16 Mamba state:
+GSM8K-300 97.7%, paired against `exact`'s 97.7% ([Nemotron](nemotron.md#serving)).

@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from sharar.launch.settings import Settings
+from sharar.launch.settings import Settings, model_config
 
 
 def server_info(port: str) -> dict | None:
@@ -38,7 +38,8 @@ def stored_on_disk(directory: Path) -> dict:
 
 
 HARNESSES = ("claude", "opencode", "aider", "codex", "show")
-ALIASES = {"qwen38": ("qwen3.8-27b", "Qwen3.8-27B"), "flashnext": ("qwen3.8-flash-next", "Qwen3.8-Flash-Next")}
+ALIASES = {"qwen38": ("qwen3.8-27b", "Qwen3.8-27B"), "flashnext": ("qwen3.8-flash-next", "Qwen3.8-Flash-Next"),
+           "nemotron": ("nemotron-3.5-super", "Nemotron-3.5-Super")}
 OUTPUT_TOKENS = 32768  # reply budget the harness configs declare (thinking included); the context is the server's
 
 
@@ -60,7 +61,7 @@ def cmd_launch(args, s: Settings, dry: bool = False) -> int:
             info = json.loads(r.read())
     except Exception:  # noqa: BLE001 - not serving
         if not dry:
-            sys.exit(f"nothing is serving at {url}: sharar serve 27b (or flashnext) first")
+            sys.exit(f"nothing is serving at {url}: sharar serve 27b (or flashnext, nemotron) first")
         info = {}
     context = int(info.get("context_length", 262144))
     alias, display = ALIASES[s.target]
@@ -208,10 +209,7 @@ def cmd_chat(args, s: Settings) -> int:
 
 def verify(url: str, s: Settings) -> int:
     """A running server: health, the pinned model and context, the model list, and a short exact answer."""
-    if s.target == "flashnext":
-        from sharar.model.flashnext import config as c
-    else:
-        from sharar.model import qwen38_config as c
+    c = model_config(s.target)
 
     def get(route):
         with urllib.request.urlopen(f"{url}{route}", timeout=30) as r:

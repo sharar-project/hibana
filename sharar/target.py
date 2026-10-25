@@ -31,7 +31,7 @@ class Target:
     hidden_size: int
     intermediate_size: int | None  # dense MLP width; None for a pure-MoE trunk
     num_layers: int
-    layer_types: tuple[str, ...]  # "full_attention" | "linear_attention", one per layer
+    layer_types: tuple[str, ...]  # "full_attention" | "linear_attention" | "moe" (a block without state), one per layer
     num_attention_heads: int
     num_kv_heads: int
     head_dim: int
@@ -67,6 +67,9 @@ class Target:
     experts_per_token: int = 0
     moe_intermediate_size: int = 0
     shared_expert_intermediate_size: int = 0
+    # Latent routed experts (0 = experts read the full hidden stream).
+    moe_latent_size: int = 0
+    routed_scaling_factor: float = 1.0
     # Hyper-connections (0 = plain residual stream).
     hc_count: int = 0
     hc_lowrank: int = 0
@@ -88,10 +91,21 @@ class Target:
     # each pinned draft's acceptance calibration (adaptive verification ranks verify seats by it): name -> the weights
     # of sigmoid(w . [logit p, gap, j / 15, 1]) (proposers/parallel.ParallelProposer.acceptance_features)
     draft_calibration: tuple[tuple[str, tuple[float, ...]], ...] = ()
+    # A request's default stop ids (the chat template's end of turn, then end of text).
+    stop_token_ids: tuple[int, ...] = (248046, 248044)  # Qwen3.8: <|im_end|>, <|endoftext|>
+    # The recurrent layers' recurrence: "gdn" (Gated DeltaNet) or "mamba2"; it picks the state formats
+    # (`launch.settings.SSM_STATES`) and the accepted-state replay.
+    recurrence: str = "gdn"
+    # The checkpoint's prefix of the in-checkpoint MTP layers' tensors (`cache/spec_budget.py`).
+    mtp_prefix: str = "mtp."
+    # The first ordinary-text token id: random warm-up prompts draw from it up (below it a vocabulary keeps control ids).
+    first_text_token: int = 0
+    # Restrict cache formats when a target's attention implements only a subset (None: the shared pool's formats).
+    kv_formats: tuple[str, ...] | None = None
 
     def __post_init__(self):
-        if len(self.layer_types) != self.num_layers or any(t not in ("full_attention", "linear_attention") for t in self.layer_types):
-            raise ValueError("layer_types must name every layer as full_attention or linear_attention")
+        if len(self.layer_types) != self.num_layers or any(t not in ("full_attention", "linear_attention", "moe") for t in self.layer_types):
+            raise ValueError("layer_types must name every layer as full_attention, linear_attention or moe")
 
     def shard(self, size: int) -> Target:
         """One tensor-parallel rank's share of `size`: attention and linear-attention heads and the MLP widths
@@ -176,6 +190,9 @@ class Target:
         raise FileNotFoundError(f"pinned snapshot {self.model_revision} not found under {root}")
 
     def load_model_config(self, snap: Path) -> dict:
+        if self.family == "nemotron":
+            from sharar.model.nemotron.config import check_config
+            return check_config(self, snap)
         cfg = json.loads((snap / "config.json").read_text())
         text = cfg["text_config"]
         expected = {
@@ -210,6 +227,8 @@ class Target:
         return cfg
 
     def layer_types_of(self, cfg: dict) -> list[str]:
+        if self.family == "nemotron":  # `check_config` matched the block pattern
+            return list(self.layer_types)
         types = cfg["text_config"]["layer_types"]
         if tuple(types) != self.layer_types:
             raise ValueError("layer_types differ from the pinned target")
@@ -303,9 +322,36 @@ def _flashnext() -> Target:
     )
 
 
+def _nemotron() -> Target:
+    from sharar.model.nemotron import config as c
+    # Mamba-2 on the linear-attention fields (model/nemotron/config.py): key heads are the B/C groups, the key head
+    # dim the state size, value heads the SSM heads. Attention has no positional encoding (no rotary dims).
+    return Target(
+        name="nemotron", family="nemotron",
+        model_id=c.MODEL_ID, model_revision=c.MODEL_REVISION, model_cache_key=c.MODEL_CACHE_KEY,
+        architecture=c.MODEL_ARCHITECTURE, hidden_size=c.HIDDEN_SIZE, intermediate_size=None,
+        num_layers=c.NUM_LAYERS, layer_types=c.LAYER_TYPES,
+        num_attention_heads=c.NUM_ATTENTION_HEADS, num_kv_heads=c.NUM_KV_HEADS, head_dim=c.HEAD_DIM,
+        partial_rotary_factor=0.0, rope_theta=0.0,
+        linear_num_key_heads=c.MAMBA_GROUPS, linear_num_value_heads=c.MAMBA_HEADS,
+        linear_key_head_dim=c.SSM_STATE, linear_value_head_dim=c.MAMBA_HEAD_DIM,
+        linear_conv_kernel=c.CONV_KERNEL, vocab_size=c.VOCAB_SIZE, rms_norm_eps=c.RMS_NORM_EPS,
+        max_position_embeddings=c.MAX_POSITION_EMBEDDINGS, nvfp4_group_size=c.NVFP4_GROUP_SIZE,
+        weight_load_peak_bytes=c.WEIGHT_LOAD_PEAK_BYTES,
+        prefill_chunk=c.PREFILL_CHUNK, solo_prefill_chunk=c.SOLO_PREFILL_CHUNK,
+        num_experts=c.NUM_EXPERTS, experts_per_token=c.EXPERTS_PER_TOKEN, moe_intermediate_size=c.MOE_INTERMEDIATE_SIZE,
+        shared_expert_intermediate_size=c.SHARED_EXPERT_INTERMEDIATE_SIZE, mtp_layers=c.MTP_LAYERS,
+        stop_token_ids=c.STOP_TOKEN_IDS, w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION,
+        recurrence="mamba2", mtp_prefix=f"{c.PREFIX}.mtp.", first_text_token=c.FIRST_TEXT_TOKEN,
+        moe_latent_size=c.MOE_LATENT_SIZE, routed_scaling_factor=c.ROUTED_SCALING_FACTOR,
+        kv_formats=("fp8",),
+    )
+
+
 QWEN38 = _qwen38()
 FLASHNEXT = _flashnext()
-TARGETS: dict[str, Target] = {QWEN38.name: QWEN38, FLASHNEXT.name: FLASHNEXT}
+NEMOTRON = _nemotron()
+TARGETS: dict[str, Target] = {QWEN38.name: QWEN38, FLASHNEXT.name: FLASHNEXT, NEMOTRON.name: NEMOTRON}
 DEFAULT_TARGET = QWEN38
 
 
@@ -326,4 +372,7 @@ def load_model(target: Target, snap: Path, **kwargs):
     if target.family == "flashnext":
         from sharar.model.flashnext.model import FlashNext
         return FlashNext(snap, target=target, **kwargs)
+    if target.family == "nemotron":
+        from sharar.model.nemotron.model import Nemotron
+        return Nemotron(snap, target=target, **kwargs)
     raise ValueError(f"no loader for target {target.name!r}")

@@ -85,7 +85,7 @@ class EngineConfig:
     w3_warning: str | None = None             # SHARAR_W3_WARNING: why the launcher serves without the profile's calibrated copies
     stable_numerics: bool = False             # SHARAR_STABLE_NUMERICS: M-invariant prefill kernels
     gdn_prefill: str = "auto"                 # SHARAR_GDN_PREFILL: auto (CuTe on SM12x), cute, triton
-    ssm_state: str = "fp32"                   # SHARAR_SSM_STATE: GDN recurrent state storage, fp32, int8 or int4 (LeapQuant per-window quantization, cache/ssm_format.py; lossy)
+    ssm_state: str = "fp32"                   # SHARAR_SSM_STATE: recurrent state storage, fp32; int8 or int4 (LeapQuant per-window quantization, GDN or Mamba-2); Mamba-2 fp16_sr (FP16, stochastically rounded) (cache/ssm_format.py; lossy)
     ssm_window: int = 16                      # SHARAR_SSM_WINDOW: committed tokens per requantization (8, 16, 32)
     ssm_compensators: int | None = None       # SHARAR_SSM_COMPENSATORS: FP16 rank-one outlier terms kept beside the quantized state (0-16; unset: 4, or 8 for int4)
     flashnext_trunk: str = "fp8"              # SHARAR_FLASHNEXT_TRUNK: bf16 | fp8
@@ -138,6 +138,9 @@ class EngineConfig:
                              f"got {self.qsa_prefill_backend!r}")
         if self.verify_attention not in ("auto", "fa2"):
             raise ValueError(f"SHARAR_VERIFY_ATTENTION must be auto or fa2; got {self.verify_attention!r}")
+        for name, v in (("SHARAR_MOE_KEEP", self.moe_keep), ("SHARAR_MOE_BUDGET", self.moe_budget)):
+            if v < 0:
+                raise ValueError(f"{name}={v}: a count of experts, or 0 (off)")
 
     @property
     def ssd_buffers(self) -> dict[str, int]:

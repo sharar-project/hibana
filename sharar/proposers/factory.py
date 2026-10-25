@@ -37,6 +37,9 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
             if model.target.family == "flashnext":
                 from sharar.model.flashnext.mtp import FlashNextMtpHead
                 head = FlashNextMtpHead(w, context.device, model, num_pages, padding_rows=padding_rows)
+            elif model.target.family == "nemotron":
+                from sharar.model.nemotron.mtp import NemotronMtpHead
+                head = NemotronMtpHead(w, context.device, model, num_pages, padding_rows=padding_rows)
             else:
                 head = MtpHead(w, context.device, model, num_pages, padding_rows=padding_rows)
         finally:
