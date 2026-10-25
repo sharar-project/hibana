@@ -150,6 +150,9 @@ def nemotron_defaults(profile: str) -> dict[str, str]:
     # request and 4 for two to four, and both calibrated 3-bit copies (h2h at one request: 54.6 -> 81.0 tok/s)
     p.update(SHARAR_ACCEPT_DEFAULT="3:2.0", SHARAR_ACCEPT_DEFAULT_SAMPLED="1", SHARAR_DEVICE_ACCEPT="1",
              SHARAR_SPEC="5", SHARAR_SPEC_DEPTHS="2:4,4:4", SHARAR_W3_DECODE="1")
+    # adaptive depth for one request, up to 8 (engine/depth.AcceptanceDepth): a drafted token costs about 2.2 ms against
+    # a depth-1 round's 39-41 ms (one request, 512 greedy tokens: 38.6 ms at depth 1, 51.3 at 5, 58.0 at 8), so 0.065
+    p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.065")
     # the FP16 Mamba state with stochastic rounding (half the state traffic of decode, verify and replay; its rounding
     # is keyed on token position and layer, so a request's arithmetic does not depend on the batch)
     p["SHARAR_SSM_STATE"] = "fp16_sr"

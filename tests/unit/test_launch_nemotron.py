@@ -66,7 +66,9 @@ def test_fast_and_throughput(env):
     for s in (fast, tput):
         assert s.get("SHARAR_ACCEPT_DEFAULT") == "3:2.0" and s.get("SHARAR_ACCEPT_DEFAULT_SAMPLED") == "1"
         assert "--accept-default-sampled" in s.engine_args()
+        assert s.spec == 8 and s.get("SHARAR_SPEC_STEP_COST") == "0.065"  # adaptive depth for one request
     assert fast.get("SHARAR_MAX_BATCH") == "4" and tput.get("SHARAR_MAX_BATCH") == "16"
+    assert fast.get("SHARAR_SPEC_DEPTHS") == "2:4,4:4" and tput.get("SHARAR_SPEC_DEPTHS") == "2:4,4:4,16:3"
 
 
 def test_an_explicit_setting_wins(env):
