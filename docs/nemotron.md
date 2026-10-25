@@ -47,8 +47,8 @@ The profiles (`nemotron_defaults` in `sharar/launch/settings.py`):
 | Profile | Settings |
 |---|---|
 | `exact` | MTP depth 3, exact acceptance, FP32 Mamba state, every token's 22 experts |
-| `fast` | both 3-bit copies, relaxed acceptance (top 3 within 2.0 logits, greedy and sampled), device-resident acceptance, 2-bit draft head, depth 5 at one request and 4 at two to four, FP16 Mamba state with stochastic rounding, expert sharing `SHARAR_MOE_KEEP=12` `SHARAR_MOE_BUDGET=48:128` |
-| `throughput` | `fast` up to 16 requests, depth 3 past four |
+| `fast` | both 3-bit copies, relaxed acceptance (top 3 within 2.0 logits, greedy and sampled), device-resident acceptance, 2-bit draft head, adaptive depth up to 8 at one request (`SHARAR_SPEC_STEP_COST=0.065`, [below](#adaptive-depth)) and 4 at two to four, FP16 Mamba state with stochastic rounding, expert sharing `SHARAR_MOE_KEEP=12` `SHARAR_MOE_BUDGET=48:128` |
+| `throughput` | `fast` up to 16 requests, depth 5 at five to eight and 3 past eight |
 
 Expert sharing (`moe.py`, `route_budget`): a verify call's rows share the experts they read. Each row is guaranteed
 its top `KEEP` experts; the call then reads at most `P` distinct experts per request and `CAP` in all, filled by
@@ -84,6 +84,22 @@ Not supported yet, to revisit:
 - `throughput`: its 16-request cap follows the 27B's and is unmeasured past 16, and its expert sharing (`fast`'s:
   128 experts a call, about 8 a request at 16) is gated at one to four requests only; 8 / 16 streams ran
   277 / 353 tok/s with it against 190 / 239 without.
+
+### Adaptive depth
+
+One request drafts as deep as its own acceptance pays for (`engine/depth.AcceptanceDepth`, as on Flash-Next): a moving
+average of its drafts accepted per position tested, q, and the depth d up to 8 that maximizes (1 - q^(d+1)) / (1 - q)
+per round cost 1 + 0.065 (d - 1). A drafted token costs about 2.2 ms against a depth-1 round's 39-41 ms (`fast`, one
+request, 512 greedy tokens per prompt; ms per round, tokens per round):
+
+| depth | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| ms | 38.6 | 44.1 | 47.1 | 49.3 | 51.3 | 53.4 | 55.6 | 58.0 |
+| tokens | 1.95 | 2.77 | 3.49 | 4.04 | 4.45 | 4.82 | 5.11 | 4.96 |
+
+Against depth 5 (h2h median, two repeats): greedy 102.5 -> 105.5 tok/s, t=0.7 97.6 -> 103.5; four streams and
+`throughput` at 8 and 16 within noise. GSM8K-300 one at a time 97.7% against depth 5's 98.3% (1 better, 3 worse,
+p 0.62), 7.25 tokens a round against 5.57.
 
 ## Checkpoint conventions
 
