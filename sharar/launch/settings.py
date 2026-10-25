@@ -42,9 +42,9 @@ TARGET_SETTINGS = {
                  "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_HEAD": "w2", "recurrence": "mamba2",
                  "w3_calibrated_only": True, "w3_required": True, "fp8_kv_only": True},
 }
-# The recurrent-state formats each recurrence stores (SHARAR_SSM_STATE, cache/ssm_format.py): the GDN's per-window
-# integer formats, Mamba-2's FP16 with stochastic rounding.
-SSM_STATES = {"gdn": ("fp32", "int8", "int4"), "mamba2": ("fp32", "fp16_sr")}
+# The recurrent-state formats each recurrence stores (SHARAR_SSM_STATE, cache/ssm_format.py): the per-window integer
+# formats on both, Mamba-2's FP16 with stochastic rounding.
+SSM_STATES = {"gdn": ("fp32", "int8", "int4"), "mamba2": ("fp32", "fp16_sr", "int8", "int4")}
 
 # The serving profiles: the default of every speed/fidelity knob a setting does not fix.
 #   exact     the target's own distribution: exact acceptance, no lossy weight copies (benchmarks)

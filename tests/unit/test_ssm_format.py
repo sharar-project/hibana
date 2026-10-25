@@ -118,7 +118,7 @@ def test_fp16_is_nemotrons_and_halves_its_state():
 
 
 def test_formats_stay_on_their_recurrence():
-    """FP16 is Mamba-2's (the GDN targets keep their FP32 pools, bit-identical), the windows the GDN's
+    """FP16 is Mamba-2's (the GDN targets keep their FP32 pools, bit-identical); the windows run on both
     (`Target.recurrence`, the launcher's table of the same name)."""
     from sharar.launch.settings import TARGET_SETTINGS
     from sharar.target import TARGETS
@@ -128,9 +128,35 @@ def test_formats_stay_on_their_recurrence():
         with pytest.raises(ValueError, match="gdn state"):
             StatePool(2, torch.device("cpu"), target=gdn, ssm_format=SsmFormat("fp16_sr"))
         assert StatePool(2, torch.device("cpu"), target=gdn).ssm_all.dtype == torch.float32
-    for kind in ("int8", "int4"):
-        with pytest.raises(ValueError, match="mamba2 state is stored as fp32 or fp16_sr"):
-            SsmFormat(kind).state_bytes_per_slot(NEMOTRON)
     assert {t.recurrence for t in TARGETS.values()} == {"gdn", "mamba2"}
     for name, t in TARGETS.items():
         assert TARGET_SETTINGS[name].get("recurrence", "gdn") == t.recurrence
+
+
+def test_windows_hold_nemotrons_mamba_state():
+    """Mamba-2 in the window format: B per group as the records' key, dt x per head as their value; 8 bits take
+    Nemotron's slot from 162 MiB (FP32) and 82 MiB (FP16) to 65 MiB, 4 bits to 53 MiB."""
+    t = NEMOTRON
+    for kind, mib in (("int8", 65.2), ("int4", 52.7)):
+        fmt = SsmFormat(kind)
+        lay = fmt.layout(t)
+        assert (lay.key_heads, lay.value_heads, lay.k, lay.v) == (8, 128, 128, 64)
+        assert fmt.state_bytes_per_slot(t) / 2 ** 20 == pytest.approx(mib, abs=0.1)
+        pool = StatePool(3, torch.device("cpu"), target=t, ssm_format=fmt)
+        assert pool.ssm_all.dtype == torch.uint8 and pool.window is not None
+        assert pool.bytes_per_slot == fmt.state_bytes_per_slot(t)
+
+
+def test_a_quantized_mamba_pool_commits_through_the_window_ring():
+    """Nemotron's int8 pool verifies into the window ring (B per group, dt x per head), not Mamba-2's replay."""
+    from types import SimpleNamespace
+    from sharar.engine.spec import SpecDecoder
+    from sharar.kernels.ssm_window import WindowState
+    t = NEMOTRON
+    pool = StatePool(2, torch.device("cpu"), target=t, ssm_format=SsmFormat("int8"))
+    ex = SimpleNamespace(state_pool=pool, max_batch=1, device=torch.device("cpu"), target=t,
+                         model=SimpleNamespace(layers=()))
+    replay = SpecDecoder(ex, SimpleNamespace(k=3), "reconstruct").replay
+    assert type(replay) is WindowState
+    assert replay.ring_k.shape == (len(t.gdn_layer_ids), 1, 8, 4, 128)
+    assert replay.ring_u.shape == (len(t.gdn_layer_ids), 1, 128, 4, 64)

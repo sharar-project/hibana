@@ -213,7 +213,7 @@ target's outputs are the same and the committed recurrent state is bitwise the h
 ## Recurrent retention
 
 `reconstruct` is the default (`--verify-state`, `SHARAR_VERIFY_STATE`), and a quantized recurrent state
-(`SHARAR_SSM_STATE=int8/int4`) requires it. It retains compact recurrence inputs, replays exactly the
+(`SHARAR_SSM_STATE=int8/int4`, GDN or Mamba-2) requires it. It retains compact recurrence inputs, replays exactly the
 stop/budget-truncated accepted prefix from untouched committed state, and writes directly into the private committed
 slots authorized by `StateManager.commit_reconstructed`, which validates counts, verified width, unique non-dummy
 slots and convolution bounds before any mutation. Each kernel program reads its whole K-by-V tile before overwriting

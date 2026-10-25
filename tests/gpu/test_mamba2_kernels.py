@@ -11,6 +11,9 @@ positions and layer index; the served `SHARAR_SSM_STATE=fp16_sr`). Within a form
 unchanged (verify == decode, replay == decode, 128-aligned prefill splits, checkpoints); against the FP32 reference
 the FP16 states carry their rounding error. The stochastic rounding itself is checked for unbiasedness and
 determinism.
+
+The quantized window formats (int8, int4) are checked against the FP32 recurrence from the state a slot holds: verify
+and the commit of every count, decode across several folds, the prefill on FP32 copies, and CUDA-graph capture.
 """
 
 import pytest
@@ -459,3 +462,177 @@ def test_fp16_state_needs_positions_for_stochastic_rounding(layer):
     slot = torch.zeros(1, dtype=torch.int32, device=DEV)
     with pytest.raises(ValueError, match="positions"):
         m.decode(zx, params, conv, ssm, slot)
+
+
+# ---- Quantized window state (SsmFormat int8 / int4) ----
+
+WINDOW = 16
+RANK = {8: 4, 4: 8}  # the format's default compensators
+
+
+class _WindowPool:
+    """The state pool a WindowState and the window paths read: FP32-free byte rows plus BF16 conv windows."""
+
+    def __init__(self, layers, slots, bits):
+        from sharar.cache.ssm_format import WindowLayout, WindowPool
+        self.layer_ids = [2 * j for j in range(layers)]
+        self.layout = WindowLayout(G, H, N, P, WINDOW, RANK[bits], bits)
+        self.ssm_all = torch.zeros((layers, slots, self.layout.nbytes), dtype=torch.uint8, device=DEV)
+        self.window = WindowPool(self.layout, self.ssm_all, self.layer_ids)
+        self.conv_all = torch.stack([_pools(slots, seed=10 + j)[0] for j in range(layers)])
+
+    def views(self, j=0):
+        return self.window.layer[self.layer_ids[j]]
+
+    def arg(self, j=0):
+        return (self.layout, self.views(j))
+
+    def seed(self, slots, seed=1, j=0):
+        """Quantize random states into `slots` and return the states they now hold, FP32 [len(slots), H, P, N]."""
+        from sharar.kernels import ssm_window as W
+        t = torch.tensor(slots, dtype=torch.int32, device=DEV)
+        W.quantize(self.layout, self.views(j), _pools(len(slots), seed=seed)[1], t)
+        return self.state(slots, j)
+
+    def state(self, slots, j=0):
+        from sharar.kernels import ssm_window as W
+        return torch.stack([W.reference_state(self.layout, self.views(j), s).float() for s in slots])
+
+
+@pytest.mark.parametrize("bits", [8, 4])
+@pytest.mark.parametrize("logged", [0, 7, 12])  # 12: the larger counts fold
+@pytest.mark.parametrize("batch,steps", [(1, 1), (3, 4), (2, 6)])
+def test_window_verify_and_commit_follow_the_recurrence(layer, batch, steps, logged, bits):
+    """From a quantized boundary state with `logged` decoded tokens in its window: verify's outputs against the FP32
+    recurrence from the state the slot holds, the pool untouched, the ring's records the recurrence's own, and the
+    commit of every count leaves the recurrence's state (exactly up to the FP16 records while the window has room,
+    within one quantization when it folds)."""
+    from sharar.kernels import ssm_window as W
+    params, _ = layer
+    pool = _WindowPool(1, 8, bits)
+    slots_l = [5, 2, 7][:batch]
+    slots = torch.tensor(slots_l, dtype=torch.int32, device=DEV)
+    s0 = pool.seed(slots_l)
+    conv0 = pool.conv_all[0].clone()
+    zx = _inputs(layer, batch * (logged + steps), 40).view(batch, logged + steps, -1)
+    for t in range(logged):
+        m.decode(zx[:, t].contiguous(), params, pool.conv_all[0], pool.ssm_all[0], slots, window=pool.arg())
+    assert int(pool.views()["log_len"][slots_l[0]].max()) == logged
+    refs = [_reference(params, zx[i], conv0[s], s0[i]) for i, s in enumerate(slots_l)]
+    for i, s in enumerate(slots_l):  # the decoded tokens' records are the recurrence's
+        if logged:
+            assert _rel(pool.state([s])[0], refs[i][3][logged - 1]) < 2e-3
+    replay = W.WindowState(pool, 4, 8, G)
+    before = pool.ssm_all.clone()
+    block = zx[:, logged:].reshape(batch * steps, -1)
+    y = m.verify(block, params, pool.conv_all[0], pool.ssm_all[0], slots, steps,
+                 replay=replay.layer_inputs[0], window=pool.arg())
+    assert torch.equal(pool.ssm_all, before)
+    for i in range(batch):
+        assert _rel(y.view(batch, steps, -1)[i], refs[i][0][logged:]) < 4e-3, i
+    for count in range(steps + 1):
+        counts = torch.tensor([(count + i) % (steps + 1) for i in range(batch)], dtype=torch.int32, device=DEV)
+        pool.ssm_all.copy_(before)
+        replay.run(pool, slots, counts)
+        for i, (s, c) in enumerate(zip(slots_l, counts.tolist())):
+            got = pool.state([s])[0]
+            if not c:
+                assert torch.equal(pool.ssm_all[0, s], before[0, s])
+                continue
+            want = refs[i][3][logged + c - 1]
+            # records only (FP16 dt x): the window's own error; a fold adds one quantization of the state
+            tol = 2e-3 if logged + c < WINDOW else {8: 3e-3, 4: 2e-2}[bits]
+            assert _rel(got, want) < tol, (i, c)
+            assert int(pool.views()["log_len"][s][0]) == (logged + c if logged + c < WINDOW else 0)
+        others = [s for s in range(8) if s not in slots_l]
+        assert torch.equal(pool.ssm_all[:, others], before[:, others])
+
+
+@pytest.mark.parametrize("bits", [8, 4])
+def test_window_decode_folds_and_tracks_the_recurrence(layer, bits):
+    """60 decode steps (three folds of a 16-token window) against the FP32 recurrence from the seeded state: the
+    quantization error enters once per fold and does not grow with the steps (the state decays)."""
+    params, _ = layer
+    pool = _WindowPool(1, 4, bits)
+    slots_l = [1, 3]
+    slots = torch.tensor(slots_l, dtype=torch.int32, device=DEV)
+    s0 = pool.seed(slots_l, seed=4)
+    conv0 = pool.conv_all[0].clone()
+    steps = 60
+    zx = _inputs(layer, 2 * steps, 41).view(2, steps, -1)
+    ys = torch.stack([m.decode(zx[:, t].contiguous(), params, pool.conv_all[0], pool.ssm_all[0], slots,
+                               window=pool.arg()) for t in range(steps)], 1)
+    for i, s in enumerate(slots_l):
+        y_ref, s_ref, h_ref, _ = _reference(params, zx[i], conv0[s], s0[i])
+        assert torch.equal(pool.conv_all[0, s], h_ref)
+        assert int(pool.views()["log_len"][s][0]) == steps % WINDOW
+        assert _rel(pool.state([s])[0], s_ref) < {8: 2e-3, 4: 2e-2}[bits], i
+        assert _rel(ys[i], y_ref) < {8: 4e-3, 4: 1e-2}[bits], i  # BF16 outputs: 4e-3 before any fold
+
+
+@pytest.mark.parametrize("bits", [8, 4])
+def test_window_prefill_quantizes_the_fp32_prefill(layer, bits):
+    """The window prefill runs the FP32 prefill on the states the slots hold: outputs bitwise the FP32 pool's from those
+    states, final and checkpoint states its states after one quantization; fresh slots ignore what they held."""
+    params, _ = layer
+    pool = _WindowPool(1, 12, bits)
+    lens, prefixes, slots = [300, 1, 129, 133, 2], [0, 5, 0, 70, 3], [3, 4, 5, 6, 7]
+    checkpoints = [(0, 128, 8), (0, 200, 9), (3, 58, 10), (3, 3, 11)]
+    from sharar.kernels import ssm_window as W
+    pool.seed(slots, seed=6)
+    held = W.materialize(pool.layout, pool.views(), torch.tensor(slots, dtype=torch.int32, device=DEV))
+    conv = pool.conv_all[0]
+    conv_fp32, ssm_fp32 = conv.clone(), torch.zeros(12, H, P, N, device=DEV)
+    for s, st, p in zip(slots, held, prefixes):
+        ssm_fp32[s] = st if p else 0
+    zx = _inputs(layer, sum(lens), 42)
+    plan = m.plan_prefill(lens, prefixes, slots, DEV, checkpoints)
+    assert plan.scratch_rows == len(lens) + len(checkpoints)
+    y = m.prefill(zx, params, conv, pool.ssm_all[0], plan, window=pool.arg())
+    y_fp32 = m.prefill(zx, params, conv_fp32, ssm_fp32, plan)
+    assert torch.equal(y, y_fp32) and torch.equal(conv, conv_fp32)
+    tol = {8: 5e-3, 4: 8e-2}[bits]  # one quantization of a prefilled state (measured 2.5e-3, 5.4e-2)
+    for s in slots + [ck for _, _, ck in checkpoints]:
+        assert _rel(pool.state([s])[0], ssm_fp32[s]) < tol, s
+        assert int(pool.views()["log_len"][s].abs().sum()) == 0
+    assert not pool.ssm_all[0, [0, 1, 2]].any()
+
+
+def test_window_paths_under_graphs(layer):
+    """verify + commit and decode on a quantized pool capture into CUDA graphs and replay as they ran eagerly."""
+    from sharar.kernels import ssm_window as W
+    params, _ = layer
+    pool = _WindowPool(2, 6, 8)
+    for j in range(2):
+        pool.seed([1, 3], seed=7 + j, j=j)
+    replay = W.WindowState(pool, 4, 5, G)
+    windows = torch.zeros(2, 4, 5, C, 3, device=DEV, dtype=torch.bfloat16)
+    slots = torch.tensor([3, 1], dtype=torch.int32, device=DEV)
+    counts = torch.tensor([2, 5], dtype=torch.int32, device=DEV)
+    zx = torch.stack([_inputs(layer, 10, 50 + j) for j in range(2)])
+    zd = _inputs(layer, 2, 52)
+    ssm0, conv0 = pool.ssm_all.clone(), pool.conv_all.clone()
+
+    def body():
+        out = [m.verify(zx[j], params, pool.conv_all[j], pool.ssm_all[j], slots, 5, windows[j],
+                        replay=replay.layer_inputs[lid], window=pool.arg(j))
+               for j, lid in enumerate(pool.layer_ids)]
+        replay.run(pool, slots, counts)
+        m.commit_conv(pool.conv_all, windows, slots, counts)
+        out.append(m.decode(zd, params, pool.conv_all[0], pool.ssm_all[0], slots, window=pool.arg(0)))
+        return out
+
+    eager = body()
+    ssm1, conv1 = pool.ssm_all.clone(), pool.conv_all.clone()
+    pool.ssm_all.copy_(ssm0)
+    pool.conv_all.copy_(conv0)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = body()
+    pool.ssm_all.copy_(ssm0)
+    pool.conv_all.copy_(conv0)
+    graph.replay()
+    torch.cuda.synchronize()
+    assert all(torch.equal(a, b) for a, b in zip(eager, captured))
+    assert torch.equal(pool.ssm_all, ssm1) and torch.equal(pool.conv_all, conv1)
