@@ -92,7 +92,7 @@ class EngineConfig:
     trunk_keep_bf16: str | None = None        # SHARAR_TRUNK_KEEP_BF16: regex of Flash-Next projections kept BF16
     flashnext_experts: str = "w3"             # SHARAR_FLASHNEXT_EXPERTS: w3 (the W3 checkpoint's 3-bit routed experts when it carries them) | nvfp4
     nemotron_experts: str = "w3"              # SHARAR_NEMOTRON_EXPERTS: w3 (with SHARAR_W3_DECODE, the W3 checkpoint's 3-bit latent experts when it carries them; else as auto) | nvfp4 (= auto) | the NVFP4 experts' kernels: auto (Sharar's up to 16 rows, FlashInfer's b12x MoE beyond), mma (Sharar's up to 16 rows, cutlass_fused_moe beyond), b12x, cutlass (throughout)
-    bolt_experts: str = "bf16"                # SHARAR_BOLT_EXPERTS: bf16 weight-only | fp8 grouped native IQ2 routed experts | b12x fused MoE (BF16 activations)
+    bolt_experts: str = "b12x"                # SHARAR_BOLT_EXPERTS: b12x fused MoE (BF16 activations) | fp8 grouped native IQ2 | bf16 Triton weight-only
     # --- speculation
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
     spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
@@ -178,7 +178,7 @@ class EngineConfig:
             trunk_keep_bf16=_str(e, "SHARAR_TRUNK_KEEP_BF16"),
             flashnext_experts=_str(e, "SHARAR_FLASHNEXT_EXPERTS", "w3"),
             nemotron_experts=_str(e, "SHARAR_NEMOTRON_EXPERTS", "w3"),
-            bolt_experts=_str(e, "SHARAR_BOLT_EXPERTS", "bf16"),
+            bolt_experts=_str(e, "SHARAR_BOLT_EXPERTS", "b12x"),
             spec=_str(e, "SHARAR_SPEC"),
             spec_depths=_str(e, "SHARAR_SPEC_DEPTHS"),
             spec_step_cost=float(_str(e, "SHARAR_SPEC_STEP_COST") or 0.0),

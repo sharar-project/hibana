@@ -66,11 +66,13 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
             raise ValueError(f"unknown serving profile {profile!r}")
         # Checkpoint-native weights, full top-9 routing and FP32 state in every profile.
         # The companion LiLiCorr draft has seven trained candidate slots and exact target verification.
+        # Routed experts on b12x's fused MoE: BF16 activations as vLLM serves them, and over the 22 h2h prompts on
+        # one GB10 a mean of 79.4 tok/s against 74.8 on the grouped FP8 operator (four streams 150.9 against 155.9).
         return {"SHARAR_SPEC": "7", "SHARAR_W3_DECODE": "0", "SHARAR_ACCEPT_DEFAULT": "off",
                 "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_DEVICE_ACCEPT": "0", "SHARAR_MAX_BATCH": "4",
                 "SHARAR_SSM_STATE": "fp32", "SHARAR_KV_FORMAT": "fp8", "SHARAR_SSD": "1",
                 "SHARAR_MOE_KEEP": "0", "SHARAR_MOE_BUDGET": "0",
-                "SHARAR_BOLT_EXPERTS": "bf16"}
+                "SHARAR_BOLT_EXPERTS": "b12x"}
     if target == "nemotron":
         return nemotron_defaults(profile)
     flashnext = target == "flashnext"
@@ -369,7 +371,7 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     depths = values.get("SHARAR_SPEC_DEPTHS", "")
     _check(not depths or re.fullmatch(r"\d+:\d+(,\d+:\d+)*", depths) is not None, "SHARAR_SPEC_DEPTHS must be BUCKET:DEPTH pairs, e.g. 8:1,16:0")
     _check(values.get("SHARAR_FLASHNEXT_EXPERTS", "w3") in ("w3", "nvfp4"), "SHARAR_FLASHNEXT_EXPERTS must be w3 or nvfp4")
-    _check(values.get("SHARAR_BOLT_EXPERTS", "bf16") in ("bf16", "fp8", "b12x"), "SHARAR_BOLT_EXPERTS must be bf16, fp8 or b12x")
+    _check(values.get("SHARAR_BOLT_EXPERTS", "b12x") in ("bf16", "fp8", "b12x"), "SHARAR_BOLT_EXPERTS must be bf16, fp8 or b12x")
     _check(values.get("SHARAR_DRAFT_HEAD", "fp8") in ("fp8", "w3", "w2"), "SHARAR_DRAFT_HEAD must be fp8, w3 or w2")
     _check(values.get("SHARAR_QSA_SPARSE_GRAPHS", "1") in ("0", "1"), "SHARAR_QSA_SPARSE_GRAPHS must be 0 or 1")
     _check(values.get("SHARAR_PLE_RESIDENT", "auto") in ("auto", "0"), "SHARAR_PLE_RESIDENT must be auto or 0")

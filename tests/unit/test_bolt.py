@@ -44,7 +44,7 @@ def test_profiles_keep_native_weights_and_use_pinned_lilicorr(tmp_path, profile,
     assert (s.target, s.port, s.service, s.spec) == ("bolt", 30006, "sharar-bolt", 7)
     assert s.get("SHARAR_W3_DECODE") == s.get("SHARAR_MOE_KEEP") == s.get("SHARAR_DEVICE_ACCEPT") == "0"
     assert s.get("SHARAR_SSM_STATE") == "fp32"
-    assert s.get("SHARAR_BOLT_EXPERTS") == "bf16"
+    assert s.get("SHARAR_BOLT_EXPERTS") == "b12x"
     assert s.parallel_draft and s.proposer == 'dflash2'
     assert settings.model_config(s.target) is config
     assert preflight.pinned_snapshots(s) == [(s.hf_cache, config.MODEL_ID, config.MODEL_REVISION),
