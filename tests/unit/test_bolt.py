@@ -40,14 +40,15 @@ def test_block_metadata_takes_precedence_and_is_validated(tmp_path, field, value
 @pytest.mark.parametrize("name", ["bolt", "nemotron-bolt"])
 def test_profiles_and_pinned_lilicorr(tmp_path, profile, name):
     """exact: checkpoint encodings, FP32 state, exact verification; fast and throughput: the calibrated 3-bit copies
-    (none here, so the engine serves the checkpoint encodings), the int8 state and relaxed greedy verification."""
+    (none here, so the engine serves the checkpoint encodings), the int8 state, relaxed greedy verification and
+    expert sharing."""
     env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
     s = settings.resolve(name, profile, env=env)
     assert (s.target, s.port, s.service, s.spec) == ("bolt", 30006, "sharar-bolt", 7)
-    assert s.get("SHARAR_MOE_KEEP") == s.get("SHARAR_DEVICE_ACCEPT") == s.get("SHARAR_ACCEPT_DEFAULT_SAMPLED") == "0"
+    assert s.get("SHARAR_DEVICE_ACCEPT") == s.get("SHARAR_ACCEPT_DEFAULT_SAMPLED") == "0"
     lossy = profile != "exact"
-    assert (s.get("SHARAR_W3_DECODE"), s.get("SHARAR_SSM_STATE"), s.get("SHARAR_ACCEPT_DEFAULT")) == (
-        ("1", "int8", "3:2.0") if lossy else ("0", "fp32", "off"))
+    knobs = ("SHARAR_W3_DECODE", "SHARAR_SSM_STATE", "SHARAR_ACCEPT_DEFAULT", "SHARAR_MOE_KEEP", "SHARAR_MOE_BUDGET")
+    assert tuple(s.get(k) for k in knobs) == (("1", "int8", "3:2.0", "4", "16:48") if lossy else ("0", "fp32", "off", "0", "0"))
     assert preflight.ensure_w3(s, log=lambda _: None, fetch=True) is None and s.engine_env(None)["SHARAR_W3_DECODE"] == "0"
     if lossy:
         assert "no calibrated 3-bit checkpoint" in s.warnings[-1]

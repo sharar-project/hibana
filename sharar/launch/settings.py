@@ -88,8 +88,11 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
         # the int8 Mamba state, and relaxed top-3 within 2.0 logits for greedy requests. Over the 22 h2h prompts on
         # one GB10, mean / four-stream tok/s 86.7 / 169.8 (exact) -> 111.0 / 187.0 (+W3) -> 114.2 / 213.7 (+int8)
         # -> 146.3 / 262.8 (+relaxed); paired on GSM8K / GPQA against exact, the 3-bit copies with the int8 state
-        # +0.1 / +1.5 points (docs/bolt.md#profiles-and-limits).
-        p.update(SHARAR_W3_DECODE="1", SHARAR_SSM_STATE="int8", SHARAR_ACCEPT_DEFAULT="3:2.0")
+        # +0.1 / +1.5 points (docs/bolt.md#profiles-and-limits). Expert sharing as Super's fast (model/nemotron/moe.py
+        # route_budget): each token keeps its top 4 experts and a decode or verify call reads at most 16 a request
+        # and 48 in all (at exact verification 114.2 / 213.7 -> 130.7 / 251.6).
+        p.update(SHARAR_W3_DECODE="1", SHARAR_SSM_STATE="int8", SHARAR_ACCEPT_DEFAULT="3:2.0",
+                 SHARAR_MOE_KEEP="4", SHARAR_MOE_BUDGET="16:48")
         return p
     if target == "nemotron":
         return nemotron_defaults(profile)

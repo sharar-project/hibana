@@ -53,8 +53,10 @@ The launcher and ledger budget the pools separately. The checkpoint's 24GB name 
 
 `exact` serves the checkpoint encodings, all nine routed experts, FP32 Mamba state and exact verification.
 `fast` and `throughput` add the calibrated 3-bit copies of the trunk and vocabulary head (177 matrices, 2.1 GiB;
-`weights/bolt_w3_calibrate.py`), the int8 Mamba state (LeapQuant windows) and relaxed top-3 within 2.0 logits for
-greedy requests; sampled requests verify exactly. All profiles use FP8 KV, up to four active requests and the SSD
+`weights/bolt_w3_calibrate.py`), the int8 Mamba state (LeapQuant windows), relaxed top-3 within 2.0 logits for
+greedy requests (sampled requests verify exactly) and expert sharing: Super's `route_budget`, each token keeping
+its top 4 of 9 experts and a decode or verify call reading at most 16 distinct experts a request and 48 in all
+(`SHARAR_MOE_KEEP=4`, `SHARAR_MOE_BUDGET=16:48`). All profiles use FP8 KV, up to four active requests and the SSD
 tier. NVIDIA publishes no 3-bit copies for Bolt: `fast` serves `w3-checkpoints/bolt-current` under the results
 directory (a link to a local calibration) or `SHARAR_W3_CHECKPOINT=DIR`, and without one the checkpoint encodings
 with a warning.
@@ -67,14 +69,12 @@ One GB10, LiLiCorr at seven drafts, 256 forced tokens, greedy, thinking off (`to
 | `exact` | 87.1 / 86.7 | 169.8 |
 | + 3-bit copies | 113.4 / 111.0 | 187.0 |
 | + int8 state | 109.8 / 114.2 | 213.7 |
-| + relaxed greedy verification (`fast`) | 142.5 / 146.3 | 262.8 |
-| + expert sharing 4 / 16:48 (opt-in) | 127.4 / 130.7 at exact verification | 251.6 |
+| + relaxed greedy verification | 142.5 / 146.3 | 262.8 |
+| + expert sharing 4 / 16:48 at exact verification | 127.4 / 130.7 | 251.6 |
 
 Paired against `exact` (GSM8K 1,319 and GPQA Diamond 198, thinking off): the 3-bit copies -0.5 / -2.5 points
 (p 0.27 / 0.56), with the int8 state +0.1 / +1.5 (p 1.0 / 0.76); MMLU-Pro (first 1,000) with the 3-bit copies
--0.1 points. The 3-bit copies answer GPQA at length (4.0K against 3.1K tokens an item). Expert sharing
-(`SHARAR_MOE_KEEP` / `SHARAR_MOE_BUDGET`, Super's `route_budget`: each token keeps its top `keep`, a decode or
-verify call reads at most `min(budget, per_request x requests)` distinct experts) is off in every profile.
+-0.1 points. The 3-bit copies answer GPQA at length (4.0K against 3.1K tokens an item).
 
 This pin has no built-in MTP head. The pinned companion
 `nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-LiLiCorr` at `449d24140160b8e51871bfc0f0a7338abf640aa1`
