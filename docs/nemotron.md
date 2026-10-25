@@ -63,11 +63,24 @@ Measured (Sharar, spark-9931; h2h median, `tools/h2h-pr.py`, greedy; tok/s) and 
 | `exact` | 45.9 | 79.8 | 97.7% |
 | `fast` | 102.5 | 185.2 | 97.7% (+0.0 pp, [-1.6, +1.6]) |
 
+The Mamba-2 state is stored as `SHARAR_SSM_STATE=fp32`, `fp16_sr` (`fast`, `throughput`), or `int8` / `int4`:
+LeapQuant's per-window format of the GDN targets, with Mamba-2's own records (B per group, dt x per head, dt A), 65 MiB
+a slot at 8 bits against 82 in FP16 and 162 in FP32. The 8-bit windows are ungated. On `exact` they score RULER v2 at
+32K 88.5 against FP32's 87.0 (100 items paired, +1.5 pp [-2.0, +5.2]) and GSM8K-50 48 against 49, at a KL against
+`exact` of 0.018 (the screen's floor, `exact` at another call shape, is 0.017); in place of FP16-SR on the 3-bit stack
+they add a KL of 0.010. Decode with every request on its own 10K-token context (`profiling/decode_curve.py`:
+`throughput`'s settings without expert sharing, depth 3; Sharar, spark-2f9d; tok/s, tokens per request per round
+3.45-3.62 in every cell):
+
+| Requests | FP32 | FP16-SR | int8 | int8 against FP16-SR |
+|---|---|---|---|---|
+| 16 | 264.9 | 281.8 | 297.8 | +5.7% |
+| 32 | 376.0 | 400.4 | 449.3 | +12.2% |
+| 64 | 513.7 | 594.9 | 666.7 | +12.1% (+30% against FP32) |
+
 Not supported yet, to revisit:
 
 - NVFP4 KV cache: the attention's fused K/V writer serves the FP8 pool only.
-- An int8 (or int4) Mamba-2 state: the window formats and kernels (`kernels/ssm_window.py`) implement the GDN
-  recurrence; Mamba-2 needs its own record and replay.
 - `throughput`: its 16-request cap follows the 27B's and is unmeasured past 16, and its expert sharing (`fast`'s:
   128 experts a call, about 8 a request at 16) is gated at one to four requests only; 8 / 16 streams ran
   277 / 353 tok/s with it against 190 / 239 without.
