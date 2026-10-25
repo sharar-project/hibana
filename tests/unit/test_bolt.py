@@ -131,3 +131,14 @@ def test_plan_rows_follow_the_graphs():
     assert graph_rows(SimpleNamespace(max_batch=1, spec="auto", spec_depths="")) == tuple(range(1, 10))
     assert 6 in graph_rows(SimpleNamespace(max_batch=2, spec="7", spec_depths="2:2"))
 
+
+def test_w3_calibration_names_cover_the_trunk_not_the_shared_experts():
+    from sharar.weights import bolt_w3_calibrate as calibrate
+    names = calibrate.projection_names(NEMOTRON_BOLT)
+    assert len(names) == 40 * 2 + 40 * 2 + 8 * 2 + 1 and names[-1] == "lm_head"
+    assert not any("shared" in n for n in names)
+    attention = next(i for i, k in enumerate(NEMOTRON_BOLT.layer_types) if k == "full_attention")
+    assert calibrate.source_prefixes(f"layers.{attention}.mixer.qkv") == [
+        f"language_model.backbone.layers.{attention}.mixer.{p}_proj" for p in "qkv"]
+    with pytest.raises(ValueError):
+        calibrate.source_prefixes("layers.1.mixer.shared_up")
