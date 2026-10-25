@@ -4,17 +4,20 @@ Requires optional b12x==1.5.0, or --package pointing to that unpacked wheel.
 --root accepts the pinned FlashInfer experimental source instead. No serving
 settings change. Native checkpoint bytes are losslessly retiled; real weights,
 changed expert ids, zero-weight padding and graph replay are checked before
-any timings. Eight route sets cycle the working set beyond L2. Timings cover
+any timings. --sibling adds a frozen checkout of the grouped FP8 IQ2 kernel.
+Route sets cycle the working set beyond L2. Timings cover
 routed up/ReLU²/down/reduction, excluding router, latent and shared projections.
 
     uv run --with b12x==1.5.0 python -m profiling.bolt_b12x_moe --output /tmp/bolt-moe.json
 """
 import argparse
+import hashlib
 import importlib.util
 import importlib.metadata
 import json
 import os
 from pathlib import Path
+import platform
 import statistics
 import subprocess
 import sys
@@ -36,22 +39,46 @@ def others():
     return [int(line) for line in text.splitlines() if line.strip().isdigit() and int(line) != os.getpid()]
 
 
-def graph_time(run):
-    for _ in range(3):
-        run()
-    g = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(g):
-        run()
-    values = []
-    for _ in range(7):
-        a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-        a.record()
-        for _ in range(50):
-            g.replay()
-        b.record()
-        b.synchronize()
-        values.append(a.elapsed_time(b) * 1000 / 50)
-    return statistics.median(values)
+def graph_times(runs, calls):
+    graphs = {}
+    for name, run in runs.items():
+        for _ in range(3):
+            run()
+        g = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(g):
+            run()
+        graphs[name] = g
+    values = {name: [] for name in runs}
+    names = list(runs)
+    for round in range(9):
+        for name in names[round % len(names):] + names[:round % len(names)]:
+            a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            a.record()
+            for _ in range(10):
+                graphs[name].replay()
+            b.record()
+            b.synchronize()
+            values[name].append(a.elapsed_time(b) * 1000 / (10 * calls))
+    return {name: {'median_us': statistics.median(v), 'min_us': min(v), 'max_us': max(v)}
+            for name, v in values.items()}
+
+
+def load_sibling(root):
+    """Import frozen development modules without altering serving dispatch."""
+    for name in ('ggml', 'iq2_moe'):
+        spec = importlib.util.spec_from_file_location(f'sharar.kernels.{name}', root / 'sharar/kernels' / f'{name}.py')
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        setattr(sys.modules['sharar.kernels'], name, module)
+    return module
+
+
+def numerical_error(actual, expected):
+    cosine = F.cosine_similarity(actual.float().flatten(), expected.float().flatten(), dim=0).item()
+    rel = ((actual.float() - expected.float()).norm() / expected.float().norm().clamp_min(1e-20)).item()
+    assert torch.isfinite(actual).all(), (cosine, rel)
+    return {'cosine': cosine, 'relative_l2': rel}
 
 
 @torch.inference_mode()
@@ -60,6 +87,8 @@ def main():
     ap.add_argument('--root', type=Path, help='pinned FlashInfer source checkout, instead of installed b12x')
     ap.add_argument('--package', type=Path, help='unpacked b12x 1.5.0 package directory')
     ap.add_argument('--snapshot', type=Path)
+    ap.add_argument('--sibling', type=Path, help='frozen source tree containing sharar/kernels/iq2_moe.py')
+    ap.add_argument('--random-routes', action='store_true')
     ap.add_argument('--layer', type=int, default=1)
     ap.add_argument('--rows', type=int, nargs='+', default=[1, 8, 32])
     ap.add_argument('--check-only', action='store_true')
@@ -95,6 +124,7 @@ def main():
         raise ValueError('this comparison is qualified against b12x==1.5.0')
     from b12x.moe import fused_moe as moe
     from b12x.preparation import PreparationSession, PreparedCall, require_prepared
+    native = load_sibling(args.sibling) if args.sibling else None
     snap = args.snapshot or NEMOTRON_BOLT.snapshot_dir(config.current().hf_cache or Path.home() / '.cache/huggingface')
     if not 0 <= args.layer < len(BOLT.blocks) or BOLT.blocks[args.layer].kind != 'moe':
         ap.error('--layer must select a pinned Bolt MoE block')
@@ -105,6 +135,7 @@ def main():
         activation=moe.ActivationSpec(mode='a16', nonlinearity='relu2', io_dtype=torch.bfloat16),
         geometry=moe.MoEGeometry(num_experts=block.experts, hidden_size=1024, intermediate_size=block.inter))
     prepared = moe.prepare_weights(plan=plan, weights=moe.BlockQuantWeights(block.w1, block.w2, codec='iq2_xxs'))
+    native_experts = native.pack_experts(block.w1, block.w2) if native else None
     compact = prepared._impl.representation.value
     payload = sum(t.numel() * t.element_size() for t in (compact.w13, compact.w13_scale, compact.w2, compact.w2_scale))
     assert payload == block.w1.numel() + block.w2.numel()
@@ -112,6 +143,14 @@ def main():
               'package_path': str(package),
               'layer': args.layer, 'geometry': [block.experts, block.inter, 1024, block.topk],
               'check_only': args.check_only, 'resident_packed_bytes': payload, 'cases': []}
+    report.update(host=platform.node(), gpu=torch.cuda.get_device_name(), torch_version=torch.__version__,
+                  benchmark_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+    if native:
+        assert native_experts.bytes == payload
+        report.update(sibling_root=str(args.sibling), native_revision=native._source_revision(),
+                      native_python_sha256=hashlib.sha256(Path(native.__file__).read_bytes()).hexdigest(),
+                      activation_profile='b12x BF16; sibling E4M3 with per-K32 FP32 scales')
+    report.update(random_routes=args.random_routes, score_scale=5., input_std=.125)
     for m in args.rows:
         decl = moe.plan_execution(experts=prepared,
             capacity=moe.ExecutionCapacity(max_tokens=m, top_k=block.topk, warmup_token_counts=(m,)),
@@ -119,9 +158,10 @@ def main():
         counts = getattr(decl, 'token_counts', (m,))
         inputs = {}
         for count in counts:
-            x = torch.randn(count, 1024, device='cuda', dtype=torch.bfloat16)
-            ids = (torch.arange(count * 9, device='cuda', dtype=torch.int32).view(count, 9) % block.experts)
-            weights = torch.softmax(torch.randn(count, 9, device='cuda'), -1)
+            x = torch.randn(count, 1024, device='cuda', dtype=torch.bfloat16) * .125
+            ids = (torch.stack([torch.randperm(block.experts, device='cuda')[:9] for _ in range(count)]).int()
+                   if args.random_routes else torch.arange(count * 9, device='cuda', dtype=torch.int32).view(count, 9) % block.experts)
+            weights = torch.softmax(torch.randn(count, 9, device='cuda'), -1) * 5.
             inputs[count] = (x, ids, weights, torch.empty_like(x))
         def factory(count):
             x, ids, weights, out = inputs[count]
@@ -146,14 +186,27 @@ def main():
                 up = ggml_bf16.matmul(x, block.w1, 'IQ2_XXS', ids=route_ids, repeat_input=True, relu2=True)
                 down = ggml_bf16.matmul(up, block.w2, 'IQ2_XXS', ids=route_ids)
                 return ggml_bf16.combine(down, weights, scale=1.)
+            if native:
+                native_workspace = native.make_workspace(native_experts, m, 9)
+                native_out = torch.empty_like(x)
+                def native_run(route_ids=ids):
+                    return native.moe(native_experts, x, route_ids, weights, workspace=native_workspace, out=native_out)
+                native_run()
+                ng = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(ng):
+                    native_run()
             candidate()
             expected = baseline()
             def error():
-                cosine = F.cosine_similarity(out.float().flatten(), expected.float().flatten(), dim=0).item()
-                rel = ((out.float() - expected.float()).norm() / expected.float().norm()).item()
-                assert cosine > .999 and rel < .015, (cosine, rel)
-                return {'cosine': cosine, 'relative_l2': rel}
+                e = numerical_error(out, expected)
+                assert e['cosine'] > .999 and e['relative_l2'] < .015, e
+                return e
             case = {'rows': m, **error()}
+            if native:
+                case['native_vs_bf16'] = numerical_error(native_out, expected)
+                fp8_reference = native.reference(native_experts, x[:2], ids[:2], weights[:2])
+                case['native_vs_fp8_reference'] = numerical_error(native_out[:2], fp8_reference)
+                assert case['native_vs_fp8_reference']['relative_l2'] < .01, case
             g = torch.cuda.CUDAGraph()
             with session.capture(), torch.cuda.graph(g):
                 candidate()
@@ -161,22 +214,42 @@ def main():
             g.replay()
             expected = baseline()
             case['mutated_graph'] = error()
+            if native:
+                ng.replay()
+                case['native_mutated_graph'] = numerical_error(native_out, expected)
+                fp8_reference = native.reference(native_experts, x[:2], ids[:2], weights[:2])
+                case['native_mutated_vs_fp8_reference'] = numerical_error(native_out[:2], fp8_reference)
+                assert case['native_mutated_vs_fp8_reference']['relative_l2'] < .01, case
+            saved_ids, saved_weights = ids[-1].clone(), weights[-1].clone()
             weights[-1].zero_()
             ids[-1].copy_(torch.arange(9, device='cuda', dtype=torch.int32))
             g.replay()
             case['padded_nonzero'] = int(torch.count_nonzero(out[-1]))
             assert case['padded_nonzero'] == 0, case
+            if native:
+                ng.replay()
+                assert torch.count_nonzero(native_out[-1]) == 0
             ids[-1].fill_(block.experts)
             out.fill_(float('nan'))
             g.replay()
             case['invalid_padded_nonzero'] = int(torch.count_nonzero(out[-1]))
             case['invalid_padded_finite'] = bool(torch.isfinite(out[-1]).all())
             assert case['invalid_padded_nonzero'] == 0 and case['invalid_padded_finite'], case
-            ids[-1].copy_(torch.arange(9, device='cuda', dtype=torch.int32))
-            weights[-1].fill_(1. / 9)
+            if native:
+                native_out.fill_(float('nan'))
+                ng.replay()
+                assert torch.isfinite(native_out[-1]).all() and torch.count_nonzero(native_out[-1]) == 0
+                case['native_padding_passed'] = True
+            ids[-1].copy_(saved_ids)
+            weights[-1].copy_(saved_weights)
             candidate()
             if not args.check_only:
-                cycle_ids = [(ids + i * m * 9).remainder(block.experts).contiguous() for i in range(8)]
+                cycle_ids, union = [], set()
+                while len(cycle_ids) < 8 or (len(union) * payload // block.experts <= 64 * 2**20
+                                            and len(union) < block.experts and len(cycle_ids) < 32):
+                    route_ids = (ids + len(cycle_ids) * m * 9).remainder(block.experts).contiguous()
+                    union.update(route_ids.flatten().tolist())
+                    cycle_ids.append(route_ids)
                 cycle_bindings = [moe.bind(decl, scratch=scratch, a=x, topk_ids=route_ids,
                     topk_weights=weights, output=out) for route_ids in cycle_ids]
                 def candidate_cycle():
@@ -185,11 +258,21 @@ def main():
                 def baseline_cycle():
                     for route_ids in cycle_ids:
                         baseline(route_ids)
-                case['b12x_us'], case['baseline_us'] = graph_time(candidate_cycle) / 8, graph_time(baseline_cycle) / 8
-                case['method'] = 'CUDA graph cycles eight route sets across more than L2; 7 rounds of 50 replays'
+                runs = {'b12x': candidate_cycle, 'baseline': baseline_cycle}
+                if native:
+                    def native_cycle():
+                        for route_ids in cycle_ids:
+                            native_run(route_ids)
+                    runs['native'] = native_cycle
+                case['timings'] = graph_times(runs, len(cycle_ids))
+                case.update({name + '_us': t['median_us'] for name, t in case['timings'].items()})
+                case['method'] = 'CUDA graph route cycles above L2; rotating backend order over 9 rounds of 10 replays'
+                case.update(cycle_calls=len(cycle_ids), distinct_experts=len(union),
+                            active_weight_bytes=len(union) * payload // block.experts)
                 case['speedup'] = case['baseline_us'] / case['b12x_us']
             case['other_gpu_pids'] = others()
             report['cases'].append(case)
+            report['valid_for_speed_comparison'] = not args.check_only and not any(c['other_gpu_pids'] for c in report['cases'])
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(report, indent=2) + '\n')
             print(json.dumps(case), flush=True)
