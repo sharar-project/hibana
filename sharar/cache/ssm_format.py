@@ -2,14 +2,15 @@
 
 `fp32` (the default) keeps each layer's state as the kernels compute it: [HV, V, K] FP32 per slot, 3 MiB per
 layer on the GDN targets, 4 MiB on Nemotron's Mamba layers. `int8` and `int4` are LeapQuant (arXiv 2609.38166):
-per-window recurrent-state quantization to 8 or 4 bits, GDN targets only.
+per-window recurrent-state quantization to 8 or 4 bits, on either recurrence (Nemotron: 162 -> 65 MiB a slot at 8
+bits, 53 MiB at 4, against 82 MiB in FP16).
 
 `fp16_sr` (Mamba-2 targets only) stores the same [HV, V, K] tensor in FP16, half the bytes every decode, verify and
 accept step streams and every snapshot, copy and SSD-tier record holds (Nemotron: 162 -> 82 MiB a slot); the kernels
 compute in FP32 and round stochastically on every store (`kernels/mamba2.py`; unbiased: a small update that
 round-to-nearest would drop survives in expectation), as NVIDIA's own vLLM recipe for Nemotron-3.5 on DGX Spark does.
 
-A quantized (GDN) layer state is a boundary state plus the committed tokens since it:
+A quantized layer state is a boundary state plus the committed tokens since it:
 
     S = Gamma_{1:n} * (C . dequant(Z) . B + K~ U~^T) + sum_j Gamma_{j+1:n} k_j u_j^T
 
@@ -18,8 +19,9 @@ A quantized (GDN) layer state is a boundary state plus the committed tokens sinc
   4 bits pack two values per byte, key columns 2i and 2i+1 in the low and high nibble, offset by 8;
 - `comp_k`, `comp_u`: `rank` compensator tokens, an FP16 rank-r fit of the boundary state's largest structure
   (power iteration) that keeps the outliers out of the integer range;
-- `log_k`, `log_u`, `log_g`: the window's committed tokens as delta-rule records (L2-normalized key, the
-  correction u = beta (v - (alpha S)^T k), the log decay), FP16/FP32, at most `window` of them;
+- `log_k`, `log_u`, `log_g`: the window's committed tokens as rank-one records, FP16/FP32, at most `window` of them:
+  on GDN the delta rule's (L2-normalized key, the correction u = beta (v - (alpha S)^T k), the log decay); on Mamba-2
+  the update's own (B per group, dt x per head, dt A), which do not depend on the state;
 - `log_len`: the number of records, per value head.
 
 Verification reads the state through this expansion and never writes it. A commit appends the accepted tokens'
@@ -40,7 +42,7 @@ import torch
 from sharar.launch.settings import SSM_STATES
 
 ALIGN = 256
-BITS = {"int8": 8, "int4": 4}  # GDN window formats
+BITS = {"int8": 8, "int4": 4}  # window formats (either recurrence)
 
 
 def _aligned(nbytes: int) -> int:
@@ -120,7 +122,7 @@ class SsmFormat:
 
     @property
     def quantized(self) -> bool:
-        """A GDN window format (int8, int4)."""
+        """A window format (int8, int4)."""
         return self.kind in BITS
 
     @property

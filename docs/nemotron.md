@@ -19,7 +19,8 @@ Formats are the checkpoint's: the routed NVFP4 experts through Sharar's small-ca
 (`kernels/nemotron_moe.py`: router, routing, experts, shared expert and `fc2_latent` in four chained launches) and
 FlashInfer's b12x MoE beyond (fc1 is `up_proj` alone), FP8 GEMVs for the Mamba and attention projections and the head,
 FP32 router logits. 66.4 GiB of weights are resident after the load (78 s from the page cache); the KV cache is small
-(8 attention layers, 4 KiB a token in FP8) and a request's recurrent state is 160 MiB (FP32; 80 MiB in FP16).
+(8 attention layers, 4 KiB a token in FP8) and a request's recurrent state is 160 MiB (FP32; 80 MiB in FP16, 63 MiB
+in 8-bit windows, `SHARAR_SSM_STATE=int8`, ungated).
 GPTQ-calibrated 3-bit copies of the trunk (Mamba, attention and lm_head projections) and of the routed experts load
 beside the checkpoint with `SHARAR_W3_DECODE=1` and `SHARAR_W3_CHECKPOINT=<dir>` (`kernels/w3_moe.py` for the
 experts). `fast` and `throughput` turn them on and serve

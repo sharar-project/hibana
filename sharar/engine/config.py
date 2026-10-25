@@ -85,7 +85,7 @@ class EngineConfig:
     w3_warning: str | None = None             # SHARAR_W3_WARNING: why the launcher serves without the profile's calibrated copies
     stable_numerics: bool = False             # SHARAR_STABLE_NUMERICS: M-invariant prefill kernels
     gdn_prefill: str = "auto"                 # SHARAR_GDN_PREFILL: auto (CuTe on SM12x), cute, triton
-    ssm_state: str = "fp32"                   # SHARAR_SSM_STATE: recurrent state storage, fp32; GDN int8 or int4 (LeapQuant per-window quantization); Mamba-2 fp16_sr (FP16, stochastically rounded) (cache/ssm_format.py; lossy)
+    ssm_state: str = "fp32"                   # SHARAR_SSM_STATE: recurrent state storage, fp32; int8 or int4 (LeapQuant per-window quantization, GDN or Mamba-2); Mamba-2 fp16_sr (FP16, stochastically rounded) (cache/ssm_format.py; lossy)
     ssm_window: int = 16                      # SHARAR_SSM_WINDOW: committed tokens per requantization (8, 16, 32)
     ssm_compensators: int | None = None       # SHARAR_SSM_COMPENSATORS: FP16 rank-one outlier terms kept beside the quantized state (0-16; unset: 4, or 8 for int4)
     flashnext_trunk: str = "fp8"              # SHARAR_FLASHNEXT_TRUNK: bf16 | fp8

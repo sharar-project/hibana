@@ -50,6 +50,15 @@ same bits. GB10 has no cvt.rs, so the rounding is integer arithmetic on the FP32
   convolves to the same bits on every path.
 - `gated_rmsnorm` fuses the gate, the grouped RMS norm, the weight and the out projection's FP8 input quantization.
   The norm spans 16 heads, so it is not fused into the per-head recurrence.
+
+A quantized pool (`SsmFormat` int8 / int4, every path's `window` argument) stores LeapQuant's per-window state
+(`cache/ssm_format.py`): a quantized boundary state plus the window's committed records. Mamba-2's update is a
+rank-one record that does not depend on the state (key B per group, value dt x per head, log decay dt A), so the
+format's commit, fold, materialize and quantize kernels (`kernels/ssm_window.py`) serve it unchanged; only the
+recurrence is this module's (`window_verify`). Verify reads the committed state through the expansion and writes one
+record per step into the round's ring (`ssm_window.WindowState`, the reconstruct strategy's replay), decode is a
+verify of one step committed at once, and the prefill runs the chunked kernels on FP32 copies of its slots' states and
+quantizes the final states and checkpoints back as new boundary states.
 """
 
 from __future__ import annotations
@@ -62,6 +71,10 @@ import torch
 import triton
 import triton.language as tl
 from triton.language.extra import libdevice
+
+from sharar.cache.ssm_format import WindowLayout
+from sharar.kernels.ssm_window import (_load_z, _parts, _split_dot, _strides, _tile, materialize, quantize,
+                                       window_commit)
 
 if TYPE_CHECKING:
     from sharar.engine.context import ForwardContext
@@ -452,16 +465,30 @@ def _split(zxbcdt: torch.Tensor, params: Mamba2Params):
 
 
 def decode(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor, ssm_state: torch.Tensor,
-           slots: torch.Tensor, positions: torch.Tensor | None = None, *, layer: int = 0) -> torch.Tensor:
+           slots: torch.Tensor, positions: torch.Tensor | None = None, *, layer: int = 0,
+           window: tuple[WindowLayout, dict] | None = None) -> torch.Tensor:
     """One token per row: conv state and SSM state of slots[i] advanced in place; returns y [B, d_inner] bf16
     (before the gated norm). Rows whose slot is negative are skipped.
 
     An FP16 `ssm_state` is stored stochastically rounded, keyed on positions[i] (the row's token position) and
-    `layer` (the layer's index among the Mamba layers); y reads the FP32 state."""
-    sr = _check_state(ssm_state, params, positions)
+    `layer` (the layer's index among the Mamba layers); y reads the FP32 state.
+    With window = (layout, this layer's region views) the pool is quantized: the token runs as a verify of one step
+    and its record is committed at once (appended to the window, or folding a full one)."""
     _, xbc, dt = _split(zxbcdt, params)
-    conv = conv_decode(xbc, params, conv_state, slots)
     b = zxbcdt.shape[0]
+    if window is not None:
+        layout, views = window
+        conv = conv_decode(xbc, params, conv_state, slots)
+        dev = zxbcdt.device
+        ring_k = torch.empty((1, b, params.groups, 1, params.state), dtype=torch.float16, device=dev)
+        ring_u = torch.empty((1, b, params.heads, 1, params.head_dim), dtype=torch.float16, device=dev)
+        ring_g = torch.empty((1, b, params.heads, 1), dtype=torch.float32, device=dev)
+        y = window_verify(layout, views, conv.unsqueeze(1), dt, params, slots, 1, ring_k[0], ring_u[0], ring_g[0])
+        window_commit(layout, {name: t.unsqueeze(0) for name, t in views.items()}, ring_k, ring_u, ring_g, slots,
+                      torch.ones(b, dtype=torch.int32, device=dev))
+        return y
+    sr = _check_state(ssm_state, params, positions)
+    conv = conv_decode(xbc, params, conv_state, slots)
     y = torch.empty((b, params.d_inner), dtype=torch.bfloat16, device=zxbcdt.device)
     _ssu_decode_kernel[(params.head_dim // _SSU_BLOCK_P, params.heads, b)](
         ssm_state, ssm_state.stride(0), slots, conv, conv.stride(0), dt, dt.stride(0), params.dt_bias, params.A,
@@ -474,7 +501,8 @@ def decode(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor,
 def verify(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor, ssm_state: torch.Tensor,
            slots: torch.Tensor, steps: int, conv_windows: torch.Tensor | None = None, *,
            snapshots: torch.Tensor | None = None, snapshot_indices: torch.Tensor | None = None,
-           replay: dict | None = None, positions: torch.Tensor | None = None, layer: int = 0) -> torch.Tensor:
+           replay: dict | None = None, positions: torch.Tensor | None = None, layer: int = 0,
+           window: tuple[WindowLayout, dict] | None = None) -> torch.Tensor:
     """Speculative verify: B rows of `steps` tokens each ([B * steps, proj] in row-major order), each row starting
     from the committed state of slots[i], which is left untouched (conv and SSM). Returns y [B * steps, d_inner].
 
@@ -483,14 +511,19 @@ def verify(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor,
     replay (an `AcceptedState.layer_inputs` entry) instead receives the compact inputs `AcceptedState.run` needs.
     An FP16 state is rounded after every step as `decode` stores it (positions [B * steps], `layer` as there), so
     every output, snapshot and replayed state is bitwise decode's.
+
+    With window = (layout, this layer's region views) the pool is quantized (`window_verify`): replay is then a
+    `ssm_window.WindowState` layer entry, whose ring receives each step's record, and there are no snapshots.
     """
-    sr = _check_state(ssm_state, params, positions)
     _, xbc, dt = _split(zxbcdt, params)
     rows_total, c = xbc.shape
     if steps < 1 or rows_total % steps:
         raise ValueError("verify needs B rows of `steps` tokens")
     b = rows_total // steps
-    if replay is not None:
+    if window is not None and (replay is None or "ring_u" not in replay or snapshots is not None):
+        raise ValueError("a quantized window verify records into a WindowState ring and takes no snapshots")
+    sr = window is None and _check_state(ssm_state, params, positions)
+    if replay is not None and window is None:
         conv = replay["xbc"]
         if conv.shape[0] < b or conv.shape[1] < steps or conv.shape[2] != c:
             raise ValueError("replay buffers are narrower than this verify")
@@ -505,6 +538,9 @@ def verify(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor,
         xbc, xbc.stride(0), params.conv_weight, params.conv_bias, conv_state, *conv_state.stride(), slots,
         conv, conv.stride(0), conv.stride(1), win, *(win.stride() if windows else (0, 0, 0, 0)),
         c, steps, windows, block, num_warps=4)
+    if window is not None:
+        return window_verify(*window, conv, dt, params, slots, steps, replay["ring_k"], replay["ring_u"],
+                             replay["ring_g"])
     y = torch.empty((rows_total, params.d_inner), dtype=torch.bfloat16, device=xbc.device)
     snap = snapshots is not None
     if snap and (snapshot_indices is None or snapshots.shape[1] < steps or snapshots.shape[2:] != ssm_state.shape[1:]):
@@ -608,6 +644,101 @@ class AcceptedState:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# Quantized window state (SsmFormat int8 / int4)
+
+
+@triton.jit
+def _window_verify_kernel(XBC, sx_row, sx_step, DtRaw, sdt, DtBias, A, Dskip, Y, sy,
+                          z, scale, smooth, comp_k, comp_u, log_k, log_u, log_g, log_len, Slots,
+                          ring_k, ring_u, ring_g,
+                          s_z, s_sc, s_sm, s_ck, s_cu, s_lk, s_lu, s_lg, s_ll,
+                          H: tl.constexpr, P: tl.constexpr, N: tl.constexpr, G: tl.constexpr, S: tl.constexpr,
+                          BT: tl.constexpr, WIN: tl.constexpr, R: tl.constexpr, BJ: tl.constexpr, RS: tl.constexpr,
+                          BKC: tl.constexpr, BITS: tl.constexpr):
+    """One head of one row, all S steps at once. The committed state is read as `ssm_window` reads the GDN's, without
+    expanding it: S_0 c = e^(G_n) [((c C) Z^T) B + (c K~^T) U~^T] + sum_j e^(G_n - G_j) (c k_j) u_j. The verified
+    steps then add their own records in the chunked form: y_t = e^(g_t) S_0 c_t + sum_(j <= t) e^(g_t - g_j)
+    (c_t . B_j) u_j + D x_t, g_t the cumulative dt A of steps 1..t and u_j = dt_j x_j, with the same FP16 records the
+    ring receives (B is BF16, exact in FP16), so the state the commit builds is the one these outputs read."""
+    h, row = tl.program_id(0), tl.program_id(1)
+    slot = tl.load(Slots + row).to(tl.int64)
+    if slot < 0:
+        return
+    g = h // (H // G)
+    o_p = tl.arange(0, P)
+    o_n = tl.arange(0, N)
+    o_t = tl.arange(0, BT)
+    mt = o_t < S
+    xrow = XBC + row * sx_row + o_t * sx_step
+    x = tl.load(xrow[:, None] + h * P + o_p[None, :], mt[:, None], 0.0).to(tl.float32)  # [BT, P]
+    bh = tl.load(xrow[:, None] + H * P + g * N + o_n[None, :], mt[:, None], 0.0).to(tl.float16)  # [BT, N]
+    ch = tl.load(xrow[:, None] + H * P + G * N + g * N + o_n[None, :], mt[:, None], 0.0).to(tl.float16)
+    dt = _dt(tl.load(DtRaw + (row * S + o_t) * sdt + h, mt, 0.0).to(tl.float32), tl.load(DtBias + h))
+    dt = tl.where(mt, dt, 0.0)
+    lg_t = dt * tl.load(A + h)
+    uh = (dt[:, None] * x).to(tl.float16)
+    # This round's records, for the commit.
+    tl.store(ring_g + (row * H + h) * RS + o_t, lg_t, mt)
+    tl.store(ring_u + (row * H + h) * RS * P + o_t[:, None] * P + o_p[None, :], uh, mt[:, None])
+    if h % (H // G) == 0:  # B once per group
+        tl.store(ring_k + (row * G + g) * RS * N + o_t[:, None] * N + o_n[None, :], bh, mt[:, None])
+
+    # ((c C) Z^T) of the integer residual, K chunk by chunk; c C as two FP16 halves against the exact integers.
+    zb = z + slot * s_z + h * P * (N * BITS // 8)
+    acc = tl.zeros([BT, P], tl.float32)
+    for kc in tl.static_range(N // BKC):
+        o_c = kc * BKC + tl.arange(0, BKC)
+        zt = tl.trans(_load_z(zb, o_p, kc * BKC, BKC, N, BITS))  # [BKC, P]
+        cc = tl.load(xrow[:, None] + H * P + G * N + g * N + o_c[None, :], mt[:, None], 0.0).to(tl.float32)
+        acc += _split_dot(cc * tl.load(smooth + slot * s_sm + h * N + o_c)[None, :], zt)
+    # Records: rows j < WIN are the window's committed tokens (j < n), rows WIN..WIN+R-1 the compensators.
+    n = tl.minimum(tl.load(log_len + slot * s_ll + h), WIN)
+    o_j = tl.arange(0, BJ)
+    is_l = o_j < n
+    is_c = (o_j >= WIN) & (o_j < WIN + R)
+    rec = is_l | is_c
+    p_k = tl.where(is_c, comp_k + slot * s_ck + (h * R + o_j - WIN) * N, log_k + slot * s_lk + (g * WIN + o_j) * N)
+    p_u = tl.where(is_c, comp_u + slot * s_cu + (h * R + o_j - WIN) * P, log_u + slot * s_lu + (h * WIN + o_j) * P)
+    lk = tl.load(p_k[:, None] + o_n[None, :], rec[:, None], 0.0)  # [BJ, N]
+    lu = tl.load(p_u[:, None] + o_p[None, :], rec[:, None], 0.0)  # [BJ, P]
+    lg = tl.load(log_g + slot * s_lg + h * WIN + o_j, is_l, 0.0)
+    gn = tl.sum(lg, 0)
+    en = tl.exp(gn)
+    w = tl.where(is_l, tl.exp(gn - tl.cumsum(lg, 0)), tl.where(is_c, en, 0.0))
+    sc = tl.load(scale + slot * s_sc + h * P + o_p) * en
+    s0c = _split_dot(tl.dot(ch, tl.trans(lk)) * w[None, :], lu) + acc * sc[None, :]  # [BT, P]: S_0 c_t
+
+    gc = tl.cumsum(lg_t, 0)
+    causal = o_t[:, None] >= o_t[None, :]
+    decay = tl.exp(tl.where(causal, gc[:, None] - gc[None, :], 0.0))
+    cb = tl.where(causal, decay * tl.dot(ch, tl.trans(bh)), 0.0)
+    y = tl.exp(gc)[:, None] * s0c + _split_dot(cb, uh) + tl.load(Dskip + h) * x
+    tl.store(Y + (row * S + o_t)[:, None] * sy + h * P + o_p[None, :], y.to(Y.dtype.element_ty), mt[:, None])
+
+
+def window_verify(layout: WindowLayout, views: dict[str, torch.Tensor], conv: torch.Tensor, dt: torch.Tensor,
+                  params: Mamba2Params, slots: torch.Tensor, steps: int, ring_k, ring_u, ring_g) -> torch.Tensor:
+    """The recurrence on a quantized window pool: B rows of `steps` convolved tokens conv [B, >= steps, conv_dim]
+    (any row and step strides) with raw dt [B * steps, H] (row stride free), each row reading the committed state of
+    slots[i] (this layer's region `views`) and never writing it. ring_* [>= B, heads, >= steps, ...] (a
+    `ssm_window.WindowState` layer entry) receive one record per step for the commit. Returns y [B * steps, d_inner]
+    bf16 before the gated norm; rows whose slot is negative are skipped."""
+    b = slots.numel()
+    if (layout.key_heads, layout.value_heads, layout.k, layout.v) != (params.groups, params.heads, params.state,
+                                                                      params.head_dim):
+        raise ValueError("window verify: the layout is not this mixer's geometry")
+    if steps > ring_u.shape[2] or b > ring_u.shape[0] or conv.shape[0] < b or conv.shape[1] < steps:
+        raise ValueError("window verify: the ring or the convolution output is smaller than the verified block")
+    y = torch.empty((b * steps, params.d_inner), dtype=torch.bfloat16, device=conv.device)
+    _window_verify_kernel[(params.heads, b)](
+        conv, conv.stride(0), conv.stride(1), dt, dt.stride(0), params.dt_bias, params.A, params.D, y, y.stride(0),
+        *_parts(views), slots, ring_k, ring_u, ring_g, *_strides(views, 0),
+        params.heads, params.head_dim, params.state, params.groups, steps, _tile(steps), layout.window,
+        layout.rank, _tile(layout.window + layout.rank), ring_u.shape[2], 64, layout.bits, num_warps=4)
+    return y
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # Gated RMS norm (+ FP8 quantization of the out projection's input)
 
 
@@ -661,6 +792,12 @@ class Mamba2PrefillPlan:
     chunk_last: torch.Tensor  # int32 [C], absolute position of the chunk's last token (an FP16 state's rounding key)
     checkpoint_ends: torch.Tensor  # int32 [K], packed token index each checkpoint ends at
     checkpoint_slots: torch.Tensor  # int32 [K]
+    # A quantized pool's prefill runs on FP32 scratch states: the sequences' in rows 0..S-1, then one per distinct
+    # checkpoint boundary.
+    scratch_rows: int
+    seq_rows: torch.Tensor  # int32 [S], 0..S-1
+    chunk_scratch: torch.Tensor  # int32 [C], scratch row receiving the state after the chunk, or -1
+    checkpoint_rows: torch.Tensor  # int32 [K], each checkpoint's scratch row
 
 
 def plan_prefill(seq_lens, prefix_lens, slots, device, checkpoints=(), chunk: int = CHUNK) -> Mamba2PrefillPlan:
@@ -677,7 +814,7 @@ def plan_prefill(seq_lens, prefix_lens, slots, device, checkpoints=(), chunk: in
         raise ValueError("Mamba prefill needs positive CPU sequence lengths, one prefix and slot each")
     starts = (0, *accumulate(seq_lens))
     cuts = [set() for _ in seq_lens]
-    ends, ck_slots, dest_at = [], [], {}
+    ends, ck_slots, ck_rows, dest_at, row_at = [], [], [], {}, {}
     for i, local, slot in checkpoints:
         if not 3 <= local < seq_lens[i]:
             raise ValueError("Mamba checkpoint must end at an interior token >= 3")
@@ -685,27 +822,31 @@ def plan_prefill(seq_lens, prefix_lens, slots, device, checkpoints=(), chunk: in
         ends.append(starts[i] + local)
         ck_slots.append(slot)
         dest_at[(i, local)] = slot
-    cu_chunks, seq_chunks, dest, last = [0], [0], [], []
+        ck_rows.append(row_at.setdefault((i, local), len(seq_lens) + len(row_at)))
+    cu_chunks, seq_chunks, dest, scratch, last = [0], [0], [], [], []
     for i, (n, p) in enumerate(zip(seq_lens, prefix_lens)):
         first = (chunk - p % chunk) % chunk or chunk
         bounds = sorted(cuts[i] | set(range(first, n, chunk)) | {n})
         for b in bounds:
             cu_chunks.append(starts[i] + b)
             dest.append(dest_at.get((i, b), -1))
+            scratch.append(row_at.get((i, b), -1))
             last.append(p + b - 1)
         seq_chunks.append(len(dest))
     packed = [*starts, *host_slots, *(int(p > 0) for p in prefix_lens), *cu_chunks, *seq_chunks, *dest, *last, *ends,
-              *ck_slots]
+              *ck_slots, *range(len(seq_lens)), *scratch, *ck_rows]
     from sharar.engine.upload import upload
     flat = upload(packed, torch.int32, device)
     views, offset = [], 0
     for size in (len(starts), len(host_slots), len(seq_lens), len(cu_chunks), len(seq_chunks), len(dest), len(last),
-                 len(ends), len(ends)):
+                 len(ends), len(ends), len(seq_lens), len(scratch), len(ck_rows)):
         views.append(flat[offset:offset + size])
         offset += size
     if device_slots is not None:
         views[1] = device_slots
-    return Mamba2PrefillPlan(starts[-1], seq_lens, len(dest), len(ends), *views)
+    return Mamba2PrefillPlan(starts[-1], seq_lens, len(dest), len(ends), *views[:9], len(seq_lens) + len(row_at),
+                             *views[9:])
+
 
 
 @dataclass
@@ -874,13 +1015,17 @@ def _chunk_scan_kernel(CB, X, Cm, sx, Dt, DACs, Entering, Dskip, Y, sy, CuChunks
 
 
 def prefill(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor, ssm_state: torch.Tensor,
-            plan: Mamba2PrefillPlan, *, layer: int = 0) -> torch.Tensor:
+            plan: Mamba2PrefillPlan, *, layer: int = 0,
+            window: tuple[WindowLayout, dict] | None = None) -> torch.Tensor:
     """Packed varlen prefill: returns y [T, d_inner] bf16 (before the gated norm).
 
     Each sequence continues from its slot's conv and SSM state when it has a prefix (zero otherwise); its final
     states replace them, and each checkpoint slot receives the conv window and SSM state at its boundary. An FP16
-    state rounds at every chunk end (`layer` as in `decode`; the plan carries the positions)."""
-    sr = _check_state(ssm_state, params, plan.chunk_last)
+    state rounds at every chunk end (`layer` as in `decode`; the plan carries the positions).
+    With window = (layout, this layer's region views) the SSM states are quantized: the recurrence runs on FP32
+    copies of the sequences' states (`plan.seq_rows`, checkpoints in `plan.chunk_scratch`), and the final and
+    checkpoint states are quantized back as new boundary states."""
+    sr = window is None and _check_state(ssm_state, params, plan.chunk_last)
     _, xbc, dt = _split(zxbcdt, params)
     t, c = xbc.shape
     if t != plan.tokens:
@@ -904,11 +1049,22 @@ def prefill(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor
         num_warps=4)
     x, bm, cm = conv, conv[:, H * P:], conv[:, H * P + G * N:]
     entering = torch.empty((nc, H, P, N), dtype=torch.bfloat16, device=dev)
+    if window is not None:
+        layout, views = window
+        states = torch.empty((plan.scratch_rows, H, P, N), dtype=torch.float32, device=dev)
+        materialize(layout, views, plan.slots, states[:nseq])
+        state_slots, chunk_dest = plan.seq_rows, plan.chunk_scratch
+    else:
+        states, state_slots, chunk_dest = ssm_state, plan.slots, plan.chunk_dest
     bm_, bn_ = _STATES_TILE
     _chunk_states_kernel[(triton.cdiv(P, bm_) * triton.cdiv(N, bn_), nseq, H)](
-        x, bm, conv.stride(0), dt_out, da_cs, entering, plan.cu_chunks, plan.seq_chunks, plan.slots,
-        plan.has_initial_state, plan.chunk_dest, plan.chunk_last, ssm_state, ssm_state.stride(0), nc, layer,
+        x, bm, conv.stride(0), dt_out, da_cs, entering, plan.cu_chunks, plan.seq_chunks, state_slots,
+        plan.has_initial_state, chunk_dest, plan.chunk_last, states, states.stride(0), nc, layer,
         H, P, N, G, CHUNK, bm_, bn_, 32, _STATES_PRECISION, sr, _PHILOX_ROUNDS, num_warps=4, num_stages=2)
+    if window is not None:
+        quantize(layout, views, states[:nseq], plan.slots)
+        if plan.num_checkpoints:
+            quantize(layout, views, states[plan.checkpoint_rows.long()], plan.checkpoint_slots)
     cb = torch.empty((nc, G, CHUNK, CHUNK), dtype=torch.float32, device=dev)
     _bmm_chunk_kernel[(triton.cdiv(CHUNK, 64) ** 2, nc * G)](
         cm, bm, conv.stride(0), cb, plan.cu_chunks, N, G, CHUNK, 64, 64, 64, num_warps=4, num_stages=2)

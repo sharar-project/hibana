@@ -74,6 +74,14 @@ def test_an_explicit_setting_wins(env):
     assert s.spec == 4 and s.get("SHARAR_ACCEPT_DEFAULT") == "2:1.0"
 
 
+def test_the_mamba_state_takes_every_format(env):
+    """FP16 (Mamba-2's) and the 8- and 4-bit windows; the GDN targets refuse FP16."""
+    for state in ("fp32", "fp16_sr", "int8", "int4"):
+        assert resolve(env, "exact", overrides={"SHARAR_SSM_STATE": state}).get("SHARAR_SSM_STATE") == state
+    with pytest.raises(ValueError, match="SHARAR_SSM_STATE must be"):
+        launch.resolve("27b", "exact", env=env, overrides={"SHARAR_SSM_STATE": "fp16_sr"})
+
+
 def test_one_spark_only(env):
     with pytest.raises(ValueError, match="one Spark"):
         resolve(env, tp=2)
