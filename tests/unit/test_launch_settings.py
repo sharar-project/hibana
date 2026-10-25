@@ -269,7 +269,9 @@ def test_flashnext_serves_dflash2_on_request(env, profile):
     # what each round verifies up to the cap (adaptive verification), no depth table; MTP stays the default with its own
     s = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": "dflash2"})
     assert s.parallel_draft and s.draft_dir is None
-    assert (s.get("SHARAR_DRAFT_PRECISION"), s.get("SHARAR_SPEC_STEP_COST"), s.get("SHARAR_SPEC_DEPTHS")) == ("fp8", "", "")
+    assert (s.get("SHARAR_DRAFT_PRECISION"), s.get("SHARAR_SPEC_STEP_COST")) == ("fp8", "")
+    # the depth tables cap each bucket (the expert budget's floor of 3 a verified token in `fast`, MTP's in `throughput`)
+    assert s.get("SHARAR_SPEC_DEPTHS") == {"exact": "", "fast": "2:7,4:7", "throughput": "16:3,32:3,64:3,128:3"}[profile]
     assert s.get("SHARAR_ACCEPT_DEFAULT") == {"exact": "off", "fast": "2:1.0", "throughput": "2:1.0"}[profile]  # MTP keeps 3:2.0
     assert s.get("SHARAR_SPEC") == {"exact": "7", "fast": "9", "throughput": "4"}[profile]
     assert s.get("SHARAR_SPEC_POLICY") == ("" if profile == "exact" else "budget")
@@ -294,8 +296,10 @@ def test_moe_budget_setting():
 def test_profile_depths_stay_within_a_lower_batch_limit(env):
     # a limit below 128 starts (128 is no captured bucket then), and a limit that is not a bucket verifies what the
     # bucket it would pad to does
-    cases = {("throughput", "64"): {"mtp": "16:3,32:3,64:3"}, ("throughput", "100"): {"mtp": "16:3,32:3,64:3,100:3"},
-             ("throughput", "12"): {"mtp": "12:3"}, ("fast", "3"): {"mtp": "2:4,3:4"}}
+    cases = {("throughput", "64"): {"mtp": "16:3,32:3,64:3", "dflash2": "16:3,32:3,64:3"},
+             ("throughput", "100"): {"mtp": "16:3,32:3,64:3,100:3", "dflash2": "16:3,32:3,64:3,100:3"},
+             ("throughput", "12"): {"mtp": "12:3", "dflash2": "12:3"},
+             ("fast", "3"): {"mtp": "2:4,3:4", "dflash2": "2:7,3:7"}}
     for (profile, batch), want in cases.items():
         for proposer, depths in want.items():
             s = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": proposer, "SHARAR_MAX_BATCH": batch})

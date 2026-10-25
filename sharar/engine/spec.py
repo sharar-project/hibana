@@ -90,7 +90,9 @@ class SpecDecoder:
             from sharar.engine.depth import ragged_budgets
             packed = not accept_graphs.enabled() and getattr(executor, "extras", None) is None
             sizes = capture_sizes(executor.max_batch)
-            self.depth_policy = RowBudget(self.k, sizes, packed_rows=ragged_budgets(sizes, self.steps) if packed else None)
+            caps = policy.depths if policy is not None else None  # a depth table caps each bucket's depth
+            self.depth_policy = RowBudget(self.k, sizes, packed_rows=ragged_budgets(sizes, self.steps) if packed else None,
+                                          caps=caps)
             proposer.score_drafts = True
             self.short_drafts = False  # else the proposer's capability (`drafts_short`)
             self.verify_depths = self.depth_policy.verify_depths

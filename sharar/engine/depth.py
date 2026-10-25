@@ -178,10 +178,13 @@ class RowBudget:
     EXPLORE = 16
 
     def __init__(self, cap: int, sizes, *, candidates=BUDGET_DEPTHS, packed_rows: dict | None = None,
-                 keep: float = 0.999, prior: float = 0.8, prior_weight: float = 4.0):
+                 caps: dict[int, int] | None = None, keep: float = 0.999, prior: float = 0.8, prior_weight: float = 4.0):
         self.depth = cap
         self.steps = cap + 1
         self.sizes = tuple(sizes)
+        # a ceiling per batch bucket (SHARAR_SPEC_DEPTHS): Flash-Next keeps at least 3 of its budgeted experts a verified
+        # token (#234; verifying past it cost GSM8K-300 3.3 points at four requests)
+        self.caps = {b: max(1, min(cap, (caps or {}).get(b, cap))) for b in self.sizes}
         self.budgets = packed_rows  # bucket -> captured row totals, with packed graphs
         self.packed = packed_rows is not None
         self.candidates = tuple(range(1, cap + 1)) if self.packed else tuple(sorted({d for d in candidates if 1 <= d <= cap} | {cap}))
@@ -227,7 +230,7 @@ class RowBudget:
 
     def full_rows(self, bucket: int) -> int:
         """The rows a bucket's full verification takes: every request at the cap."""
-        return self.budgets[bucket][-1] if self.packed else bucket * (self.depth + 1)
+        return self.rows(bucket, bucket, self.caps[bucket])
 
     def expected_tokens(self, depth: int, sampled: bool = False) -> float:
         """Tokens a request emits per round at `depth` from past rounds: 1 + sum_{j<=depth} P(at least j accepted)."""
@@ -242,11 +245,12 @@ class RowBudget:
         """Before drafting: the depth to draft. A greedy batch drafts the whole block, scored and allotted after (one
         forward costs about the same at any depth); a sampled one verifies one depth from past rounds."""
         self._round = None
-        if not self.costs or all(r.params.greedy for r in requests):
-            return self.depth
         b = len(requests)
         bucket = graph_set.pick(self.sizes, b)
-        depth = max(self.candidates, key=lambda d: b * self.expected_tokens(d, True)
+        cap = self.caps[bucket]
+        if not self.costs or all(r.params.greedy for r in requests):
+            return cap
+        depth = max((d for d in self.candidates if d <= cap), key=lambda d: b * self.expected_tokens(d, True)
                     / self.cost(bucket, self.rows(bucket, b, d), True))
         self.chosen[bucket, depth] += 1
         return depth
@@ -256,6 +260,7 @@ class RowBudget:
         at `depth`, as for sampled or constrained batches)."""
         b = len(requests)
         bucket = graph_set.pick(self.sizes, b)
+        depth = min(depth, self.caps[bucket])
         if acceptance is None or not self.costs:
             return [depth] * b, self.rows(bucket, b, depth)
         shift = torch.tensor(self.shift[:depth], device=acceptance.device)

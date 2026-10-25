@@ -318,3 +318,15 @@ def test_row_budget_verifies_every_draft_where_rows_are_free():
     assert policy.allot(_requests(1), unsure[:1], 9) == ([9], 10)
     limits, _ = policy.allot(_requests(8), unsure, 9)
     assert limits[0] < 9
+
+
+def test_row_budget_keeps_each_buckets_cap():
+    """A depth table caps each bucket (Flash-Next DFlash2 `fast`: 7 for two to four requests keeps at least 3 of the
+    budgeted experts a verified token); the policy chooses at or below it."""
+    policy = _padded()
+    capped = type(policy)(15, policy.sizes, caps={1: 15, 2: 7, 4: 7, 8: 15})
+    capped.costs = policy.costs
+    sure = torch.full((4, 15), 0.99)
+    assert capped.choose(_requests(4)) == 7 and capped.choose(_requests(1)) == 15
+    assert max(capped.allot(_requests(4), sure, 15)[0]) <= 7 and capped.allot(_requests(1), sure[:1], 15)[0] == [15]
+    assert capped.allot(_requests(3, greedy=False), None, 15)[0] == [7] * 3
