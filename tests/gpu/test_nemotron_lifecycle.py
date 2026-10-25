@@ -29,7 +29,7 @@ def model():
     torch.cuda.empty_cache()
 
 
-@pytest.mark.parametrize("state_format", ["fp32", "fp16_sr"])
+@pytest.mark.parametrize("state_format", ["fp32", "fp16_sr", "int8"])
 def test_mtp_reconstruction_commits_real_batches(model, state_format):
     loaded, tok = model
     with config.using(config.current().replace(target="nemotron", kv_format="fp8", ssm_state=state_format,
@@ -38,7 +38,9 @@ def test_mtp_reconstruction_commits_real_batches(model, state_format):
         ex = Executor(loaded, num_pages=4096, num_slots=8, max_batch=2, max_context=512,
                       spec_config=SpecConfig("mtp", 3, "reconstruct"))
         ex.capture_graphs(log=print)
-        assert ex.spec.bytes == verify_bytes(2, 4, "reconstruct", NEMOTRON)
+        budget = verify_bytes(2, 4, "reconstruct", NEMOTRON)
+        # an int8 pool's window ring is smaller than the Mamba-2 replay inputs the budget plans for
+        assert ex.spec.bytes <= budget if ex.state_pool.window is not None else ex.spec.bytes == budget
         before = ex.kv_pool.free_count, ex.state_pool.free_count
         for graphs in (False, True):
             ex.use_graphs = graphs

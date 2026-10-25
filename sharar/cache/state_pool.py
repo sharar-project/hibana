@@ -6,8 +6,8 @@ snapshot or reconstructs directly into validated private slots. The tensors are 
 kernels' `initial_state_indices` address the slot directly.
 
 The recurrent state is FP32 [HV, V, K] per layer and slot (FP16 with a Mamba-2 target's `fp16_sr` format), or,
-with a quantized GDN `SsmFormat` (int8, int4), one byte row per layer and slot that holds the per-window quantized
-state (`cache/ssm_format.py`; typed views in `window`).
+with a quantized `SsmFormat` (int8, int4; GDN or Mamba-2), one byte row per layer and slot that holds the
+per-window quantized state (`cache/ssm_format.py`; typed views in `window`).
 """
 
 from __future__ import annotations
