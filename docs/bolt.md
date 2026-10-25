@@ -71,9 +71,14 @@ One GB10, LiLiCorr at seven drafts, 256 forced tokens, greedy, thinking off (`to
 | + expert sharing 4 / 16:48 (`fast`) | 127.4 / 130.7 | 251.6 |
 | `fast` with relaxed greedy verification, top-3 within 2.0 (`SHARAR_ACCEPT_DEFAULT=3:2.0`) | 156.5 / 159.8 | 297.0 |
 
+Thinking on and sampled at the checkpoint's defaults (temperature 1.0, top-p 0.95, top-k 20), same prompts:
+`exact` 80.4 / 89.3 and 183.7; `fast` 127.8 / 135.5 and 261.4; `fast` with relaxed sampled verification at top-2
+within 1.0 (`SHARAR_ACCEPT_DEFAULT_SAMPLED=1`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD=2:1.0`) 140.5 / 142.9 and 284.2.
+
 Paired against `exact` (GSM8K 1,319 and GPQA Diamond 198, thinking off): the 3-bit copies -0.5 / -2.5 points
 (p 0.27 / 0.56), with the int8 state +0.1 / +1.5 (p 1.0 / 0.76); MMLU-Pro (first 1,000) with the 3-bit copies
--0.1 points. The 3-bit copies answer GPQA at length (4.0K against 3.1K tokens an item). Relaxed verification
+-0.1 points; `fast` (with expert sharing) -0.5 / -2.0 (p 0.34 / 0.64). The 3-bit copies answer GPQA at length
+(4.0K against 3.1K tokens an item; `fast` 4.2K). Relaxed verification
 at top-3 within 2.0 is not a profile default: against the 3-bit copies with the int8 state it costs GPQA 8.6 points
 (p 0.02; answers 27% longer, 29 more at the 8,192-token cap) at an unchanged GSM8K.
 
