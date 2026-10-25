@@ -30,7 +30,10 @@ from pathlib import Path
 
 import torch
 
-from sharar.weights.nemotron_w3_calibrate import PROBE_ROWS, _sha256, errors
+from sharar.weights.nemotron_w3_calibrate import errors
+from sharar.weights.w3_checkpoint import sha256 as _sha256
+
+PROBE_ROWS = 64  # probe rows kept per projection call of a held-out sample, as Nemotron's capture keeps
 
 FIT_KINDS = ("in_proj", "out_proj", "qkv", "o", "fc1", "fc2")
 

@@ -102,27 +102,61 @@ def test_spec_decoder_requires_the_ring_for_a_quantized_pool():
 
 def test_fp16_is_nemotrons_and_halves_its_state():
     t = NEMOTRON
-    sr, rn = SsmFormat("fp16"), SsmFormat("fp16-rn")
-    assert sr.stochastic and not rn.stochastic and not sr.quantized and sr.layout(t) is None
-    assert (sr.describe(), rn.describe(), FP32.describe()) == ("fp16-sr", "fp16-rn", "fp32")
-    assert sr.dtype == rn.dtype == torch.float16 and FP32.dtype == torch.float32 and SsmFormat("int8").dtype is None
+    sr = SsmFormat("fp16_sr")
+    assert not sr.quantized and sr.layout(t) is None
+    assert (sr.describe(), FP32.describe()) == ("fp16_sr", "fp32")
+    assert sr.dtype == torch.float16 and FP32.dtype == torch.float32 and SsmFormat("int8").dtype is None
     conv = t.conv_dim * t.conv_state_len * 2 * len(t.gdn_layer_ids)
     assert sr.state_bytes_per_slot(t) - conv == (FP32.state_bytes_per_slot(t) - conv) // 2
     assert sr.state_bytes_per_slot(t) / 2 ** 20 == pytest.approx(82.3, abs=0.1)  # 162.3 MiB in FP32
     pool = StatePool(3, torch.device("cpu"), target=t, ssm_format=sr)
     assert pool.ssm_all.dtype == torch.float16 and pool.window is None and pool.bytes_per_slot == sr.state_bytes_per_slot(t)
-    assert SsmFormat.from_config(EngineConfig.from_env({"SHARAR_SSM_STATE": "fp16-rn"})) == rn
+    assert SsmFormat.from_config(EngineConfig.from_env({"SHARAR_SSM_STATE": "fp16_sr"})) == sr
+    for old in ("fp16", "fp16-rn"):  # no other spelling
+        with pytest.raises(ValueError, match="fp16_sr"):
+            SsmFormat(old)
 
 
 def test_formats_stay_on_their_recurrence():
-    """FP16 is Mamba-2's (the GDN targets keep their FP32 pools, bit-identical), the windows the GDN's."""
+    """FP16 is Mamba-2's (the GDN targets keep their FP32 pools, bit-identical); the windows run on both
+    (`Target.recurrence`, the launcher's table of the same name)."""
+    from sharar.launch.settings import TARGET_SETTINGS
+    from sharar.target import TARGETS
     for gdn in (DEFAULT_TARGET, FLASHNEXT):
-        for kind in ("fp16", "fp16-rn"):
-            with pytest.raises(ValueError, match="Mamba-2"):
-                SsmFormat(kind).state_bytes_per_slot(gdn)
-            with pytest.raises(ValueError, match="Mamba-2"):
-                StatePool(2, torch.device("cpu"), target=gdn, ssm_format=SsmFormat(kind))
+        with pytest.raises(ValueError, match="gdn state is stored as fp32, int8 or int4"):
+            SsmFormat("fp16_sr").state_bytes_per_slot(gdn)
+        with pytest.raises(ValueError, match="gdn state"):
+            StatePool(2, torch.device("cpu"), target=gdn, ssm_format=SsmFormat("fp16_sr"))
         assert StatePool(2, torch.device("cpu"), target=gdn).ssm_all.dtype == torch.float32
-    for kind in ("int8", "int4"):
-        with pytest.raises(ValueError, match="GDN"):
-            SsmFormat(kind).state_bytes_per_slot(NEMOTRON)
+    assert {t.recurrence for t in TARGETS.values()} == {"gdn", "mamba2"}
+    for name, t in TARGETS.items():
+        assert TARGET_SETTINGS[name].get("recurrence", "gdn") == t.recurrence
+
+
+def test_windows_hold_nemotrons_mamba_state():
+    """Mamba-2 in the window format: B per group as the records' key, dt x per head as their value; 8 bits take
+    Nemotron's slot from 162 MiB (FP32) and 82 MiB (FP16) to 65 MiB, 4 bits to 53 MiB."""
+    t = NEMOTRON
+    for kind, mib in (("int8", 65.2), ("int4", 52.7)):
+        fmt = SsmFormat(kind)
+        lay = fmt.layout(t)
+        assert (lay.key_heads, lay.value_heads, lay.k, lay.v) == (8, 128, 128, 64)
+        assert fmt.state_bytes_per_slot(t) / 2 ** 20 == pytest.approx(mib, abs=0.1)
+        pool = StatePool(3, torch.device("cpu"), target=t, ssm_format=fmt)
+        assert pool.ssm_all.dtype == torch.uint8 and pool.window is not None
+        assert pool.bytes_per_slot == fmt.state_bytes_per_slot(t)
+
+
+def test_a_quantized_mamba_pool_commits_through_the_window_ring():
+    """Nemotron's int8 pool verifies into the window ring (B per group, dt x per head), not Mamba-2's replay."""
+    from types import SimpleNamespace
+    from sharar.engine.spec import SpecDecoder
+    from sharar.kernels.ssm_window import WindowState
+    t = NEMOTRON
+    pool = StatePool(2, torch.device("cpu"), target=t, ssm_format=SsmFormat("int8"))
+    ex = SimpleNamespace(state_pool=pool, max_batch=1, device=torch.device("cpu"), target=t,
+                         model=SimpleNamespace(layers=()))
+    replay = SpecDecoder(ex, SimpleNamespace(k=3), "reconstruct").replay
+    assert type(replay) is WindowState
+    assert replay.ring_k.shape == (len(t.gdn_layer_ids), 1, 8, 4, 128)
+    assert replay.ring_u.shape == (len(t.gdn_layer_ids), 1, 128, 4, 64)

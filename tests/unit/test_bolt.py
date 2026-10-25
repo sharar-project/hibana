@@ -107,10 +107,8 @@ def test_bolt_lilicorr_depth_limits_and_plain_decode(tmp_path):
 
 def test_bolt_accepts_mamba_state_storage(tmp_path):
     from sharar.cache.ssm_format import SsmFormat
-    for kind in ("fp32", "fp16", "fp16-rn"):
+    for kind in ("fp32", "fp16_sr", "int8", "int4"):
         SsmFormat(kind).check(NEMOTRON_BOLT)
-    with pytest.raises(ValueError, match="GDN format"):
-        SsmFormat("int8").check(NEMOTRON_BOLT)
 
 
 def test_torch_reference_parses_puzzle_and_has_no_mtp(tmp_path):

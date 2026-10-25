@@ -64,6 +64,10 @@ class BoltMoe:
         return (self.expert_bytes + self.router.numel() * self.router.element_size() + self.bias.numel() * 4
                 + sum(lin.bytes for lin in (self.fc1, self.fc2, self.shared_up, self.shared_down)))
 
+    def forward(self, x, ctx=None, x_q=None):
+        """`Block.forward`'s mixer call: the projections read BF16, so the norm's FP8 copy `x_q` goes unread."""
+        return self(x, ctx)
+
     def __call__(self, x, ctx=None):
         x = x.contiguous()
         logits = torch.mm(x, self.router.T, out_dtype=torch.float32)
@@ -120,7 +124,7 @@ class Bolt(Nemotron):
         if cfg.bolt_experts == "fp8":
             from sharar.kernels.iq2_moe import _source_revision
             self.arithmetic_identity["kernel"] = _source_revision()
-        if cfg.moe_keep or cfg.moe_budget or cfg.moe_floors or cfg.moe_tau or cfg.moe_extra:
+        if cfg.moe_keep or cfg.moe_budget:
             raise ValueError("Bolt uses all nine routed experts; disable expert pruning")
         calibrated = None
         if cfg.w3_decode:

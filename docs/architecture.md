@@ -66,8 +66,8 @@ benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) th
 | Device-resident acceptance | opt-in | on in `fast` and `throughput` | on in `fast` and `throughput` |
 | Exact / relaxed / sampled acceptance | yes | yes | yes |
 | Constrained output (JSON schema, forced tool calls) | yes | yes | not yet checked |
-| Calibrated 3-bit weights | layers and draft (decode copies) | trunk (decode copies) and routed experts (the only copy) | none yet |
-| Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk; 3-bit routed experts (NVFP4 in `exact`; split by expert on two Sparks) | the checkpoint's: NVFP4 experts, FP8 Mamba/attention/head projections, BF16 router and latent projections |
+| Calibrated 3-bit weights | layers and draft (decode copies) | trunk (decode copies) and routed experts (the only copy) | trunk (decode copies) and routed experts (the only copy) |
+| Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk; 3-bit routed experts (NVFP4 in `exact`; split by expert on two Sparks) | the checkpoint's: NVFP4 experts (3-bit in `fast` and `throughput`), FP8 Mamba/attention/head projections, BF16 router and latent projections |
 | Prefix cache, SSD tier, 262K context | yes | yes (sparse attention past 2,048 tokens) | yes (Mamba-2 state as the GDN's) |
 | Tensor parallel on two Sparks | yes | yes | no |
 

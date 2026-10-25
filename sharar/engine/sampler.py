@@ -6,7 +6,7 @@ top_p 0.95) when a request does not set them; temperature 0 means greedy.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import math
 import secrets
 
@@ -17,13 +17,6 @@ class InvalidRequest(ValueError):
     """Input rejected before admission or any GPU work."""
 
 
-def served_stop_ids() -> tuple[int, ...]:
-    """The served target's end-of-turn and end-of-text ids (`Target.stop_token_ids`, from SHARAR_TARGET)."""
-    from sharar import target as targets
-    from sharar.engine.config import current
-    return targets.get(current().target).stop_token_ids
-
-
 @dataclass
 class SamplingParams:
     max_new_tokens: int = 32
@@ -31,7 +24,7 @@ class SamplingParams:
     top_k: int = 20
     top_p: float = 0.95
     seed: int | None = None
-    stop_token_ids: tuple[int, ...] = field(default_factory=served_stop_ids)
+    stop_token_ids: tuple[int, ...] | None = None  # None: the served target's (`Target.stop_token_ids`, Executor.admit)
     ignore_eos: bool = False
     trace: bool = True  # may this request be written to the opt-in trace sink
     # Relaxed speculative acceptance: a drafted token is also accepted when the

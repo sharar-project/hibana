@@ -10,6 +10,30 @@ from sharar.kernels import w3_moe
 E, L, I, K = 48, 1024, 2688, 22  # the kernel reads only the experts the ids name
 
 
+@torch.no_grad()
+def cheap_fit(w1, s1, g1, w2, s2, g2, codebook2="lloyd", chunk: int = 16):
+    """NVFP4 experts (up w1 [E, I, L/2], down w2 [E, L, I/2], unswizzled block scales, global scales [E]) -> W3Experts
+    by the cheap fit (`w3_moe.quantize`: a weight-error scale grid, the nearest level; fc1 = up in the checkpoint's row
+    order, fc2 in `codebook2`) and each matrix's relative weight error."""
+    from sharar.kernels import w3
+    parts, report = {}, {}
+    for key, (packed, scales, scale2), book in (("w1", (w1, s1, g1), "lloyd"), ("w2", (w2, s2, g2), codebook2)):
+        levels = w3._codebook(book)
+        e, r = packed.shape[:2]
+        out, num, den = [], 0.0, 0.0
+        for lo in range(0, e, chunk):
+            hi = min(e, lo + chunk)
+            w = w3_moe.nvfp4_dequant(packed[lo:hi], scales[lo:hi], scale2[lo:hi]).reshape((hi - lo) * r, -1)
+            m = w3.pack_codes(*w3_moe.quantize(w, levels), levels, rows_per_chunk=r)
+            num += (w3.dequantize(m) - w).square().sum().item()
+            den += w.square().sum().item()
+            out.append(m)
+        parts[key] = w3.W3Weight(*(torch.cat([getattr(m, a) for m in out]) for a in ("planes", "scales", "row_scale")),
+                                 e * r, packed.shape[2] * 2, levels, w3.lut_of(levels))
+        report[key] = (num / den) ** 0.5
+    return w3_moe.W3Experts.from_stacked(parts["w1"], parts["w2"], w1.shape[0]), report
+
+
 @pytest.fixture(scope="module")
 def experts():
     g = torch.Generator(device="cuda").manual_seed(7)
@@ -22,7 +46,7 @@ def experts():
     w1, s1 = nvfp4(I, L)
     w2, s2 = nvfp4(L, I)
     scale2 = torch.rand(E, generator=g, device="cuda") * 0.5 + 0.25
-    ex, report = w3_moe.calibrate_relu2(w1, s1, scale2, w2, s2, scale2.flip(0))
+    ex, report = cheap_fit(w1, s1, scale2, w2, s2, scale2.flip(0))
     assert not w3_moe.gated(ex)
     assert 0.05 < report["w1"] < 0.3 and 0.05 < report["w2"] < 0.3
     return ex
@@ -116,17 +140,16 @@ def block1():
     """Block 1 of the pinned checkpoint twice: NVFP4 experts and (nearest-rounded, Lloyd/zero8) 3-bit ones."""
     import gc
     from sharar.model.nemotron.moe import NemotronMoe, load_experts
-    from sharar.model.nemotron.reference import find_snapshot
     from sharar.target import NEMOTRON
     from sharar.weights.safetensors import SnapshotWeights
     try:
-        snap = find_snapshot()
+        snap = NEMOTRON.snapshot_dir()
     except FileNotFoundError as exc:
         pytest.skip(str(exc))
     w = SnapshotWeights(snap)
     prefix = "language_model.backbone.layers.1.mixer"
     nv = load_experts(w, prefix, NEMOTRON.num_experts, torch.device("cuda"))
-    ex, _ = w3_moe.calibrate_relu2(nv["w1"], nv["s1"], nv["g1"], nv["w2"], nv["s2"], nv["g2"], codebook2="zero8")
+    ex, _ = cheap_fit(nv["w1"], nv["s1"], nv["g1"], nv["w2"], nv["s2"], nv["g2"], codebook2="zero8")
     del nv
     blocks = (NemotronMoe(w, prefix, torch.device("cuda"), NEMOTRON), NemotronMoe(w, prefix, torch.device("cuda"), NEMOTRON, w3=ex))
     norm = w.get("language_model.backbone.layers.1.norm.weight").float()

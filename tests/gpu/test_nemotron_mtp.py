@@ -2,10 +2,10 @@
 
 - Draft heads over an `Fp8Linear` (Nemotron's head, a static input scale beside the weight scale): the 2/3-bit copy
   and the rescored shortlist are bitwise what they are over a `TrunkLinear` (Flash-Next's) holding the same FP8 matrix
-  and scale, so Flash-Next's heads are unchanged by the generalization; a reduced vocabulary keeps the FP8 kind.
-- On the pinned checkpoint (skipped without it; the MTP head, embedding and FP8 lm_head, about 3.5 GB): the default
-  draft MoE path is bitwise the trunk's `NemotronMoe`; the FP8 projections stay close to the checkpoint's BF16 ones;
-  and a replayed draft graph is bitwise the eager step for the served settings (FP8 projections, 2-bit head).
+  and scale, so Flash-Next's heads are unchanged by the generalization.
+- On the pinned checkpoint (skipped without it; the MTP head, embedding and FP8 lm_head, about 3.5 GB): the FP8
+  projections stay close to the checkpoint's BF16 ones, and a replayed draft graph is bitwise the eager step for the
+  served settings (FP8 projections, 2-bit head).
 """
 
 from types import SimpleNamespace
@@ -45,26 +45,12 @@ def test_shortlist_over_an_fp8linear_picks_as_over_a_trunklinear(fmt, rescore):
         assert torch.equal(i0, i1) and torch.equal(v0, v1)  # topk values carry the weight scale either way
 
 
-def test_reduced_vocabulary_over_an_fp8linear_keeps_its_input_scale():
-    from sharar.kernels import ops
-    from sharar.proposers.draft_head import ShortlistHead
-    from sharar.weights.modelopt import Fp8Linear
-    _, fp8, w = _heads(4096, 4096, seed=2)
-    ids = torch.randperm(4096, device="cuda")[:1000]
-    head = ShortlistHead(fp8, ids, "fp8")
-    assert isinstance(head.head, Fp8Linear) and head.head.input_scale is fp8.input_scale
-    x = w[ids[:3]]  # each row's own weight row wins
-    assert torch.equal(head.argmax(x), ids[:3])
-    sorted_ids = head.ids
-    assert torch.equal(head.argmax(x), sorted_ids[ops.fp8_linear(x, fp8)[:, sorted_ids].argmax(-1)])
-
-
 # ---- on the pinned checkpoint -------------------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def snapshot():
-    from sharar.model.nemotron.reference import find_snapshot
+    from sharar.target import NEMOTRON
     try:
-        return find_snapshot()
+        return NEMOTRON.snapshot_dir()
     except FileNotFoundError as exc:
         pytest.skip(str(exc))
 
@@ -83,47 +69,41 @@ def parts(snapshot):
     return model
 
 
-def _head(snapshot, model, **kw):
-    from sharar.model.nemotron.mtp import NemotronMtpHead
+def _head(snapshot, model, bf16: bool = False):
+    """The served head, or (`bf16`) the same head with the checkpoint's BF16 eh_proj and attention q|k|v and o as
+    plain BF16 matmuls in place of its FP8 ones."""
+    from sharar.model.flashnext.linear import TrunkLinear
+    from sharar.model.nemotron.mtp import PREFIX, NemotronMtpHead
     from sharar.weights.safetensors import SnapshotWeights
     w = SnapshotWeights(snapshot)
+    dev = torch.device("cuda")
     try:
-        return NemotronMtpHead(w, torch.device("cuda"), model, 4 * 700 + 64, padding_rows=4, **kw)
+        head = NemotronMtpHead(w, dev, model, 4 * 700 + 64, padding_rows=4)
+        if bf16:
+            p = f"{PREFIX}.0.mixer"
+            head.eh = TrunkLinear.from_bf16(w.get(f"{PREFIX}.0.eh_proj.weight").to(dev), "bf16")
+            head.qkv = TrunkLinear.load(w, [f"{p}.q_proj.weight", f"{p}.k_proj.weight", f"{p}.v_proj.weight"], dev, "bf16")
+            head.o = TrunkLinear.load(w, [f"{p}.o_proj.weight"], dev, "bf16")
+        return head
     finally:
         w.close()
-
-
-def test_default_draft_moe_is_the_trunk_block(snapshot):
-    from sharar.model.nemotron.moe import NemotronMoe
-    from sharar.model.nemotron.mtp import PREFIX, DraftMoe
-    from sharar.target import NEMOTRON
-    from sharar.weights.safetensors import SnapshotWeights
-    w = SnapshotWeights(snapshot)
-    try:
-        plain, draft = (cls(w, f"{PREFIX}.1.mixer", torch.device("cuda"), NEMOTRON) for cls in (NemotronMoe, DraftMoe))
-    finally:
-        w.close()
-    torch.manual_seed(3)
-    x = torch.randn(5, 4096, device="cuda").to(torch.bfloat16)
-    assert torch.equal(plain(x), draft(x))
 
 
 def test_fp8_projections_stay_close_to_the_checkpoints(snapshot, parts):
-    """Draft-only: the d rows of one step through FP8 eh_proj and attention (and FP8 latent projections) against the
-    checkpoint's BF16, over the same draft KV. Random tokens and rows route and attend arbitrarily, which amplifies the
-    rounding (u keeps cosine 0.9993, d 0.985 and 0.978 measured); on recorded target rows the FP8 head's tokens per
-    round matched the BF16 head's (`profiling/nemotron_draft_step.py --accept`)."""
+    """Draft-only: the d rows of one step through FP8 eh_proj and attention against the checkpoint's BF16, over the
+    same draft KV. Random tokens and rows route and attend arbitrarily, which amplifies the rounding (u keeps cosine
+    0.9993, d 0.985 measured); on recorded target rows the FP8 head's tokens per round matched the BF16 head's."""
     torch.manual_seed(4)
     rows = {}
-    for kw in ({"precision": "bf16"}, {"precision": "fp8"}, {"precision": "fp8", "moe_precision": "fp8"}):
-        head = _head(snapshot, parts, **kw)
+    for bf16 in (True, False):
+        head = _head(snapshot, parts, bf16)
         gen = torch.Generator().manual_seed(5)
         n = 300
         toks = torch.randint(0, 131072, (n,), generator=gen).cuda()
         hid = torch.randn(n, 4096, generator=gen).to(torch.bfloat16).cuda()
         pages = torch.arange(1, n + 1, dtype=torch.int32, device="cuda")
         head.write_kv(toks[:-1], hid[:-1], torch.arange(1, n, device="cuda"), pages[:-1])
-        rows[tuple(kw.items())] = head.forward(toks[-1:], hid[-1:], torch.tensor([n], device="cuda"), pages[-1:], [1], [pages])
+        rows[bf16] = head.forward(toks[-1:], hid[-1:], torch.tensor([n], device="cuda"), pages[-1:], [1], [pages])
         del head
         torch.cuda.empty_cache()
     base, *others = rows.values()
@@ -131,10 +111,34 @@ def test_fp8_projections_stay_close_to_the_checkpoints(snapshot, parts):
         assert torch.nn.functional.cosine_similarity(d.float(), base.float(), dim=-1).min() > 0.97
 
 
+def fill(head, b: int, context: int, gen: torch.Generator, scale: float):
+    """Draft KV for `b` sequences of `context` tokens on disjoint pages; returns each sequence's pages."""
+    device = head.device
+    pages = []
+    for i in range(b):
+        p = torch.arange(1 + i * (context + 16), 1 + i * (context + 16) + context + 16, dtype=torch.int32, device=device)
+        toks = torch.randint(0, head.lm_head.out_features, (context - 1,), generator=gen).to(device)
+        hid = (torch.randn(context - 1, head.hidden_width, generator=gen) * scale).to(torch.bfloat16).to(device)
+        head.write_kv(toks, hid, torch.arange(1, context, dtype=torch.int64, device=device), p[1:context])
+        pages.append(p)
+    return pages
+
+
+def chain(proposer, b: int, context: int, pages, tokens, hidden, steps: int, graphs: bool):
+    """`steps` chained draft steps for b sequences at position `context`; returns [(hidden, token)] per step."""
+    out = []
+    positions = torch.full((b,), context, dtype=torch.int64, device=tokens.device)
+    for j in range(steps):
+        kv = [torch.cat([p[1:context], p[context:context + j + 1]]) for p in pages]
+        write = torch.stack([p[context + j] for p in pages]).contiguous()
+        hidden, tokens, _ = proposer._step(tokens, hidden, positions + j, write, kv, graphs)
+        out.append((hidden.clone(), tokens.clone()))
+    return out
+
+
 @pytest.mark.parametrize("fmt", ["w2"])
 def test_draft_graph_replays_the_eager_step(snapshot, parts, fmt):
     """Three chained steps at batch 1 and 4, served settings: bitwise."""
-    from profiling.nemotron_draft_step import chain, fill
     from sharar.proposers.mtp import MtpProposer
     from sharar.proposers.draft_head import RESCORE
     head = _head(snapshot, parts)

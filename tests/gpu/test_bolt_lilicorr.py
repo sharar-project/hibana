@@ -12,7 +12,7 @@ from sharar.target import NEMOTRON_BOLT
 
 def numerics(**extra):
     return config.using(config.current().replace(target='bolt', w3_decode=False, w3_checkpoint=None,
-        moe_keep=0, moe_budget=0, moe_floors=None, moe_tau=0, moe_extra=0, ssd=False,
+        moe_keep=0, moe_budget=0, ssd=False,
         kv_format='fp8', ssm_state='fp32', **extra))
 
 
@@ -132,7 +132,7 @@ def test_sampled_mixed_batch_preserves_laws_and_repeats(runtime):
 def test_ssd_restore_keeps_drafting_features(runtime, tmp_path):
     ex, _, encode = runtime
     cfg = config.current().replace(target='bolt', w3_decode=False, w3_checkpoint=None,
-        moe_keep=0, moe_budget=0, moe_floors=None, moe_tau=0, moe_extra=0, kv_format='fp8',
+        moe_keep=0, moe_budget=0, kv_format='fp8',
         ssm_state='fp32', ssd=True, ssd_dir=str(tmp_path), ssd_gib=2., ssd_block_tokens=64)
     with config.using(cfg):
         ex.flush_cache()

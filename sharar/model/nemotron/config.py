@@ -22,14 +22,14 @@ MODEL_REVISION = "6aae0d6d0285e561bbb72efa10ba1425d41ebddc"
 MODEL_CACHE_KEY = "models--nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
 MODEL_ARCHITECTURE = "NemotronH_Omni_Reasoning_V3"
 # Calibrated 3-bit copies (GPTQ trunk projections and routed experts), Flash-Next's arrangement: fetched on serve into
-# $SHARAR_RESULTS/w3-checkpoints/nemotron-<revision> and linked as nemotron-current. Private until the redistribution
-# terms of the NVFP4 export are checked. Unset until published: `fast` then serves a local nemotron-current link, or
-# the NVFP4 experts and FP8 trunk with a warning.
-W3_REPO: str | None = None
-W3_REVISION: str | None = None
+# $SHARAR_RESULTS/w3-checkpoints/nemotron-<revision> and linked as nemotron-current (`fast` and `throughput` need them).
+# Private until the redistribution terms of the NVFP4 export are checked.
+W3_REPO = "shadowpa0327/NVIDIA-Nemotron-3.5-Super-NVFP4-sharar-w3"
+W3_REVISION = "2ca8b352b0fbff1620117f86c023552e761a7e32"  # GPTQ trunk + GPTQ routed experts (MTP head's included)
 PREFIX = "language_model"
 
 STOP_TOKEN_IDS = (11, 2)  # <|im_end|>, </s> (generation_config.json)
+FIRST_TEXT_TOKEN = 1000  # ids below are the tokenizer's 1,000 added (control) tokens
 
 HIDDEN_SIZE = 4096
 VOCAB_SIZE = 131_072

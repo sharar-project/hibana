@@ -35,7 +35,7 @@ from sharar.api.parsers.tools import TOOL_CALL_START, has_tool_call, parse_tool_
 from sharar.api.validation import _output_spec, _sampling_from, _stops, _template_kwargs
 from sharar.engine.loop import EngineUnavailable, Ticket, EngineLoop
 from sharar.engine.grammar import Grammars
-from sharar.engine.sampler import InvalidRequest, SamplingParams, served_stop_ids
+from sharar.engine.sampler import InvalidRequest
 from sharar.engine.scheduler import QueueFull, Scheduler
 from sharar.tokenizer import SnapshotTokenizer
 
@@ -94,7 +94,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         """The request's Constraint (engine/grammar.py); compiling runs off the event loop."""
         if grammar_builder[0] is None:
             grammar_builder[0] = Grammars.from_tokenizer(tok._tok, describe.get("vocab_size", targets.DEFAULT_TARGET.vocab_size),
-                                                         served_stop_ids())
+                                                         targets.get(describe.get("target")).stop_token_ids)
         g, (kind, arg), armed = grammar_builder[0], spec, not in_reasoning
         try:
             constraint = (g.tool_call(tools or [], arg, armed) if kind == "tool_call" else

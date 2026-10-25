@@ -4,7 +4,8 @@ kernel for any row count (`csrc/w3_gemm.cu`, namespace `moe`).
 Nemotron's latent experts (`model/nemotron/moe.py`) take the same format and kernel without a gate: fc1 is up_proj
 alone [2688, 1024] in the checkpoint's row order, fc2 [1024, 2688], h = relu(up)^2 (bf16, as the checkpoint's
 ReLU^2), top 22 (2.25 MB an expert against NVFP4's 3.10). The kernel tells the two apart by the input width and
-fc1's rows per expert (`gated`). `calibrate_relu2` is that model's cheap fit.
+fc1's rows per expert (`gated`). Each of fc1 and fc2 carries its codebook (a sparse down projection may take one with a
+zero level); Flash-Next's share one.
 
 Format: each expert is two W3 matrices, fc1 [1280, 2560] and fc2 [2560, 640]: 3-bit codes into an eight-level
 E4M3 codebook, one E4M3 scale per 32 weights, an FP32 multiplier per row (3.25 bits per weight plus 4 bytes a
@@ -24,20 +25,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 import torch
 
 from sharar.kernels import w3
 
 HIDDEN, INTER, TOPK, EXPERTS = 2560, 640, 10, 512  # Flash-Next; Nemotron: 1024 (latent), 2688, 22, 512
-PDL: bool | None = None  # Nemotron's decode calls chain their launches (csrc/w3_gemm.cu); None: EngineConfig.w3_moe_pdl
-
-
-def _pdl() -> bool:
-    if PDL is not None:
-        return PDL
-    from sharar.engine.config import current
-    return current().w3_moe_pdl
 ORDER_IN_KERNEL = 640  # up to this many (row, k) pairs the kernel sorts them itself
 # From this many rows each pass of an expert (up to 112 pairs) runs in its own block, next to the expert's other passes,
 # so its weights stream from DRAM about once instead of once per pass. The same bits either way.
@@ -55,17 +47,9 @@ class W3Experts:
     row2: torch.Tensor      # [E, H]
     codebook: tuple[float, ...]
     lut: int
+    fc2_codebook: tuple[float, ...]
+    fc2_lut: int
     base: int = 0           # the first expert's id: experts base .. base + E - 1 (expert parallel: one rank's range)
-    codebook2: tuple[float, ...] | None = None  # fc2's codebook when it is not fc1's (Nemotron: a sparse down may take one with a zero)
-    lut2: int | None = None
-
-    @property
-    def fc2_codebook(self) -> tuple[float, ...]:
-        return self.codebook if self.codebook2 is None else self.codebook2
-
-    @property
-    def fc2_lut(self) -> int:
-        return self.lut if self.lut2 is None else self.lut2
 
     @property
     def bytes(self) -> int:
@@ -89,15 +73,11 @@ class W3Experts:
                            e * n, k, *((self.codebook, self.lut) if fc1 else (self.fc2_codebook, self.fc2_lut)))
 
     @classmethod
-    def from_stacked(cls, fc1: w3.W3Weight, fc2: w3.W3Weight, experts: int, base: int = 0, own_fc2_codebook: bool = False) -> "W3Experts":
-        """`own_fc2_codebook`: fc2 may have a codebook of its own (Nemotron); else fc1 and fc2 must share one."""
-        if fc1.codebook != fc2.codebook and not own_fc2_codebook:
-            raise ValueError("fc1 and fc2 of a layer's experts share one codebook")
+    def from_stacked(cls, fc1: w3.W3Weight, fc2: w3.W3Weight, experts: int, base: int = 0) -> "W3Experts":
         def split(m):
             return (m.planes.reshape(experts, -1, *m.planes.shape[1:]), m.scales.reshape(experts, -1, *m.scales.shape[1:]),
                     m.row_scale.reshape(experts, -1))
-        same = fc1.codebook == fc2.codebook
-        return cls(*split(fc1), *split(fc2), fc1.codebook, fc1.lut, base, None if same else fc2.codebook, None if same else fc2.lut)
+        return cls(*split(fc1), *split(fc2), fc1.codebook, fc1.lut, fc2.codebook, fc2.lut, base)
 
 
 def gated(experts: W3Experts) -> bool:
@@ -173,31 +153,6 @@ def calibrate(w13, s13, scale2_13, w2, s2, scale2_2, codebook="lloyd", ratios=RA
     return W3Experts.from_stacked(parts["w13"], parts["w2"], w13.shape[0]), report
 
 
-@torch.no_grad()
-def calibrate_relu2(w1, s1, g1, w2, s2, g2, codebook="lloyd", ratios=RATIOS, chunk: int = 16, codebook2=None):
-    """Nemotron's NVFP4 experts (up w1 [E, I, L/2] and down w2 [E, L, I/2], unswizzled block scales, global scales [E])
-    -> (W3Experts with fc1 = up in the checkpoint's row order, report of the relative weight errors): `calibrate`'s
-    weight-error scale grid and nearest level, no activations."""
-    parts, report = {}, {}
-    for key, (packed, scales, scale2) in {"w1": (w1, s1, g1), "w2": (w2, s2, g2)}.items():
-        levels = w3._codebook(codebook if key == "w1" or codebook2 is None else codebook2)
-        e, r = packed.shape[:2]
-        out, num, den = [], 0.0, 0.0
-        for lo in range(0, e, chunk):
-            hi = min(e, lo + chunk)
-            w = nvfp4_dequant(packed[lo:hi], scales[lo:hi], scale2[lo:hi]).reshape((hi - lo) * r, -1)
-            codes, sc, rs = quantize(w, levels, ratios)
-            m = w3.pack_codes(codes, sc, rs, levels, rows_per_chunk=r)
-            num += (w3.dequantize(m) - w).square().sum().item()
-            den += w.square().sum().item()
-            out.append(m)
-            del w, codes, sc, rs
-        parts[key] = w3.W3Weight(*(torch.cat([getattr(m, a) for m in out]) for a in ("planes", "scales", "row_scale")),
-                                 e * r, packed.shape[2] * 2, levels, w3.lut_of(levels))
-        report[key] = (num / den) ** 0.5 if den else 0.0
-    return W3Experts.from_stacked(parts["w1"], parts["w2"], w1.shape[0], own_fc2_codebook=True), report
-
-
 # ------------------------------------------------------------------ the kernel
 
 def w3_moe(experts: W3Experts, x: torch.Tensor, ids: torch.Tensor, weights: torch.Tensor, pairs: bool = False,
@@ -221,7 +176,7 @@ def w3_moe(experts: W3Experts, x: torch.Tensor, ids: torch.Tensor, weights: torc
         order = torch.sort(key, stable=True).indices.to(torch.int32)
     return w3._module().w3_moe(x.contiguous(), ids, weights.float().contiguous(), order,
                                experts.planes13, experts.scales13, experts.row13, experts.planes2, experts.scales2, experts.row2,
-                               experts.lut, experts.fc2_lut, experts.base, WIDE_ROWS, 2 if pairs and pairs_bf16 else int(pairs), _pdl())
+                               experts.lut, experts.fc2_lut, experts.base, WIDE_ROWS, 2 if pairs and pairs_bf16 else int(pairs))
 
 
 def quant_e4m3(t: torch.Tensor, stage: str) -> torch.Tensor:

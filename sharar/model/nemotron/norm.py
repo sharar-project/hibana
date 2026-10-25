@@ -6,20 +6,16 @@ tensor, and the FP8 copy the next projection reads comes from the BF16 output.
 
 The residual forms run as one launch (`kernels/cute/nemotron_norm.py`): FlashInfer's fused add + RMS norm with the
 outputs written where the caller wants them, so a call that keeps its input or the old residual makes no clone,
-and with the FP8 copy fused in. Bitwise the clone + `fused_add_rmsnorm` + `quant_fp8` chain it replaces;
-SHARAR_NEMOTRON_FUSED=0 keeps that chain (A/B and the test's reference).
+and with the FP8 copy fused in. Bitwise the clone + `fused_add_rmsnorm` + `quant_fp8` chain it replaces, which
+serves the shapes the fused kernel does not take (`nemotron_norm.supported`).
 """
 
 from __future__ import annotations
 
 import torch
 
-from sharar.kernels import nemotron_fused
-
 
 def _fused_ok(x: torch.Tensor, residual: torch.Tensor) -> bool:
-    if not nemotron_fused.enabled():
-        return False
     from sharar.kernels.cute import nemotron_norm
     return nemotron_norm.supported(x, residual)
 
@@ -59,10 +55,6 @@ class RMSNorm:
     def bytes(self) -> int:
         return self.weight.numel() * self.weight.element_size()
 
-    def torch_forward(self, x: torch.Tensor) -> torch.Tensor:
-        xf = x.float()
-        return (xf * torch.rsqrt(xf.pow(2).mean(dim=-1, keepdim=True) + self.eps)).to(x.dtype) * self.weight
-
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         return rmsnorm(x.reshape(-1, x.shape[-1]), self.weight, self.eps)[0].view(x.shape)
 
@@ -71,7 +63,7 @@ class RMSNorm:
         """Where the new residual goes: residual itself, or (not inplace) a new tensor."""
         return residual if inplace else torch.empty_like(residual)
 
-    def fused_add(self, x: torch.Tensor, residual: torch.Tensor, inplace: bool = False, *, verify: bool = False,
+    def fused_add(self, x: torch.Tensor, residual: torch.Tensor, inplace: bool = False, *,
                   consume_input: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
         """norm(x + residual) and the new residual; consume_input: x may be overwritten."""
         out_res = self._sum_out(residual, inplace)
@@ -80,7 +72,7 @@ class RMSNorm:
         return out, out_res
 
     def fused_add_quant(self, x: torch.Tensor, residual: torch.Tensor | None, fp8_scale: torch.Tensor | None, inplace: bool = False, *,
-                        verify: bool = False, consume_input: bool = False):
+                        consume_input: bool = False):
         """Like fused_add, also returning the FP8 copy at `fp8_scale` (None: no copy). With residual None (the first
         block) the residual becomes x itself."""
         if residual is None:

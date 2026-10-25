@@ -55,6 +55,8 @@ def verify_bytes(batch, steps, strategy, target=None):
     conv = layers * batch * steps * t.conv_dim * t.conv_state_len * 2
     if strategy == 'snapshots':
         return ssm * steps + conv
+    if t.recurrence == 'mamba2':  # kernels/mamba2.AcceptedState: x | B | C, dt and exp(dt A), the verified positions
+        return layers * batch * steps * (t.conv_dim * 2 + t.linear_num_value_heads * 2 * 4) + batch * steps * 4 + conv
     compact = layers * batch * steps * ((t.linear_num_key_heads * t.linear_key_head_dim + t.linear_num_value_heads * t.linear_value_head_dim) * 2
                                         + t.linear_num_value_heads * 2 * 4)
     return compact + conv
@@ -70,7 +72,7 @@ def budget(spec, batch, *, cache_slots=96, target=None):
     fixed = verify_bytes(batch, spec.depth + 1, spec.state_strategy, t)
     page_bytes = 0
     if spec.name == 'mtp':
-        weights, largest = tensor_bytes(t.snapshot_dir(), 'language_model.mtp.' if t.family == 'nemotron' else 'mtp.')
+        weights, largest = tensor_bytes(t.snapshot_dir(), t.mtp_prefix)
         if t.family == 'flashnext':
             # The expert tensors (most of the bytes) are stored FP8 and loaded one expert at a time.
             weights, largest = weights // 2, 4 * 2**20

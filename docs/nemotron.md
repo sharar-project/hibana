@@ -17,14 +17,18 @@ sigmoids renormalized, scaled by 5) that work in a 1,024-wide latent space betwe
 an NVFP4 shared expert on the full 4,096 hidden; both use ReLU², not SwiGLU. The checkpoint's own MTP layer (an
 attention block and an MoE block) is the drafter.
 
-Formats are the checkpoint's: the routed experts through FlashInfer's `cutlass_fused_moe` (fc1 is `up_proj` alone),
-FP8 GEMVs for the Mamba and attention projections and the head, FP32 router logits. 66.4 GiB of weights are resident
-after the load (78 s from the page cache); the KV cache is small (8 attention layers, 4 KiB a token in FP8) and a
-request's recurrent state is 160 MiB (FP32; 80 MiB in FP16). GPTQ-calibrated 3-bit copies of the trunk (Mamba,
-attention and lm_head projections) and of the routed experts load beside the checkpoint with `SHARAR_W3_DECODE=1` and
-`SHARAR_W3_CHECKPOINT=<dir>` (`kernels/w3_moe.py` for the experts). `fast` and `throughput` turn them on and serve
-`w3-checkpoints/nemotron-current` ([where it comes from](w3-calibration.md#where-the-served-copies-come-from)); without
-one they serve the NVFP4 experts and FP8 trunk, about a third slower at one request.
+Formats are the checkpoint's: the routed NVFP4 experts through Sharar's small-call kernels for calls of up to 16 rows
+(`kernels/nemotron_moe.py`: router, routing, experts, shared expert and `fc2_latent` in four chained launches) and
+FlashInfer's b12x MoE beyond (fc1 is `up_proj` alone), FP8 GEMVs for the Mamba and attention projections and the head,
+FP32 router logits. 66.4 GiB of weights are resident after the load (78 s from the page cache); the KV cache is small
+(8 attention layers, 4 KiB a token in FP8) and a request's recurrent state is 160 MiB (FP32; 80 MiB in FP16, 63 MiB
+in 8-bit windows, `SHARAR_SSM_STATE=int8`, ungated).
+GPTQ-calibrated 3-bit copies of the trunk (Mamba, attention and lm_head projections) and of the routed experts load
+beside the checkpoint with `SHARAR_W3_DECODE=1` and `SHARAR_W3_CHECKPOINT=<dir>` (`kernels/w3_moe.py` for the
+experts). `fast` and `throughput` turn them on and serve
+`w3-checkpoints/nemotron-current` ([where it comes from](w3-calibration.md#nemotron)); without one they refuse to
+start (`exact` serves the checkpoint's NVFP4 experts and FP8 trunk). A checkpoint that carries the routed experts serves
+them as the only expert copy, at every call size (the MTP head's load with the drafter).
 
 ## Package
 
@@ -37,7 +41,6 @@ one they serve the NVFP4 experts and FP8 trunk, about a third slower at one requ
 | `moe.py` | the latent MoE block: fused router and `fc1_latent` GEMM, the routing kernels, budgeted expert selection |
 | `mtp.py` | `NemotronMtpHead`: the checkpoint's MTP layer for the `mtp` proposer |
 | `norm.py` | plain RMSNorm (weight, not Gemma's 1 + w) |
-| `reference.py` | the plain-torch reference the GPU tests and `tools/nemotron_golden.py` compare against |
 
 ## Serving
 
@@ -47,34 +50,44 @@ The profiles (`nemotron_defaults` in `sharar/launch/settings.py`):
 |---|---|
 | `exact` | MTP depth 3, exact acceptance, FP32 Mamba state, every token's 22 experts |
 | `fast` | both 3-bit copies, relaxed acceptance (top 3 within 2.0 logits, greedy and sampled), device-resident acceptance, 2-bit draft head, depth 5 at one request and 4 at two to four, FP16 Mamba state with stochastic rounding, expert sharing `SHARAR_MOE_KEEP=12` `SHARAR_MOE_BUDGET=48:128` |
-| `throughput` | `fast` up to 16 requests, depth 3 past four, without the sharing and the FP16 state (ungated at 5-16 requests) |
+| `throughput` | `fast` up to 16 requests, depth 3 past four |
 
 Expert sharing (`moe.py`, `route_budget`): a verify call's rows share the experts they read. Each row is guaranteed
 its top `KEEP` experts; the call then reads at most `P` distinct experts per request and `CAP` in all, filled by
-summed routing weight, and every row also takes its other top-22 experts that the call reads anyway (free riders,
-`SHARAR_MOE_FREE_RIDERS`). The cap is a fill target as well as a limit: with floor 16 and cap 64 the floors' union at one
-request (about 58) is below the cap, so the call reads more experts than floor 16 alone, and is slower.
+summed routing weight, and every row also takes its other top-22 experts that the call reads anyway (free riders).
+The KV cache is FP8 only: NVFP4 KV (`SHARAR_KV_FORMAT=nvfp4`) and the `sim-*` screens are not supported yet (the
+attention's fused K/V writer serves the FP8 pool), and the launcher and the executor refuse them.
 
-Measured on spark-9931 (h2h median, `tools/h2h-pr.py`, greedy; tok/s at one request / total at four streams):
+Measured (Sharar, spark-9931; h2h median, `tools/h2h-pr.py`, greedy; tok/s) and GSM8K-300 paired against `exact`:
 
-| Configuration | 1 request | 4 streams |
-|---|---|---|
-| `exact` | 45.9 | 79.8 |
-| `fast` before sharing and FP16 state | 54.6 | 92.5 |
-| + both 3-bit copies | 81.0 | 132.7 |
-| + floor 16, no cap | 92.3 | 150.9 |
-| + floor 12, cap 48:128, FP16 state (`fast`) | 102.5 | 185.2 |
+| Profile | 1 request | 4 streams | GSM8K-300 |
+|---|---|---|---|
+| `exact` | 45.9 | 79.8 | 97.7% |
+| `fast` | 102.5 | 185.2 | 97.7% (+0.0 pp, [-1.6, +1.6]) |
 
-GSM8K-300, paired against `exact` (97.7%): the last row 97.7% (+0.0 pp [-1.6, +1.6], Spark 3), `fast` with NVFP4
-experts and this sharing 97.3% (-0.3 pp), `fast` without sharing 97.0% (-0.7 pp, Spark 3). Tighter caps per request
-(12:24:96, 8:40) failed (-2.0, -1.7 pp).
+The Mamba-2 state is stored as `SHARAR_SSM_STATE=fp32`, `fp16_sr` (`fast`, `throughput`), or `int8` / `int4`:
+LeapQuant's per-window format of the GDN targets, with Mamba-2's own records (B per group, dt x per head, dt A), 65 MiB
+a slot at 8 bits against 82 in FP16 and 162 in FP32. The 8-bit windows are ungated. On `exact` they score RULER v2 at
+32K 88.5 against FP32's 87.0 (100 items paired, +1.5 pp [-2.0, +5.2]) and GSM8K-50 48 against 49, at a KL against
+`exact` of 0.018 (the screen's floor, `exact` at another call shape, is 0.017); in place of FP16-SR on the 3-bit stack
+they add a KL of 0.010. Decode with every request on its own 10K-token context (`profiling/decode_curve.py`:
+`throughput`'s settings without expert sharing, depth 3; Sharar, spark-2f9d; tok/s, tokens per request per round
+3.45-3.62 in every cell):
 
-Round profile at one request (nsys, both 3-bit copies, floor 16): 54 ms a round for 5.1 tokens; the verify forward
-46 ms, of it the routed and shared experts 30 ms and the trunk's 3-bit GEMMs 9 ms; the MTP draft 7.5 ms, acceptance
-and Mamba replay 2 ms; under 1 ms idle. `profiling/nemotron_quickstack.py` screens a configuration in about three
-minutes (speed, KL against `exact` and against a chosen anchor, GSM8K-50) before an h2h and a paired gate.
+| Requests | FP32 | FP16-SR | int8 | int8 against FP16-SR |
+|---|---|---|---|---|
+| 16 | 264.9 | 281.8 | 297.8 | +5.7% |
+| 32 | 376.0 | 400.4 | 449.3 | +12.2% |
+| 64 | 513.7 | 594.9 | 666.7 | +12.1% (+30% against FP32) |
 
-## Conventions that cost a day
+Not supported yet, to revisit:
+
+- NVFP4 KV cache: the attention's fused K/V writer serves the FP8 pool only.
+- `throughput`: its 16-request cap follows the 27B's and is unmeasured past 16, and its expert sharing (`fast`'s:
+  128 experts a call, about 8 a request at 16) is gated at one to four requests only; 8 / 16 streams ran
+  277 / 353 tok/s with it against 190 / 239 without.
+
+## Checkpoint conventions
 
 - The checkpoint is the omni model: every text weight sits under `language_model.` (`language_model.backbone.layers.N`,
   `language_model.mtp.layers.N`), and `config.json` holds the text model under `llm_config`, not `text_config`.
@@ -87,7 +100,5 @@ minutes (speed, KL against `exact` and against a chosen anchor, GSM8K-50) before
   7e-4 to 1.6e-3 apart and BF16 logits change the top-22 set of 9-22% of rows.
 - The routing weights come from the plain sigmoid, the bias only steers the choice; `routed_scaling_factor` (5) rides
   in fc2's dequantization scale.
-- The MTP head's hidden is the target's output after `norm_f`, and its output is taken after its own final layernorm:
-  with the hidden before `norm_f` depth-1 agreement falls from 93.9% to 40%, and with the draft's output before the
-  final layernorm depth 2 falls to 8%.
+- The MTP head consumes the target's output after `norm_f` and feeds back its output after its own final layernorm.
 - Attention has no positional encoding at all; nothing reads `rope_theta`.

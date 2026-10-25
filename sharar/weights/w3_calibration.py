@@ -42,7 +42,7 @@ class _ColumnBlock:
     def __init__(self, rows, block, levels, device, capture):
         self.work = torch.zeros((rows, block), device=device)
         self.inverse = torch.eye(block, device=device)
-        self.scales = torch.ones((rows, block), device=device)  # per column (a group's scale repeated, or act order's)
+        self.scales = torch.ones((rows, block // w3.GROUP), device=device)
         self.errors = torch.empty_like(self.work)
         self.codes = torch.empty((rows, block), dtype=torch.int32, device=device)
         self.levels = torch.tensor(levels, device=device)
@@ -60,7 +60,7 @@ class _ColumnBlock:
 
     def _run(self):
         for col in range(self.work.shape[1]):
-            scale = self.scales[:, col]
+            scale = self.scales[:, col // w3.GROUP]
             value = self.work[:, col].clone()
             code = torch.bucketize((value / scale.clamp_min(1e-30)).contiguous(), self.midpoints, out_int32=True)
             quantized = self.levels[code.long()] * scale
@@ -82,8 +82,7 @@ class _ColumnBlock:
 
 @torch.no_grad()
 def quantize(weight: torch.Tensor, covariance: torch.Tensor, *, damping: float = .01,
-             codebook="lloyd", capture: bool = True, rows_per_chunk: int = 1024, unbias: str | None = None,
-             act_order: bool = False, ratios=(.6, .7, .8, .9, 1.0)):
+             codebook="lloyd", capture: bool = True, rows_per_chunk: int = 1024, unbias: str | None = None):
     """Calibrate a matrix, returning kernel-ready weights and a small report.
 
     `unbias` rescales each row through its row scale (the format and the bytes do not change) so that the
@@ -91,12 +90,7 @@ def quantize(weight: torch.Tensor, covariance: torch.Tensor, *, damping: float =
     or the same under the covariance, c = w H w^T / w_q H w^T ("output"). The quantizer is MSE-optimal per
     matrix, which shrinks each row by about its relative error squared (3 to 10% on the Flash-Next trunk);
     through a deep residual trunk the shrinkage adds coherently. On Flash-Next's decode path "weight"
-    removed more of the added KL than "output": the calibration covariance under-states the shrinkage.
-
-    `act_order` visits the columns in decreasing input energy (diagonal of the covariance) with the group scales
-    fixed beforehand in the original order ("static groups"), so the stored layout and the kernel do not change; the
-    columns the error update can least afford to perturb are quantized first, before error has flowed into them.
-    `ratios` is the clipping grid of the group scales (`fit_scales`)."""
+    removed more of the added KL than "output": the calibration covariance under-states the shrinkage."""
     n, k = weight.shape
     if n % 128 or k % 128 or covariance.shape != (k, k):
         raise ValueError("calibration needs aligned [N,K] weights and [K,K] covariance")
@@ -112,9 +106,6 @@ def quantize(weight: torch.Tensor, covariance: torch.Tensor, *, damping: float =
     if diagonal.max() <= 0 or (diagonal < 0).any():
         raise ValueError("calibration covariance must contain positive input energy")
     h.diagonal().add_(damping * diagonal.mean().clamp_min(1e-12))
-    perm = torch.argsort(diagonal, descending=True) if act_order else None
-    if perm is not None:
-        h = h[perm][:, perm]
     chol = torch.linalg.cholesky(h)
     del h
     inverse = torch.linalg.cholesky(torch.cholesky_inverse(chol), upper=True)
@@ -123,23 +114,18 @@ def quantize(weight: torch.Tensor, covariance: torch.Tensor, *, damping: float =
     block = None
     for start in range(0, n, rows_per_chunk):
         original = weight[start:start + rows_per_chunk].float()
-        scales, row_scale = fit_scales(original, diagonal, levels, ratios)
+        scales, row_scale = fit_scales(original, diagonal, levels)
         effective = scales.float() * row_scale[:, None]
-        columns = effective.repeat_interleave(w3.GROUP, dim=1)  # each column's scale, in visiting order
         work = original.clone()
-        if perm is not None:
-            columns, work = columns[:, perm].contiguous(), work[:, perm].contiguous()
         codes = torch.empty_like(work, dtype=torch.int32)
         if block is None or block.work.shape[0] != work.shape[0]:
             block = _ColumnBlock(work.shape[0], 128, levels, weight.device, capture)
         for col in range(0, k, 128):
             end = col + 128
-            q, errors = block(work[:, col:end], inverse[col:end, col:end], columns[:, col:end])
+            q, errors = block(work[:, col:end], inverse[col:end, col:end], effective[:, col // 32:end // 32])
             codes[:, col:end].copy_(q)
             if end < k:
                 work[:, end:].sub_(errors @ inverse[col:end, end:])
-        if perm is not None:
-            codes = codes.index_select(1, torch.argsort(perm))  # back to the stored column order
         if unbias:
             dequantized = torch.tensor(levels, device=weight.device)[codes.long()] * effective.repeat_interleave(w3.GROUP, dim=1)
             projected = original @ covariance.float() if unbias == "output" else original
@@ -151,9 +137,7 @@ def quantize(weight: torch.Tensor, covariance: torch.Tensor, *, damping: float =
         del work, codes
     result = w3.W3Weight(*(torch.cat([getattr(p, key) for p in packed]) for key in ("planes", "scales", "row_scale")),
                          n, k, levels, w3.lut_of(levels))
-    report = {"method": "gptq", "damping": damping, "group_size": 32, "scale_grid": list(ratios), "bytes": result.bytes}
-    if act_order:
-        report["act_order"] = True
+    report = {"method": "gptq", "damping": damping, "group_size": 32, "scale_grid": [.6, .7, .8, .9, 1.0], "bytes": result.bytes}
     if unbias:
         gain = torch.cat(gains)
         report.update(unbias=unbias, gain_mean=round(gain.mean().item(), 5), gain_max=round(gain.max().item(), 5))

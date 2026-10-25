@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from sharar.launch.settings import Settings
+from sharar.launch.settings import Settings, model_config
 
 
 def server_info(port: str) -> dict | None:
@@ -210,7 +210,6 @@ def cmd_chat(args, s: Settings) -> int:
 
 def verify(url: str, s: Settings) -> int:
     """A running server: health, the pinned model and context, the model list, and a short exact answer."""
-    from sharar.launch.settings import model_config
     c = model_config(s.target)
 
     def get(route):

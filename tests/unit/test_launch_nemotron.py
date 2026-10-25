@@ -39,11 +39,11 @@ def test_exact_serves_the_checkpoint_alone(env):
 
 
 @pytest.mark.parametrize("profile", ["fast", "throughput"])
-def test_the_3bit_copies_are_calibrated_only(env, tmp_path, profile):
+def test_the_3bit_profiles_need_the_calibrated_copies(env, tmp_path, profile):
     s = resolve(env, profile)
     assert s.get("SHARAR_W3_DECODE") == "1"
-    assert preflight.ensure_w3(s, fetch=False) is None and "NVFP4 experts and FP8 trunk" in s.warnings[0]
-    assert s.engine_env(None)["SHARAR_W3_DECODE"] == "0"  # no checkpoint: never the nearest-rounded copies
+    with pytest.raises(preflight.PreflightError, match="calibrated 3-bit copies"):
+        preflight.ensure_w3(s, fetch=False)  # no checkpoint: no fallback
     current = s.w3_root / "nemotron-current"
     current.mkdir(parents=True)
     (current / "manifest.json").write_text("{}")
@@ -52,13 +52,13 @@ def test_the_3bit_copies_are_calibrated_only(env, tmp_path, profile):
     assert s.engine_env(current)["SHARAR_W3_DECODE"] == "1"
 
 
-def test_fast_alone_shares_experts_and_halves_the_state(env):
+def test_fast_and_throughput_share_experts_and_halve_the_state(env):
     fast = resolve(env, "fast")
-    assert (fast.get("SHARAR_MOE_KEEP"), fast.get("SHARAR_MOE_BUDGET"), fast.get("SHARAR_SSM_STATE")) == ("12", "48:128", "fp16")
-    for profile in ("exact", "throughput"):
-        s = resolve(env, profile)
-        assert s.get("SHARAR_MOE_KEEP", "0") == "0" and not s.get("SHARAR_MOE_BUDGET")
-        assert s.get("SHARAR_SSM_STATE", "fp32") == "fp32"
+    assert (fast.get("SHARAR_MOE_KEEP"), fast.get("SHARAR_MOE_BUDGET"), fast.get("SHARAR_SSM_STATE")) == ("12", "48:128", "fp16_sr")
+    tput, exact = resolve(env, "throughput"), resolve(env, "exact")
+    assert (tput.get("SHARAR_MOE_KEEP"), tput.get("SHARAR_MOE_BUDGET"), tput.get("SHARAR_SSM_STATE")) == ("12", "48:128", "fp16_sr")
+    assert exact.get("SHARAR_MOE_KEEP", "0") == "0" and not exact.get("SHARAR_MOE_BUDGET")
+    assert exact.get("SHARAR_SSM_STATE", "fp32") == "fp32"
 
 
 def test_fast_and_throughput(env):
@@ -74,6 +74,14 @@ def test_an_explicit_setting_wins(env):
     assert s.spec == 4 and s.get("SHARAR_ACCEPT_DEFAULT") == "2:1.0"
 
 
+def test_the_mamba_state_takes_every_format(env):
+    """FP16 (Mamba-2's) and the 8- and 4-bit windows; the GDN targets refuse FP16."""
+    for state in ("fp32", "fp16_sr", "int8", "int4"):
+        assert resolve(env, "exact", overrides={"SHARAR_SSM_STATE": state}).get("SHARAR_SSM_STATE") == state
+    with pytest.raises(ValueError, match="SHARAR_SSM_STATE must be"):
+        launch.resolve("27b", "exact", env=env, overrides={"SHARAR_SSM_STATE": "fp16_sr"})
+
+
 def test_one_spark_only(env):
     with pytest.raises(ValueError, match="one Spark"):
         resolve(env, tp=2)
@@ -84,3 +92,11 @@ def test_preflight_checks_the_pinned_snapshot(env, tmp_path):
     assert preflight.pinned_snapshots(s) == [(s.hf_cache, nemotron.MODEL_ID, nemotron.MODEL_REVISION)]
     assert preflight.ensure_snapshots(s, fetch=False) == [f"{nemotron.MODEL_ID}@{nemotron.MODEL_REVISION[:7]}"]
     assert launch.model_config("nemotron") is nemotron
+
+
+@pytest.mark.parametrize("kv", ["nvfp4", "sim-fp4", "sim-k8v4", "sim-bf16"])
+def test_fp8_kv_only(env, kv):
+    """The attention's fused K/V writer serves the FP8 pool: the NVFP4 cache and the accuracy screens are refused."""
+    with pytest.raises(ValueError, match="FP8 KV cache only"):
+        resolve({**env, "SHARAR_KV_FORMAT": kv}, "fast")
+    assert resolve(env, "fast").get("SHARAR_KV_FORMAT", "fp8") == "fp8"

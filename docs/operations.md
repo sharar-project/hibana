@@ -77,7 +77,7 @@ or `dflash2`.
 
 ### NVFP4 KV
 
-`SHARAR_KV_FORMAT=nvfp4` (`fast` and `throughput` on one Spark, both targets) stores K and V as NVFP4: two E2M1 codes
+`SHARAR_KV_FORMAT=nvfp4` (`fast` and `throughput` on one Spark, the 27B and Flash-Next; not supported on Nemotron yet) stores K and V as NVFP4: two E2M1 codes
 a byte and an E4M3 scale per 16 values, 4.5 bits a value where FP8 takes 8. The same memory holds 16/9 the 27B's tokens
 and about 1.4x Flash-Next's (its BF16 index keys keep their size): longer contexts or more requests at once, more
 cached prefixes, and fewer bytes read back from the SSD tier.
@@ -124,11 +124,11 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 | Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | Flash-Next top-3 within 2.0 (DFlash2 top-2 within 1.0); the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
 | Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next and Nemotron also the routed experts) | off | on | on |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next and Nemotron | as fast |
-| NVFP4 KV cache (`SHARAR_KV_FORMAT`, [below](#nvfp4-kv)) | FP8 | one Spark: NVFP4 (both targets); two Sparks FP8 | as fast |
-| Budgeted expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_BUDGET`) | off | Flash-Next: keep 4, budget 12:64; Nemotron: keep 12, budget 48:128 | Flash-Next as fast; Nemotron off |
+| NVFP4 KV cache (`SHARAR_KV_FORMAT`, [below](#nvfp4-kv)) | FP8 | one Spark: NVFP4 (the 27B and Flash-Next; Nemotron serves FP8 only); two Sparks FP8 | as fast |
+| Budgeted expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_BUDGET`) | off | Flash-Next: keep 4, budget 12:64; Nemotron: keep 12, budget 48:128 | as fast |
 | Optimized QSA prefill kernels (`SHARAR_QSA_PREFILL_BACKEND`) | off (original) | Flash-Next: auto (where eligible: SM121, one or two Sparks, through 32K) | as fast |
 | Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
-| Reduced recurrent state (`SHARAR_SSM_STATE`) | off (FP32) | Nemotron: FP16 with stochastic rounding; else FP32 | 8-bit GDN state; Nemotron FP32 |
+| Reduced recurrent state (`SHARAR_SSM_STATE`) | off (FP32) | Nemotron: FP16 with stochastic rounding; else FP32 | 8-bit GDN state; Nemotron FP16 with stochastic rounding |
 
 Relaxed acceptance accepts a drafted token the target ranks within its top-k and within a logit margin of its
 argmax, so outputs are no longer the target's exact greedy continuation; a request can pin exact acceptance with
@@ -154,15 +154,15 @@ Four of the knobs take more than the table shows:
   `SHARAR_MOE_KEEP` alone gives each token its top k;
   `SHARAR_MOE_KEEP=0` routes in full. A token's experts depend on the rest of its forward, so a greedy reply can change
   with what else the server runs. Nemotron's selection (22 of 512 experts a token) keeps k as each row's floor, lets a
-  row's other top-22 experts ride along when the forward reads them anyway (`SHARAR_MOE_FREE_RIDERS=0`: off), and fills
-  the cap by summed routing weight ([how](nemotron.md#serving)).
-- **`SHARAR_SSM_STATE=fp32|int8|int4`**: the integer formats quantize each GDN layer's recurrent state per window as
+  row's other top-22 experts ride along when the forward reads them anyway, and fills the cap by summed routing weight
+  ([how](nemotron.md#serving)).
+- **`SHARAR_SSM_STATE=fp32|int8|int4|fp16_sr`**: the integer formats quantize each recurrent layer's state per window as
   in LeapQuant ([arXiv 2609.38166](https://arxiv.org/abs/2609.38166); `sharar/cache/ssm_format.py`), a fraction of
   FP32's memory per slot, and need `SHARAR_VERIFY_STATE=reconstruct` (with `snapshots` the state stays FP32). The
   saving pays with many requests (on one Spark the 27B decodes 30% faster at 16) but not at one, where it also
-  delays a long prompt's first token, so `fast` keeps FP32. Nemotron's Mamba-2 state takes `fp16` (stochastic
-  rounding keyed on token position and layer) or `fp16-rn` (nearest) instead: half of FP32's state traffic, and in
-  `fast` with expert sharing.
+  delays a long prompt's first token, so `fast` keeps FP32. Nemotron's Mamba-2 state also takes `fp16_sr` (stochastic
+  rounding keyed on token position and layer): half of FP32's state traffic, and in `fast` with expert sharing; its
+  `int8` and `int4` (65 and 53 MiB a slot against FP16's 82) are ungated.
 - **`SHARAR_QSA_PREFILL_BACKEND=original|auto|optimized`** (Flash-Next): `auto` runs the optimized SM121 sparse
   eager prefill through 32K where eligible and the original elsewhere; `optimized` requires it. Its score
   arithmetic and tie order differ, so `exact` keeps `original`; it makes 8K and 32K prefill 3-4% faster with

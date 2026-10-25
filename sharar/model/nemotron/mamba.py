@@ -4,9 +4,9 @@
 FP8 in_proj -> z | xBC | dt; causal conv (kernel 4, bias, SiLU) over xBC; the SSD recurrence over 128 heads of 64
 with 8 B/C groups of state 128 (`kernels/mamba2.py`); y * silu(z) normalized in groups of 1024, quantized into the
 FP8 out_proj. The pool's conv state is [slots, 10240, 3] and its SSM state Mamba's [slots, heads, head dim, state]
-FP32 (FP16 under SHARAR_SSM_STATE=fp16 / fp16-rn, rounded on every store, stochastically keyed on the token position
-and this layer's index among the Mamba layers), so prefix-cache checkpoints, scratch slots and the SSD tier carry it
-as they carry the GDN's. Prefill continues
+FP32 (FP16 under SHARAR_SSM_STATE=fp16_sr, rounded stochastically on every store, keyed on the token position
+and this layer's index among the Mamba layers; a per-window quantized byte row under int8 / int4), so prefix-cache
+checkpoints, scratch slots and the SSD tier carry it as they carry the GDN's. Prefill continues
 each sequence from its slot and writes interior checkpoints; decode advances the slot in place; verify leaves it and
 records either every step's state (`snapshots`) or the compact inputs the accept step replays (`reconstruct`).
 """
@@ -65,16 +65,18 @@ class NemotronMamba:
     def forward(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
         zxbcdt = (self.in_proj(x) if self.in_proj.input_scale is None else ops.fp8_linear(x, self.in_proj, x_q=x_q))
         conv, ssm = self._states(ctx)
-        rounding = dict(layer=self.index, stochastic=mamba2.state_rounding(ctx.state_pool) == "sr"
-                        if ctx is not None and ctx.state_pool is not None else False)
+        pool = ctx.state_pool if ctx is not None else None
+        window = getattr(pool, "window", None)
+        storage = dict(layer=self.index,
+                       window=(window.layout, window.layer[self.layer_id]) if window is not None else None)
         if ctx is None or ctx.mode == "prefill":
             y = mamba2.prefill(zxbcdt, self.params, conv, ssm, mamba2.prepare_prefill(ctx, x.shape[0], x.device),
-                               **rounding)
+                               **storage)
         elif ctx.mode == "verify":
             y = mamba2.verify(zxbcdt, self.params, conv, ssm, ctx.seq_slots, ctx.verify_steps,
                               ctx.verify_conv_windows.get(self.layer_id),
                               snapshots=ctx.inter_ssm.get(self.layer_id), snapshot_indices=ctx.verify_scratch,
-                              replay=ctx.verify_replay.get(self.layer_id), positions=ctx.positions, **rounding)
+                              replay=ctx.verify_replay.get(self.layer_id), positions=ctx.positions, **storage)
         else:
-            y = mamba2.decode(zxbcdt, self.params, conv, ssm, ctx.slots, ctx.positions, **rounding)
+            y = mamba2.decode(zxbcdt, self.params, conv, ssm, ctx.slots, ctx.positions, **storage)
         return self._out(y, zxbcdt)

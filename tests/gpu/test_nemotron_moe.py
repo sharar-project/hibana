@@ -3,13 +3,14 @@
 - `NemotronMoe.reference` (FP32, dequantized experts) against Transformers' `NemotronHMoE` carrying the same
   dequantized weights in BF16: the semantics (FP32 router, bias for the choice only, renormalized sigmoid weights times
   5, latent experts, shared expert on x).
-- The served block (fused router|fc1 GEMM, routing kernel, `cutlass_fused_moe` ReLU², NVFP4 shared expert, fc2 addmm)
-  against the reference with its activations rounded to NVFP4 as the kernels round them: cosine >= 0.9999 (0.99995
-  measured); against the FP32 reference about 0.9985, which is NVFP4 activations alone. Calls of at most 16 rows take
-  Sharar's kernels (`kernels/nemotron_moe.py`): the same bound (0.999997 measured), their router kernel's routing
-  bitwise route_topk's, the budgeted path, the routed experts alone against `cutlass_fused_moe`.
-- The routing kernel against torch's top-k (the same experts every row), its padded rows, `SHARAR_MOE_KEEP` alone,
-  budgeted selection's invariants, a replayed CUDA graph, and the MTP head's block.
+- The served block against the reference with its activations rounded to NVFP4 as the kernels round them. Calls of
+  at most 16 rows take Sharar's kernels (`kernels/nemotron_moe.py`): cosine >= 0.9999 (0.999997 measured), their router
+  kernel's routing bitwise route_topk's, and the budgeted path. Larger calls take FlashInfer's b12x MoE (fused
+  router|fc1 GEMM, routing kernel, b12x ReLU², NVFP4 shared expert, fc2 addmm), whose routed sum is checked against
+  FlashInfer's `cutlass_fused_moe` on the same pairs (`cutlass_routed`, the test's reference: it is deterministic and
+  rounds closer to the reference than b12x); against the FP32 reference about 0.9985, which is NVFP4 activations alone.
+- The routing kernel against torch's top-k (the same experts every row), its padded rows, budgeted selection's
+  invariants (floors, free riders, a binding cap), a replayed CUDA graph, and the MTP head's block.
 
 Needs the pinned snapshot (skipped otherwise); holds one block's experts (1.5 GiB) and, for the Transformers check,
 a BF16 copy of them (5.6 GiB)."""
@@ -35,10 +36,10 @@ def cos(a, b) -> float:
 
 @pytest.fixture(scope="module")
 def weights():
-    from sharar.model.nemotron.reference import find_snapshot
+    from sharar.target import NEMOTRON
     from sharar.weights.safetensors import SnapshotWeights
     try:
-        snap = find_snapshot()
+        snap = NEMOTRON.snapshot_dir()
     except FileNotFoundError as exc:
         pytest.skip(str(exc))
     return snap, SnapshotWeights(snap)
@@ -62,6 +63,19 @@ def rows(w, m: int, seed: int) -> torch.Tensor:
     return (torch.randn(m, c.HIDDEN_SIZE, generator=g) * norm).bfloat16().cuda()
 
 
+def cutlass_routed(moe, lat, ids, w):
+    """The routed experts' weighted sum through FlashInfer's `cutlass_fused_moe` (ReLU², the checkpoint's tensors and
+    `moe.quant_scales`): the reference the b12x path is checked against."""
+    from flashinfer.fused_moe import ActivationType, cutlass_fused_moe
+    m = lat.shape[0]
+    out = cutlass_fused_moe(
+        input=lat, token_selected_experts=ids, token_final_scales=w,
+        fc1_expert_weights=moe.w1.view(torch.long), fc2_expert_weights=moe.w2.view(torch.long),
+        output_dtype=torch.bfloat16, quant_scales=moe.quant_scales, activation_type=ActivationType.Relu2,
+        tune_max_num_tokens=max(1, 1 << (m - 1).bit_length()))
+    return out[0] if isinstance(out, (list, tuple)) else out
+
+
 def ctx_for(mode: str, slots: list[int], steps: int = 1):
     s = torch.tensor(slots, dtype=torch.int32, device="cuda")
     return SimpleNamespace(mode="decode", slots=s) if mode == "decode" else SimpleNamespace(mode="verify", seq_slots=s, verify_steps=steps)
@@ -71,9 +85,9 @@ def test_reference_matches_transformers(weights, moe):
     from transformers.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
     from transformers.models.nemotron_h.modeling_nemotron_h import NemotronHMoE
     from sharar.kernels.w3_moe import nvfp4_dequant, unswizzle_batched
-    from sharar.model.nemotron.reference import read_json
+    import json
     snap, w = weights
-    cfg = {k: v for k, v in read_json(snap / "config.json")["llm_config"].items() if k != "time_step_limit"}
+    cfg = {k: v for k, v in json.loads((snap / "config.json").read_text())["llm_config"].items() if k != "time_step_limit"}
     with torch.device("meta"):
         hf = NemotronHMoE(NemotronHConfig(**cfg))
     hf = hf.to_empty(device="cuda").bfloat16()
@@ -105,7 +119,7 @@ def test_block_matches_reference(weights, moe, m):
     with torch.inference_mode():
         out = moe(x, None)
         assert out.dtype == torch.bfloat16 and out.shape == x.shape
-        b12x = moe.b12x is not None and m > moe.SMALL_ROWS  # b12x rounds less exactly than cutlass and Sharar's kernels
+        b12x = m > moe.SMALL_ROWS  # b12x rounds less exactly than cutlass and Sharar's kernels
         assert cos(out, moe.reference(x, quantize_activations=True)) > (B12X_BLOCK_COS if b12x else 0.9999)
         assert cos(out, moe.reference(x)) > 0.998
 
@@ -141,50 +155,17 @@ def test_small_router_routes_as_route_topk(weights, moe, m, k, slots, steps):
     assert torch.equal(ids, ref_ids) and torch.equal(w, ref_w)
 
 
-@pytest.mark.parametrize("m", [1, 5, 16])
-def test_small_fragment_variants_agree(weights, moe, m):
-    """The paired-step fragments (128-byte row pieces) and the plain ones compute the same block: the routed sums bit
-    for bit (each block-scale group's dot is exact either way), the output to FP32 rounding."""
-    from sharar.kernels import nemotron_moe
-    x = rows(weights[1], m, 500 + m)
-    w = moe.small_weights()
-    out, default = {}, nemotron_moe.P2
-    try:
-        for p2 in (False, True):
-            nemotron_moe.P2 = p2
-            _, ids, wt, ws = nemotron_moe.router(x, w, moe.bias, moe.topk)
-            out[p2] = (nemotron_moe.block(x, ws, ids, wt, w, stages=3).clone(), nemotron_moe.block(x, ws, ids, wt, w))
-    finally:
-        nemotron_moe.P2 = default
-    assert torch.equal(out[False][0], out[True][0])
-    assert cos(out[False][1], out[True][1]) > 0.99999
-
-
-def test_small_routed_matches_cutlass(weights, moe):
-    """`routed` for a small call (the MTP head's DraftMoe path) against `cutlass_fused_moe` on the same pairs."""
-    from sharar.model.nemotron.moe import route_topk
-    x = rows(weights[1], 9, 300)
-    fused = torch.mm(x, moe.gate_fc1.T, out_dtype=torch.float32)
-    ids, w, lat = route_topk(fused, moe.bias, moe.topk, moe.latent)
-    big = copy.copy(moe)
-    big.SMALL_ROWS, big.b12x = 0, None
-    assert cos(moe.routed(lat, ids, w), big.routed(lat, ids, w)) > 0.9999
-
-
 @pytest.mark.parametrize("m", [1, 9, 64, 600])
 def test_b12x_routed_matches_cutlass(weights, moe, m):
-    """FlashInfer's b12x MoE (SHARAR_NEMOTRON_EXPERTS b12x / auto past 16 rows) on the checkpoint's tensors: the
-    routed sum against cutlass_fused_moe's on the same pairs, same magnitude, eager and in a graph replay."""
-    from sharar.kernels.b12x_moe import B12xExperts
+    """FlashInfer's b12x MoE (calls past 16 rows) on the checkpoint's tensors: the routed sum against
+    cutlass_fused_moe's on the same pairs, same magnitude, eager and in a graph replay."""
     from sharar.model.nemotron.moe import route_topk
     x = rows(weights[1], m, 700 + m)
     fused = torch.mm(x, moe.gate_fc1.T, out_dtype=torch.float32)
     ids, w, lat = route_topk(fused, moe.bias, moe.topk, moe.latent)
-    big = copy.copy(moe)
-    big.SMALL_ROWS, big.b12x = 0, None
-    b12x = moe.b12x or B12xExperts(moe.w1, moe.s1, moe.g1, moe.in1, moe.w2, moe.s2, moe.g2, moe.in2, c.ROUTED_SCALING_FACTOR)
+    b12x = moe.b12x
     with torch.inference_mode():
-        ref = big.routed(lat, ids, w).float()
+        ref = cutlass_routed(moe, lat, ids, w).float()
         got = b12x(lat, ids, w)
         assert cos(got, ref) > B12X_COS
         assert abs(float(got.float().norm() / ref.norm()) - 1) < 0.03  # 0.984-1.015 of cutlass's on real inputs, 0.98 on Gaussian rows
@@ -199,13 +180,14 @@ def test_b12x_routed_matches_cutlass(weights, moe, m):
 
 def test_small_budget_path(weights, moe):
     """Budgeted selection on a small verify call: route_budget's ids through the small kernels (the plan from them)
-    equal the large-call path's experts, to the W4A4 bound."""
+    equal the large-call path's experts (the routed sum through `cutlass_routed`), to the W4A4 bound."""
     x = rows(weights[1], 8, 400)
     m = copy.copy(moe)
     m.keep, m.budget, m.per_request = 6, 64, 0
     ctx = ctx_for("verify", [3, 2], 4)
     big = copy.copy(m)
-    big.SMALL_ROWS, big.b12x = 0, None
+    big.SMALL_ROWS = 0
+    big.routed = lambda lat, ids, w: cutlass_routed(big, lat, ids, w)
     with torch.inference_mode():
         assert cos(m(x, ctx), big(x, ctx)) > 0.9999
 
@@ -224,30 +206,19 @@ def test_padded_rows_repeat_row_zero(weights, moe):
     assert torch.equal(lat, plain[2])
 
 
-def test_keep_alone_routes_each_token_to_its_top(weights, moe):
-    x = rows(weights[1], 8, 11)
-    m = copy.copy(moe)
-    m.keep, m.budget, m.free_riders = 6, 0, False  # SHARAR_MOE_FREE_RIDERS=0: the plain top k
-    fused = torch.mm(x, moe.gate_fc1.T, out_dtype=torch.float32)
-    ids, w, _ = m.route(fused, ctx_for("decode", list(range(1, 9))))
-    full, _, _ = moe.route(fused, None)
-    assert ids.shape == (8, 6) and torch.equal(ids, full[:, :6])
-    torch.testing.assert_close(w.sum(-1), torch.ones(8, device="cuda"))
-
-
 @pytest.mark.parametrize("m,cap", [(4, 44), (16, 64), (16, 128)])
 def test_budget_invariants(weights, moe, m, cap):
     """The call reads at most the cap's experts (or the guaranteed ones when they exceed it); every real row keeps its
-    guaranteed top experts first and takes only experts in the set, from its candidates, in rank order; weights are
+    guaranteed top experts first and takes only experts in the set, from its top 22, in rank order; weights are
     its sigmoid scores renormalized; padded rows read nothing new."""
-    from sharar.model.nemotron.moe import ROUTE_CANDIDATES, route_budget
+    from sharar.model.nemotron.moe import route_budget
     x = rows(weights[1], m, 1000 + m)
     fused = torch.mm(x, moe.gate_fc1.T, out_dtype=torch.float32)
     keep = max(4, min(8, cap // m))
     slots = torch.tensor([1] * (m - 1) + [0], dtype=torch.int32, device="cuda")  # the last row padded
     ids, w, lat = route_budget(fused, moe.bias, moe.topk, moe.latent, keep, cap, slots, 1)
     s = fused[:, :moe.experts].sigmoid()
-    order = torch.topk(s + moe.bias, ROUTE_CANDIDATES, dim=-1).indices
+    order = torch.topk(s + moe.bias, moe.topk, dim=-1).indices
     used = ids[w > 0].unique()
     guaranteed = order[:m - 1, :keep].unique()
     assert len(used) <= max(cap, len(guaranteed))
@@ -317,7 +288,7 @@ def test_floor_and_free_riders(weights, moe, m, floor, cap):
     x = rows(weights[1], m, 1300 + m)
     fused = torch.mm(x, moe.gate_fc1.T, out_dtype=torch.float32)
     mm = copy.copy(moe)
-    mm.keep, mm.budget, mm.per_request, mm.free_riders = floor, cap, 0, True
+    mm.keep, mm.budget, mm.per_request = floor, cap, 0
     reqs = m // 6
     ctx = ctx_for("verify", list(range(1, reqs)) + [0], 6)
     ids, w, lat = mm.route(fused, ctx)
@@ -337,50 +308,6 @@ def test_floor_and_free_riders(weights, moe, m, floor, cap):
     assert torch.equal(lat, fused[:, moe.experts:].bfloat16())
 
 
-@pytest.mark.parametrize("m,floor,tau", [(12, 4, 0.9), (24, 8, 0.85)])
-def test_tau_floor(weights, moe, m, floor, tau):
-    """SHARAR_MOE_TAU: a real row's guarantee is its top max(floor, n) experts, n the fewest whose sigmoid weights hold
-    tau of its top 22's; the set is the union of those, and rows take their other top-22 experts in it."""
-    x = rows(weights[1], m, 1500 + m)
-    fused = torch.mm(x, moe.gate_fc1.T, out_dtype=torch.float32)
-    mm = copy.copy(moe)
-    mm.keep, mm.budget, mm.per_request, mm.free_riders, mm.extra, mm.tau = floor, 0, 0, True, 0, tau
-    reqs = m // 6
-    ids, w, _ = mm.route(fused, ctx_for("verify", list(range(1, reqs)) + [0], 6))
-    s = fused[:, :moe.experts].sigmoid()
-    order = torch.topk(s + moe.bias, moe.topk, dim=-1).indices
-    real = m - 6
-    guaranteed = set()
-    for r in range(real):
-        p = s[r, order[r]]
-        before = torch.cumsum(p, 0) - p
-        n = int((before < tau * p.sum()).sum())
-        guaranteed |= set(order[r, :max(floor, n)].tolist())
-    used = set(ids[:real][w[:real] > 0].tolist())
-    assert used == guaranteed
-    for r in range(real):
-        live = w[r] > 0
-        assert ids[r][live].tolist() == [e for e in order[r].tolist() if e in used]
-    assert (w[real:] == 0).all()
-
-
-def test_floor_table(weights, tmp_path):
-    """SHARAR_MOE_FLOORS: a block takes its own floor from the table (a block it does not name: no cut)."""
-    import json
-    from sharar.engine import config as engine_config
-    from sharar.model.nemotron.moe import NemotronMoe, block_index, floors
-    from sharar.target import NEMOTRON
-    table = tmp_path / "t.json"
-    table.write_text(json.dumps({"floors": {"1": 12, "3": 22}}))
-    assert floors(str(table)) == {1: 12, 3: 22} and block_index(PREFIX) == 1 and block_index(MTP_PREFIX) is None
-    with engine_config.using(engine_config.current().replace(moe_floors=str(table), moe_keep=0)):
-        m = NemotronMoe(weights[1], PREFIX, torch.device("cuda"), NEMOTRON)
-    assert m.keep == 12 and m.free_riders
-    del m
-    gc.collect()
-    torch.cuda.empty_cache()
-
-
 @pytest.mark.parametrize("m,floor,cap", [(12, 16, 60), (24, 16, 160), (24, 12, 128)])
 def test_binding_cap(weights, moe, m, floor, cap):
     """A cap the floors' union exceeds: each real row is guaranteed its top `fallback` (cap / rows within [8, floor)),
@@ -389,7 +316,7 @@ def test_binding_cap(weights, moe, m, floor, cap):
     x = rows(weights[1], m, 1700 + m)
     fused = torch.mm(x, moe.gate_fc1.T, out_dtype=torch.float32)
     mm = copy.copy(moe)
-    mm.keep, mm.budget, mm.per_request, mm.free_riders, mm.extra, mm.tau = floor, cap, 0, True, 0, 0.0
+    mm.keep, mm.budget, mm.per_request = floor, cap, 0
     g = mm.fallback(m, 6)
     reqs = m // 6
     ids, w, _ = mm.route(fused, ctx_for("verify", list(range(1, reqs)) + [0], 6))

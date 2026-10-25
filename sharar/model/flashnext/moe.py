@@ -88,9 +88,6 @@ class MoeLayer:
         # (`guarantee`, at most `keep`), then takes others from the set, up to topk. Slots left over name no expert,
         # which the w3 kernel skips, or for the NVFP4 experts (an expert in every slot) the token's own top 1 at
         # weight 0, the same bits. SHARAR_MOE_KEEP alone: each token's top `keep`. Keeping topk or more is the served route.
-        for name, v in (("SHARAR_MOE_KEEP", cfg.moe_keep), ("SHARAR_MOE_BUDGET", cfg.moe_budget)):
-            if v < 0:
-                raise ValueError(f"{name}={v}: a count of experts, or 0 (off)")
         self.keep = cfg.moe_keep if cfg.moe_keep < self.topk else 0
         self.budget = cfg.moe_budget if self.keep else 0
         self.per_request = cfg.moe_budget_per_request

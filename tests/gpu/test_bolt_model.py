@@ -25,7 +25,7 @@ def model(snapshot, request):
     from sharar.model.bolt.model import Bolt
     start_thread()
     with config.using(config.current().replace(target="bolt", w3_decode=False, moe_keep=0, moe_budget=0,
-                                               moe_floors=None, moe_tau=0, moe_extra=0, ssd=False, kv_format="sim-bf16",
+                                               ssd=False, kv_format="sim-bf16",
                                                bolt_experts=request.param)):
         model = Bolt(snapshot, log=lambda msg: print(msg, flush=True))
     yield model

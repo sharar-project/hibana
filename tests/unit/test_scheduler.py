@@ -10,6 +10,7 @@ import torch
 from sharar.engine.request import Request, State
 from sharar.engine.sampler import SamplingParams
 from sharar.engine.scheduler import Metrics, QueueFull, Scheduler, SchedulerConfig
+from sharar.target import DEFAULT_TARGET
 
 
 def test_latency_metrics_keep_a_bounded_recent_window():
@@ -76,6 +77,8 @@ class FakeExecutor:
 
     def validate_request(self, ids, params):
         params.validate()
+        if params.stop_token_ids is None:  # Executor.validate_request: the target's (here the default target's)
+            params.stop_token_ids = DEFAULT_TARGET.stop_token_ids
 
     def cache_stats(self):
         return None
@@ -87,6 +90,7 @@ class FakeExecutor:
         return len(self.kv_pool._free) >= len(prompt_ids) + reserve_tokens and len(self.state_pool._free) >= 1
 
     def admit(self, ids, params, req=None):
+        self.validate_request(ids, params)
         req = req or Request(prompt_ids=list(ids), params=params)
         req.slot = int(self.state_pool._free.pop())
         req.pages = self.kv_pool.alloc(len(ids))
