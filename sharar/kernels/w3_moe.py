@@ -24,20 +24,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 import torch
 
 from sharar.kernels import w3
 
 HIDDEN, INTER, TOPK, EXPERTS = 2560, 640, 10, 512  # Flash-Next; Nemotron: 1024 (latent), 2688, 22, 512
-PDL: bool | None = None  # Nemotron's decode calls chain their launches (csrc/w3_gemm.cu); None: EngineConfig.w3_moe_pdl
-
-
-def _pdl() -> bool:
-    if PDL is not None:
-        return PDL
-    from sharar.engine.config import current
-    return current().w3_moe_pdl
 ORDER_IN_KERNEL = 640  # up to this many (row, k) pairs the kernel sorts them itself
 # From this many rows each pass of an expert (up to 112 pairs) runs in its own block, next to the expert's other passes,
 # so its weights stream from DRAM about once instead of once per pass. The same bits either way.
@@ -221,7 +212,7 @@ def w3_moe(experts: W3Experts, x: torch.Tensor, ids: torch.Tensor, weights: torc
         order = torch.sort(key, stable=True).indices.to(torch.int32)
     return w3._module().w3_moe(x.contiguous(), ids, weights.float().contiguous(), order,
                                experts.planes13, experts.scales13, experts.row13, experts.planes2, experts.scales2, experts.row2,
-                               experts.lut, experts.fc2_lut, experts.base, WIDE_ROWS, 2 if pairs and pairs_bf16 else int(pairs), _pdl())
+                               experts.lut, experts.fc2_lut, experts.base, WIDE_ROWS, 2 if pairs and pairs_bf16 else int(pairs))
 
 
 def quant_e4m3(t: torch.Tensor, stage: str) -> torch.Tensor:

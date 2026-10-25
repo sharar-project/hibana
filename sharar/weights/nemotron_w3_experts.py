@@ -125,7 +125,7 @@ def capture(args) -> None:
     from sharar.model.nemotron.mtp import NemotronMtpHead
     from sharar.target import NEMOTRON
     from sharar.weights.safetensors import SnapshotWeights
-    install(current().replace(target="nemotron", w3_decode=False, w3_checkpoint=None, nemotron_experts="nvfp4"))
+    install(current().replace(target="nemotron", w3_decode=False, w3_checkpoint=None))
     out = args.activations
     if (out / "capture.json").exists():
         raise SystemExit("refusing to overwrite a finished capture")

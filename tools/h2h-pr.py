@@ -4,8 +4,6 @@
 
     tools/h2h-pr.py --target flashnext --pr my-branch
     tools/h2h-pr.py --target 27b --pr origin/perf/x --base origin/main --repeats 2 --modes greedy,t07,t10
-    tools/h2h-pr.py --target nemotron --pr HEAD --name knobs --arm exact=exact \
-        --arm relaxed=exact:SHARAR_ACCEPT_DEFAULT=3:2.0,SHARAR_ACCEPT_DEFAULT_SAMPLED=1 --arm fast=fast
 
 Each arm is a git worktree of its ref under the run directory, served by this checkout's Python environment
 (`uv sync`; the two refs must share `uv.lock`) with `sharar serve <target> --fast|--throughput` on --port, the
@@ -27,12 +25,6 @@ are removed once the report is written.
 
 sharar-eval runs from this environment's `eval` extra (pinned in uv.lock), or from a checkout given with --evals /
 SHARAR_EVALS for unreleased sharar-eval changes, as `tools/evaluate.py` does.
-
-**Configurations of one checkout** (`--arm NAME=PROFILE[:KEY=VALUE,...]`, repeatable): instead of base and PR, every
-arm serves the --pr ref (one worktree) with `sharar serve <target> --<PROFILE>` and its SHARAR_* settings in the
-environment, in the order given, each at the `--fast` request counts (`--throughput` counts for a `throughput` arm).
-The table reports each arm against the first: a knob's increment is an arm that adds it to the one before. This is
-how a target main does not serve (Nemotron) is measured, and how a profile's knobs are each measured on its own.
 """
 from __future__ import annotations
 
@@ -167,85 +159,6 @@ def table(run: Path, plan: dict, modes: list[str]) -> str:
     return "\n".join(lines)
 
 
-def parse_arms(items: list[str], ap) -> dict[str, tuple[str, dict]]:
-    """--arm NAME=PROFILE[:KEY=VALUE,...] -> {name: (profile, {SHARAR_KEY: value})}, in the order given. A value may
-    hold ':' and ',' (3:2.0, SHARAR_SPEC_DEPTHS=2:4,4:4): pairs split only where a ',' precedes the next SHARAR_."""
-    import re
-    arms: dict[str, tuple[str, dict]] = {}
-    for item in items:
-        name, _, spec = item.partition("=")
-        profile, _, settings = spec.partition(":")
-        if not re.fullmatch(r"[A-Za-z0-9_.]+", name) or name in arms:
-            ap.error(f"--arm {item!r}: NAME is letters, digits, _ and ., once each")
-        if profile not in gate.PROFILE_NAMES:
-            ap.error(f"--arm {item!r}: PROFILE must be one of {', '.join(gate.PROFILE_NAMES)}")
-        values = dict(kv.split("=", 1) for kv in re.split(r",(?=SHARAR_)", settings) if kv) if settings else {}
-        if any(not k.startswith("SHARAR_") for k in values):
-            ap.error(f"--arm {item!r}: settings are SHARAR_KEY=VALUE pairs")
-        arms[name] = (profile, values)
-    return arms
-
-
-def run_arms(args, arms: dict, target: str, refs: dict, labels: dict, run: Path, tree: Path, env: dict, ev: dict,
-             results: Path, plan: dict) -> int:
-    """Every --arm configuration of the one worktree in turn, `--repeats` times; the table reports each against the first."""
-    (run / "manifest.json").write_text(json.dumps({"target": target, "refs": refs, "labels": labels, "modes": args.modes,
-                                                  "arms": {n: {"profile": p, "env": e} for n, (p, e) in arms.items()},
-                                                  "fast": plan.get("fast"), "throughput": plan.get("throughput"),
-                                                  "repeats": args.repeats, "warmup_s": args.warmup_s, "duration_s": args.duration_s,
-                                                  "categories": args.categories, "evals": ev["label"], "evals_commit": ev["commit"]}, indent=1) + "\n")
-    evals_env = {**os.environ, "SHARAR_RESULTS": str(results)}
-    lock = results / ".gpu.lock"
-    counts_of = lambda profile: plan.get("throughput" if profile == "throughput" else "fast", [])  # noqa: E731
-    for rep in range(args.repeats):
-        for arm, (profile, values) in arms.items():
-            stem = f"{arm}-{profile}-r{rep}"
-            if (run / f"{stem}.done").exists() or not counts_of(profile):
-                continue
-            (run / f"{stem}.jsonl").unlink(missing_ok=True)
-            ssd = run / f"{stem}.ssd"
-            shutil.rmtree(ssd, ignore_errors=True)
-            with gpu_lock(lock, f"{arm} r{rep}"), Server(tree, target, profile, args.port, run / f"{stem}.server.log",
-                                                        {**env, **values, "SHARAR_SSD_DIR": str(ssd)}) as s:
-                (run / f"{stem}.server.json").write_text(json.dumps(s.info, indent=1) + "\n")
-                log(f"{arm} ({profile} {values}) r{rep}: serving")
-                serve_h2h(args, ev, arm, run / f"{stem}.jsonl", counts_of(profile), run / f"{stem}.h2h.log", evals_env)
-            shutil.rmtree(ssd, ignore_errors=True)
-            (run / f"{stem}.done").touch()
-            log(f"{arm} r{rep}: done")
-    values = collect(run)
-    mean = lambda key: statistics.mean(values[key]) if values.get(key) else None  # noqa: E731
-    first = next(iter(arms))
-    lines = ["| arm | profile | settings | requests | sampling | tok/s | vs " + first + " |", "|---|---|---|---:|---|---:|---:|"]
-    for arm, (profile, settings) in arms.items():
-        for n in counts_of(profile):
-            for mode in args.modes.split(","):
-                v, b = mean((arm, profile, n, mode)), mean((first, arms[first][0], n, mode))
-                shown = ", ".join(f"{k.removeprefix('SHARAR_')}={x}" for k, x in settings.items()) or "(profile)"
-                lines.append(f"| {arm} | {profile} | {shown} | {n} | {mode} | {f'{v:.1f}' if v else ''} | "
-                             f"{f'x{v / b:.3f}' if v and b else ''} |")
-    md = (f"**h2h, {target}, one Spark, configurations of `{labels['pr']}`** ({args.repeats} repeat{'s' if args.repeats > 1 else ''}, "
-          f"arms in order). tok/s: 1 request = median decode tok/s over h2h's {args.categories} prompts (one at a time); more = "
-          f"aggregate tok/s of that many closed-loop streams over {args.duration_s:.0f} s after {args.warmup_s:.0f} s. Thinking off, "
-          f"up to 1,024 tokens, natural stops; greedy / t07 = T 0.7 (top-p 0.95, top-k 20).\n\n" + "\n".join(lines) + "\n")
-    (run / "report.md").write_text(md)
-    git("worktree", "remove", "--force", str(tree))
-    print(md)
-    log(f"report: {run / 'report.md'}")
-    return 0
-
-
-def serve_h2h(args, ev: dict, arm: str, out: Path, counts: list[int], hlog: Path, evals_env: dict) -> None:
-    """h2h against the server on --port: `decode` for one request, closed-loop `--streams` for more."""
-    common = ["--modes", args.modes, "--thinking", "off", "--only", args.categories]
-    if 1 in counts:
-        h2h(ev, arm, out, ["--workloads", "decode", *common], hlog, evals_env)
-    streams = [n for n in counts if n > 1]
-    if streams:
-        h2h(ev, arm, out, ["--workloads", "conc", "--streams", ",".join(map(str, streams)),
-                           "--warmup-s", str(args.warmup_s), "--duration-s", str(args.duration_s), *common], hlog, evals_env)
-
-
 # h2h_v1's prompt categories measured by default: all but multilingual (--categories adds it back)
 CATEGORIES = ("chat", "code", "math", "prose", "structured")
 
@@ -254,9 +167,7 @@ def main() -> int:
     global URL
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     ap.add_argument("--target", choices=("flashnext", "27b", "qwen38", "nemotron"), required=True)
-    ap.add_argument("--pr", default=None, help="the branch, commit or ref to measure (with --arm: the one served; default HEAD)")
-    ap.add_argument("--arm", action="append", default=[], metavar="NAME=PROFILE[:KEY=VALUE,...]",
-                    help="a configuration of the --pr checkout to measure instead of base and PR (repeatable; see above)")
+    ap.add_argument("--pr", required=True, help="the branch, commit or ref to measure")
     ap.add_argument("--base", default="origin/main")
     ap.add_argument("--name", help="run directory name (default: the PR ref's short commit)")
     ap.add_argument("--fast", default="1,4", help="request counts under --fast (1: h2h decode; more: closed-loop streams)")
@@ -274,11 +185,6 @@ def main() -> int:
     ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
                     help="sharar-eval's Python (default: this environment's, or the checkout's .venv)")
     args = ap.parse_args()
-    arms = parse_arms(args.arm, ap)
-    if not arms and args.pr is None:
-        ap.error("--pr is required (or give --arm configurations of one checkout)")
-    if arms:
-        args.pr = args.pr or "HEAD"
     launch = gate.launch
     target = launch.target_name(args.target)
     URL = f"http://127.0.0.1:{args.port}"
@@ -286,8 +192,8 @@ def main() -> int:
     usage = subprocess.run([ev["python"], "-m", "evals.h2h", "--help"], cwd=ev["cwd"], capture_output=True, text=True).stdout
     if "--streams" not in usage or "--only" not in usage:
         raise SystemExit(f"sharar-eval ({ev['label']}, {ev['commit'][:12]}): its h2h has no --streams or --only; update it")
-    refs = {"pr": git("rev-parse", args.pr)} if arms else {"base": git("rev-parse", args.base), "pr": git("rev-parse", args.pr)}
-    if not arms and git("show", f"{refs['base']}:uv.lock") != git("show", f"{refs['pr']}:uv.lock"):
+    refs = {"base": git("rev-parse", args.base), "pr": git("rev-parse", args.pr)}
+    if git("show", f"{refs['base']}:uv.lock") != git("show", f"{refs['pr']}:uv.lock"):
         raise SystemExit("the two refs pin different dependencies (uv.lock); both arms run this checkout's environment")
     conf = launch.config_file()
     env = {**os.environ, "SHARAR_TRACES": "off", **({"SHARAR_CONFIG_FILE": str(conf)} if conf else {})}
@@ -298,7 +204,7 @@ def main() -> int:
     if args.tp == 2:  # `sharar serve --tp 2` mirrors each arm's checkout to the same path on the peer
         from sharar.launch import tp
         tp.ssh(tp.peer(env), f"mkdir -p {trees}", check=True)
-    labels = {"pr": f"{args.pr} {refs['pr'][:9]}"} if arms else {"base": f"{args.base} {refs['base'][:9]}", "pr": f"{args.pr} {refs['pr'][:9]}"}
+    labels = {"base": f"{args.base} {refs['base'][:9]}", "pr": f"{args.pr} {refs['pr'][:9]}"}
     for arm, sha in refs.items():
         tree = trees / arm
         if not tree.exists():
@@ -307,8 +213,6 @@ def main() -> int:
             raise SystemExit(f"{tree} holds another commit: use a new --name")
     plan = {"fast": [int(v) for v in args.fast.split(",") if v], "throughput": [int(v) for v in args.throughput.split(",") if v]}
     plan = {p: c for p, c in plan.items() if c}
-    if arms:
-        return run_arms(args, arms, target, refs, labels, run, trees / "pr", env, ev, results, plan)
     (run / "manifest.json").write_text(json.dumps({"target": target, "refs": refs, "labels": labels, "plan": plan, "modes": args.modes,
                                                   "repeats": args.repeats, "warmup_s": args.warmup_s, "duration_s": args.duration_s,
                                                   "categories": args.categories, "evals": ev["label"], "evals_commit": ev["commit"]}, indent=1) + "\n")
@@ -328,7 +232,14 @@ def main() -> int:
                                                                        {**env, "SHARAR_SSD_DIR": str(ssd)}, args.tp) as s:
                     (run / f"{arm}-{profile}-r{rep}.server.json").write_text(json.dumps(s.info, indent=1) + "\n")
                     log(f"{arm} ({labels[arm]}) {profile} r{rep}: serving")
-                    serve_h2h(args, ev, arm, out, counts, run / f"{arm}-{profile}-r{rep}.h2h.log", evals_env)
+                    hlog = run / f"{arm}-{profile}-r{rep}.h2h.log"
+                    common = ["--modes", args.modes, "--thinking", "off", "--only", args.categories]
+                    if 1 in counts:
+                        h2h(ev, arm, out, ["--workloads", "decode", *common], hlog, evals_env)
+                    streams = [n for n in counts if n > 1]
+                    if streams:
+                        h2h(ev, arm, out, ["--workloads", "conc", "--streams", ",".join(map(str, streams)),
+                                                           "--warmup-s", str(args.warmup_s), "--duration-s", str(args.duration_s), *common], hlog, evals_env)
                 shutil.rmtree(ssd, ignore_errors=True)
                 done.touch()
                 log(f"{arm} {profile} r{rep}: done")

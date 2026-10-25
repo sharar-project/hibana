@@ -85,13 +85,12 @@ class EngineConfig:
     w3_warning: str | None = None             # SHARAR_W3_WARNING: why the launcher serves without the profile's calibrated copies
     stable_numerics: bool = False             # SHARAR_STABLE_NUMERICS: M-invariant prefill kernels
     gdn_prefill: str = "auto"                 # SHARAR_GDN_PREFILL: auto (CuTe on SM12x), cute, triton
-    ssm_state: str = "fp32"                   # SHARAR_SSM_STATE: recurrent state storage, fp32; GDN int8 or int4 (LeapQuant per-window quantization); Mamba-2 fp16 (stochastic rounding) or fp16-rn (cache/ssm_format.py; lossy)
+    ssm_state: str = "fp32"                   # SHARAR_SSM_STATE: recurrent state storage, fp32; GDN int8 or int4 (LeapQuant per-window quantization); Mamba-2 fp16_sr (FP16, stochastically rounded) (cache/ssm_format.py; lossy)
     ssm_window: int = 16                      # SHARAR_SSM_WINDOW: committed tokens per requantization (8, 16, 32)
     ssm_compensators: int | None = None       # SHARAR_SSM_COMPENSATORS: FP16 rank-one outlier terms kept beside the quantized state (0-16; unset: 4, or 8 for int4)
     flashnext_trunk: str = "fp8"              # SHARAR_FLASHNEXT_TRUNK: bf16 | fp8
     trunk_keep_bf16: str | None = None        # SHARAR_TRUNK_KEEP_BF16: regex of Flash-Next projections kept BF16
     flashnext_experts: str = "w3"             # SHARAR_FLASHNEXT_EXPERTS: w3 (the W3 checkpoint's 3-bit routed experts when it carries them) | nvfp4
-    nemotron_experts: str = "w3"              # SHARAR_NEMOTRON_EXPERTS: w3 (with SHARAR_W3_DECODE, the W3 checkpoint's 3-bit latent experts when it carries them; else as auto) | nvfp4 (= auto) | the NVFP4 experts' kernels: auto (Sharar's up to 16 rows, FlashInfer's b12x MoE beyond), mma (Sharar's up to 16 rows, cutlass_fused_moe beyond), b12x, cutlass (throughout)
     # --- speculation
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
     spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
@@ -102,8 +101,6 @@ class EngineConfig:
     draft_head: str = "fp8"                   # SHARAR_DRAFT_HEAD: fp8 (the target's head), w3 or w2
     draft_head_rescore: int = 8               # SHARAR_DRAFT_HEAD_RESCORE (default 8, 16 for w2)
     device_accept: bool = False               # SHARAR_DEVICE_ACCEPT
-    nemotron_fused: bool = True               # SHARAR_NEMOTRON_FUSED=0: Nemotron's fused norm / KV-write kernels off (A/B)
-    w3_moe_pdl: bool = True                   # SHARAR_W3_MOE_PDL=0: Nemotron's 3-bit decode MoE launches not chained by PDL (A/B)
     accept_default: str = "off"               # SHARAR_ACCEPT_DEFAULT: K:M for greedy requests that set neither field (off: exact)
     accept_default_sampled: bool = False      # SHARAR_ACCEPT_DEFAULT_SAMPLED
     accept_default_sampled_threshold: str | None = None  # SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD: K:M for sampled requests (unset: accept_default's)
@@ -133,10 +130,6 @@ class EngineConfig:
     moe_keep: int = 0                         # SHARAR_MOE_KEEP=k: Flash-Next decode and verify forwards, the most top experts a token is guaranteed (alone: each token's top k); 0, or k of 10 and above: the served top-10
     moe_budget: int = 0                       # SHARAR_MOE_BUDGET=[P:]B: with SHARAR_MOE_KEEP, a decode or verify forward reads at most B distinct experts, or min(B, P x its requests) (more only for the tokens' guaranteed experts): those with the most router probability across its tokens (model/flashnext/moe.py, route_budget); 0: off
     moe_budget_per_request: int = 0           # the P of SHARAR_MOE_BUDGET=P:B
-    moe_extra: int = 0                        # SHARAR_MOE_EXTRA=X: Nemotron's sharing with free riders: X more experts per real request past the union of the tokens' floors, by routing weight (with SHARAR_MOE_BUDGET also within its cap)
-    moe_floors: str | None = None             # SHARAR_MOE_FLOORS: Nemotron's per-block floors, a JSON file {"floors": {"<block>": F, ...}} (22 or a missing block: no cut) or the name of one in model/nemotron/moe_floors/; replaces SHARAR_MOE_KEEP's uniform floor
-    moe_tau: float = 0.0                      # SHARAR_MOE_TAU=t: Nemotron's sharing, each token also keeps its top experts until they hold t of its top-22 routing weight (the floor, uniform or per block, is its minimum)
-    moe_free_riders: bool = True              # SHARAR_MOE_FREE_RIDERS=0: Nemotron's sharing without free riders (SHARAR_MOE_KEEP alone: each token's top k; with SHARAR_MOE_BUDGET: Flash-Next's cap / rows guarantee); else KEEP is each token's floor, its other top-22 experts ride along when the call reads them anyway (model/nemotron/moe.py)
 
     def __post_init__(self) -> None:
         if self.qsa_prefill_backend not in ("original", "auto", "optimized"):
@@ -174,7 +167,6 @@ class EngineConfig:
             flashnext_trunk=_str(e, "SHARAR_FLASHNEXT_TRUNK", "fp8"),
             trunk_keep_bf16=_str(e, "SHARAR_TRUNK_KEEP_BF16"),
             flashnext_experts=_str(e, "SHARAR_FLASHNEXT_EXPERTS", "w3"),
-            nemotron_experts=_str(e, "SHARAR_NEMOTRON_EXPERTS", "w3"),
             spec=_str(e, "SHARAR_SPEC"),
             spec_depths=_str(e, "SHARAR_SPEC_DEPTHS"),
             spec_step_cost=float(_str(e, "SHARAR_SPEC_STEP_COST") or 0.0),
@@ -184,8 +176,6 @@ class EngineConfig:
             draft_head=_str(e, "SHARAR_DRAFT_HEAD", "fp8"),
             draft_head_rescore=_int(e, "SHARAR_DRAFT_HEAD_RESCORE", 16 if e.get("SHARAR_DRAFT_HEAD") == "w2" else 8),
             device_accept=_flag(e, "SHARAR_DEVICE_ACCEPT"),
-            nemotron_fused=_flag(e, "SHARAR_NEMOTRON_FUSED", True),
-            w3_moe_pdl=_flag(e, "SHARAR_W3_MOE_PDL", True),
             accept_default=e.get("SHARAR_ACCEPT_DEFAULT", "off"),
             accept_default_sampled=_flag(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED"),
             accept_default_sampled_threshold=_str(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"),
@@ -211,10 +201,6 @@ class EngineConfig:
             moe_keep=_int(e, "SHARAR_MOE_KEEP", 0),
             moe_budget=budget[1],
             moe_budget_per_request=budget[0],
-            moe_free_riders=e.get("SHARAR_MOE_FREE_RIDERS", "1") != "0",
-            moe_extra=_int(e, "SHARAR_MOE_EXTRA", 0),
-            moe_floors=_str(e, "SHARAR_MOE_FLOORS"),
-            moe_tau=float(_str(e, "SHARAR_MOE_TAU") or 0.0),
         )
 
     def replace(self, **changes) -> EngineConfig:

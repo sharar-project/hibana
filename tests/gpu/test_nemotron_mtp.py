@@ -3,9 +3,9 @@
 - Draft heads over an `Fp8Linear` (Nemotron's head, a static input scale beside the weight scale): the 2/3-bit copy
   and the rescored shortlist are bitwise what they are over a `TrunkLinear` (Flash-Next's) holding the same FP8 matrix
   and scale, so Flash-Next's heads are unchanged by the generalization; a reduced vocabulary keeps the FP8 kind.
-- On the pinned checkpoint (skipped without it; the MTP head, embedding and FP8 lm_head, about 3.5 GB): the default
-  draft MoE path is bitwise the trunk's `NemotronMoe`; the FP8 projections stay close to the checkpoint's BF16 ones;
-  and a replayed draft graph is bitwise the eager step for the served settings (FP8 projections, 2-bit head).
+- On the pinned checkpoint (skipped without it; the MTP head, embedding and FP8 lm_head, about 3.5 GB): the FP8
+  projections stay close to the checkpoint's BF16 ones, and a replayed draft graph is bitwise the eager step for the
+  served settings (FP8 projections, 2-bit head).
 """
 
 from types import SimpleNamespace
@@ -93,29 +93,13 @@ def _head(snapshot, model, **kw):
         w.close()
 
 
-def test_default_draft_moe_is_the_trunk_block(snapshot):
-    from sharar.model.nemotron.moe import NemotronMoe
-    from sharar.model.nemotron.mtp import PREFIX, DraftMoe
-    from sharar.target import NEMOTRON
-    from sharar.weights.safetensors import SnapshotWeights
-    w = SnapshotWeights(snapshot)
-    try:
-        plain, draft = (cls(w, f"{PREFIX}.1.mixer", torch.device("cuda"), NEMOTRON) for cls in (NemotronMoe, DraftMoe))
-    finally:
-        w.close()
-    torch.manual_seed(3)
-    x = torch.randn(5, 4096, device="cuda").to(torch.bfloat16)
-    assert torch.equal(plain(x), draft(x))
-
-
 def test_fp8_projections_stay_close_to_the_checkpoints(snapshot, parts):
-    """Draft-only: the d rows of one step through FP8 eh_proj and attention (and FP8 latent projections) against the
-    checkpoint's BF16, over the same draft KV. Random tokens and rows route and attend arbitrarily, which amplifies the
-    rounding (u keeps cosine 0.9993, d 0.985 and 0.978 measured); on recorded target rows the FP8 head's tokens per
-    round matched the BF16 head's (`profiling/nemotron_draft_step.py --accept`)."""
+    """Draft-only: the d rows of one step through FP8 eh_proj and attention against the checkpoint's BF16, over the
+    same draft KV. Random tokens and rows route and attend arbitrarily, which amplifies the rounding (u keeps cosine
+    0.9993, d 0.985 measured); on recorded target rows the FP8 head's tokens per round matched the BF16 head's."""
     torch.manual_seed(4)
     rows = {}
-    for kw in ({"precision": "bf16"}, {"precision": "fp8"}, {"precision": "fp8", "moe_precision": "fp8"}):
+    for kw in ({"precision": "bf16"}, {"precision": "fp8"}):
         head = _head(snapshot, parts, **kw)
         gen = torch.Generator().manual_seed(5)
         n = 300
@@ -131,10 +115,34 @@ def test_fp8_projections_stay_close_to_the_checkpoints(snapshot, parts):
         assert torch.nn.functional.cosine_similarity(d.float(), base.float(), dim=-1).min() > 0.97
 
 
+def fill(head, b: int, context: int, gen: torch.Generator, scale: float):
+    """Draft KV for `b` sequences of `context` tokens on disjoint pages; returns each sequence's pages."""
+    device = head.device
+    pages = []
+    for i in range(b):
+        p = torch.arange(1 + i * (context + 16), 1 + i * (context + 16) + context + 16, dtype=torch.int32, device=device)
+        toks = torch.randint(0, head.lm_head.out_features, (context - 1,), generator=gen).to(device)
+        hid = (torch.randn(context - 1, head.hidden_width, generator=gen) * scale).to(torch.bfloat16).to(device)
+        head.write_kv(toks, hid, torch.arange(1, context, dtype=torch.int64, device=device), p[1:context])
+        pages.append(p)
+    return pages
+
+
+def chain(proposer, b: int, context: int, pages, tokens, hidden, steps: int, graphs: bool):
+    """`steps` chained draft steps for b sequences at position `context`; returns [(hidden, token)] per step."""
+    out = []
+    positions = torch.full((b,), context, dtype=torch.int64, device=tokens.device)
+    for j in range(steps):
+        kv = [torch.cat([p[1:context], p[context:context + j + 1]]) for p in pages]
+        write = torch.stack([p[context + j] for p in pages]).contiguous()
+        hidden, tokens, _ = proposer._step(tokens, hidden, positions + j, write, kv, graphs)
+        out.append((hidden.clone(), tokens.clone()))
+    return out
+
+
 @pytest.mark.parametrize("fmt", ["w2"])
 def test_draft_graph_replays_the_eager_step(snapshot, parts, fmt):
     """Three chained steps at batch 1 and 4, served settings: bitwise."""
-    from profiling.nemotron_draft_step import chain, fill
     from sharar.proposers.mtp import MtpProposer
     from sharar.proposers.draft_head import RESCORE
     head = _head(snapshot, parts)

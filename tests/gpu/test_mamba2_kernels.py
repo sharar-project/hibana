@@ -6,10 +6,11 @@ does before the scan), then steps h' = exp(dt A) h + dt x B^T, y = h' C + D x to
 SSD) is compared within tolerance; decode, verify and replay share one recurrence and are compared bitwise with each
 other. Parameters are layer 0's when the checkpoint is present (random otherwise).
 
-Every state test runs in the three storage formats: FP32, FP16 stochastically rounded ("sr", keyed on the token
-positions and layer index) and FP16 rounded to nearest ("rn"). Within a format the bitwise contracts hold unchanged
-(verify == decode, replay == decode, 128-aligned prefill splits, checkpoints); against the FP32 reference the FP16
-states carry their rounding error. The stochastic rounding itself is checked for unbiasedness and determinism.
+Every state test runs in three storage formats: FP32, FP16 stochastically rounded ("sr", keyed on the token positions
+and layer index; the served `SHARAR_SSM_STATE=fp16_sr`) and FP16 rounded to nearest ("rn", the kernels'
+`stochastic=False`, the reference that shows what stochastic rounding keeps). Within a format the bitwise contracts
+hold unchanged (verify == decode, replay == decode, 128-aligned prefill splits, checkpoints); against the FP32
+reference the FP16 states carry their rounding error. The stochastic rounding itself is checked for unbiasedness and determinism.
 """
 
 import pytest
@@ -224,8 +225,9 @@ def test_checkpoint_is_the_shorter_prefill(layer, fmt):
 
 class _Pool:
     def __init__(self, layers, slots, fmt="fp32"):
-        from sharar.cache.ssm_format import SsmFormat
-        self.ssm_format = SsmFormat({"fp32": "fp32", "sr": "fp16", "rn": "fp16-rn"}[fmt])
+        from types import SimpleNamespace
+        # the served FP16 format rounds stochastically; "rn" is the kernels' nearest rounding (`stochastic=False`)
+        self.ssm_format = SimpleNamespace(stochastic=fmt == "sr")
         self.layer_ids = [2 * j for j in range(layers)]
         self.conv_all = torch.stack([_pools(slots, seed=10 + j)[0] for j in range(layers)])
         self.ssm_all = torch.stack([_pools(slots, seed=10 + j, fmt=fmt)[1] for j in range(layers)])

@@ -1216,7 +1216,7 @@ template <class S>
 torch::Tensor run(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, torch::Tensor order,
                   torch::Tensor planes13, torch::Tensor scales13, torch::Tensor row13,
                   torch::Tensor planes2, torch::Tensor scales2, torch::Tensor row2, int64_t lut, int64_t lut2, int64_t e_lo,
-                  int64_t wide_rows, int64_t pairs, bool allow_pdl) {
+                  int64_t wide_rows, int64_t pairs) {
   constexpr int kH = S::H, kI = S::I, kN1 = S::N1;
   const int M = x.size(0), topk = ids.dim() == 2 ? ids.size(1) : 0, P = M * topk;
   TORCH_CHECK(ids.dim() == 2 && ids.dtype() == at::kInt && ids.is_contiguous() && ids.size(0) == M && topk >= 1 && topk <= S::TOPK,
@@ -1258,7 +1258,7 @@ torch::Tensor run(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, tor
   cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
   // Nemotron's decode calls chain their four launches (and the small-call kernels around them, `nemotron_moe.cu`) by
   // programmatic dependent launch; the arithmetic is the same either way
-  const bool pdl = allow_pdl && !S::GATED && M <= 16;
+  const bool pdl = !S::GATED && M <= 16;
   auto launch = [&](void (*kernel)(const Params), dim3 grid, dim3 block) {
     cudaLaunchConfig_t cfg = {};
     cfg.gridDim = grid;
@@ -1366,7 +1366,7 @@ std::vector<torch::Tensor> quant_groups(torch::Tensor x) {
 torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, torch::Tensor order,
                      torch::Tensor planes13, torch::Tensor scales13, torch::Tensor row13,
                      torch::Tensor planes2, torch::Tensor scales2, torch::Tensor row2, int64_t lut, int64_t lut2, int64_t e_lo,
-                     int64_t wide_rows, int64_t pairs, bool pdl) {
+                     int64_t wide_rows, int64_t pairs) {
   using namespace moe;
   TORCH_CHECK(x.dim() == 2 && x.size(0) >= 1, "w3_moe: x must be [M, H] with M >= 1");
   TORCH_CHECK(pairs >= 0 && pairs <= 2, "pairs: 0 (the sum), 1 (FP32 pairs) or 2 (BF16 pairs)");
@@ -1374,9 +1374,9 @@ torch::Tensor w3_moe(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, 
   TORCH_CHECK(planes13.dim() >= 2 && row13.dim() == 2, "experts: planes [E, N/32, ...], row scales [E, N]");
   const int64_t width = x.size(1), fc1 = row13.size(1);
   if (width == FlashNextShape::H && fc1 == FlashNextShape::N1)
-    return run<FlashNextShape>(x, ids, weights, order, planes13, scales13, row13, planes2, scales2, row2, lut, lut2, e_lo, wide_rows, pairs, pdl);
+    return run<FlashNextShape>(x, ids, weights, order, planes13, scales13, row13, planes2, scales2, row2, lut, lut2, e_lo, wide_rows, pairs);
   if (width == NemotronShape::H && fc1 == NemotronShape::N1)
-    return run<NemotronShape>(x, ids, weights, order, planes13, scales13, row13, planes2, scales2, row2, lut, lut2, e_lo, wide_rows, pairs, pdl);
+    return run<NemotronShape>(x, ids, weights, order, planes13, scales13, row13, planes2, scales2, row2, lut, lut2, e_lo, wide_rows, pairs);
   TORCH_CHECK(false, "w3_moe: no expert geometry with x width ", width, " and ", fc1, " fc1 rows per expert");
   return torch::Tensor();
 }

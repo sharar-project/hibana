@@ -16,7 +16,6 @@ import torch
 
 from sharar.kernels import ops
 from sharar.kernels.fp8_quant import quant_fp8
-from sharar.kernels import nemotron_fused
 from sharar.kernels.nemotron_fused import write_kv
 from sharar.model.attention import Attention
 from sharar.weights.modelopt import load_fp8_linear
@@ -55,15 +54,12 @@ class NemotronAttention(Attention):
         return qkv[:, :self.q_size].view(qkv.shape[0], self.num_heads, self.head_dim)
 
     def decode(self, x, ctx, x_q=None):
-        if not nemotron_fused.enabled():
-            return super().decode(x, ctx, x_q)
         q = self._project_write(x, ctx, ctx.out_pages, x_q)
         attn = ctx.decode_wrapper.run(q, ctx.kv_pool.cache(self.layer_id))
         return self._finish(attn.view(q.shape[0], self.q_size), None)
 
     def prefill(self, x, positions, ctx=None, x_q=None):
-        if (not nemotron_fused.enabled() or ctx is None or ctx.mode == "prefill" or ctx.kv_pool is None
-                or not (ctx.prefix_len > 0 or ctx.batched)):
+        if ctx is None or ctx.mode == "prefill" or ctx.kv_pool is None or not (ctx.prefix_len > 0 or ctx.batched):
             return super().prefill(x, positions, ctx, x_q)
         # verify: the rows attend over their sequences' FP8 pages, their own K/V written first
         q = self._project_write(x, ctx, ctx.pages, x_q)

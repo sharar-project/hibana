@@ -5,7 +5,7 @@ speculative verification. Acceptance either copies a retained
 snapshot or reconstructs directly into validated private slots. The tensors are per layer so the
 kernels' `initial_state_indices` address the slot directly.
 
-The recurrent state is FP32 [HV, V, K] per layer and slot (FP16 with a Mamba-2 target's `fp16` / `fp16-rn` format), or,
+The recurrent state is FP32 [HV, V, K] per layer and slot (FP16 with a Mamba-2 target's `fp16_sr` format), or,
 with a quantized GDN `SsmFormat` (int8, int4), one byte row per layer and slot that holds the per-window quantized
 state (`cache/ssm_format.py`; typed views in `window`).
 """

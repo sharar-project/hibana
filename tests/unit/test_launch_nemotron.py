@@ -54,7 +54,7 @@ def test_the_3bit_copies_are_calibrated_only(env, tmp_path, profile):
 
 def test_fast_alone_shares_experts_and_halves_the_state(env):
     fast = resolve(env, "fast")
-    assert (fast.get("SHARAR_MOE_KEEP"), fast.get("SHARAR_MOE_BUDGET"), fast.get("SHARAR_SSM_STATE")) == ("12", "48:128", "fp16")
+    assert (fast.get("SHARAR_MOE_KEEP"), fast.get("SHARAR_MOE_BUDGET"), fast.get("SHARAR_SSM_STATE")) == ("12", "48:128", "fp16_sr")
     for profile in ("exact", "throughput"):
         s = resolve(env, profile)
         assert s.get("SHARAR_MOE_KEEP", "0") == "0" and not s.get("SHARAR_MOE_BUDGET")

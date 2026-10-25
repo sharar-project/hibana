@@ -7,27 +7,13 @@
   index_put writes (seven launches a layer) with one. The cast is FP32 -> e4m3 round-to-nearest-even as torch's;
   torch maps |x| >= 464 to NaN where this saturates at 448, a value no attention input reaches (it would be NaN
   in every later attention read).
-
-SHARAR_NEMOTRON_FUSED=0 turns every Nemotron fusion off (this module's, the residual norm's), for A/B runs.
 """
 
 from __future__ import annotations
 
-
 import torch
 import triton
 import triton.language as tl
-
-
-ENABLED: bool | None = None  # tests pin it; None: the engine's setting (EngineConfig.nemotron_fused)
-
-
-def enabled() -> bool:
-    """Whether Nemotron's fused kernels run (SHARAR_NEMOTRON_FUSED, read through the engine's config, not at import)."""
-    if ENABLED is not None:
-        return ENABLED
-    from sharar.engine.config import current
-    return current().nemotron_fused
 
 
 @triton.jit

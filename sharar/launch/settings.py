@@ -149,7 +149,7 @@ def nemotron_defaults(profile: str) -> dict[str, str]:
     # fewer experts per MoE block at one and four requests. FP16-SR state: half the state traffic of replay and verify.
     # h2h on spark-9931 with both 3-bit copies: 102.5 tok/s at one request (floor 16 uncapped 92.3, no sharing 79.5),
     # 185 at four; GSM8K-300 within noise of exact with NVFP4 experts (-0.3 pp) and with the 3-bit stack (+0.0 pp).
-    p.update(SHARAR_W3_DECODE="1", SHARAR_MOE_KEEP="12", SHARAR_MOE_BUDGET="48:128", SHARAR_SSM_STATE="fp16")
+    p.update(SHARAR_W3_DECODE="1", SHARAR_MOE_KEEP="12", SHARAR_MOE_BUDGET="48:128", SHARAR_SSM_STATE="fp16_sr")
     if profile == "throughput":
         # 5-16 requests are ungated for both: a 128-expert cap over 16 requests' verify rows is untested
         p.update(SHARAR_MAX_BATCH="16", SHARAR_SPEC_DEPTHS="2:4,4:4,16:3", SHARAR_MOE_KEEP="0", SHARAR_SSM_STATE="fp32")  # TPUT_NOTE
@@ -357,7 +357,7 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(values.get("SHARAR_DRAFT_HEAD", "fp8") in ("fp8", "w3", "w2"), "SHARAR_DRAFT_HEAD must be fp8, w3 or w2")
     _check(values.get("SHARAR_QSA_SPARSE_GRAPHS", "1") in ("0", "1"), "SHARAR_QSA_SPARSE_GRAPHS must be 0 or 1")
     _check(values.get("SHARAR_PLE_RESIDENT", "auto") in ("auto", "0"), "SHARAR_PLE_RESIDENT must be auto or 0")
-    ssm_states = ("fp32", "int8", "int4") if name != "nemotron" else ("fp32", "fp16", "fp16-rn")  # Mamba-2: FP16 (stochastic or nearest), not the GDN's windows
+    ssm_states = ("fp32", "int8", "int4") if name != "nemotron" else ("fp32", "fp16_sr")  # Mamba-2: FP16 (stochastic rounding), not the GDN's windows
     _check(values.get("SHARAR_SSM_STATE", "fp32") in ssm_states, "SHARAR_SSM_STATE must be " + ", ".join(ssm_states[:-1]) + " or " + ssm_states[-1])
     kv_format = values.get("SHARAR_KV_FORMAT", "fp8")
     _check(kv_format in ("fp8", "nvfp4", "sim-fp4", "sim-k8v4", "sim-bf16"),

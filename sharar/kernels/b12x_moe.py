@@ -1,11 +1,11 @@
 """Nemotron-3.5-Super's routed NVFP4 experts through FlashInfer's b12x SM12x MoE (`b12x_fused_moe`'s backend, ReLU²).
 
-The checkpoint's tensors as `cutlass_fused_moe` reads them: packed weights [E, N, K/2] and the block scales in the
-SM120 128x4 interleave, which b12x takes as the 6-D MMA view of the same storage (no copy). b12x's kernels quantize
-their inputs with dividing global scales (`cute_dsl/fp4_common.py`: block scale amax / (6 gs), codes v / (block scale
-x gs)), so the checkpoint's input scales enter as they are (in1 for FC1's input, in2 for FC2's), and FC1's
-dequantization multiplier is w1_alpha x input_global_scale = g1 x in1 (folded once here, as `B12xMoEWrapper` would per
-call); routed_scaling_factor rides in FC2's alpha (in2 x g2 x 5), as on the cutlass path.
+The checkpoint's tensors as `model/nemotron/moe.py` holds them (`cutlass_fused_moe`'s layout): packed weights
+[E, N, K/2] and the block scales in the SM120 128x4 interleave, which b12x takes as the 6-D MMA view of the same
+storage (no copy). b12x's kernels quantize their inputs with dividing global scales (`cute_dsl/fp4_common.py`: block
+scale amax / (6 gs), codes v / (block scale x gs)), so the checkpoint's input scales enter as they are (in1 for FC1's
+input, in2 for FC2's), and FC1's dequantization multiplier is w1_alpha x input_global_scale = g1 x in1 (folded once
+here, as `B12xMoEWrapper` would per call); routed_scaling_factor rides in FC2's alpha (in2 x g2 x 5).
 
 Workspaces: eager calls (prefill chunks) use FlashInfer's own cache; a call under CUDA-graph capture gets a workspace
 of its own shape, kept for the graph's life (b12x's cached workspace can be reallocated by a larger eager call).

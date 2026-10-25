@@ -13,13 +13,13 @@
 //   down    routed experts' down, each pair's FP32 output weighted; the last block of each 64-feature tile sums the
 //           pairs per row in selection order (deterministic)
 //   out     fc2_latent (BF16) plus the shared expert's down (NVFP4) into the block's BF16 output
-// (`prep` plans given ids instead: budgeted routing, or the routed experts alone for the MTP head's DraftMoe.)
+// (`prep` plans given ids instead: budgeted routing.)
 //
 // The matrices go through the tensor core with small-M fragments: weights in the 16-row A operand of mma.sync
 // m16n8k{16,64}, a call's rows (or an expert's pairs) in the 8 columns of B, FP32 accumulation. NVFP4 is the
 // checkpoint's layout (packed rows, low nibble first; E4M3 block scales per 16 in CUTLASS's SM120 128x4 interleave),
-// so prefill keeps `cutlass_fused_moe` and the NVFP4 GEMM on the same tensors; the tensor core applies the block scales
-// (kind::mxf4nvf4 scale_vec::4X, UE4M3).
+// so prefill's MoE (FlashInfer's b12x) and the NVFP4 GEMM read the same tensors; the tensor core applies the block
+// scales (kind::mxf4nvf4 scale_vec::4X, UE4M3).
 //
 // NVFP4 fragments. A lane (g = lane / 4, t = lane % 4) loads 16 contiguous bytes (32 FP4, two block-scale groups) of
 // rows g and g + 8 per 128-k step; the MMA wants each lane to hold half of a group (k 8t .. 8t + 7 of the 64), the
@@ -34,7 +34,7 @@
 // kernel 177 GB/s against 216; the CUDA-core path for the experts and the shared expert (whole 512-byte row pieces a
 // warp, E2M1 -> f16x2 dot products) ran 162-198 GB/s against 216-233.
 //
-// Measured (Sharar, spark-9931, 2026-10-24): block 1, real inputs (captured text, consecutive rows), CUDA graphs, dense
+// Measured (Sharar, spark-9931): block 1, real inputs (captured text, consecutive rows), CUDA graphs, dense
 // weights rotated over 4 copies, 8 windows, median us per call, no other GPU process during any measurement. GB/s over
 // the bytes the call must read (45.7 MB dense + distinct experts x 3.10 MB). `cutlass` / `b12x`: the block with the
 // routed experts through cutlass_fused_moe / FlashInfer's b12x MoE (router|fc1 torch.mm, route_topk, NVFP4 shared
@@ -51,7 +51,7 @@
 //    512    511.5  1630 |   8725.6   187 |   7685.2  212 |
 //   2048    512.0  1631 |  13497.6   121 |  10324.0  158 |
 // Past 16 rows b12x streams the experts at 224-226 GB/s; these kernels' run ~228 at 16 rows, so wider ones would gain
-// a percent or two: calls past 16 rows go to b12x (SHARAR_NEMOTRON_EXPERTS=auto). Accuracy (blocks 1, 8, 14, real
+// a percent or two: calls past 16 rows go to b12x. Accuracy (blocks 1, 8, 14, real
 // inputs; cosine against the reference with NVFP4 activations): these kernels >= 0.999998 (M 1-16), cutlass >= 0.99923
 // (0.99936 at M 512 in block 1), b12x 0.99926-0.99996 with its routed sum mostly 0.2-1.6% smaller than cutlass's
 // (block 14: 1.5% at M 1-4; block 1 at M 512: 1.5% larger); against the FP32 reference all are at the W4A4 floor (0.981-0.998).
@@ -302,220 +302,8 @@ __device__ __forceinline__ void run(float (&acc)[NT][4], const Op& op, int s0, i
   }
 }
 
-// ---- paired steps: a warp's 16 rows as two tiles of 8, each instruction reading 128 contiguous bytes (two steps) of
-// 4 rows. Lane (g, t) loads row g / 2 of the instruction's four at step 2 s + g % 2, so the MMA's row g is that row
-// at that step (rows g and g + 1 one row's two steps); the B columns pair up the same way, column 2 c + j token c's
-// activation at step 2 s + j, so only the accumulator entries where the row's and the column's step agree count,
-// and the two of a row add up across lanes g, g ^ 1 at the end. Four tokens an n8 tile, half the MMA's columns spent;
-// the tensor core has the throughput. DRAM serves the 128-byte row pieces 221-236 GB/s where the 64-byte ones of the
-// plain fragments get 201-227 (a pure read on GB10, row widths 512-8192 bytes).
-template <int NT>
-struct P2Fp4Op {
-  const uint8_t* w[4];    // rows g/2, 4 + g/2, 8 + g/2, 12 + g/2 of the warp's 16, + 64 (g % 2) + 16 t
-  const uint8_t* sr[2];   // tile 0 / 1: the scale row of the lane's SFA row (virtual row g + 8 (t % 2))
-  const uint8_t* xq[NT];  // token 4 nt + g/2: code row + 64 (g % 2) + 16 t, or null
-  const uint8_t* xs[NT];  // its scale row + 8 (g % 2)
-  int ks, par;            // the matrix's steps; g % 2
-};
-
-template <int NT>
-struct P2Fp4Step {
-  uint4 w[4];
-  uint32_t slo[2], shi[2];
-  uint4 x[NT];
-  uint2 xs[NT];
-};
-
-template <int NT>
-__device__ __forceinline__ void load_w(P2Fp4Step<NT>& d, const P2Fp4Op<NT>& op, int s) {
-  const int step = 2 * s + op.par;
-  const bool ok = step < op.ks;  // an odd step count: the last pair's second step is zero
-#pragma unroll
-  for (int i = 0; i < 4; ++i) d.w[i] = ok ? __ldcs(reinterpret_cast<const uint4*>(op.w[i] + 128 * s)) : make_uint4(0u, 0u, 0u, 0u);
-#pragma unroll
-  for (int i = 0; i < 2; ++i) {
-    d.slo[i] = ok ? __ldcs(reinterpret_cast<const unsigned int*>(op.sr[i] + (2 * step) * 512)) : 0u;
-    d.shi[i] = ok ? __ldcs(reinterpret_cast<const unsigned int*>(op.sr[i] + (2 * step + 1) * 512)) : 0u;
-  }
-}
-
-template <int NT>
-__device__ __forceinline__ void load_x(P2Fp4Step<NT>& d, const P2Fp4Op<NT>& op, int s) {
-  const bool ok = 2 * s + op.par < op.ks;
-#pragma unroll
-  for (int nt = 0; nt < NT; ++nt) {
-    d.x[nt] = ok && op.xq[nt] ? __ldg(reinterpret_cast<const uint4*>(op.xq[nt] + 128 * s)) : make_uint4(0u, 0u, 0u, 0u);
-    d.xs[nt] = ok && op.xs[nt] ? __ldg(reinterpret_cast<const uint2*>(op.xs[nt] + 16 * s)) : make_uint2(0u, 0u);
-  }
-}
-
-template <int NT>
-__device__ __forceinline__ void compute2(float (&acc)[2][NT][4], const P2Fp4Step<NT>& d, bool odd) {
-#pragma unroll
-  for (int T = 0; T < 2; ++T) {
-    const uint4 a = exchange(d.w[2 * T], odd), b = exchange(d.w[2 * T + 1], odd);
-    const uint32_t sfa0 = prmt(d.slo[T], d.shi[T], 0x5140), sfa1 = prmt(d.slo[T], d.shi[T], 0x7362);
-#pragma unroll
-    for (int nt = 0; nt < NT; ++nt) {
-      mma_fp4(acc[T][nt], a.x, b.x, a.y, b.y, d.x[nt].x, d.x[nt].y, sfa0, d.xs[nt].x);
-      mma_fp4(acc[T][nt], a.z, b.z, a.w, b.w, d.x[nt].z, d.x[nt].w, sfa1, d.xs[nt].y);
-    }
-  }
-}
-
-template <int NT>
-struct P2Bf16Op {
-  const uint8_t* w[4];
-  const uint8_t* x[NT];
-  int ks, par;
-};
-
-template <int NT>
-struct P2Bf16Step {
-  uint4 w[4];
-  uint4 x[NT];
-};
-
-template <int NT>
-__device__ __forceinline__ void load_w(P2Bf16Step<NT>& d, const P2Bf16Op<NT>& op, int s) {
-  const bool ok = 2 * s + op.par < op.ks;
-#pragma unroll
-  for (int i = 0; i < 4; ++i) d.w[i] = ok ? __ldcs(reinterpret_cast<const uint4*>(op.w[i] + 128 * s)) : make_uint4(0u, 0u, 0u, 0u);
-}
-
-template <int NT>
-__device__ __forceinline__ void load_x(P2Bf16Step<NT>& d, const P2Bf16Op<NT>& op, int s) {
-  const bool ok = 2 * s + op.par < op.ks;
-#pragma unroll
-  for (int nt = 0; nt < NT; ++nt)
-    d.x[nt] = ok && op.x[nt] ? __ldg(reinterpret_cast<const uint4*>(op.x[nt] + 128 * s)) : make_uint4(0u, 0u, 0u, 0u);
-}
-
-template <int NT>
-__device__ __forceinline__ void compute2(float (&acc)[2][NT][4], const P2Bf16Step<NT>& d, bool) {
-#pragma unroll
-  for (int T = 0; T < 2; ++T)
-#pragma unroll
-    for (int nt = 0; nt < NT; ++nt) {
-      mma_bf16(acc[T][nt], d.w[2 * T].x, d.w[2 * T + 1].x, d.w[2 * T].y, d.w[2 * T + 1].y, d.x[nt].x, d.x[nt].y);
-      mma_bf16(acc[T][nt], d.w[2 * T].z, d.w[2 * T + 1].z, d.w[2 * T].w, d.w[2 * T + 1].w, d.x[nt].z, d.x[nt].w);
-    }
-}
-
-// Paired steps [s0, s1) (two steps each) into acc (zeroed here), two pairs in flight; `wait` as in `run`.
-template <int NT, class Step, class Op>
-__device__ __forceinline__ void run2(float (&acc)[2][NT][4], const Op& op, int s0, int s1, bool wait) {
-  constexpr int PF2 = 2;
-  const bool odd = threadIdx.x & 1;
-#pragma unroll
-  for (int T = 0; T < 2; ++T)
-#pragma unroll
-    for (int nt = 0; nt < NT; ++nt)
-#pragma unroll
-      for (int i = 0; i < 4; ++i) acc[T][nt][i] = 0.f;
-  Step ring[PF2];
-#pragma unroll
-  for (int j = 0; j < PF2; ++j)
-    if (s0 + j < s1) load_w(ring[j], op, s0 + j);
-  if (wait) {
-    grid_wait();
-    grid_launch();
-  }
-#pragma unroll
-  for (int j = 0; j < PF2; ++j)
-    if (s0 + j < s1) load_x(ring[j], op, s0 + j);
-  for (int s = s0; s < s1; s += PF2) {
-#pragma unroll
-    for (int j = 0; j < PF2; ++j) {
-      if (s + j < s1) {
-        const Step d = ring[j];
-        if (s + j + PF2 < s1) {
-          load_w(ring[j], op, s + j + PF2);
-          load_x(ring[j], op, s + j + PF2);
-        }
-        compute2(acc, d, odd);
-      }
-    }
-  }
-}
-
-// The counted entries summed per row: out[row][token] for the warp's 16 rows and tokens 4 nt + t < cols.
-template <int NT>
-__device__ __forceinline__ void finish2(const float (&acc)[2][NT][4], float (*out)[17], int cols) {
-  const int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3, par = g & 1;
-#pragma unroll
-  for (int T = 0; T < 2; ++T)
-#pragma unroll
-    for (int nt = 0; nt < NT; ++nt) {
-      float lo = par ? acc[T][nt][1] : acc[T][nt][0], hi = par ? acc[T][nt][3] : acc[T][nt][2];
-      lo += __shfl_xor_sync(0xffffffffu, lo, 4);
-      hi += __shfl_xor_sync(0xffffffffu, hi, 4);
-      const int c = 4 * nt + t;
-      if (!par && c < cols) {
-        out[8 * T + (g >> 1)][c] = lo;
-        out[8 * T + 4 + (g >> 1)][c] = hi;
-      }
-    }
-}
-
-// An NVFP4 [*, K] weight's rows R0 .. R0 + 15 (w: the matrix, sc: its scales) against `cols` activation rows (row(c))
-// of a [*, K] activation (xq / xs), paired steps [s0, s1), into out (raw sums).
-template <int NT, int K, class RowOf>
-__device__ __forceinline__ void p2_fp4(const uint8_t* w, const uint8_t* sc, int R0, const uint8_t* xq, const uint8_t* xs,
-                                       int cols, RowOf row, int s0, int s1, bool wait, float (*out)[17]) {
-  const int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
-  P2Fp4Op<NT> op;
-  op.par = g & 1;
-  op.ks = K / 128;
-#pragma unroll
-  for (int i = 0; i < 4; ++i) op.w[i] = w + static_cast<size_t>(R0 + 4 * i + (g >> 1)) * (K / 2) + 64 * op.par + 16 * t;
-#pragma unroll
-  for (int T = 0; T < 2; ++T) op.sr[T] = sc + swz_row(R0 + 8 * T + 4 * (t & 1) + (g >> 1), K / 16);
-#pragma unroll
-  for (int nt = 0; nt < NT; ++nt) {
-    const int c = 4 * nt + (g >> 1);
-    const int r = c < cols ? row(c) : -1;
-    op.xq[nt] = r >= 0 ? xq + static_cast<size_t>(r) * (K / 2) + 64 * op.par + 16 * t : nullptr;
-    op.xs[nt] = r >= 0 ? xs + static_cast<size_t>(r) * (K / 16) + 8 * op.par : nullptr;
-  }
-  float acc[2][NT][4];
-  run2<NT, P2Fp4Step<NT>>(acc, op, s0, s1, wait);
-  finish2(acc, out, cols);
-}
-
-template <int NT, class RowOf>
-__device__ __forceinline__ void p2_bf16(const __nv_bfloat16* w, int K, int R0, const __nv_bfloat16* x, int cols, RowOf row,
-                                        int s0, int s1, bool wait, float (*out)[17]) {
-  const int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
-  P2Bf16Op<NT> op;
-  op.par = g & 1;
-  op.ks = K / 32;
-#pragma unroll
-  for (int i = 0; i < 4; ++i)
-    op.w[i] = reinterpret_cast<const uint8_t*>(w + static_cast<size_t>(R0 + 4 * i + (g >> 1)) * K) + 64 * op.par + 16 * t;
-#pragma unroll
-  for (int nt = 0; nt < NT; ++nt) {
-    const int c = 4 * nt + (g >> 1);
-    const int r = c < cols ? row(c) : -1;
-    op.x[nt] = r >= 0 ? reinterpret_cast<const uint8_t*>(x + static_cast<size_t>(r) * K) + 64 * op.par + 16 * t : nullptr;
-  }
-  float acc[2][NT][4];
-  run2<NT, P2Bf16Step<NT>>(acc, op, s0, s1, wait);
-  finish2(acc, out, cols);
-}
-
-// p2_fp4 with one n8 tile up to 4 columns, two up to 8, four up to 16.
-template <int K, class RowOf>
-__device__ __forceinline__ void p2_fp4_any(const uint8_t* w, const uint8_t* sc, int R0, const uint8_t* xq, const uint8_t* xs,
-                                           int cols, RowOf row, int s0, int s1, bool wait, float (*out)[17]) {
-  if (cols <= 4) p2_fp4<1, K>(w, sc, R0, xq, xs, cols, row, s0, s1, wait, out);
-  else if (cols <= 8) p2_fp4<2, K>(w, sc, R0, xq, xs, cols, row, s0, s1, wait, out);
-  else p2_fp4<4, K>(w, sc, R0, xq, xs, cols, row, s0, s1, wait, out);
-}
-
 struct Params {
   const __nv_bfloat16* x;    // [M, kH]
-  const __nv_bfloat16* lat;  // [M, kL] (prep only)
   const int* ids;            // [M, topk]
   const float* wts;          // [M, topk]
   const __nv_bfloat16 *wr, *fc2;         // [kRouter, kH], [kH, kL]
@@ -536,15 +324,13 @@ struct Params {
   __nv_bfloat16* routed;  // [M, kL]
   __nv_bfloat16* out;     // [M, kH]
   int M, topk;      // rows; experts per row (the ids' width)
-  int up_shared;    // up blocks of the shared expert (kUpShared, or 0: the routed experts alone)
+  int up_shared;    // up blocks of the shared expert (kUpShared)
   const float* bias;  // [E] routing: the choice's score correction
   const int* slots;   // routing: [M / steps] state slots (0: a padded request), or null
   int steps;
   int route;          // the router kernel routes (ids_out, wts_out, the plan)
   int* ids_out;
   float* wts_out;
-  int simt;           // the router GEMV on the CUDA cores for calls of at most 8 rows
-  int p2;             // paired-step fragments (128-byte row pieces) for the experts, the shared expert and fc2
   int pad_id;         // routing: the id a padded row names (-1: row 0's top expert; 3-bit experts: 512, no expert)
   __nv_bfloat16* lat_out;  // router: the BF16 latent [M, kL] (the 3-bit experts' input), or null
 };
@@ -732,9 +518,8 @@ __device__ __forceinline__ void router_block_simt(const Params& p, float (*red)[
 // 32 logit blocks routes every row and plans the call.
 __global__ void __launch_bounds__(kSplitWarps * 32) router_kernel(const Params p) {
   __shared__ float red[kSplitWarps][16][kMaxRows + 1];
-  if (p.simt && p.M <= 4) router_block_simt<4>(p, red);
-  else if (p.simt && p.M <= 8) router_block_simt<8>(p, red);
-  else if (p.M <= 8) router_block<1>(p, red);
+  if (p.M <= 4) router_block_simt<4>(p, red);
+  else if (p.M <= 8) router_block_simt<8>(p, red);
   else router_block<2>(p, red);
   const float gs_su = __ldg(p.gs_su);
   for (int i = blockIdx.x + gridDim.x * threadIdx.x; i < p.M * (kH / 16); i += gridDim.x * blockDim.x) {
@@ -795,18 +580,11 @@ __global__ void __launch_bounds__(kSplitWarps * 32) router_kernel(const Params p
   if (threadIdx.x == 0) p.counters[kRouteCounter] = 0;
 }
 
-// ---------------------------------------------------------------- prep: the plan of given ids (and the latent)
+// ---------------------------------------------------------------- prep: the plan of given ids
 
 __global__ void __launch_bounds__(kE) prep_kernel(const Params p) {
   grid_wait();
   grid_launch();
-  if (blockIdx.x > 0) {  // the latent row, one block-scale group a thread (the routed experts alone)
-    const int r = blockIdx.x - 1;
-    if (threadIdx.x < kL / 16)
-      quant_group_bf16(p.lat + static_cast<size_t>(r) * kL, threadIdx.x, __ldg(p.gs1), p.xq + static_cast<size_t>(r) * (kL / 2),
-                       p.xs + static_cast<size_t>(r) * (kL / 16));
-    return;
-  }
   __shared__ int count[kE], slot[kE], start[kE + 1], fill[kE];
   make_plan(p, [&](int i) { return __ldg(p.ids + i); }, [&](int i) { return __ldg(p.wts + i); }, p.M * p.topk, count, slot,
             start, fill);
@@ -816,16 +594,12 @@ __global__ void __launch_bounds__(kE) prep_kernel(const Params p) {
 
 // One warp's 16 rows at R0 of a [rows, K] NVFP4 weight against `cols` activation rows (row c of the B operand at
 // xq + row(c) * K/2: list[c] / div, or c without a list), relu(alpha acc)^2 rounded to BF16 (the intermediate the
-// reference and cutlass_fused_moe quantize), quantized with gs into hq / hs (row stride N/2, N/16) at list[c] (or c).
+// reference quantizes), quantized with gs into hq / hs (row stride N/2, N/16) at list[c] (or c).
 template <int NT, int K, int N>
 __device__ __forceinline__ void up_warp(const uint8_t* w, const uint8_t* sc, int R0, const uint8_t* xq, const uint8_t* xs,
                                         const int* list, int div, int cols, float alpha, float gs, uint8_t* hq,
-                                        uint8_t* hs, float (*hsm)[kMaxRows + 1], bool wait, bool p2) {
+                                        uint8_t* hs, float (*hsm)[kMaxRows + 1], bool wait) {
   const int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
-  if (p2) {
-    p2_fp4_any<K>(w, sc, R0, xq, xs, cols, [&](int c) { return list ? __ldg(list + c) / div : c; }, 0, (K / 128 + 1) / 2,
-                  wait, hsm);
-  } else {
   Fp4Op<NT> op;
   op.rg = w + static_cast<size_t>(R0 + g) * (K / 2) + 16 * t;
   op.rg8 = op.rg + 8 * (K / 2);
@@ -843,7 +617,6 @@ __device__ __forceinline__ void up_warp(const uint8_t* w, const uint8_t* sc, int
   for (int nt = 0; nt < NT; ++nt)
 #pragma unroll
     for (int i = 0; i < 4; ++i) hsm[g + 8 * (i >> 1)][nt * 8 + 2 * t + (i & 1)] = acc[nt][i];
-  }
   __syncwarp();
   // one (column, half) a lane: the warp's 16 rows are one block-scale group of the intermediate
   const int c = lane >> 1, h = lane & 1;
@@ -871,8 +644,8 @@ __global__ void __launch_bounds__(kWarps * 32) up_kernel(const Params p) {
   if (blockIdx.x < p.up_shared) {
     const int R0 = blockIdx.x * kBlockRows + warp * 16;
     const float alpha = __ldg(p.alpha_su), gs = __ldg(p.gs_sd);
-    if (p.M <= 8) up_warp<1, kH, kS>(p.wsu, p.ssu, R0, p.xsq, p.xss, nullptr, 1, p.M, alpha, gs, p.hsq, p.hss, hsm[warp], true, p.p2);
-    else up_warp<2, kH, kS>(p.wsu, p.ssu, R0, p.xsq, p.xss, nullptr, 1, p.M, alpha, gs, p.hsq, p.hss, hsm[warp], true, p.p2);
+    if (p.M <= 8) up_warp<1, kH, kS>(p.wsu, p.ssu, R0, p.xsq, p.xss, nullptr, 1, p.M, alpha, gs, p.hsq, p.hss, hsm[warp], true);
+    else up_warp<2, kH, kS>(p.wsu, p.ssu, R0, p.xsq, p.xss, nullptr, 1, p.M, alpha, gs, p.hsq, p.hss, hsm[warp], true);
     return;
   }
   const int b = blockIdx.x - p.up_shared, d = b / (kI / kBlockRows);
@@ -888,8 +661,8 @@ __global__ void __launch_bounds__(kWarps * 32) up_kernel(const Params p) {
   for (int base = 0; base < n; base += kMaxRows) {  // more than 16 pairs on one expert: only with repeated ids
     const int cols = min(kMaxRows, n - base);
     const int* list = p.order + s0 + base;
-    if (cols <= 8) up_warp<1, kL, kI>(w, sc, R0, p.xq, p.xs, list, p.topk, cols, alpha, gs, p.hq, p.hs, hsm[warp], false, p.p2);
-    else up_warp<2, kL, kI>(w, sc, R0, p.xq, p.xs, list, p.topk, cols, alpha, gs, p.hq, p.hs, hsm[warp], false, p.p2);
+    if (cols <= 8) up_warp<1, kL, kI>(w, sc, R0, p.xq, p.xs, list, p.topk, cols, alpha, gs, p.hq, p.hs, hsm[warp], false);
+    else up_warp<2, kL, kI>(w, sc, R0, p.xq, p.xs, list, p.topk, cols, alpha, gs, p.hq, p.hs, hsm[warp], false);
   }
 }
 
@@ -935,21 +708,10 @@ __global__ void __launch_bounds__(kWarps * 32) down_kernel(const Params p) {
     const uint8_t* w = p.w2 + static_cast<size_t>(e) * kL * (kI / 2);
     const uint8_t* sc = p.s2 + static_cast<size_t>(e) * kL * (kI / 16);
     const float alpha = __ldg(p.alpha2 + e);
-    __shared__ float dt[kWarps][16][kMaxRows + 1];
     for (int base = 0; base < n; base += kMaxRows) {
       const int cols = min(kMaxRows, n - base);
       const int* list = p.order + s0 + base;
-      if (p.p2) {
-        float (*tile)[kMaxRows + 1] = dt[threadIdx.x >> 5];
-        p2_fp4_any<kI>(w, sc, R0, p.hq, p.hs, cols, [&](int c) { return __ldg(list + c); }, 0, (kI / 128 + 1) / 2, base == 0,
-                       tile);
-        __syncwarp();
-        for (int i = threadIdx.x & 31; i < 16 * cols; i += 32) {
-          const int r = i & 15, c = i >> 4, q = __ldg(list + c);
-          p.y[static_cast<size_t>(q) * kL + R0 + r] = tile[r][c] * alpha * __ldg(p.wts + q);
-        }
-        __syncwarp();
-      } else if (cols <= 8) {
+      if (cols <= 8) {
         down_warp<1>(p, w, sc, R0, list, cols, alpha);
       } else {
         down_warp<2>(p, w, sc, R0, list, cols, alpha);
@@ -1030,34 +792,9 @@ __device__ __forceinline__ void out_block(const Params& p, float (*red)[16][kMax
     for (int i = 0; i < 4; ++i) red[warp][g + 8 * (i >> 1)][nt * 8 + 2 * t + (i & 1)] = acc[nt][i];
 }
 
-// The paired-step split: fc2's 16 pairs (K 1024) and the shared down's 21 (K 5376) over the 8 warps as one list of 37;
-// a warp's part of each matrix into its own tile, the shared one's scaled, summed in shared memory.
-__device__ __forceinline__ void out_block2(const Params& p, float (*red)[16][kMaxRows + 1]) {
-  __shared__ float part[kSplitWarps][16][kMaxRows + 1];
-  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, R0 = blockIdx.x * 16;
-  constexpr int A = kL / 64, B = kS / 256 + 1, T = A + B;  // 16 + 21 pairs (kS / 128 = 42 steps)
-  const int v0 = warp * T / kSplitWarps, v1 = (warp + 1) * T / kSplitWarps, M = p.M;
-  auto id = [](int c) { return c; };
-  for (int i = lane; i < 16 * M; i += 32) red[warp][i & 15][i >> 4] = part[warp][i & 15][i >> 4] = 0.f;
-  __syncwarp();
-  if (v0 < A) {
-    if (M <= 4) p2_bf16<1>(p.fc2, kL, R0, p.routed, M, id, v0, min(v1, A), true, red[warp]);
-    else if (M <= 8) p2_bf16<2>(p.fc2, kL, R0, p.routed, M, id, v0, min(v1, A), true, red[warp]);
-    else p2_bf16<4>(p.fc2, kL, R0, p.routed, M, id, v0, min(v1, A), true, red[warp]);
-  }
-  if (v1 > A) {
-    p2_fp4_any<kS>(p.wsd, p.ssd, R0, p.hsq, p.hss, M, id, max(v0, A) - A, v1 - A, true, part[warp]);
-    __syncwarp();
-    const float alpha = __ldg(p.alpha_sd);
-    for (int i = lane; i < 16 * M; i += 32) red[warp][i & 15][i >> 4] += alpha * part[warp][i & 15][i >> 4];
-  }
-  __syncwarp();
-}
-
 __global__ void __launch_bounds__(kSplitWarps * 32) out_kernel(const Params p) {
   __shared__ float red[kSplitWarps][16][kMaxRows + 1];
-  if (p.p2) out_block2(p, red);
-  else if (p.M <= 8) out_block<1>(p, red);
+  if (p.M <= 8) out_block<1>(p, red);
   else out_block<2>(p, red);
   __syncthreads();
   for (int i = threadIdx.x; i < 16 * p.M; i += kSplitWarps * 32) {
@@ -1071,8 +808,8 @@ __global__ void __launch_bounds__(kSplitWarps * 32) out_kernel(const Params p) {
 
 // ---------------------------------------------------------------- host
 
-// Launch with programmatic stream serialization (`pdl`): the kernel may start while the previous one finishes.
-void launch(void (*kernel)(const Params), dim3 grid, dim3 block, cudaStream_t stream, bool pdl, const Params& p) {
+// Launch with programmatic stream serialization: the kernel may start while the previous one finishes.
+void launch(void (*kernel)(const Params), dim3 grid, dim3 block, cudaStream_t stream, const Params& p) {
   cudaLaunchConfig_t cfg = {};
   cfg.gridDim = grid;
   cfg.blockDim = block;
@@ -1081,17 +818,17 @@ void launch(void (*kernel)(const Params), dim3 grid, dim3 block, cudaStream_t st
   attr[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
   attr[0].val.programmaticStreamSerializationAllowed = 1;
   cfg.attrs = attr;
-  cfg.numAttrs = pdl ? 1 : 0;
+  cfg.numAttrs = 1;
   C10_CUDA_CHECK(cudaLaunchKernelEx(&cfg, kernel, p));
 }
 
 template <class T>
 const T* ptr(const torch::Tensor& t) { return reinterpret_cast<const T*>(t.data_ptr()); }
 
-Params make_params(const torch::Tensor& x, const std::vector<torch::Tensor>& w, int M, bool shared = true) {
+Params make_params(const torch::Tensor& x, const std::vector<torch::Tensor>& w, int M) {
   // w: wr, fc2, w1, s1, w2, s2, wsu, ssu, wsd, ssd, alpha1, alpha2, gs1, gs2, alpha_su, alpha_sd, gs_su, gs_sd, counters
   TORCH_CHECK(w.size() == 19, "weights: 19 tensors");
-  TORCH_CHECK(!shared || (x.dtype() == at::kBFloat16 && x.is_contiguous() && x.dim() == 2 && x.size(0) == M && x.size(1) == kH),
+  TORCH_CHECK(x.dtype() == at::kBFloat16 && x.is_contiguous() && x.dim() == 2 && x.size(0) == M && x.size(1) == kH,
               "x: contiguous bf16 [M, 4096]");
   TORCH_CHECK(M >= 1 && M <= kMaxRows, "1..16 rows");
   TORCH_CHECK(w[0].numel() == static_cast<int64_t>(kRouter) * kH && w[1].numel() == static_cast<int64_t>(kH) * kL, "router / fc2");
@@ -1104,8 +841,8 @@ Params make_params(const torch::Tensor& x, const std::vector<torch::Tensor>& w, 
   for (int i = 10; i < 18; ++i) TORCH_CHECK(w[i].dtype() == at::kFloat && w[i].is_contiguous(), "scales: fp32");
   TORCH_CHECK(w[18].dtype() == at::kInt && w[18].numel() > kRouteCounter, "counters");
   Params p{};
-  p.x = shared ? ptr<__nv_bfloat16>(x) : nullptr;
-  p.up_shared = shared ? kUpShared : 0;
+  p.x = ptr<__nv_bfloat16>(x);
+  p.up_shared = kUpShared;
   p.wr = ptr<__nv_bfloat16>(w[0]);
   p.fc2 = ptr<__nv_bfloat16>(w[1]);
   p.w1 = ptr<uint8_t>(w[2]);
@@ -1178,22 +915,18 @@ void bind(Params& p, const torch::Tensor& ws, int M) {
   p.routed = reinterpret_cast<__nv_bfloat16*>(b + l.routed);
 }
 
-torch::Tensor routed_view(const torch::Tensor& ws, int M) {
-  return ws.narrow(0, layout(M).routed, M * kL * 2).view(at::kBFloat16).view({M, kL});
-}
-
 void check_ids(const torch::Tensor& ids, const torch::Tensor& wts, int M) {
   TORCH_CHECK(ids.dtype() == at::kInt && ids.is_contiguous() && ids.dim() == 2 && ids.size(0) == M, "ids: int32 [M, k]");
   TORCH_CHECK(ids.size(1) >= 1 && ids.size(1) <= kMaxTopk, "1..32 experts a row");
   TORCH_CHECK(wts.dtype() == at::kFloat && wts.is_contiguous() && wts.sizes() == ids.sizes(), "weights: fp32 like ids");
 }
 
-// up (+ down, + out by `stages`) after the plan.
-void launch_rest(const Params& p, int stages, bool pdl, cudaStream_t stream) {
+// up, down and out after the plan.
+void launch_rest(const Params& p, cudaStream_t stream) {
   const int slots = std::max(1, std::min(p.M * p.topk, kE));
-  if (stages >= 2) launch(up_kernel, p.up_shared + (kI / kBlockRows) * slots, kWarps * 32, stream, pdl, p);
-  if (stages >= 3) launch(down_kernel, dim3(kL / kBlockRows, slots), kWarps * 32, stream, pdl, p);
-  if (stages >= 4) launch(out_kernel, kH / 16, kSplitWarps * 32, stream, pdl, p);
+  launch(up_kernel, p.up_shared + (kI / kBlockRows) * slots, kWarps * 32, stream, p);
+  launch(down_kernel, dim3(kL / kBlockRows, slots), kWarps * 32, stream, p);
+  launch(out_kernel, kH / 16, kSplitWarps * 32, stream, p);
 }
 
 }  // namespace
@@ -1203,9 +936,9 @@ void launch_rest(const Params& p, int stages, bool pdl, cudaStream_t stream) {
 // (`moe.py`'s route_topk: bias for the choice, renormalized sigmoid weights; with `slots`, rows r of requests with
 // slots[r / steps] == 0 take row 0's top expert at weight 0) and plans the call; else ids / weights are left
 // unwritten (the caller routes from fused and passes its own to `block` with `plan`). Either way it quantizes x and the
-// latent for the rest of the block. `simt`: the GEMV on the CUDA cores up to 8 rows.
+// latent for the rest of the block. The GEMV runs on the CUDA cores up to 8 rows.
 std::vector<torch::Tensor> router(torch::Tensor x, std::vector<torch::Tensor> w, torch::Tensor bias, int64_t k,
-                                  torch::Tensor slots, int64_t steps, bool route, bool pdl, bool simt, int64_t pad_id) {
+                                  torch::Tensor slots, int64_t steps, bool route, int64_t pad_id) {
   const int M = x.size(0);
   Params p = make_params(x, w, M);
   TORCH_CHECK(k >= 1 && k <= kMaxTopk, "1..32 experts a row");
@@ -1225,22 +958,19 @@ std::vector<torch::Tensor> router(torch::Tensor x, std::vector<torch::Tensor> w,
   p.slots = slots.numel() ? slots.data_ptr<int>() : nullptr;
   p.steps = static_cast<int>(steps);
   p.route = route;
-  p.simt = simt;
   p.topk = static_cast<int>(k);
   p.ids_out = ids.data_ptr<int>();
   p.wts_out = wts.data_ptr<float>();
-  launch(router_kernel, kRouter / 16, kSplitWarps * 32, c10::cuda::getCurrentCUDAStream(), pdl, p);
+  launch(router_kernel, kRouter / 16, kSplitWarps * 32, c10::cuda::getCurrentCUDAStream(), p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return {fused, ids, wts, ws, lat};
 }
 
 // The block after `router`: x [M, 4096] bf16, its workspace, ids / weights [M, k] (int32 / fp32; weights
 // renormalized, routed_scaling_factor rides in alpha2) -> bf16 [M, 4096] = fc2_latent(routed sum) + shared expert.
-// `plan`: plan the call from ids (when `router` did not route). `stages` (profiling): 1 plan, 2 + up, 3 + down
-// (returns the routed sum [M, 1024]), 4 everything. `pdl`: programmatic dependent launches. Graph-capturable;
-// deterministic.
+// `plan`: plan the call from ids (when `router` did not route). Graph-capturable; deterministic.
 torch::Tensor block(torch::Tensor x, torch::Tensor ws, torch::Tensor ids, torch::Tensor wts, std::vector<torch::Tensor> w,
-                    bool plan, int64_t stages, bool pdl, bool p2) {
+                    bool plan) {
   const int M = x.size(0);
   Params p = make_params(x, w, M);
   check_ids(ids, wts, M);
@@ -1248,51 +978,28 @@ torch::Tensor block(torch::Tensor x, torch::Tensor ws, torch::Tensor ids, torch:
   p.ids = ids.data_ptr<int>();
   p.wts = wts.data_ptr<float>();
   p.topk = ids.size(1);
-  p.p2 = p2;
   auto out = torch::empty({M, kH}, x.options());
   p.out = reinterpret_cast<__nv_bfloat16*>(out.data_ptr());
   cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
-  if (plan) launch(prep_kernel, 1, kE, stream, pdl, p);
-  launch_rest(p, static_cast<int>(stages), pdl, stream);
+  if (plan) launch(prep_kernel, 1, kE, stream, p);
+  launch_rest(p, stream);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
-  return stages >= 4 ? out : routed_view(ws, M);
-}
-
-// The routed experts alone for latent [M, 1024] bf16 and ids / weights [M, k] -> the routed sum, bf16 [M, 1024]
-// (plan and latent quantization, up, down).
-torch::Tensor routed(torch::Tensor lat, torch::Tensor ids, torch::Tensor wts, std::vector<torch::Tensor> w, bool pdl, bool p2) {
-  const int M = lat.size(0);
-  Params p = make_params(lat, w, M, false);
-  TORCH_CHECK(lat.dtype() == at::kBFloat16 && lat.is_contiguous() && lat.dim() == 2 && lat.size(1) == kL, "lat: bf16 [M, 1024]");
-  check_ids(ids, wts, M);
-  auto ws = torch::empty({static_cast<int64_t>(layout(M).total)}, lat.options().dtype(at::kByte));
-  bind(p, ws, M);
-  p.lat = ptr<__nv_bfloat16>(lat);
-  p.ids = ids.data_ptr<int>();
-  p.wts = wts.data_ptr<float>();
-  p.topk = ids.size(1);
-  p.p2 = p2;
-  cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
-  launch(prep_kernel, 1 + M, kE, stream, pdl, p);
-  launch_rest(p, 3, pdl, stream);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
-  return routed_view(ws, M);
+  return out;
 }
 
 // The block around 3-bit routed experts (`kernels/w3_moe.py`, which reads the router's BF16 latent and ids): after
 // `router`, `shared_up` (the shared expert's up, relu^2 and NVFP4 quantization), then the caller's routed sum, then
 // `out` (fc2_latent of that sum plus the shared expert's down) -> bf16 [M, 4096].
-void shared_up(torch::Tensor x, torch::Tensor ws, std::vector<torch::Tensor> w, bool pdl, bool p2) {
+void shared_up(torch::Tensor x, torch::Tensor ws, std::vector<torch::Tensor> w) {
   const int M = x.size(0);
   Params p = make_params(x, w, M);
   bind(p, ws, M);
   p.topk = 1;
-  p.p2 = p2;
-  launch(up_kernel, kUpShared, kWarps * 32, c10::cuda::getCurrentCUDAStream(), pdl, p);
+  launch(up_kernel, kUpShared, kWarps * 32, c10::cuda::getCurrentCUDAStream(), p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-torch::Tensor out(torch::Tensor x, torch::Tensor ws, torch::Tensor routed, std::vector<torch::Tensor> w, bool pdl, bool p2) {
+torch::Tensor out(torch::Tensor x, torch::Tensor ws, torch::Tensor routed, std::vector<torch::Tensor> w) {
   const int M = x.size(0);
   Params p = make_params(x, w, M);
   TORCH_CHECK(routed.dtype() == at::kBFloat16 && routed.is_contiguous() && routed.dim() == 2 && routed.size(0) == M &&
@@ -1300,10 +1007,9 @@ torch::Tensor out(torch::Tensor x, torch::Tensor ws, torch::Tensor routed, std::
   bind(p, ws, M);
   p.routed = reinterpret_cast<__nv_bfloat16*>(routed.data_ptr());
   p.topk = 1;
-  p.p2 = p2;
   auto o = torch::empty({M, kH}, x.options());
   p.out = reinterpret_cast<__nv_bfloat16*>(o.data_ptr());
-  launch(out_kernel, kH / 16, kSplitWarps * 32, c10::cuda::getCurrentCUDAStream(), pdl, p);
+  launch(out_kernel, kH / 16, kSplitWarps * 32, c10::cuda::getCurrentCUDAStream(), p);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return o;
 }
@@ -1313,5 +1019,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("out", &out, "Nemotron MoE fc2_latent of a routed sum plus the shared expert's down, 1..16 rows");
   m.def("router", &router, "Nemotron MoE router|fc1 GEMV (+ routing and planning), 1..16 rows (SM120/121)");
   m.def("block", &block, "Nemotron latent MoE block after the router, NVFP4 experts, 1..16 rows (SM120/121)");
-  m.def("routed", &routed, "Nemotron routed NVFP4 experts alone, 1..16 rows (SM120/121)");
 }

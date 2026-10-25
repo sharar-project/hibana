@@ -147,15 +147,14 @@ Four of the knobs take more than the table shows:
   `SHARAR_MOE_KEEP` alone gives each token its top k;
   `SHARAR_MOE_KEEP=0` routes in full. A token's experts depend on the rest of its forward, so a greedy reply can change
   with what else the server runs. Nemotron's selection (22 of 512 experts a token) keeps k as each row's floor, lets a
-  row's other top-22 experts ride along when the forward reads them anyway (`SHARAR_MOE_FREE_RIDERS=0`: off), and fills
-  the cap by summed routing weight ([how](nemotron.md#serving)).
-- **`SHARAR_SSM_STATE=fp32|int8|int4`**: the integer formats quantize each GDN layer's recurrent state per window as
+  row's other top-22 experts ride along when the forward reads them anyway, and fills the cap by summed routing weight
+  ([how](nemotron.md#serving)).
+- **`SHARAR_SSM_STATE=fp32|int8|int4|fp16_sr`**: the integer formats quantize each GDN layer's recurrent state per window as
   in LeapQuant ([arXiv 2609.38166](https://arxiv.org/abs/2609.38166); `sharar/cache/ssm_format.py`), a fraction of
   FP32's memory per slot, and need `SHARAR_VERIFY_STATE=reconstruct` (with `snapshots` the state stays FP32). The
   saving pays with many requests (on one Spark the 27B decodes 30% faster at 16) but not at one, where it also
-  delays a long prompt's first token, so `fast` keeps FP32. Nemotron's Mamba-2 state takes `fp16` (stochastic
-  rounding keyed on token position and layer) or `fp16-rn` (nearest) instead: half of FP32's state traffic, and in
-  `fast` with expert sharing.
+  delays a long prompt's first token, so `fast` keeps FP32. Nemotron's Mamba-2 state takes `fp16_sr` instead (stochastic
+  rounding keyed on token position and layer): half of FP32's state traffic, and in `fast` with expert sharing.
 - **`SHARAR_QSA_PREFILL_BACKEND=original|auto|optimized`** (Flash-Next): `auto` runs the optimized SM121 sparse
   eager prefill through 32K where eligible and the original elsewhere; `optimized` requires it. Its score
   arithmetic and tie order differ, so `exact` keeps `original`; it makes 8K and 32K prefill 3-4% faster with

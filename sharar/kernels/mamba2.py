@@ -12,10 +12,10 @@ causal convolution with bias and SiLU, split into x (128 heads x 64), B and C (8
 dt_bias), A = -exp(A_log); h' = exp(dt A) h + dt x B^T per head, y = h' C + D x; then y * silu(z), RMS-normalized
 in groups of 1024 (norm_before_gate=False) and scaled by the norm weight; out_proj. The HF port clamps dt from below
 at time_step_min (1e-3) in its chunked path only (not in its recurrent path); vLLM and the checkpoint's
-time_step_limit (0, inf) do not clamp, which is this module's default (`dt_limit`). Layer 0's dt does go below 1e-3.
+time_step_limit (0, inf) do not clamp, and neither does this module. Layer 0's dt does go below 1e-3.
 
 The recurrent state is [slot, head, headdim, d_state], which is the state pool's [slot, HV, V, K], FP32 or FP16
-(`SsmFormat` fp16 / fp16-rn); the convolution state is the last three pre-convolution inputs, [slot, conv_dim, 3]
+(`SsmFormat` fp16_sr); the convolution state is the last three pre-convolution inputs, [slot, conv_dim, 3]
 BF16 (the in_proj's own BF16 outputs, so it stores them exactly in every format). Every path addresses the pool by
 slot index and reads no host value, so decode, verify and replay are CUDA-graph safe with static shapes.
 
@@ -23,7 +23,7 @@ An FP16 state is computed in FP32 and rounded on every store (`_round_state`): d
 step (the running state continues from the rounded value, so verify == decode bitwise; snapshots hold it), each
 replayed step, and each prefill chunk end (checkpoints and the final state; chunks sit on the 128-token grid, so a
 split prefill still reproduces the unsplit one). The readout y uses the FP32 state before rounding. Stochastic
-rounding (fp16, NVIDIA's recipe for this model on DGX Spark) draws its bits from Philox (5 rounds) with the counter
+rounding (fp16_sr, NVIDIA's recipe for this model on DGX Spark) draws its bits from Philox (5 rounds) with the counter
 (element // 4, token position, layer index) and a fixed key: no host RNG, nothing per launch, so a run reproduces
 itself bit for bit whatever its slot or batch, and every path that stores the state after a given token uses the
 same bits. GB10 has no cvt.rs, so the rounding is integer arithmetic on the FP32 bits (`_sr_fp16`).
@@ -85,11 +85,10 @@ _STATES_TILE = (64, 64)
 # (mamba_ssm's choice), 4e-4 with TF32, 5e-6 with 3xTF32 for 8% more time in that kernel (1.69 -> 1.83 ms at 8192
 # tokens). The state persists through every later decode step, so it gets the 3xTF32 dot.
 _STATES_PRECISION = "tf32x3"
-# FP16 state storage (SsmFormat fp16 / fp16-rn): the Philox key and rounds of the stochastic rounding (NVIDIA's DGX
+# FP16 state storage (SsmFormat fp16_sr): the Philox key and rounds of the stochastic rounding (NVIDIA's DGX
 # Spark recipe for this model runs vLLM with 5 rounds).
 _SEED = tl.constexpr(0x5348415241520001)
 _PHILOX_ROUNDS = 5
-_RNG_WORDS = tl.constexpr(4)
 
 
 def _round_mode(ssm_state: torch.Tensor, stochastic: bool) -> int:
@@ -110,7 +109,6 @@ class Mamba2Params:
     groups: int = GROUPS
     head_dim: int = HEAD_DIM
     state: int = STATE
-    dt_limit: tuple[float, float] = (0.0, float("inf"))
 
     @property
     def heads(self) -> int:
@@ -126,7 +124,7 @@ class Mamba2Params:
 
 
 def prepare_params(conv_weight, conv_bias, A_log, D, dt_bias, norm_weight, eps: float, *, groups: int = GROUPS,
-                   state: int = STATE, dt_limit=(0.0, float("inf"))) -> Mamba2Params:
+                   state: int = STATE) -> Mamba2Params:
     """Checkpoint tensors (any float dtype; conv1d.weight [C, 1, 4] or [C, 4]) -> `Mamba2Params`."""
     heads = A_log.numel()
     head_dim = norm_weight.numel() // heads
@@ -136,13 +134,8 @@ def prepare_params(conv_weight, conv_bias, A_log, D, dt_bias, norm_weight, eps: 
         A=(-torch.exp(A_log.float())).contiguous(),
         D=D.float().contiguous(), dt_bias=dt_bias.float().contiguous(),
         norm_weight=norm_weight.to(torch.bfloat16).contiguous(), eps=float(eps),
-        groups=groups, head_dim=head_dim, state=state, dt_limit=(float(dt_limit[0]), float(dt_limit[1])),
+        groups=groups, head_dim=head_dim, state=state,
     )
-
-
-def _limit_args(params: Mamba2Params) -> dict:
-    lo, hi = params.dt_limit
-    return dict(DT_MIN=lo, DT_MAX=hi if hi != float("inf") else 3.0e38, DT_LIMIT=lo > 0.0 or hi != float("inf"))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -150,13 +143,10 @@ def _limit_args(params: Mamba2Params) -> dict:
 
 
 @triton.jit
-def _dt(raw, bias, DT_MIN: tl.constexpr, DT_MAX: tl.constexpr, DT_LIMIT: tl.constexpr):
-    """softplus(raw + bias) with torch's threshold of 20, optionally clamped."""
+def _dt(raw, bias):
+    """softplus(raw + bias) with torch's threshold of 20, unclamped (time_step_limit (0, inf))."""
     v = raw + bias
-    dt = tl.where(v <= 20.0, libdevice.log1p(tl.exp(v)), v)
-    if DT_LIMIT:
-        dt = tl.minimum(tl.maximum(dt, DT_MIN), DT_MAX)
-    return dt
+    return tl.where(v <= 20.0, libdevice.log1p(tl.exp(v)), v)
 
 
 @triton.jit
@@ -211,15 +201,10 @@ def _round_state(state, rows, layer, pos, ROUND: tl.constexpr, ROUNDS: tl.conste
     else:
         BM: tl.constexpr = state.shape[0]
         BN: tl.constexpr = state.shape[1]
-        if _RNG_WORDS == 4:
-            c0 = (rows[:, None] // 4 + tl.arange(0, BN // 4)[None, :]).to(tl.uint32)
-            zero = c0 * 0
-            r0, r1, r2, r3 = tl.philox(_SEED, c0, zero + pos.to(tl.uint32), zero + layer.to(tl.uint32), zero, ROUNDS)
-            r = tl.reshape(tl.join(tl.join(r0, r1), tl.join(r2, r3)), (BM, BN))
-        else:
-            c0 = (rows[:, None] + tl.arange(0, BN)[None, :]).to(tl.uint32)
-            zero = c0 * 0
-            r, _, _, _ = tl.philox(_SEED, c0, zero + pos.to(tl.uint32), zero + layer.to(tl.uint32), zero, ROUNDS)
+        c0 = (rows[:, None] // 4 + tl.arange(0, BN // 4)[None, :]).to(tl.uint32)
+        zero = c0 * 0
+        r0, r1, r2, r3 = tl.philox(_SEED, c0, zero + pos.to(tl.uint32), zero + layer.to(tl.uint32), zero, ROUNDS)
+        r = tl.reshape(tl.join(tl.join(r0, r1), tl.join(r2, r3)), (BM, BN))
         return _sr_fp16(state, r)
 
 
@@ -361,8 +346,7 @@ def conv_decode(xbc: torch.Tensor, params: Mamba2Params, conv_state: torch.Tenso
 @triton.jit(do_not_specialize=["layer"])
 def _ssu_decode_kernel(State, s_slot, Slots, XBC, sx, DtRaw, sdt, DtBias, A, Dskip, Y, sy, Pos, layer,
                        H: tl.constexpr, P: tl.constexpr, N: tl.constexpr, G: tl.constexpr,
-                       DT_MIN: tl.constexpr, DT_MAX: tl.constexpr, DT_LIMIT: tl.constexpr, BLOCK_P: tl.constexpr,
-                       ROUND: tl.constexpr, ROUNDS: tl.constexpr):
+                       BLOCK_P: tl.constexpr, ROUND: tl.constexpr, ROUNDS: tl.constexpr):
     pp, h, row = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     slot = tl.load(Slots + row).to(tl.int64)
     if slot < 0:
@@ -374,7 +358,7 @@ def _ssu_decode_kernel(State, s_slot, Slots, XBC, sx, DtRaw, sdt, DtBias, A, Dsk
     x = tl.load(xrow + h * P + op).to(tl.float32)
     b = tl.load(xrow + H * P + g * N + on).to(tl.float32)
     c = tl.load(xrow + H * P + G * N + g * N + on).to(tl.float32)
-    dt = _dt(tl.load(DtRaw + row * sdt + h).to(tl.float32), tl.load(DtBias + h), DT_MIN, DT_MAX, DT_LIMIT)
+    dt = _dt(tl.load(DtRaw + row * sdt + h).to(tl.float32), tl.load(DtBias + h))
     dA = tl.exp(dt * tl.load(A + h))
     tile = h * P * N + op[:, None] * N + on[None, :]
     ptrs = State + slot * s_slot + tile
@@ -390,8 +374,7 @@ def _ssu_verify_kernel(State, s_slot, Slots, XBC, sx_row, sx_step, DtRaw, sdt, D
                        Pos, PosOut, s_pos_row, layer,
                        H: tl.constexpr, P: tl.constexpr, N: tl.constexpr, G: tl.constexpr, S: tl.constexpr,
                        SNAPSHOTS: tl.constexpr, RECORD: tl.constexpr,
-                       DT_MIN: tl.constexpr, DT_MAX: tl.constexpr, DT_LIMIT: tl.constexpr, BLOCK_P: tl.constexpr,
-                       ROUND: tl.constexpr, ROUNDS: tl.constexpr):
+                       BLOCK_P: tl.constexpr, ROUND: tl.constexpr, ROUNDS: tl.constexpr):
     pp, h, row = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     slot = tl.load(Slots + row).to(tl.int64)
     g = h // (H // G)
@@ -407,7 +390,7 @@ def _ssu_verify_kernel(State, s_slot, Slots, XBC, sx_row, sx_step, DtRaw, sdt, D
         x = tl.load(xrow + h * P + op).to(tl.float32)
         b = tl.load(xrow + H * P + g * N + on).to(tl.float32)
         c = tl.load(xrow + H * P + G * N + g * N + on).to(tl.float32)
-        dt = _dt(tl.load(DtRaw + (row * S + t) * sdt + h).to(tl.float32), bias, DT_MIN, DT_MAX, DT_LIMIT)
+        dt = _dt(tl.load(DtRaw + (row * S + t) * sdt + h).to(tl.float32), bias)
         dA = tl.exp(dt * a)
         state = _advance(state, x, b, dt, dA)
         tl.store(Y + (row * S + t) * sy + h * P + op, _readout(state, c, x, d).to(Y.dtype.element_ty))
@@ -490,7 +473,7 @@ def decode(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor,
     _ssu_decode_kernel[(params.head_dim // _SSU_BLOCK_P, params.heads, b)](
         ssm_state, ssm_state.stride(0), slots, conv, conv.stride(0), dt, dt.stride(0), params.dt_bias, params.A,
         params.D, y, y.stride(0), positions if mode == 2 else slots, layer,
-        params.heads, params.head_dim, params.state, params.groups, **_limit_args(params),
+        params.heads, params.head_dim, params.state, params.groups,
         BLOCK_P=_SSU_BLOCK_P, ROUND=mode, ROUNDS=_PHILOX_ROUNDS, num_warps=_SSU_WARPS)
     return y
 
@@ -546,7 +529,7 @@ def verify(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor,
         snapshot_indices if snap else slots, dt_out, da_out,
         dt_out.stride(0) if rec else 0, dt_out.stride(1) if rec else 0,
         positions if mode == 2 else slots, pos_out, pos_out.stride(0) if pos_out.ndim == 2 else 0, layer,
-        params.heads, params.head_dim, params.state, params.groups, steps, snap, rec, **_limit_args(params),
+        params.heads, params.head_dim, params.state, params.groups, steps, snap, rec,
         BLOCK_P=_SSU_BLOCK_P, ROUND=mode, ROUNDS=_PHILOX_ROUNDS, num_warps=_SSU_WARPS)
     return y
 
@@ -770,8 +753,7 @@ def prepare_prefill(ctx: ForwardContext | None, tokens: int, device) -> Mamba2Pr
 
 @triton.jit
 def _chunk_cumsum_kernel(DtRaw, sdt, DtBias, A, DtOut, DACs, CuChunks, nchunks,
-                         H: tl.constexpr, CS: tl.constexpr, BLOCK_H: tl.constexpr,
-                         DT_MIN: tl.constexpr, DT_MAX: tl.constexpr, DT_LIMIT: tl.constexpr):
+                         H: tl.constexpr, CS: tl.constexpr, BLOCK_H: tl.constexpr):
     c = tl.program_id(0).to(tl.int64)
     oh = tl.program_id(1) * BLOCK_H + tl.arange(0, BLOCK_H)
     ot = tl.arange(0, CS)
@@ -780,7 +762,7 @@ def _chunk_cumsum_kernel(DtRaw, sdt, DtBias, A, DtOut, DACs, CuChunks, nchunks,
     hm = oh < H
     valid = hm[:, None] & (ot[None, :] < n)
     raw = tl.load(DtRaw + (t0 + ot)[None, :].to(tl.int64) * sdt + oh[:, None], valid, 0.0).to(tl.float32)
-    dt = _dt(raw, tl.load(DtBias + oh, hm, 0.0)[:, None], DT_MIN, DT_MAX, DT_LIMIT)
+    dt = _dt(raw, tl.load(DtBias + oh, hm, 0.0)[:, None])
     dt = tl.where(valid, dt, 0.0)
     out = oh[:, None].to(tl.int64) * nchunks * CS + c * CS + ot[None, :]
     tl.store(DtOut + out, dt, hm[:, None])
@@ -795,7 +777,7 @@ def _chunk_states_kernel(X, B, sx, Dt, DACs, Entering, CuChunks, SeqChunks, Slot
     """The inter-chunk recurrence of one sequence for one [BLOCK_M, BLOCK_N] tile of a head's state, walking its
     chunks in order: each chunk's own contribution sum_t exp(dA_last - dA_t) dt_t x_t B_t^T is formed in registers
     and folded into the running FP32 state, so no per-chunk state buffer round-trips through memory. PRECISION is
-    the contribution's dot: "bf16" rounds the scaled B to BF16 (mamba_ssm/vLLM), "tf32x3" keeps it near FP32.
+    the contribution's dot's input precision (`_STATES_PRECISION`).
     Entering[c] (BF16, what the scan's dot consumes) receives the state entering chunk c, ChunkDest[c] the state
     after it (a checkpoint), and the sequence's slot the final state; the initial state is read from that slot
     first, by the only program that writes this tile of it. An FP16 pool (ROUND 1, 2) rounds the running state at
@@ -827,10 +809,7 @@ def _chunk_states_kernel(X, B, sx, Dt, DACs, Entering, CuChunks, SeqChunks, Slot
             b = tl.load(b_col + rows[:, None], km[:, None], 0.0).to(tl.float32)
             scale = tl.exp(tl.minimum(da_last - tl.load(DACs + hc + k + ok, km, 0.0), 0.0)) * tl.load(
                 Dt + hc + k + ok, km, 0.0)
-            if PRECISION == "bf16":
-                acc += tl.dot(x, (b * scale[:, None]).to(X.dtype.element_ty))
-            else:
-                acc += tl.dot(x.to(tl.float32), b * scale[:, None], input_precision=PRECISION)
+            acc += tl.dot(x.to(tl.float32), b * scale[:, None], input_precision=PRECISION)
         state = tl.exp(da_last) * state + acc
         if ROUND != 0:
             pos = tl.load(ChunkLast + c) if ROUND == 2 else 0
@@ -933,7 +912,7 @@ def prefill(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor
     da_cs = torch.empty_like(dt_out)
     _chunk_cumsum_kernel[(nc, triton.cdiv(H, 16))](
         dt, dt.stride(0), params.dt_bias, params.A, dt_out, da_cs, plan.cu_chunks, nc, H, CHUNK, 16,
-        **_limit_args(params), num_warps=4)
+        num_warps=4)
     x, bm, cm = conv, conv[:, H * P:], conv[:, H * P + G * N:]
     entering = torch.empty((nc, H, P, N), dtype=torch.bfloat16, device=dev)
     bm_, bn_ = _STATES_TILE

@@ -6,20 +6,16 @@ tensor, and the FP8 copy the next projection reads comes from the BF16 output.
 
 The residual forms run as one launch (`kernels/cute/nemotron_norm.py`): FlashInfer's fused add + RMS norm with the
 outputs written where the caller wants them, so a call that keeps its input or the old residual makes no clone,
-and with the FP8 copy fused in. Bitwise the clone + `fused_add_rmsnorm` + `quant_fp8` chain it replaces;
-SHARAR_NEMOTRON_FUSED=0 keeps that chain (A/B and the test's reference).
+and with the FP8 copy fused in. Bitwise the clone + `fused_add_rmsnorm` + `quant_fp8` chain it replaces, which
+serves the shapes the fused kernel does not take (`nemotron_norm.supported`).
 """
 
 from __future__ import annotations
 
 import torch
 
-from sharar.kernels import nemotron_fused
-
 
 def _fused_ok(x: torch.Tensor, residual: torch.Tensor) -> bool:
-    if not nemotron_fused.enabled():
-        return False
     from sharar.kernels.cute import nemotron_norm
     return nemotron_norm.supported(x, residual)
 

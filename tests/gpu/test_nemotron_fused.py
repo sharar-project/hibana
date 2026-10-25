@@ -47,15 +47,16 @@ def test_residual_norm(rows):
 @pytest.mark.parametrize("inplace,consume", [(False, False), (True, False), (True, True)])
 @torch.inference_mode()
 def test_rmsnorm_module(inplace, consume, monkeypatch):
-    """`RMSNorm.fused_add(_quant)` on the fused kernel against the FlashInfer chain (SHARAR_NEMOTRON_FUSED=0)."""
-    from sharar.kernels import nemotron_fused
+    """`RMSNorm.fused_add(_quant)` on the fused kernel against the FlashInfer chain (the path of the shapes the fused
+    kernel does not take)."""
+    from sharar.kernels.cute import nemotron_norm
     from sharar.model.nemotron import norm
     x, residual, weight = _inputs(5, 7)
     n = norm.RMSNorm(weight, 1e-5)
     s = torch.tensor([0.05], device="cuda")
     results = {}
     for fused in (False, True):
-        monkeypatch.setattr(nemotron_fused, "ENABLED", fused)
+        monkeypatch.setattr(norm, "_fused_ok", nemotron_norm.supported if fused else lambda x, residual: False)
         xa, ra = x.clone(), residual.clone()
         out, q, res = n.fused_add_quant(xa, ra, s, inplace=inplace, consume_input=consume)
         xb, rb = x.clone(), residual.clone()

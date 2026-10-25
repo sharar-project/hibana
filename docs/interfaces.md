@@ -222,7 +222,7 @@ arithmetic, so the committed state is the verify's own bit for bit (Flash-Next a
 pair). A failure after mutation marks every affected request uncacheable, and a post-write `MemoryError` is not
 retried, so no retry reuses partially advanced state. `snapshots` retains every verify state (in the pool's dtype)
 and is the test reference for reconstruction (`tests/gpu/test_lifecycle.py`). An FP16 Mamba-2 state
-(`SHARAR_SSM_STATE=fp16` or `fp16-rn`, Nemotron) works with both: verify rounds its running state after every step
+(`SHARAR_SSM_STATE=fp16_sr`, Nemotron) works with both: verify rounds its running state after every step
 exactly as decode stores it, with the same stochastic-rounding bits (keyed on the token position and layer, never on
 the slot or batch), so snapshots, replays and decode stay bitwise equal within the format.
 

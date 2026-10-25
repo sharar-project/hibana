@@ -4,11 +4,10 @@
 layer on the GDN targets, 4 MiB on Nemotron's Mamba layers. `int8` and `int4` are LeapQuant (arXiv 2609.38166):
 per-window recurrent-state quantization to 8 or 4 bits, GDN targets only.
 
-`fp16` and `fp16-rn` (Mamba-2 targets only) store the same [HV, V, K] tensor in FP16, half the bytes every decode,
-verify and accept step streams and every snapshot, copy and SSD-tier record holds (Nemotron: 162 -> 82 MiB a slot);
-the kernels compute in FP32 and round on every store (`kernels/mamba2.py`). `fp16` rounds stochastically (unbiased:
-a small update that round-to-nearest would drop survives in expectation), as NVIDIA's own vLLM recipe for
-Nemotron-3.5 on DGX Spark does; `fp16-rn` rounds to nearest, the comparison arm.
+`fp16_sr` (Mamba-2 targets only) stores the same [HV, V, K] tensor in FP16, half the bytes every decode, verify and
+accept step streams and every snapshot, copy and SSD-tier record holds (Nemotron: 162 -> 82 MiB a slot); the kernels
+compute in FP32 and round stochastically on every store (`kernels/mamba2.py`; unbiased: a small update that
+round-to-nearest would drop survives in expectation), as NVIDIA's own vLLM recipe for Nemotron-3.5 on DGX Spark does.
 
 A quantized (GDN) layer state is a boundary state plus the committed tokens since it:
 
@@ -40,7 +39,7 @@ import torch
 
 ALIGN = 256
 BITS = {"int8": 8, "int4": 4}  # GDN window formats
-FP16 = {"fp16": True, "fp16-rn": False}  # Mamba-2 FP16 storage -> stochastic rounding
+FP16 = ("fp16_sr",)  # Mamba-2 FP16 storage, stochastically rounded
 MAMBA_FAMILIES = ("nemotron",)
 
 
@@ -107,7 +106,7 @@ class SsmFormat:
 
     def __post_init__(self):
         if self.kind not in ("fp32", *BITS, *FP16):
-            raise ValueError(f"SHARAR_SSM_STATE must be fp32, int8, int4, fp16 or fp16-rn, not {self.kind!r}")
+            raise ValueError(f"SHARAR_SSM_STATE must be fp32, int8, int4 or fp16_sr, not {self.kind!r}")
         if self.rank is None:
             object.__setattr__(self, "rank", 8 if self.kind == "int4" else 4)
         if self.window not in (8, 16, 32):
@@ -126,7 +125,7 @@ class SsmFormat:
 
     @property
     def stochastic(self) -> bool:
-        return FP16.get(self.kind, False)
+        return self.kind in FP16
 
     @property
     def dtype(self) -> torch.dtype | None:
@@ -136,7 +135,7 @@ class SsmFormat:
     def describe(self) -> str:
         if self.quantized:
             return f"{self.kind}:w{self.window}:r{self.rank}"
-        return {"fp16": "fp16-sr", "fp16-rn": "fp16-rn"}.get(self.kind, "fp32")
+        return "fp16_sr" if self.kind in FP16 else "fp32"
 
     def check(self, target) -> None:
         """Reject a format the target's recurrence does not implement (FP16 is Mamba-2's, the windows GDN's)."""
@@ -146,7 +145,7 @@ class SsmFormat:
                              "is fp32, int8 or int4")
         if self.quantized and mamba:
             raise ValueError(f"SHARAR_SSM_STATE={self.kind} is a GDN format; {target.name}'s Mamba-2 state is "
-                             "fp32, fp16 or fp16-rn")
+                             "fp32 or fp16_sr")
 
     def layout(self, target) -> WindowLayout | None:
         if not self.quantized:

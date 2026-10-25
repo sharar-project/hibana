@@ -10,7 +10,7 @@ and embeddings. With SHARAR_W3_DECODE=1 and SHARAR_W3_CHECKPOINT the FP8 project
 copies (`attach_calibrated`, `weights/nemotron_w3_calibrate.py`) that calls of at most 64 rows read.
 A W3 checkpoint that carries the routed experts of every MoE block (`layers.N.experts.w1` / `.w2`,
 `weights/nemotron_w3_experts.py`) serves those 3-bit experts as the only expert copy, the MTP head's too when it
-carries `mtp.experts.*` (SHARAR_NEMOTRON_EXPERTS=nvfp4 keeps the NVFP4 ones); its trunk entries, if any, attach as above.
+carries `mtp.experts.*`; its trunk entries, if any, attach as above.
 """
 
 from __future__ import annotations
@@ -83,8 +83,8 @@ class Block:
 
 def w3_expert_blocks(calibrated, kinds) -> set[int]:
     """The MoE block indices the W3 checkpoint (`calibrated`, or None) serves 3-bit experts for: every MoE block's when
-    it carries them (a partial set is an error) and SHARAR_NEMOTRON_EXPERTS is w3 (the default); else none."""
-    if calibrated is None or current().nemotron_experts != "w3":
+    it carries them (a partial set is an error); else none."""
+    if calibrated is None:
         return set()
     have = calibrated.expert_layers()
     moe = {i for i, kind in enumerate(kinds) if kind == "moe"}

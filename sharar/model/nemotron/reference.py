@@ -49,8 +49,8 @@ runs in about 8 GiB plus that cache. A quantised linear is computed as `(x @ Wq^
 E2M1 times its E4M3 block scale, both exact in BF16 (at most 6 significant bits), and the per-tensor `s`
 (`weight_scale` / `weight_scale_2`) multiplies the FP32-accumulated output before its one rounding to `dtype`. So the
 weights are the checkpoint's exactly and no step rounds a dequantised weight. Linears run in `dtype` (BF16 by default,
-as Transformers runs the model; FP32 for a tighter golden); norms, conv, the SSM, softmax, routing and the expert sum
-run in FP32, with results cast to `dtype` where Transformers casts them.
+as Transformers runs the model; FP32 for the tests' parity checks); norms, conv, the SSM, softmax, routing and the
+expert sum run in FP32, with results cast to `dtype` where Transformers casts them.
 """
 
 from __future__ import annotations

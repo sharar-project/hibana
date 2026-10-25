@@ -4,7 +4,7 @@
 FP8 in_proj -> z | xBC | dt; causal conv (kernel 4, bias, SiLU) over xBC; the SSD recurrence over 128 heads of 64
 with 8 B/C groups of state 128 (`kernels/mamba2.py`); y * silu(z) normalized in groups of 1024, quantized into the
 FP8 out_proj. The pool's conv state is [slots, 10240, 3] and its SSM state Mamba's [slots, heads, head dim, state]
-FP32 (FP16 under SHARAR_SSM_STATE=fp16 / fp16-rn, rounded on every store, stochastically keyed on the token position
+FP32 (FP16 under SHARAR_SSM_STATE=fp16_sr, rounded stochastically on every store, keyed on the token position
 and this layer's index among the Mamba layers), so prefix-cache checkpoints, scratch slots and the SSD tier carry it
 as they carry the GDN's. Prefill continues
 each sequence from its slot and writes interior checkpoints; decode advances the slot in place; verify leaves it and

@@ -15,14 +15,17 @@ sigmoids renormalized, scaled by 5) that work in a 1,024-wide latent space betwe
 an NVFP4 shared expert on the full 4,096 hidden; both use ReLU², not SwiGLU. The checkpoint's own MTP layer (an
 attention block and an MoE block) is the drafter.
 
-Formats are the checkpoint's: the routed experts through FlashInfer's `cutlass_fused_moe` (fc1 is `up_proj` alone),
-FP8 GEMVs for the Mamba and attention projections and the head, FP32 router logits. 66.4 GiB of weights are resident
-after the load (78 s from the page cache); the KV cache is small (8 attention layers, 4 KiB a token in FP8) and a
-request's recurrent state is 160 MiB (FP32; 80 MiB in FP16). GPTQ-calibrated 3-bit copies of the trunk (Mamba,
-attention and lm_head projections) and of the routed experts load beside the checkpoint with `SHARAR_W3_DECODE=1` and
-`SHARAR_W3_CHECKPOINT=<dir>` (`kernels/w3_moe.py` for the experts). `fast` and `throughput` turn them on and serve
-`w3-checkpoints/nemotron-current` ([where it comes from](w3-calibration.md#where-the-served-copies-come-from)); without
-one they serve the NVFP4 experts and FP8 trunk, about a third slower at one request.
+Formats are the checkpoint's: the routed NVFP4 experts through Sharar's small-call kernels for calls of up to 16 rows
+(`kernels/nemotron_moe.py`: router, routing, experts, shared expert and `fc2_latent` in four chained launches) and
+FlashInfer's b12x MoE beyond (fc1 is `up_proj` alone), FP8 GEMVs for the Mamba and attention projections and the head,
+FP32 router logits. 66.4 GiB of weights are resident after the load (78 s from the page cache); the KV cache is small
+(8 attention layers, 4 KiB a token in FP8) and a request's recurrent state is 160 MiB (FP32; 80 MiB in FP16).
+GPTQ-calibrated 3-bit copies of the trunk (Mamba, attention and lm_head projections) and of the routed experts load
+beside the checkpoint with `SHARAR_W3_DECODE=1` and `SHARAR_W3_CHECKPOINT=<dir>` (`kernels/w3_moe.py` for the
+experts). `fast` and `throughput` turn them on and serve
+`w3-checkpoints/nemotron-current` ([where it comes from](w3-calibration.md#nemotron)); without one they serve the
+NVFP4 experts and FP8 trunk, about a third slower at one request. A checkpoint that carries the routed experts serves
+them as the only expert copy, at every call size.
 
 ## Package
 
@@ -35,7 +38,7 @@ one they serve the NVFP4 experts and FP8 trunk, about a third slower at one requ
 | `moe.py` | the latent MoE block: fused router and `fc1_latent` GEMM, the routing kernels, budgeted expert selection |
 | `mtp.py` | `NemotronMtpHead`: the checkpoint's MTP layer for the `mtp` proposer |
 | `norm.py` | plain RMSNorm (weight, not Gemma's 1 + w) |
-| `reference.py` | the plain-torch reference the GPU tests and `tools/nemotron_golden.py` compare against |
+| `reference.py` | the plain-torch reference the GPU tests compare against |
 
 ## Serving
 
@@ -49,9 +52,9 @@ The profiles (`nemotron_defaults` in `sharar/launch/settings.py`):
 
 Expert sharing (`moe.py`, `route_budget`): a verify call's rows share the experts they read. Each row is guaranteed
 its top `KEEP` experts; the call then reads at most `P` distinct experts per request and `CAP` in all, filled by
-summed routing weight, and every row also takes its other top-22 experts that the call reads anyway (free riders,
-`SHARAR_MOE_FREE_RIDERS`). The cap is a fill target as well as a limit: with floor 16 and cap 64 the floors' union at one
-request (about 58) is below the cap, so the call reads more experts than floor 16 alone, and is slower.
+summed routing weight, and every row also takes its other top-22 experts that the call reads anyway (free riders).
+The cap is a fill target as well as a limit: with floor 16 and cap 64 the floors' union at one request (about 58) is
+below the cap, so the call reads more experts than floor 16 alone, and is slower.
 
 Measured on spark-9931 (h2h median, `tools/h2h-pr.py`, greedy; tok/s at one request / total at four streams):
 
@@ -69,8 +72,7 @@ experts and this sharing 97.3% (-0.3 pp), `fast` without sharing 97.0% (-0.7 pp,
 
 Round profile at one request (nsys, both 3-bit copies, floor 16): 54 ms a round for 5.1 tokens; the verify forward
 46 ms, of it the routed and shared experts 30 ms and the trunk's 3-bit GEMMs 9 ms; the MTP draft 7.5 ms, acceptance
-and Mamba replay 2 ms; under 1 ms idle. `profiling/nemotron_quickstack.py` screens a configuration in about three
-minutes (speed, KL against `exact` and against a chosen anchor, GSM8K-50) before an h2h and a paired gate.
+and Mamba replay 2 ms; under 1 ms idle.
 
 ## Conventions that cost a day
 
