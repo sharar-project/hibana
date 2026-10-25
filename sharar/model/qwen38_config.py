@@ -39,3 +39,10 @@ WEIGHT_LOAD_PEAK_BYTES = 24 * 2**30
 DRAFT_PINS = {
     'dflash2': ('incoai/Qwen3.8-27B-DFlash2', 'dedf8df68adfb1afeaf7b7480c0a0243108177b4'),
 }
+# Each pinned draft's acceptance calibration: a position's probability of acceptance, given the positions before it
+# were accepted, is sigmoid(w . (logit p, gap, j / 15, 1)) with p the lattice's top conditional probability at
+# position j and gap its top-1 minus top-2 log-probability. Fitted on 27,046 drafted positions (one Spark, exact
+# greedy, nine prompts: six chats and the three 10K benchmark workloads); AUC 0.92 on prompts left out of the fit.
+DRAFT_CALIBRATION = {
+    'dflash2': (0.9693, -0.3068, -0.8203, 0.0344),
+}

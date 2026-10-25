@@ -58,6 +58,9 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
         from sharar.proposers.parallel import ParallelProposer
         snapshot = draft_snapshot(proposer, draft_dir, model.target)
         adapter = ParallelProposer(ParallelDraftModel(snapshot, model, context.max_context, precision=draft_precision), context, k, proposer)
+        if draft_dir is None and model.target.name == "qwen38":  # fitted on the 27B's pinned draft only
+            from sharar.model.qwen38_config import DRAFT_CALIBRATION
+            adapter.calibration = DRAFT_CALIBRATION[proposer]
     else:
         raise ValueError(f"unknown proposer {proposer!r}")
     return adapter

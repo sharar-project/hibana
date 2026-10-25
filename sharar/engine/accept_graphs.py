@@ -43,13 +43,15 @@ SAMPLED_CANDIDATES, SAMPLED_TOP_K = 128, 64  # sampled rows: the vocabulary top-
 
 
 class AcceptGraphs:
-    def __init__(self, spec, verify_graphs):
+    def __init__(self, spec, verify_graphs, pool=None):
         self.spec, self.vg = spec, verify_graphs
         self.ex = spec.ex
         self.device = spec.device
         self.s = verify_graphs.s_len
         self.k = self.s - 1
-        self._pool = torch.cuda.graph_pool_handle()
+        # One pool may serve the accept graphs of several verify depths (engine/depth.RowBudget): one depth's replays at
+        # a time, and every result lands in the static buffers below, so the pool holds only the bodies' temporaries.
+        self._pool = torch.cuda.graph_pool_handle() if pool is None else pool
         self._st: dict[int, dict] = {}
         self._graphs: dict[int, torch.cuda.CUDAGraph] = {}
         self._decide: dict[int, torch.cuda.CUDAGraph] = {}  # sampled batches: the decision, then the commit graph
