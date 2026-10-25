@@ -272,18 +272,24 @@ class ParallelProposer:
 
     def acceptance(self, candidates, scores, tokens):
         """Each drafted position's calibrated probability of acceptance once the positions before it were accepted
-        (`Proposal.acceptance`, FP32 [B, k]): from the lattice row the drafts before position j select, its top
-        probability and top-1 minus top-2 gap. The row depends on y_{j-1}, never on y_j."""
+        (`Proposal.acceptance`, FP32 [B, k]): sigmoid(w . features), `self.calibration` the pinned draft's w."""
+        w = self.calibration
+        logit, gap, position = self.acceptance_features(candidates, scores, tokens)
+        return torch.sigmoid(w[0] * logit + w[1] * gap + w[2] * position + w[3])
+
+    @staticmethod
+    def acceptance_features(candidates, scores, tokens):
+        """The calibration's features per drafted position (FP32 [B, k] each): the logit of the top probability of the
+        lattice row the drafts before position j select, its top-1 minus top-2 log-probability, and j / 15. The row
+        depends on y_{j-1}, never on y_j (tools/fit_draft_calibration.py fits the weights)."""
         batch, steps, width = candidates.shape
         ranks = (candidates == tokens[..., None]).to(torch.int8).argmax(-1)
         previous = torch.cat([torch.zeros_like(ranks[:, :1]), ranks[:, :-1]], dim=1)
         rows = scores.float().log_softmax(-1).gather(2, previous[:, :, None, None].expand(batch, steps, 1, width))[:, :, 0]
         top = rows.topk(2, dim=-1).values
         logp = top[..., 0].clamp(max=-1e-6)
-        w = self.calibration
-        position = torch.arange(steps, device=scores.device, dtype=torch.float32) / 15
-        return torch.sigmoid(w[0] * (logp - torch.log(-torch.expm1(logp))) + w[1] * (top[..., 0] - top[..., 1])
-                             + w[2] * position + w[3])
+        position = (torch.arange(steps, device=scores.device, dtype=torch.float32) / 15).expand(batch, steps)
+        return logp - torch.log(-torch.expm1(logp)), top[..., 0] - top[..., 1], position
 
     def accepted_batch(self, requests, emitted, features):
         """Project committed rows together, then scatter into private rings.

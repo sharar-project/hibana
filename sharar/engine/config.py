@@ -95,6 +95,7 @@ class EngineConfig:
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
     spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
     spec_step_cost: float = 0.0               # SHARAR_SPEC_STEP_COST: adaptive depth per request (engine/depth.AcceptanceDepth): one more drafted token's cost relative to a depth-1 round; SHARAR_SPEC is the cap (0: the fixed depth)
+    spec_policy: str = "fixed"                # SHARAR_SPEC_POLICY: fixed | budget (engine/depth.RowBudget: a scoring drafter's verified drafts from its scores and the measured costs, up to SHARAR_SPEC)
     draft_dir: str | None = None              # SHARAR_DRAFT
     host_floor_gib: float = HOST_FLOOR_KIB / 2**20  # SHARAR_HOST_FLOOR_GIB: MemAvailable the pools leave for the OS and other programs; admission holds and the guard acts under half of it
     draft_vocab: int = 0                      # SHARAR_DRAFT_VOCAB: reduced MTP draft vocabulary rows (0: full)
@@ -170,6 +171,7 @@ class EngineConfig:
             spec=_str(e, "SHARAR_SPEC"),
             spec_depths=_str(e, "SHARAR_SPEC_DEPTHS"),
             spec_step_cost=float(_str(e, "SHARAR_SPEC_STEP_COST") or 0.0),
+            spec_policy=_str(e, "SHARAR_SPEC_POLICY", "fixed"),
             draft_dir=_str(e, "SHARAR_DRAFT"),
             host_floor_gib=floor_kib(e) / 2**20,
             draft_vocab=_int(e, "SHARAR_DRAFT_VOCAB", 0),

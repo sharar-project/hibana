@@ -42,7 +42,6 @@ class Capabilities:
     draft_head: bool = False        # DraftHeadChoice: set_draft_head(ids, fmt, rescore) on the head
     short_drafts: bool = False      # propose(..., depth=d) drafts only the d tokens a shallower round verifies; capture_graphs(log, depths={d: buckets}) at the verify graphs' pairs
     scored_drafts: bool = False     # ScoredDrafts: with score_drafts set, Proposal.acceptance gives each drafted position's probability of acceptance (a depth per request, engine/depth.RowBudget.allot)
-    sequential_drafts: bool = False # SequentialDrafts: drafts a token a step; draft_step_ms(batch) times one step (RowBudget prices a deeper draft)
 
 
 @dataclass(frozen=True)
@@ -119,13 +118,8 @@ class ScoredDrafts(Protocol):
     score_drafts: bool  # set by the depth policy that reads Proposal.acceptance; scoring costs nothing otherwise
 
 
-@runtime_checkable
-class SequentialDrafts(Protocol):
-    def draft_step_ms(self, batch: int) -> float | None: ...
-
-
 PROTOCOLS = {"device_feedback": DeviceFeedback, "checkpoint_cache": CheckpointCache, "stored_payload": StoredPayload,
-             "scored_drafts": ScoredDrafts, "sequential_drafts": SequentialDrafts}
+             "scored_drafts": ScoredDrafts}
 
 
 def check_capabilities(proposer) -> None:

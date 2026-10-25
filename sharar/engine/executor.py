@@ -690,8 +690,11 @@ class Executor:
         if self.spec is not None:
             # Two speculative rounds at batch 1 and 2 so the first real request
             # does not pay the lazy kernel loads of the verify/accept path. The
-            # random prompts can emit EOS; ignore it so every step keeps four live rows.
-            spec_params = SamplingParams(max_new_tokens=12 if self.max_batch <= 4 else 64, ignore_eos=True)
+            # random prompts can emit EOS; ignore it so every step keeps four live rows,
+            # and budget every round at the full draft width (a depth policy may verify all of it).
+            rounds = 2 + sum(1 for size in (4, 8, 16) if size <= self.max_batch)
+            spec_params = SamplingParams(max_new_tokens=max(12 if self.max_batch <= 4 else 64, 1 + rounds * self.spec.steps),
+                                         ignore_eos=True)
             d = self.admit(random_ids(50, 14), spec_params)
             e = self.admit(random_ids(60, 15), spec_params)
             self.prefill(d)

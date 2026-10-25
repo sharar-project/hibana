@@ -91,10 +91,15 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
                 # (-0.3, -2.9 to +2.2) for 5% fewer tokens a round there
                 p["SHARAR_ACCEPT_DEFAULT"] = "2:1.0"
                 if profile == "fast":
-                    p.update(SHARAR_SPEC="9", SHARAR_SPEC_DEPTHS="2:7,4:7")
+                    p["SHARAR_SPEC"] = "9"
         elif profile == "fast":  # adaptive depth: h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
             # two Sparks: 0.14 drafted chat and prose too deep (-12%, -7% against depth 4); 0.2 keeps them within noise
             p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14" if tp == 1 else "0.2", SHARAR_SPEC_DEPTHS="2:4,4:4")
+    if profile != "exact" and (proposer or ("mtp" if flashnext else "dflash2")) == "dflash2":
+        # adaptive verification (engine/depth.RowBudget): DFlash2's calibrated draft scores and the measured verify
+        # costs decide what each round verifies, up to SHARAR_SPEC (a depth per request on the 27B, one depth for the
+        # batch on Flash-Next); `exact` keeps the fixed depth so its runs repeat
+        p["SHARAR_SPEC_POLICY"] = "budget"
     if profile != "exact" and tp == 1:
         # NVFP4 KV (cache/kv_pool.py): 4.5 bits a value where FP8 takes 8, so the same memory holds more tokens (the
         # 27B 16/9, Flash-Next ~1.4 beside its BF16 index keys): long contexts and concurrent requests, more cached
@@ -109,7 +114,8 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
             # DFlash2 drafts as MTP here: from 16 requests depth 5 decoded 9-10% slower than 3 (one Spark, 3-bit
             # experts, 8K and 32K prompts), its verification then past the 64 rows the 3-bit copies serve; and the
             # verify buffers hold every request slot at the deepest depth (128 requests: 1.7 GiB at 4, 3.4 at 9)
-            p["SHARAR_SPEC_DEPTHS"] = "16:3,32:3,64:3,128:3" if flashnext_experts == "w3" and tp == 1 else "16:3"
+            if proposer != "dflash2":
+                p["SHARAR_SPEC_DEPTHS"] = "16:3,32:3,64:3,128:3" if flashnext_experts == "w3" and tp == 1 else "16:3"
         # the 8-bit GDN state pays with many requests; `fast` keeps FP32: no gain at one request, slower prefill
         p["SHARAR_SSM_STATE"] = "int8"
     # the SSD tier in every profile: a restore gives back the state the GPU held, and an evicted or restarted prefix
@@ -303,6 +309,7 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(batch.isdigit() and 1 <= int(batch) <= 128, "SHARAR_MAX_BATCH must be in [1, 128]")
     depths = values.get("SHARAR_SPEC_DEPTHS", "")
     _check(not depths or re.fullmatch(r"\d+:\d+(,\d+:\d+)*", depths) is not None, "SHARAR_SPEC_DEPTHS must be BUCKET:DEPTH pairs, e.g. 8:1,16:0")
+    _check(values.get("SHARAR_SPEC_POLICY", "fixed") in ("fixed", "budget"), "SHARAR_SPEC_POLICY must be fixed or budget")
     _check(values.get("SHARAR_FLASHNEXT_EXPERTS", "w3") in ("w3", "nvfp4"), "SHARAR_FLASHNEXT_EXPERTS must be w3 or nvfp4")
     _check(values.get("SHARAR_DRAFT_HEAD", "fp8") in ("fp8", "w3", "w2"), "SHARAR_DRAFT_HEAD must be fp8, w3 or w2")
     _check(values.get("SHARAR_QSA_SPARSE_GRAPHS", "1") in ("0", "1"), "SHARAR_QSA_SPARSE_GRAPHS must be 0 or 1")

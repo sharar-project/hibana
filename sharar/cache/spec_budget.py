@@ -90,19 +90,20 @@ def budget(spec, batch, *, cache_slots=96, target=None):
         fixed += cfg['num_hidden_layers'] * (batch + 1) * (window + spec.depth + 1) * 2 * cfg['num_key_value_heads'] * cfg['head_dim'] * 2
         fixed += weights + 2 * largest + 128 * 2**20 * max(1, -(-batch // 32))  # the draft attention's workspace
     # CUDA graphs, workspaces and cached activation blocks are counted once, by `ledger.after_plan_bytes`: one verify
-    # depth's graphs; a measured depth captures more
+    # depth's graphs; adaptive verification captures more
     return fixed + depth_policy_bytes(spec, batch, t), page_bytes
 
 
 def depth_policy_bytes(spec, batch, target) -> int:
-    """The verify graphs a measured depth (SHARAR_SPEC_POLICY=budget, engine/depth.RowBudget) keeps beyond one depth's:
-    the logits and final-norm rows of every other captured depth (the graphs share their pool, workspace and page index).
-    Packed graphs (the 27B's DFlash2) share one set of outputs per batch bucket: nothing beyond one depth's. Flash-Next,
-    throughput, depths 1-4: 1.06 GiB of logits counted, 1.11 GiB measured."""
+    """The verify graphs adaptive verification (SHARAR_SPEC_POLICY=budget, engine/depth.RowBudget) keeps beyond one
+    depth's: on padded graphs (Flash-Next's DFlash2) the logits and final-norm rows of every other captured depth (the
+    graphs share their pool, workspace and page index). Packed graphs (the 27B's) share one set of outputs per batch
+    bucket: nothing beyond one depth's. Flash-Next, throughput, depths 1-4: 1.06 GiB of logits counted, 1.11 GiB
+    measured."""
     from sharar.engine.config import current
     from sharar.engine.depth import BUDGET_DEPTHS
     from sharar.engine.graphs import capture_sizes
-    if current().spec_policy != 'budget' or (spec.name == 'dflash2' and target.family != 'flashnext'):
+    if current().spec_policy != 'budget' or spec.name != 'dflash2' or target.family != 'flashnext':
         return 0
     rows = sum(capture_sizes(batch)) * sum(d + 1 for d in BUDGET_DEPTHS if d < spec.depth)
     return rows * (target.vocab_size + 2 * target.hidden_size) * 2

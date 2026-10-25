@@ -171,7 +171,8 @@ def summary(s: Settings, host: dict[str, str], w3: Path | None, tp: int = 1) -> 
              + (f"{s.get('SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD') or s.get('SHARAR_ACCEPT_DEFAULT')}" if sampled == "1" else "exact"),
              f"  3-bit copies: {on(s.get('SHARAR_W3_DECODE'))}{f' ({w3})' if w3 else ''}; device-resident acceptance: {on(s.get('SHARAR_DEVICE_ACCEPT'))}",
              f"  context {s.max_context} tokens, up to {s.get('SHARAR_MAX_BATCH')} requests"
-             + (f", verify depth by batch {s.get('SHARAR_SPEC_DEPTHS')}" if s.get("SHARAR_SPEC_DEPTHS") else ""),
+             + (f", verify depth by batch {s.get('SHARAR_SPEC_DEPTHS')}" if s.get("SHARAR_SPEC_DEPTHS") else "")
+             + (", adaptive verification (DFlash2's draft scores)" if s.get("SHARAR_SPEC_POLICY") == "budget" else ""),
              f"  traces: {s.traces or 'off'}; SSD tier: {ssd}"]
     lines += [f"  WARNING: {w}" for w in s.warnings]
     return "\n".join(lines)

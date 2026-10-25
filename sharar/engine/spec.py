@@ -69,25 +69,30 @@ class SpecDecoder:
         self.verify_depth = self.k
         self.verify_depths = (self.k,)  # benchmarks may explicitly capture narrower widths
         from sharar.engine.config import current
+        from sharar.engine.depth import parse_depths
         from sharar.engine.graphs import capture_sizes
+        policy = parse_depths(current().spec_depths, capture_sizes(executor.max_batch), self.k)
+        if policy is not None:  # depth per batch bucket: verify graphs only where a bucket uses the depth
+            self.depth_policy = policy
+            self.verify_depths = policy.verify_depths
+        if current().spec_step_cost and proposer.requirements.capabilities.short_drafts:
+            # Adaptive depth per request: the depth above is the cap, and every depth below it verifies.
+            from sharar.engine.depth import AcceptanceDepth
+            self.depth_policy = AcceptanceDepth(self.depth_policy, current().spec_step_cost)
+            self.verify_depths = self.depth_policy.verify_depths
         if current().spec_policy not in ("fixed", "budget"):
             raise ValueError("SHARAR_SPEC_POLICY must be fixed or budget")
-        if current().spec_policy == "budget":
+        if current().spec_policy == "budget" and proposer.requirements.capabilities.scored_drafts:
+            # Adaptive verification (engine/depth.RowBudget): the drafts' scores decide what a round verifies, in
+            # packed graphs (a depth per request) for a target without side inputs that accepts on the host (the
+            # 27B), else in padded graphs (one depth for the batch; Flash-Next). The block is drafted whole: one
+            # forward costs about the same at any depth, and its draft graphs stay one per bucket.
             from sharar.engine.depth import ragged_budgets
-            # Packed graphs (a depth per request) where the proposer scores its drafts and the round accepts on the
-            # host for a target without side inputs (the 27B's DFlash2); otherwise one graph per depth.
-            caps = proposer.requirements.capabilities
-            packed = caps.scored_drafts and not accept_graphs.enabled() and getattr(executor, "extras", None) is None
+            packed = not accept_graphs.enabled() and getattr(executor, "extras", None) is None
             sizes = capture_sizes(executor.max_batch)
-            sequential = caps.sequential_drafts  # a draft step a token (MTP)
-            self.depth_policy = RowBudget(self.k, sizes, packed_rows=ragged_budgets(sizes, self.steps) if packed else None,
-                                          sequential=sequential)
-            if packed:
-                proposer.score_drafts = True
-                # a block drafter (DFlash2) drafts the whole block for packed rows, whatever the round verifies: one
-                # forward costs about the same at any depth, and its draft graphs stay one per bucket
-                if not sequential:
-                    self.short_drafts = False  # else the proposer's capability (`drafts_short`)
+            self.depth_policy = RowBudget(self.k, sizes, packed_rows=ragged_budgets(sizes, self.steps) if packed else None)
+            proposer.score_drafts = True
+            self.short_drafts = False  # else the proposer's capability (`drafts_short`)
             self.verify_depths = self.depth_policy.verify_depths
         self.width_graphs = {}
         self.device = executor.device
@@ -128,7 +133,7 @@ class SpecDecoder:
         # Set by benchmarks: synchronize around the draft/verify/accept phases
         # to attribute time. Off in serving so the host can queue graphs ahead.
         self.timing = False
-        self._round_timings: list[tuple] = []  # finished rounds' (batch, rows, events, tokens, sampled, depth) for the depth policy
+        self._round_timings: list[tuple] = []  # finished rounds' (batch, rows, events, tokens, sampled) for the depth policy
         # Pinned staging for the per-round host -> device upload: rows are
         # pending token, its position, state slot; one non-blocking copy.
         self._host_rows = torch.empty((3, n), dtype=torch.int64, pin_memory=self.device.type == "cuda")
@@ -199,7 +204,7 @@ class SpecDecoder:
                              "sampled_acceptance": [round(a / t, 3) for a, t in zip(*policy.survival[True])],
                              "shift": [round(v, 2) for v in policy.shift],
                              "tokens_per_ms": {label(b, s): round(v, 3) for (b, s), v in policy.rate.items()},
-                             "overhead_ms": {label(b, s): [round(v, 3) for v in am] for (b, s), am in policy.overhead.items()},
+                             "overhead_ms": {label(b, s): round(v, 3) for (b, s), v in policy.overhead.items()},
                              "depths": {str(b): {str(d): n for (bb, d), n in sorted(policy.chosen.items()) if bb == b}
                                         for b in sorted({b for b, _ in policy.chosen})}}
         if self.timing:  # phase split is only meaningful with the synchronizing timers on
@@ -239,22 +244,16 @@ class SpecDecoder:
         for depth, graphs in sorted(self.width_graphs.items()):
             for b in graphs.sizes:
                 policy.costs[b, b * (depth + 1)] = graphs.time_replay(b, context)
-        if self.proposer.requirements.capabilities.sequential_drafts and self.drafts_short:
-            for b in policy.sizes:
-                if (ms := self.proposer.draft_step_ms(b)) is not None:
-                    policy.draft_step[b] = ms
         self._common_costs()
         if log:
             for b in policy.sizes:
-                log(f"  verify cost, batch {b}: " + ", ".join(f"{d}: {policy.costs[b, b * (d + 1)]:.1f}" for d in policy.candidates) + " ms"
-                    + (f"; draft {policy.draft_step[b]:.2f} ms a token" if b in policy.draft_step else ""))
+                log(f"  verify cost, batch {b}: " + ", ".join(f"{d}: {policy.costs[b, b * (d + 1)]:.1f}" for d in policy.candidates) + " ms")
 
     def _common_costs(self) -> None:
         """Tensor-parallel ranks decide alike only from the same numbers: every rank keeps the slowest rank's costs."""
-        policy = self.depth_policy
-        for table in (policy.costs, policy.draft_step):
-            keys = sorted(table)
-            table.update(zip(keys, all_reduce_max([table[k] for k in keys])))
+        costs = self.depth_policy.costs
+        keys = sorted(costs)
+        costs.update(zip(keys, all_reduce_max([costs[k] for k in keys])))
 
     def ingest_prefill(self, req, ids, start, result) -> None:
         self.proposer.ingest_prefill(req, ids, start, result)
@@ -284,7 +283,7 @@ class SpecDecoder:
             end.record()
             depth = batch.proposal.tokens.shape[1]
             rows = batch.ragged[1] if batch.ragged is not None else graph_set.pick(self.depth_policy.sizes, len(reqs)) * (depth + 1)
-            self._round_timings.append((len(reqs), rows, start, end, self.emitted - emitted, batch.sampled, depth))
+            self._round_timings.append((len(reqs), rows, start, end, self.emitted - emitted, batch.sampled))
 
     TP_LEARN_EVERY = 8  # tensor-parallel rounds whose times the ranks exchange at once
 
@@ -295,8 +294,8 @@ class SpecDecoder:
         pending = self._round_timings
         if get_tp_info().size == 1:
             if pending and pending[-1][3].query():
-                b, rows, start, end, tokens, sampled, depth = pending[-1]
-                learn(b, rows, start.elapsed_time(end), tokens, depth=depth, sampled=sampled)
+                b, rows, start, end, tokens, sampled = pending[-1]
+                learn(b, rows, start.elapsed_time(end), tokens, sampled=sampled)
             pending.clear()
             return
         if len(pending) <= self.TP_LEARN_EVERY:
@@ -305,8 +304,8 @@ class SpecDecoder:
         for t in done:
             t[3].synchronize()
         times = all_reduce_max([start.elapsed_time(end) for _, _, start, end, *_ in done])
-        for (b, rows, _, _, tokens, sampled, depth), ms in zip(done, times):
-            learn(b, rows, ms, tokens, depth=depth, sampled=sampled)
+        for (b, rows, _, _, tokens, sampled), ms in zip(done, times):
+            learn(b, rows, ms, tokens, sampled=sampled)
 
     def prepare(self, reqs: list[Request]) -> Verification:
         """Reserve and draft one target verification batch."""
@@ -345,6 +344,9 @@ class SpecDecoder:
             raise ValueError("proposer must return int64 [batch, k] on the target device")
         if getattr(self, "ragged_graphs", None) is not None and ex.use_graphs:
             return self._prepare_ragged(reqs, proposal, y, k, toks_t, poss_t, slots_t, new_pages, sampled, t0, timing)
+        if isinstance(policy, RowBudget) and not sampled and not any(r.grammar is not None for r in reqs):
+            k = policy.allot(reqs, proposal.acceptance, k)[0][0]  # padded graphs: one depth from the drafts' scores
+            s_len = k + 1
         y = y[:, :k]
         proposal = Proposal(y, proposal.probabilities[:, :k] if proposal.probabilities is not None else None,
                             proposal.support[:, :k] if proposal.support is not None else None,

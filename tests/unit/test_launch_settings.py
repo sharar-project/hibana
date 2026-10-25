@@ -265,20 +265,16 @@ def test_the_27b_fp8_draft_applies_when_its_draft_runs(env):
 
 @pytest.mark.parametrize("profile", launch.PROFILE_NAMES)
 def test_flashnext_serves_dflash2_on_request(env, profile):
-    # FP8 as the 27B's (with the 3-bit copies where the profile decodes 3-bit), at depths that keep MTP's guaranteed
-    # experts a verified token in `fast` and MTP's own in `throughput`; MTP stays the default with its own depths
+    # FP8 as the 27B's (with the 3-bit copies where the profile decodes 3-bit); outside `exact` its drafts' scores decide
+    # what each round verifies up to the cap (adaptive verification), no depth table; MTP stays the default with its own
     s = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": "dflash2"})
     assert s.parallel_draft and s.draft_dir is None
-    assert (s.get("SHARAR_DRAFT_PRECISION"), s.get("SHARAR_SPEC_STEP_COST")) == ("fp8", "")
+    assert (s.get("SHARAR_DRAFT_PRECISION"), s.get("SHARAR_SPEC_STEP_COST"), s.get("SHARAR_SPEC_DEPTHS")) == ("fp8", "", "")
     assert s.get("SHARAR_ACCEPT_DEFAULT") == {"exact": "off", "fast": "2:1.0", "throughput": "2:1.0"}[profile]  # MTP keeps 3:2.0
-    depths = {"exact": ("7", ""), "fast": ("9", "2:7,4:7"), "throughput": ("4", "16:3,32:3,64:3,128:3")}
-    assert (s.get("SHARAR_SPEC"), s.get("SHARAR_SPEC_DEPTHS")) == depths[profile]
-    capped = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": "dflash2", "SHARAR_SPEC": "5"})
-    assert capped.get("SHARAR_SPEC_DEPTHS") == {"exact": "", "fast": "2:5,4:5", "throughput": "16:3,32:3,64:3,128:3"}[profile]
-    if profile == "throughput":  # MTP's depths, also with NVFP4 experts (up to 64 requests)
-        assert resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": "dflash2", "SHARAR_FLASHNEXT_EXPERTS": "nvfp4"}).get(
-            "SHARAR_SPEC_DEPTHS") == "16:3"
+    assert s.get("SHARAR_SPEC") == {"exact": "7", "fast": "9", "throughput": "4"}[profile]
+    assert s.get("SHARAR_SPEC_POLICY") == ("" if profile == "exact" else "budget")
     mtp = resolve(env, "flashnext", profile)
+    assert mtp.get("SHARAR_SPEC_POLICY") == ""
     assert (mtp.proposer, mtp.get("SHARAR_DRAFT_PRECISION")) == ("mtp", "bf16") and not mtp.parallel_draft
     assert mtp.get("SHARAR_ACCEPT_DEFAULT") == ("off" if profile == "exact" else "3:2.0")
     assert resolve({**env, "SHARAR_DRAFT_PRECISION": ""}, "flashnext", profile).get("SHARAR_DRAFT_PRECISION") == "bf16"  # empty is unset
@@ -298,10 +294,8 @@ def test_moe_budget_setting():
 def test_profile_depths_stay_within_a_lower_batch_limit(env):
     # a limit below 128 starts (128 is no captured bucket then), and a limit that is not a bucket verifies what the
     # bucket it would pad to does
-    cases = {("throughput", "64"): {"mtp": "16:3,32:3,64:3", "dflash2": "16:3,32:3,64:3"},
-             ("throughput", "100"): {"mtp": "16:3,32:3,64:3,100:3", "dflash2": "16:3,32:3,64:3,100:3"},
-             ("throughput", "12"): {"mtp": "12:3", "dflash2": "12:3"},
-             ("fast", "3"): {"mtp": "2:4,3:4", "dflash2": "2:7,3:7"}}
+    cases = {("throughput", "64"): {"mtp": "16:3,32:3,64:3"}, ("throughput", "100"): {"mtp": "16:3,32:3,64:3,100:3"},
+             ("throughput", "12"): {"mtp": "12:3"}, ("fast", "3"): {"mtp": "2:4,3:4"}}
     for (profile, batch), want in cases.items():
         for proposer, depths in want.items():
             s = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": proposer, "SHARAR_MAX_BATCH": batch})
@@ -346,3 +340,18 @@ def test_host_floor_setting(env, tmp_path):
             resolve(env, "flashnext", overrides={"SHARAR_HOST_FLOOR_GIB": bad})
     with pytest.raises(ValueError, match="SHARAR_MIN_AVAILABLE_KIB is retired"):  # main's guard setting, e.g. its 16 GiB
         resolve(env, "flashnext", overrides={"SHARAR_MIN_AVAILABLE_KIB": str(16 * 2**20)})
+
+
+def test_adaptive_verification_for_dflash2_outside_exact(env):
+    # DFlash2 (the 27B's own drafter, Flash-Next's on request) verifies what its drafts' scores pay for in `fast` and
+    # `throughput`, on one Spark or two; `exact` keeps the fixed depth so its runs repeat; MTP keeps its own policy
+    for tp in (1, 2):
+        for profile in ("fast", "throughput"):
+            assert launch.profile_defaults(profile, "qwen38", tp=tp)["SHARAR_SPEC_POLICY"] == "budget"
+            assert launch.profile_defaults(profile, "flashnext", tp=tp, proposer="dflash2")["SHARAR_SPEC_POLICY"] == "budget"
+            assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "flashnext", tp=tp)
+            assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "qwen38", tp=tp, proposer="mtp")
+        assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults("exact", "qwen38", tp=tp)
+    assert resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "fixed"}).get("SHARAR_SPEC_POLICY") == "fixed"
+    with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY"):
+        resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "auto"})
