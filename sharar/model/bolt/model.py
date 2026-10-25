@@ -112,7 +112,11 @@ class Bolt(Nemotron):
         self.bolt_experts = cfg.bolt_experts
         from importlib.metadata import version
         # the SSD store keys recurrent state by the arithmetic that produced it: b12x's linears, and the expert backend
-        self.arithmetic_identity = {"linears": f"b12x {version('b12x')}", "iq2_experts": cfg.bolt_experts}
+        import hashlib
+        from sharar.model.bolt import tuning
+        launch = hashlib.sha256(repr(sorted(tuning.CONFIGS.items())).encode()).hexdigest()[:16]  # split-K orders the sums
+        self.arithmetic_identity = {"linears": f"b12x {version('b12x')}", "launch_configs": launch,
+                                    "iq2_experts": cfg.bolt_experts}
         if cfg.bolt_experts == "fp8":
             from sharar.kernels.iq2_moe import _source_revision
             self.arithmetic_identity["kernel"] = _source_revision()
