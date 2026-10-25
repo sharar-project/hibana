@@ -150,13 +150,15 @@ def nemotron_defaults(profile: str) -> dict[str, str]:
     # request and 4 for two to four, and both calibrated 3-bit copies (h2h at one request: 54.6 -> 81.0 tok/s)
     p.update(SHARAR_ACCEPT_DEFAULT="3:2.0", SHARAR_ACCEPT_DEFAULT_SAMPLED="1", SHARAR_DEVICE_ACCEPT="1",
              SHARAR_SPEC="5", SHARAR_SPEC_DEPTHS="2:4,4:4", SHARAR_W3_DECODE="1")
-    if profile == "throughput":  # up to 16 requests, depth 3 past four; fast's sharing and FP16 state are ungated there
-        p.update(SHARAR_MAX_BATCH="16", SHARAR_SPEC_DEPTHS="2:4,4:4,16:3", SHARAR_MOE_KEEP="0", SHARAR_SSM_STATE="fp32")
+    # the FP16 Mamba state with stochastic rounding (half the state traffic of decode, verify and replay; its rounding
+    # is keyed on token position and layer, so a request's arithmetic does not depend on the batch)
+    p["SHARAR_SSM_STATE"] = "fp16_sr"
+    if profile == "throughput":  # up to 16 requests, depth 3 past four; fast's expert sharing is ungated there
+        p.update(SHARAR_MAX_BATCH="16", SHARAR_SPEC_DEPTHS="2:4,4:4,16:3", SHARAR_MOE_KEEP="0")
         return p
     # expert sharing (model/nemotron/moe.py: each verify row keeps its top 12 experts, a call reads at most 48 a request
-    # and 128 in all) and the FP16 Mamba state with stochastic rounding, gated together against exact (GSM8K-300 97.7%
-    # each): 102.5 tok/s at one request
-    p.update(SHARAR_MOE_KEEP="12", SHARAR_MOE_BUDGET="48:128", SHARAR_SSM_STATE="fp16_sr")
+    # and 128 in all), gated together with the FP16 state against exact (GSM8K-300 97.7% each): 102.5 tok/s at one request
+    p.update(SHARAR_MOE_KEEP="12", SHARAR_MOE_BUDGET="48:128")
     return p
 
 

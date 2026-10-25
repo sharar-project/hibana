@@ -121,7 +121,7 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 | Budgeted expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_BUDGET`) | off | Flash-Next: keep 4, budget 12:64; Nemotron: keep 12, budget 48:128 | Flash-Next as fast; Nemotron off |
 | Optimized QSA prefill kernels (`SHARAR_QSA_PREFILL_BACKEND`) | off (original) | Flash-Next: auto (where eligible: SM121, one or two Sparks, through 32K) | as fast |
 | Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
-| Reduced recurrent state (`SHARAR_SSM_STATE`) | off (FP32) | Nemotron: FP16 with stochastic rounding; else FP32 | 8-bit GDN state; Nemotron FP32 |
+| Reduced recurrent state (`SHARAR_SSM_STATE`) | off (FP32) | Nemotron: FP16 with stochastic rounding; else FP32 | 8-bit GDN state; Nemotron FP16 with stochastic rounding |
 
 Relaxed acceptance accepts a drafted token the target ranks within its top-k and within a logit margin of its
 argmax, so outputs are no longer the target's exact greedy continuation; a request can pin exact acceptance with

@@ -58,7 +58,8 @@ def test_fast_alone_shares_experts_and_halves_the_state(env):
     for profile in ("exact", "throughput"):
         s = resolve(env, profile)
         assert s.get("SHARAR_MOE_KEEP", "0") == "0" and not s.get("SHARAR_MOE_BUDGET")
-        assert s.get("SHARAR_SSM_STATE", "fp32") == "fp32"
+    assert resolve(env, "throughput").get("SHARAR_SSM_STATE") == "fp16_sr"
+    assert resolve(env, "exact").get("SHARAR_SSM_STATE", "fp32") == "fp32"
 
 
 def test_fast_and_throughput(env):
