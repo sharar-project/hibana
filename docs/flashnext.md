@@ -113,26 +113,26 @@ draft and feedback graphs, device-resident acceptance, and retained features thr
 - **Taps.** The drafter reads layers 5, 15, 25, 35 and 45, each the FP32 mean of the four hyper streams leaving the
   layer (`flashnext_fused.stream_mean`), as the publisher's SGLang capture defines them. Its rows go through the
   lm_head alone (`FlashNext.head_logits`), not the mixer, which reads hyper streams.
-- **Short drafts.** A round drafts only the depth it checks: one block of the anchor and d masked rows, with draft
-  graphs per batch bucket and depth, so `fast` drafts 8 rows a request for two to four requests (depth 7) where a
-  whole block is 10.
-- **Depth.** Under budgeted expert selection a verify forward reads its cap's experts whatever its rows (one request:
-  32-35 ms a round from depth 3 to 15, 3-bit experts, drafting a whole block), so a deeper round guarantees each
-  checked token fewer of its own experts (2 x cap / rows). The depths are caps that keep MTP's floor of 3: `fast` checks
-  at most 9 for one request and 7 for two to four (`SHARAR_SPEC=9`, `SHARAR_SPEC_DEPTHS=2:7,4:7`); `throughput` drafts as
-  MTP, 4 and 3 from 16 requests (from 16, depth 5 decoded 9-10% slower than 3: its verification passes the 64 rows the
-  3-bit copies serve; and the verify buffers hold every request slot at the deepest depth, 1.7 GiB at 4 and 3.4 at 9
-  for 128 requests); `exact`, which reads every expert, drafts 7 (unmeasured). On the h2h prompts, greedy at `fast`'s
+- **Depth.** `fast` and `throughput` draft the whole block each round and verify what its scores pay for
+  ([adaptive verification](operations.md#adaptive-verification-dflash2)): one depth for the batch, padded graphs at
+  every candidate depth up to the cap, with the pinned draft's own calibration (held-out AUC 0.872). Under budgeted
+  expert selection a verify forward reads its cap's experts whatever its rows (one request: 32-35 ms a round from
+  depth 3 to 15, 3-bit experts), so a deeper round guarantees each checked token fewer of its own experts
+  (2 x cap / rows). The caps: `fast` 9 (`SHARAR_SPEC=9`), MTP's floor of 3 for one request; `throughput` 4 as MTP
+  (from 16 requests, depth 5 decoded 9-10% slower than 3: its verification passes the 64 rows the 3-bit copies serve;
+  and the verify buffers hold every request slot at the deepest depth, 1.7 GiB at 4 and 3.4 at 9 for 128 requests);
+  `exact`, which reads every expert, drafts 7 at every round (unmeasured). On the h2h prompts, greedy at `fast`'s
   top-2 within 1.0, the drafter emits 2.8 tokens a round at depth 3, 3.6 at 7 and 3.9 at 9, counting the first d
   drafts of a 10-row block (at 9: math 6.1, structured 5.7, code 5.4; chat 3.2, prose 2.7, multilingual 2.6).
+- **Short drafts.** With `SHARAR_SPEC_POLICY=fixed` a round drafts only the depth it checks (one block of the anchor
+  and d masked rows, draft graphs per batch bucket and depth); adaptive verification drafts the whole block, which
+  costs about the same.
 - **Acceptance.** `fast` and `throughput` accept a DFlash2 draft the target ranks top-2 within 1.0 logits, the 27B's
   sampled rule: at Flash-Next's top-3 within 2.0, DFlash2 lost 3.3 points of GSM8K-300 one request at a time against
   MTP with its 3-bit draft head; at top-2 within 1.0 it ties, for 5% fewer tokens a round there.
-- **Adaptive depth.** Off in every profile. With `SHARAR_SPEC_STEP_COST` (a DFlash2 round costs about 0.01 of a round
-  more per depth), each request checks as deep as its recent acceptance pays for, up
-  to its bucket's depth (`engine/depth.AcceptanceDepth`, [as for MTP](#the-mtp-draft)). Depth tables and adaptive
-  depth reach the 27B's DFlash2 too, a round drafting d + 1 rows; there adaptive depth captures verify and draft
-  graphs at depths 1-15 for up to four requests (unmeasured).
+- **Adaptive depth.** With `SHARAR_SPEC_POLICY=fixed` and `SHARAR_SPEC_STEP_COST`, each request checks as deep as
+  its recent acceptance pays for, up to its bucket's depth (`engine/depth.AcceptanceDepth`, [as for MTP](#the-mtp-draft));
+  adaptive verification replaces it in `fast` and `throughput`.
 - **MTP's own.** The 2-bit draft head and a reduced draft vocabulary serve MTP only: DFlash2 projects every drafted
   position through the target's lm_head, which with 3-bit decode copies on (`fast`, `throughput`) is the lm_head's
   3-bit copy the verify reads too. A DFlash2 round is about 85% verification at one request (a draft is 4.4 ms of

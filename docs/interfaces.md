@@ -127,7 +127,11 @@ buckets and a bucket at depth 0 decodes plainly while the proposer still ingests
 with `Capabilities.short_drafts` (MTP and DFlash2) gets `propose(..., depth=d)` and drafts only those `d` tokens (a
 DFlash2 round runs one block of the anchor and `d` masked rows), and its `capture_graphs(log, depths={d: buckets})`
 receives the verify graphs' pairs (DFlash2 captures a draft graph at each; MTP's one-step graphs serve every depth);
-others draft `k` and the first `d` are verified.
+others draft `k` and the first `d` are verified. A proposer with `Capabilities.scored_drafts` (DFlash2) fills
+`Proposal.acceptance` with each drafted position's probability of acceptance once `score_drafts` is set; adaptive
+verification (`engine/depth.RowBudget`) then has it draft `k` and decides after drafting what the round verifies:
+a depth per request in packed verify graphs on a target without side inputs that accepts on the host (the 27B), one
+depth for the batch in padded graphs otherwise.
 
 - `ingest_prefill(req, ids, start, result)` consumes each freshly computed chunk; `start(req, token)` publishes the
   first emitted token; `ready(req)` decides whether a request may enter speculation (otherwise it decodes plainly).
