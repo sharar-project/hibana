@@ -47,7 +47,7 @@ The profiles (`nemotron_defaults` in `sharar/launch/settings.py`):
 |---|---|
 | `exact` | MTP depth 3, exact acceptance, FP32 Mamba state, every token's 22 experts |
 | `fast` | both 3-bit copies, relaxed acceptance (top 3 within 2.0 logits, greedy and sampled), device-resident acceptance, 2-bit draft head, depth 5 at one request and 4 at two to four, FP16 Mamba state with stochastic rounding, expert sharing `SHARAR_MOE_KEEP=12` `SHARAR_MOE_BUDGET=48:128` |
-| `throughput` | `fast` up to 16 requests, depth 3 past four, without the expert sharing (ungated at 5-16 requests) |
+| `throughput` | `fast` up to 16 requests, depth 3 past four |
 
 Expert sharing (`moe.py`, `route_budget`): a verify call's rows share the experts they read. Each row is guaranteed
 its top `KEEP` experts; the call then reads at most `P` distinct experts per request and `CAP` in all, filled by
@@ -67,8 +67,9 @@ Not supported yet, to revisit:
 - NVFP4 KV cache: the attention's fused K/V writer serves the FP8 pool only.
 - An int8 (or int4) Mamba-2 state: the window formats and kernels (`kernels/ssm_window.py`) implement the GDN
   recurrence; Mamba-2 needs its own record and replay.
-- `throughput`: its 16-request cap follows the 27B's and is unmeasured past 16; expert sharing there is not
-  quality-gated (with `fast`'s sharing, 8 / 16 streams ran 277 / 353 tok/s against 190 / 239 without).
+- `throughput`: its 16-request cap follows the 27B's and is unmeasured past 16, and its expert sharing (`fast`'s:
+  128 experts a call, about 8 a request at 16) is gated at one to four requests only; 8 / 16 streams ran
+  277 / 353 tok/s with it against 190 / 239 without.
 
 ## Checkpoint conventions
 

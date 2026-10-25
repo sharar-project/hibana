@@ -52,14 +52,13 @@ def test_the_3bit_profiles_need_the_calibrated_copies(env, tmp_path, profile):
     assert s.engine_env(current)["SHARAR_W3_DECODE"] == "1"
 
 
-def test_fast_alone_shares_experts_and_halves_the_state(env):
+def test_fast_and_throughput_share_experts_and_halve_the_state(env):
     fast = resolve(env, "fast")
     assert (fast.get("SHARAR_MOE_KEEP"), fast.get("SHARAR_MOE_BUDGET"), fast.get("SHARAR_SSM_STATE")) == ("12", "48:128", "fp16_sr")
-    for profile in ("exact", "throughput"):
-        s = resolve(env, profile)
-        assert s.get("SHARAR_MOE_KEEP", "0") == "0" and not s.get("SHARAR_MOE_BUDGET")
-    assert resolve(env, "throughput").get("SHARAR_SSM_STATE") == "fp16_sr"
-    assert resolve(env, "exact").get("SHARAR_SSM_STATE", "fp32") == "fp32"
+    tput, exact = resolve(env, "throughput"), resolve(env, "exact")
+    assert (tput.get("SHARAR_MOE_KEEP"), tput.get("SHARAR_MOE_BUDGET"), tput.get("SHARAR_SSM_STATE")) == ("12", "48:128", "fp16_sr")
+    assert exact.get("SHARAR_MOE_KEEP", "0") == "0" and not exact.get("SHARAR_MOE_BUDGET")
+    assert exact.get("SHARAR_SSM_STATE", "fp32") == "fp32"
 
 
 def test_fast_and_throughput(env):
