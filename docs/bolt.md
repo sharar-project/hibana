@@ -34,19 +34,16 @@ The loader reads the native safetensors tensors:
 | Mamba input/output projections | ModelOpt W4A16 NVFP4, with E4M3 block scales and an FP32 global gain |
 | Embeddings, norms and router | BF16; router correction bias is FP32 |
 
-`kernels/ggml_bf16.py` decodes tiles into BF16 MMA operands while keeping the resident matrices packed. It
-does not quantize activations. NVFP4's global gain multiplies the FP32 accumulator before the output rounds
-to BF16. IQ2 routed calls select experts using device ids; invalid ids on padded graph rows produce zero.
-The weighted sum is accumulated in FP32 and rounded to BF16 before the latent output projection.
-
-The default BF16 path uses one tensor-core tile per routed pair and output tile, including a padded row tile
-for small calls. `SHARAR_BOLT_EXPERTS=fp8` selects `kernels/iq2_moe.py`: GPU grouping, grouped up/down projections,
-fused ReLU² and intermediate quantization, and an FP32 weighted combination. The checkpoint's IQ2 bytes
-are losslessly retiled at load and replace the original expert buffers. Activations use E4M3 with FP32 scales
-per 32 values; the down-projection pairs stay FP32 until the weighted sum rounds to BF16. This changes the
-arithmetic. The shared expert, latent, attention, Mamba and vocabulary projections keep the BF16 path.
-Temporary scratch belongs to each call and is reused between layers by the graph allocator. SSD cache
-identities distinguish the two expert arithmetic modes.
+Every dense projection runs b12x's SM120 BF16-activation GEMMs (`model/bolt/linear.py`), as vLLM's b12x
+linears do: NVFP4 through the W4A16 recipe, Q8_0 and IQ2_XXS through the block-quant recipes. Weights stay in
+their checkpoint encodings (Q8_0 and IQ2_XXS are losslessly retiled at load) and activations stay BF16. Plans
+for the CUDA graphs' row counts are compiled at load, on the loading thread; `model/bolt/tuning.py` pins measured
+launch configurations per projection and row count. The routed experts run b12x's fused IQ2_XXS MoE
+(`kernels/b12x_iq2_moe.py`: routing, up projection, ReLU², down projection and the weighted sum in one launch,
+BF16 activations). `SHARAR_BOLT_EXPERTS=fp8` selects Sharar's grouped operator (`kernels/iq2_moe.py`: E4M3
+activations, four launches), about 5% slower for one request and up to 6% faster for four;
+`SHARAR_BOLT_EXPERTS=bf16` keeps the Triton weight-only path (`kernels/ggml_bf16.py`). SSD cache identities
+include the linears' b12x version and launch configurations, the expert backend and expert sharing.
 
 Loaded model allocations are about 21.2 GiB before request pools and graphs. One FP32 Mamba slot costs
 162.34 MiB across the 40 recurrent blocks; FP8 KV costs 4 KiB per token across eight attention blocks.
@@ -54,15 +51,35 @@ The launcher and ledger budget the pools separately. The checkpoint's 24GB name 
 
 ## Profiles and limits
 
-Every profile uses native weights, all nine routed experts, FP32 Mamba state, FP8 KV, up to four active
-requests and the SSD tier. `SHARAR_BOLT_EXPERTS=bf16|fp8` selects the routed-expert arithmetic; the profiles
-default to `bf16` while the FP8 option is evaluated. There is no calibrated W3 copy or expert pruning.
-FP16 Mamba storage is available through the shared runtime but is not a Bolt default.
+`exact` serves the checkpoint encodings, all nine routed experts, FP32 Mamba state and exact verification.
+`fast` and `throughput` add the calibrated 3-bit copies of the trunk and vocabulary head (177 matrices, 2.1 GiB;
+`weights/bolt_w3_calibrate.py`), the int8 Mamba state (LeapQuant windows) and relaxed top-3 within 2.0 logits for
+greedy requests; sampled requests verify exactly. All profiles use FP8 KV, up to four active requests and the SSD
+tier. NVIDIA publishes no 3-bit copies for Bolt: `fast` serves `w3-checkpoints/bolt-current` under the results
+directory (a link to a local calibration) or `SHARAR_W3_CHECKPOINT=DIR`, and without one the checkpoint encodings
+with a warning.
+
+One GB10, LiLiCorr at seven drafts, 256 forced tokens, greedy, thinking off (`tools/h2h-pr.py`'s method), tok/s:
+
+| Configuration | 22 prompts: median / mean | four streams |
+|---|---:|---:|
+| vLLM (b12x linears and MoE, exact) | 73.9 / 76.6 | 147.1 |
+| `exact` | 87.1 / 86.7 | 169.8 |
+| + 3-bit copies | 113.4 / 111.0 | 187.0 |
+| + int8 state | 109.8 / 114.2 | 213.7 |
+| + relaxed greedy verification (`fast`) | 142.5 / 146.3 | 262.8 |
+| + expert sharing 4 / 16:48 (opt-in) | 127.4 / 130.7 at exact verification | 251.6 |
+
+Paired against `exact` (GSM8K 1,319 and GPQA Diamond 198, thinking off): the 3-bit copies -0.5 / -2.5 points
+(p 0.27 / 0.56), with the int8 state +0.1 / +1.5 (p 1.0 / 0.76); MMLU-Pro (first 1,000) with the 3-bit copies
+-0.1 points. The 3-bit copies answer GPQA at length (4.0K against 3.1K tokens an item). Expert sharing
+(`SHARAR_MOE_KEEP` / `SHARAR_MOE_BUDGET`, Super's `route_budget`: each token keeps its top `keep`, a decode or
+verify call reads at most `min(budget, per_request x requests)` distinct experts) is off in every profile.
 
 This pin has no built-in MTP head. The pinned companion
 `nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-LiLiCorr` at `449d24140160b8e51871bfc0f0a7338abf640aa1`
 uses the parallel DFlash proposer (`dflash2` in Sharar), sharing the target's embeddings and vocabulary head.
-All profiles default to seven draft tokens with exact target verification; `--spec N` selects 1–7 and
+All profiles default to seven draft tokens (verified exactly under `exact`); `--spec N` selects 1–7 and
 `--spec 0` turns speculation off. Longer drafts and MTP are rejected. The draft keeps its published NVFP4/BF16
 weights (`--draft-precision bf16`); the precision name refers to its activations and floating-point matrices.
 
@@ -77,7 +94,8 @@ numerical parity; packed NVFP4 KV is not enabled.
 ## Validation
 
 `tests/gpu/test_bolt_kernels.py` checks each packed encoding against dequantized BF16 matmul, including routed
-pairs, padded rows, ReLU² and CUDA graph replay. `tests/gpu/test_bolt_model.py` checks all 88 residual outputs
+pairs, padded rows, ReLU², CUDA graph replay, b12x plans prepared at load and run from another thread, the fused
+MoE and budgeted expert selection at Bolt's geometry. `tests/gpu/test_bolt_model.py` checks all 88 residual outputs
 and logits against the independent PyTorch reference, the heterogeneous MoE blocks against Transformers,
 chunked prefill, prefix reuse, graph decode and exact Mamba-state restoration from the SSD tier.
 `tests/gpu/test_lilicorr.py` checks the published packed correlator against an independent unpacked reference,

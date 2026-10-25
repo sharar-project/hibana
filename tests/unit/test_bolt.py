@@ -38,12 +38,19 @@ def test_block_metadata_takes_precedence_and_is_validated(tmp_path, field, value
 
 @pytest.mark.parametrize("profile", settings.PROFILE_NAMES)
 @pytest.mark.parametrize("name", ["bolt", "nemotron-bolt"])
-def test_profiles_keep_native_weights_and_use_pinned_lilicorr(tmp_path, profile, name):
+def test_profiles_and_pinned_lilicorr(tmp_path, profile, name):
+    """exact: checkpoint encodings, FP32 state, exact verification; fast and throughput: the calibrated 3-bit copies
+    (none here, so the engine serves the checkpoint encodings), the int8 state and relaxed greedy verification."""
     env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
     s = settings.resolve(name, profile, env=env)
     assert (s.target, s.port, s.service, s.spec) == ("bolt", 30006, "sharar-bolt", 7)
-    assert s.get("SHARAR_W3_DECODE") == s.get("SHARAR_MOE_KEEP") == s.get("SHARAR_DEVICE_ACCEPT") == "0"
-    assert s.get("SHARAR_SSM_STATE") == "fp32"
+    assert s.get("SHARAR_MOE_KEEP") == s.get("SHARAR_DEVICE_ACCEPT") == s.get("SHARAR_ACCEPT_DEFAULT_SAMPLED") == "0"
+    lossy = profile != "exact"
+    assert (s.get("SHARAR_W3_DECODE"), s.get("SHARAR_SSM_STATE"), s.get("SHARAR_ACCEPT_DEFAULT")) == (
+        ("1", "int8", "3:2.0") if lossy else ("0", "fp32", "off"))
+    assert preflight.ensure_w3(s, log=lambda _: None, fetch=True) is None and s.engine_env(None)["SHARAR_W3_DECODE"] == "0"
+    if lossy:
+        assert "no calibrated 3-bit checkpoint" in s.warnings[-1]
     assert s.get("SHARAR_BOLT_EXPERTS") == "b12x"
     assert s.parallel_draft and s.proposer == 'dflash2'
     assert settings.model_config(s.target) is config
@@ -142,11 +149,14 @@ def test_w3_calibration_names_cover_the_trunk_not_the_shared_experts():
         calibrate.source_prefixes("layers.1.mixer.shared_up")
 
 
-def test_w3_decode_needs_a_local_calibration(tmp_path):
+def test_w3_serves_a_local_calibration(tmp_path):
+    """Bolt publishes no 3-bit copies: SHARAR_W3_CHECKPOINT=DIR, or the w3-checkpoints/bolt-current link, without a fetch."""
     env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
-    with pytest.raises(ValueError, match="SHARAR_W3_CHECKPOINT"):
-        settings.resolve("bolt", "exact", env=env, overrides={"SHARAR_W3_DECODE": "1"})
     (tmp_path / "w3").mkdir()
     (tmp_path / "w3" / "manifest.json").write_text("{}")
     s = settings.resolve("bolt", "exact", env=env, overrides={"SHARAR_W3_DECODE": "1", "SHARAR_W3_CHECKPOINT": str(tmp_path / "w3")})
     assert preflight.ensure_w3(s, fetch=False) == (tmp_path / "w3").resolve()
+    s = settings.resolve("bolt", "fast", env=env)
+    s.w3_root.mkdir(parents=True)
+    (s.w3_root / "bolt-current").symlink_to(tmp_path / "w3")
+    assert preflight.ensure_w3(s, log=lambda msg: pytest.fail(msg), fetch=True) == (tmp_path / "w3").resolve()
