@@ -12,9 +12,10 @@ from sharar.kernels import ops, w3
 from sharar.kernels.fp8_quant import quant_fp8
 from sharar.target import NEMOTRON
 from sharar.weights.modelopt import Fp8Linear
-from sharar.weights.nemotron_w3_calibrate import Capture, errors, projection_names, source_prefixes
+from sharar.weights.nemotron_w3_calibrate import errors, projection_names, source_prefixes
+from sharar.weights.w3_calibrate import InputCovariances
 from sharar.weights.w3_calibration import quantize
-from sharar.weights.w3_checkpoint import FORMAT_VERSION, save_weight
+from sharar.weights.w3_checkpoint import FORMAT_VERSION, CalibratedWeights, save_weight
 
 
 def _fp8_linear(n: int, k: int, seed: int) -> Fp8Linear:
@@ -40,13 +41,16 @@ def test_names_cover_the_model_projections():
 def test_capture_sees_the_served_fp8_input():
     lin = _fp8_linear(256, 512, 1)
     x = torch.randn(40, 512, device="cuda", dtype=torch.bfloat16)
-    with Capture([("p", lin)]) as cap:
+    original = ops.fp8_linear
+    with InputCovariances([("p", lin)], served_fp8=True) as cap:
         ops.fp8_linear(x, lin)  # BF16 in: quantized at the static scale, as the copy will read it
         ops.fp8_linear(None, lin, x_q=quant_fp8(x, lin.input_scale))
-    assert ops.fp8_linear is cap.original
+        cap.holdout = True  # a held-out sample: 64 evenly spaced probe rows, no covariance
+        ops.fp8_linear(x[:20], lin)
+    assert ops.fp8_linear is original
     seen = quant_fp8(x, lin.input_scale).float() * lin.input_scale
-    torch.testing.assert_close(cap.h["p"], 2 * seen.T @ seen, rtol=1e-5, atol=1e-3)
-    assert cap.rows["p"] == 80
+    torch.testing.assert_close(cap.matrices["p"], 2 * seen.T @ seen, rtol=1e-5, atol=1e-3)
+    assert cap.counts["p"] == 80 and torch.equal(torch.cat(cap.held["p"]), seen[:20].bfloat16())
 
 
 @torch.inference_mode()
@@ -65,7 +69,7 @@ def test_fitted_copy_loads_and_serves_decode_only(tmp_path):
     other = _fp8_linear(256, 512, 3)
     model = SimpleNamespace(target=NEMOTRON, linears=lambda: iter([("layers.0.mixer.out_proj", lin), ("lm_head", other)]))
     from sharar.model.nemotron.model import Nemotron
-    identity = Nemotron.attach_calibrated(model, tmp_path, log=None)
+    identity = Nemotron.attach_calibrated(model, CalibratedWeights(tmp_path, revision=NEMOTRON.model_revision), log=None)
     assert len(identity) == 64 and other.w3 is None
     assert torch.equal(lin.w3.planes, packed.planes) and torch.equal(lin.w3.row_scale, packed.row_scale)
 

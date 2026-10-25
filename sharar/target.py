@@ -87,6 +87,13 @@ class Target:
     draft_pins: tuple[tuple[str, str, str], ...] = ()
     # A request's default stop ids (the chat template's end of turn, then end of text).
     stop_token_ids: tuple[int, ...] = (248046, 248044)  # Qwen3.8: <|im_end|>, <|endoftext|>
+    # The recurrent layers' recurrence: "gdn" (Gated DeltaNet) or "mamba2"; it picks the state formats
+    # (`launch.settings.SSM_STATES`) and the accepted-state replay.
+    recurrence: str = "gdn"
+    # The checkpoint's prefix of the in-checkpoint MTP layers' tensors (`cache/spec_budget.py`).
+    mtp_prefix: str = "mtp."
+    # The first ordinary-text token id: random warm-up prompts draw from it up (below it a vocabulary keeps control ids).
+    first_text_token: int = 0
 
     def __post_init__(self):
         if len(self.layer_types) != self.num_layers or any(t not in ("full_attention", "linear_attention", "moe") for t in self.layer_types):
@@ -325,6 +332,7 @@ def _nemotron() -> Target:
         num_experts=c.NUM_EXPERTS, experts_per_token=c.EXPERTS_PER_TOKEN, moe_intermediate_size=c.MOE_INTERMEDIATE_SIZE,
         shared_expert_intermediate_size=c.SHARED_EXPERT_INTERMEDIATE_SIZE, mtp_layers=c.MTP_LAYERS,
         stop_token_ids=c.STOP_TOKEN_IDS, w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION,
+        recurrence="mamba2", mtp_prefix=f"{c.PREFIX}.mtp.", first_text_token=c.FIRST_TEXT_TOKEN,
     )
 
 

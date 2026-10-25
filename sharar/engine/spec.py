@@ -88,16 +88,15 @@ class SpecDecoder:
             raise ValueError("a quantized recurrent state (SHARAR_SSM_STATE=int8/int4) commits through the verify ring: use --verify-state reconstruct")
         if state_strategy == "reconstruct":
             if quantized:  # one record per verified token; the commit appends or folds them
-                from sharar.kernels.ssm_window import WindowState as Replay
-            elif executor.target.family == "nemotron":  # Mamba-2: replays the verified x, B and dt
-                from sharar.kernels.mamba2 import AcceptedState as Replay
-            else:
-                from sharar.kernels.fla.accepted_state import AcceptedState as Replay
-            if Replay.__name__ == "AcceptedState":  # the commit replays with the arithmetic the model's verify uses
+                from sharar.kernels.ssm_window import WindowState
+                self.replay = WindowState(executor.state_pool, n, self.steps, executor.target.linear_num_key_heads)
+            elif executor.target.recurrence == "mamba2":  # replays the verified x, B and dt
+                from sharar.kernels.mamba2 import AcceptedState
+                self.replay = AcceptedState(executor.state_pool, n, self.steps, executor.target.linear_num_key_heads)
+            else:  # the commit replays with the arithmetic the model's verify uses
+                from sharar.kernels.fla.accepted_state import AcceptedState
                 cuda = any(getattr(layer.mixer, "cuda_verify", False) for layer in getattr(executor.model, "layers", ()))
-                self.replay = Replay(executor.state_pool, n, self.steps, executor.target.linear_num_key_heads, cuda=cuda)
-            else:
-                self.replay = Replay(executor.state_pool, n, self.steps, executor.target.linear_num_key_heads)
+                self.replay = AcceptedState(executor.state_pool, n, self.steps, executor.target.linear_num_key_heads, cuda=cuda)
             self.inter_ssm_all, self.inter_ssm = None, {}
         else:
             self.inter_ssm_all = torch.zeros((len(layer_ids), n, self.steps, *ssm_shape), dtype=executor.state_pool.ssm_all.dtype, device=self.device)

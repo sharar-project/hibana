@@ -65,13 +65,11 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
+from sharar.model.nemotron import config as c
 from sharar.weights.safetensors import SnapshotWeights
 
-MODEL_ID = "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
-MODEL_REVISION = "6aae0d6d0285e561bbb72efa10ba1425d41ebddc"
-MODEL_CACHE_KEY = "models--nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
-TRUNK = "language_model.backbone"
-MTP = "language_model.mtp.layers"
+TRUNK = f"{c.PREFIX}.backbone"
+MTP = f"{c.PREFIX}.mtp.layers"
 
 
 def find_snapshot(cache_dir: str | os.PathLike | None = None) -> Path:
@@ -81,10 +79,10 @@ def find_snapshot(cache_dir: str | os.PathLike | None = None) -> Path:
     roots = [cache_dir, current().hf_cache, Path.home() / ".cache/huggingface/hub"]
     for root in filter(None, roots):
         for base in (Path(root), Path(root) / "hub"):
-            snap = base / MODEL_CACHE_KEY / "snapshots" / MODEL_REVISION
+            snap = base / c.MODEL_CACHE_KEY / "snapshots" / c.MODEL_REVISION
             if (snap / "config.json").is_file() and (snap / "model.safetensors.index.json").is_file():
                 return snap
-    raise FileNotFoundError(f"snapshot {MODEL_ID}@{MODEL_REVISION} not found")
+    raise FileNotFoundError(f"snapshot {c.MODEL_ID}@{c.MODEL_REVISION} not found")
 
 
 def read_json(path: Path) -> dict:
@@ -128,29 +126,30 @@ class NemotronConfig:
     norm_topk: bool
     n_group: int
     topk_group: int
-    eos: tuple[int, ...] = (2, 11)
+    eos: tuple[int, ...] = c.STOP_TOKEN_IDS
 
     @classmethod
     def from_snapshot(cls, snap: Path) -> "NemotronConfig":
-        c = read_json(snap / "config.json")["llm_config"]
+        """The pinned geometry (`model/nemotron/config.py`, which `check_config` matches against the snapshot's
+        config.json), and from config.json what only the reference reads: the MTP block pattern, time_step_limit."""
+        from sharar.target import NEMOTRON
+        c.check_config(NEMOTRON, snap)
+        llm = read_json(snap / "config.json")["llm_config"]
+        if llm["mamba_hidden_act"] != "silu":
+            raise ValueError("unexpected Mamba activation")
         legacy = {"mamba": "mamba", "moe": "moe", "attention": "attention", "linear_attention": "mamba",
                   "full_attention": "attention"}
-        if c["mlp_hidden_act"] != "relu2" or c["mamba_hidden_act"] != "silu" or c.get("n_shared_experts") != 1:
-            raise ValueError("unexpected activation or shared-expert count")
-        if c.get("num_nextn_predict_layers", 0) != 1 or c.get("tie_word_embeddings"):
-            raise ValueError("expected one untied MTP step")
         return cls(
-            hidden=c["hidden_size"], vocab=c["vocab_size"], eps=c["layer_norm_epsilon"],
-            block_types=tuple(legacy[t] for t in c["layers_block_type"]),
-            mtp_block_types=tuple(legacy[t] for t in c["mtp_layers_block_type"]),
-            heads=c["num_attention_heads"], kv_heads=c["num_key_value_heads"], head_dim=c["head_dim"],
-            mamba_heads=c["mamba_num_heads"], mamba_head_dim=c["mamba_head_dim"], n_groups=c["n_groups"],
-            d_state=c["ssm_state_size"], conv_kernel=c["conv_kernel"], chunk=c["chunk_size"],
-            time_step_limit=tuple(float(v) for v in c["time_step_limit"]),
-            experts=c["n_routed_experts"], top_k=c["num_experts_per_tok"], moe_inter=c["moe_intermediate_size"],
-            latent=c["moe_latent_size"], shared_inter=c["moe_shared_expert_intermediate_size"],
-            routed_scale=float(c["routed_scaling_factor"]), norm_topk=bool(c["norm_topk_prob"]),
-            n_group=c["n_group"], topk_group=c["topk_group"],
+            hidden=c.HIDDEN_SIZE, vocab=c.VOCAB_SIZE, eps=c.RMS_NORM_EPS, block_types=c.BLOCK_TYPES,
+            mtp_block_types=tuple(legacy[t] for t in llm["mtp_layers_block_type"]),
+            heads=c.NUM_ATTENTION_HEADS, kv_heads=c.NUM_KV_HEADS, head_dim=c.HEAD_DIM,
+            mamba_heads=c.MAMBA_HEADS, mamba_head_dim=c.MAMBA_HEAD_DIM, n_groups=c.MAMBA_GROUPS,
+            d_state=c.SSM_STATE, conv_kernel=c.CONV_KERNEL, chunk=c.MAMBA_CHUNK,
+            time_step_limit=tuple(float(v) for v in llm["time_step_limit"]),
+            experts=c.NUM_EXPERTS, top_k=c.EXPERTS_PER_TOKEN, moe_inter=c.MOE_INTERMEDIATE_SIZE,
+            latent=c.MOE_LATENT_SIZE, shared_inter=c.SHARED_EXPERT_INTERMEDIATE_SIZE,
+            routed_scale=c.ROUTED_SCALING_FACTOR, norm_topk=c.EXPECTED["norm_topk_prob"],
+            n_group=c.EXPECTED["n_group"], topk_group=c.EXPECTED["topk_group"],
         )
 
     @property

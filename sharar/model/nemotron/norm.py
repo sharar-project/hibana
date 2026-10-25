@@ -55,10 +55,6 @@ class RMSNorm:
     def bytes(self) -> int:
         return self.weight.numel() * self.weight.element_size()
 
-    def torch_forward(self, x: torch.Tensor) -> torch.Tensor:
-        xf = x.float()
-        return (xf * torch.rsqrt(xf.pow(2).mean(dim=-1, keepdim=True) + self.eps)).to(x.dtype) * self.weight
-
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         return rmsnorm(x.reshape(-1, x.shape[-1]), self.weight, self.eps)[0].view(x.shape)
 
@@ -67,7 +63,7 @@ class RMSNorm:
         """Where the new residual goes: residual itself, or (not inplace) a new tensor."""
         return residual if inplace else torch.empty_like(residual)
 
-    def fused_add(self, x: torch.Tensor, residual: torch.Tensor, inplace: bool = False, *, verify: bool = False,
+    def fused_add(self, x: torch.Tensor, residual: torch.Tensor, inplace: bool = False, *,
                   consume_input: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
         """norm(x + residual) and the new residual; consume_input: x may be overwritten."""
         out_res = self._sum_out(residual, inplace)
@@ -76,7 +72,7 @@ class RMSNorm:
         return out, out_res
 
     def fused_add_quant(self, x: torch.Tensor, residual: torch.Tensor | None, fp8_scale: torch.Tensor | None, inplace: bool = False, *,
-                        verify: bool = False, consume_input: bool = False):
+                        consume_input: bool = False):
         """Like fused_add, also returning the FP8 copy at `fp8_scale` (None: no copy). With residual None (the first
         block) the residual becomes x itself."""
         if residual is None:

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import torch
 
-from sharar.distributed import all_gather, all_reduce, get_tp_info
+from sharar.distributed import get_tp_info
 from sharar.engine.config import current
 from sharar.engine.context import ForwardContext, scratch_prefill_context
 from sharar.engine.contracts import ForwardResult
@@ -29,7 +29,7 @@ from sharar.model.nemotron import config as c
 from sharar.model.nemotron.attention import NemotronAttention
 from sharar.model.nemotron.config import PREFIX
 from sharar.model.nemotron.mamba import NemotronMamba
-from sharar.model.nemotron.moe import NemotronMoe
+from sharar.model.nemotron.moe import NemotronMoe, expert_names
 from sharar.model.nemotron.norm import RMSNorm
 from sharar.target import NEMOTRON, Target
 from sharar.weights import files
@@ -37,6 +37,22 @@ from sharar.weights.modelopt import load_fp8_linear
 from sharar.weights.safetensors import SnapshotWeights
 
 BACKBONE = f"{PREFIX}.backbone"
+EXPERTS_AHEAD = 2  # MoE blocks whose expert files the read pool reads ahead of the one loading (Flash-Next's)
+
+
+def latent_expert_names(block: str) -> list[str]:
+    """The W3 checkpoint's entries of a latent MoE block's 3-bit experts (`layers.N` of the trunk, or `mtp`)."""
+    return [f"{block}.experts.w1", f"{block}.experts.w2"]
+
+
+def load_latent_experts(calibrated, block: str, target: Target, device):
+    """A block's 3-bit experts from the W3 checkpoint (`CalibratedWeights`): fc1 = up [E x inter, latent] in the
+    checkpoint's row order and fc2 = down [E x latent, inter], stacked over all experts (one Spark: no expert
+    parallelism); each matrix with its own codebook."""
+    from sharar.kernels.w3_moe import W3Experts
+    e, inter, latent = target.num_experts, target.moe_intermediate_size, c.MOE_LATENT_SIZE
+    w1, w2 = latent_expert_names(block)
+    return W3Experts.from_stacked(calibrated._load(w1, e * inter, latent, device), calibrated._load(w2, e * latent, inter, device), e)
 
 
 def drop_page_cache(snap: Path) -> None:
@@ -76,9 +92,7 @@ class Block:
         consume = inplace and ctx.mode == "prefill"
         scale = getattr(self.mixer, "input_scale", None)  # the FP8 input of the mixer's first projection, when it has one
         hidden, hidden_q, residual = self.norm.fused_add_quant(hidden, residual, scale, inplace=inplace, consume_input=consume)
-        if self.kind == "moe":
-            return all_reduce(self.mixer(hidden, ctx)), residual
-        return all_reduce(self.mixer.forward(hidden, ctx, hidden_q)), residual
+        return self.mixer.forward(hidden, ctx, hidden_q), residual
 
 
 def w3_expert_blocks(calibrated, kinds) -> set[int]:
@@ -106,9 +120,10 @@ def w3_expert_saving(target: Target, blocks: int) -> int:
 class Nemotron:
     def __init__(self, snap: Path, device: torch.device | str = "cuda", log=print, target: Target = NEMOTRON, **_ignored):
         from sharar.cache.ledger import check_load_headroom
-        tp = get_tp_info()
-        if tp.size != 1:
+        if get_tp_info().size != 1:
             raise ValueError("Nemotron serves on one Spark")
+        if current().kv_format != "fp8":  # the fused K/V writer (`kernels/nemotron_fused.py`) writes the FP8 pool
+            raise ValueError("Nemotron serves an FP8 KV cache only (SHARAR_KV_FORMAT=fp8)")
         # Calibrated only: nearest rounding's output error on held-out activations is two to four times GPTQ's
         # (docs/w3-calibration.md, Nemotron), so there is no nearest-rounded fallback.
         calibrated = None
@@ -128,10 +143,24 @@ class Nemotron:
         self.embed = w.get(f"{BACKBONE}.embeddings.weight").to(self.device)
         self.ragged = ops.RaggedAttention(self.device, target.num_attention_heads, target.num_kv_heads, target.head_dim)
         self.layers: list[Block] = []
+        kinds = target.layer_types_of(cfg)
+        moe = [i for i, kind in enumerate(kinds) if kind == "moe"]
+
+        def ahead(k: int) -> None:
+            """Start reading the k-th MoE block's experts, the bulk of a block, on the read pool (`weights/files.py`)."""
+            if k < len(moe):
+                if expert_blocks:
+                    calibrated.ahead(latent_expert_names(f"layers.{moe[k]}"))
+                else:
+                    w.ahead(expert_names(f"{BACKBONE}.layers.{moe[k]}.mixer", target.num_experts))
+
         try:
-            for i, kind in enumerate(target.layer_types_of(cfg)):
-                experts3 = (calibrated.load_latent_experts(f"layers.{i}", target.num_experts, target.moe_intermediate_size,
-                                                           c.MOE_LATENT_SIZE, self.device) if i in expert_blocks else None)
+            for k in range(EXPERTS_AHEAD):
+                ahead(k)
+            for i, kind in enumerate(kinds):
+                if kind == "moe":
+                    ahead(moe.index(i) + EXPERTS_AHEAD)
+                experts3 = load_latent_experts(calibrated, f"layers.{i}", target, self.device) if i in expert_blocks else None
                 self.layers.append(Block(w, i, kind, self.device, self.ragged, target, experts3))
                 w.close()  # GB10 counts source maps and allocations against one pool: reopen shards per block
                 if log and (i + 1) % 11 == 0:
@@ -143,10 +172,8 @@ class Nemotron:
         self.final_norm = RMSNorm(w.get(f"{BACKBONE}.norm_f.weight").to(self.device), target.rms_norm_eps)
         self.lm_head = load_fp8_linear(w, [f"{PREFIX}.lm_head"], self.device)
         w.close()
-        # the MTP head's 3-bit experts, when the checkpoint carries them (`NemotronMtpHead` takes them from here)
-        self.mtp_experts3 = (calibrated.load_latent_experts("mtp", target.num_experts, target.moe_intermediate_size,
-                                                            c.MOE_LATENT_SIZE, self.device)
-                             if expert_blocks and "mtp.experts.w1" in calibrated.weights else None)
+        # the W3 checkpoint serving the experts: `NemotronMtpHead` loads the MTP head's from it when it carries them
+        self.w3_experts = calibrated if expert_blocks else None
         torch.cuda.synchronize()
         drop_page_cache(snap)
         self.w3_identity = self.attach_calibrated(calibrated, log) if calibrated else None
@@ -157,8 +184,7 @@ class Nemotron:
         self.stream_bytes = (sum(layer.bytes for layer in self.layers) - sum(m.expert_bytes for m in moes) + routed
                              + self.lm_head.bytes + self.embed.shape[1] * self.embed.element_size())
         if log and expert_blocks:
-            log(f"  experts: 3-bit from {calibrated.directory} ({sum(m.expert_bytes for m in moes) / 2**30:.1f} GiB"
-                f"{', and the MTP head' if self.mtp_experts3 is not None else ''})")
+            log(f"  experts: 3-bit from {calibrated.directory} ({sum(m.expert_bytes for m in moes) / 2**30:.1f} GiB)")
         if log:
             log(f"  weights loaded in {time.perf_counter() - started:.0f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated "
                 f"({self.stream_bytes / 1e9:.2f} GB per decode token)")
@@ -176,10 +202,8 @@ class Nemotron:
     def attach_calibrated(self, calibrated, log=print) -> str:
         """Calibrated 3-bit decode copies over the FP8 projections, by `linears()` name; calls of at most 64 rows then
         read them (`ops.fp8_linear`), prefill keeps the FP8 weights. A projection the checkpoint does not carry stays
-        FP8 (a checkpoint fitted with `--exclude lm_head` keeps the FP8 head). Returns the manifest's identity."""
-        if isinstance(calibrated, (str, Path)):
-            from sharar.weights.w3_checkpoint import CalibratedWeights
-            calibrated = CalibratedWeights(calibrated, revision=self.target.model_revision)
+        FP8 (a checkpoint fitted with `--exclude lm_head` keeps the FP8 head). `calibrated`: a `CalibratedWeights`.
+        Returns the manifest's identity."""
         linears = dict(self.linears())
         trunk = {n for n in calibrated.weights if ".experts." not in n}  # routed experts load with their blocks
         missing = sorted(trunk - set(linears))
@@ -235,6 +259,6 @@ class Nemotron:
 
     @torch.inference_mode()
     def logits(self, hidden: torch.Tensor) -> torch.Tensor:
-        return all_gather(ops.fp8_linear(hidden, self.lm_head))
+        return ops.fp8_linear(hidden, self.lm_head)
 
     head_logits = logits

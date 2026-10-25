@@ -137,6 +137,9 @@ class EngineConfig:
                              f"got {self.qsa_prefill_backend!r}")
         if self.verify_attention not in ("auto", "fa2"):
             raise ValueError(f"SHARAR_VERIFY_ATTENTION must be auto or fa2; got {self.verify_attention!r}")
+        for name, v in (("SHARAR_MOE_KEEP", self.moe_keep), ("SHARAR_MOE_BUDGET", self.moe_budget)):
+            if v < 0:
+                raise ValueError(f"{name}={v}: a count of experts, or 0 (off)")
 
     @property
     def ssd_buffers(self) -> dict[str, int]:

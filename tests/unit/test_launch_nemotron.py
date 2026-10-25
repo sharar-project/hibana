@@ -84,3 +84,11 @@ def test_preflight_checks_the_pinned_snapshot(env, tmp_path):
     assert preflight.pinned_snapshots(s) == [(s.hf_cache, nemotron.MODEL_ID, nemotron.MODEL_REVISION)]
     assert preflight.ensure_snapshots(s, fetch=False) == [f"{nemotron.MODEL_ID}@{nemotron.MODEL_REVISION[:7]}"]
     assert launch.model_config("nemotron") is nemotron
+
+
+def test_fp8_kv_only(env):
+    """The attention's fused K/V writer serves the FP8 pool: the NVFP4 cache and the accuracy screens are refused."""
+    for kv in ("nvfp4", "sim-fp4"):
+        with pytest.raises(ValueError, match="FP8 KV cache only"):
+            resolve({**env, "SHARAR_KV_FORMAT": kv}, "fast")
+    assert resolve(env, "fast").get("SHARAR_KV_FORMAT", "fp8") == "fp8"

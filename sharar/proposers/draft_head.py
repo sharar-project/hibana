@@ -59,33 +59,26 @@ def _weight_scale(lin) -> torch.Tensor | None:
     return lin.scale if hasattr(lin, "scale") else lin.weight_scale
 
 
-def _head_rows(lin, ids: torch.Tensor):
-    """The rows `ids` of a head, as the same kind of linear (an `Fp8Linear` keeps its static input scale)."""
-    from sharar.model.flashnext.linear import TrunkLinear
-    if isinstance(lin, TrunkLinear):
-        return TrunkLinear(lin.weight[ids].contiguous(), lin.scale)
-    import dataclasses
-    return dataclasses.replace(lin, weight=lin.weight[ids].contiguous(), w3=None)
-
-
 class ShortlistHead:
-    """The rows `ids` of an FP8 lm_head (Flash-Next's `TrunkLinear` or Nemotron's `Fp8Linear`; every row when `ids` is
-    None), as they are
-    or as a 3-bit (`fmt="w3"`) or 2-bit (`"w2"`) copy; with `rescore` > 1 the copy's logits only pick
+    """The rows `ids` of an FP8 lm_head (Flash-Next's `TrunkLinear`; every row when `ids` is None, also of Nemotron's
+    `Fp8Linear`), as they are or as a 3-bit (`fmt="w3"`) or 2-bit (`"w2"`) copy; with `rescore` > 1 the copy's logits only pick
     that many candidates and the target head's own FP8 rows choose among them."""
 
     rows_changed = True
 
     def __init__(self, lm_head, ids: torch.Tensor | None = None, fmt: str = "fp8", rescore: int = 0):
+        from sharar.model.flashnext.linear import TrunkLinear
         if fmt not in FORMATS:
             raise ValueError(f"draft head format must be fp8, w3 or w2, not {fmt!r}")
         if not hasattr(lm_head, "weight") or lm_head.weight.dim() != 2 or lm_head.weight.dtype == torch.uint8:
             raise ValueError("a shortlist draft head reads rows of an FP8 lm_head (Flash-Next, Nemotron); the 27B's NVFP4 head is not supported yet")
+        if ids is not None and not isinstance(lm_head, TrunkLinear):
+            raise ValueError("a reduced draft vocabulary reads rows of a TrunkLinear lm_head (Flash-Next)")
         self.fmt = fmt
         self.ids = None if ids is None else ids.to(lm_head.weight.device, torch.int64).unique(sorted=True)
         if fmt != "fp8" and self.ids is not None:
             self.ids = _pad_rows(self.ids, 128)
-        rows = lm_head if self.ids is None else _head_rows(lm_head, self.ids)
+        rows = lm_head if self.ids is None else TrunkLinear(lm_head.weight[self.ids].contiguous(), lm_head.scale)
         self.head, self.w3 = (None, pack_head(rows, fmt)) if fmt != "fp8" else (rows, None)
         # Shortlist: the low-bit logits pick `rescore` candidates and the target head's own FP8 rows
         # (already resident) choose among them, so the pick is the full head's whenever its

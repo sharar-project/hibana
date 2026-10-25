@@ -44,12 +44,11 @@ CANARIES = {
 }
 
 
-def random_ids(n: int, seed: int, vocab: int = 248_320) -> list[int]:
+def random_ids(n: int, seed: int, first: int = 0, vocab: int = 200_000) -> list[int]:
+    """`n` seeded ids of ordinary text: from `first` (`Target.first_text_token`) up to the vocabulary and below the
+    Qwen targets' special-token range (200,000 and up)."""
     rng = random.Random(seed)
-    # Stay inside the trained vocabulary: the 27B's below its special-token range, a smaller vocabulary's past its
-    # first 1,000 ids (Nemotron's control tokens).
-    low, high = (0, 200_000) if vocab > 200_000 else (1000, vocab)
-    return [rng.randrange(low, high) for _ in range(n)]
+    return [rng.randrange(first, min(vocab, 200_000)) for _ in range(n)]
 
 
 def build_prompts(snap: Path) -> dict[str, list[int]]:

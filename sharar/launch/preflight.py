@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from sharar.launch import guard
-from sharar.launch.settings import Settings
+from sharar.launch.settings import TARGET_SETTINGS, Settings, model_config
 
 HEADROOM = 10 * 2**30  # left free after a download: logs, JIT caches, stored prefixes
 LOAD_PEAK_KIB = 24 * 2**20  # the streaming load's measured MemAvailable drop, with margin (qwen38_config.WEIGHT_LOAD_PEAK_BYTES)
@@ -91,7 +91,6 @@ def download(cache: Path, repo: str, revision: str, log=print) -> None:
 
 def pinned_snapshots(s: Settings) -> list[tuple[Path, str, str]]:
     """(cache, repo, revision) of the target's checkpoint and, for a parallel draft served from the pinned snapshot, its draft."""
-    from sharar.launch.settings import model_config
     c = model_config(s.target)
     out = [(s.model_cache, c.MODEL_ID, c.MODEL_REVISION)]
     if s.parallel_draft and s.draft_dir is None:
@@ -140,16 +139,8 @@ def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
                 ("serving the one in " + current.name if (current / "manifest.json").is_file() else "none to serve"))
     if (current / "manifest.json").is_file():
         return current.resolve()
-    if s.target == "flashnext":
-        s.warnings.append("no calibrated 3-bit checkpoint: serving the FP8 trunk, about 24% slower single-stream than "
-                          f"{s.profile} with it")
-    elif s.target == "nemotron":
-        s.warnings.append("no calibrated 3-bit checkpoint: serving the NVFP4 experts and FP8 trunk, about a third slower "
-                          f"single-stream than {s.profile} with it")
-    else:
-        s.warnings.append("no calibrated 3-bit checkpoint: nearest-rounded copies (about 2 GSM8K points and 8% tokens per "
-                          "round below calibrated)")
-    s.warnings[-1] += "; calibrate with docs/w3-calibration.md or set SHARAR_W3_CHECKPOINT"
+    s.warnings.append("no calibrated 3-bit checkpoint: " + TARGET_SETTINGS[s.target]["w3_missing"].format(profile=s.profile)
+                      + "; calibrate with docs/w3-calibration.md or set SHARAR_W3_CHECKPOINT")
     return None
 
 

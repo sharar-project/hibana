@@ -63,16 +63,14 @@ class NemotronMamba:
     def forward(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
         zxbcdt = ops.fp8_linear(x, self.in_proj, x_q=x_q)
         conv, ssm = self._states(ctx)
-        rounding = dict(layer=self.index, stochastic=mamba2.state_rounding(ctx.state_pool) == "sr"
-                        if ctx is not None and ctx.state_pool is not None else False)
         if ctx is None or ctx.mode == "prefill":
             y = mamba2.prefill(zxbcdt, self.params, conv, ssm, mamba2.prepare_prefill(ctx, x.shape[0], x.device),
-                               **rounding)
+                               layer=self.index)
         elif ctx.mode == "verify":
             y = mamba2.verify(zxbcdt, self.params, conv, ssm, ctx.seq_slots, ctx.verify_steps,
                               ctx.verify_conv_windows.get(self.layer_id),
                               snapshots=ctx.inter_ssm.get(self.layer_id), snapshot_indices=ctx.verify_scratch,
-                              replay=ctx.verify_replay.get(self.layer_id), positions=ctx.positions, **rounding)
+                              replay=ctx.verify_replay.get(self.layer_id), positions=ctx.positions, layer=self.index)
         else:
-            y = mamba2.decode(zxbcdt, self.params, conv, ssm, ctx.slots, ctx.positions, **rounding)
+            y = mamba2.decode(zxbcdt, self.params, conv, ssm, ctx.slots, ctx.positions, layer=self.index)
         return self._out(y, zxbcdt)

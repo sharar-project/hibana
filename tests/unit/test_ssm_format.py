@@ -103,7 +103,7 @@ def test_spec_decoder_requires_the_ring_for_a_quantized_pool():
 def test_fp16_is_nemotrons_and_halves_its_state():
     t = NEMOTRON
     sr = SsmFormat("fp16_sr")
-    assert sr.stochastic and not FP32.stochastic and not sr.quantized and sr.layout(t) is None
+    assert not sr.quantized and sr.layout(t) is None
     assert (sr.describe(), FP32.describe()) == ("fp16_sr", "fp32")
     assert sr.dtype == torch.float16 and FP32.dtype == torch.float32 and SsmFormat("int8").dtype is None
     conv = t.conv_dim * t.conv_state_len * 2 * len(t.gdn_layer_ids)
@@ -118,13 +118,19 @@ def test_fp16_is_nemotrons_and_halves_its_state():
 
 
 def test_formats_stay_on_their_recurrence():
-    """FP16 is Mamba-2's (the GDN targets keep their FP32 pools, bit-identical), the windows the GDN's."""
+    """FP16 is Mamba-2's (the GDN targets keep their FP32 pools, bit-identical), the windows the GDN's
+    (`Target.recurrence`, the launcher's table of the same name)."""
+    from sharar.launch.settings import TARGET_SETTINGS
+    from sharar.target import TARGETS
     for gdn in (DEFAULT_TARGET, FLASHNEXT):
-        with pytest.raises(ValueError, match="Mamba-2"):
+        with pytest.raises(ValueError, match="gdn state is stored as fp32, int8 or int4"):
             SsmFormat("fp16_sr").state_bytes_per_slot(gdn)
-        with pytest.raises(ValueError, match="Mamba-2"):
+        with pytest.raises(ValueError, match="gdn state"):
             StatePool(2, torch.device("cpu"), target=gdn, ssm_format=SsmFormat("fp16_sr"))
         assert StatePool(2, torch.device("cpu"), target=gdn).ssm_all.dtype == torch.float32
     for kind in ("int8", "int4"):
-        with pytest.raises(ValueError, match="GDN"):
+        with pytest.raises(ValueError, match="mamba2 state is stored as fp32 or fp16_sr"):
             SsmFormat(kind).state_bytes_per_slot(NEMOTRON)
+    assert {t.recurrence for t in TARGETS.values()} == {"gdn", "mamba2"}
+    for name, t in TARGETS.items():
+        assert TARGET_SETTINGS[name].get("recurrence", "gdn") == t.recurrence

@@ -71,7 +71,8 @@ class Executor:
             future, extra_page = 0, 0
             if spec_config is not None:
                 from sharar.cache.spec_budget import budget
-                future, extra_page = budget(spec_config, max_batch, cache_slots=cache_slots, target=self.target)
+                future, extra_page = budget(spec_config, max_batch, cache_slots=cache_slots, target=self.target,
+                                            state_itemsize=(self.ssm_format.dtype or torch.float32).itemsize)
             if cfg.ssd:  # the SSD tier pins its staging buffers in the DRAM the pools come from: plan around them
                 from sharar.cache.ssd import SsdTier
                 future += SsdTier.memory_bound(self.target, cfg.ssd_block_tokens, extra_page, **cfg.ssd_buffers)
@@ -201,7 +202,8 @@ class Executor:
         from sharar.cache.spec_budget import SpecConfig, budget
         from sharar.cache.ledger import check_load_headroom
         fixed, per_page = budget(SpecConfig(proposer, k, state_strategy, draft_precision, draft_dir), self.max_batch,
-                                 cache_slots=self.state_pool.num_slots, target=self.target)
+                                 cache_slots=self.state_pool.num_slots, target=self.target,
+                                 state_itemsize=(self.ssm_format.dtype or torch.float32).itemsize)
         after = after_plan_bytes(self.max_batch)
         check_load_headroom(fixed + per_page * self.kv_pool.num_pages + after["graphs"] + after["first_use"] + after["activations"])
         context = ProposerContext(self.device, self.max_batch, self.max_context)
@@ -249,6 +251,8 @@ class Executor:
     # ---- lifecycle ----
     def validate_request(self, prompt_ids: list[int], params: SamplingParams) -> None:
         params.validate()
+        if params.stop_token_ids is None:
+            params.stop_token_ids = self.target.stop_token_ids
         if not isinstance(prompt_ids, list) or not prompt_ids:
             raise InvalidRequest("prompt must be a non-empty token list")
         vocab = self.target.vocab_size
@@ -676,12 +680,13 @@ class Executor:
         initialization (b12x module load, cuDNN handles, Triton compiles)."""
         from sharar.engine.prompts import random_ids
 
+        text = (self.target.first_text_token, self.target.vocab_size)  # the ids random prompts draw from
         params = SamplingParams(max_new_tokens=1)
-        a = self.admit(random_ids(300, 11, self.target.vocab_size), params)
+        a = self.admit(random_ids(300, 11, *text), params)
         self.prefill(a, max_tokens=256)  # chunk 1
         self.prefill(a)  # chunk 2 with prefix
-        b = self.admit(random_ids(40, 12, self.target.vocab_size), params)
-        c = self.admit(random_ids(70, 13, self.target.vocab_size), params)
+        b = self.admit(random_ids(40, 12, *text), params)
+        c = self.admit(random_ids(70, 13, *text), params)
         self.prefill_batch([(b, 40), (c, 70)])
         for r in (a, b, c):
             self.release(r)
@@ -692,8 +697,8 @@ class Executor:
             # does not pay the lazy kernel loads of the verify/accept path. The
             # random prompts can emit EOS; ignore it so every step keeps four live rows.
             spec_params = SamplingParams(max_new_tokens=12 if self.max_batch <= 4 else 64, ignore_eos=True)
-            d = self.admit(random_ids(50, 14, self.target.vocab_size), spec_params)
-            e = self.admit(random_ids(60, 15, self.target.vocab_size), spec_params)
+            d = self.admit(random_ids(50, 14, *text), spec_params)
+            e = self.admit(random_ids(60, 15, *text), spec_params)
             self.prefill(d)
             self.prefill(e)
             self.decode_step([d])
@@ -703,7 +708,7 @@ class Executor:
                 if self.max_batch < size:
                     break
                 while len(live) < size:
-                    r = self.admit(random_ids(55 + 10 * (len(live) - 2), 14 + len(live), self.target.vocab_size), spec_params)
+                    r = self.admit(random_ids(55 + 10 * (len(live) - 2), 14 + len(live), *text), spec_params)
                     self.prefill(r)
                     live.append(r)
                 self.decode_step(live)
@@ -712,7 +717,7 @@ class Executor:
             # One sampled round per path, so the first sampled request does not compile the sampled-speculation
             # kernels (kernels/sampled_verify.py, the sampled lattice walk).
             sampled = SamplingParams(max_new_tokens=12, ignore_eos=True, temperature=1.0, top_k=20, top_p=0.95, seed=0)
-            f = self.admit(random_ids(50, 30, self.target.vocab_size), sampled)
+            f = self.admit(random_ids(50, 30, *text), sampled)
             self.prefill(f)
             self.decode_step([f])
             self.release(f)

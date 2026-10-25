@@ -2,7 +2,7 @@
 
 - Draft heads over an `Fp8Linear` (Nemotron's head, a static input scale beside the weight scale): the 2/3-bit copy
   and the rescored shortlist are bitwise what they are over a `TrunkLinear` (Flash-Next's) holding the same FP8 matrix
-  and scale, so Flash-Next's heads are unchanged by the generalization; a reduced vocabulary keeps the FP8 kind.
+  and scale, so Flash-Next's heads are unchanged by the generalization.
 - On the pinned checkpoint (skipped without it; the MTP head, embedding and FP8 lm_head, about 3.5 GB): the FP8
   projections stay close to the checkpoint's BF16 ones, and a replayed draft graph is bitwise the eager step for the
   served settings (FP8 projections, 2-bit head).
@@ -45,20 +45,6 @@ def test_shortlist_over_an_fp8linear_picks_as_over_a_trunklinear(fmt, rescore):
         assert torch.equal(i0, i1) and torch.equal(v0, v1)  # topk values carry the weight scale either way
 
 
-def test_reduced_vocabulary_over_an_fp8linear_keeps_its_input_scale():
-    from sharar.kernels import ops
-    from sharar.proposers.draft_head import ShortlistHead
-    from sharar.weights.modelopt import Fp8Linear
-    _, fp8, w = _heads(4096, 4096, seed=2)
-    ids = torch.randperm(4096, device="cuda")[:1000]
-    head = ShortlistHead(fp8, ids, "fp8")
-    assert isinstance(head.head, Fp8Linear) and head.head.input_scale is fp8.input_scale
-    x = w[ids[:3]]  # each row's own weight row wins
-    assert torch.equal(head.argmax(x), ids[:3])
-    sorted_ids = head.ids
-    assert torch.equal(head.argmax(x), sorted_ids[ops.fp8_linear(x, fp8)[:, sorted_ids].argmax(-1)])
-
-
 # ---- on the pinned checkpoint -------------------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def snapshot():
@@ -83,12 +69,22 @@ def parts(snapshot):
     return model
 
 
-def _head(snapshot, model, **kw):
-    from sharar.model.nemotron.mtp import NemotronMtpHead
+def _head(snapshot, model, bf16: bool = False):
+    """The served head, or (`bf16`) the same head with the checkpoint's BF16 eh_proj and attention q|k|v and o as
+    plain BF16 matmuls in place of its FP8 ones."""
+    from sharar.model.flashnext.linear import TrunkLinear
+    from sharar.model.nemotron.mtp import PREFIX, NemotronMtpHead
     from sharar.weights.safetensors import SnapshotWeights
     w = SnapshotWeights(snapshot)
+    dev = torch.device("cuda")
     try:
-        return NemotronMtpHead(w, torch.device("cuda"), model, 4 * 700 + 64, padding_rows=4, **kw)
+        head = NemotronMtpHead(w, dev, model, 4 * 700 + 64, padding_rows=4)
+        if bf16:
+            p = f"{PREFIX}.0.mixer"
+            head.eh = TrunkLinear.from_bf16(w.get(f"{PREFIX}.0.eh_proj.weight").to(dev), "bf16")
+            head.qkv = TrunkLinear.load(w, [f"{p}.q_proj.weight", f"{p}.k_proj.weight", f"{p}.v_proj.weight"], dev, "bf16")
+            head.o = TrunkLinear.load(w, [f"{p}.o_proj.weight"], dev, "bf16")
+        return head
     finally:
         w.close()
 
@@ -99,15 +95,15 @@ def test_fp8_projections_stay_close_to_the_checkpoints(snapshot, parts):
     0.9993, d 0.985 measured); on recorded target rows the FP8 head's tokens per round matched the BF16 head's."""
     torch.manual_seed(4)
     rows = {}
-    for kw in ({"precision": "bf16"}, {"precision": "fp8"}):
-        head = _head(snapshot, parts, **kw)
+    for bf16 in (True, False):
+        head = _head(snapshot, parts, bf16)
         gen = torch.Generator().manual_seed(5)
         n = 300
         toks = torch.randint(0, 131072, (n,), generator=gen).cuda()
         hid = torch.randn(n, 4096, generator=gen).to(torch.bfloat16).cuda()
         pages = torch.arange(1, n + 1, dtype=torch.int32, device="cuda")
         head.write_kv(toks[:-1], hid[:-1], torch.arange(1, n, device="cuda"), pages[:-1])
-        rows[tuple(kw.items())] = head.forward(toks[-1:], hid[-1:], torch.tensor([n], device="cuda"), pages[-1:], [1], [pages])
+        rows[bf16] = head.forward(toks[-1:], hid[-1:], torch.tensor([n], device="cuda"), pages[-1:], [1], [pages])
         del head
         torch.cuda.empty_cache()
     base, *others = rows.values()

@@ -76,8 +76,8 @@ FP8_MAX = tl.constexpr(448.0)
 
 # The recurrence tile: BLOCK_P rows of a head's [headdim, d_state] state per program. Decode and verify must use
 # the same tile and warp count for their outputs to agree bitwise (the readout's reduction order follows the layout;
-# the state update is elementwise). 32 x 8 warps: decode streams its state at the same ~200-220 GB/s as 16 x 4 and
-# the verify reads it 15-20% faster (B = 16, S = 5: 225 against 190 GB/s).
+# the state update is elementwise). 32 x 8 warps: the verify reads the state at 225 GB/s against 16 x 4's 190 (B = 16,
+# S = 5), decode at the same speed.
 _SSU_BLOCK_P, _SSU_WARPS = 32, 8
 # The prefill's inter-chunk recurrence tile [headdim rows, d_state columns].
 _STATES_TILE = (64, 64)
@@ -89,10 +89,6 @@ _STATES_PRECISION = "tf32x3"
 # Spark recipe for this model runs vLLM with 5 rounds).
 _SEED = tl.constexpr(0x5348415241520001)
 _PHILOX_ROUNDS = 5
-
-
-def _round_mode(ssm_state: torch.Tensor, stochastic: bool) -> int:
-    return 0 if ssm_state.dtype == torch.float32 else 2 if stochastic else 1
 
 
 @dataclass(frozen=True)
@@ -188,16 +184,14 @@ def _sr_fp16(v, r):
 
 
 @triton.jit
-def _round_state(state, rows, layer, pos, ROUND: tl.constexpr, ROUNDS: tl.constexpr):
-    """The stored form of an FP32 state tile: itself (ROUND 0), FP16 to nearest (1) or stochastically rounded FP16
-    (2). rows [BM] is each tile row's offset in the layer's [H, P, N] state (its first column's element). Philox
+def _round_state(state, rows, layer, pos, SR: tl.constexpr, ROUNDS: tl.constexpr):
+    """The stored form of an FP32 state tile: itself (an FP32 pool) or, with SR (an FP16 pool), stochastically rounded
+    FP16. rows [BM] is each tile row's offset in the layer's [H, P, N] state (its first column's element). Philox
     draws four words per counter (element // 4, position, layer index), one per element of four consecutive columns,
     so every path that stores the state after the token at `pos` draws the same bits, and a run reproduces itself
     whatever the slot, batch or launch."""
-    if ROUND == 0:
+    if not SR:
         return state
-    elif ROUND == 1:
-        return tl.minimum(tl.maximum(state, -65504.0), 65504.0).to(tl.float16)
     else:
         BM: tl.constexpr = state.shape[0]
         BN: tl.constexpr = state.shape[1]
@@ -346,7 +340,7 @@ def conv_decode(xbc: torch.Tensor, params: Mamba2Params, conv_state: torch.Tenso
 @triton.jit(do_not_specialize=["layer"])
 def _ssu_decode_kernel(State, s_slot, Slots, XBC, sx, DtRaw, sdt, DtBias, A, Dskip, Y, sy, Pos, layer,
                        H: tl.constexpr, P: tl.constexpr, N: tl.constexpr, G: tl.constexpr,
-                       BLOCK_P: tl.constexpr, ROUND: tl.constexpr, ROUNDS: tl.constexpr):
+                       BLOCK_P: tl.constexpr, SR: tl.constexpr, ROUNDS: tl.constexpr):
     pp, h, row = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     slot = tl.load(Slots + row).to(tl.int64)
     if slot < 0:
@@ -363,8 +357,8 @@ def _ssu_decode_kernel(State, s_slot, Slots, XBC, sx, DtRaw, sdt, DtBias, A, Dsk
     tile = h * P * N + op[:, None] * N + on[None, :]
     ptrs = State + slot * s_slot + tile
     state = _advance(tl.load(ptrs).to(tl.float32), x, b, dt, dA)
-    pos = tl.load(Pos + row) if ROUND == 2 else 0
-    tl.store(ptrs, _round_state(state, h * P * N + op * N, layer, pos, ROUND, ROUNDS))
+    pos = tl.load(Pos + row) if SR else 0
+    tl.store(ptrs, _round_state(state, h * P * N + op * N, layer, pos, SR, ROUNDS))
     tl.store(Y + row * sy + h * P + op, _readout(state, c, x, tl.load(Dskip + h)).to(Y.dtype.element_ty))
 
 
@@ -374,7 +368,7 @@ def _ssu_verify_kernel(State, s_slot, Slots, XBC, sx_row, sx_step, DtRaw, sdt, D
                        Pos, PosOut, s_pos_row, layer,
                        H: tl.constexpr, P: tl.constexpr, N: tl.constexpr, G: tl.constexpr, S: tl.constexpr,
                        SNAPSHOTS: tl.constexpr, RECORD: tl.constexpr,
-                       BLOCK_P: tl.constexpr, ROUND: tl.constexpr, ROUNDS: tl.constexpr):
+                       BLOCK_P: tl.constexpr, SR: tl.constexpr, ROUNDS: tl.constexpr):
     pp, h, row = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     slot = tl.load(Slots + row).to(tl.int64)
     g = h // (H // G)
@@ -395,15 +389,15 @@ def _ssu_verify_kernel(State, s_slot, Slots, XBC, sx_row, sx_step, DtRaw, sdt, D
         state = _advance(state, x, b, dt, dA)
         tl.store(Y + (row * S + t) * sy + h * P + op, _readout(state, c, x, d).to(Y.dtype.element_ty))
         # The next step continues from the state as decode would have stored it.
-        pos = tl.load(Pos + row * S + t) if ROUND == 2 else 0
-        state = _round_state(state, h * P * N + op * N, layer, pos, ROUND, ROUNDS).to(tl.float32)
+        pos = tl.load(Pos + row * S + t) if SR else 0
+        state = _round_state(state, h * P * N + op * N, layer, pos, SR, ROUNDS).to(tl.float32)
         if SNAPSHOTS:
             tl.store(snap + t * s_snap_step, state.to(Snap.dtype.element_ty))
         if RECORD:
             if pp == 0:
                 tl.store(DtOut + row * s_rec_row + t * s_rec_step + h, dt)
                 tl.store(DAOut + row * s_rec_row + t * s_rec_step + h, dA)
-                if ROUND == 2:
+                if SR:
                     if h == 0:
                         tl.store(PosOut + row * s_pos_row + t, pos.to(tl.int32))
 
@@ -412,7 +406,7 @@ def _ssu_verify_kernel(State, s_slot, Slots, XBC, sx_row, sx_step, DtRaw, sdt, D
 def _ssu_replay_kernel(State, s_layer, s_slot, Slots, Counts, XBC, sx_layer, sx_row, sx_step,
                        Dt, DA, s_rec_layer, s_rec_row, s_rec_step, ROWS, Pos, s_pos_row,
                        H: tl.constexpr, P: tl.constexpr, N: tl.constexpr, G: tl.constexpr, BLOCK_P: tl.constexpr,
-                       ROUND: tl.constexpr, ROUNDS: tl.constexpr):
+                       SR: tl.constexpr, ROUNDS: tl.constexpr):
     pp, h, lr = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     layer, row = (lr // ROWS).to(tl.int64), lr % ROWS
     count = tl.load(Counts + row)
@@ -431,22 +425,22 @@ def _ssu_replay_kernel(State, s_layer, s_slot, Slots, Counts, XBC, sx_layer, sx_
         x = tl.load(xbase + t * sx_step + h * P + op).to(tl.float32)
         b = tl.load(xbase + t * sx_step + H * P + g * N + on).to(tl.float32)
         state = _advance(state, x, b, tl.load(Dt + rbase + t * s_rec_step), tl.load(DA + rbase + t * s_rec_step))
-        if ROUND != 0:  # each step rounds as decode's store does
-            pos = tl.load(Pos + row * s_pos_row + t) if ROUND == 2 else 0
-            state = _round_state(state, h * P * N + op * N, layer, pos, ROUND, ROUNDS).to(tl.float32)
+        if SR:  # each step rounds as decode's store does
+            pos = tl.load(Pos + row * s_pos_row + t)
+            state = _round_state(state, h * P * N + op * N, layer, pos, SR, ROUNDS).to(tl.float32)
     tl.store(ptrs, state.to(State.dtype.element_ty))
 
 
-def _check_state(ssm_state: torch.Tensor, params: Mamba2Params, positions: torch.Tensor | None = None,
-                 stochastic: bool = True) -> int:
-    """The state's rounding mode (`_round_state`), after checking its layout and the positions SR keys on."""
+def _check_state(ssm_state: torch.Tensor, params: Mamba2Params, positions: torch.Tensor | None = None) -> bool:
+    """Whether the state is stored stochastically rounded (FP16; FP32 is stored as computed), after checking its layout
+    and the positions the rounding keys on."""
     if (ssm_state.dtype not in (torch.float32, torch.float16)
             or ssm_state.shape[1:] != (params.heads, params.head_dim, params.state) or not ssm_state[0].is_contiguous()):
         raise ValueError("the SSM state must be FP32 or FP16 [slots, heads, headdim, d_state] with contiguous slots")
-    mode = _round_mode(ssm_state, stochastic)
-    if mode == 2 and positions is None:
+    sr = ssm_state.dtype == torch.float16
+    if sr and positions is None:
         raise ValueError("a stochastically rounded FP16 state needs the token positions")
-    return mode
+    return sr
 
 
 def _split(zxbcdt: torch.Tensor, params: Mamba2Params):
@@ -458,41 +452,39 @@ def _split(zxbcdt: torch.Tensor, params: Mamba2Params):
 
 
 def decode(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor, ssm_state: torch.Tensor,
-           slots: torch.Tensor, positions: torch.Tensor | None = None, *, layer: int = 0,
-           stochastic: bool = True) -> torch.Tensor:
+           slots: torch.Tensor, positions: torch.Tensor | None = None, *, layer: int = 0) -> torch.Tensor:
     """One token per row: conv state and SSM state of slots[i] advanced in place; returns y [B, d_inner] bf16
     (before the gated norm). Rows whose slot is negative are skipped.
 
-    An FP16 `ssm_state` is stored stochastically rounded (`stochastic`, keyed on positions[i], the row's token
-    position, and `layer`, the layer's index among the Mamba layers) or rounded to nearest; y reads the FP32 state."""
-    mode = _check_state(ssm_state, params, positions, stochastic)
+    An FP16 `ssm_state` is stored stochastically rounded, keyed on positions[i] (the row's token position) and
+    `layer` (the layer's index among the Mamba layers); y reads the FP32 state."""
+    sr = _check_state(ssm_state, params, positions)
     _, xbc, dt = _split(zxbcdt, params)
     conv = conv_decode(xbc, params, conv_state, slots)
     b = zxbcdt.shape[0]
     y = torch.empty((b, params.d_inner), dtype=torch.bfloat16, device=zxbcdt.device)
     _ssu_decode_kernel[(params.head_dim // _SSU_BLOCK_P, params.heads, b)](
         ssm_state, ssm_state.stride(0), slots, conv, conv.stride(0), dt, dt.stride(0), params.dt_bias, params.A,
-        params.D, y, y.stride(0), positions if mode == 2 else slots, layer,
+        params.D, y, y.stride(0), positions if sr else slots, layer,
         params.heads, params.head_dim, params.state, params.groups,
-        BLOCK_P=_SSU_BLOCK_P, ROUND=mode, ROUNDS=_PHILOX_ROUNDS, num_warps=_SSU_WARPS)
+        BLOCK_P=_SSU_BLOCK_P, SR=sr, ROUNDS=_PHILOX_ROUNDS, num_warps=_SSU_WARPS)
     return y
 
 
 def verify(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor, ssm_state: torch.Tensor,
            slots: torch.Tensor, steps: int, conv_windows: torch.Tensor | None = None, *,
            snapshots: torch.Tensor | None = None, snapshot_indices: torch.Tensor | None = None,
-           replay: dict | None = None, positions: torch.Tensor | None = None, layer: int = 0,
-           stochastic: bool = True) -> torch.Tensor:
+           replay: dict | None = None, positions: torch.Tensor | None = None, layer: int = 0) -> torch.Tensor:
     """Speculative verify: B rows of `steps` tokens each ([B * steps, proj] in row-major order), each row starting
     from the committed state of slots[i], which is left untouched (conv and SSM). Returns y [B * steps, d_inner].
 
     conv_windows [capacity, >= steps, conv_dim, 3] receives each row's convolution window after every step.
     snapshots [scratch, >= steps, H, P, N] (with snapshot_indices [B]) receives the SSM state after every step;
     replay (an `AcceptedState.layer_inputs` entry) instead receives the compact inputs `AcceptedState.run` needs.
-    An FP16 state is rounded after every step as `decode` stores it (positions [B * steps], `layer`, `stochastic`
-    as there), so every output, snapshot and replayed state is bitwise decode's.
+    An FP16 state is rounded after every step as `decode` stores it (positions [B * steps], `layer` as there), so
+    every output, snapshot and replayed state is bitwise decode's.
     """
-    mode = _check_state(ssm_state, params, positions, stochastic)
+    sr = _check_state(ssm_state, params, positions)
     _, xbc, dt = _split(zxbcdt, params)
     rows_total, c = xbc.shape
     if steps < 1 or rows_total % steps:
@@ -519,8 +511,8 @@ def verify(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor,
         raise ValueError("invalid verify snapshot buffer")
     rec = replay is not None
     dt_out, da_out = (replay["dt"], replay["dA"]) if rec else (y, y)
-    pos_out = replay["pos"] if rec and mode == 2 else slots
-    if rec and mode == 2 and (pos_out.shape[0] < b or pos_out.shape[1] < steps):
+    pos_out = replay["pos"] if rec and sr else slots
+    if rec and sr and (pos_out.shape[0] < b or pos_out.shape[1] < steps):
         raise ValueError("replay buffers are narrower than this verify")
     _ssu_verify_kernel[(params.head_dim // _SSU_BLOCK_P, params.heads, b)](
         ssm_state, ssm_state.stride(0), slots, conv, conv.stride(0), conv.stride(1), dt, dt.stride(0),
@@ -528,34 +520,33 @@ def verify(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor,
         snapshots if snap else y, snapshots.stride(0) if snap else 0, snapshots.stride(1) if snap else 0,
         snapshot_indices if snap else slots, dt_out, da_out,
         dt_out.stride(0) if rec else 0, dt_out.stride(1) if rec else 0,
-        positions if mode == 2 else slots, pos_out, pos_out.stride(0) if pos_out.ndim == 2 else 0, layer,
+        positions if sr else slots, pos_out, pos_out.stride(0) if pos_out.ndim == 2 else 0, layer,
         params.heads, params.head_dim, params.state, params.groups, steps, snap, rec,
-        BLOCK_P=_SSU_BLOCK_P, ROUND=mode, ROUNDS=_PHILOX_ROUNDS, num_warps=_SSU_WARPS)
+        BLOCK_P=_SSU_BLOCK_P, SR=sr, ROUNDS=_PHILOX_ROUNDS, num_warps=_SSU_WARPS)
     return y
 
 
 def replay(ssm_all: torch.Tensor, xbc: torch.Tensor, dt: torch.Tensor, dA: torch.Tensor, slots: torch.Tensor,
-           counts: torch.Tensor, groups: int = GROUPS, positions: torch.Tensor | None = None,
-           stochastic: bool = True) -> None:
+           counts: torch.Tensor, groups: int = GROUPS, positions: torch.Tensor | None = None) -> None:
     """Advance ssm_all[layer, slots[i]] by counts[i] recorded verify steps, for every layer in one launch.
 
     ssm_all [L, slots, H, P, N]; xbc [L, capacity, steps, conv_dim]; dt, dA [L, capacity, steps, H]. Row i of this
     batch is capacity row i. Slots must be distinct (each program reads its tile before writing it); counts outside
     [1, steps] other than 0 are the caller's error, and 0 leaves the slot untouched. An FP16 pool rounds every step
-    as decode does; stochastic rounding reads the verified positions [capacity, steps] (int32) and keys on the
-    layer's index in ssm_all."""
+    as decode does: it reads the verified positions [capacity, steps] (int32) and keys on the layer's index in
+    ssm_all."""
     layers, _, heads, head_dim, state = ssm_all.shape
     rows = slots.numel()
     if counts.numel() != rows or xbc.shape[0] != layers or dt.shape != dA.shape or dt.shape[-1] != heads:
         raise ValueError("invalid replay geometry")
-    mode = _round_mode(ssm_all, stochastic)
-    if mode == 2 and (positions is None or positions.dtype != torch.int32 or positions.ndim != 2):
+    sr = ssm_all.dtype == torch.float16
+    if sr and (positions is None or positions.dtype != torch.int32 or positions.ndim != 2):
         raise ValueError("a stochastically rounded FP16 replay needs the int32 [capacity, steps] verify positions")
     _ssu_replay_kernel[(head_dim // _SSU_BLOCK_P, heads, layers * rows)](
         ssm_all, ssm_all.stride(0), ssm_all.stride(1), slots, counts, xbc, xbc.stride(0), xbc.stride(1),
         xbc.stride(2), dt, dA, dt.stride(0), dt.stride(1), dt.stride(2), rows,
-        positions if mode == 2 else slots, positions.stride(0) if mode == 2 else 0,
-        heads, head_dim, state, groups, BLOCK_P=_SSU_BLOCK_P, ROUND=mode, ROUNDS=_PHILOX_ROUNDS,
+        positions if sr else slots, positions.stride(0) if sr else 0,
+        heads, head_dim, state, groups, BLOCK_P=_SSU_BLOCK_P, SR=sr, ROUNDS=_PHILOX_ROUNDS,
         num_warps=_SSU_WARPS)
 
 
@@ -601,7 +592,6 @@ class AcceptedState:
         conv_dim = pool.conv_all.shape[2]
         device = pool.ssm_all.device
         self.batch, self.steps, self.groups = batch, steps, key_heads
-        self.stochastic = state_rounding(pool) == "sr"
         self.xbc = torch.empty((layers, batch, steps, conv_dim), dtype=torch.bfloat16, device=device)
         self.dt = torch.empty((layers, batch, steps, heads), dtype=torch.float32, device=device)
         self.dA = torch.empty_like(self.dt)
@@ -614,16 +604,7 @@ class AcceptedState:
         return sum(t.numel() * t.element_size() for t in (self.xbc, self.dt, self.dA, self.pos))
 
     def run(self, pool, slots: torch.Tensor, counts: torch.Tensor) -> None:
-        replay(pool.ssm_all, self.xbc, self.dt, self.dA, slots, counts, self.groups, self.pos, self.stochastic)
-
-
-def state_rounding(pool) -> str | None:
-    """How a state pool stores its Mamba state: None (FP32), "sr" (FP16, stochastically rounded) or "rn" (FP16,
-    to nearest), from its `SsmFormat` (an FP16 pool without one rounds stochastically)."""
-    if pool.ssm_all.dtype == torch.float32:
-        return None
-    fmt = getattr(pool, "ssm_format", None)
-    return "rn" if fmt is not None and not fmt.stochastic else "sr"
+        replay(pool.ssm_all, self.xbc, self.dt, self.dA, slots, counts, self.groups, self.pos)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -728,8 +709,9 @@ def plan_prefill(seq_lens, prefix_lens, slots, device, checkpoints=(), chunk: in
 
 
 def prepare_prefill(ctx: ForwardContext | None, tokens: int, device) -> Mamba2PrefillPlan:
-    """The prefill plan of a forward context (cached on it as `mamba_plan`), as `model/gdn_plan.py` reads it."""
-    plan = getattr(ctx, "mamba_plan", None) if ctx is not None else None
+    """The prefill plan of a forward context, made by its first Mamba layer and kept in the context's model side input
+    (`ctx.extras`: Nemotron has no other, `forward_extras()` is None) for the rest, as `model/gdn_plan.py` reads it."""
+    plan = ctx.extras if ctx is not None and isinstance(ctx.extras, Mamba2PrefillPlan) else None
     if plan is not None:
         return plan
     if ctx is not None and ctx.batched:
@@ -747,7 +729,7 @@ def prepare_prefill(ctx: ForwardContext | None, tokens: int, device) -> Mamba2Pr
             checkpoints.append((i, pos - prefixes[i], slot))
     plan = plan_prefill(lengths, prefixes, slots, device, checkpoints)
     if ctx is not None:
-        ctx.mamba_plan = plan
+        ctx.extras = plan
     return plan
 
 
@@ -773,14 +755,14 @@ def _chunk_cumsum_kernel(DtRaw, sdt, DtBias, A, DtOut, DACs, CuChunks, nchunks,
 def _chunk_states_kernel(X, B, sx, Dt, DACs, Entering, CuChunks, SeqChunks, Slots, HasInit, ChunkDest, ChunkLast,
                          Pool, s_slot, nchunks, layer, H: tl.constexpr, P: tl.constexpr, N: tl.constexpr,
                          G: tl.constexpr, CS: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-                         BLOCK_K: tl.constexpr, PRECISION: tl.constexpr, ROUND: tl.constexpr, ROUNDS: tl.constexpr):
+                         BLOCK_K: tl.constexpr, PRECISION: tl.constexpr, SR: tl.constexpr, ROUNDS: tl.constexpr):
     """The inter-chunk recurrence of one sequence for one [BLOCK_M, BLOCK_N] tile of a head's state, walking its
     chunks in order: each chunk's own contribution sum_t exp(dA_last - dA_t) dt_t x_t B_t^T is formed in registers
     and folded into the running FP32 state, so no per-chunk state buffer round-trips through memory. PRECISION is
     the contribution's dot's input precision (`_STATES_PRECISION`).
     Entering[c] (BF16, what the scan's dot consumes) receives the state entering chunk c, ChunkDest[c] the state
     after it (a checkpoint), and the sequence's slot the final state; the initial state is read from that slot
-    first, by the only program that writes this tile of it. An FP16 pool (ROUND 1, 2) rounds the running state at
+    first, by the only program that writes this tile of it. An FP16 pool (SR) rounds the running state at
     every chunk end as decode would store the state after that chunk's last token; chunks sit on the absolute
     128-token grid, so a prefill split on it still reproduces the unsplit run bitwise."""
     pid, seq, h = tl.program_id(0), tl.program_id(1), tl.program_id(2)
@@ -811,9 +793,9 @@ def _chunk_states_kernel(X, B, sx, Dt, DACs, Entering, CuChunks, SeqChunks, Slot
                 Dt + hc + k + ok, km, 0.0)
             acc += tl.dot(x.to(tl.float32), b * scale[:, None], input_precision=PRECISION)
         state = tl.exp(da_last) * state + acc
-        if ROUND != 0:
-            pos = tl.load(ChunkLast + c) if ROUND == 2 else 0
-            state = _round_state(state, h * P * N + om * N + pid_n * BLOCK_N, layer, pos, ROUND, ROUNDS).to(tl.float32)
+        if SR:
+            pos = tl.load(ChunkLast + c)
+            state = _round_state(state, h * P * N + om * N + pid_n * BLOCK_N, layer, pos, SR, ROUNDS).to(tl.float32)
         dest = tl.load(ChunkDest + c).to(tl.int64)
         if dest >= 0:
             tl.store(Pool + dest * s_slot + tile, state.to(Pool.dtype.element_ty))
@@ -885,13 +867,13 @@ def _chunk_scan_kernel(CB, X, Cm, sx, Dt, DACs, Entering, Dskip, Y, sy, CuChunks
 
 
 def prefill(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor, ssm_state: torch.Tensor,
-            plan: Mamba2PrefillPlan, *, layer: int = 0, stochastic: bool = True) -> torch.Tensor:
+            plan: Mamba2PrefillPlan, *, layer: int = 0) -> torch.Tensor:
     """Packed varlen prefill: returns y [T, d_inner] bf16 (before the gated norm).
 
     Each sequence continues from its slot's conv and SSM state when it has a prefix (zero otherwise); its final
     states replace them, and each checkpoint slot receives the conv window and SSM state at its boundary. An FP16
-    state rounds at every chunk end (`layer`, `stochastic` as in `decode`; the plan carries the positions)."""
-    mode = _check_state(ssm_state, params, plan.chunk_last, stochastic)
+    state rounds at every chunk end (`layer` as in `decode`; the plan carries the positions)."""
+    sr = _check_state(ssm_state, params, plan.chunk_last)
     _, xbc, dt = _split(zxbcdt, params)
     t, c = xbc.shape
     if t != plan.tokens:
@@ -919,7 +901,7 @@ def prefill(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor
     _chunk_states_kernel[(triton.cdiv(P, bm_) * triton.cdiv(N, bn_), nseq, H)](
         x, bm, conv.stride(0), dt_out, da_cs, entering, plan.cu_chunks, plan.seq_chunks, plan.slots,
         plan.has_initial_state, plan.chunk_dest, plan.chunk_last, ssm_state, ssm_state.stride(0), nc, layer,
-        H, P, N, G, CHUNK, bm_, bn_, 32, _STATES_PRECISION, mode, _PHILOX_ROUNDS, num_warps=4, num_stages=2)
+        H, P, N, G, CHUNK, bm_, bn_, 32, _STATES_PRECISION, sr, _PHILOX_ROUNDS, num_warps=4, num_stages=2)
     cb = torch.empty((nc, G, CHUNK, CHUNK), dtype=torch.float32, device=dev)
     _bmm_chunk_kernel[(triton.cdiv(CHUNK, 64) ** 2, nc * G)](
         cm, bm, conv.stride(0), cb, plan.cu_chunks, N, G, CHUNK, 64, 64, 64, num_warps=4, num_stages=2)

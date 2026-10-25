@@ -25,7 +25,7 @@ beside the checkpoint with `SHARAR_W3_DECODE=1` and `SHARAR_W3_CHECKPOINT=<dir>`
 experts). `fast` and `throughput` turn them on and serve
 `w3-checkpoints/nemotron-current` ([where it comes from](w3-calibration.md#nemotron)); without one they serve the
 NVFP4 experts and FP8 trunk, about a third slower at one request. A checkpoint that carries the routed experts serves
-them as the only expert copy, at every call size.
+them as the only expert copy, at every call size (the MTP head's load with the drafter).
 
 ## Package
 
@@ -53,26 +53,14 @@ The profiles (`nemotron_defaults` in `sharar/launch/settings.py`):
 Expert sharing (`moe.py`, `route_budget`): a verify call's rows share the experts they read. Each row is guaranteed
 its top `KEEP` experts; the call then reads at most `P` distinct experts per request and `CAP` in all, filled by
 summed routing weight, and every row also takes its other top-22 experts that the call reads anyway (free riders).
-The cap is a fill target as well as a limit: with floor 16 and cap 64 the floors' union at one request (about 58) is
-below the cap, so the call reads more experts than floor 16 alone, and is slower.
+The KV cache is FP8 (`SHARAR_KV_FORMAT=fp8`, the only format the attention's fused K/V writer serves).
 
-Measured on spark-9931 (h2h median, `tools/h2h-pr.py`, greedy; tok/s at one request / total at four streams):
+Measured (Sharar, spark-9931; h2h median, `tools/h2h-pr.py`, greedy; tok/s) and GSM8K-300 paired against `exact`:
 
-| Configuration | 1 request | 4 streams |
-|---|---|---|
-| `exact` | 45.9 | 79.8 |
-| `fast` before sharing and FP16 state | 54.6 | 92.5 |
-| + both 3-bit copies | 81.0 | 132.7 |
-| + floor 16, no cap | 92.3 | 150.9 |
-| + floor 12, cap 48:128, FP16 state (`fast`) | 102.5 | 185.2 |
-
-GSM8K-300, paired against `exact` (97.7%): the last row 97.7% (+0.0 pp [-1.6, +1.6], Spark 3), `fast` with NVFP4
-experts and this sharing 97.3% (-0.3 pp), `fast` without sharing 97.0% (-0.7 pp, Spark 3). Tighter caps per request
-(12:24:96, 8:40) failed (-2.0, -1.7 pp).
-
-Round profile at one request (nsys, both 3-bit copies, floor 16): 54 ms a round for 5.1 tokens; the verify forward
-46 ms, of it the routed and shared experts 30 ms and the trunk's 3-bit GEMMs 9 ms; the MTP draft 7.5 ms, acceptance
-and Mamba replay 2 ms; under 1 ms idle.
+| Profile | 1 request | 4 streams | GSM8K-300 |
+|---|---|---|---|
+| `exact` | 45.9 | 79.8 | 97.7% |
+| `fast` | 102.5 | 185.2 | 97.7% (+0.0 pp, [-1.6, +1.6]) |
 
 ## Conventions that cost a day
 

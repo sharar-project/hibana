@@ -12,34 +12,33 @@ so the weighting happens in latent space before fc2, and the shared expert sees 
 
 Formats and fusions:
 - Router and fc1_latent both read x: one BF16 GEMM over their concatenated rows [512 + 1024, 4096] with an FP32 output.
-  FP32 logits matter: a block's bias spans under 0.1 (4.20-4.30 in block 1, 17.77-17.81 in block 8), so on real text
-  the 22nd and 23rd choice scores sit a median 7e-4 to 1.6e-3 apart, and BF16 logits (median error 2e-3) change the
-  top-22 set of 9-22% of rows (blocks 1, 8, 14). The routing kernel reads the logits and also casts the latent half to
-  BF16 for the experts, so the cast costs no launch.
+  FP32 logits matter: a block's 22nd and 23rd choice scores sit a median 7e-4 to 1.6e-3 apart, and BF16 logits change
+  the top-22 set of 9-22% of rows. The routing kernel reads the logits and also casts the latent half to BF16 for the
+  experts, so the cast costs no launch.
 - Routed experts (NVFP4), by call size: Sharar's kernels (below) up to SMALL_ROWS rows, beyond them FlashInfer's b12x
   SM12x MoE (`kernels/b12x_moe.py`, the non-gated ReLU² activation) on the same tensors: fc1 is up_proj alone
-  ([E, 2688, 512] packed), block scales swizzled per expert (Flash-Next's SM120 interleave). Every expert carries the
-  same input scales (up 0.002046, down 0.03404 in layer 1), so the one per-layer activation scale (Flash-Next's
-  convention, the largest expert's) is exactly the checkpoint's. routed_scaling_factor rides in the fc2 dequantization
-  scale, so the routing weights are plain renormalized ones (route_budget's pick kernel writes those). b12x is not
-  deterministic: calls past 16 rows (prefill chunks, wide verify forwards) differ run to run (two calls agree to cosine
-  0.9997-0.99996; a prompt's teacher-forced logprobs by up to 1.5). The 3-bit experts serve every size deterministically.
+  ([E, 2688, 512] packed), block scales swizzled per expert (Flash-Next's SM120 interleave). Every expert of a block
+  carries the same input scales, so the one per-layer activation scale (Flash-Next's convention, the largest
+  expert's) is exactly the checkpoint's. routed_scaling_factor rides in the fc2 dequantization scale, so the routing
+  weights are plain renormalized ones (route_budget's pick kernel writes those). b12x is not deterministic: calls past
+  16 rows (prefill chunks, wide verify forwards) differ run to run (a prompt's teacher-forced logprobs by up to 1.5).
+  The 3-bit experts serve every size deterministically.
 - Shared expert: the checkpoint's NVFP4 through Sharar's NVFP4 linear (`ops.nvfp4_linear`), ReLU² in place between.
 - fc2_latent: BF16, as shipped, as an addmm onto the shared expert's output (the block's sum in the GEMM epilogue).
 - 3-bit routed experts (`w3=`, with SHARAR_W3_DECODE when the W3 checkpoint carries this block's experts): the only
   expert copy (the NVFP4 experts are not loaded), every call, decode to prefill, through `kernels/w3_moe.py`'s ReLU^2
-  geometry (E4M3 activations per 32-group, GPTQ-calibrated codes, `weights/nemotron_w3_experts.py`). routed_scaling_factor is folded into fc2's row scales at load; padded and
-  unfilled slots name no expert (id 512), which the kernel skips. Calls of at most SMALL_ROWS rows keep the small-call
-  kernels below for everything but the routed sum (`nemotron_moe.w3_block`: router, shared up, w3_moe on the router's
-  BF16 latent and ids, then fc2_latent plus the shared down).
+  geometry (E4M3 activations per 32-group, GPTQ-calibrated codes, `weights/nemotron_w3_experts.py`).
+  routed_scaling_factor is folded into fc2's row scales at load; padded and unfilled slots name no expert (id 512),
+  which the kernel skips. Calls of at most SMALL_ROWS rows keep the small-call kernels below for everything but the
+  routed sum (`nemotron_moe.w3_block`: router, shared up, w3_moe on the router's BF16 latent and ids, then fc2_latent
+  plus the shared down).
 
 Calls of at most SMALL_ROWS rows (decode, verify, the MTP head's draft steps) run the block through Sharar's own kernels
 (`kernels/nemotron_moe.py`) instead, on the same tensors: the router|fc1 GEMV, the routing kernel below, then four
 launches (prep: the call's experts and pairs, the latent and x quantized; up: routed and shared, relu² and the NVFP4
 quantization in the epilogue; down: routed, summed per row; out: fc2_latent plus the shared expert's down), each
 streaming its weights once, every distinct expert once for all of its pairs, with programmatic dependent launches so
-a kernel's weight stream starts under the previous one's tail. Block 1, real inputs, CUDA graphs: see the table in
-`kernels/csrc/nemotron_moe.cu`.
+a kernel's weight stream starts under the previous one's tail.
 
 Routing for decode and verify forwards follows Flash-Next (`model/flashnext/moe.py`): a CUDA graph's padded rows (dummy
 state slot 0) take row 0's top expert at weight 0, which reads no further expert (3-bit experts: no expert, id 512).
@@ -191,12 +190,12 @@ def _route_rank_kernel(L, Bias, Slots, Cand, P, Bits, Dense, Y, stride_l, Bits2,
 
 
 @triton.jit
-def _share_select_kernel(Score, Bits, Slots, Set, R, Budget, PerRequest, MinCap, Bits2, E: tl.constexpr,
+def _share_select_kernel(Score, Bits, Slots, Set, R, Budget, PerRequest, Bits2, E: tl.constexpr,
                          BLOCK: tl.constexpr, NW: tl.constexpr, RB: tl.constexpr, STEPS: tl.constexpr,
                          HAS_SLOTS: tl.constexpr, G: tl.constexpr = 0):
     """Flash-Next's `_budget_select_kernel`: word `program_id` of the call's set, every real row's top KEEP (the OR of
     Bits), then the highest-scoring other experts (equal scores: the lower expert), as many as the cap leaves (Budget,
-    or min(Budget, max(MinCap, PerRequest x real requests)); 0: none). With G, a cap the floors' union exceeds
+    or min(Budget, PerRequest x real requests); 0: none). With G, a cap the floors' union exceeds
     guarantees each real row only its top G (Bits2), and the cap fills from the scores. One program per 32 experts,
     each ranking its own against all."""
     g = tl.program_id(0)
@@ -208,7 +207,7 @@ def _share_select_kernel(Score, Bits, Slots, Set, R, Budget, PerRequest, MinCap,
             q = q0 + rq
             reqs += tl.sum((tl.load(Slots + q, mask=q < R // STEPS, other=0) != 0).to(tl.int32), 0)
     if PerRequest > 0:
-        Budget = tl.minimum(Budget, tl.maximum(MinCap, PerRequest * reqs))
+        Budget = tl.minimum(Budget, PerRequest * reqs)
     w = tl.arange(0, NW)
     rr = tl.arange(0, RB)
     core = tl.zeros([NW], dtype=tl.int32)
@@ -284,10 +283,10 @@ def _share_pick_kernel(Slots, Cand, P, Set, Ids, W, R, K: tl.constexpr, C: tl.co
 
 
 def route_budget(fused: torch.Tensor, bias: torch.Tensor, k: int, latent: int, keep: int, budget: int,
-                 slots: torch.Tensor | None = None, steps: int = 1, per_request: int = 0, min_cap: int = 0,
-                 repeat: bool = True, fallback: int = 0):
+                 slots: torch.Tensor | None = None, steps: int = 1, per_request: int = 0, repeat: bool = True,
+                 fallback: int = 0):
     """Budgeted top-k over fused FP32 [R, E + latent] -> (ids [R, k], renormalized weights [R, k], BF16 latent): the
-    call reads at most min(budget, max(min_cap, per_request x real requests)) distinct experts (or `budget` without
+    call reads at most min(budget, per_request x real requests) distinct experts (or `budget` without
     `per_request`), more only when the rows' guaranteed top `keep` exceed it (a budget of 0: the guaranteed experts
     alone). Each real row takes those of its top k (by choice score) that are in the set, in rank order, its top
     `keep` first (the others ride along free); its weights are its plain sigmoid scores renormalized over those. Slots
@@ -317,7 +316,7 @@ def route_budget(fused: torch.Tensor, bias: torch.Tensor, k: int, latent: int, k
                              KEEP=keep, K=k, LAT=latent, G=fallback, num_warps=1, **common)
     _budget_score_kernel[(block // 32,)](dense, score, r, BLOCK=block, EB=32, RB=16, num_warps=1)
     rb = min(64, max(16, triton.next_power_of_2(r)))
-    _share_select_kernel[(nw,)](score, bits, sl, chosen, r, budget, per_request, min_cap, bits2, E=e, BLOCK=block,
+    _share_select_kernel[(nw,)](score, bits, sl, chosen, r, budget, per_request, bits2, E=e, BLOCK=block,
                                 NW=nw, RB=rb, STEPS=steps, HAS_SLOTS=slots is not None, G=fallback, num_warps=4)
     _share_pick_kernel[(triton.cdiv(r, rb),)](sl, cand, p, chosen, ids, w, r, k, NW=nw, RB=rb, num_warps=4,
                                               KP=triton.next_power_of_2(k), NONE=e, REPEAT=repeat, **common)
@@ -341,16 +340,21 @@ def relu2_(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
+def expert_names(prefix: str, experts: int) -> list[str]:
+    """Every tensor `load_experts` reads for the block at `prefix`."""
+    kinds = ("weight", "weight_scale", "weight_scale_2", "input_scale")
+    return [f"{prefix}.experts.{e}.{p}.{k}" for e in range(experts) for p in ("up_proj", "down_proj") for k in kinds]
+
+
 def load_experts(w, prefix: str, experts: int, device) -> dict[str, torch.Tensor]:
     """A block's routed NVFP4 experts as stored: up [E, I, L/2] and down [E, L, I/2] uint8 (low nibble first), their
-    float8_e4m3fn block scales (unswizzled), FP32 [E] global scales and input scales. Read whole from the block's
-    shard (`SnapshotWeights.get_whole`) and stacked on the device."""
-    kinds = ("weight", "weight_scale", "weight_scale_2", "input_scale")
-    names = [f"{prefix}.experts.{e}.{p}.{k}" for e in range(experts) for p in ("up_proj", "down_proj") for k in kinds]
-    t = w.get_whole(names, device)
+    float8_e4m3fn block scales (unswizzled), FP32 [E] global scales and input scales. Stacked on the host from views of
+    the block's shard as read (`SnapshotWeights.get_whole` on the CPU), then copied to the device: only the experts'
+    bytes reach it."""
+    t = w.get_whole(expert_names(prefix, experts), "cpu")
 
     def each(proj: str, kind: str) -> torch.Tensor:
-        return torch.stack([t[f"{prefix}.experts.{e}.{proj}.{kind}"] for e in range(experts)]).contiguous()
+        return torch.stack([t[f"{prefix}.experts.{e}.{proj}.{kind}"] for e in range(experts)]).to(device)
 
     def scalars(proj: str, kind: str) -> torch.Tensor:  # [] in the trunk's blocks, [1] in the MTP head's
         return each(proj, kind).float().reshape(experts)
@@ -362,13 +366,9 @@ def load_experts(w, prefix: str, experts: int, device) -> dict[str, torch.Tensor
 
 
 class NemotronMoe:
-    # Budgeted selection: one request reads at least MIN_CAP experts (Flash-Next's measured top-10 value scaled to top
-    # 22, unmeasured on this model); with a binding cap each token keeps at least its top SHARE_MIN
-    MIN_CAP = 36
-    SHARE_MIN = 8
-    # calls of at most this many rows take Sharar's kernels: the fastest at every M of 1-16 (block 1: 506 us at 1 row
-    # against b12x 572; 3481 against 3591 at 16); past 16 rows b12x streams at 224-226 GB/s, where wider kernels would
-    # gain a percent or two (`kernels/csrc/nemotron_moe.cu`)
+    SHARE_MIN = 8  # budgeted selection: under a binding cap each token keeps at least its top SHARE_MIN
+    # calls of at most this many rows take Sharar's kernels, the fastest at every M of 1-16 (block 1, 16 rows: 3481 us
+    # against b12x's 3591; `kernels/csrc/nemotron_moe.cu`)
     SMALL_ROWS = 16
 
     def __init__(self, w, prefix: str, device: torch.device, target, w3=None):
@@ -393,9 +393,6 @@ class NemotronMoe:
         self.shared_down = load_nvfp4_linear(w, [f"{prefix}.shared_experts.down_proj"], device)
 
         cfg = current()
-        for name, v in (("SHARAR_MOE_KEEP", cfg.moe_keep), ("SHARAR_MOE_BUDGET", cfg.moe_budget)):
-            if v < 0:
-                raise ValueError(f"{name}={v}: a count of experts, or 0 (off)")
         self.keep = cfg.moe_keep if cfg.moe_keep < self.topk else 0  # each token's floor (0: every token's top 22)
         self.budget = cfg.moe_budget if self.keep else 0
         self.per_request = cfg.moe_budget_per_request
@@ -416,6 +413,7 @@ class NemotronMoe:
             su, sd = self.shared_up, self.shared_down
             self.small_scales = [one(0.0), one(0.0), one(0.0), one(0.0), one(su.alpha), one(sd.alpha),
                                  one(su.input_scale_inv), one(sd.input_scale_inv)]
+            self._small = self._small_weights()
             return
         nv = load_experts(w, prefix, self.experts, device)
         self.w1, self.w2 = nv["w1"], nv["w2"]  # [E, I, L/2], [E, L, I/2] uint8
@@ -436,10 +434,13 @@ class NemotronMoe:
         # calls past SMALL_ROWS rows: FlashInfer's b12x MoE on the same tensors
         from sharar.kernels.b12x_moe import B12xExperts
         self.b12x = B12xExperts(self.w1, self.s1, nv["g1"], in1, self.w2, self.s2, nv["g2"], in2, c.ROUTED_SCALING_FACTOR)
+        self._small = self._small_weights()
 
     def small_weights(self) -> list[torch.Tensor]:
-        """The tensors `kernels/nemotron_moe.py` reads, in its order (built per call: copies of the block may swap
-        the dense weights)."""
+        """The tensors `kernels/nemotron_moe.py` reads, in its order."""
+        return self._small
+
+    def _small_weights(self) -> list[torch.Tensor]:
         from sharar.kernels import nemotron_moe
         su, sd = self.shared_up, self.shared_down
         return [self.gate_fc1, self.fc2, self.w1, self.s1, self.w2, self.s2, su.weight, su.weight_scale_swizzled,
@@ -477,7 +478,7 @@ class NemotronMoe:
             return route_topk(fused, self.bias, self.topk, self.latent, slots, steps, repeat=repeat)
         # each real token's top `keep` (its floor); its other top-k experts in the call's set ride along
         return route_budget(fused, self.bias, self.topk, self.latent, self.keep, self.budget, slots, steps,
-                            per_request=self.per_request, min_cap=self.MIN_CAP, repeat=repeat,
+                            per_request=self.per_request, repeat=repeat,
                             fallback=self.fallback(fused.shape[0], steps))
 
     def fallback(self, rows: int, steps: int) -> int:
@@ -486,7 +487,7 @@ class NemotronMoe:
         rule gives the floor itself."""
         if not self.budget:
             return 0
-        cap = min(self.budget, max(self.MIN_CAP, self.per_request * (rows // steps))) if self.per_request else self.budget
+        cap = min(self.budget, self.per_request * (rows // steps)) if self.per_request else self.budget
         g = max(min(self.SHARE_MIN, self.keep), min(self.keep, cap // rows))
         return g if g < self.keep else 0
 
@@ -522,8 +523,9 @@ class NemotronMoe:
         from sharar.kernels import ops
         return ops.nvfp4_linear(relu2_(ops.nvfp4_linear(x, self.shared_up)), self.shared_down)
 
-    def __call__(self, x: torch.Tensor, ctx=None) -> torch.Tensor:
-        """Post-norm rows x [M, H] BF16 -> the block's mixer output [M, H] BF16 (the residual add is the caller's)."""
+    def forward(self, x: torch.Tensor, ctx=None, x_q=None) -> torch.Tensor:
+        """Post-norm rows x [M, H] BF16 -> the block's mixer output [M, H] BF16 (the residual add is the caller's).
+        `x_q`: the mixers' common signature; this block reads BF16 x."""
         x = x.contiguous()
         if x.shape[0] <= self.SMALL_ROWS:
             return self.small(x, ctx)
@@ -531,6 +533,8 @@ class NemotronMoe:
         ids, weights, latent = self.route(fused, ctx)
         routed = self.routed(latent, ids, weights)
         return torch.addmm(self.shared(x), routed, self.fc2.T)
+
+    __call__ = forward
 
     @torch.no_grad()
     def reference(self, x: torch.Tensor, quantize_activations: bool = False) -> torch.Tensor:

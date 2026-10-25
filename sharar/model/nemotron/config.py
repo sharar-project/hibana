@@ -30,6 +30,7 @@ W3_REVISION: str | None = None
 PREFIX = "language_model"
 
 STOP_TOKEN_IDS = (11, 2)  # <|im_end|>, </s> (generation_config.json)
+FIRST_TEXT_TOKEN = 1000  # ids below are the tokenizer's 1,000 added (control) tokens
 
 HIDDEN_SIZE = 4096
 VOCAB_SIZE = 131_072

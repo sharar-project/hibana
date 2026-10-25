@@ -6,11 +6,11 @@ does before the scan), then steps h' = exp(dt A) h + dt x B^T, y = h' C + D x to
 SSD) is compared within tolerance; decode, verify and replay share one recurrence and are compared bitwise with each
 other. Parameters are layer 0's when the checkpoint is present (random otherwise).
 
-Every state test runs in three storage formats: FP32, FP16 stochastically rounded ("sr", keyed on the token positions
-and layer index; the served `SHARAR_SSM_STATE=fp16_sr`) and FP16 rounded to nearest ("rn", the kernels'
-`stochastic=False`, the reference that shows what stochastic rounding keeps). Within a format the bitwise contracts
-hold unchanged (verify == decode, replay == decode, 128-aligned prefill splits, checkpoints); against the FP32
-reference the FP16 states carry their rounding error. The stochastic rounding itself is checked for unbiasedness and determinism.
+Every state test runs in both storage formats: FP32 and FP16 stochastically rounded ("sr", keyed on the token
+positions and layer index; the served `SHARAR_SSM_STATE=fp16_sr`). Within a format the bitwise contracts hold
+unchanged (verify == decode, replay == decode, 128-aligned prefill splits, checkpoints); against the FP32 reference
+the FP16 states carry their rounding error. The stochastic rounding itself is checked for unbiasedness and
+determinism.
 """
 
 import pytest
@@ -21,12 +21,12 @@ import triton.language as tl
 
 from sharar.kernels import mamba2 as m
 
-FORMATS = ("fp32", "sr", "rn")
-DTYPE = {"fp32": torch.float32, "sr": torch.float16, "rn": torch.float16}
+FORMATS = ("fp32", "sr")
+DTYPE = {"fp32": torch.float32, "sr": torch.float16}
 # Relative error of the state against the FP32 reference after a few steps: each FP16 store adds at most one FP16
-# ulp (2^-10 relative; SR) or half of one (RN).
-STATE_TOL = {"fp32": 1e-6, "sr": 2e-3, "rn": 1e-3}
-PREFILL_STATE_TOL = {"fp32": 5e-5, "sr": 2e-3, "rn": 1e-3}
+# ulp (2^-10 relative).
+STATE_TOL = {"fp32": 1e-6, "sr": 2e-3}
+PREFILL_STATE_TOL = {"fp32": 5e-5, "sr": 2e-3}
 
 DEV = "cuda"
 H, P, N, G, C, DI = m.HEADS, m.HEAD_DIM, m.STATE, m.GROUPS, m.CONV_DIM, m.D_INNER
@@ -112,7 +112,7 @@ def _pools(slots, seed=1, fmt="fp32"):
 
 
 def _kw(fmt, layer=0):
-    return dict(layer=layer, stochastic=fmt == "sr")
+    return dict(layer=layer)
 
 
 def _positions(start, rows, steps=1):
@@ -182,7 +182,7 @@ def test_prefill_equals_stepwise_decode(layer, fmt):
                      for t in range(260)])
     assert _rel(y_p, y_d) < 4e-3
     # 260 decode stores against 3 chunk-end roundings: the FP16 paths differ by their rounding noise
-    assert _rel(ssm[0], ssm[1]) < {"fp32": 5e-5, "sr": 5e-3, "rn": 5e-3}[fmt]
+    assert _rel(ssm[0], ssm[1]) < {"fp32": 5e-5, "sr": 5e-3}[fmt]
     assert torch.equal(conv[0], conv[1])
 
 
@@ -225,9 +225,6 @@ def test_checkpoint_is_the_shorter_prefill(layer, fmt):
 
 class _Pool:
     def __init__(self, layers, slots, fmt="fp32"):
-        from types import SimpleNamespace
-        # the served FP16 format rounds stochastically; "rn" is the kernels' nearest rounding (`stochastic=False`)
-        self.ssm_format = SimpleNamespace(stochastic=fmt == "sr")
         self.layer_ids = [2 * j for j in range(layers)]
         self.conv_all = torch.stack([_pools(slots, seed=10 + j)[0] for j in range(layers)])
         self.ssm_all = torch.stack([_pools(slots, seed=10 + j, fmt=fmt)[1] for j in range(layers)])
@@ -404,7 +401,7 @@ def test_stochastic_rounding_is_unbiased_between_neighbours():
 
 def _stagnation(fmt, steps=400):
     """How far the mean state of one slot grows from 1 with no decay (A ~ 0) and per-step increments dt x b ~ 5e-5, a
-    tenth of half an FP16 ulp at 1 (2^-11): round to nearest drops every one, stochastic rounding keeps them in
+    tenth of half an FP16 ulp at 1 (2^-11): round to nearest would drop every one, stochastic rounding keeps them in
     expectation. x and B come from the convolution bias (zero inputs, zero taps)."""
     bias = torch.zeros(C, device=DEV)
     bias[:DI + G * N] = 0.1
@@ -422,8 +419,7 @@ def _stagnation(fmt, steps=400):
 
 def test_stochastic_rounding_keeps_sub_ulp_updates():
     exact = _stagnation("fp32")
-    assert 0.01 < exact < 0.03  # 400 updates of ~5e-5: about 20 FP16 ulps at 1
-    assert _stagnation("rn") == 0.0  # every update below half an ulp is lost
+    assert 0.01 < exact < 0.03  # 400 updates of ~5e-5: about 20 FP16 ulps at 1, each below half an ulp
     assert _stagnation("sr") == pytest.approx(exact, rel=0.01)
 
 
@@ -440,7 +436,7 @@ def test_stochastic_rounding_is_deterministic_and_keyed():
         ssm[:] = ssm[1]
         conv[:] = conv[1]
         s = torch.tensor(slots, dtype=torch.int32, device=DEV)
-        m.decode(zx, params, conv, ssm, s, torch.tensor(pos, device=DEV), layer=lay, stochastic=True)
+        m.decode(zx, params, conv, ssm, s, torch.tensor(pos, device=DEV), layer=lay)
         outs[key] = (ssm[s[0]].clone(), ssm[s[1]].clone())
     assert torch.equal(outs["a"][0], outs["a"][1]) and torch.equal(outs["a"][0], outs["b"][0])
     assert not torch.equal(outs["pos"][0], outs["pos"][1])
@@ -463,4 +459,3 @@ def test_fp16_state_needs_positions_for_stochastic_rounding(layer):
     slot = torch.zeros(1, dtype=torch.int32, device=DEV)
     with pytest.raises(ValueError, match="positions"):
         m.decode(zx, params, conv, ssm, slot)
-    m.decode(zx, params, conv, ssm, slot, stochastic=False)  # round to nearest keys on nothing

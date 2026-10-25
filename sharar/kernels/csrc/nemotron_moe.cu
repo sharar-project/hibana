@@ -29,32 +29,9 @@
 // fragments of a step as one 16-byte word and their scales as one 8-byte word. BF16 needs no exchange (no groups):
 // both operands take the same permutation of k within a 32-k step, the natural one of a 16-byte load.
 //
-// Tried and dropped (block 1, real inputs, CUDA graphs, GB10): staging the weights through shared memory by cp.async
-// in 256-byte row pieces (DRAM serves those ~10% faster than the fragments' 64-byte ones in a pure read) made the down
-// kernel 177 GB/s against 216; the CUDA-core path for the experts and the shared expert (whole 512-byte row pieces a
-// warp, E2M1 -> f16x2 dot products) ran 162-198 GB/s against 216-233.
-//
-// Measured (Sharar, spark-9931): block 1, real inputs (captured text, consecutive rows), CUDA graphs, dense
-// weights rotated over 4 copies, 8 windows, median us per call, no other GPU process during any measurement. GB/s over
-// the bytes the call must read (45.7 MB dense + distinct experts x 3.10 MB). `cutlass` / `b12x`: the block with the
-// routed experts through cutlass_fused_moe / FlashInfer's b12x MoE (router|fc1 torch.mm, route_topk, NVFP4 shared
-// expert, fc2 addmm around them); `these`: this file's kernels (parts: router, up, down, out).
-//      M  experts    MB |  cutlass  GB/s |    b12x  GB/s |   these  GB/s  (router    up  down   out)
-//      1     22.0   114 |    621.4   183 |    571.8  199 |   505.5  225   (    58   207   155    89)
-//      2     42.8   178 |    889.5   200 |    826.6  216 |   780.4  228   (    58   340   303    93)
-//      4     81.2   297 |   1414.5   210 |   1363.4  218 |  1304.2  228   (    58   595   554    99)
-//      8    145.5   496 |   2295.7   216 |   2265.0  219 |  2174.9  228   (    59   998  1024    81)
-//     16    240.6   791 |   3601.9   220 |   3591.0  220 |  3480.5  227   (    71  1628  1686    97)
-//     32    338.1  1093 |   4987.1   219 |   4875.5  224 |
-//     64    403.4  1295 |   5962.0   217 |   5768.5  224 |
-//    128    486.1  1551 |   7286.4   213 |   6958.2  223 |
-//    512    511.5  1630 |   8725.6   187 |   7685.2  212 |
-//   2048    512.0  1631 |  13497.6   121 |  10324.0  158 |
-// Past 16 rows b12x streams the experts at 224-226 GB/s; these kernels' run ~228 at 16 rows, so wider ones would gain
-// a percent or two: calls past 16 rows go to b12x. Accuracy (blocks 1, 8, 14, real
-// inputs; cosine against the reference with NVFP4 activations): these kernels >= 0.999998 (M 1-16), cutlass >= 0.99923
-// (0.99936 at M 512 in block 1), b12x 0.99926-0.99996 with its routed sum mostly 0.2-1.6% smaller than cutlass's
-// (block 14: 1.5% at M 1-4; block 1 at M 512: 1.5% larger); against the FP32 reference all are at the W4A4 floor (0.981-0.998).
+// Measured (block 1, real inputs, CUDA graphs, GB10): at one row 505 us against b12x's 572 (225 against 199 GB/s over
+// the bytes the call must read), at 16 rows 3481 against 3591; past 16 rows b12x streams the experts at 224-226 GB/s,
+// so calls past 16 rows go to b12x. Cosine against the reference with NVFP4 activations: >= 0.999998 (M 1-16).
 
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>

@@ -37,10 +37,10 @@ from math import prod
 
 import torch
 
+from sharar.launch.settings import SSM_STATES
+
 ALIGN = 256
 BITS = {"int8": 8, "int4": 4}  # GDN window formats
-FP16 = ("fp16_sr",)  # Mamba-2 FP16 storage, stochastically rounded
-MAMBA_FAMILIES = ("nemotron",)
 
 
 def _aligned(nbytes: int) -> int:
@@ -105,7 +105,7 @@ class SsmFormat:
     rank: int | None = None  # compensator tokens (None: the paper's 4, or 8 at 4 bits)
 
     def __post_init__(self):
-        if self.kind not in ("fp32", *BITS, *FP16):
+        if not any(self.kind in kinds for kinds in SSM_STATES.values()):
             raise ValueError(f"SHARAR_SSM_STATE must be fp32, int8, int4 or fp16_sr, not {self.kind!r}")
         if self.rank is None:
             object.__setattr__(self, "rank", 8 if self.kind == "int4" else 4)
@@ -124,28 +124,19 @@ class SsmFormat:
         return self.kind in BITS
 
     @property
-    def stochastic(self) -> bool:
-        return self.kind in FP16
-
-    @property
     def dtype(self) -> torch.dtype | None:
-        """The pool's state dtype for an unquantized format."""
-        return None if self.quantized else torch.float16 if self.kind in FP16 else torch.float32
+        """The pool's state dtype for an unquantized format (FP16: stochastically rounded by the kernels)."""
+        return None if self.quantized else torch.float16 if self.kind == "fp16_sr" else torch.float32
 
     def describe(self) -> str:
-        if self.quantized:
-            return f"{self.kind}:w{self.window}:r{self.rank}"
-        return "fp16_sr" if self.kind in FP16 else "fp32"
+        return f"{self.kind}:w{self.window}:r{self.rank}" if self.quantized else self.kind
 
     def check(self, target) -> None:
-        """Reject a format the target's recurrence does not implement (FP16 is Mamba-2's, the windows GDN's)."""
-        mamba = target.family in MAMBA_FAMILIES
-        if self.kind in FP16 and not mamba:
-            raise ValueError(f"SHARAR_SSM_STATE={self.kind} stores a Mamba-2 state; {target.name}'s GDN state "
-                             "is fp32, int8 or int4")
-        if self.quantized and mamba:
-            raise ValueError(f"SHARAR_SSM_STATE={self.kind} is a GDN format; {target.name}'s Mamba-2 state is "
-                             "fp32 or fp16_sr")
+        """Reject a format the target's recurrence does not store (`Target.recurrence`, `settings.SSM_STATES`)."""
+        kinds = SSM_STATES[target.recurrence]
+        if self.kind not in kinds:
+            raise ValueError(f"SHARAR_SSM_STATE={self.kind}: {target.name}'s {target.recurrence} state is stored as "
+                             + ", ".join(kinds[:-1]) + f" or {kinds[-1]}")
 
     def layout(self, target) -> WindowLayout | None:
         if not self.quantized:

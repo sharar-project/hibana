@@ -123,7 +123,8 @@ MoE block's 512 routed experts (the 40 trunk blocks' and the MTP head's). The tr
 at most 64 rows read them, prefill keeps FP8); the experts are the only expert copy, at every call size. Two tools
 write it, `sharar/weights/nemotron_w3_calibrate.py` (trunk) and `sharar/weights/nemotron_w3_experts.py` (experts),
 each a capture through the serving model (FP8 trunk, NVFP4 experts; hold the GPU lock) and a fit from it. Nemotron's
-tokenizer is its own, so the samples are rebuilt from the Qwen targets' sources in its tokenizer and chat template:
+tokenizer is its own, so the samples are rebuilt from the Qwen targets' sources in its tokenizer and chat template
+(`sharar/weights/nemotron_w3_inputs.py` builds both sets):
 
 ```bash
 python3 -m sharar.weights.w3_calibration_inputs --tokenizer SNAP/tokenizer.json --commit bc7984f --output code.json
@@ -133,11 +134,13 @@ python3 -m sharar.weights.nemotron_w3_inputs --tokenizer SNAP/tokenizer.json --c
   --traces answers-sharegpt.json --output nemotron-calibration-inputs.json
 SHARAR_TARGET=nemotron python3 -m sharar.weights.nemotron_w3_calibrate capture --inputs nemotron-calibration-inputs.json --activations ACT
 SHARAR_TARGET=nemotron python3 -m sharar.weights.nemotron_w3_calibrate fit --activations ACT --output TRUNK
-# experts: the coding proxy, 250 ShareGPT reasoning traces and 600 packed MMLU / MMLU-Pro validation answers
-python3 -m sharar.weights.nemotron_w3_experts inputs --tokenizer SNAP/tokenizer.json --code code.json \
-  --traces answers-sharegpt.json --knowledge answers.json --output nemotron-expert-inputs.json
+# experts: the coding proxy, 180 ShareGPT reasoning traces (110 English, 70 other) and 250 MMLU / MMLU-Pro validation
+# answers packed into 104 samples: 348 samples, sha256 bba92b75...
+python3 -m sharar.weights.nemotron_w3_inputs --tokenizer SNAP/tokenizer.json --code code.json \
+  --traces answers-sharegpt.json --knowledge answers.json --traces-en 110 --traces-other 70 --knowledge-items 250 \
+  --seed 20261024 --output nemotron-expert-inputs.json
 python3 -m sharar.weights.nemotron_w3_experts capture --inputs nemotron-expert-inputs.json --activations EXPERT_ACT
-python3 -m sharar.weights.nemotron_w3_experts fit --method gptq --activations EXPERT_ACT --source TRUNK \
+python3 -m sharar.weights.nemotron_w3_experts fit --activations EXPERT_ACT --source TRUNK \
   --output $SHARAR_RESULTS/w3-checkpoints/nemotron-<name>
 ln -sfn nemotron-<name> $SHARAR_RESULTS/w3-checkpoints/nemotron-current
 ```
@@ -150,10 +153,11 @@ ln -sfn nemotron-<name> $SHARAR_RESULTS/w3-checkpoints/nemotron-current
   there is no nearest-rounded fallback (`Nemotron` refuses `SHARAR_W3_DECODE=1` without a checkpoint).
 - **Experts** (`capture`: every MoE block's routed latent rows with their top-22 ids and weights, the MTP head's from
   its teacher-forced depth-1 input; `fit`: about 135 s a block on the GB10, resumable per block, `--deadline` for
-  locked windows): per expert H1 = sum g² x xᵀ over its routed rows for up and H2 the same over relu(x upᵀ)² from
-  the NVFP4 up for down, shrunk toward the block's pool (n0 = 256 rows), damping 0.01. Each matrix takes the codebook
-  (Lloyd's eight levels, or `zero8` with an exact zero) with the smaller nearest-rounding output error: the
-  checkpoint's NVFP4 down projections carry many exact zeros, so zero8 wins them. `--source TRUNK` copies the trunk
+  locked windows; a resume refuses other settings or another capture): per expert H1 = sum g² x xᵀ over its routed
+  rows for up and H2 the same over relu(x upᵀ)² from the NVFP4 up for down, shrunk toward the block's pool (n0 = 256
+  rows), damping 0.01. Each matrix takes the codebook (Lloyd's eight levels, or `zero8` with an exact zero) with the
+  smaller nearest-rounding output error: the checkpoint's NVFP4 down projections carry many exact zeros, so zero8
+  wins them. Experts routed fewer than 16 rows keep that nearest-rounded fit. `--source TRUNK` copies the trunk
   entries in, verified; only a complete run publishes the manifest.
 
 The 3-bit experts replace the NVFP4 ones (51.9 GiB resident after the load against 66.9 GiB); the trunk copies add
