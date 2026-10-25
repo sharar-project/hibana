@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from safetensors import safe_open
 
 from sharar.model.parallel_draft import ParallelDraftModel, frequencies, rms
-from sharar.model.bolt.linear import PackedLinear
+from sharar.model.bolt.linear import PackedLinear, PlanRows, graph_rows
 from sharar.proposers.draft_head import TargetHead
 from sharar.model.lilicorr_config import validate_config
 
@@ -60,6 +60,10 @@ class LiLiCorrDraftModel(ParallelDraftModel):
                     source.get_tensor(p + '.weight').clone().to(self.device), 'NVFP4',
                     source.get_tensor(p + '.weight_scale').clone().to(self.device),
                     source.get_tensor(p + '.weight_scale_2').clone().to(self.device).float().reshape(()))
+        from sharar.engine.config import current
+        rows = PlanRows(exact=graph_rows(current()))
+        for lin in self.packed.values():  # b12x compiles on this (the loading) thread, not the engine's
+            lin.prepare(rows)
         for layer in range(self.layers):
             p = f'layers.{layer}.self_attn.'
             self.weights[p + 'kv'] = torch.cat([self.weights.pop(p + name + '_proj.weight') for name in ('k', 'v')])

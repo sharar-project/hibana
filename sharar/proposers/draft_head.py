@@ -157,17 +157,21 @@ def _pad_rows(ids: torch.Tensor, multiple: int) -> torch.Tensor:
 def pack_head(lin, fmt: str = "w3", rows_per_chunk: int = 16384):
     """3-bit (`w3`) or 2-bit (`w2`: four levels, fitted group scales) copy of an FP8 head [N, K] (`TrunkLinear` or
     `Fp8Linear`), dequantized a slice at a time (the whole lm_head in FP32 would be a 2.5 GB temporary)."""
+    scale = _weight_scale(lin)
+    return pack_rows(lambda r0, r1: lin.weight[r0:r1].float() * scale.float() if scale is not None else lin.weight[r0:r1].float(),
+                     lin.out_features, lin.in_features, fmt, rows_per_chunk)
+
+
+def pack_rows(read, rows: int, cols: int, fmt: str = "w3", rows_per_chunk: int = 16384):
+    """`pack_head` over any head: `read(r0, r1)` returns rows [r0, r1) dequantized to FP32."""
     from sharar.kernels import w3
     codebook, fit = ("lloyd2", True) if fmt == "w2" else (w3.DEFAULT_CODEBOOK, False)
-    scale = _weight_scale(lin)
-    parts = [w3.pack((lin.weight[r0:r0 + rows_per_chunk].float() * scale.float()) if scale is not None
-                     else lin.weight[r0:r0 + rows_per_chunk].float(), codebook, fit_scales=fit)
-             for r0 in range(0, lin.out_features, rows_per_chunk)]
+    parts = [w3.pack(read(r0, min(r0 + rows_per_chunk, rows)), codebook, fit_scales=fit) for r0 in range(0, rows, rows_per_chunk)]
     if len(parts) == 1:
         return parts[0]
     first = parts[0]
     return w3.W3Weight(torch.cat([p.planes for p in parts]), torch.cat([p.scales for p in parts]), torch.cat([p.row_scale for p in parts]),
-                       lin.out_features, lin.in_features, first.codebook, first.lut)
+                       rows, cols, first.codebook, first.lut)
 
 
 class VocabParallelHead:

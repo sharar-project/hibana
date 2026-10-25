@@ -26,8 +26,9 @@ def test_dense_matches_bf16_reference(quant, m, relu2):
     weight = matrix(quant, 80, 512)
     x = torch.randn(m, 512, device="cuda", dtype=torch.bfloat16)
     if quant == "NVFP4":
-        from sharar.weights.modelopt import unpack_fp4
-        expected = (torch.mm(x, unpack_fp4(weight.weight, weight.scales).bfloat16().T,
+        from sharar.weights.modelopt import unpack_fp4, unswizzle_block_scales
+        scales = unswizzle_block_scales(weight.scales.reshape(-1), 80, 512 // 16)
+        expected = (torch.mm(x, unpack_fp4(weight.weight, scales).bfloat16().T,
                              out_dtype=torch.float32) * weight.gain).bfloat16()
     else:
         expected = x @ weight.dequantize().bfloat16().T
@@ -75,3 +76,95 @@ def test_q8_embedding_reads_only_requested_rows():
     ids = torch.tensor([4, 0, 79, 4], device="cuda")
     expected = weight.dequantize()[ids].bfloat16()
     assert torch.equal(kernels.embedding(ids, weight.weight), expected)
+
+
+@pytest.mark.parametrize("n,k", [(18560, 4096), (4096, 8192)])  # Bolt's Mamba in_proj and out_proj
+@pytest.mark.parametrize("m", [1, 8, 32, 40, 129])
+def test_nvfp4_bolt_shapes_and_graph_replay(n, k, m):
+    """b12x's W4A16 GEMM at verification row counts, and a captured call reading new inputs on replay."""
+    torch.manual_seed(14)
+    weight = matrix("NVFP4", n, k)
+    x = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
+    expected = (x.float() @ weight.dequantize().T).bfloat16()
+    torch.testing.assert_close(weight(x), expected, rtol=.016, atol=.03)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = weight(x)
+    x.copy_(torch.randn_like(x))
+    graph.replay()
+    assert torch.equal(captured, weight(x))
+
+
+@pytest.mark.parametrize("quant", ["Q8_0", "IQ2_XXS"])
+def test_block_quant_plan_rows_chunking_and_release(quant):
+    """A prepared projection drops its checkpoint copy, runs its exact rows and chunks calls past its capacity."""
+    from sharar.model.bolt.linear import PlanRows
+    torch.manual_seed(15)
+    weight = matrix(quant, 256, 512)
+    reference = weight.dequantize().bfloat16()
+    weight.prepare(PlanRows(capacity=16, exact=(8,)))
+    assert weight.weight is None and weight.bytes > 0
+    for m in (8, 16, 40):
+        x = torch.randn(m, 512, device="cuda", dtype=torch.bfloat16)
+        torch.testing.assert_close(weight(x), x @ reference.T, rtol=.016, atol=.004)
+    with pytest.raises(ValueError):
+        weight.dequantize()
+
+
+@pytest.mark.parametrize("quant", ["NVFP4", "Q8_0"])
+def test_prepared_plans_run_on_another_thread(quant):
+    """The engine infers on its own thread: a plan compiled at load must serve a row count no warm-up ran there."""
+    import threading
+    from sharar.model.bolt.linear import PlanRows
+    torch.manual_seed(16)
+    weight = matrix(quant, 256, 512)
+    reference = weight.dequantize().float()
+    weight.prepare(PlanRows(capacity=1024, exact=(8,)))
+    x = torch.randn(300, 512, device="cuda", dtype=torch.bfloat16)
+    result = {}
+    thread = threading.Thread(target=lambda: result.update(y=weight(x)))
+    thread.start()
+    thread.join()
+    expected = x.float() @ reference.T
+    assert ((result["y"].float() - expected).norm() / expected.norm()).item() < 5e-3
+
+
+def test_b12x_iq2_moe_matches_reference_replays_and_runs_on_another_thread():
+    """b12x's fused IQ2_XXS MoE: weighted ReLU^2 experts against the BF16 operator, changed routes under graph replay,
+    and a row count no warm-up ran, called from another thread (the engine's)."""
+    import threading
+    from sharar.kernels import b12x_iq2_moe
+    from sharar.model.bolt.linear import PlanRows
+    torch.manual_seed(17)
+    experts, inter, hidden, topk = 16, 512, 256, 4
+    up = torch.stack([matrix("IQ2_XXS", inter, hidden).weight for _ in range(experts)])
+    down = torch.stack([matrix("IQ2_XXS", hidden, inter).weight for _ in range(experts)])
+    reference = (up.clone(), down.clone())
+    block = b12x_iq2_moe.Experts(up, down, topk, PlanRows(capacity=64, exact=(1, 8)))
+    b12x_iq2_moe.prepare([block])
+
+    def expected(x, ids, weights):
+        h = kernels.matmul(x, reference[0], "IQ2_XXS", ids=ids, repeat_input=True, relu2=True)
+        return kernels.combine(kernels.matmul(h, reference[1], "IQ2_XXS", ids=ids), weights, scale=1.).float()
+
+    def close(y, want):
+        return ((y.float() - want).norm() / want.norm()).item() < .01
+
+    x = torch.randn(8, hidden, device="cuda", dtype=torch.bfloat16) * .5
+    ids = torch.stack([torch.randperm(experts, device="cuda")[:topk] for _ in range(8)]).int()
+    weights = torch.softmax(torch.randn(8, topk, device="cuda"), -1) * 5
+    assert close(block(x, ids, weights), expected(x, ids, weights))
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = block(x, ids, weights)
+    ids.copy_((ids + 3) % experts)
+    graph.replay()
+    assert close(captured, expected(x, ids, weights))
+    result = {}
+    rows = torch.randn(13, hidden, device="cuda", dtype=torch.bfloat16) * .5
+    routes = torch.stack([torch.randperm(experts, device="cuda")[:topk] for _ in range(13)]).int()
+    gains = torch.full((13, topk), .5, device="cuda")
+    thread = threading.Thread(target=lambda: result.update(y=block(rows, routes, gains)))
+    thread.start()
+    thread.join()
+    assert close(result["y"], expected(rows, routes, gains))

@@ -92,7 +92,7 @@ class EngineConfig:
     trunk_keep_bf16: str | None = None        # SHARAR_TRUNK_KEEP_BF16: regex of Flash-Next projections kept BF16
     flashnext_experts: str = "w3"             # SHARAR_FLASHNEXT_EXPERTS: w3 (the W3 checkpoint's 3-bit routed experts when it carries them) | nvfp4
     nemotron_experts: str = "w3"              # SHARAR_NEMOTRON_EXPERTS: w3 (with SHARAR_W3_DECODE, the W3 checkpoint's 3-bit latent experts when it carries them; else as auto) | nvfp4 (= auto) | the NVFP4 experts' kernels: auto (Sharar's up to 16 rows, FlashInfer's b12x MoE beyond), mma (Sharar's up to 16 rows, cutlass_fused_moe beyond), b12x, cutlass (throughout)
-    bolt_experts: str = "bf16"                # SHARAR_BOLT_EXPERTS: bf16 weight-only | fp8 grouped native IQ2 routed experts
+    bolt_experts: str = "bf16"                # SHARAR_BOLT_EXPERTS: bf16 weight-only | fp8 grouped native IQ2 routed experts | b12x fused MoE (BF16 activations)
     # --- speculation
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
     spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
@@ -140,8 +140,8 @@ class EngineConfig:
     moe_free_riders: bool = True              # SHARAR_MOE_FREE_RIDERS=0: Nemotron's sharing without free riders (SHARAR_MOE_KEEP alone: each token's top k; with SHARAR_MOE_BUDGET: Flash-Next's cap / rows guarantee); else KEEP is each token's floor, its other top-22 experts ride along when the call reads them anyway (model/nemotron/moe.py)
 
     def __post_init__(self) -> None:
-        if self.bolt_experts not in ("bf16", "fp8"):
-            raise ValueError(f"SHARAR_BOLT_EXPERTS must be bf16 or fp8; got {self.bolt_experts!r}")
+        if self.bolt_experts not in ("bf16", "fp8", "b12x"):
+            raise ValueError(f"SHARAR_BOLT_EXPERTS must be bf16, fp8 or b12x; got {self.bolt_experts!r}")
         if self.qsa_prefill_backend not in ("original", "auto", "optimized"):
             raise ValueError("SHARAR_QSA_PREFILL_BACKEND must be original, auto, or optimized; "
                              f"got {self.qsa_prefill_backend!r}")

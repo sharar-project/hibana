@@ -52,7 +52,7 @@ def test_profiles_keep_native_weights_and_use_pinned_lilicorr(tmp_path, profile,
     assert preflight.ensure_w3(s, fetch=False) is None
 
 
-@pytest.mark.parametrize("backend", ["bf16", "fp8"])
+@pytest.mark.parametrize("backend", ["bf16", "fp8", "b12x"])
 def test_expert_backend_override_and_engine_report(tmp_path, backend):
     from sharar.engine.config import EngineConfig
     env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
@@ -120,3 +120,14 @@ def test_torch_reference_parses_puzzle_and_has_no_mtp(tmp_path):
     assert cfg.time_step_limit == (0., float("inf"))
     assert cfg.mtp_block_types == () and cfg.top_k == 9
     assert cfg.mamba_inner == 8192 and cfg.conv_dim == 10240
+
+
+def test_plan_rows_follow_the_graphs():
+    """b12x plans tune the rows the CUDA graphs run: batch buckets times one or a speculative round."""
+    from types import SimpleNamespace
+
+    from sharar.model.bolt.linear import graph_rows
+    assert graph_rows(SimpleNamespace(max_batch=4, spec="7", spec_depths=None)) == (1, 2, 4, 7, 8, 14, 16, 28, 32)
+    assert graph_rows(SimpleNamespace(max_batch=1, spec="auto", spec_depths="")) == tuple(range(1, 10))
+    assert 6 in graph_rows(SimpleNamespace(max_batch=2, spec="7", spec_depths="2:2"))
+

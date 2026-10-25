@@ -5,6 +5,7 @@ triton==3.7.1
 flashinfer-python==0.6.17
 flashinfer-jit-cache==0.6.17+cu130
 apache-tvm-ffi==0.1.13.post3
+b12x==1.5.0
 charset-normalizer==3.5.1
 cuda-bindings==13.3.1
 cuda-core==1.0.1
@@ -32,6 +33,7 @@ nvidia-cutlass-dsl==4.7.1
 nvidia-cutlass-dsl-libs-base==4.7.1
 nvidia-cutlass-dsl-libs-core==4.7.1
 nvidia-cutlass-dsl-libs-cu12==4.7.1
+nvidia-cutlass-dsl-libs-cu13==4.7.1
 nvidia-ml-py==13.610.43
 nvidia-nccl-cu13==2.29.7
 nvidia-nvjitlink==13.3.33

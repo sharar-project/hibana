@@ -2,7 +2,7 @@
 
 Every block's expert count/width comes from its pinned Puzzle configuration.
 IQ2 routed and shared experts stay packed; Q8 attention/head/latent projections
-and NVFP4 Mamba projections use weight-only BF16 kernels. No MTP is in this pin.
+and NVFP4 Mamba projections run b12x's BF16-activation GEMMs (`linear.py`). No MTP is in this pin.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from sharar.distributed import get_tp_info
 from sharar.engine.config import current
 from sharar.kernels import ggml_bf16, ops
 from sharar.model.bolt.config import BOLT
-from sharar.model.bolt.linear import PackedLinear
+from sharar.model.bolt.linear import PackedLinear, PlanRows, graph_rows
 from sharar.model.nemotron.attention import NemotronAttention
 from sharar.model.nemotron.mamba import NemotronMamba
 from sharar.model.nemotron.model import BACKBONE, Block, Nemotron, drop_page_cache
@@ -43,15 +43,21 @@ class BoltMoe:
             raise ValueError(f"{prefix}: encoded expert shapes differ from the pinned Puzzle block")
         if self.router.shape != (self.experts, BOLT.hidden) or self.bias.shape != (self.experts,):
             raise ValueError(f"{prefix}: router shape differs from the pinned Puzzle block")
-        self.iq2 = None
-        if current().bolt_experts == "fp8":
+        self.iq2 = self.b12x = None
+        backend = current().bolt_experts
+        if backend == "fp8":
             from sharar.kernels import iq2_moe
             self.iq2 = iq2_moe.pack_experts(self.w1, self.w2)
+            del self.w1, self.w2
+        elif backend == "b12x":
+            from sharar.kernels import b12x_iq2_moe
+            self.b12x = b12x_iq2_moe.Experts(self.w1, self.w2, self.topk, PlanRows(exact=graph_rows(current())))
             del self.w1, self.w2
 
     @property
     def expert_bytes(self):
-        return self.iq2.bytes if self.iq2 is not None else self.w1.numel() + self.w2.numel()
+        packed = self.iq2 if self.iq2 is not None else self.b12x
+        return packed.bytes if packed is not None else self.w1.numel() + self.w2.numel()
 
     @property
     def bytes(self):
@@ -67,7 +73,9 @@ class BoltMoe:
         if ctx is not None and ctx.mode in ("decode", "verify"):
             slots, steps = (ctx.slots, 1) if ctx.mode == "decode" else (ctx.seq_slots, ctx.verify_steps)
         ids, weights, latent = route_topk(fused, self.bias, self.topk, BOLT.latent, slots, steps, repeat=False)
-        if self.iq2 is not None:
+        if self.b12x is not None:
+            routed = self.b12x(latent, ids, weights * BOLT.route_scale)
+        elif self.iq2 is not None:
             from sharar.kernels import iq2_moe
             # Temporary workspace belongs to this call. The graph allocator reuses
             # it between layers; retaining one per layer would multiply scratch by 40.
@@ -102,12 +110,21 @@ class Bolt(Nemotron):
             raise ValueError("Bolt serves on one Spark")
         cfg = current()
         self.bolt_experts = cfg.bolt_experts
-        self.arithmetic_identity = None
+        from importlib.metadata import version
+        # the SSD store keys recurrent state by the arithmetic that produced it: b12x's linears, and the expert backend
+        self.arithmetic_identity = {"linears": f"b12x {version('b12x')}", "iq2_experts": cfg.bolt_experts}
         if cfg.bolt_experts == "fp8":
             from sharar.kernels.iq2_moe import _source_revision
-            self.arithmetic_identity = {"iq2_experts": "fp8", "kernel": _source_revision()}
-        if cfg.w3_decode or cfg.moe_keep or cfg.moe_budget or cfg.moe_floors or cfg.moe_tau or cfg.moe_extra:
-            raise ValueError("Bolt uses the checkpoint's packed weights and all nine routed experts; disable W3 and expert pruning")
+            self.arithmetic_identity["kernel"] = _source_revision()
+        if cfg.moe_keep or cfg.moe_budget or cfg.moe_floors or cfg.moe_tau or cfg.moe_extra:
+            raise ValueError("Bolt uses all nine routed experts; disable expert pruning")
+        calibrated = None
+        if cfg.w3_decode:
+            # calibrated only (`weights/bolt_w3_calibrate.py`), as for Super: there is no nearest-rounded fallback
+            if not cfg.w3_checkpoint:
+                raise ValueError("Bolt's 3-bit copies are calibrated only: SHARAR_W3_DECODE=1 needs SHARAR_W3_CHECKPOINT")
+            from sharar.weights.w3_checkpoint import CalibratedWeights
+            calibrated = CalibratedWeights(cfg.w3_checkpoint, revision=target.model_revision)
         if cfg.kv_format not in ("fp8", "sim-bf16"):
             raise ValueError("Bolt currently supports FP8 KV (sim-bf16 for parity)")
         target.load_model_config(snap)
@@ -130,6 +147,24 @@ class Bolt(Nemotron):
                         f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB)")
             self.final_norm = RMSNorm(w.get(f"{BACKBONE}.norm_f.weight").to(self.device), target.rms_norm_eps)
             self.lm_head = PackedLinear.load(w, ["language_model.lm_head"], self.device)
+            if calibrated is not None:
+                self.w3_identity = self.attach_calibrated(calibrated, log)
+            self.draft_lm_head = None
+            if cfg.draft_head != "fp8":
+                # the drafter's own head (SHARAR_DRAFT_HEAD): a nearest-rounded copy of the Q8_0 rows, packed before
+                # `prepare` releases them; verification keeps the exact head, so it moves acceptance, not output
+                from sharar.proposers.draft_head import pack_rows
+                from sharar.weights.ggml import dequantize
+                head = self.lm_head
+                self.draft_lm_head = pack_rows(lambda r0, r1: dequantize(head.weight[r0:r1], "Q8_0").float(),
+                                               head.out_features, head.in_features, cfg.draft_head)
+            from sharar.kernels import b12x_iq2_moe
+            b12x_iq2_moe.prepare([layer.mixer.b12x for layer in self.layers if layer.kind == "moe" and layer.mixer.b12x], log)
+            rows = graph_rows(cfg)
+            for _, lin in self.linears():
+                # the head reads at most the graphs' rows (longer calls chunk): a prefill capacity would hold a
+                # [4096, 131072] workspace
+                lin.prepare(PlanRows(max(rows), rows) if lin is self.lm_head else PlanRows(exact=rows))
         finally:
             w.close()
         torch.cuda.synchronize()
@@ -152,8 +187,36 @@ class Bolt(Nemotron):
                     yield f"layers.{layer.index}.mixer.{name}", lin
         yield "lm_head", self.lm_head
 
+    def attach_calibrated(self, calibrated, log=print) -> str:
+        """Calibrated 3-bit decode copies over the projections the checkpoint carries, by `linears()` name; calls of
+        at most 64 rows read them, longer ones keep b12x on the checkpoint encodings. Runs before `prepare` releases
+        the Q8_0 bytes. Returns the manifest's identity."""
+        from sharar.kernels import w3
+        from sharar.weights.sharding import REPLICATED
+        linears = dict(self.linears())
+        missing = sorted(set(calibrated.weights) - set(linears))
+        if missing:
+            raise ValueError(f"calibrated names not in this model: {missing[:4]}")
+        loads = [(name, linears[name], REPLICATED) for name in linears if name in calibrated.weights]
+        for (_, lin, _), copy in zip(loads, calibrated.load_many(loads)):
+            lin.w3, lin.w3_rows = copy, w3.NARROW_ROWS
+        torch.cuda.synchronize()
+        if log:
+            kept = [name for name in linears if name not in calibrated.weights]
+            log(f"  w3: {len(loads)} calibrated matrices from {calibrated.directory} "
+                f"({sum(lin.w3.bytes for _, lin, _ in loads) / 2**30:.2f} GiB); {len(kept)} keep their checkpoint encoding")
+        return calibrated.identity
+
     @torch.inference_mode()
     def logits(self, hidden):
         return self.lm_head(hidden.contiguous())
 
-    head_logits = logits
+    @torch.inference_mode()
+    def head_logits(self, hidden):
+        """The drafter's vocabulary projection: its 3-bit/2-bit head copy when SHARAR_DRAFT_HEAD asks for one, else
+        the head itself. The target's verification always reads `logits`."""
+        if self.draft_lm_head is None:
+            return self.logits(hidden)
+        from sharar.kernels import w3
+        parts = [w3.w3_linear(part.contiguous(), self.draft_lm_head) for part in hidden.reshape(-1, hidden.shape[-1]).split(w3.MAX_ROWS)]
+        return parts[0] if len(parts) == 1 else torch.cat(parts)
