@@ -48,7 +48,7 @@ def test_profiles_and_pinned_lilicorr(tmp_path, profile, name):
     assert s.get("SHARAR_DEVICE_ACCEPT") == s.get("SHARAR_ACCEPT_DEFAULT_SAMPLED") == "0"
     lossy = profile != "exact"
     knobs = ("SHARAR_W3_DECODE", "SHARAR_SSM_STATE", "SHARAR_ACCEPT_DEFAULT", "SHARAR_MOE_KEEP", "SHARAR_MOE_BUDGET")
-    assert tuple(s.get(k) for k in knobs) == (("1", "int8", "off", "4", "16:48") if lossy else ("0", "fp32", "off", "0", "0"))
+    assert tuple(s.get(k) for k in knobs) == (("1", "int8", "off", "6", "20:64") if lossy else ("0", "fp32", "off", "0", "0"))
     assert preflight.ensure_w3(s, log=lambda _: None, fetch=True) is None and s.engine_env(None)["SHARAR_W3_DECODE"] == "0"
     if lossy:
         assert "no calibrated 3-bit checkpoint" in s.warnings[-1]

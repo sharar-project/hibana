@@ -54,8 +54,8 @@ The launcher and ledger budget the pools separately. The checkpoint's 24GB name 
 `exact` serves the checkpoint encodings, all nine routed experts, FP32 Mamba state and exact verification.
 `fast` and `throughput` add the calibrated 3-bit copies of the trunk and vocabulary head (177 matrices, 2.1 GiB;
 `weights/bolt_w3_calibrate.py`), the int8 Mamba state (LeapQuant windows) and expert sharing: Super's `route_budget`, each token keeping
-its top 4 of 9 experts and a decode or verify call reading at most 16 distinct experts a request and 48 in all
-(`SHARAR_MOE_KEEP=4`, `SHARAR_MOE_BUDGET=16:48`). Every profile verifies LiLiCorr's drafts exactly. All profiles use FP8 KV, up to four active requests and the SSD
+its top 6 of 9 experts and a decode or verify call reading at most 20 distinct experts a request and 64 in all
+(`SHARAR_MOE_KEEP=6`, `SHARAR_MOE_BUDGET=20:64`). Every profile verifies LiLiCorr's drafts exactly. All profiles use FP8 KV, up to four active requests and the SSD
 tier. NVIDIA publishes no 3-bit copies for Bolt: `fast` serves `w3-checkpoints/bolt-current` under the results
 directory (a link to a local calibration) or `SHARAR_W3_CHECKPOINT=DIR`, and without one the checkpoint encodings
 with a warning.
@@ -68,19 +68,22 @@ One GB10, LiLiCorr at seven drafts, 256 forced tokens, greedy, thinking off (`to
 | `exact` | 87.1 / 86.7 | 169.8 |
 | + 3-bit copies | 113.4 / 111.0 | 187.0 |
 | + int8 state | 109.8 / 114.2 | 213.7 |
-| + expert sharing 4 / 16:48 (`fast`) | 127.4 / 130.7 | 251.6 |
-| `fast` with relaxed greedy verification, top-3 within 2.0 (`SHARAR_ACCEPT_DEFAULT=3:2.0`) | 156.5 / 159.8 | 297.0 |
+| + expert sharing 6 / 20:64 (`fast`) | 119.5 / 121.7 | 228.9 |
+| expert sharing 4 / 16:48 instead | 127.4 / 130.7 | 251.6 |
+| sharing 4 / 16:48 with relaxed greedy verification, top-3 within 2.0 (`SHARAR_ACCEPT_DEFAULT=3:2.0`) | 156.5 / 159.8 | 297.0 |
 
 Thinking on and sampled at the checkpoint's defaults (temperature 1.0, top-p 0.95, top-k 20), same prompts:
-`exact` 80.4 / 89.3 and 183.7; `fast` 127.8 / 135.5 and 261.4; `fast` with relaxed sampled verification at top-2
+`exact` 80.4 / 89.3 and 183.7; with sharing 4 / 16:48, 127.8 / 135.5 and 261.4, and with relaxed sampled verification at top-2
 within 1.0 (`SHARAR_ACCEPT_DEFAULT_SAMPLED=1`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD=2:1.0`) 140.5 / 142.9 and 284.2.
 
 Paired against `exact` (GSM8K 1,319 and GPQA Diamond 198, thinking off): the 3-bit copies -0.5 / -2.5 points
 (p 0.27 / 0.56), with the int8 state +0.1 / +1.5 (p 1.0 / 0.76); MMLU-Pro (first 1,000) with the 3-bit copies
--0.1 points; `fast` (with expert sharing) -0.5 / -2.0 (p 0.34 / 0.64). The 3-bit copies answer GPQA at length
-(4.0K against 3.1K tokens an item; `fast` 4.2K). Thinking on (greedy, 32,768-token cap), the 3-bit copies against
+-0.1 points; with expert sharing 4 / 16:48, -0.5 / -2.0 (p 0.34 / 0.64). The 3-bit copies answer GPQA at length
+(4.0K against 3.1K tokens an item; with sharing 4 / 16:48, 4.2K). Thinking on (greedy, 32,768-token cap), the 3-bit copies against
 the checkpoint encodings score GPQA 74.2% against 73.7% at 4% more tokens (15.4K against 14.8K an item) and GSM8K
-(first 300) 97.3% against 96.3%. Relaxed verification
+(first 300) 97.3% against 96.3%. Sampled with thinking on, sharing at 4 / 16:48 thinks 1.23x longer on GPQA than
+the 3-bit copies with the int8 state alone (95% interval 1.07-1.43) and loses questions at the cap; the copies and
+the int8 state leave the length where `exact` has it, and so does sharing at 6 / 20:64. Relaxed verification
 at top-3 within 2.0 is not a profile default: against the 3-bit copies with the int8 state it costs GPQA 8.6 points
 (p 0.02; answers 27% longer, 29 more at the 8,192-token cap) at an unchanged GSM8K.
 
