@@ -171,7 +171,8 @@ class RaggedVerifyGraphs:
     from its outputs; never committed), and the bucket's padded requests on padding pages. GDN and attention read the
     per-sequence offsets (cu_seqlens = qo_indptr, rows_seq / rows_pos). The outputs are unpacked to the [batch, width]
     rows acceptance, commit and feedback read: row j of request i is its packed row j (rows past a request's length
-    are filler its acceptance limit never reads)."""
+    are filler its acceptance limit never reads). The logits stay packed, [rows, V]: the relaxed rule reads each
+    draft's row in place, and sampled or constrained rounds unpack the rows they read."""
 
     def __init__(self, spec, budgets: dict[int, tuple[int, ...]]):
         self.spec, self.ex, self.device = spec, spec.ex, spec.device
@@ -185,13 +186,14 @@ class RaggedVerifyGraphs:
         self._st: dict[tuple[int, int], dict] = {}
         self._graphs: dict[tuple[int, int], torch.cuda.CUDAGraph] = {}
         # A bucket's graphs (one per row total) replay one at a time and their outputs are read before the next replay,
-        # so they share the bucket's page index and unpacked outputs: the logits alone are b x steps x the vocabulary
+        # so they share the bucket's page index and outputs: the logits alone take up to b x steps x the vocabulary
         # (eleven copies: 2.5 GiB at 16 requests on the 27B)
         self._kv_indices: dict[int, torch.Tensor] = {}
         self._outputs: dict[int, dict] = {}
 
     def _bucket_outputs(self, b: int, out: dict, logits: torch.Tensor) -> dict:
-        """Bucket b's unpacked outputs, allocated by the first warm-up run (outside capture) in the forward's shapes."""
+        """Bucket b's outputs (the logits packed, the rest unpacked), allocated by the first warm-up run (outside
+        capture) in the forward's shapes."""
         if b not in self._outputs:
             n = b * self.steps
             rows = lambda t: torch.empty((n, *t.shape[1:]), dtype=t.dtype, device=t.device)  # noqa: E731
@@ -271,8 +273,9 @@ class RaggedVerifyGraphs:
                     st["norm"] = torch.index_select(out["norm"], 0, st["unpack"], out=o["norm"])
                     st["features"] = {lid: torch.index_select(f, 0, st["unpack"], out=o["features"][lid])
                                       for lid, f in (out.get("features") or {}).items()}
-                    st["logits"] = torch.index_select(logits, 0, st["unpack"], out=o["logits"])
-                    st["argmax"] = torch.argmax(st["logits"], -1, out=o["argmax"])
+                    st["logits"] = o["logits"][:logits.shape[0]]
+                    st["logits"].copy_(logits)
+                    st["argmax"] = torch.index_select(torch.argmax(st["logits"], -1), 0, st["unpack"], out=o["argmax"])
                 self._graphs[b, rows] = graph_set.capture(self._pool, body)
                 self._st[b, rows] = st
             if log:
@@ -293,8 +296,8 @@ class RaggedVerifyGraphs:
     def run(self, bucket: int, rows: int, lengths: list[int], width: int, tokens, positions, pages, slots, kv_all):
         """Replay the (bucket, rows) graph. lengths: every sequence's rows (the requests', then the bucket's padded
         ones), summing to `rows`; tokens/positions/pages [rows] packed; slots [bucket]; kv_all one page list per
-        sequence. Returns (norm, argmax, features, logits) of the first len(kv_all real) requests unpacked to rows of
-        `width`, views the next replay overwrites."""
+        sequence. Returns the graph's outputs, views the next replay overwrites: norm, argmax and features unpacked to
+        rows of `width` (the real requests' first), the logits packed ([rows, V]; `unpack` maps unpacked rows to them)."""
         st = self._st[bucket, rows]
         st["tokens"].copy_(tokens)
         st["positions"].copy_(positions)

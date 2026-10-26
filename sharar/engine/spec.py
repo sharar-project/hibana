@@ -39,7 +39,8 @@ class Verification:
     # copied right after drafting so the grammar walk runs while the GPU verifies.
     drafted_host: tuple | None = None
     # A packed verification (RaggedVerifyGraphs): (bucket, rows, every sequence's rows, unpacked width, each request's
-    # acceptance limit), the bucket's slots and every sequence's KV pages, padded sequences included.
+    # acceptance limit, each draft's packed row for the relaxed rule: int64 [b, width - 1], -1 past the request's limit,
+    # None without relaxed requests), the bucket's slots and every sequence's KV pages, padded sequences included.
     ragged: tuple | None = None
     slots_all: torch.Tensor | None = None
     kv_all: list | None = None
@@ -413,6 +414,11 @@ class SpecDecoder:
             kv_all += [torch.zeros(n + 1, dtype=torch.int32, device=d) for n in padded]
         slots_all = torch.cat([slots_t, torch.zeros(len(padded), dtype=slots_t.dtype, device=d)])
         cut = width - 1
+        cells = None
+        if not sampled and any(r.params.relaxed for r in reqs):
+            starts = [sum(lengths[:i]) for i in range(b)]
+            cells = torch.tensor([[starts[i] + j if j < n else -1 for j in range(cut)] for i, n in enumerate(limits)],
+                                 dtype=torch.int64, pin_memory=d.type == "cuda").to(d, non_blocking=True)
         proposal = Proposal(proposal.tokens[:, :cut], proposal.probabilities[:, :cut] if proposal.probabilities is not None else None,
                             proposal.support[:, :cut] if proposal.support is not None else None,
                             confidence=proposal.confidence[:, :cut] if proposal.confidence is not None else None,
@@ -426,23 +432,26 @@ class SpecDecoder:
             torch.cuda.synchronize()
         t1 = time.perf_counter()
         return Verification(list(reqs), proposal, sampled, tokens, positions, pages, slots_t, kv_all[:b], t0, t1, drafted_host,
-                            ragged=(bucket, rows, lengths + padded, width, limits), slots_all=slots_all, kv_all=kv_all)
+                            ragged=(bucket, rows, lengths + padded, width, limits, cells), slots_all=slots_all, kv_all=kv_all)
 
     def _verify_ragged(self, batch: Verification) -> None:
-        bucket, rows, lengths, width, limits = batch.ragged
+        bucket, rows, lengths, width, limits, cells = batch.ragged
         st = self.ragged_graphs.run(bucket, rows, lengths, width, batch.tokens, batch.positions, batch.pages,
                                     batch.slots_all, batch.kv_all)
         reqs = batch.requests
         b = len(reqs)
         n = b * width
-        logits = st["logits"][:n]
-        constrained = self._constrain(batch, logits)
-        z_flat = logits.argmax(-1) if constrained else st["argmax"][:n]
+        y = batch.proposal.tokens
+        logits, z_flat = st["logits"], st["argmax"][:n]  # logits packed: [rows, V]
+        if batch.sampled or any(r.grammar is not None for r in reqs):  # the rows they read, unpacked: [b * width, V]
+            logits = logits.index_select(0, st["unpack"][:n])
+            if self._constrain(batch, logits):
+                z_flat = logits.argmax(-1)
+            cells = self._cells(b, width, y.shape[1])
         norm = st["norm"][:n].view(b, width, -1).clone() if self.proposer.requirements.features.final_norm else None
         layers = {lid: value[:n].view(b, width, -1).clone() for lid, value in st["features"].items()} if st["features"] else None
         z = logits.view(b, width, -1) if batch.sampled else z_flat.view(b, width).clone()
-        y = batch.proposal.tokens
-        relaxed = None if batch.sampled else self._relaxed_matches(reqs, logits, y, b, width)
+        relaxed = None if batch.sampled else self._relaxed_matches(reqs, logits, y, cells)
         self._accept(reqs, y, z, VerifiedFeatures(norm, layers), batch.started, batch.prepared,
                      proposal=batch.proposal if batch.sampled else None, relaxed=relaxed, confidence=batch.proposal.confidence,
                      limits=None if batch.sampled else limits)
@@ -473,7 +482,8 @@ class SpecDecoder:
             norm = norm_rows.view(b_sz, s_len, -1).clone() if self.proposer.requirements.features.final_norm else None
             layers = {lid: value.view(b_sz, s_len, -1).clone() for lid, value in layers.items()} if layers else None
             z = z_flat.view(b_sz, s_len, -1) if batch.sampled else z_flat.view(b_sz, s_len).clone()
-            relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens, b_sz, s_len)
+            relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens,
+                                                                        self._cells(b_sz, s_len, k))
             self._accept_batch(batch, z, VerifiedFeatures(norm, layers), relaxed=relaxed)
             return
         ctx = self.context(batch, self._eager_wrapper())
@@ -493,25 +503,34 @@ class SpecDecoder:
         other's plan before the GPU read it (illegal memory access under load)."""
         return getattr(self.ex, "_verify_prefill", self.ex._paged_prefill)  # test doubles have only one
 
-    def _relaxed_matches(self, reqs, logits, y, b_sz: int, s_len: int):
-        """[b, k] bool: drafted token within the request's top-k and logit margin of the target's argmax.
+    def _cells(self, b_sz: int, s_len: int, k: int) -> torch.Tensor:
+        """Each draft's verify row in [b * s_len, V] logits, request i's row j at i * s_len + j: int64 [b, k]."""
+        return torch.arange(b_sz * s_len, device=self.device).view(b_sz, s_len)[:, :k]
+
+    def _relaxed_matches(self, reqs, logits, y, cells):
+        """[b, k] bool: drafted token y[i, j] within the request's top-k and logit margin of the target's argmax, in
+        the logits row cells[i, j] (-1: a draft the round does not verify, never a match).
 
         None when no request in the batch asked for relaxed acceptance, so the
         default path is untouched. Rows of exact requests get top-k 1 and margin 0,
         which reduces to the argmax test."""
         if not any(r.params.relaxed for r in reqs):
             return None
-        k = y.shape[1]
+        b_sz, k = y.shape
         host = self._host_relax
         for i, r in enumerate(reqs):
             host[0, i] = float(r.params.accept_top_k)
             host[1, i] = float(r.params.accept_margin)
         thresholds = host[:, :b_sz].to(self.device, non_blocking=True)
-        rows = logits.view(b_sz, s_len, -1)[:, :k]  # row j predicts drafted token y_j
-        ly = rows.gather(-1, y.unsqueeze(-1)).squeeze(-1).float()
-        lmax = rows.max(-1).values.float()
-        rank = (rows > ly.unsqueeze(-1)).sum(-1).float()
-        return (rank < thresholds[0].unsqueeze(1)) & ((lmax - ly) <= thresholds[1].unsqueeze(1))
+        if logits.is_cuda:  # one pass over each row (kernels/relaxed_rank.py)
+            from sharar.kernels.relaxed_rank import rank_gap
+            above, gap = (t.view(b_sz, k) for t in rank_gap(logits, cells.reshape(-1), y.reshape(-1)))
+        else:
+            rows = logits[cells.clamp(min=0)]  # [b, k, V]: row j predicts drafted token y_j
+            ly = rows.gather(-1, y.unsqueeze(-1)).squeeze(-1).float()
+            above = (rows > ly.unsqueeze(-1)).sum(-1)
+            gap = (rows.max(-1).values.float() - ly).masked_fill(cells < 0, float("inf"))
+        return (above < thresholds[0].unsqueeze(1)) & (gap <= thresholds[1].unsqueeze(1))
 
     def _constrain(self, batch: Verification, logits: torch.Tensor) -> bool:
         """Mask the verified rows of constrained requests by their grammar (engine/grammar.py), in place.
@@ -571,7 +590,8 @@ class SpecDecoder:
         logits = self.ex.model.logits(out["norm"])
         self._constrain(batch, logits)
         z = logits.view(b_sz, s_len, -1) if batch.sampled else logits.argmax(-1).view(b_sz, s_len)
-        relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens, b_sz, s_len)
+        relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens,
+                                                                    self._cells(b_sz, s_len, k))
         self._accept_batch(batch, z, VerifiedFeatures(norm, layers), relaxed=relaxed)
 
     def _accept_batch(self, batch, z, features, relaxed=None):
