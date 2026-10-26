@@ -109,17 +109,16 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
                 # (-0.3, -2.9 to +2.2) for 5% fewer tokens a round there
                 p["SHARAR_ACCEPT_DEFAULT"] = "2:1.0"
                 if profile == "fast":
-                    p.update(SHARAR_SPEC="9", SHARAR_SPEC_DEPTHS="2:7,4:7")  # caps under adaptive verification
+                    p.update(SHARAR_SPEC="9", SHARAR_SPEC_DEPTHS="2:7,4:7")
         elif profile == "fast":  # adaptive depth: h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
             # two Sparks: 0.14 drafted chat and prose too deep (-12%, -7% against depth 4); 0.2 keeps them within noise
             p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14" if tp == 1 else "0.2", SHARAR_SPEC_DEPTHS="2:4,4:4")
     if profile != "exact" and not flashnext and (proposer or "dflash2") == "dflash2":
         # adaptive verification (engine/depth.RowBudget): DFlash2's calibrated draft scores and the measured verify
         # costs decide what each round verifies, a depth per request in packed graphs (one Spark against fixed 15:
-        # throughput 8 / 16 requests +9 / +14% greedy, two Sparks +9 / +18%; quick suite equal). Flash-Next's DFlash2
-        # runs it on padded graphs with SHARAR_SPEC_POLICY=budget, off by default: under its depth caps (#234) its
-        # verify rows cost little, so verifying fewer lost tokens (4 requests -6.5%), and past them quality fell.
-        # `exact` keeps the fixed depth so its runs repeat
+        # throughput 8 / 16 requests +9 / +14% greedy, two Sparks +9 / +18%; quick suite equal). `exact` keeps the
+        # fixed depth so its runs repeat. Flash-Next keeps its depth tables (#273): under its expert budget verify rows
+        # cost little, so verifying fewer saved nothing
         p["SHARAR_SPEC_POLICY"] = "budget"
     if profile != "exact" and tp == 1:
         # NVFP4 KV (cache/kv_pool.py): 4.5 bits a value where FP8 takes 8, so the same memory holds more tokens (the
@@ -370,6 +369,8 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     depths = values.get("SHARAR_SPEC_DEPTHS", "")
     _check(not depths or re.fullmatch(r"\d+:\d+(,\d+:\d+)*", depths) is not None, "SHARAR_SPEC_DEPTHS must be BUCKET:DEPTH pairs, e.g. 8:1,16:0")
     _check(values.get("SHARAR_SPEC_POLICY", "fixed") in ("fixed", "budget"), "SHARAR_SPEC_POLICY must be fixed or budget")
+    _check(not (name == "flashnext" and values.get("SHARAR_SPEC_POLICY") == "budget"),
+           "SHARAR_SPEC_POLICY=budget (adaptive verification) serves the 27B: Flash-Next keeps its depth tables")
     _check(values.get("SHARAR_FLASHNEXT_EXPERTS", "w3") in ("w3", "nvfp4"), "SHARAR_FLASHNEXT_EXPERTS must be w3 or nvfp4")
     _check(values.get("SHARAR_DRAFT_HEAD", "fp8") in ("fp8", "w3", "w2"), "SHARAR_DRAFT_HEAD must be fp8, w3 or w2")
     _check(values.get("SHARAR_QSA_SPARSE_GRAPHS", "1") in ("0", "1"), "SHARAR_QSA_SPARSE_GRAPHS must be 0 or 1")

@@ -130,8 +130,7 @@ receives the verify graphs' pairs (DFlash2 captures a draft graph at each; MTP's
 others draft `k` and the first `d` are verified. A proposer with `Capabilities.scored_drafts` (DFlash2) fills
 `Proposal.acceptance` with each drafted position's probability of acceptance once `score_drafts` is set; adaptive
 verification (`engine/depth.RowBudget`) then has it draft `k` and decides after drafting what the round verifies:
-a depth per request in packed verify graphs on a target without side inputs that accepts on the host (the 27B), one
-depth for the batch in padded graphs otherwise.
+a depth per request in packed verify graphs, accepted on the host (a target without side inputs: the 27B).
 
 - `ingest_prefill(req, ids, start, result)` consumes each freshly computed chunk; `start(req, token)` publishes the
   first emitted token; `ready(req)` decides whether a request may enter speculation (otherwise it decodes plainly).

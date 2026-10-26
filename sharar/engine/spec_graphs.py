@@ -8,7 +8,6 @@ import torch
 
 from sharar.engine import graph_set
 from sharar.engine.context import ForwardContext
-from sharar.engine.depth import RowBudget
 import dataclasses
 
 from sharar.engine.graphs import capture_sizes, check_context_capacity, graph_variants
@@ -49,21 +48,9 @@ class VerifyGraphs:
         self.s_len = depth + 1
         self.max_context = spec.ex.max_context + depth
         self.sizes = capture_sizes(spec.ex.max_batch) if sizes is None else tuple(sizes)  # a depth per batch bucket captures its buckets only
-        # A policy that captures many depths (engine/depth.RowBudget) shares one pool and one FlashInfer workspace across
-        # them: one depth's graph replays at a time and every replay plans first.
-        budget = isinstance(spec.depth_policy, RowBudget)
-        shared = getattr(spec, "verify_shared", None) if budget else None
-        if shared is None:
-            # FlashInfer's split-KV scratch grows with the verified rows: 388 MB at 128 requests x 5 rows
-            shared = (torch.cuda.graph_pool_handle(),
-                      torch.empty(256 * 1024 * 1024 * max(1, -(-spec.ex.max_batch // 64)), dtype=torch.uint8, device=self.device))
-            if budget:
-                spec.verify_shared = shared
-        self._pool, self._ws = shared
-        # and one page index per batch bucket (b x the deepest depth's context: 0.25 GiB a depth at 128 requests)
-        self._kv_indices = getattr(spec, "verify_kv_indices", None) if budget else None
-        if budget and self._kv_indices is None:
-            self._kv_indices = spec.verify_kv_indices = {}
+        self._pool = torch.cuda.graph_pool_handle()
+        # FlashInfer's split-KV scratch grows with the verified rows: 388 MB at 128 requests x 5 rows
+        self._ws = torch.empty(256 * 1024 * 1024 * max(1, -(-spec.ex.max_batch // 64)), dtype=torch.uint8, device=self.device)
         self.variants = graph_variants(spec.ex)
         self._st: dict[int, dict] = {}
         self._graphs: dict[tuple[int, str], torch.cuda.CUDAGraph] = {}
@@ -77,7 +64,7 @@ class VerifyGraphs:
             "slots": torch.zeros(b, dtype=torch.int32, device=d),
             "qo_indptr": torch.arange(0, b * s + 1, s, dtype=torch.int32, device=d),
             "kv_indptr": torch.zeros(b + 1, dtype=torch.int32, device=d),
-            "kv_indices": self._page_index(b),
+            "kv_indices": torch.zeros(b * self.max_context, dtype=torch.int32, device=d),
             "last_page_len": torch.ones(b, dtype=torch.int32, device=d),
             "side": self.ex.extras.buffers(b * s) if self.ex.extras is not None else None,  # the model's static side inputs
         }
@@ -98,14 +85,6 @@ class VerifyGraphs:
             st["ctx_sparse"] = dataclasses.replace(st["ctx"], extras=self.ex.extras.selecting(
                 st["side"], st["kv_indices"], st["kv_indptr"], st["row_seq"], self.max_context))
         return st
-
-    def _page_index(self, b: int) -> torch.Tensor:
-        """The bucket's page index buffer: its own, or the one every depth's graph of bucket b shares."""
-        if self._kv_indices is None:
-            return torch.zeros(b * self.max_context, dtype=torch.int32, device=self.device)
-        if b not in self._kv_indices:
-            self._kv_indices[b] = torch.zeros(b * (self.ex.max_context + self.spec.k), dtype=torch.int32, device=self.device)
-        return self._kv_indices[b]
 
     def _plan(self, st: dict, kv_all: list[torch.Tensor]) -> None:
         check_context_capacity([p.shape[0] for p in kv_all], self.max_context)

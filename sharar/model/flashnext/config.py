@@ -51,13 +51,6 @@ MTP_LAYERS = 1
 DRAFT_PINS = {
     "dflash2": ("incoai/Qwen3.8-Flash-Next-DFlash2", "a22a1744e85c17364dcc54a6a420af7135d4c7f6"),
 }
-# The pinned draft's acceptance calibration (adaptive verification ranks verify seats by it): sigmoid(w . (logit p, gap,
-# j / 15, 1)), tools/fit_draft_calibration.py under the served acceptance (top-2 within 1.0) on 11,728 tested positions
-# (one Spark, greedy, depth 9, fifteen prompts: twelve chats and the three benchmark workloads at 4K); held-out AUC
-# 0.868, mean predicted 0.758 against 0.752 accepted (a fit under exact acceptance predicted 0.710 there).
-DRAFT_CALIBRATION = {
-    "dflash2": (1.273, -0.5991, -1.6394, 0.5292),
-}
 
 # Resident weights: NVFP4 experts ~68 GB + FP8 trunk ~3.5 GB + BF16 embeddings 1.3 GB + FP8 head 0.6 GB,
 # plus the staging of one layer's expert shards during the load.

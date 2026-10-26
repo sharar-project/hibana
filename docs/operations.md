@@ -56,7 +56,7 @@ same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (defau
 | Draft checkpoint | the publisher's pinned draft | `sharar serve --draft DIR` or `SHARAR_DRAFT=/dir`: a DFlash2 checkpoint of the same architecture, trained on the served target's features |
 | Accepted state | reconstruction | `SHARAR_VERIFY_STATE` |
 | Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K; 4.5 GiB as NVFP4) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
-| Adaptive verification (DFlash2) | the 27B's `fast`, `throughput`: on; `exact` and Flash-Next's DFlash2: off | `SHARAR_SPEC_POLICY=budget\|fixed`: the drafts' calibrated scores and the measured verify costs decide what each round verifies, up to `SHARAR_SPEC` ([below](#adaptive-verification-dflash2)); it replaces DFlash2's depth tables and adaptive depth |
+| Adaptive verification (DFlash2) | the 27B's `fast`, `throughput`: on; `exact`: off; Flash-Next: none | `SHARAR_SPEC_POLICY=budget\|fixed`: the drafts' calibrated scores and the measured verify costs decide what each round verifies, up to `SHARAR_SPEC` ([below](#adaptive-verification-dflash2)); it replaces DFlash2's depth tables and adaptive depth |
 | Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:4,4:4`, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark), else `16:3`; Flash-Next DFlash2 `fast`: `2:7,4:7`, `throughput`: MTP's (with adaptive verification, caps per bucket) | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC` and `SHARAR_MAX_BATCH`, a limit between buckets verifying what the bucket it pads to does). The 3-bit copies serve calls of at most 128 rows on the 27B and 64 on Flash-Next, so wider verifications run the original weights |
 | Adaptive draft depth (MTP and DFlash2) | Flash-Next `fast` with MTP: on, 0.14 (0.2 on two Sparks); DFlash2: off | `SHARAR_SPEC_STEP_COST` (0 = the fixed depth): each request drafts as deep as its own recent acceptance pays for, up to the batch bucket's depth ([MTP](flashnext.md#the-mtp-draft), [DFlash2](flashnext.md#the-dflash2-draft)) |
 | Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext` | `sharar serve --port`, `SHARAR_PORT` / `SHARAR_SERVICE` |
@@ -83,27 +83,25 @@ DFlash2 drafts its whole block in one forward, then verifies only the drafts wor
 - **Costs.** After graph capture every verify graph is timed per batch bucket and row total (random tokens, 4K cached
   tokens a row; on two Sparks the slower rank's time); what the graphs do not cover (drafting, acceptance, feedback,
   longer contexts) is a moving mean of each round's GPU time beyond its graph. The table carries the hardware's steps:
-  the 3-bit copies serve calls of at most 128 rows on the 27B and 64 on Flash-Next.
+  the 27B's 3-bit copies serve calls of at most 128 rows.
 - **Rule.** Verify the seats that maximize sum(S) - rate x cost(rows), rate the batch bucket's measured tokens per ms.
   One scored round in 16 verifies every draft, so deep positions keep being tested.
-- **Two executions.** The 27B verifies packed rows (`spec_graphs.RaggedVerifyGraphs`, row totals per bucket): seats go
-  to each request in order of S, so a confident request verifies deep and an unsure one shallow. Flash-Next verifies
-  padded graphs (one per bucket and depth): the batch takes the one depth that maximizes the rule over every
-  request's seats, since its QSA and PLE side inputs and device acceptance take uniform rows. Steady state, the 27B's
-  throughput settings at 10K context: packed against padded with the same scores x1.04 at 8 requests and x1.12 at 16,
-  equal at 1-4.
+- **Packed verification.** Each request verifies its own number of drafts (`spec_graphs.RaggedVerifyGraphs`, row
+  totals per batch bucket): seats go to each request in order of S, so a confident request verifies deep and an unsure
+  one shallow. Steady state, the 27B's throughput settings at 10K context: x1.04 at 8 requests and x1.12 at 16 against
+  one depth for the batch with the same scores, equal at 1-4.
 - **Sampled and constrained batches** verify one depth for every request, chosen before drafting from the drafts'
   survival per position over past rounds, so rejection sampling stays exact.
-- **Where it is on.** The 27B's `fast` and `throughput` (packed), against its fixed 15: one Spark +1 to +16% (8 / 16
-  requests +9 / +14% greedy), two Sparks +1 to +18%, the quick suite equal (pooled -0.4 pp, p 0.74). Flash-Next's
-  DFlash2 takes it with `SHARAR_SPEC_POLICY=budget` (padded), off by default: under its depth caps per bucket (the
-  depth tables, which keep at least 3 budgeted experts a verified token) its rows cost little, so verifying fewer lost
-  accepted tokens (4 requests -6.5%), and past the caps GSM8K-300 fell 3.3 points. Packed graphs for Flash-Next
-  (#273) would spend the caps' rows per request instead.
+- **Where it is on.** The 27B's `fast` and `throughput`, against its fixed 15: one Spark +1 to +16% (8 / 16
+  requests +9 / +14% greedy), two Sparks +1 to +18%, the quick suite equal (pooled -0.4 pp, p 0.74). Not Flash-Next
+  (`SHARAR_SPEC_POLICY=budget` is refused there): under its expert budget a verify forward reads the same experts
+  whatever its rows, so verifying fewer saves nothing, and its depth caps (the experts each verified token keeps) leave
+  only moving rows between requests, measured at +1 to +5% greedy and slower under sampling (#273).
 
 `/get_server_info` reports what it learned under `spec_stats.budget`: acceptance per position (greedy and sampled),
-the shift, tokens per ms and overhead per bucket, and the depths (padded) and row totals (packed) it verified. MTP
-keeps its own depth tables and adaptive depth (`SHARAR_SPEC_DEPTHS`, `SHARAR_SPEC_STEP_COST` above).
+the shift, tokens per ms and overhead per bucket, and the row totals (scored rounds) and depths (sampled or constrained
+rounds) it verified. MTP keeps its own depth tables and adaptive depth (`SHARAR_SPEC_DEPTHS`, `SHARAR_SPEC_STEP_COST`
+above).
 
 ### NVFP4 KV
 

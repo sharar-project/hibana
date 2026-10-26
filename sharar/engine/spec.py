@@ -83,16 +83,17 @@ class SpecDecoder:
         if current().spec_policy not in ("fixed", "budget"):
             raise ValueError("SHARAR_SPEC_POLICY must be fixed or budget")
         if current().spec_policy == "budget" and proposer.requirements.capabilities.scored_drafts:
-            # Adaptive verification (engine/depth.RowBudget): the drafts' scores decide what a round verifies, in
-            # packed graphs (a depth per request) for a target without side inputs that accepts on the host (the
-            # 27B), else in padded graphs (one depth for the batch; Flash-Next). The block is drafted whole: one
-            # forward costs about the same at any depth, and its draft graphs stay one per bucket.
+            # Adaptive verification (engine/depth.RowBudget): the drafts' scores decide what a round verifies, a depth
+            # per request in packed graphs, accepted on the host. The block is drafted whole: one forward costs about
+            # the same at any depth, and its draft graphs stay one per bucket. A model with side inputs (Flash-Next's
+            # QSA and PLE rows) has no packed verification: under its expert budget verify rows cost little, so
+            # verifying fewer saved nothing there (#273).
             from sharar.engine.depth import ragged_budgets
-            packed = not accept_graphs.enabled() and getattr(executor, "extras", None) is None
+            if getattr(executor, "extras", None) is not None:
+                raise ValueError(f"SHARAR_SPEC_POLICY=budget verifies packed rows, which {executor.target.name} does not support: use fixed")
             sizes = capture_sizes(executor.max_batch)
             caps = policy.depths if policy is not None else None  # a depth table caps each bucket's depth
-            self.depth_policy = RowBudget(self.k, sizes, packed_rows=ragged_budgets(sizes, self.steps) if packed else None,
-                                          caps=caps)
+            self.depth_policy = RowBudget(self.k, sizes, packed_rows=ragged_budgets(sizes, self.steps), caps=caps)
             proposer.score_drafts = True
             self.short_drafts = False  # else the proposer's capability (`drafts_short`)
             self.verify_depths = self.depth_policy.verify_depths
@@ -157,16 +158,14 @@ class SpecDecoder:
         from sharar.engine.spec_graphs import VerifyGraphs
 
         policy = self.depth_policy
-        if isinstance(policy, RowBudget) and policy.packed:
+        if isinstance(policy, RowBudget):
             from sharar.engine.spec_graphs import RaggedVerifyGraphs
             self.ragged_graphs = RaggedVerifyGraphs(self, policy.budgets)
             self.ragged_graphs.capture(log=log)
-        # deepest first: a shallower depth's graphs fit in the blocks a deeper one's freed (they share a pool)
-        for depth in sorted(self.verify_depths, reverse=True):
+        for depth in self.verify_depths:
             graphs = VerifyGraphs(self, depth, sizes=policy.sizes_for(depth, capture_sizes(self.ex.max_batch)))
             graphs.capture(log=log)
             self.width_graphs[depth] = graphs
-        self.width_graphs = dict(sorted(self.width_graphs.items()))
         self.verify_graphs = (self.width_graphs.get(self.k) or self.width_graphs[max(self.width_graphs)]) if self.width_graphs else None
         if self.drafts_short:  # draft graphs at the verify graphs' (depth, buckets)
             self.proposer.capture_graphs(log=log, depths={d: g.sizes for d, g in self.width_graphs.items()})
@@ -174,9 +173,8 @@ class SpecDecoder:
             self.proposer.capture_graphs(log=log)
         self.measure_costs(log=log)
         if AcceptGraphs.supported(self):  # captured whenever possible so the path can be switched at run time
-            pool = torch.cuda.graph_pool_handle()  # every depth's accept graphs share one pool (`AcceptGraphs`)
-            for graphs in reversed(self.width_graphs.values()):  # deepest first, as the verify graphs
-                graphs.accept = AcceptGraphs(self, graphs, pool=pool)
+            for graphs in self.width_graphs.values():
+                graphs.accept = AcceptGraphs(self, graphs)
                 graphs.accept.capture(log=log)
 
     @property
@@ -202,8 +200,7 @@ class SpecDecoder:
         policy = getattr(self, "depth_policy", None)
         if isinstance(policy, RowBudget):  # what it measured while serving
             label = lambda b, s: f"{b}{':sampled' if s else ''}"  # noqa: E731
-            out["budget"] = {"packed": policy.packed,
-                             "acceptance": [round(a / t, 3) for a, t in zip(*policy.survival[False])],
+            out["budget"] = {"acceptance": [round(a / t, 3) for a, t in zip(*policy.survival[False])],
                              "sampled_acceptance": [round(a / t, 3) for a, t in zip(*policy.survival[True])],
                              "shift": [round(v, 2) for v in policy.shift],
                              "tokens_per_ms": {label(b, s): round(v, 3) for (b, s), v in policy.rate.items()},
@@ -234,25 +231,15 @@ class SpecDecoder:
         policy = self.depth_policy
         if not isinstance(policy, RowBudget):
             return
-        context = min(self.COST_CONTEXT, self.ex.max_context)
-        ragged = getattr(self, "ragged_graphs", None)
-        if ragged is not None:
-            context = min(self.COST_CONTEXT, self.ex.max_context - 1)  # the graphs hold max_context + k cached tokens
-            for b in ragged.sizes:
-                for rows in ragged.budgets[b]:
-                    policy.costs[b, rows] = ragged.time_replay(b, rows, context)
-            self._common_costs()
-            if log:
-                for b in ragged.sizes:
-                    log(f"  verify cost, batch {b}: " + ", ".join(f"{r} rows {policy.costs[b, r]:.1f}" for r in ragged.budgets[b]) + " ms")
-            return
-        for depth, graphs in sorted(self.width_graphs.items()):
-            for b in graphs.sizes:
-                policy.costs[b, b * (depth + 1)] = graphs.time_replay(b, context)
+        ragged = self.ragged_graphs
+        context = min(self.COST_CONTEXT, self.ex.max_context - 1)  # the graphs hold max_context + k cached tokens
+        for b in ragged.sizes:
+            for rows in ragged.budgets[b]:
+                policy.costs[b, rows] = ragged.time_replay(b, rows, context)
         self._common_costs()
         if log:
-            for b in policy.sizes:
-                log(f"  verify cost, batch {b}: " + ", ".join(f"{d}: {policy.costs[b, b * (d + 1)]:.1f}" for d in policy.candidates) + " ms")
+            for b in ragged.sizes:
+                log(f"  verify cost, batch {b}: " + ", ".join(f"{r} rows {policy.costs[b, r]:.1f}" for r in ragged.budgets[b]) + " ms")
 
     def _common_costs(self) -> None:
         """Tensor-parallel ranks decide alike only from the same numbers: every rank keeps the slowest rank's costs."""
@@ -317,7 +304,7 @@ class SpecDecoder:
         ex = self.ex
         policy = getattr(self, 'depth_policy', None)
         k = policy.choose(reqs) if policy is not None else self.k
-        packed = isinstance(policy, RowBudget) and policy.packed  # packed graphs hold every depth up to k
+        packed = isinstance(policy, RowBudget)  # packed graphs hold every depth up to k
         if not (1 <= k <= self.k if packed else k in getattr(self, 'verify_depths', (self.k,))):
             raise ValueError('uncaptured verification depth')
         b_sz = len(reqs)
@@ -349,9 +336,6 @@ class SpecDecoder:
             raise ValueError("proposer must return int64 [batch, k] on the target device")
         if getattr(self, "ragged_graphs", None) is not None and ex.use_graphs:
             return self._prepare_ragged(reqs, proposal, y, k, toks_t, poss_t, slots_t, new_pages, sampled, t0, timing)
-        if isinstance(policy, RowBudget) and not sampled and not any(r.grammar is not None for r in reqs):
-            k = policy.allot(reqs, proposal.acceptance, k)[0][0]  # padded graphs: one depth from the drafts' scores
-            s_len = k + 1
         y = y[:, :k]
         proposal = Proposal(y, proposal.probabilities[:, :k] if proposal.probabilities is not None else None,
                             proposal.support[:, :k] if proposal.support is not None else None,

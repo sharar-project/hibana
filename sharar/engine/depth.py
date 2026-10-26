@@ -134,11 +134,6 @@ class AcceptanceDepth:
         return tuple(sorted(set(range(1, small + 1)) | {d for d in caps.values() if d}))
 
 
-# The depths a padded `RowBudget` captures verify graphs for (up to the proposer's k): every depth to 8, then a few
-# wider. Packed graphs hold every depth to k.
-BUDGET_DEPTHS = (1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15)
-
-
 def ragged_budgets(sizes, steps: int) -> dict[int, tuple[int, ...]]:
     """The row totals packed verify graphs are captured for, per batch bucket: multiples of the bucket from one row a
     sequence (plain decode) to `steps`, and 128 (the 27B's 3-bit copies' limit) where it falls between."""
@@ -164,10 +159,9 @@ class RowBudget:
     - Rule: verify the seats that maximize sum(S) - rate * cost(rows), rate the bucket's measured tokens per ms (each
       round's tokens / cost until one is measured).
 
-    Two executions of the same rule. Packed graphs (`packed_rows`, spec_graphs.RaggedVerifyGraphs; a target without
-    side inputs that accepts on the host, the 27B) fill seats per request in order of S, at the captured row total
-    that maximizes the rule. Padded graphs (one per bucket and depth; Flash-Next) give every request the depth that
-    maximizes it. One scored round in `EXPLORE` verifies every draft, so deep positions keep being tested.
+    The round verifies packed (`packed_rows`, spec_graphs.RaggedVerifyGraphs): seats go to each request in order of S,
+    at the captured row total that maximizes the rule, so a confident request verifies deep and an unsure one shallow.
+    One scored round in `EXPLORE` verifies every draft, so deep positions keep being tested.
 
     Sampled and constrained batches verify one depth chosen before drafting (`choose`) from the drafts' survival per
     position over past rounds (accepted / tested; an untested position is not a rejection; greedy and sampled kept
@@ -177,17 +171,16 @@ class RowBudget:
     depths = None
     EXPLORE = 16
 
-    def __init__(self, cap: int, sizes, *, candidates=BUDGET_DEPTHS, packed_rows: dict | None = None,
-                 caps: dict[int, int] | None = None, keep: float = 0.999, prior: float = 0.8, prior_weight: float = 4.0):
+    verify_depths = ()  # packed graphs hold every depth
+
+    def __init__(self, cap: int, sizes, *, packed_rows: dict[int, tuple[int, ...]], caps: dict[int, int] | None = None,
+                 keep: float = 0.999, prior: float = 0.8, prior_weight: float = 4.0):
         self.depth = cap
         self.steps = cap + 1
         self.sizes = tuple(sizes)
-        # a ceiling per batch bucket (SHARAR_SPEC_DEPTHS): Flash-Next keeps at least 3 of its budgeted experts a verified
-        # token (#234; verifying past it cost GSM8K-300 3.3 points at four requests)
-        self.caps = {b: max(1, min(cap, (caps or {}).get(b, cap))) for b in self.sizes}
-        self.budgets = packed_rows  # bucket -> captured row totals, with packed graphs
-        self.packed = packed_rows is not None
-        self.candidates = tuple(range(1, cap + 1)) if self.packed else tuple(sorted({d for d in candidates if 1 <= d <= cap} | {cap}))
+        self.caps = {b: max(1, min(cap, (caps or {}).get(b, cap))) for b in self.sizes}  # a ceiling per bucket (SHARAR_SPEC_DEPTHS)
+        self.budgets = packed_rows  # bucket -> captured row totals
+        self.candidates = tuple(range(1, cap + 1))
         self.keep = keep
         self.costs: dict[tuple[int, int], float] = {}  # (bucket, rows) -> ms of the verify graph
         self.overhead: dict[tuple[int, bool], float] = {}  # (bucket, sampled) -> ms a round takes beyond its verify graph
@@ -195,22 +188,16 @@ class RowBudget:
         self.rate: dict[tuple[int, bool], float] = {}  # (bucket, sampled) -> achieved tokens per ms
         self.survival = {s: ([prior * prior_weight] * cap, [prior_weight] * cap) for s in (False, True)}
         self.shift = [0.0] * cap
-        self.chosen: Counter = Counter()  # (bucket, depth) -> rounds verified at that depth (padded and one-depth rounds)
-        self.chosen_rows: Counter = Counter()  # (bucket, rows) -> packed rounds that verified that many rows
+        self.chosen: Counter = Counter()  # (bucket, depth) -> one-depth rounds (sampled, constrained) at that depth
+        self.chosen_rows: Counter = Counter()  # (bucket, rows) -> scored rounds that verified that many rows
         self._scored = 0
         self._round = None  # the last scored round's {id(request): its positions' probabilities}
-
-    @property
-    def verify_depths(self) -> tuple[int, ...]:
-        return () if self.packed else self.candidates  # packed graphs hold every depth
 
     def sizes_for(self, depth: int, sizes: tuple[int, ...]) -> tuple[int, ...]:
         return sizes
 
     def rows(self, bucket: int, b: int, depth: int) -> int:
         """The rows a round of b requests at `depth` verifies in a graph of `bucket`."""
-        if not self.packed:
-            return bucket * (depth + 1)
         needed = b * (depth + 1) + bucket - b  # the bucket's padded sequences take a row each
         return next(r for r in self.budgets[bucket] if r >= needed)
 
@@ -279,16 +266,6 @@ class RowBudget:
                 run *= p
                 out.append(run)
             survival.append(out)
-        if not self.packed:  # padded graphs: the one depth with the best rule over every request's seats
-            seats = [0.0] * (depth + 1)
-            for out in survival:
-                for j, g in enumerate(out):
-                    seats[j + 1] += g
-            for j in range(1, depth + 1):
-                seats[j] += seats[j - 1]
-            best = max((d for d in self.candidates if d <= depth), key=lambda d: value(b + seats[d], self.rows(bucket, b, d)))
-            self.chosen[bucket, best] += 1
-            return [best] * b, self.rows(bucket, b, best)
         gains = sorted(((g, -j, i) for i, out in enumerate(survival) for j, g in enumerate(out)), reverse=True)
         prefix = [0.0]  # within a request values never increase: ties keep positions in order
         for g, _, _ in gains:
