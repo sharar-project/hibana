@@ -163,16 +163,16 @@ def test_packed_row_budget_gives_rows_to_the_likeliest_drafts():
 
 
 def test_row_budget_explores_and_learns_the_tested_positions():
-    for policy in (_packed(),):
-        reqs = _requests(4)
-        shy = torch.full((4, 15), 0.5)
-        for round_ in range(1, 2 * policy.EXPLORE + 1):
-            limits, rows = policy.allot(reqs, shy, 15)
-            if round_ % policy.EXPLORE == 0:
-                assert limits == [15] * 4  # every draft verified now and then
-            for r, limit in zip(reqs, limits):
-                policy.observe(r, limit, min(limit, 9))  # the target takes nine drafts in a row, more than 0.5 each says
-        assert min(policy.shift[:3]) > 0.1
+    policy = _packed()
+    reqs = _requests(4)
+    shy = torch.full((4, 15), 0.5)
+    for round_ in range(1, 2 * policy.EXPLORE + 1):
+        limits, rows = policy.allot(reqs, shy, 15)
+        if round_ % policy.EXPLORE == 0:
+            assert limits == [15] * 4  # every draft verified now and then
+        for r, limit in zip(reqs, limits):
+            policy.observe(r, limit, min(limit, 9))  # the target takes nine drafts in a row, more than 0.5 each says
+    assert min(policy.shift[:3]) > 0.1
 
 
 def test_row_budget_counts_only_the_positions_a_round_tested():
@@ -188,13 +188,14 @@ def test_row_budget_counts_only_the_positions_a_round_tested():
 
 
 def test_row_budget_keeps_sampled_batches_at_one_depth_from_past_rounds():
-    for policy in (_packed(),):
-        for _ in range(2000):
-            policy.observe(_requests(1, greedy=False)[0], 15, 15 if random.random() < 0.3 else 2)
-        sampled = _requests(3, greedy=False)
-        depth = policy.choose(sampled)
-        limits, rows = policy.allot(sampled, None, depth)
-        assert 1 <= depth <= 15 and limits == [depth] * 3 and rows >= 3 * (depth + 1) + 1  # three requests in bucket 4
+    policy = _packed()
+    for _ in range(2000):
+        policy.observe(_requests(1, greedy=False)[0], 15, 15 if random.random() < 0.3 else 2)
+    sampled = _requests(3, greedy=False)
+    depth = policy.choose(sampled)
+    limits, rows = policy.allot(sampled, None, depth)
+    assert 1 <= depth <= 15 and limits == [depth] * 3 and rows >= 3 * (depth + 1) + 1  # three requests in bucket 4
+    assert policy.choose(sampled) == depth and sum(policy.chosen.values()) == 1  # the executor asks too: counted once
 
 
 def test_row_budget_keeps_sampled_estimates_apart():

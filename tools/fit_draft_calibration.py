@@ -9,7 +9,7 @@ acceptance rule, on chat prompts and the benchmark workloads. Every position a r
 rejection) is one sample: its features and whether it was accepted. Prompts alternate between the fit and the held-out
 set; the AUC is reported on the held-out prompts.
 
-    SHARAR_TARGET=flashnext SHARAR_SPEC=9 python3 tools/fit_draft_calibration.py --out fit.json
+    SHARAR_SPEC=15 python3 tools/fit_draft_calibration.py --out fit.json  # the 27B's pinned DFlash2
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sharar import benchmark_workloads, target as targets  # noqa: E402
 from sharar.cache.spec_budget import SpecConfig  # noqa: E402
-from sharar.engine.config import current  # noqa: E402
+from sharar.engine.config import current, install  # noqa: E402
 from sharar.engine.depth import FixedDepth  # noqa: E402
 from sharar.engine.executor import Executor  # noqa: E402
 from sharar.engine.prompts import ChatTemplate  # noqa: E402
@@ -97,7 +97,7 @@ def main() -> int:
     ap.add_argument("--tokens", type=int, default=512, help="output tokens per prompt")
     ap.add_argument("--workload-tokens", type=int, default=4000, help="prompt length of the benchmark workloads")
     args = ap.parse_args()
-    cfg = current()
+    cfg = install(current().replace(spec_policy="fixed"))  # every round at the full depth, recorded by `Recorder`
     target = targets.get(cfg.target)
     snap = target.snapshot_dir()
     tok, template = SnapshotTokenizer(snap), ChatTemplate(snap)

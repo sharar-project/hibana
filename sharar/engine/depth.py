@@ -163,10 +163,10 @@ class RowBudget:
     at the captured row total that maximizes the rule, so a confident request verifies deep and an unsure one shallow.
     One scored round in `EXPLORE` verifies every draft, so deep positions keep being tested.
 
-    Sampled and constrained batches verify one depth chosen before drafting (`choose`) from the drafts' survival per
-    position over past rounds (accepted / tested; an untested position is not a rejection; greedy and sampled kept
-    apart), so rejection sampling stays exact. A depth chosen from scores reads only the drafts before each position.
-    Until the costs are measured every round verifies the cap."""
+    Sampled batches verify one depth chosen before drafting (`choose`) from the drafts' survival per position over past
+    rounds (accepted / tested; an untested position is not a rejection; greedy and sampled kept apart), so rejection
+    sampling stays exact; greedy batches with a constrained request verify every request at the cap. A depth chosen
+    from scores reads only the drafts before each position. Until the costs are measured every round verifies the cap."""
 
     depths = None
     EXPLORE = 16
@@ -188,7 +188,7 @@ class RowBudget:
         self.rate: dict[tuple[int, bool], float] = {}  # (bucket, sampled) -> achieved tokens per ms
         self.survival = {s: ([prior * prior_weight] * cap, [prior_weight] * cap) for s in (False, True)}
         self.shift = [0.0] * cap
-        self.chosen: Counter = Counter()  # (bucket, depth) -> one-depth rounds (sampled, constrained) at that depth
+        self.chosen: Counter = Counter()  # (bucket, depth) -> one-depth rounds (sampled or constrained) at that depth
         self.chosen_rows: Counter = Counter()  # (bucket, rows) -> scored rounds that verified that many rows
         self._scored = 0
         self._round = None  # the last scored round's {id(request): its positions' probabilities}
@@ -230,17 +230,16 @@ class RowBudget:
 
     def choose(self, requests) -> int:
         """Before drafting: the depth to draft. A greedy batch drafts the whole block, scored and allotted after (one
-        forward costs about the same at any depth); a sampled one verifies one depth from past rounds."""
+        forward costs about the same at any depth); a sampled one verifies one depth from past rounds. Idempotent: the
+        executor asks too (a depth of 0 would decode plainly; this policy never returns one)."""
         self._round = None
         b = len(requests)
         bucket = graph_set.pick(self.sizes, b)
         cap = self.caps[bucket]
         if not self.costs or all(r.params.greedy for r in requests):
             return cap
-        depth = max((d for d in self.candidates if d <= cap), key=lambda d: b * self.expected_tokens(d, True)
-                    / self.cost(bucket, self.rows(bucket, b, d), True))
-        self.chosen[bucket, depth] += 1
-        return depth
+        return max((d for d in self.candidates if d <= cap), key=lambda d: b * self.expected_tokens(d, True)
+                   / self.cost(bucket, self.rows(bucket, b, d), True))
 
     def allot(self, requests, acceptance, depth: int) -> tuple[list[int], int]:
         """After drafting `depth`: each request's limit and the rows the round verifies (acceptance None: every request
@@ -249,6 +248,8 @@ class RowBudget:
         bucket = graph_set.pick(self.sizes, b)
         depth = min(depth, self.caps[bucket])
         if acceptance is None or not self.costs:
+            if acceptance is None:
+                self.chosen[bucket, depth] += 1
             return [depth] * b, self.rows(bucket, b, depth)
         shift = torch.tensor(self.shift[:depth], device=acceptance.device)
         q = torch.sigmoid(torch.logit(acceptance[:, :depth].float().clamp(1e-6, 1 - 1e-6)) + shift)

@@ -117,18 +117,6 @@ class VerifyGraphs:
             if log:
                 log(f"  captured {'dense and selecting ' if 'selecting' in self.variants else ''}verify graph for batch {b}")
 
-    @torch.inference_mode()
-    def time_replay(self, b: int, context: int, rounds: int = 7) -> float:
-        """Median ms of the dense verify graph for bucket b, each row attending `context` cached tokens (page 0).
-        The rows are random tokens: a mixture of experts routes them across its experts as served traffic does,
-        where identical rows would all read the same few."""
-        st = self._st[b]
-        vocab = self.ex.target.vocab_size
-        st["tokens"].copy_(torch.randint(0, vocab, st["tokens"].shape, device=self.device,
-                                         generator=torch.Generator(device=self.device).manual_seed(b)))
-        self._plan(st, [torch.zeros(context + self.s_len, dtype=torch.int32, device=self.device) for _ in range(b)])
-        return graph_set.time_replay(self._graphs[b, "dense"], rounds)
-
     @torch.inference_mode()  # the dense capture's outputs are inference tensors
     def _sparse_body(self, st: dict) -> None:
         out = self.ex.model.forward(st["tokens"], st["ctx_sparse"])

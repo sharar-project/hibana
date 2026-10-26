@@ -82,17 +82,25 @@ class SpecDecoder:
             self.verify_depths = self.depth_policy.verify_depths
         if current().spec_policy not in ("fixed", "budget"):
             raise ValueError("SHARAR_SPEC_POLICY must be fixed or budget")
-        if current().spec_policy == "budget" and proposer.requirements.capabilities.scored_drafts:
+        if current().spec_policy == "budget":
             # Adaptive verification (engine/depth.RowBudget): the drafts' scores decide what a round verifies, a depth
             # per request in packed graphs, accepted on the host. The block is drafted whole: one forward costs about
-            # the same at any depth, and its draft graphs stay one per bucket. A model with side inputs (Flash-Next's
-            # QSA and PLE rows) has no packed verification: under its expert budget verify rows cost little, so
-            # verifying fewer saved nothing there (#273).
+            # the same at any depth, and its draft graphs stay one per bucket. Packed verification needs Gated DeltaNet
+            # recurrent layers and no side inputs: Flash-Next's QSA and PLE rows have none (under its expert budget
+            # verify rows cost little, so verifying fewer saved nothing there, #273), nor has Nemotron's Mamba-2.
             from sharar.engine.depth import ragged_budgets
-            if getattr(executor, "extras", None) is not None:
-                raise ValueError(f"SHARAR_SPEC_POLICY=budget verifies packed rows, which {executor.target.name} does not support: use fixed")
+            target = executor.target
+            if not proposer.requirements.capabilities.scored_drafts:
+                raise ValueError("SHARAR_SPEC_POLICY=budget needs a drafter that scores its drafts (DFlash2): use fixed")
+            if current().spec_step_cost:
+                raise ValueError("SHARAR_SPEC_STEP_COST (adaptive depth) does not combine with SHARAR_SPEC_POLICY=budget")
+            if getattr(executor, "extras", None) is not None or getattr(target, "recurrence", "gdn") != "gdn":
+                raise ValueError(f"SHARAR_SPEC_POLICY=budget verifies packed rows, which {target.name} does not support: use fixed")
             sizes = capture_sizes(executor.max_batch)
             caps = policy.depths if policy is not None else None  # a depth table caps each bucket's depth
+            if caps and 0 in caps.values():
+                raise ValueError("SHARAR_SPEC_POLICY=budget verifies at least one draft a request: a depth table of "
+                                 "plain decode (0) needs SHARAR_SPEC_POLICY=fixed")
             self.depth_policy = RowBudget(self.k, sizes, packed_rows=ragged_budgets(sizes, self.steps), caps=caps)
             proposer.score_drafts = True
             self.short_drafts = False  # else the proposer's capability (`drafts_short`)

@@ -265,18 +265,20 @@ def test_the_27b_fp8_draft_applies_when_its_draft_runs(env):
 
 @pytest.mark.parametrize("profile", launch.PROFILE_NAMES)
 def test_flashnext_serves_dflash2_on_request(env, profile):
-    # FP8 as the 27B's (with the 3-bit copies where the profile decodes 3-bit); outside `exact` its drafts' scores decide
-    # what each round verifies up to the cap (adaptive verification), no depth table; MTP stays the default with its own
+    # FP8 as the 27B's (with the 3-bit copies where the profile decodes 3-bit), at depths that keep MTP's guaranteed
+    # experts a verified token in `fast` and MTP's own in `throughput`; MTP stays the default with its own depths
     s = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": "dflash2"})
     assert s.parallel_draft and s.draft_dir is None
     assert (s.get("SHARAR_DRAFT_PRECISION"), s.get("SHARAR_SPEC_STEP_COST")) == ("fp8", "")
-    # the depth tables cap each bucket (the expert budget's floor of 3 a verified token in `fast`, MTP's in `throughput`)
-    assert s.get("SHARAR_SPEC_DEPTHS") == {"exact": "", "fast": "2:7,4:7", "throughput": "16:3,32:3,64:3,128:3"}[profile]
     assert s.get("SHARAR_ACCEPT_DEFAULT") == {"exact": "off", "fast": "2:1.0", "throughput": "2:1.0"}[profile]  # MTP keeps 3:2.0
-    assert s.get("SHARAR_SPEC") == {"exact": "7", "fast": "9", "throughput": "4"}[profile]
-    assert s.get("SHARAR_SPEC_POLICY") == ""  # adaptive verification on request (padded graphs)
+    depths = {"exact": ("7", ""), "fast": ("9", "2:7,4:7"), "throughput": ("4", "16:3,32:3,64:3,128:3")}
+    assert (s.get("SHARAR_SPEC"), s.get("SHARAR_SPEC_DEPTHS")) == depths[profile]
+    capped = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": "dflash2", "SHARAR_SPEC": "5"})
+    assert capped.get("SHARAR_SPEC_DEPTHS") == {"exact": "", "fast": "2:5,4:5", "throughput": "16:3,32:3,64:3,128:3"}[profile]
+    if profile == "throughput":  # MTP's depths, also with NVFP4 experts (up to 64 requests)
+        assert resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": "dflash2", "SHARAR_FLASHNEXT_EXPERTS": "nvfp4"}).get(
+            "SHARAR_SPEC_DEPTHS") == "16:3"
     mtp = resolve(env, "flashnext", profile)
-    assert mtp.get("SHARAR_SPEC_POLICY") == ""
     assert (mtp.proposer, mtp.get("SHARAR_DRAFT_PRECISION")) == ("mtp", "bf16") and not mtp.parallel_draft
     assert mtp.get("SHARAR_ACCEPT_DEFAULT") == ("off" if profile == "exact" else "3:2.0")
     assert resolve({**env, "SHARAR_DRAFT_PRECISION": ""}, "flashnext", profile).get("SHARAR_DRAFT_PRECISION") == "bf16"  # empty is unset
@@ -361,3 +363,12 @@ def test_adaptive_verification_for_dflash2_outside_exact(env):
         resolve(env, "flashnext", "fast", overrides={"SHARAR_PROPOSER": "dflash2", "SHARAR_SPEC_POLICY": "budget"})
     with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY"):
         resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "auto"})
+    # only the 27B's DFlash2 with drafts: the profile's policy steps aside for plain decode, an explicit one is refused
+    assert resolve(env, "27b", "throughput", overrides={"SHARAR_SPEC": "0"}).get("SHARAR_SPEC_POLICY") == ""
+    for overrides in ({"SHARAR_SPEC": "0"}, {"SHARAR_PROPOSER": "mtp", "SHARAR_DRAFT_PRECISION": "bf16"},
+                      {"SHARAR_SPEC_DEPTHS": "16:0"}, {"SHARAR_SPEC_STEP_COST": "0.1"}):
+        with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY=budget"):
+            resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "budget", **overrides})
+    with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY=budget"):
+        resolve(env, "nemotron", "fast", overrides={"SHARAR_SPEC_POLICY": "budget"})
+    assert resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_DEPTHS": "16:4"}).get("SHARAR_SPEC_POLICY") == "budget"
