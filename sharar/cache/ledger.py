@@ -48,6 +48,11 @@ ACTIVATION_BYTES = 1 * GIB
 # cache; on two Sparks each rank reads its own and every rank takes the smallest plan): left unplanned so those checks
 # do not fail on a few MB of drift (Flash-Next --throughput --tp 2: "needs 55.1 GiB, have 55.1 GiB" on rank 1)
 PLAN_SLACK_BYTES = GIB // 4
+# What a byte of the pools takes from MemAvailable: on a Spark's unified memory a CUDA allocation lowers MemAvailable by
+# more than its size (Flash-Next, one Spark, no cached blocks to reuse: the KV pool's 19.78 GiB took 20.29, the state
+# pool's 10.87 took 11.06, the workspaces' 0.53 took 0.92; 3.5% over the three). Planned at face value, the pools left
+# the drafter 1.1 GiB short of the headroom the plan had kept for it ("needs 12.6 GiB, have 11.7").
+POOL_COST = 1.04
 
 
 def graph_bytes(max_batch: int) -> int:
@@ -148,7 +153,7 @@ class Ledger:
         kv_bytes_per_token = self.target.kv_bytes_per_token
         state_bytes_per_slot = state_bytes_per_slot or self.target.state_bytes_per_slot
         available = mem_available_bytes()
-        budget = available - self.floor_bytes - future_bytes - PLAN_SLACK_BYTES
+        budget = int((available - self.floor_bytes - future_bytes - PLAN_SLACK_BYTES) / POOL_COST)  # in pool bytes
         page_bytes = kv_bytes_per_token + extra_page_bytes
         shared = SHARED_CONTEXT * min(max_running, SHARED_REQUESTS) // max_running
         must_tokens = max(context_len, max_running * min(context_len, shared))
