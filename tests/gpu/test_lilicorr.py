@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from sharar.model.lilicorr import LiLiCorrDraftModel
 from sharar.proposers.factory import draft_snapshot
 from sharar.target import NEMOTRON_BOLT
+from sharar.weights.modelopt import unswizzle_block_scales
 
 
 @pytest.fixture(scope='module')
@@ -35,7 +36,9 @@ def reference_linear(model):
             w = model.packed[name]
             if name not in unpacked:
                 codes = torch.stack([w.weight & 15, w.weight >> 4], -1).flatten(-2).long()
-                unpacked[name] = (values[codes] * w.scales.float().repeat_interleave(16, -1)).bfloat16()
+                # PackedLinear holds the block scales in the CUTLASS 128x4 layout; back to checkpoint order
+                scales = unswizzle_block_scales(w.scales.reshape(-1), w.out_features, w.in_features // 16)
+                unpacked[name] = (values[codes] * scales.float().repeat_interleave(16, -1)).bfloat16()
             out = (torch.mm(x.reshape(-1, x.shape[-1]), unpacked[name].T, out_dtype=torch.float32)
                    * w.gain).bfloat16().view(*x.shape[:-1], -1)
         else:
