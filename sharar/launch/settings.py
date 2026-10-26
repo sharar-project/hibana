@@ -154,10 +154,13 @@ def nemotron_defaults(profile: str) -> dict[str, str]:
          "SHARAR_DEVICE_ACCEPT": "0", "SHARAR_MAX_BATCH": "4", "SHARAR_SPEC": "3", "SHARAR_SSD": "1"}
     if profile == "exact":
         return p
-    # relaxed top-3 within 2.0 logits for greedy and sampled requests, device-resident acceptance, depth 5 for one
-    # request and 4 for two to four, and both calibrated 3-bit copies (h2h at one request: 54.6 -> 81.0 tok/s)
+    # relaxed top-3 within 2.0 logits for greedy and sampled requests, device-resident acceptance, depth 4 for two to
+    # four requests, and both calibrated 3-bit copies (h2h at one request, depth 5: 54.6 -> 81.0 tok/s)
     p.update(SHARAR_ACCEPT_DEFAULT="3:2.0", SHARAR_ACCEPT_DEFAULT_SAMPLED="1", SHARAR_DEVICE_ACCEPT="1",
-             SHARAR_SPEC="5", SHARAR_SPEC_DEPTHS="2:4,4:4", SHARAR_W3_DECODE="1")
+             SHARAR_SPEC_DEPTHS="2:4,4:4", SHARAR_W3_DECODE="1")
+    # adaptive depth for one request, up to 8 (engine/depth.AcceptanceDepth, docs/nemotron.md#adaptive-depth): a drafted
+    # token costs about 2.2 ms against a depth-1 round's 39-41 ms, so 0.065; h2h against depth 5 greedy +3%, t=0.7 +6%
+    p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.065")
     # the FP16 Mamba state with stochastic rounding (half the state traffic of decode, verify and replay; its rounding
     # is keyed on token position and layer, so a request's arithmetic does not depend on the batch)
     p["SHARAR_SSM_STATE"] = "fp16_sr"
@@ -165,8 +168,8 @@ def nemotron_defaults(profile: str) -> dict[str, str]:
     # and 128 in all), gated together with the FP16 state against exact (GSM8K-300 97.7% each at one to four requests):
     # 102.5 tok/s at one request; at 8 / 16 streams 277 / 353 tok/s against 190 / 239 without
     p.update(SHARAR_MOE_KEEP="12", SHARAR_MOE_BUDGET="48:128")
-    if profile == "throughput":  # up to 16 requests, depth 3 past four
-        p.update(SHARAR_MAX_BATCH="16", SHARAR_SPEC_DEPTHS="2:4,4:4,16:3")
+    if profile == "throughput":  # up to 16 requests, depth 5 to eight (a bucket not named verifies SHARAR_SPEC), 3 past
+        p.update(SHARAR_MAX_BATCH="16", SHARAR_SPEC_DEPTHS="2:4,4:4,8:5,16:3")
     return p
 
 
