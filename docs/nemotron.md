@@ -47,7 +47,7 @@ The profiles (`nemotron_defaults` in `sharar/launch/settings.py`):
 | Profile | Settings |
 |---|---|
 | `exact` | MTP depth 3, exact acceptance, FP32 Mamba state, every token's 22 experts |
-| `fast` | both 3-bit copies, relaxed acceptance (top 3 within 2.0 logits, greedy and sampled), device-resident acceptance, 2-bit draft head, adaptive depth up to 8 at one request (`SHARAR_SPEC_STEP_COST=0.065`, [below](#adaptive-depth)) and 4 at two to four, FP16 Mamba state with stochastic rounding, expert sharing `SHARAR_MOE_KEEP=12` `SHARAR_MOE_BUDGET=48:128` |
+| `fast` | both 3-bit copies, relaxed acceptance (top 3 within 2.0 logits, greedy and sampled), device-resident acceptance, 2-bit draft head, adaptive depth up to 8 at one request (`SHARAR_SPEC_STEP_COST=0.065`, [below](#adaptive-depth)), up to 6 at two requests and 5 at three or four, FP16 Mamba state with stochastic rounding, expert sharing `SHARAR_MOE_KEEP=12` `SHARAR_MOE_BUDGET=48:128` |
 | `throughput` | `fast` up to 16 requests, depth 5 at five to eight and 3 past eight |
 
 Expert sharing (`moe.py`, `route_budget`): a verify call's rows share the experts they read. Each row is guaranteed
@@ -100,6 +100,20 @@ request, 512 greedy tokens per prompt; ms per round, tokens per round):
 Against depth 5 (h2h median, two repeats): greedy 102.5 -> 105.5 tok/s, t=0.7 97.6 -> 103.5; four streams and
 `throughput` at 8 and 16 within noise. GSM8K-300 one at a time 97.7% against depth 5's 98.3% (1 better, 3 worse,
 p 0.62), 7.25 tokens a round against 5.57.
+
+Two to four requests verify the deepest depth any of them wants, up to a cap per batch bucket: 6 at two requests
+and 5 at three or four. The rows of a call share its 128 experts, so a deeper round leaves each row fewer of its own,
+and acceptance falls faster with depth than at one request. Fixed depth, all requests started together, 512 greedy
+tokens each (aggregate tok/s):
+
+| depth | 4 | 5 | 6 | 7 | 8 |
+|---|---:|---:|---:|---:|---:|
+| 2 requests | 116.3 | 124.0 | 128.6 | 128.7 | 126.0 |
+| 4 requests | 168.6 | 184.4 | 173.6 | 182.5 | 180.3 |
+
+Against caps of 4 (h2h closed-loop streams, two repeats): 2 streams greedy 118.5 -> 136.3 tok/s, t=0.7 115.0 -> 128.3;
+4 streams greedy 182.5 -> 196.4, t=0.7 177.2 -> 188.9. GSM8K-300 at four concurrent requests 97.7% against 97.0%
+(5 better, 3 worse, p 0.73), 21.3 tokens a round against 18.4.
 
 ## Checkpoint conventions
 
