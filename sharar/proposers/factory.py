@@ -61,9 +61,6 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
         from sharar.proposers.parallel import ParallelProposer
         snapshot = draft_snapshot(proposer, draft_dir, model.target)
         adapter = ParallelProposer(ParallelDraftModel(snapshot, model, context.max_context, precision=draft_precision), context, k, proposer)
-        calibration = dict(model.target.draft_calibration).get(proposer)
-        if draft_dir is None and calibration is not None:  # the pinned draft's own fit; --draft checkpoints score raw
-            adapter.calibration = calibration
     else:
         raise ValueError(f"unknown proposer {proposer!r}")
     return adapter

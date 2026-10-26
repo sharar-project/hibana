@@ -31,18 +31,3 @@ def capture(pool, body: Callable[[], None], warmup: Callable[[], None] | None = 
         body()
     torch.cuda.synchronize()
     return graph
-
-
-def time_replay(graph: torch.cuda.CUDAGraph, rounds: int = 7) -> float:
-    """Median ms of a replay of `graph` (three replays warm it first): the costs engine/depth.RowBudget decides from."""
-    for _ in range(3):
-        graph.replay()
-    times = []
-    for _ in range(rounds):
-        start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-        start.record()
-        graph.replay()
-        end.record()
-        end.synchronize()
-        times.append(start.elapsed_time(end))
-    return sorted(times)[len(times) // 2]

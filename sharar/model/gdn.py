@@ -263,19 +263,18 @@ class GatedDeltaNet:
 
     def _verify_core(self, mixed_qkv, z, b, a, ctx):
         s_len = ctx.verify_steps
-        ragged = ctx.verify_rows_seq is not None  # sequences of their own lengths, packed (cu_seqlens)
+        b_sz = mixed_qkv.shape[0] // s_len
         conv_states = ctx.state_pool.conv[self.layer_id]
         ssm_states = ctx.state_pool.ssm[self.layer_id]
         conv = verify_convolve(mixed_qkv, conv_states, self.conv_weight, ctx.seq_slots,
-                               ctx.verify_conv_windows[self.layer_id], s_len,
-                               rows_seq=ctx.verify_rows_seq, rows_pos=ctx.verify_rows_pos)
-        q, k, v = self._split_heads(conv.reshape(1, mixed_qkv.shape[0], self.conv_dim))
+                               ctx.verify_conv_windows[self.layer_id], s_len)
+        q, k, v = self._split_heads(conv.reshape(1, b_sz * s_len, self.conv_dim))
         window = _window(ctx)
         if window is not None:  # records into the round's ring; `_window_out` finishes the output
             ring = ctx.verify_replay[self.layer_id]
             return window_verify(window.layout, window.layer[self.layer_id], q, k, v, a, b, self.A_log, self.dt_bias,
                                  ctx.seq_slots, s_len, ring["ring_k"], ring["ring_u"], ring["ring_g"],
-                                 norm=self._window_norm(z), cu_seqlens=ctx.cu_seqlens if ragged else None)
+                                 norm=self._window_norm(z))
         cuda = self.cuda_verify and gdn_verify.supports(k, v, ssm_states)
         recurrence = gdn_verify.verify if cuda else fused_sigmoid_gating_delta_rule_update
         core = recurrence(

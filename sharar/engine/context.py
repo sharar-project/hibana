@@ -52,10 +52,6 @@ class ForwardContext:
     # after every token in inter_ssm[layer][scratch, step]
     verify_steps: int = 0
     verify_scratch: torch.Tensor | None = None  # int32 [B]
-    # packed verify of per-sequence lengths (at most verify_steps; cu_seqlens holds the offsets): each row's
-    # sequence and position in it, int32 [rows]; None when every sequence verifies verify_steps rows
-    verify_rows_seq: torch.Tensor | None = None
-    verify_rows_pos: torch.Tensor | None = None
     # the 27B's verification over many rows a sequence: (qo_indptr, kv_indptr, kv_indices, splits), the graph's index
     # buffers (FlashInfer's plan fills them) for kernels/verify_attn_cuda.verify_attention; None: FlashInfer's
     verify_attention: tuple | None = None

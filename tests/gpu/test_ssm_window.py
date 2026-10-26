@@ -340,31 +340,3 @@ def test_per_window_error_stays_far_below_per_token_quantization(bits):
     window_error = _rel(W.reference_state(lay, views, 1), exact)
     naive_error = _rel(naive, exact)
     assert window_error < FOLD[bits] * 1.5 and window_error * 4 < naive_error, (window_error, naive_error)
-
-
-@pytest.mark.parametrize("bits", [8, 4])
-def test_ragged_verify_matches_each_sequence_alone(bits):
-    """Sequences of their own lengths, packed (cu_seqlens), give each sequence's own verify: its output rows and the
-    ring records of its tokens; the committed state is not written."""
-    lay, raw, pool = _pool(bits=bits)
-    views = pool.layer[0]
-    lengths = (1, 5, 16)
-    slots = torch.tensor([2, 5, 1], dtype=torch.int32, device="cuda")
-    W.quantize(lay, views, _state(3), slots)
-    full = [_inputs(16, seed=20 + i) for i in range(3)]
-    packed = {key: (torch.cat([f[key][:, :n] for f, n in zip(full, lengths)], 1) if key in ("q", "k", "v")
-                    else torch.cat([f[key][:n] for f, n in zip(full, lengths)]) if key in ("a", "b") else full[0][key])
-              for key in full[0]}
-    cu = torch.tensor([0, 1, 6, 22], dtype=torch.int32, device="cuda")
-    before = raw.clone()
-    rk, ru, rg = _ring(3, 16)
-    out = W.window_verify(lay, views, slots=slots, steps=16, ring_k=rk, ring_u=ru, ring_g=rg, cu_seqlens=cu, **packed)
-    assert torch.equal(raw, before)
-    for i, n in enumerate(lengths):
-        alone = {**full[i], "A_log": full[0]["A_log"], "dt_bias": full[0]["dt_bias"]}
-        ak, au, ag = _ring(1, 16)
-        want = W.window_verify(lay, views, slots=slots[i:i + 1].contiguous(), steps=16, ring_k=ak, ring_u=au, ring_g=ag, **alone)
-        start = int(cu[i])
-        assert torch.equal(out[0, start:start + n], want[0, :n]), (bits, i)
-        assert torch.equal(ru[i, :, :n], au[0, :, :n]) and torch.equal(rg[i, :, :n], ag[0, :, :n])
-        assert torch.equal(rk[i, :, :n], ak[0, :, :n])

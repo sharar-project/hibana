@@ -88,9 +88,6 @@ class Target:
     mtp_layers: int = 0
     # Pinned block drafters trained on this target's features: (proposer, repository, revision).
     draft_pins: tuple[tuple[str, str, str], ...] = ()
-    # each pinned draft's acceptance calibration (adaptive verification ranks verify seats by it): name -> the weights
-    # of sigmoid(w . [logit p, gap, j / 15, 1]) (proposers/parallel.ParallelProposer.acceptance_features)
-    draft_calibration: tuple[tuple[str, tuple[float, ...]], ...] = ()
     # A request's default stop ids (the chat template's end of turn, then end of text).
     stop_token_ids: tuple[int, ...] = (248046, 248044)  # Qwen3.8: <|im_end|>, <|endoftext|>
     # The recurrent layers' recurrence: "gdn" (Gated DeltaNet) or "mamba2"; it picks the state formats
@@ -288,7 +285,6 @@ def _qwen38() -> Target:
         max_position_embeddings=c.MAX_POSITION_EMBEDDINGS, nvfp4_group_size=c.NVFP4_GROUP_SIZE,
         weight_load_peak_bytes=c.WEIGHT_LOAD_PEAK_BYTES, w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION,
         draft_pins=tuple((name, *pin) for name, pin in c.DRAFT_PINS.items()),
-        draft_calibration=tuple(getattr(c, "DRAFT_CALIBRATION", {}).items()),
     )
 
 
@@ -318,7 +314,6 @@ def _flashnext() -> Target:
         indexer_budget=c.INDEXER_BUDGET, indexer_compress_ratio=c.INDEXER_COMPRESS_RATIO,
         indexer_n_heads=c.INDEXER_N_HEADS, indexer_head_dim=c.INDEXER_HEAD_DIM, mtp_layers=c.MTP_LAYERS,
         w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION, draft_pins=tuple((name, *pin) for name, pin in c.DRAFT_PINS.items()),
-        draft_calibration=tuple(getattr(c, "DRAFT_CALIBRATION", {}).items()),
     )
 
 

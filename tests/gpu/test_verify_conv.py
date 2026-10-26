@@ -44,26 +44,3 @@ def test_convolution_and_candidate_windows_are_bitwise_identical(batch, steps, a
     assert torch.equal(actual.view(torch.int16), expected.reshape_as(actual).view(torch.int16))
     assert torch.equal(windows, expected_windows)
     assert torch.equal(state, state_before)
-
-
-@pytest.mark.parametrize('lengths', [(1, 4, 2), (16, 1, 7, 3), (5,)])
-def test_ragged_sequences_match_each_sequence_alone(lengths):
-    """Packed sequences of their own lengths give each sequence's uniform result, bitwise."""
-    from sharar.kernels.verify_conv import verify_convolve
-    torch.manual_seed(7)
-    dim, steps = 10240, 16
-    state = torch.randn(8, dim, 3, device='cuda', dtype=torch.bfloat16)
-    weight = torch.randn(dim, 8, device='cuda', dtype=torch.bfloat16)[:, ::2]
-    slots = torch.tensor([5, 2, 6, 1][:len(lengths)], dtype=torch.int32, device='cuda')
-    x = torch.randn(sum(lengths), dim, device='cuda').bfloat16()
-    seq = torch.cat([torch.full((n,), i, dtype=torch.int32) for i, n in enumerate(lengths)]).cuda()
-    pos = torch.cat([torch.arange(n, dtype=torch.int32) for n in lengths]).cuda()
-    windows = torch.full((4, steps, dim, 3), -17., device='cuda', dtype=torch.bfloat16)
-    got = verify_convolve(x, state, weight, slots, windows, steps, rows_seq=seq, rows_pos=pos)
-    start = 0
-    for i, n in enumerate(lengths):
-        alone = torch.full((1, steps, dim, 3), -17., device='cuda', dtype=torch.bfloat16)
-        want = verify_convolve(x[start:start + n].contiguous(), state, weight, slots[i:i + 1].contiguous(), alone, n)
-        assert torch.equal(got[start:start + n].view(torch.int16), want.view(torch.int16))
-        assert torch.equal(windows[i, :n], alone[0, :n]) and bool((windows[i, n:] == -17.).all())
-        start += n

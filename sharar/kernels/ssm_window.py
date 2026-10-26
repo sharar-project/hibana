@@ -181,14 +181,14 @@ def _fit_quantize(st, zb, scb, smb, ckb, cub, K: tl.constexpr, V: tl.constexpr, 
 @triton.jit(do_not_specialize=["T"])
 def _verify_kernel(q, k, v, a, b, A_log, dt_bias, o, o_scale, gate, norm_w, out_scale,
                    z, scale, smooth, comp_k, comp_u, log_k, log_u, log_g, log_len, slots,
-                   ring_k, ring_u, ring_g, cu_seqlens,
+                   ring_k, ring_u, ring_g,
                    s_z, s_sc, s_sm, s_ck, s_cu, s_lk, s_lu, s_lg, s_ll,
                    stride_q, stride_k, stride_v, stride_a, stride_b, stride_gate, stride_o,
                    qk_scale, eps, T,
                    H: tl.constexpr, HV: tl.constexpr, K: tl.constexpr, V: tl.constexpr, BKC: tl.constexpr,
                    BT: tl.constexpr, P: tl.constexpr, R: tl.constexpr, BJ: tl.constexpr, RS: tl.constexpr,
                    BITS: tl.constexpr, PREC: tl.constexpr, LOG_BT: tl.constexpr, FUSED: tl.constexpr,
-                   SIGMOID_GATE: tl.constexpr, OUT: tl.constexpr, STAGES: tl.constexpr, RAGGED: tl.constexpr):
+                   SIGMOID_GATE: tl.constexpr, OUT: tl.constexpr, STAGES: tl.constexpr):
     """One value head of one sequence, all V columns. The integer residual streams through shared memory in K chunks
     (software-pipelined, so its loads overlap the products) into Q S and K S accumulators that hold whole rows; the
     kernel forms the rest of the block after the stream.
@@ -217,14 +217,9 @@ def _verify_kernel(q, k, v, a, b, A_log, dt_bias, o, o_scale, gate, norm_w, out_
 
     # The verified tokens: gates, L2-normalized queries and keys. Round the keys to FP16 here, as the ring stores
     # them, so each record's correction uses exactly the key the commit applies.
-    if RAGGED:  # sequences of their own lengths (at most T), packed: cu_seqlens [N + 1]
-        bos = tl.load(cu_seqlens + i_n)
-        length = tl.load(cu_seqlens + i_n + 1) - bos
-    else:
-        bos = i_n * T
-        length = T
+    bos = i_n * T
     o_t = tl.arange(0, BT)
-    mt = o_t < length
+    mt = o_t < T
     tok = bos + o_t
     x = tl.load(a + tok * stride_a + hv, mask=mt, other=0.).to(tl.float32) + tl.load(dt_bias + hv).to(tl.float32)
     g = -tl.exp(tl.load(A_log + hv).to(tl.float32)) * tl.where(x <= 20., tl.log(1. + tl.exp(x)), x)
@@ -420,7 +415,7 @@ def _qmax(layout: WindowLayout) -> float:
 
 
 def window_verify(layout: WindowLayout, views: dict[str, torch.Tensor], q, k, v, a, b, A_log, dt_bias, slots,
-                  steps: int, ring_k, ring_u, ring_g, norm=None, cu_seqlens=None) -> torch.Tensor:
+                  steps: int, ring_k, ring_u, ring_g, norm=None) -> torch.Tensor:
     """One layer's verify (or decode, steps=1) over N sequences of `steps` tokens each, laid out token-major.
 
     views: this layer's region views ([slots, ...] each). q/k [1, N*steps, H, K] and v [1, N*steps, HV, V] may be
@@ -429,15 +424,11 @@ def window_verify(layout: WindowLayout, views: dict[str, torch.Tensor], q, k, v,
     HV*V], weight [V], eps, quantization, gate activation "swish" or "sigmoid") the out projection's input
     [N*steps, HV*V]: the gated RMS norm of `verify_gated_norm` (swish) or `rms_norm_gated` (sigmoid) applied to that
     output, then with an FP8 input scale `quant_fp8` (FP8), with "groups" `w3.quant_groups` (E4M3 and its FP32 scales
-    [N*steps, HV*V/32], a pair, the 3-bit GEMM's input), or with None nothing (BF16). With `cu_seqlens` (int32
-    [N + 1], a graph's static offsets) the sequences have their own lengths, at most `steps`, packed in order."""
+    [N*steps, HV*V/32], a pair, the 3-bit GEMM's input), or with None nothing (BF16)."""
     tokens, h, kd = q.shape[1], q.shape[2], q.shape[3]
     hv, vd = v.shape[2], v.shape[3]
     n = slots.numel()
-    ragged = cu_seqlens is not None
-    if ragged and (cu_seqlens.shape != (n + 1,) or cu_seqlens.dtype != torch.int32):
-        raise ValueError("window verify: cu_seqlens must be int32 [N + 1]")
-    if (not ragged and tokens != n * steps) or (h, hv, kd, vd) != (layout.key_heads, layout.value_heads, layout.k, layout.v):
+    if tokens != n * steps or (h, hv, kd, vd) != (layout.key_heads, layout.value_heads, layout.k, layout.v):
         raise ValueError("window verify: inputs do not match the slots, steps or layout")
     if steps > ring_u.shape[2] or n > ring_u.shape[0]:
         raise ValueError("window verify: the ring is smaller than the verified block")
@@ -463,12 +454,12 @@ def window_verify(layout: WindowLayout, views: dict[str, torch.Tensor], q, k, v,
         o_scale = o
     _verify_kernel[(hv, n)](
         q, k, v, a, b, A_log, dt_bias, o, o_scale, gate, norm_w, out_scale, *_parts(views), slots, ring_k, ring_u, ring_g,
-        cu_seqlens if ragged else slots, *_strides(views, 0), q.stride(1), k.stride(1), v.stride(1), a.stride(-2), b.stride(-2),
+        *_strides(views, 0), q.stride(1), k.stride(1), v.stride(1), a.stride(-2), b.stride(-2),
         gate.stride(0) if fused else 0, hv * vd, kd ** -0.5, eps, steps,
         H=h, HV=hv, K=kd, V=vd, BKC=VERIFY_BKC, BT=bt, P=layout.window, LOG_BT=bt.bit_length() - 1, R=layout.rank,
         BJ=_tile(layout.window + layout.rank), RS=ring_u.shape[2], BITS=layout.bits, PREC=PREC, FUSED=fused,
         SIGMOID_GATE=activation == "sigmoid", OUT=out_kind,
-        STAGES=VERIFY_STAGES, num_warps=VERIFY_WARPS, num_stages=VERIFY_STAGES, RAGGED=ragged,
+        STAGES=VERIFY_STAGES, num_warps=VERIFY_WARPS, num_stages=VERIFY_STAGES,
     )
     return (o, o_scale) if out_kind == OUT_GROUPS else o
 
