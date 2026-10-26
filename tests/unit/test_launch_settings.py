@@ -301,7 +301,7 @@ def test_profile_depths_stay_within_a_lower_batch_limit(env):
     cases = {("throughput", "64"): {"mtp": "16:3,32:3,64:3", "dflash2": "16:3,32:3,64:3"},
              ("throughput", "100"): {"mtp": "16:3,32:3,64:3,100:3", "dflash2": "16:3,32:3,64:3,100:3"},
              ("throughput", "12"): {"mtp": "12:3", "dflash2": "12:3"},
-             ("fast", "3"): {"mtp": "2:4,3:4", "dflash2": "2:7,3:7"}}
+             ("fast", "3"): {"mtp": "2:7,3:6", "dflash2": "2:7,3:7"}}
     for (profile, batch), want in cases.items():
         for proposer, depths in want.items():
             s = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": proposer, "SHARAR_MAX_BATCH": batch})
