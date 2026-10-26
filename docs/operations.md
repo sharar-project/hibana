@@ -93,8 +93,9 @@ DFlash2 drafts its whole block in one forward, then verifies only the drafts wor
 - **Sampled batches** verify one depth for every request, chosen before drafting from the drafts' survival per
   position over past rounds, so rejection sampling stays exact; a greedy batch with a constrained request (a grammar)
   verifies every request at the cap.
-- **Where it is on.** The 27B's `fast` and `throughput`, against its fixed 15: one Spark +1 to +16% (8 / 16
-  requests +9 / +14% greedy), two Sparks +1 to +18%, the quick suite equal (pooled -0.4 pp, p 0.74). Not Flash-Next
+- **Where it is on.** The 27B's `fast` and `throughput`, against its fixed 15: one Spark x0.98 to x1.28 (1 and 4
+  requests within noise; 8 / 16 requests +13 / +28% greedy, +9 / +18% at T 0.7), two Sparks +1 to +18% (measured
+  before the one-pass relaxed rule), the quick suite equal (pooled -0.4 pp, p 0.74). Not Flash-Next
   (`SHARAR_SPEC_POLICY=budget` is refused there): under its expert budget a verify forward reads the same experts
   whatever its rows, so verifying fewer saves nothing, and its depth caps (the experts each verified token keeps) leave
   only moving rows between requests, measured at +1 to +5% greedy and slower under sampling (#273).

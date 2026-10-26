@@ -116,7 +116,7 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
     if profile != "exact" and target == "qwen38" and (proposer or "dflash2") == "dflash2":
         # adaptive verification (engine/depth.RowBudget): DFlash2's calibrated draft scores and the measured verify
         # costs decide what each round verifies, a depth per request in packed graphs (one Spark against fixed 15:
-        # throughput 8 / 16 requests +9 / +14% greedy, two Sparks +9 / +18%; quick suite equal). `exact` keeps the
+        # throughput 8 / 16 requests +13 / +28% greedy, two Sparks +9 / +18%; quick suite equal). `exact` keeps the
         # fixed depth so its runs repeat. Flash-Next keeps its depth tables (#273): under its expert budget verify rows
         # cost little, so verifying fewer saved nothing
         p["SHARAR_SPEC_POLICY"] = "budget"
