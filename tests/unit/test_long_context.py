@@ -30,7 +30,7 @@ def test_default_profile_plan(monkeypatch):
     # two snapshots), with 96 slots at least; pages take the rest, uncapped.
     kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
     got = plan(monkeypatch, 32768)
-    budget = 90 * GIB - LEFT
+    budget = int((90 * GIB - LEFT) / ledger_mod.POOL_COST)  # each pool byte costs POOL_COST of MemAvailable
     must = 4 * 32768 * kv
     spare = budget - must - 9 * state
     share = CACHED_SNAPSHOTS * state / (CACHED_SNAPSHOTS * state + SHARED_CONTEXT * kv)
@@ -45,7 +45,7 @@ def test_what_is_allocated_after_the_pools_comes_off_the_plan(monkeypatch):
     after = Ledger(start_available=90 * GIB).plan(max_running=4, context_len=32768, future_bytes=6 * GIB)
     pages_and_slots = lambda p: p.kv_tokens * DEFAULT_TARGET.kv_bytes_per_token + p.state_slots * DEFAULT_TARGET.state_bytes_per_slot  # noqa: E731
     assert after.after_pools_bytes == 6 * GIB
-    assert 5.9 * GIB < pages_and_slots(bare) - pages_and_slots(after) <= 6 * GIB
+    assert 5.9 * GIB / ledger_mod.POOL_COST < pages_and_slots(bare) - pages_and_slots(after) <= 6 * GIB / ledger_mod.POOL_COST
     with pytest.raises(MemoryError, match="SHARAR_HOST_FLOOR_GIB"):
         Ledger(start_available=90 * GIB).plan(max_running=4, context_len=32768, future_bytes=90 * GIB)
 
@@ -113,7 +113,7 @@ def test_a_tight_budget_gives_the_caches_all_that_is_left(monkeypatch):
     allocated after the pools counted, there is no margin to take, and the caches get all of it."""
     kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
     must = 4 * 32768 * kv + 9 * state
-    available = LEFT + must + 3 * GIB  # 3 GiB left after the guarantees
+    available = LEFT + (must + 3 * GIB) * ledger_mod.POOL_COST  # 3 GiB of pools left after the guarantees
     got = plan(monkeypatch, 32768, available_gib=available / GIB)
     assert got.state_slots == min(96, 9 + int(3 * GIB * 0.6) // state) > 9
 
@@ -123,6 +123,7 @@ def test_the_guaranteed_slots_cover_each_request_and_its_prompt_end_snapshot(mon
     requests with a snapshot each), so a start that fits works, and one that does not fails at planning."""
     kv, state = DEFAULT_TARGET.kv_bytes_per_token, DEFAULT_TARGET.state_bytes_per_slot
     must = 4 * 32768 * kv + 9 * state
-    assert plan(monkeypatch, 32768, available_gib=(LEFT + must) / GIB).state_slots == 9
+    cost = ledger_mod.POOL_COST  # MemAvailable a pool byte takes
+    assert plan(monkeypatch, 32768, available_gib=(LEFT + must * cost + 64) / GIB).state_slots == 9
     with pytest.raises(MemoryError):
-        plan(monkeypatch, 32768, available_gib=(LEFT + must - 2 * state) / GIB)
+        plan(monkeypatch, 32768, available_gib=(LEFT + (must - 2 * state) * cost) / GIB)
