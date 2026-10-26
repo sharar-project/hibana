@@ -36,8 +36,8 @@ def main():
     args = parser.parse_args()
     snap = args.snapshot or NEMOTRON_BOLT.snapshot_dir(config.current().hf_cache or Path.home() / ".cache/huggingface")
     start_thread()
-    cfg = config.current().replace(target="bolt", hf_cache=str(snap.parents[2]), w3_decode=False, moe_keep=0, moe_budget=0, moe_floors=None,
-                                   moe_tau=0, moe_extra=0, ssd=False, ssm_state="fp32", kv_format="fp8")
+    cfg = config.current().replace(target="bolt", hf_cache=str(snap.parents[2]), w3_decode=False, moe_keep=0, moe_budget=0,
+                                   ssd=False, ssm_state="fp32", kv_format="fp8")
     with config.using(cfg):
         drop_page_cache(snap)
         before = available()

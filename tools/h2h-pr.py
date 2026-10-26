@@ -167,9 +167,7 @@ def main() -> int:
     global URL
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     ap.add_argument("--target", choices=("flashnext", "27b", "qwen38", "nemotron", "bolt"), required=True)
-    ap.add_argument("--pr", default=None, help="the branch, commit or ref to measure (with --arm: the one served; default HEAD)")
-    ap.add_argument("--arm", action="append", default=[], metavar="NAME=PROFILE[:KEY=VALUE,...]",
-                    help="a configuration of the --pr checkout to measure instead of base and PR (repeatable; see above)")
+    ap.add_argument("--pr", required=True, help="the branch, commit or ref to measure")
     ap.add_argument("--base", default="origin/main")
     ap.add_argument("--name", help="run directory name (default: the PR ref's short commit)")
     ap.add_argument("--fast", default="1,4", help="request counts under --fast (1: h2h decode; more: closed-loop streams)")

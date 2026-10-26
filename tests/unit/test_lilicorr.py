@@ -30,6 +30,13 @@ def test_reject_incompatible_checkpoint_geometry(field, value):
         validate_config(cfg, NEMOTRON_BOLT)
 
 
+def test_reject_a_norm_epsilon_the_backbone_does_not_use():
+    cfg = json.loads(CONFIG.read_text())
+    cfg['rms_norm_eps'] = 1e-5
+    with pytest.raises(ValueError, match='eps'):
+        validate_config(cfg, NEMOTRON_BOLT)
+
+
 def test_parallel_draft_directory_accepts_lilicorr(tmp_path):
     from sharar.proposers.factory import draft_snapshot
     (tmp_path / 'config.json').write_text(CONFIG.read_text())

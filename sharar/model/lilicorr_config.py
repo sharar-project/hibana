@@ -10,6 +10,8 @@ def validate_config(cfg, target=None):
         raise ValueError('unsupported LiLiCorr backbone or convolution geometry')
     if not d.get('attention_sink_bias') or not d.get('use_swa') or cfg['sliding_window'] != d['swa_window_size']:
         raise ValueError('LiLiCorr requires sliding attention and trained sink biases')
+    if cfg.get('rms_norm_eps', 1e-6) != 1e-6:
+        raise ValueError('the parallel draft backbone normalizes with eps 1e-6')
     if cfg.get('has_own_lm_head', False):
         raise ValueError('this LiLiCorr loader shares the target vocabulary head')
     topk = d['lilicorr_candidate_topk']

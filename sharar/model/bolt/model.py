@@ -93,14 +93,14 @@ class BoltMoe:
         slots, steps = None, 1
         if ctx is not None and ctx.mode in ("decode", "verify"):
             slots, steps = (ctx.slots, 1) if ctx.mode == "decode" else (ctx.seq_slots, ctx.verify_steps)
+        # a dropped slot or a padded row names a real expert at weight 0 (`repeat`), never id E (no expert): with id E
+        # in real rows, served generations with sharing broke down at once
         if self.keep and slots is not None:
-            # a dropped slot names the row's own top expert at weight 0 (`repeat`): with id E (no expert) in real rows,
-            # served generations broke down at once (padded rows carry id E, their outputs discarded)
             ids, weights, latent = route_budget(fused, self.bias, self.topk, BOLT.latent, self.keep, self.budget, slots,
                                                 steps, per_request=self.per_request, repeat=True,
                                                 fallback=self.fallback(fused.shape[0], steps))
         else:
-            ids, weights, latent = route_topk(fused, self.bias, self.topk, BOLT.latent, slots, steps, repeat=False)
+            ids, weights, latent = route_topk(fused, self.bias, self.topk, BOLT.latent, slots, steps, repeat=True)
         if self.b12x is not None:
             routed = self.b12x(latent, ids, weights * BOLT.route_scale)
         elif self.iq2 is not None:
@@ -138,15 +138,16 @@ class Bolt(Nemotron):
             raise ValueError("Bolt serves on one Spark")
         cfg = current()
         self.bolt_experts = cfg.bolt_experts
-        # the SSD store keys recurrent state by the arithmetic that produced it: b12x's linears and their launch
-        # configurations (split-K orders the sums), the expert backend and expert sharing
+        # the SSD store keys recurrent state by the arithmetic that produced it: b12x's linears, their launch
+        # configurations (split-K orders the sums) and the row counts planned exactly (the rest share the capacity
+        # plan), the expert backend and expert sharing
         launch = hashlib.sha256(repr(sorted(tuning.CONFIGS.items())).encode()).hexdigest()[:16]
         self.arithmetic_identity = {"linears": f"b12x {version('b12x')}", "launch_configs": launch,
-                                    "iq2_experts": cfg.bolt_experts}
+                                    "plan_rows": list(graph_rows(cfg)), "iq2_experts": cfg.bolt_experts}
         if cfg.bolt_experts == "fp8":
             from sharar.kernels.iq2_moe import _source_revision
             self.arithmetic_identity["kernel"] = _source_revision()
-        if cfg.moe_keep:
+        if 0 < cfg.moe_keep < min(b.topk for b in BOLT.blocks if b.kind == "moe"):  # BoltMoe routes in full from top-k on
             self.arithmetic_identity["moe_sharing"] = f"{cfg.moe_keep}:{cfg.moe_budget_per_request}:{cfg.moe_budget}"
         calibrated = None
         if cfg.w3_decode:
@@ -205,9 +206,6 @@ class Bolt(Nemotron):
                              + sum(m.expert_bytes * m.topk // m.experts for m in moes))
         if log:
             log(f"  Bolt loaded in {time.perf_counter() - started:.0f}s; {torch.cuda.memory_allocated() / 2**30:.2f} GiB CUDA allocated")
-
-    def embed_ids(self, input_ids):
-        return torch.nn.functional.embedding(input_ids, self.embed)
 
     def linears(self):
         for layer in self.layers:

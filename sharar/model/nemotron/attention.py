@@ -48,8 +48,8 @@ class NemotronAttention(Attention):
         return self._split_qkv(self._project(x, x_q), positions)
 
     def _finish(self, attn, gate):
-        if self.o.input_scale is None:
-            return self.o(attn)
+        if self.o.input_scale is None:  # a weight-only o_proj (Bolt) reads BF16 [T, heads * head_dim]
+            return self.o(attn.reshape(attn.shape[0], self.q_size))
         return super()._finish(attn, gate)
 
     def _split_qkv(self, qkv, positions):
