@@ -60,32 +60,31 @@ tier. NVIDIA publishes no 3-bit copies for Bolt: `fast` serves `w3-checkpoints/b
 directory (a link to a local calibration) or `SHARAR_W3_CHECKPOINT=DIR`, and without one the checkpoint encodings
 with a warning.
 
-One GB10, LiLiCorr at seven drafts, 256 forced tokens, greedy, thinking off (`tools/h2h-pr.py`'s method), tok/s:
+One GB10, LiLiCorr at seven drafts, the 22 h2h prompts at 256 forced tokens (`tools/h2h-pr.py`'s method), tok/s for
+one request (median / mean) and four streams; sampled at the checkpoint's defaults (temperature 1.0, top-p 0.95,
+top-k 20):
 
-| Configuration | 22 prompts: median / mean | four streams |
-|---|---:|---:|
-| vLLM (b12x linears and MoE, exact) | 73.9 / 76.6 | 147.1 |
-| `exact` | 87.1 / 86.7 | 169.8 |
-| + 3-bit copies | 113.4 / 111.0 | 187.0 |
-| + int8 state | 109.8 / 114.2 | 213.7 |
-| + expert sharing 6 / 20:64 (`fast`) | 119.5 / 121.7 | 228.9 |
-| expert sharing 4 / 16:48 instead | 127.4 / 130.7 | 251.6 |
-| sharing 4 / 16:48 with relaxed greedy verification, top-3 within 2.0 (`SHARAR_ACCEPT_DEFAULT=3:2.0`) | 156.5 / 159.8 | 297.0 |
+| Configuration | greedy, thinking off | four streams | sampled, thinking on | four streams |
+|---|---:|---:|---:|---:|
+| vLLM (b12x linears and MoE, exact) | 73.9 / 76.6 | 147.1 | 70.3 / 72.7 | 147.9 |
+| `exact` | 87.1 / 86.7 | 169.8 | 80.4 / 89.3 | 183.7 |
+| `fast` | 118.6 / 122.9 | 226.3 | 121.7 / 124.4 | 234.1 |
+| `fast` with relaxed acceptance, top-2 within 1.0 (`SHARAR_ACCEPT_DEFAULT=2:1.0`, `SHARAR_ACCEPT_DEFAULT_SAMPLED=1`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD=2:1.0`) | 141.4 / 143.1 | 261.5 | 135.5 / 140.5 | 260.9 |
 
-Thinking on and sampled at the checkpoint's defaults (temperature 1.0, top-p 0.95, top-k 20), same prompts:
-`exact` 80.4 / 89.3 and 183.7; with sharing 4 / 16:48, 127.8 / 135.5 and 261.4, and with relaxed sampled verification at top-2
-within 1.0 (`SHARAR_ACCEPT_DEFAULT_SAMPLED=1`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD=2:1.0`) 140.5 / 142.9 and 284.2.
+Greedy, thinking off, mean and four streams: the 3-bit copies take `exact`'s 86.7 / 169.8 to 111.0 / 187.0, the
+int8 state to 114.2 / 213.7 and expert sharing to 121.7 / 228.9.
 
-Paired against `exact` (GSM8K 1,319 and GPQA Diamond 198, thinking off): the 3-bit copies -0.5 / -2.5 points
-(p 0.27 / 0.56), with the int8 state +0.1 / +1.5 (p 1.0 / 0.76); MMLU-Pro (first 1,000) with the 3-bit copies
--0.1 points; with expert sharing 4 / 16:48, -0.5 / -2.0 (p 0.34 / 0.64). The 3-bit copies answer GPQA at length
-(4.0K against 3.1K tokens an item; with sharing 4 / 16:48, 4.2K). Thinking on (greedy, 32,768-token cap), the 3-bit copies against
-the checkpoint encodings score GPQA 74.2% against 73.7% at 4% more tokens (15.4K against 14.8K an item) and GSM8K
-(first 300) 97.3% against 96.3%. Sampled with thinking on, sharing at 4 / 16:48 thinks 1.23x longer on GPQA than
-the 3-bit copies with the int8 state alone (95% interval 1.07-1.43) and loses questions at the cap; the copies and
-the int8 state leave the length where `exact` has it, and so does sharing at 6 / 20:64. Relaxed verification
-at top-3 within 2.0 is not a profile default: against the 3-bit copies with the int8 state it costs GPQA 8.6 points
-(p 0.02; answers 27% longer, 29 more at the 8,192-token cap) at an unchanged GSM8K.
+Paired against `exact` item by item (`evals.suite compare`). Sampled with thinking on (the checkpoint's defaults,
+32,768-token cap), GPQA Diamond: `fast` 75.8% against 76.3% (-0.5 points, p 1.0; 11 better, 12 worse), 36 against
+34 answers at the cap, 15.1K against 14.6K tokens an item. Greedy with thinking off (GSM8K 1,319 / GPQA 198): the
+3-bit copies -0.5 / -2.5 points (p 0.27 / 0.56) and with the int8 state +0.1 / +1.5 (p 1.0 / 0.76); MMLU-Pro (first
+1,000) with the 3-bit copies -0.1 points. Thinking on and greedy, the 3-bit copies score GPQA 74.2% against 73.7%
+and GSM8K (first 300) 97.3% against 96.3%.
+
+Relaxed acceptance is not a profile default: sampled with thinking on, top-2 within 1.0 costs `fast` GPQA 5.6 points
+(p 0.052; nine more answers at the cap), and greedy top-3 within 2.0 cost GPQA 8.6 points (p 0.02). Expert sharing
+at keep 4, 16 a request and 48 in all (8% faster than 6 / 20:64) thinks 1.23x longer on GPQA than no sharing
+(95% interval 1.07-1.43) and costs 6.6 points (p 0.011), mostly answers cut off at the cap.
 
 This pin has no built-in MTP head. The pinned companion
 `nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-LiLiCorr` at `449d24140160b8e51871bfc0f0a7338abf640aa1`

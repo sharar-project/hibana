@@ -88,11 +88,11 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
         # and the int8 Mamba state; paired on GSM8K / GPQA against exact +0.1 / +1.5 points. Over the 22 h2h prompts on
         # one GB10, mean / four-stream tok/s 86.7 / 169.8 (exact) -> 111.0 / 187.0 (+W3) -> 114.2 / 213.7 (+int8).
         # Expert sharing as Super's fast (model/nemotron/moe.py route_budget): each token keeps its top 6 experts and a
-        # decode or verify call reads at most 20 a request and 64 in all (114.2 / 213.7 -> 121.7 / 228.9). Keep 4 at
-        # 16:48 (130.7 / 251.6) thought 1.23x longer on GPQA, sampled with thinking on, and lost questions at the
-        # 32K cap; keep 6 at 20:64 thinks as long as exact.
-        # Verification stays exact: relaxed top-3 within 2.0 logits (146.3 / 262.8) cost GPQA 8.6 points (p 0.02;
-        # answers 27% longer, 29 more at the token cap) at an unchanged GSM8K.
+        # decode or verify call reads at most 20 a request and 64 in all (114.2 / 213.7 -> 121.7 / 228.9). Sampled
+        # with thinking on, fast against exact on GPQA: 75.8% against 76.3% (p 1.0). Keep 4 at 16:48 (130.7 / 251.6)
+        # thought 1.23x longer and cost 6.6 points (p 0.011), mostly answers cut off at the 32K cap.
+        # Verification stays exact: relaxed top-2 within 1.0 cost fast GPQA 5.6 points sampled with thinking on
+        # (p 0.052), and greedy top-3 within 2.0 cost 8.6 (p 0.02).
         p.update(SHARAR_W3_DECODE="1", SHARAR_SSM_STATE="int8",
                  SHARAR_MOE_KEEP="6", SHARAR_MOE_BUDGET="20:64")
         return p
