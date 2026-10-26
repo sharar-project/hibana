@@ -20,7 +20,7 @@ a new file, and add a row here in the same commit.
 | causal-conv1d, <https://github.com/Dao-AILab/causal-conv1d> (Tri Dao) and vLLM, <https://github.com/vllm-project/vllm> | Triton causal Conv1D prefill and state-update kernels | BSD 3-Clause (causal-conv1d), Apache License 2.0 (vLLM) |
 | FlashInfer, <https://github.com/flashinfer-ai/flashinfer> | A dependency (paged attention, NVFP4/FP8 GEMM, activation quantization, sampling); `sharar/kernels/cute/residual_norm.py` vendors the body of 0.6.17's CuTe `FusedAddRMSNormKernel` with quantizing epilogues added; `sharar/kernels/cute/gdn/` derives a 32-token-chunk GDN prefill kernel from 0.6.17's `gdn_kernels/delta_rule_dsl` (its `LICENSE` bundled) | Apache License 2.0 |
 | b12x 1.5.0 (PyPI `b12x`) | A dependency on GB10 (the `gb10` extra), nothing vendored: Bolt's SM120 block-scaled GEMMs (`sharar/model/bolt/linear.py`) and fused IQ2_XXS MoE (`sharar/kernels/b12x_iq2_moe.py`) | Apache License 2.0 |
-| ggml-org/llama.cpp, <https://github.com/ggml-org/llama.cpp>, snapshot `d327bf1f0780f87b8c01b367b61853b0c291d7c4` | IQ2_XS/XXS codebooks in `weights/iq2_xs_grid.py` and `weights/iq2_grid.py`, Q8_0/IQ2 layout decoding in `weights/ggml.py` and `kernels/csrc/ggml_codec.cuh` (shared by the dense and routed kernels); license verified at this commit | MIT, Copyright (c) 2023-2026 The ggml authors |
+| ggml-org/llama.cpp, <https://github.com/ggml-org/llama.cpp>, snapshot `d327bf1f0780f87b8c01b367b61853b0c291d7c4` | IQ2_XS/XXS codebooks in `weights/iq2_xs_grid.py` and `weights/iq2_grid.py`, Q8_0/IQ2 layout decoding in `weights/ggml.py` and `kernels/csrc/ggml_codec.cuh` (used by the routed-expert kernel); license verified at this commit | MIT, Copyright (c) 2023-2026 The ggml authors |
 
 ## ggml MIT notice
 

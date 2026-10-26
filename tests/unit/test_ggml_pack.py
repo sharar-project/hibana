@@ -9,7 +9,6 @@ from sharar.kernels.ggml import _execution_lut, pack_weight
 from sharar.weights.ggml import FORMATS, dequantize
 from sharar.weights.iq2_grid import GRID
 from sharar.weights.iq2_xs_grid import GRID_XS
-from sharar.weights.linear import Linear
 
 
 def blocks(quant, n=136, k=768):
@@ -26,7 +25,6 @@ def test_pack_is_lossless_owned_and_compact(quant):
     raw = blocks(quant)
     expected = raw.clone()
     weight = pack_weight(raw, quant)
-    assert isinstance(weight, Linear)
     assert weight.bytes == raw.numel()
     assert (weight.out_features, weight.in_features) == (136, 768)
     assert torch.equal(weight.blocks(), expected)

@@ -101,10 +101,5 @@ class GgmlLinear:
     def dequantize(self) -> torch.Tensor:
         return dequantize(self.weight, self.quant)
 
-    def prepare(self):
-        """Return a compact native FP8-compute linear; preparation precedes graph capture."""
-        from sharar.kernels.ggml import pack_weight
-        return pack_weight(self.weight, self.quant)
-
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         return F.linear(x, self.dequantize().to(x.dtype))

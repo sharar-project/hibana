@@ -2,7 +2,7 @@
 import os
 import pytest
 import torch
-from sharar.kernels import ggml, iq2_moe
+from sharar.kernels import iq2_moe
 
 
 def blocks(quant, e=3, h=256, intermediate=512):
@@ -56,8 +56,8 @@ def test_packing_rejects_mismatched_geometry_and_nonfinite_bases():
         iq2_moe.pack_experts(up, down)
 
 
-@pytest.mark.parametrize("backend", [ggml, iq2_moe])
-def test_jit_cache_includes_shared_codec_bytes(tmp_path, monkeypatch, backend):
+def test_jit_cache_includes_shared_codec_bytes(tmp_path, monkeypatch):
+    backend = iq2_moe
     from torch.utils import cpp_extension
     source, header = tmp_path / "kernel.cu", tmp_path / "codec.cuh"
     source.write_bytes(b"unchanged kernel")
