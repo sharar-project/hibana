@@ -1,4 +1,5 @@
 """Speculator parts: declared capabilities, shared draft heads, the depth policy."""
+import random
 from types import SimpleNamespace
 
 import pytest
@@ -124,3 +125,189 @@ def test_acceptance_depth_follows_each_requests_rate_under_the_cap():
     assert wide.sizes_for(2, (1, 2, 4, 8, 16, 32)) == (1, 2, 4) and wide.sizes_for(4, (1, 2, 4, 8, 16, 32)) == (1, 2, 4, 8)
     with pytest.raises(ValueError):
         AcceptanceDepth(FixedDepth(4), 0.0)
+
+
+# Adaptive verification for a scoring drafter (DFlash2): engine/depth.RowBudget
+
+
+def _requests(n, greedy=True):
+    return [SimpleNamespace(params=SimpleNamespace(greedy=greedy)) for _ in range(n)]
+
+
+def _packed():
+    from sharar.engine.depth import RowBudget, ragged_budgets
+    budgets = ragged_budgets((1, 2, 4, 8), 16)
+    policy = RowBudget(15, tuple(budgets), packed_rows=budgets)
+    for b, rows in budgets.items():  # the measured shape: rows nearly free to 64, the original weights past it
+        for r in rows:
+            policy.costs[b, r] = 55 + 0.3 * r if r <= 64 else 95 + 0.1 * r
+    return policy
+
+
+def test_an_unmeasured_row_budget_verifies_the_cap():
+    from sharar.engine.depth import RowBudget, ragged_budgets
+    fresh = RowBudget(15, (1, 2, 4, 8), packed_rows=ragged_budgets((1, 2, 4, 8), 16))
+    assert fresh.verify_depths == () and fresh.depths is None
+    assert fresh.choose(_requests(8)) == 15 and fresh.allot(_requests(8), torch.full((8, 15), 0.9), 15) == ([15] * 8, 128)
+
+
+def test_packed_row_budget_gives_rows_to_the_likeliest_drafts():
+    policy = _packed()
+    reqs = _requests(8)
+    acceptance = torch.full((8, 15), 0.3)
+    acceptance[:2] = 0.95  # two requests draft text the target will take
+    limits, rows = policy.allot(reqs, acceptance, 15)
+    assert rows <= 64 and sum(limits) <= rows - 8
+    assert min(limits[:2]) > max(limits[2:])  # the confident requests verify deeper
+    assert policy.verify_depths == () and policy.choose(reqs) == 15  # greedy: allotted after drafting
+
+
+def test_row_budget_explores_and_learns_the_tested_positions():
+    for policy in (_packed(),):
+        reqs = _requests(4)
+        shy = torch.full((4, 15), 0.5)
+        for round_ in range(1, 2 * policy.EXPLORE + 1):
+            limits, rows = policy.allot(reqs, shy, 15)
+            if round_ % policy.EXPLORE == 0:
+                assert limits == [15] * 4  # every draft verified now and then
+            for r, limit in zip(reqs, limits):
+                policy.observe(r, limit, min(limit, 9))  # the target takes nine drafts in a row, more than 0.5 each says
+        assert min(policy.shift[:3]) > 0.1
+
+
+def test_row_budget_counts_only_the_positions_a_round_tested():
+    from sharar.engine.depth import RowBudget, ragged_budgets
+    policy = RowBudget(15, (1,), packed_rows=ragged_budgets((1,), 16), prior_weight=0.0)
+    acc, tested = policy.survival[False]
+    for _ in range(100):  # shallow rounds, every draft accepted: positions past 3 untested, not rejected
+        policy.observe(None, 3, 3)
+    assert tested[3] == 0 and acc[0] / tested[0] == 1.0
+    for _ in range(100):  # a full-depth round rejected at position 5
+        policy.observe(None, 15, 5)
+    assert acc[5] == 0 and tested[6] == 0 and abs(acc[4] / tested[4] - 1.0) < 1e-9
+
+
+def test_row_budget_keeps_sampled_batches_at_one_depth_from_past_rounds():
+    for policy in (_packed(),):
+        for _ in range(2000):
+            policy.observe(_requests(1, greedy=False)[0], 15, 15 if random.random() < 0.3 else 2)
+        sampled = _requests(3, greedy=False)
+        depth = policy.choose(sampled)
+        limits, rows = policy.allot(sampled, None, depth)
+        assert 1 <= depth <= 15 and limits == [depth] * 3 and rows >= 3 * (depth + 1) + 1  # three requests in bucket 4
+
+
+def test_row_budget_keeps_sampled_estimates_apart():
+    policy = _packed()
+    greedy, sampled = _requests(1)[0], _requests(1, greedy=False)[0]
+    for _ in range(3000):
+        policy.observe(greedy, 15, 15)  # greedy drafts all accepted
+        policy.observe(sampled, 15, 1 if random.random() < 0.5 else 0)  # sampled ones rarely
+    assert policy.expected_tokens(15) > 10 and policy.expected_tokens(15, sampled=True) < 2
+    for _ in range(30):
+        policy.observe_round(4, 64, 95.0, tokens=40)
+        policy.observe_round(4, 16, 120.0, tokens=6, sampled=True)
+    assert (4, True) in policy.overhead and policy.rate[4, True] < policy.rate[4, False]
+    assert policy.choose(_requests(4, greedy=False)) <= 3  # sampled batches stop where their own drafts stop paying
+
+
+def test_row_budget_learns_the_round_time_beyond_its_graphs():
+    """Rows follow the drafts' scores, so rows and tokens move together: the round's unmeasured time is one moving mean
+    per bucket, and the timed graphs carry the rows."""
+    from sharar.engine.depth import RowBudget
+    policy = RowBudget(15, (4,), packed_rows={4: (16, 32, 48, 64)})
+    for rows in (16, 32, 48, 64):
+        policy.costs[4, rows] = 60.0
+    for rows in (16, 32, 48, 64) * 20:
+        policy.observe_round(4, rows, 60.0 + 10.0 + 0.2 * rows, tokens=rows // 4)
+    assert abs(policy.overhead[4, False] - (10.0 + 0.2 * 40)) < 0.5 and policy.cost(4, 16) == 60.0 + policy.overhead[4, False]
+
+
+def test_dflash2_acceptance_reads_only_earlier_drafts():
+    from sharar.proposers.parallel import ParallelProposer
+    torch.manual_seed(0)
+    candidates = torch.stack([torch.randperm(50)[:4] for _ in range(6)]).unsqueeze(0)  # [1, 6 positions, 4 ranks]
+    scores = torch.randn(1, 6, 4, 4)
+    owner = SimpleNamespace(calibration=(0.9693, -0.3068, -0.8203, 0.0344), acceptance_features=ParallelProposer.acceptance_features)
+    tokens = candidates[:, :, 0].clone()
+    a = ParallelProposer.acceptance(owner, candidates, scores, tokens)
+    assert a.shape == (1, 6) and bool(((a > 0) & (a < 1)).all())
+    other = tokens.clone()
+    other[0, 3] = candidates[0, 3, 2]  # a different draft at position 3 changes positions after it only
+    b = ParallelProposer.acceptance(owner, candidates, scores, other)
+    assert torch.equal(a[:, :4], b[:, :4]) and not torch.equal(a[:, 4], b[:, 4])
+
+
+def test_the_27b_carries_its_pinned_drafts_calibration():
+    from sharar import target as targets
+    weights = dict(targets.get("qwen38").draft_calibration)["dflash2"]
+    assert len(weights) == 4 and weights[0] > 0  # a higher top probability, a likelier acceptance
+    assert targets.get("flashnext").draft_calibration == ()  # no adaptive verification there (#273)
+
+
+def test_ragged_budgets_cover_plain_decode_to_full_depth_and_128_rows():
+    from sharar.engine.depth import ragged_budgets
+    budgets = ragged_budgets((1, 2, 4, 8, 16), 16)
+    assert budgets[1][0] == 1 and budgets[1][-1] == 16 and budgets[16][0] == 16 and budgets[16][-1] == 256
+    assert 128 in budgets[8] and 128 in budgets[16] and all(r % 4 == 0 for r in budgets[4])
+
+
+def test_tensor_parallel_ranks_learn_the_same_round_times_at_the_same_round(monkeypatch):
+    """Each rank decides on its own, so every rank must learn the same times at the same round: the slowest rank's,
+    every TP_LEARN_EVERY rounds, never the previous round's event as soon as it happens to be done."""
+    from sharar.engine import spec as spec_mod
+
+    class Event:
+        def __init__(self, ms):
+            self.ms = ms
+
+        def synchronize(self):
+            pass
+
+        def query(self):
+            return True
+
+        def elapsed_time(self, end):
+            return end.ms - self.ms
+
+    monkeypatch.setattr(spec_mod, "get_tp_info", lambda: SimpleNamespace(size=2))
+    monkeypatch.setattr(spec_mod, "all_reduce_max", lambda values: [v + 1.0 for v in values])  # the other rank: slower
+    decoder = spec_mod.SpecDecoder.__new__(spec_mod.SpecDecoder)
+    decoder._round_timings = []
+    learned = []
+    learn = lambda b, rows, ms, tokens, sampled: learned.append((b, rows, ms))  # noqa: E731
+    every = decoder.TP_LEARN_EVERY
+    for i in range(2 * every + 1):
+        decoder._learn_round(learn)
+        decoder._round_timings.append((1, 16, Event(0.0), Event(30.0 + i), 5, False))
+        assert len(learned) == (every if i > every else 0)
+    assert learned == [(1, 16, 31.0 + i) for i in range(every)]
+
+
+def test_row_budget_verifies_every_draft_where_rows_are_free():
+    """A saving under the noise floor (1 ms, 3% of the round) is no saving: where 1 to 9 drafts verify in 16.6-18.1 ms
+    unsure drafts still all verify; a wide bucket's rows cost real time."""
+    from sharar.engine.depth import RowBudget, ragged_budgets
+    budgets = ragged_budgets((1, 8), 10)
+    policy = RowBudget(9, (1, 8), packed_rows=budgets)
+    for b, rows in budgets.items():
+        for r in rows:
+            policy.costs[b, r] = 16.6 + 0.17 * (r - 1) if b == 1 else 20.0 + 0.5 * r  # 0.5 ms a row at 8 requests
+    for key in ((1, False), (8, False)):
+        policy.overhead[key] = 20.0
+    unsure = torch.full((8, 9), 0.4)
+    assert policy.allot(_requests(1), unsure[:1], 9) == ([9], 10)
+    limits, _ = policy.allot(_requests(8), unsure, 9)
+    assert max(limits) < 9
+
+
+def test_row_budget_keeps_each_buckets_cap():
+    """A depth table (SHARAR_SPEC_DEPTHS) caps each bucket: the policy verifies at or below it."""
+    from sharar.engine.depth import RowBudget, ragged_budgets
+    budgets = ragged_budgets((1, 2, 4, 8), 16)
+    capped = RowBudget(15, (1, 2, 4, 8), packed_rows=budgets, caps={1: 15, 2: 7, 4: 7, 8: 15})
+    capped.costs = {(b, r): 20.0 for b, rows in budgets.items() for r in rows}
+    sure = torch.full((4, 15), 0.99)
+    assert capped.choose(_requests(4)) == 7 and capped.choose(_requests(1)) == 15
+    assert max(capped.allot(_requests(4), sure, 15)[0]) <= 7 and capped.allot(_requests(1), sure[:1], 15)[0] == [15]
+    assert capped.allot(_requests(3, greedy=False), None, 15)[0] == [7] * 3
