@@ -1,6 +1,5 @@
 """Published LiLiCorr weights against an independent, unpacked torch reference."""
 import gc
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest

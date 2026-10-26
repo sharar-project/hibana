@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Plain-torch reference for NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4 (text model and MTP head; the vision tower,
-its projector and `mlp1` are never read). Every fast kernel and the engine integration are checked against this.
+"""Plain-torch reference for the Nemotron-H text model, which `tests/gpu/test_bolt_model.py` checks Bolt's engine
+against (residual outputs and logits). Written for NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4, whose layout the
+notes below describe; Bolt's GGML-encoded experts and projections are dequantized through `sharar/weights/ggml.py`.
+The vision tower, its projector and `mlp1` are never read.
 
 The model follows Transformers' built-in `nemotron_h` (the snapshot's `modeling_nemotron_h_omni.py` only wraps
-`AutoModelForCausalLM.from_config(llm_config)`); the MTP head, which Transformers drops on load, follows vLLM's and
-SGLang's `nemotron_h_mtp.py`. Semantics, each confirmed against that code and the checkpoint:
+`AutoModelForCausalLM.from_config(llm_config)`). Semantics, each confirmed against that code and the checkpoint:
 
 - **Blocks.** 88 blocks from `llm_config.layers_block_type` (40 mamba, 40 moe, 8 attention), each
   `x = x + mixer(rms_norm(x, block.norm))`; the residual stream stays in the activation dtype (`residual_in_fp32` is
@@ -28,19 +29,11 @@ SGLang's `nemotron_h_mtp.py`. Semantics, each confirmed against that code and th
   (BF16, 4096 -> 1024), each chosen expert `down(relu(up(h))^2)` (NVFP4, up [2688, 1024], down [1024, 2688], no gate
   projection), weighted sum in FP32, `fc2_latent_proj` (BF16, 1024 -> 4096). Shared expert: `down(relu(up(x))^2)`
   (NVFP4, [5376, 4096] / [4096, 5376]) on the full normed hidden `x`, added after `fc2_latent_proj`.
-- **MTP** (`language_model.mtp.layers.{0,1}`, one step, shares `embeddings` and `lm_head` with the trunk). For
-  position i it takes `h_i`, the trunk's hidden *after* `norm_f` (the tensor `lm_head` reads), and the embedding of the
-  next token `t_{i+1}`: `x = eh_proj([enorm(embed(t_{i+1})), hnorm(h_i)])` (concat order e then h; eh_proj BF16
-  [4096, 8192]); `x = x + attn(layers.0.norm(x))` (BF16 attention like the trunk's, with its own causal KV cache over
-  MTP positions; `k_scale`/`v_scale` are FP8-KV-cache scales and unused here); `x = x + moe(layers.1.norm(x))` (an
-  NVFP4 latent MoE like the trunk's); `h' = layers.1.final_layernorm(x)`; `logits = lm_head(h')` predict t_{i+2}.
-  Chained drafts feed `h'` back as the next step's hidden with the drafted token (vLLM's recursion); see
-  `NemotronReference.mtp_chain`.
 - **Quantisation** (ModelOpt 0.37, `MIXED_PRECISION`). FP8: E4M3 `weight` times the per-tensor F32 `weight_scale`.
   NVFP4: `weight` U8 [N, K/2] holds two E2M1 codes per byte, element 2j in the low nibble and 2j+1 in the high one;
   `weight_scale` E4M3 [N, K/16] scales each run of 16 along K, `weight_scale_2` F32 is global:
   `w = e2m1 * weight_scale * weight_scale_2`. `input_scale` (static activation scales) is ignored: activations are not
-  quantised here. Embeddings, router, latent projections, `eh_proj` and MTP attention are BF16; A_log, D, dt_bias,
+  quantised here. Embeddings, router and latent projections are BF16; A_log, D, dt_bias,
   conv and norm weights are BF16 too (used in FP32), `e_score_correction_bias` F32.
 
 Precision: weights stay on the GPU in their checkpoint encoding; routed experts are read from the shards on demand
@@ -71,7 +64,6 @@ MODEL_ID = "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
 MODEL_REVISION = "6aae0d6d0285e561bbb72efa10ba1425d41ebddc"
 MODEL_CACHE_KEY = "models--nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
 TRUNK = "language_model.backbone"
-MTP = "language_model.mtp.layers"
 
 
 def find_snapshot(cache_dir: str | os.PathLike | None = None) -> Path:
@@ -92,14 +84,6 @@ def read_json(path: Path) -> dict:
     def hook(d):
         return float(d["__float__"]) if set(d) == {"__float__"} else d
     return json.loads(Path(path).read_text(), object_hook=hook)
-
-
-def render_chat(snap: Path, messages: list[dict], enable_thinking: bool = False) -> str:
-    """The snapshot's chat template with the generation prompt (thinking off: the turn opens with
-    `<think></think>`)."""
-    import jinja2
-    template = jinja2.Environment(loader=jinja2.BaseLoader()).from_string((snap / "chat_template.jinja").read_text())
-    return template.render(messages=messages, add_generation_prompt=True, enable_thinking=enable_thinking)
 
 
 @dataclass(frozen=True)
@@ -613,30 +597,19 @@ def moe_mixer(p: MoEParams, x: torch.Tensor, cfg: NemotronConfig, experts: Exper
 
 @dataclass
 class State:
-    """Per-sequence decode state: Mamba conv/SSM states and attention KV per trunk block, MTP attention KV."""
+    """Per-sequence decode state: Mamba conv/SSM states and attention KV per trunk block."""
     conv: dict[int, torch.Tensor] = field(default_factory=dict)
     ssm: dict[int, torch.Tensor] = field(default_factory=dict)
     kv: dict[int, tuple[torch.Tensor, torch.Tensor]] = field(default_factory=dict)
-    mtp_kv: tuple[torch.Tensor, torch.Tensor] | None = None
     length: int = 0
 
 
-@dataclass
-class MtpParams:
-    enorm: torch.Tensor
-    hnorm: torch.Tensor
-    eh_proj: Linear
-    attn: Block  # layers.0: norm + attention
-    moe: Block  # layers.1: norm + MoE
-    final_norm: torch.Tensor  # layers.1.final_layernorm
-
-
 class NemotronReference:
-    """The text model and MTP head, weight-dequantised. `blocks` limits which trunk blocks load (for per-block tests);
-    `head=False` skips embeddings, norm_f, lm_head and MTP."""
+    """The text model, weight-dequantised. `blocks` limits which trunk blocks load (for per-block tests);
+    `head=False` skips embeddings, norm_f and lm_head."""
 
     def __init__(self, snap: Path | None = None, device="cuda", dtype: torch.dtype = torch.bfloat16,
-                 expert_cache_gib: float = 6.0, blocks=None, head: bool = True, mtp: bool = True,
+                 expert_cache_gib: float = 6.0, blocks=None, head: bool = True,
                  low_nibble_first: bool = True, time_step_limit: tuple[float, float] | None = None, log=None):
         self.snap = Path(snap) if snap is not None else find_snapshot()
         self.cfg = NemotronConfig.from_snapshot(self.snap)
@@ -652,21 +625,11 @@ class NemotronReference:
                                         low_nibble_first)
             if log and i % 8 == 7:
                 log(f"loaded block {i}")
-        self.embed = self.norm_f = self.lm_head = self.mtp = None
+        self.embed = self.norm_f = self.lm_head = None
         if head:
             self.embed = self.w.get(f"{TRUNK}.embeddings.weight").to(self.device)
             self.norm_f = self.w.get(f"{TRUNK}.norm_f.weight").to(self.device)
             self.lm_head = load_linear(self.w, "language_model.lm_head", self.device)
-            if mtp and self.cfg.mtp_block_types:
-                if self.cfg.mtp_block_types != ("attention", "moe"):
-                    raise ValueError(f"unexpected MTP pattern {self.cfg.mtp_block_types}")
-                get = lambda name: self.w.get(f"{MTP}.{name}").to(self.device)  # noqa: E731
-                self.mtp = MtpParams(
-                    get("0.enorm.weight"), get("0.hnorm.weight"),
-                    load_linear(self.w, f"{MTP}.0.eh_proj", self.device),
-                    load_block(self.w, f"{MTP}.0", "attention", self.device, low_nibble_first),
-                    load_block(self.w, f"{MTP}.1", "moe", self.device, low_nibble_first),
-                    get("1.final_layernorm.weight"))
 
     # -- trunk --------------------------------------------------------------------------------------------------------
 
@@ -723,103 +686,4 @@ class NemotronReference:
             out["logits"] = self.logits(final)
         elif isinstance(logits, int):
             out["logits"] = self.logits(final[-logits:])
-        return out
-
-    @torch.inference_mode()
-    def generate(self, prompt: torch.Tensor, max_new: int, stop=None, state: State | None = None) -> dict:
-        """Greedy decode: prefill `prompt`, then one token per step through the carried state. Returns
-        {"ids": generated ids, "final": [n, hidden] post-norm hidden of each position that produced a token
-        (the last prompt position first), "state"}."""
-        stop = set(self.cfg.eos if stop is None else stop)
-        state = state or State()
-        out = self.forward(prompt, state, logits=1)
-        ids, finals = [], [out["final"][-1:]]
-        nxt = int(out["logits"][-1].argmax())
-        for _ in range(max_new):
-            ids.append(nxt)
-            if nxt in stop or len(ids) == max_new:
-                break
-            out = self.forward(torch.tensor([nxt]), state, logits=1)
-            finals.append(out["final"])
-            nxt = int(out["logits"][-1].argmax())
-        return {"ids": ids, "final": torch.cat(finals), "state": state}
-
-    # -- MTP ----------------------------------------------------------------------------------------------------------
-
-    def mtp_input(self, hidden: torch.Tensor, next_ids: torch.Tensor, order: str = "eh") -> torch.Tensor:
-        """eh_proj([enorm(embed(next)), hnorm(hidden)]) ("eh"; "he" swaps the halves, for the ablation)."""
-        m = self.mtp
-        e = rms_norm(self.embed_ids(next_ids), m.enorm, self.cfg.eps)
-        h = rms_norm(hidden.to(self.dtype), m.hnorm, self.cfg.eps)
-        return m.eh_proj(torch.cat([e, h] if order == "eh" else [h, e], -1))
-
-    def mtp_tail(self, x: torch.Tensor, attn_out: torch.Tensor):
-        """From the attention mixer's output on: residual, MoE block, final_layernorm. Returns (pre, post)."""
-        m = self.mtp
-        x = x + attn_out.to(x.dtype)
-        x = x + moe_mixer(m.moe.mixer, rms_norm(x, m.moe.norm, self.cfg.eps), self.cfg, self.experts).to(x.dtype)
-        return x, rms_norm(x, m.final_norm, self.cfg.eps)
-
-    @torch.inference_mode()
-    def mtp_forward(self, hidden: torch.Tensor, next_ids: torch.Tensor, state: State | None = None,
-                    order: str = "eh") -> dict:
-        """One MTP step over positions i (hidden [T, hidden] = trunk post-norm_f h_i, next_ids [T] = t_{i+1}),
-        attending causally to earlier MTP positions in `state.mtp_kv` (updated). Returns {"pre": before
-        final_layernorm, "final": after it, "logits": FP32 predictions of t_{i+2}}."""
-        m = self.mtp
-        x = self.mtp_input(hidden, next_ids.to(self.device), order)
-        attn_out, kv = attention_mixer(m.attn.mixer, rms_norm(x, m.attn.norm, self.cfg.eps), self.cfg,
-                                       state and state.mtp_kv)
-        if state is not None:
-            state.mtp_kv = kv
-        pre, post = self.mtp_tail(x, attn_out)
-        return {"pre": pre, "final": post, "logits": self.logits(post)}
-
-    @torch.inference_mode()
-    def mtp_chain(self, hidden: torch.Tensor, ids: torch.Tensor, depth: int, feed: str = "final",
-                  order: str = "eh", teacher: bool = False) -> list[torch.Tensor]:
-        """Chained MTP drafts from every position of one sequence at once. hidden [T, hidden] is the trunk's post-norm
-        h_i for positions 0..T-1 of `ids` [T+1] (ids[i+1] is the token after position i). Step 1 is `mtp_forward`
-        over the whole sequence (its KV are the MTP cache a draft round starts from). Step d > 1 drafts, for each
-        base position i, the token at i+d+1 from (step d-1's `feed` output at i: "final" after final_layernorm as vLLM
-        feeds it, or "pre"; the token step d-1 drafted, or with `teacher` the true one); its query sees the step-1 KV
-        of positions <= i plus its own chain's earlier steps, as an MTP KV cache does during one draft round.
-        Returns the FP32 logits of each step, [T, vocab] each."""
-        m, cfg = self.mtp, self.cfg
-        ids = ids.to(self.device)
-        x = self.mtp_input(hidden, ids[1:], order)
-        hn = rms_norm(x, m.attn.norm, cfg.eps)
-        t_len = x.shape[0]
-        q = m.attn.mixer.q(hn).view(t_len, cfg.heads, cfg.head_dim)
-        k0 = m.attn.mixer.k(hn).view(t_len, cfg.kv_heads, cfg.head_dim)
-        v0 = m.attn.mixer.v(hn).view(t_len, cfg.kv_heads, cfg.head_dim)
-        a = attend(q, k0, v0, 0).to(self.dtype).reshape(t_len, -1)
-        pre, post = self.mtp_tail(x, m.attn.mixer.o(a))
-        out = [self.logits(post)]
-        chain_k, chain_v = [], []
-        rows = torch.arange(t_len, device=self.device)
-        for d in range(2, depth + 1):
-            prev = post if feed == "final" else pre
-            if teacher:
-                tok = ids[(rows + d).clamp(max=ids.numel() - 1)]
-            else:
-                tok = out[-1].argmax(-1)
-            # chained tokens of later base positions run past the sequence; their rows are garbage and ignored
-            x = self.mtp_input(prev, tok, order)
-            hn = rms_norm(x, m.attn.norm, cfg.eps)
-            q = m.attn.mixer.q(hn).view(t_len, cfg.heads, cfg.head_dim)
-            chain_k.append(m.attn.mixer.k(hn).view(t_len, cfg.kv_heads, cfg.head_dim))
-            chain_v.append(m.attn.mixer.v(hn).view(t_len, cfg.kv_heads, cfg.head_dim))
-            rep = cfg.heads // cfg.kv_heads
-            kf0, vf0 = k0.float().repeat_interleave(rep, 1), v0.float().repeat_interleave(rep, 1)
-            kc = torch.stack(chain_k, 1).float().repeat_interleave(rep, 2)  # [T, d-1, H, D]
-            vc = torch.stack(chain_v, 1).float().repeat_interleave(rep, 2)
-            s0 = torch.einsum("thd,shd->hts", q.float(), kf0) * cfg.head_dim ** -0.5
-            s0 = s0.masked_fill(rows[None, None, :] > rows[None, :, None], -math.inf)
-            sc = torch.einsum("thd,tjhd->htj", q.float(), kc) * cfg.head_dim ** -0.5
-            probs = torch.cat([s0, sc], -1).softmax(-1)
-            a = torch.einsum("hts,shd->thd", probs[..., :t_len], vf0) + \
-                torch.einsum("htj,tjhd->thd", probs[..., t_len:], vc)
-            pre, post = self.mtp_tail(x, m.attn.mixer.o(a.to(self.dtype).reshape(t_len, -1)))
-            out.append(self.logits(post))
         return out

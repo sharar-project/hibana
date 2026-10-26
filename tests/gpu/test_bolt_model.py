@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from sharar.engine import config
-from sharar.model.nemotron import reference as R
+from tests import nemotron_reference as R
 
 
 @pytest.fixture(scope="module")
@@ -36,7 +36,7 @@ def model(snapshot, request):
 
 @pytest.fixture(scope="module")
 def reference(snapshot):
-    model = R.NemotronReference(snapshot, dtype=torch.bfloat16, expert_cache_gib=1, mtp=False)
+    model = R.NemotronReference(snapshot, dtype=torch.bfloat16, expert_cache_gib=1)
     yield model
     model.experts.clear()
     del model

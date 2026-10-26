@@ -120,7 +120,7 @@ def test_bolt_accepts_mamba_state_storage(tmp_path):
 
 
 def test_torch_reference_parses_puzzle_and_has_no_mtp(tmp_path):
-    from sharar.model.nemotron.reference import NemotronConfig
+    from tests.nemotron_reference import NemotronConfig
     (tmp_path / "config.json").write_text(CONFIG.read_text())
     cfg = NemotronConfig.from_snapshot(tmp_path)
     assert cfg.time_step_limit == (0., float("inf"))
