@@ -233,7 +233,7 @@ class Nemotron:
         if ctx.mode == "prefill":
             from sharar.kernels.mamba2 import prepare_prefill
             prepare_prefill(ctx, input_ids.shape[0], self.device)
-        hidden = torch.nn.functional.embedding(input_ids, self.embed)
+        hidden = self.embed_ids(input_ids)
         ctx.capture = capture
         out: dict = {"input_ids": input_ids, "positions": ctx.positions}
         if capture:
@@ -250,6 +250,9 @@ class Nemotron:
         out["norm"] = normed
         out["pre_norm"] = pre_norm
         return out
+
+    def embed_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.embedding(input_ids, self.embed)
 
     def prefill(self, input_ids: torch.Tensor, capture: bool = False) -> dict:
         """Stand-alone prefill without pools (parity tools)."""

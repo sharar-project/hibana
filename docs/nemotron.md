@@ -1,5 +1,7 @@
 # NVIDIA-Nemotron-3.5-Super in Sharar
 
+[Nemotron Bolt](bolt.md) uses the same Mamba runtime with a separate packed checkpoint and per-block expert geometry.
+
 The third serving target (`sharar serve nemotron`, `sharar/model/nemotron/`), on one Spark. Checkpoint:
 `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` at `6aae0d6` (NVIDIA's ModelOpt export: NVFP4 routed and shared
 experts, FP8 Mamba, attention and lm_head projections, BF16 embeddings, router and latent projections). The text model

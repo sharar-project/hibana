@@ -91,7 +91,7 @@ def evals_cmd(python: str, *args: str) -> list[str]:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--target", choices=("flashnext", "qwen38", "nemotron"), required=True)
+    ap.add_argument("--target", choices=("flashnext", "qwen38", "nemotron", "bolt"), required=True)
     ap.add_argument("--profile", choices=gate.PROFILE_NAMES, default="fast")
     ap.add_argument("--env", action="append", default=[], help="SHARAR_KEY=VALUE override (repeatable)")
     ap.add_argument("--allow-dirty", action="store_true", help="evaluate with uncommitted engine changes (recorded as a hash)")

@@ -85,6 +85,8 @@ class DraftState:
 class ParallelProposer:
     def __init__(self, model, context, k, name):
         import flashinfer
+        if not 1 <= k <= getattr(model, 'max_depth', 15):
+            raise ValueError('draft depth exceeds the checkpoint trained block size')
         self.model, self.context, self.k, self.name = model, context, k, name
         self.feedback_graphs = None
         self._feedback_enabled = False
@@ -106,7 +108,7 @@ class ParallelProposer:
         # rows over the feature window
         self.workspace = torch.empty(128 * 2**20 * max(1, -(-context.max_batch // 32)), dtype=torch.uint8, device=device)
         self.requirements = ProposerRequirements(name, FeatureRequest(layers=model.features),
-                                                persistent_bytes=self.bytes, greedy_only=False, max_depth=15,
+                                                persistent_bytes=self.bytes, greedy_only=False, max_depth=getattr(model, 'max_depth', 15),
                                                 capabilities=Capabilities(device_feedback=True, checkpoint_cache=True,
                                                                           stored_payload=True, short_drafts=True))
         self.attention = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self.workspace, 'NHD')
@@ -240,12 +242,17 @@ class ParallelProposer:
             history = torch.arange(max(0, state.end - self.window), state.end, device=device) % self.window + base
             write.append(noise)
             histories.append(torch.cat([history, noise]))
+        anchor_features = None
+        if getattr(self.model, 'uses_context_anchor', False):
+            states = [self._state(req) for req in requests]
+            anchor_features = self.features[[state.slot for state in states], [(state.end - 1) % self.window for state in states]]
         if graphs and self.graphs is not None:
-            hidden, candidates, scores = self.graphs.run(tokens, positions, torch.cat(write), histories)
+            extra = {'anchor_features': anchor_features} if anchor_features is not None else {}
+            hidden, candidates, scores = self.graphs.run(tokens, positions, torch.cat(write), histories, **extra)
         else:
             self._plan(self.attention, histories, batch, s)
             hidden = self.model.forward(tokens, positions, torch.cat(write), self.caches, self.attention)[:, 1:]
-            candidates, scores = self.model.selector(hidden, inputs.tokens)
+            candidates, scores = self.select(hidden, inputs.tokens, anchor_features)
         sampled = any(not r.params.greedy for r in requests)
         if not sampled:
             from sharar.kernels.draft_selection import greedy_lattice
@@ -264,6 +271,11 @@ class ParallelProposer:
         else:
             tokens_s, laws = sample_lattice(candidates, scores, [r.params for r in requests], [r.generator for r in requests])
         return Proposal(tokens_s, laws, candidates)
+
+    def select(self, hidden, anchor, anchor_features=None):
+        if getattr(self.model, 'uses_context_anchor', False):
+            return self.model.selector(hidden, anchor, anchor_features)
+        return self.model.selector(hidden, anchor)
 
     def accepted_batch(self, requests, emitted, features):
         """Project committed rows together, then scatter into private rings.

@@ -19,9 +19,10 @@ CHECKOUT = Path(__file__).resolve().parents[2]  # the repository root when shara
 # Canonical target names and the names users type.
 ALIASES = {"27b": "qwen38", "27B": "qwen38", "qwen38": "qwen38", "qwen3.8-27b": "qwen38",
            "flashnext": "flashnext", "flash-next": "flashnext", "Flash-Next": "flashnext",
-           "nemotron": "nemotron", "nemotron-super": "nemotron", "Nemotron": "nemotron"}
-TARGET_CHOICES = ("27b", "flashnext", "nemotron", "qwen38", "flash-next", "nemotron-super")
-SERVED = ("27b", "flashnext", "nemotron")  # one name per target, in the order `status`, `stop` and the clients look
+           "nemotron": "nemotron", "nemotron-super": "nemotron", "Nemotron": "nemotron",
+           "bolt": "bolt", "nemotron-bolt": "bolt"}
+TARGET_CHOICES = ("27b", "flashnext", "nemotron", "bolt", "qwen38", "flash-next", "nemotron-super", "nemotron-bolt")
+SERVED = ("27b", "flashnext", "nemotron", "bolt")  # one name per target, in the order `status`, `stop` and the clients look
 
 # What each target serves when nothing else says so (port, service, drafter: the SHARAR_* keys), and what the launcher
 # knows of it: `recurrence` (`Target.recurrence`, the formats of SSM_STATES; default gdn), `w3_missing` (what the
@@ -41,6 +42,10 @@ TARGET_SETTINGS = {
     "nemotron": {"SHARAR_SERVICE": "sharar-nemotron", "SHARAR_PORT": "30005", "SHARAR_PROPOSER": "mtp",
                  "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_HEAD": "w2", "recurrence": "mamba2",
                  "w3_calibrated_only": True, "w3_required": True, "fp8_kv_only": True},
+    "bolt": {"SHARAR_SERVICE": "sharar-bolt", "SHARAR_PORT": "30006", "SHARAR_PROPOSER": "dflash2",
+             "SHARAR_DRAFT": "pinned", "SHARAR_DRAFT_PRECISION": "bf16", "SHARAR_VERIFY_STATE": "reconstruct",
+             "recurrence": "mamba2", "w3_calibrated_only": True,
+             "w3_missing": "serving the checkpoint encodings, about 25% slower single-stream than {profile} with them"},
 }
 # The recurrent-state formats each recurrence stores (SHARAR_SSM_STATE, cache/ssm_format.py): the per-window integer
 # formats on both, Mamba-2's FP16 with stochastic rounding.
@@ -68,6 +73,29 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
                      proposer: str | None = None) -> dict[str, str]:
     """The profile's value for each knob it sets, as SHARAR_* settings, for one Spark or `tp` of them and the drafter
     `proposer` (None: the target's own)."""
+    if target == "bolt":
+        if profile not in PROFILE_NAMES:
+            raise ValueError(f"unknown serving profile {profile!r}")
+        # exact: the checkpoint encodings, all nine routed experts, FP32 state and exact verification of LiLiCorr's
+        # seven drafts. Routed experts on b12x's fused MoE (BF16 activations, as vLLM serves them).
+        p = {"SHARAR_SPEC": "7", "SHARAR_W3_DECODE": "0", "SHARAR_ACCEPT_DEFAULT": "off",
+             "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_DEVICE_ACCEPT": "0", "SHARAR_MAX_BATCH": "4",
+             "SHARAR_SSM_STATE": "fp32", "SHARAR_KV_FORMAT": "fp8", "SHARAR_SSD": "1",
+             "SHARAR_MOE_KEEP": "0", "SHARAR_MOE_BUDGET": "0", "SHARAR_BOLT_EXPERTS": "b12x"}
+        if profile == "exact":
+            return p
+        # fast, throughput: the calibrated 3-bit copies of the trunk and vocabulary head (weights/bolt_w3_calibrate.py)
+        # and the int8 Mamba state; paired on GSM8K / GPQA against exact +0.1 / +1.5 points. Over the 22 h2h prompts on
+        # one GB10, mean / four-stream tok/s 86.7 / 169.8 (exact) -> 111.0 / 187.0 (+W3) -> 114.2 / 213.7 (+int8).
+        # Expert sharing as Super's fast (model/nemotron/moe.py route_budget): each token keeps its top 6 experts and a
+        # decode or verify call reads at most 20 a request and 64 in all (114.2 / 213.7 -> 121.7 / 228.9). Sampled
+        # with thinking on, fast against exact on GPQA: 75.8% against 76.3% (p 1.0). Keep 4 at 16:48 (130.7 / 251.6)
+        # thought 1.23x longer and cost 6.6 points (p 0.011), mostly answers cut off at the 32K cap.
+        # Verification stays exact: relaxed top-2 within 1.0 cost fast GPQA 5.6 points sampled with thinking on
+        # (p 0.052), and greedy top-3 within 2.0 cost 8.6 (p 0.02).
+        p.update(SHARAR_W3_DECODE="1", SHARAR_SSM_STATE="int8",
+                 SHARAR_MOE_KEEP="6", SHARAR_MOE_BUDGET="20:64")
+        return p
     if target == "nemotron":
         return nemotron_defaults(profile)
     flashnext = target == "flashnext"
@@ -173,12 +201,14 @@ def target_name(name: str | None) -> str:
     try:
         return ALIASES[name or "qwen38"]
     except KeyError:
-        raise ValueError(f"unknown target {name!r} (choose 27b, flashnext or nemotron)") from None
+        raise ValueError(f"unknown target {name!r} (choose 27b, flashnext, nemotron or bolt)") from None
 
 
 def model_config(name: str):
     """The target's pinned-checkpoint module (MODEL_ID, MODEL_REVISION, DRAFT_PINS when it has drafters); torch-free."""
-    if name == "flashnext":
+    if name == "bolt":
+        from sharar.model.bolt import config as c
+    elif name == "flashnext":
         from sharar.model.flashnext import config as c
     elif name == "nemotron":
         from sharar.model.nemotron import config as c
@@ -363,6 +393,7 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     depths = values.get("SHARAR_SPEC_DEPTHS", "")
     _check(not depths or re.fullmatch(r"\d+:\d+(,\d+:\d+)*", depths) is not None, "SHARAR_SPEC_DEPTHS must be BUCKET:DEPTH pairs, e.g. 8:1,16:0")
     _check(values.get("SHARAR_FLASHNEXT_EXPERTS", "w3") in ("w3", "nvfp4"), "SHARAR_FLASHNEXT_EXPERTS must be w3 or nvfp4")
+    _check(values.get("SHARAR_BOLT_EXPERTS", "b12x") in ("bf16", "fp8", "b12x"), "SHARAR_BOLT_EXPERTS must be bf16, fp8 or b12x")
     _check(values.get("SHARAR_DRAFT_HEAD", "fp8") in ("fp8", "w3", "w2"), "SHARAR_DRAFT_HEAD must be fp8, w3 or w2")
     _check(values.get("SHARAR_QSA_SPARSE_GRAPHS", "1") in ("0", "1"), "SHARAR_QSA_SPARSE_GRAPHS must be 0 or 1")
     _check(values.get("SHARAR_PLE_RESIDENT", "auto") in ("auto", "0"), "SHARAR_PLE_RESIDENT must be auto or 0")
@@ -391,6 +422,11 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
             int(values.get("SHARAR_SPEC", "15")) and values["SHARAR_PROPOSER"] == "dflash2"):
         values["SHARAR_DRAFT_PRECISION"] = "bf16"  # the target's FP8 draft applies when its parallel draft runs
     precision, proposer, spec = values.get("SHARAR_DRAFT_PRECISION"), values["SHARAR_PROPOSER"], int(values.get("SHARAR_SPEC", "15"))
+    if name == "bolt":
+        _check(spec == 0 or (proposer == "dflash2" and 1 <= spec <= 7),
+               "Bolt has no in-checkpoint MTP; use LiLiCorr DFlash2 at depth 1..7, or SHARAR_SPEC=0")
+        _check(precision == "bf16", "Bolt LiLiCorr uses its published W4A16/BF16 draft weights")
+        _check(kv_format in ("fp8", "sim-bf16"), "Bolt supports FP8 KV or sim-bf16 for parity")
     _check(proposer in ("mtp", "dflash2"), f"SHARAR_PROPOSER must be mtp or dflash2 (got {proposer!r})")
     _check(precision != "fp8" or (spec and proposer == "dflash2"), "FP8 draft precision requires enabled DFlash2 speculation")
     max_context = int(values.get("SHARAR_MAX_CONTEXT") or DEFAULT_CONTEXT)

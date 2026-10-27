@@ -90,6 +90,8 @@ class Target:
     draft_pins: tuple[tuple[str, str, str], ...] = ()
     # A request's default stop ids (the chat template's end of turn, then end of text).
     stop_token_ids: tuple[int, ...] = (248046, 248044)  # Qwen3.8: <|im_end|>, <|endoftext|>
+    # Puzzle MoE blocks: (checkpoint index, expert count, intermediate width, top-k).
+    moe_block_specs: tuple[tuple[int, int, int, int], ...] = ()
     # The recurrent layers' recurrence: "gdn" (Gated DeltaNet) or "mamba2"; it picks the state formats
     # (`launch.settings.SSM_STATES`) and the accepted-state replay.
     recurrence: str = "gdn"
@@ -187,6 +189,9 @@ class Target:
         raise FileNotFoundError(f"pinned snapshot {self.model_revision} not found under {root}")
 
     def load_model_config(self, snap: Path) -> dict:
+        if self.name == "bolt":
+            from sharar.model.bolt.config import check_config
+            return check_config(self, snap)
         if self.family == "nemotron":
             from sharar.model.nemotron.config import check_config
             return check_config(self, snap)
@@ -346,7 +351,24 @@ def _nemotron() -> Target:
 QWEN38 = _qwen38()
 FLASHNEXT = _flashnext()
 NEMOTRON = _nemotron()
-TARGETS: dict[str, Target] = {QWEN38.name: QWEN38, FLASHNEXT.name: FLASHNEXT, NEMOTRON.name: NEMOTRON}
+
+
+def _bolt() -> Target:
+    from sharar.model.bolt import config as c
+    # Same recurrence and attention as Super; Puzzle prunes only the MoE geometry.
+    return replace(NEMOTRON, name="bolt", model_id=c.MODEL_ID, model_revision=c.MODEL_REVISION,
+                   model_cache_key=c.MODEL_CACHE_KEY, layer_types=c.LAYER_TYPES,
+                   max_position_embeddings=c.BOLT.context, num_experts=0, experts_per_token=9,
+                   moe_intermediate_size=0, mtp_layers=0, w3_repo=None, w3_revision=None,
+                   prefill_chunk=c.PREFILL_CHUNK, solo_prefill_chunk=0,
+                   weight_load_peak_bytes=c.WEIGHT_LOAD_PEAK_BYTES,
+                   draft_pins=tuple((name, *pin) for name, pin in c.DRAFT_PINS.items()),
+                   moe_block_specs=tuple((i, e, width, 9) for i, e, width in c.MOE_SPECS),
+                   kv_formats=("fp8", "sim-bf16"))  # sim-bf16: the parity tests' unquantized cache
+
+
+NEMOTRON_BOLT = _bolt()
+TARGETS: dict[str, Target] = {t.name: t for t in (QWEN38, FLASHNEXT, NEMOTRON, NEMOTRON_BOLT)}
 DEFAULT_TARGET = QWEN38
 
 
@@ -361,6 +383,9 @@ def get(name: str | None) -> Target:
 
 def load_model(target: Target, snap: Path, **kwargs):
     """Construct the target's model object; the executor reads its `.target`."""
+    if target.name == "bolt":
+        from sharar.model.bolt.model import Bolt
+        return Bolt(snap, target=target, **kwargs)
     if target.family == "qwen38":
         from sharar.model.qwen38 import Qwen38
         return Qwen38(snap, target=target, **kwargs)

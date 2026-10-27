@@ -20,10 +20,10 @@ def draft_snapshot(proposer, draft_dir=None, target=None):
     directory = Path(draft_dir)
     if not (directory / "config.json").is_file() or not (directory / "model.safetensors").is_file():
         raise FileNotFoundError(f"draft directory {directory} needs config.json and model.safetensors")
-    wanted = "DFlash2DraftModel"
+    wanted = ("DFlash2DraftModel", "LiLiCorrDraftModel")
     architectures = json.loads((directory / "config.json").read_text()).get("architectures")
-    if architectures != [wanted]:
-        raise ValueError(f"draft directory {directory} holds {architectures}, expected [{wanted!r}] for {proposer}")
+    if not architectures or len(architectures) != 1 or architectures[0] not in wanted:
+        raise ValueError(f"draft directory {directory} holds {architectures}, expected one of {wanted} for {proposer}")
     return directory
 
 
@@ -57,10 +57,15 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
             head.set_draft_head(ids, fmt, cfg.draft_head_rescore)  # shortlist rescored by the target's head
         adapter = MtpProposer(head, context, k)
     elif proposer == "dflash2":
+        import json
         from sharar.model.parallel_draft import ParallelDraftModel
         from sharar.proposers.parallel import ParallelProposer
         snapshot = draft_snapshot(proposer, draft_dir, model.target)
-        adapter = ParallelProposer(ParallelDraftModel(snapshot, model, context.max_context, precision=draft_precision), context, k, proposer)
+        cls = ParallelDraftModel
+        if json.loads((snapshot / 'config.json').read_text())['architectures'] == ['LiLiCorrDraftModel']:
+            from sharar.model.lilicorr import LiLiCorrDraftModel
+            cls = LiLiCorrDraftModel
+        adapter = ParallelProposer(cls(snapshot, model, context.max_context, precision=draft_precision), context, k, proposer)
     else:
         raise ValueError(f"unknown proposer {proposer!r}")
     return adapter

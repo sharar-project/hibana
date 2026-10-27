@@ -241,7 +241,10 @@ def _share_pick_kernel(Slots, Cand, P, Set, Ids, W, R, K: tl.constexpr, C: tl.co
     v = tl.where(chosen, p, 0.0)
     if CP == 64:
         v = tl.sum(tl.reshape(v, [RB, 2, 32]), 1)
-    v16 = tl.sum(tl.reshape(v, [RB, 2, 16]), 1)
+    if CP >= 32:
+        v16 = tl.sum(tl.reshape(v, [RB, 2, 16]), 1)
+    else:  # Bolt's top 9 pads to 16 lanes
+        v16 = v
     v8 = tl.sum(tl.reshape(v16, [RB, 2, 8]), 1)
     v4 = tl.sum(tl.reshape(v8, [RB, 2, 4]), 1)
     v2 = tl.sum(tl.reshape(v4, [RB, 2, 2]), 1)

@@ -14,6 +14,7 @@ constraints = [
     { name = "annotated-types", specifier = "==0.8.0" },
     { name = "anyio", specifier = "==4.15.0" },
     { name = "apache-tvm-ffi", specifier = "==0.1.13.post3" },
+    { name = "b12x", specifier = "==1.5.0" },
     { name = "certifi", specifier = "==2026.7.22" },
     { name = "charset-normalizer", specifier = "==3.5.1" },
     { name = "click", specifier = "==8.5.0" },
@@ -62,6 +63,7 @@ constraints = [
     { name = "nvidia-cutlass-dsl-libs-base", specifier = "==4.7.1" },
     { name = "nvidia-cutlass-dsl-libs-core", specifier = "==4.7.1" },
     { name = "nvidia-cutlass-dsl-libs-cu12", specifier = "==4.7.1" },
+    { name = "nvidia-cutlass-dsl-libs-cu13", specifier = "==4.7.1" },
     { name = "nvidia-ml-py", specifier = "==13.610.43" },
     { name = "nvidia-nccl-cu13", specifier = "==2.29.7" },
     { name = "nvidia-nvjitlink", specifier = "==13.3.33" },
@@ -147,6 +149,28 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/14/14/caee1214caea4b631aa98000fda0c3d2b9ed066505dfd36044d3b9c6901a/apache_tvm_ffi-0.1.13.post3.tar.gz", hash = "sha256:b8153f020418df39cd93c3a6beda9d8c9b6e49b4e1b96de26ea6889c32347a00", size = 3017667, upload-time = "2026-08-10T14:01:07.533Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a6/c4/db872a3d3ff7ba718cc76b8076b4dfd80eb5b6a36ff5b131aca443754e66/apache_tvm_ffi-0.1.13.post3-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c108c26935a609b636bb1a53df6d7c53ab776550ad04f17d6dcb35e883112f78", size = 2755741, upload-time = "2026-08-10T14:00:31.291Z" },
+]
+
+[[package]]
+name = "b12x"
+version = "1.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "apache-tvm-ffi" },
+    { name = "cuda-python" },
+    { name = "nvidia-cutlass-dsl" },
+    { name = "nvidia-cutlass-dsl-libs-base" },
+    { name = "nvidia-cutlass-dsl-libs-core" },
+    { name = "nvidia-cutlass-dsl-libs-cu12" },
+    { name = "nvidia-cutlass-dsl-libs-cu13" },
+    { name = "rich" },
+    { name = "safetensors" },
+    { name = "torch" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/68/15/ab0198b2d97cff0a6bda3da54a7791c745007d7cc204d2e03ad81d39f086/b12x-1.5.0.tar.gz", hash = "sha256:20d2c80d6590a0e4f622f89055cfb1fee92b08c427b6df1bc6b82b68759dbab2", size = 2183283, upload-time = "2026-09-30T19:22:21.182Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/33/f9/1a52a8a90b9d5dd3ce0ea32c3bfe88675dc17ef22010117f9996edb22a91/b12x-1.5.0-py3-none-any.whl", hash = "sha256:4b6635e93ce672db1415cca1817c81eab461a245fb96a5e2de7efa2e36a36114", size = 2434954, upload-time = "2026-09-30T19:22:19.019Z" },
 ]
 
 [[package]]
@@ -807,6 +831,22 @@ wheels = [
 ]
 
 [[package]]
+name = "nvidia-cutlass-dsl-libs-cu13"
+version = "4.7.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cuda-python" },
+    { name = "numpy" },
+    { name = "nvidia-cuda-nvdisasm" },
+    { name = "nvidia-cutlass-dsl-libs-base" },
+    { name = "protobuf" },
+    { name = "typing-extensions" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/30/ea/c7c2b4da3d6c9818e152e20cd5f797fb6d9ef75c3a5c80d2d6a9cb211489/nvidia_cutlass_dsl_libs_cu13-4.7.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:e675bf04dc6c91f7c4d5540699b7a031f2b8b44cd2687b32c20892f112f7e0d9", size = 86957786, upload-time = "2026-08-26T03:07:23.015Z" },
+]
+
+[[package]]
 name = "nvidia-ml-py"
 version = "13.610.43"
 source = { registry = "https://pypi.org/simple" }
@@ -1062,6 +1102,7 @@ test = [
 
 [package.dev-dependencies]
 gb10 = [
+    { name = "b12x" },
     { name = "einops" },
     { name = "flashinfer-jit-cache" },
     { name = "flashinfer-python" },
@@ -1091,6 +1132,7 @@ provides-extras = ["test", "eval"]
 
 [package.metadata.requires-dev]
 gb10 = [
+    { name = "b12x", specifier = "==1.5.0" },
     { name = "einops", specifier = "==0.8.2" },
     { name = "flashinfer-jit-cache", specifier = "==0.6.17+cu130", index = "https://flashinfer.ai/whl/cu130" },
     { name = "flashinfer-python", specifier = "==0.6.17" },

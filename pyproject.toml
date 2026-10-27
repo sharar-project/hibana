@@ -32,6 +32,7 @@ gb10 = [
   "torch==2.13.0+cu130",
   "flashinfer-python==0.6.17",
   "flashinfer-jit-cache==0.6.17+cu130",
+  "b12x==1.5.0",  # Bolt's projections and routed experts (model/bolt/linear.py, kernels/b12x_iq2_moe.py)
   "triton==3.7.1",
   "einops==0.8.2",
   "ninja==1.13.2",  # first-use builds of the CUDA kernels
@@ -49,6 +50,7 @@ constraint-dependencies = [
   "annotated-types==0.8.0",
   "anyio==4.15.0",
   "apache-tvm-ffi==0.1.13.post3",
+  "b12x==1.5.0",
   "certifi==2026.7.22",
   "charset-normalizer==3.5.1",
   "click==8.5.0",
@@ -96,6 +98,7 @@ constraint-dependencies = [
   "nvidia-cutlass-dsl-libs-base==4.7.1",
   "nvidia-cutlass-dsl-libs-core==4.7.1",
   "nvidia-cutlass-dsl-libs-cu12==4.7.1",
+  "nvidia-cutlass-dsl-libs-cu13==4.7.1",
   "nvidia-cutlass-dsl==4.7.1",
   "nvidia-ml-py==13.610.43",
   "nvidia-nccl-cu13==2.29.7",
@@ -149,11 +152,14 @@ explicit = true
 [project.scripts]
 sharar = "sharar.cli:main"
 
+[tool.setuptools]
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+
 [tool.setuptools.packages.find]
 include = ["sharar*"]
 
 [tool.setuptools.package-data]
 sharar = ["benchmark_data/*.txt"]
-"sharar.kernels" = ["csrc/*.cu", "csrc/*.cpp"]
+"sharar.kernels" = ["csrc/*.cu", "csrc/*.cuh", "csrc/*.cpp"]
 "sharar.kernels.qsa" = ["csrc/*.cu", "csrc/LICENSE.*", "LICENSE.vllm", "README.md"]
 "sharar.kernels.cute.gdn" = ["LICENSE", "README.md"]

@@ -83,6 +83,12 @@ def budget(spec, batch, *, cache_slots=96, target=None):
         snapshot = draft_snapshot(spec.name, spec.draft_dir, t)  # the checkpoint served: pinned, or --draft DIR
         weights, largest = tensor_bytes(snapshot)
         cfg = json.loads((snapshot / 'config.json').read_text())
+        if cfg.get('architectures') == ['LiLiCorrDraftModel']:
+            from sharar.model.lilicorr_config import validate_config
+            if spec.depth > validate_config(cfg, t):
+                raise ValueError('draft depth exceeds the checkpoint trained block size')
+            if spec.draft_precision != 'bf16':
+                raise ValueError('LiLiCorr uses its published W4A16/BF16 draft weights')
         window = cfg['sliding_window']
         # Active rings (+dummy), one feature window per usable recurrent slot,
         # and two temporaries while gathering and replacing a retained window.

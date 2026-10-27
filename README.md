@@ -31,6 +31,7 @@ uv run sharar launch claude   # Claude Code on the model (also opencode, aider, 
 | | |
 |---|---|
 | `sharar serve 27b` / `sharar serve flashnext` | Serve a model in the foreground (Flash-Next on port 30004) |
+| `sharar serve bolt` | Serve Nemotron 3.5 Bolt's packed text model on port 30006 |
 | `sharar serve 27b --detach` | The same as a background service; `sharar stop`, `sharar logs -f` |
 | `sharar serve 27b --exact` | The model's own outputs, for benchmarks (the default `fast` profile is faster and slightly lossy; also `--throughput`) |
 | `sharar serve 27b --tp 2` | Tensor-parallel on two Sparks linked by their ConnectX ports ([tensor parallel](docs/tensor-parallel.md)) |
@@ -68,6 +69,7 @@ behavior, update its page in the same pull request (`python3 tools/check_links.p
 | [Cache design](docs/cache_design.md) | GPU pools, the radix prefix cache and the SSD tier |
 | [Interfaces](docs/interfaces.md) | Request ownership, proposer lifecycle, device-resident acceptance, failure handling |
 | [Flash-Next](docs/flashnext.md) | The second target: model, package, conventions, sparse attention, its MTP and DFlash2 drafts |
+| [Nemotron Bolt](docs/bolt.md) | Packed IQ2/Q8/NVFP4 text inference on the Nemotron Mamba runtime |
 | [Tensor parallel](docs/tensor-parallel.md) | Two Sparks: setup, sharding, the RDMA all-reduce, limits |
 | [3-bit calibration](docs/w3-calibration.md) | Fitting and serving the calibrated 3-bit copies |
 | [Evaluation](docs/evaluation.md) | Measuring a build or a change, the lossy-change gate, nightly and weekly GB10 checks |
