@@ -52,8 +52,8 @@ checkpoint, pinned by revision in the target's config (`W3_REPO`, `W3_REVISION`)
 - a link to any other directory is a local calibration: it stays, and the serve prints a note with the command that
   switches to the published copies (`fetch --target T --root R --switch`).
 
-Every target has one: Flash-Next's (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3`: the 3-bit trunk and the GPTQ
-routed experts) and the 27B's (`yemara/Qwen3.8-27B-NVFP4-sharar-w3`, GPTQ from the FP8 release on the `bc7984f`
+Every target has one: Flash-Next's (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3-qad`: the 3-bit trunk trained by
+quantization-aware distillation, [below](#qad-trunk-flash-next), and the GPTQ routed experts) and the 27B's (`yemara/Qwen3.8-27B-NVFP4-sharar-w3`, GPTQ from the FP8 release on the `bc7984f`
 inputs), and Nemotron's (`shadowpa0327/NVIDIA-Nemotron-3.5-Super-NVFP4-sharar-w3`: the GPTQ trunk projections and
 routed experts; private), which its `fast` and `throughput` require: without one they refuse to start. To serve a new
 calibration, point the link at its directory or set
@@ -113,6 +113,25 @@ SHARAR_TARGET=flashnext python3 -m sharar.weights.flashnext_w3_experts fit --met
 The pinned checkpoint's GPTQ fit (`694e279`; relative weight error against the NVFP4 experts 0.164 fc1 / 0.163 fc2,
 output error 0.072 / 0.120) matched `fast` with NVFP4 experts within noise on MMLU-Pro, GPQA Diamond, GSM8K and
 HumanEval. Serving it replaces the NVFP4 experts (they are not loaded), 17.2 GiB less resident memory.
+
+## QAD trunk (Flash-Next)
+
+The pinned Flash-Next checkpoint (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3-qad` at `5c4c62a`) keeps `694e279`'s routed
+experts byte for byte and replaces its 231 GPTQ trunk matrices with copies trained by quantization-aware distillation
+(NVIDIA ModelOpt): the student runs the decode numerics (3-bit trunk and experts, E4M3 activations per 32-group); each
+trunk weight's code (straight-through to the eight Lloyd levels) and a per-row gain on its row scale are trained on
+KL(teacher || student) over the vocabulary, the teacher being the checkpoint as `exact` serves it (BF16 trunk, NVFP4
+experts). The E4M3 group scales are kept. 33M tokens of Flash-Next's own thinking-on answers (Open-PerfectBlend,
+OpenCodeInstruct, UltraChat prompts; GPQA and MMLU-Pro test overlaps removed); 2.0% of the trunk codes changed. Its model
+card has the method and data.
+
+On H100 through the SGLang port of these kernels (`w3` arm: 3-bit trunk + routed experts, exact DFlash2 verification),
+GPQA Diamond at 64K tokens, three seeds: 83.3% against 76.4% for `694e279` (paired +6.9 points, 95% CI +3.5 to +10.4)
+and 86.4% exact; capped answers 18 a seed against 30. With the `fast` techniques (expert sharing 4:12:64, relaxed
+top-2 within 1.0), one seed, 82.3-82.8% at batch 8, 16 and 32 against 83.8% without them. LiveCodeBench v6 (131
+problems from 2025-02), one seed, 128K tokens: 84.7%; 73.3% counting only answers within 64K, against 77.1% exact at 64K.
+These are port numbers, not GB10 numbers: the lossy-change gate (`tools/lossy-gate.py --target flashnext --profile fast`)
+against `exact` is the check on a Spark.
 
 
 ## Nemotron

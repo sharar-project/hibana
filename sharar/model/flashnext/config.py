@@ -8,8 +8,10 @@ MODEL_ARCHITECTURE = "Qwen4ExpForConditionalGeneration"
 # Calibrated 3-bit trunk copies: fetched on first serve when $SHARAR_RESULTS/w3-checkpoints/flashnext-current
 # is missing. Private until the redistribution terms of the NVFP4 export are checked; the fetch then fails and the
 # launcher serves the FP8 trunk with a warning.
-W3_REPO = "yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3"
-W3_REVISION = "694e2790772b36297b52bb1dffdc33281d766671"  # 3-bit trunk + GPTQ 3-bit routed experts; the trunk-only copies were 970cbfc
+W3_REPO = "yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3-qad"
+# QAD (ModelOpt) trunk copies + the GPTQ 3-bit routed experts of yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3@694e279 (GPTQ trunk);
+# the trunk-only copies were that repository's 970cbfc
+W3_REVISION = "5c4c62a62853caebea8cedda7fbed952efa1effe"
 
 HIDDEN_SIZE = 2560
 NUM_LAYERS = 48
