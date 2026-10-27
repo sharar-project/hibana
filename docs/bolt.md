@@ -74,9 +74,11 @@ top-k 20):
 Greedy, thinking off, mean and four streams: the 3-bit copies take `exact`'s 86.7 / 169.8 to 111.0 / 187.0, the
 int8 state to 114.2 / 213.7 and expert sharing to 121.7 / 228.9.
 
-Paired against `exact` item by item (`evals.suite compare`). Sampled with thinking on (the checkpoint's defaults,
-32,768-token cap), GPQA Diamond: `fast` 75.8% against 76.3% (-0.5 points, p 1.0; 11 better, 12 worse), 36 against
-34 answers at the cap, 15.1K against 14.6K tokens an item. Greedy with thinking off (GSM8K 1,319 / GPQA 198): the
+Paired against `exact` item by item (`evals.suite compare`), sampled with thinking on at the checkpoint's defaults.
+GPQA Diamond at a 65,536-token cap, four seeds, eight requests at once: `fast` 85.7% against 85.4% (+0.4 points, 95%
+interval -1.7 to +2.5, p 0.81, over 792 pairs), 35 against 42 answers at the cap; NVIDIA reports 86.43 with no cap
+and eight repeats. At a 32,768-token cap, one seed: GPQA `fast` 75.8% against 76.3% (p 1.0), 36 against 34 answers
+at the cap; IFEval (541, prompt-level strict) 85.0% against 84.8% (p 1.0). Greedy with thinking off (GSM8K 1,319 / GPQA 198): the
 3-bit copies -0.5 / -2.5 points (p 0.27 / 0.56) and with the int8 state +0.1 / +1.5 (p 1.0 / 0.76); MMLU-Pro (first
 1,000) with the 3-bit copies -0.1 points. Thinking on and greedy, the 3-bit copies score GPQA 74.2% against 73.7%
 and GSM8K (first 300) 97.3% against 96.3%.
