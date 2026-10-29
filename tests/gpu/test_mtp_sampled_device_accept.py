@@ -66,17 +66,36 @@ def test_sampled_batches_propose_a_law_and_greedy_batches_argmax(runtime):
     assert greedy.probabilities is None and greedy.support is None
 
 
+def _run_recorded(ex, prompts, params, rounds, device_accept):
+    """`run_rounds`, and each round's drafts."""
+    drafts = []
+    propose = ex.spec.proposer.propose
+
+    def record(*args, **kwargs):
+        proposal = propose(*args, **kwargs)
+        drafts.append(proposal.tokens.clone())
+        return proposal
+    ex.spec.proposer.propose = record
+    try:
+        return run_rounds(ex, prompts, params, rounds, device_accept), drafts
+    finally:
+        ex.spec.proposer.propose = propose
+
+
 @pytest.mark.parametrize('batch', [1, 3])
 @pytest.mark.parametrize('rounds', [1, 8])
 def test_sampled_draft_device_round_matches_host_round(runtime, batch, rounds):
     """As test_mtp_device_accept's sampled test, with sampled drafts: both paths draw the same drafts (Philox at the
     draft offsets) and decide on the same law with the same kernel at the verify offsets, so the first round agrees
-    exactly and later rounds up to the first whose counts differ."""
+    exactly and later rounds up to the first whose counts or drafts differ. Later rounds draft from the fed-back KV,
+    which the two paths project differently, and a draw from a law that moved can change a draft (and the residual a
+    rejection draws from) where the argmax would not, with the counts unchanged."""
     ex, prompts = runtime
     params = [SamplingParams(**SAMPLED, seed=100 + i) for i in range(batch)]
-    host = run_rounds(ex, prompts[:batch], params, rounds, device_accept=False)
-    device = run_rounds(ex, prompts[:batch], params, rounds, device_accept=True)
-    agree = next((j for j, (a, b) in enumerate(zip(device[3], host[3])) if a != b), min(len(device[3]), len(host[3])))
+    host, host_drafts = _run_recorded(ex, prompts[:batch], params, rounds, device_accept=False)
+    device, device_drafts = _run_recorded(ex, prompts[:batch], params, rounds, device_accept=True)
+    agree = next((j for j, (a, b, da, db) in enumerate(zip(device[3], host[3], device_drafts, host_drafts))
+                  if a != b or not torch.equal(da, db)), min(len(device[3]), len(host[3])))
     assert agree >= 1, (device[3], host[3])
     for i, (out_d, out_h) in enumerate(zip(device[0], host[0])):
         n = 1 + sum(c[i] for c in host[3][:agree])
