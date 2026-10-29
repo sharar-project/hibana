@@ -10,6 +10,14 @@ from sharar.engine import sampling_rng
 from sharar.proposers.mtp import draft_laws, draft_rows
 
 
+@pytest.fixture(autouse=True)
+def _inference_mode():
+    """As the engine runs: sampling_rng's pinned buffers are process-wide, and one an engine test created under
+    inference mode cannot be written outside it."""
+    with torch.inference_mode():
+        yield
+
+
 class _Req:
     def __init__(self, params, seed, rounds=0):
         self.params = params
