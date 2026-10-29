@@ -164,6 +164,7 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 |---|---|---|---|
 | Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-3 within 2.0 logits; Flash-Next DFlash2 top-2 within 1.0; Bolt off | as fast |
 | Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_SOFT`, `accept_soft` in the [API](api.md)) | 0 (exact) | Flash-Next s = 0.5; the 27B, Nemotron and Bolt 0 (exact) | as fast |
+| Sampled MTP drafts (`SHARAR_MTP_SAMPLE`, [below](#sampled-mtp-drafts)) | off | on where MTP drafts | as fast |
 | Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next and Nemotron also the routed experts; Bolt's trunk and vocabulary head) | off | on | on |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next and Nemotron | as fast |
 | NVFP4 KV cache (`SHARAR_KV_FORMAT`, [below](#nvfp4-kv)) | FP8 | one Spark: NVFP4 (the 27B and Flash-Next; Nemotron serves FP8 only); two Sparks FP8 | as fast |
@@ -219,6 +220,26 @@ Four of the knobs take more than the table shows:
 
 A new lossy option enters `fast` (and so `throughput`) only through the lossy-change gate
 ([CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option)).
+
+
+### Sampled MTP drafts
+
+With `SHARAR_MTP_SAMPLE=1` a batch with a sampled request does not draft the MTP head's argmax: each step draws its
+draft from the request's own law (its temperature, top-k and top-p; `SHARAR_MTP_DRAFT_TEMPERATURE` multiplies the
+temperature) over the draft head's `SHARAR_MTP_SAMPLE_CANDIDATES` (16) best tokens, on Flash-Next and Nemotron the 2-bit
+head's shortlist rescored by the target's FP8 rows. The draw is a Philox uniform at the request's draft offset
+(engine/sampling_rng.py), so a seeded request stays reproducible; the drafted token feeds the next MTP step. The
+verifier gets that law q and its candidates and accepts each draft with probability min(1, p/q), sampling the
+residual max(p - q, 0) at the first rejection (engine/rejection.py; on the device with `SHARAR_DEVICE_ACCEPT`): what is
+emitted is the target's law p whatever q is, and a token outside the candidates still comes out through the residual.
+An argmax draft is accepted with probability p(argmax); a sampled one with sum over tokens of min(p, q).
+
+Measured on the SGLang port (Flash-Next QAD 3-bit, MTP depth 4, H100, 40 GPQA-Diamond prompts, T 1.0, top-p 0.95,
+top-k 20), tokens a round: argmax drafts 2.55 exact, 4.17 relaxed 3:2.0; sampled drafts 3.13 exact (3.15 on the
+head's top 16, 3.07-3.13 at draft temperature 0.8-1.3); +16-19% tok/s at 4 and 16 requests over argmax exact. The
+relaxed rule is faster but its sampled output moves toward the argmax (GPQA-D at 256K, 4 requests: 73.7% against 90.9%
+exact, 50 answers cut at the length cap), so the profiles verify sampled MTP drafts exactly. Greedy requests are
+unchanged (argmax drafts and `SHARAR_ACCEPT_DEFAULT`).
 
 ## Request traces
 

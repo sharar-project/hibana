@@ -52,6 +52,12 @@ class TargetHead:
         """(values, global ids), each [..., k]."""
         return self.logits_fn(x).topk(k, dim=-1)
 
+    def candidates(self, x: torch.Tensor, r: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """The head's r best tokens: (global ids int64 [..., r], their FP32 logits [..., r]), descending. A sampled MTP
+        draft's law lives on them (proposers/mtp.py)."""
+        values, ids = self.logits_fn(x).float().topk(r, dim=-1)
+        return ids, values
+
 
 def _weight_scale(lin) -> torch.Tensor | None:
     """An FP8 head's one weight scale: a `TrunkLinear`'s `scale` (Flash-Next; None when it is BF16) or an
@@ -76,6 +82,7 @@ class ShortlistHead:
             raise ValueError("a reduced draft vocabulary reads rows of a TrunkLinear lm_head (Flash-Next)")
         self.fmt = fmt
         self.ids = None if ids is None else ids.to(lm_head.weight.device, torch.int64).unique(sorted=True)
+        self.real_rows = None if self.ids is None else self.ids.numel()  # rows past it repeat the last id (_pad_rows)
         if fmt != "fp8" and self.ids is not None:
             self.ids = _pad_rows(self.ids, 128)
         rows = lm_head if self.ids is None else TrunkLinear(lm_head.weight[self.ids].contiguous(), lm_head.scale)
@@ -131,6 +138,25 @@ class ShortlistHead:
             values, local = logits.topk(k, dim=-1)
             ids = self._global(local)
         return values.view(*x.shape[:-1], k), ids.view(*x.shape[:-1], k)
+
+    def candidates(self, x: torch.Tensor, r: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """The head's r best tokens, (global ids int64 [..., r], FP32 logits [..., r]) descending: with rescoring, the
+        best r of the shortlist (the max(rescore, r) best by the low-bit logits) by the target head's FP8 rows, weight
+        scale applied, so the shortlist holds the `argmax` pick; else the r best rows of this head. Padded rows
+        (repeats of the last id) are never candidates, so the ids are unique per row."""
+        flat = x.reshape(-1, x.shape[-1])
+        logits = self._logits(flat)
+        if self.real_rows is not None and logits.shape[-1] > self.real_rows:
+            logits = logits.float().masked_fill(torch.arange(logits.shape[-1], device=logits.device) >= self.real_rows, float('-inf'))
+        if self.rescore:
+            cand, exact = self._shortlist(flat, logits, max(self.rescore, r))
+            values, order = exact.topk(r, dim=-1)
+            scale = _weight_scale(self.source)
+            values, ids = values * (scale.float().reshape(()) if scale is not None else 1.0), cand.gather(-1, order)
+        else:
+            values, local = logits.float().topk(r, dim=-1)
+            ids = self._global(local)
+        return ids.view(*x.shape[:-1], r), values.view(*x.shape[:-1], r)
 
     def _shortlist(self, x: torch.Tensor, logits: torch.Tensor, r: int) -> tuple[torch.Tensor, torch.Tensor]:
         """The shortlist's global ids [M, r] and their logits by the target head's FP8 rows, without the
@@ -223,6 +249,28 @@ class VocabParallelHead:
     def argmax(self, x: torch.Tensor) -> torch.Tensor:
         flat = x.reshape(-1, x.shape[-1])
         return self._pick(flat, self._logits(flat)).view(x.shape[:-1])
+
+    def candidates(self, x: torch.Tensor, r: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """`ShortlistHead.candidates` across the ranks: each proposes its max(rescore, r) best, the best of those are the
+        shortlist, and with rescoring each candidate's FP8 logit (from the rank holding its row, weight scale applied)
+        orders them. Every rank returns the same (ids [..., r], FP32 logits [..., r])."""
+        from sharar.distributed import all_reduce
+        flat = x.reshape(-1, x.shape[-1])
+        width = max(self.rescore, r)
+        values, local = self._logits(flat).topk(width, dim=-1)
+        values, ids = self._gather(values.float()), self._gather(local + self.offset)  # [M, size * width]
+        top_v, top = values.topk(width, dim=-1)
+        cand = ids.gather(-1, top)
+        if not self.rescore:
+            out_ids, out_v = cand[:, :r], top_v[:, :r]
+        else:
+            mine = (cand >= self.offset) & (cand < self.offset + self.local)
+            rows = self.lm_head.weight[(cand - self.offset).clamp(0, self.local - 1)].float()
+            exact = all_reduce(torch.bmm(rows, flat.float().unsqueeze(-1)).squeeze(-1) * mine)
+            scale = _weight_scale(self.lm_head)
+            out_v, order = (exact * (scale.float().reshape(()) if scale is not None else 1.0)).topk(r, dim=-1)
+            out_ids = cand.gather(-1, order)
+        return out_ids.view(*x.shape[:-1], r), out_v.view(*x.shape[:-1], r)
 
     def argmax_confidence(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """The argmax and the softmax top-1 probability and margin over the whole vocabulary: each rank's
