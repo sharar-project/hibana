@@ -329,6 +329,8 @@ class Settings:
             args.append("--accept-default-sampled")
             if self.get("SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"):
                 args += ["--accept-default-sampled-threshold", self.get("SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD")]
+            if self.get("SHARAR_ACCEPT_SOFT"):
+                args += ["--accept-soft", self.get("SHARAR_ACCEPT_SOFT")]
         if self.get("SHARAR_SPEC_DEPTHS") and self.spec:
             args += ["--spec-depths", self.get("SHARAR_SPEC_DEPTHS")]
         if self.draft_dir is not None:

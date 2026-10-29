@@ -54,6 +54,8 @@ def _record(req) -> dict:
         },
         "spec": None,
     }
+    if params.accept_soft != float("inf"):  # the soft relaxed rule; absent: the forced accept
+        doc["params"]["accept_soft"] = params.accept_soft
     rounds = req.trace_rounds
     if rounds:
         doc["spec"] = {"k": len(rounds[0]["y"]), "rounds": list(rounds)}

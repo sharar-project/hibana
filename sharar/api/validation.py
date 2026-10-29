@@ -8,15 +8,18 @@ from sharar.engine.sampler import InvalidRequest, SamplingParams
 # and --accept-default-sampled-threshold.
 ACCEPT_DEFAULT = (1, 0.0)
 ACCEPT_DEFAULT_SAMPLED = (1, 0.0)
+# accept_soft for requests that do not set it (--accept-soft; inf: the forced accept).
+ACCEPT_SOFT_DEFAULT = math.inf
 
 
-def set_accept_default(top_k: int, margin: float, sampled: bool | tuple[int, float] = False) -> None:
+def set_accept_default(top_k: int, margin: float, sampled: bool | tuple[int, float] = False, soft: float = math.inf) -> None:
     """sampled: False keeps sampled requests exact, True gives them the greedy threshold, (K, M) their own."""
-    global ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED
+    global ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED, ACCEPT_SOFT_DEFAULT
     threshold = sampled if isinstance(sampled, tuple) else (top_k, margin) if sampled else (1, 0.0)
     for k, m in ((top_k, margin), threshold):
         SamplingParams(accept_top_k=k, accept_margin=m).validate()
-    ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED = (top_k, margin), threshold
+    SamplingParams(accept_soft=soft).validate()
+    ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED, ACCEPT_SOFT_DEFAULT = (top_k, margin), threshold, soft
 
 
 def parse_accept_default(text: str | None) -> tuple[int, float]:
@@ -41,6 +44,7 @@ def _sampling_from(body: dict, max_default: int = 512) -> SamplingParams:
     top_p = body.get("top_p", sp.get("top_p", 0.95))
     top_k = body.get("top_k", sp.get("top_k", 20))
     seed = body.get("seed", sp.get("seed"))
+    soft = body.get("accept_soft", sp.get("accept_soft"))
     # JSON has one number type. Accept finite integral floats at the HTTP
     # boundary; the engine contract stays strictly integer (and rejects bool).
     def integer(value):
@@ -56,6 +60,7 @@ def _sampling_from(body: dict, max_default: int = 512) -> SamplingParams:
         trace=body.get("trace", sp.get("trace", True)),
         accept_top_k=integer(body.get("accept_top_k", sp.get("accept_top_k", 1))),
         accept_margin=body.get("accept_margin", sp.get("accept_margin", 0.0)),
+        accept_soft=soft if soft is not None else ACCEPT_SOFT_DEFAULT,
     )
     default = ACCEPT_DEFAULT if params.greedy else ACCEPT_DEFAULT_SAMPLED
     if ("accept_top_k" not in body and "accept_top_k" not in sp and "accept_margin" not in body and "accept_margin" not in sp

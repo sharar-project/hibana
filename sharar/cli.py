@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -45,6 +46,7 @@ def add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--accept-default-sampled", action="store_true", default=None, help="also apply the relaxed acceptance default to sampled requests (default: SHARAR_ACCEPT_DEFAULT_SAMPLED=1, else greedy only)")
     p.add_argument("--accept-default-sampled-threshold", default=None, help="with --accept-default-sampled, the K:M sampled requests get instead of --accept-default's (default: SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD)")
     p.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests that do not set accept_top_k/accept_margin, as K:M (default: SHARAR_ACCEPT_DEFAULT, else the profile's); 'off' keeps every request exact")
+    p.add_argument("--accept-soft", type=float, default=None, help="sampled relaxed requests that do not set accept_soft: a plausible draft is accepted when u * q < e^s * p instead of always, so no token comes out more than e^s times as often as the target gives it (0: exact sampling; default: SHARAR_ACCEPT_SOFT, else inf, the forced accept)")
     p.add_argument("--tp", type=int, default=1, help="tensor-parallel ranks, one GPU (Spark) each; rank 0 serves HTTP")
     p.add_argument("--tp-rank", type=int, default=0, help="this process's tensor-parallel rank")
     p.add_argument("--tp-address", default=None, help="HOST:PORT on rank 0's host where the ranks meet (required with --tp > 1)")
@@ -124,6 +126,9 @@ def run_engine(args, parser) -> int:
             accept_default_sampled = False
     if not args.spec:
         accept_default, accept_default_sampled = (1, 0.0), False  # no speculation, nothing to relax
+    accept_soft = next((x for x in (args.accept_soft, cfg.accept_soft) if x is not None), math.inf)
+    if math.isnan(accept_soft) or accept_soft < 0:
+        parser.error("--accept-soft must be >= 0 (inf: the forced accept)")
     max_context = args.context_length if args.context_length is not None else cfg.max_context
     from sharar.engine.profile import MAX_CONTEXT
     if max_context is not None and not 2 <= max_context <= MAX_CONTEXT:
@@ -150,13 +155,14 @@ def run_engine(args, parser) -> int:
                                       accept_default_sampled=bool(accept_default_sampled), max_batch=max_batch,
                                       accept_default_sampled_threshold=(f"{accept_default_sampled[0]}:{accept_default_sampled[1]}"
                                                                         if isinstance(accept_default_sampled, tuple) else None),
-                                      spec_depths=spec_depths if args.spec else None))
+                                      spec_depths=spec_depths if args.spec else None,
+                                      accept_soft=accept_soft if math.isfinite(accept_soft) else None))
     from sharar.api.server import serve
     serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state,
           draft_precision=args.draft_precision, traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
           accept_default=accept_default, target=target,
           max_context=max_context, max_batch=max_batch,
-          accept_default_sampled=accept_default_sampled)
+          accept_default_sampled=accept_default_sampled, accept_soft=accept_soft)
     if args.tp > 1:
         close_distributed()
     return 0

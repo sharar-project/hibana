@@ -40,6 +40,7 @@ speculative scratch capacity.
 | `response_format: {"type":"json_object"}` / `{"type":"json_schema","json_schema":{"schema":{...}}}` | Constrained: a JSON object / JSON valid against the schema ([constrained output](#constrained-output)) |
 | `trace` | `false` excludes this request from the opt-in [trace sink](operations.md#request-traces); accepted on every generation route |
 | `accept_top_k`, `accept_margin` | Relaxed speculative acceptance: a drafted token is also accepted when the target ranks it within its top `accept_top_k` and within `accept_margin` logits of the argmax (a log-probability ratio; 1.0 means at least 37% of the top probability). Faster, and no longer the target's exact continuation; the per-request `spec_relaxed_tokens` counts such tokens. **A request that sets neither field gets the server's default**, which the serving profile chooses ([operations](operations.md#serving-profiles); `fast`: top-3 within 2.0 for greedy requests, and for sampled ones top-3 within 2.0 on Flash-Next with MTP, top-2 within 1.0 on the 27B; Flash-Next with DFlash2: top-2 within 1.0 for both; `exact`: off). Send `accept_top_k: 1` for the exact continuation on one request. Accepted on every generation route |
+| `accept_soft` | Sampled requests under a relaxed rule: a plausible draft (MTP or DFlash2) keeps its acceptance draw, relaxed by e^`accept_soft`: accepted when u · q(y) < e^s · p(y) instead of always. No token then comes out more than e^s times as often as the target's law gives it (KL to the target ≤ s); `0` is exact sampling. Unset: the server's `--accept-soft` (`SHARAR_ACCEPT_SOFT`), else the forced accept, where a plausible token comes out at the drafter's probability. Greedy requests ignore it |
 
 `GET /get_server_info` reports `speculative.draft` (the served draft
 directory), `speculative.accept_default`, `spec_stats` (rounds, proposed, accepted, emitted, `relaxed_accepts`) and, when
@@ -125,7 +126,7 @@ prompt length as `{"input_tokens": N}`.
 | `thinking` | `enabled` or `adaptive` turn thinking on (`budget_tokens` is not enforced), `disabled` turns it off; omitted, `chat_template_kwargs.enable_thinking` decides, default on |
 | `output_config.effort` | As chat `reasoning_effort`: Claude Code's default `high` is the template's `xhigh`, `/effort low` its `low` (the template's instruction only, not a token budget) |
 | `temperature`, `top_p`, `top_k`, `stop_sequences`, `stream` | As the chat fields, except that an omitted `temperature` is Anthropic's 1.0 (with the chat defaults top_p 0.95 and top_k 20, the models' own generation config), not greedy. Claude Code sends no sampling fields, and greedy thinking looped until `max_tokens` in its sessions |
-| `trace`, `accept_top_k`, `accept_margin`, `chat_template_kwargs` | Sharar's extensions, as in chat |
+| `trace`, `accept_top_k`, `accept_margin`, `accept_soft`, `chat_template_kwargs` | Sharar's extensions, as in chat |
 
 `cache_control` markers are accepted and not acted on; the prefix cache
 reuses shared prefixes regardless. `metadata`, other top-level fields,

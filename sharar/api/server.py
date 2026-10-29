@@ -569,7 +569,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             raise InvalidRequest(f"prompt is too long: {len(ids)} tokens > {limit - 1} maximum")
         if isinstance(max_tokens, (int, float)) and not isinstance(max_tokens, bool):
             max_tokens = min(max_tokens, limit - len(ids))  # clients size max_tokens for a larger window
-        sampling = {k: body[k] for k in ("temperature", "top_p", "top_k", "trace", "accept_top_k", "accept_margin") if k in body}
+        sampling = {k: body[k] for k in ("temperature", "top_p", "top_k", "trace", "accept_top_k", "accept_margin", "accept_soft") if k in body}
         # Anthropic's default temperature, and both targets' generation_config (top_p 0.95 and top_k 20 are the
         # chat defaults). Claude Code sends no sampling fields; greedy thinking looped to max_tokens in its sessions.
         sampling.setdefault("temperature", 1.0)
@@ -761,13 +761,13 @@ def _persist_prefixes(ex, engine, log) -> None:
 def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
           traces: str | None = None, traces_max_mib: int = 32768, draft_dir: str | None = None,
           accept_default: tuple[int, float] = (1, 0.0), target: str | None = None, max_context: int | None = None,
-          accept_default_sampled: bool | tuple[int, float] = False, max_batch: int = 4) -> None:
+          accept_default_sampled: bool | tuple[int, float] = False, max_batch: int = 4, accept_soft: float = float("inf")) -> None:
     from sharar.cache.spec_budget import SpecConfig
     from sharar.api.validation import set_accept_default
 
     if accept_default != (1, 0.0) and not spec:
         raise ValueError('a relaxed acceptance default requires speculation')
-    set_accept_default(*accept_default, sampled=accept_default_sampled)
+    set_accept_default(*accept_default, sampled=accept_default_sampled, soft=accept_soft)
     from sharar.api.validation import ACCEPT_DEFAULT_SAMPLED as sampled_threshold
 
     if not spec and draft_precision != 'bf16':
@@ -847,7 +847,8 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
                         if hasattr(ex.spec.proposer, "model") else None,
                         "accept_default": {"accept_top_k": accept_default[0], "accept_margin": accept_default[1],
                                            "sampled": sampled_threshold != (1, 0.0), "sampled_accept_top_k": sampled_threshold[0],
-                                           "sampled_accept_margin": sampled_threshold[1]}} if spec else None,
+                                           "sampled_accept_margin": sampled_threshold[1],
+                                           "accept_soft": accept_soft if accept_soft != float("inf") else None}} if spec else None,
         "attention_backend": "flashinfer",
         # the chunked GDN prefill (kernels/gdn_prefill.backend): CuTe on SM12x for the FP32 state, else Triton
         "gdn_backend": current().gdn_prefill if current().gdn_prefill != "auto" else

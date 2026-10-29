@@ -168,6 +168,9 @@ def test_the_engine_gets_explicit_flags_and_its_environment(env, tmp_path):
     assert args[args.index("--context-length") + 1] == "262144" and args[args.index("--draft-precision") + 1] == "fp8"
     assert args[args.index("--accept-default") + 1] == "3:2.0" and args[args.index("--accept-default-sampled-threshold") + 1] == "2:1.0"
     assert "--draft" not in args and args[args.index("--traces") + 1] == str(s.traces)
+    assert "--accept-soft" not in args  # unset: the forced accept
+    soft = resolve({**env, "SHARAR_DRAFT": "pinned", "SHARAR_ACCEPT_SOFT": "0.25"}, "27b", "fast").engine_args()
+    assert soft[soft.index("--accept-soft") + 1] == "0.25"
     e = s.engine_env(tmp_path / "w3")
     assert e["SHARAR_W3_CHECKPOINT"] == str(tmp_path / "w3") and e["SHARAR_SSD_DIR"] == str(s.ssd)
     assert "SHARAR_DRAFT" not in e and "SHARAR_TRACES" not in e  # the flags carry them

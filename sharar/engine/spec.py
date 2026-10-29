@@ -440,7 +440,7 @@ class SpecDecoder:
                     relaxed_i = plausible(y[i], p, req.params.accept_top_k, req.params.accept_margin) if req.params.relaxed else None
                     a_t, c_t, rx_t = verify_rows(y[i], p, proposal.probabilities[i] if proposal.probabilities is not None else None,
                                                  proposal.support[i] if proposal.support is not None else None, req.generator,
-                                                 relaxed=relaxed_i)
+                                                 relaxed=relaxed_i, soft_scale=req.params.soft_scale)
                     acc_rows.append(a_t)
                     corr_rows.append(c_t)
                     flag_rows.append(rx_t.to(torch.int64))

@@ -140,7 +140,7 @@ def plausible(tokens, p, top_k: int, margin: float):
     return (p_y > 0) & (rank < top_k) & (gap <= margin)
 
 
-def verify_rows(tokens, p, q, support, generator, relaxed=None):
+def verify_rows(tokens, p, q, support, generator, relaxed=None, soft_scale: float = 0.0):
     """Vectorized rejection sampling for one request without host syncs.
 
     Same acceptance rule as `verify_row` (accept y_j with probability
@@ -154,9 +154,10 @@ def verify_rows(tokens, p, q, support, generator, relaxed=None):
     sequential reference for a fixed seed; it is equal in distribution.
 
     `relaxed` ([k] bool, `plausible`) also accepts those drafted tokens
-    whatever the draw; the correction at the first position failing both
-    tests is the residual as before. The third result marks accepted
-    positions that only the relaxed rule accepted ([k] bool)."""
+    whatever the draw, or with `soft_scale` = e^-s (SamplingParams.accept_soft
+    s) when u * e^-s * q_j[y_j] < p_j[y_j]; the correction at the first
+    position failing both tests is the residual as before. The third result
+    marks accepted positions that only the relaxed rule accepted ([k] bool)."""
     k = tokens.shape[0]
     idx = torch.arange(k, device=p.device)
     if q is None:  # deterministic draft: acceptance p[y], residual p without y
@@ -171,6 +172,8 @@ def verify_rows(tokens, p, q, support, generator, relaxed=None):
     threshold = torch.where(q_y > 0, threshold, torch.zeros_like(threshold))
     u = torch.rand(k, device=p.device, generator=generator)
     exact = u < threshold
+    if relaxed is not None:  # e^-s on the plausible draft's uniform (0: the forced accept)
+        relaxed = relaxed & (u * soft_scale * q_y < p_y)
     ok = exact if relaxed is None else exact | relaxed
     prefix = torch.cumprod(ok.to(torch.int64), dim=0)
     accepted = prefix.sum()
@@ -229,7 +232,8 @@ def verify_batch(tokens, logits, params, generators, q=None, support=None, rng=N
     the drafts' law: none (deterministic drafts, MTP: point masses) or q [B, k, W] on support [B, k, W] (DFlash2).
     The same law as `distribution` (`candidate_laws`) and the same rule as `verify_rows` (accept y_j with
     probability min(1, p_j[y_j] / q_j[y_j]); at the first rejection draw from max(p_j - q_j, 0); after k
-    acceptances draw the bonus from p_k; `relaxed` rows also accept what `plausible` passes; the residual is
+    acceptances draw the bonus from p_k; `relaxed` rows also accept what `plausible` passes, when
+    u * e^-accept_soft * q_j[y_j] < p_j[y_j] (always for the forced accept, accept_soft inf); the residual is
     positive only where p_j is, so it lives on p_j's candidates), for the whole batch at once and on a few
     dozen candidates instead of the 248K-token vocabulary. Each row draws k + 1 uniforms from its own
     generator (the k acceptance tests, then the correction by inverse CDF), so a row's result does not depend
@@ -270,8 +274,9 @@ def verify_batch(tokens, logits, params, generators, q=None, support=None, rng=N
     if any(relaxed_rows):
         rank = (law[:, :k] > p_y.unsqueeze(-1)).sum(-1)
         gap = law[:, :k].amax(-1).log() - p_y.log()
-        rule = _rows("rule", [[p.accept_top_k if r else 0, float(p.accept_margin)] for p, r in zip(params, relaxed_rows)], dev)
-        ok = exact | ((p_y > 0) & (rank < rule[:, :1]) & (gap <= rule[:, 1:]))  # rows not relaxed have top 0: never
+        rule = _rows("rule", [[p.accept_top_k if r else 0, float(p.accept_margin), p.soft_scale] for p, r in zip(params, relaxed_rows)], dev)
+        boosted = u[:, :k] * rule[:, 2:] * (1.0 if q is None else q_y) < p_y  # accept_soft: u q < e^s p (scale 0: always)
+        ok = exact | ((p_y > 0) & (rank < rule[:, :1]) & (gap <= rule[:, 1:2]) & boosted)  # rows not relaxed have top 0: never
     prefix = torch.cumprod(ok.to(torch.int64), dim=1)
     accepted = prefix.sum(1)
     # the law at the first rejection (without its drafted token), or the bonus law after k acceptances
@@ -347,7 +352,7 @@ def _verify_fused(tokens, logits, params, rng, q, support):
     values, index = logits.topk(c, dim=-1)
     row_params = sampling_rng.rows("verify-params", [[1.0, 1, 1.0, 0.0, 0.0, 0, 0, 0] if p.greedy else
                                                      [max(p.temperature, 1e-6), p.top_k, p.top_p, float(p.accept_top_k if p.relaxed else 0),
-                                                      float(p.accept_margin), 0, 0, 0] for p in params], torch.float32, dev)
+                                                      float(p.accept_margin), p.soft_scale, 0, 0] for p in params], torch.float32, dev)
     rng_t = sampling_rng.rows("verify-rng", rng, torch.int64, dev)
     accepted, correction, flags, fit = verify_candidates(values, index, tokens, row_params, rng_t, q, support)
     greedy = [p.greedy for p in params]

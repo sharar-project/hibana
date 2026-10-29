@@ -36,6 +36,10 @@ class SamplingParams:
     # continuation nor exact samples of the target distribution.
     accept_top_k: int = 1
     accept_margin: float = 0.0
+    # Sampled requests: a plausible draft keeps its uniform, scaled by e^-accept_soft, and is accepted when
+    # u * q(y) < e^accept_soft * p(y) instead of always, so no token comes out more than e^accept_soft times as often
+    # as the target's law gives it. 0 is exact sampling; inf (the default) the forced accept. Greedy rows have no draw.
+    accept_soft: float = math.inf
     # Constrained output (engine/grammar.py Constraint): every emitted token must keep the output inside the grammar.
     constraint: object = None
     # The token position where the prompt's last message starts (the chat API renders the conversation without it; 0:
@@ -64,6 +68,8 @@ class SamplingParams:
             raise InvalidRequest("accept_top_k must be an integer >= 1")
         if type(self.accept_margin) not in (int, float) or not math.isfinite(self.accept_margin) or self.accept_margin < 0:
             raise InvalidRequest("accept_margin must be a finite number >= 0")
+        if type(self.accept_soft) not in (int, float) or math.isnan(self.accept_soft) or self.accept_soft < 0:
+            raise InvalidRequest("accept_soft must be a number >= 0 (inf: the forced accept)")
         if type(self.message_boundary) is not int or self.message_boundary < 0:
             raise InvalidRequest("message_boundary must be an integer >= 0")
 
@@ -74,6 +80,11 @@ class SamplingParams:
     @property
     def relaxed(self) -> bool:
         return self.accept_top_k > 1 and self.accept_margin > 0
+
+    @property
+    def soft_scale(self) -> float:
+        """e^-accept_soft, the factor on a plausible draft's uniform (0: the forced accept)."""
+        return math.exp(-self.accept_soft)
 
 
 class Sampler:

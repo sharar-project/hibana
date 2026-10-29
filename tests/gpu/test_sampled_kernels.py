@@ -88,3 +88,39 @@ def test_verify_candidates_flags_ties_past_the_candidates():
     rows = torch.tensor([[1.0, 5, 0.95, 0, 0, 0, 0, 0]], device=DEV)
     *_, fit = verify_candidates(values, index, torch.zeros(1, 3, dtype=torch.int64, device=DEV), rows, torch.tensor([[1, 32]], device=DEV))
     assert int(fit[0]) == 0
+
+
+@pytest.mark.parametrize("draft", ["mtp-plausible", "mtp-implausible", "dflash2"])
+def test_verify_candidates_soft_law(draft):
+    """accept_soft s (row_params[5] = e^-s): the first token's law is min(q, c p) + (1 - alpha) (p - q)+ / Z with
+    c = e^s on the plausible set (tests/unit/test_accept_soft.py); s = inf (0 in the slot) is the forced accept."""
+    import math
+    from sharar.kernels.sampled_verify import verify_candidates
+    p = torch.tensor([0.60, 0.30, 0.07, 0.03], device=DEV)  # top-2 within 1.0 plausible
+    q = torch.tensor([0.90, 0.06, 0.02, 0.02], device=DEV)
+    plaus = torch.tensor([True, True, False, False], device=DEV)
+    n = 400_000
+    torch.manual_seed(5)
+    values = torch.cat([p.log(), torch.tensor([-30.0], device=DEV)]).expand(n, 2, 5).contiguous()  # top_k 4 drops the fifth
+    index = torch.arange(5, device=DEV).expand(n, 2, 5).contiguous()
+    rng = torch.stack([torch.arange(n, device=DEV) * 7919 + 1, torch.zeros(n, dtype=torch.int64, device=DEV)], 1)
+    for s in (0.0, 0.1, 0.25, 0.5, math.inf):
+        rows = torch.tensor([[1.0, 4, 1.0, 2, 1.0, math.exp(-s), 0, 0]], device=DEV).expand(n, 8).contiguous()
+        if draft == "dflash2":
+            drafts = torch.multinomial(q, n, replacement=True).view(n, 1)
+            qq, support, point = q.expand(n, 1, 4).contiguous(), torch.arange(4, device=DEV).expand(n, 1, 4).contiguous(), q
+        else:
+            y = 0 if draft == "mtp-plausible" else 2
+            drafts, qq, support = torch.full((n, 1), y, device=DEV), None, None
+            point = torch.nn.functional.one_hot(torch.tensor(y, device=DEV), 4).float()
+        a, c, flags, fit = verify_candidates(values, index, drafts, rows, rng, qq, support)
+        assert bool(fit.all())
+        got = torch.bincount(torch.where(a > 0, drafts[:, 0], c), minlength=4).float() / n
+        cap = torch.where(plaus, torch.tensor(math.exp(s), device=DEV), torch.tensor(1.0, device=DEV)) * p
+        acc = torch.minimum(point, cap)
+        left = (p - point).clamp(min=0)
+        law = acc + (1 - acc.sum()).clamp(min=0) * left / left.sum()
+        assert (got - law).abs().max() < 0.004, (draft, s, got, law)
+        assert abs(a.float().mean().item() - acc.sum().item()) < 0.004, (draft, s)
+        assert not (flags[:, 0].bool() & (a == 0)).any()  # flags mark accepts only
+        assert s > 0 or not flags.any()  # s = 0 boosts nothing
