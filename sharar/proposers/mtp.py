@@ -70,6 +70,18 @@ def draft_choice(head, hidden: torch.Tensor, with_confidence: bool) -> tuple[tor
     return head.draft_head.argmax_confidence(head.head_input(hidden))
 
 
+def draft_outputs(head, hidden: torch.Tensor, with_confidence: bool, width: int):
+    """`draft_choice`, and with SHARAR_MTP_SAMPLE (`width` > 0) the draft head's candidates from the same head pass:
+    the draft is then their first, the head's best (its argmax, ties aside; a shortlist head ranks max(rescore, width)
+    candidates by the FP8 rows), unless the confidence trace reads the head's own logits. Returns (token, confidence,
+    (ids, logits) [rows, width] or None)."""
+    if not width:
+        return (*draft_choice(head, hidden, with_confidence), None)
+    ids, values = draft_candidates(head, hidden, width)
+    token, conf = draft_choice(head, hidden, True) if with_confidence else (ids[..., 0], None)
+    return token, conf, (ids, values)
+
+
 class MtpProposer:
     def __init__(self, head, context: ProposerContext, k: int = 3):
         self.head, self.context, self.k = head, context, k
@@ -232,9 +244,8 @@ class MtpProposer:
                 cand = tuple(t.clone() for t in self.graphs.candidates(tokens.shape[0]))
         else:
             hidden = self.head.forward(tokens, hidden, positions, pages, [1] * len(kv), kv)
-            token, conf = draft_choice(self.head, hidden, self.with_confidence)
-            if sampled:
-                cand = draft_candidates(self.head, hidden, self.sample_width)
+            token, conf, cand = draft_outputs(self.head, hidden, self.with_confidence, self.sample_width if self.sample else 0)
+            cand = cand if sampled else None
         return hidden, token, conf, cand
 
     def accepted_batch(self, requests, emitted, features):

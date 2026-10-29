@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from sharar.proposers.mtp import draft_candidates, draft_choice
+from sharar.proposers.mtp import draft_outputs
 
 from sharar.target import DEFAULT_TARGET
 from sharar.engine import graph_set
@@ -50,7 +50,9 @@ class DraftGraphs:
         self.mtp.attention.paged_prefill(st["wrapper"], torch.arange(0, b + 1, dtype=torch.int32), indptr, torch.cat(kv_all),
                                          torch.ones(b, dtype=torch.int32), causal=True, guard=False)  # graph-bound buffers
 
-    def _forward(self, st: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    def _forward(self, st: dict):
+        """(hidden, argmax, confidence, candidates): with SHARAR_MTP_SAMPLE one head pass gives the candidates and the
+        argmax their first, so greedy batches replay the same graph at the same cost."""
         mtp = self.mtp
         saved = mtp._attn
         mtp._attn = st["wrapper"]
@@ -58,11 +60,8 @@ class DraftGraphs:
             d = mtp.forward_static(st["tokens"], st["hidden"], st["positions"], st["pages"])
         finally:
             mtp._attn = saved
-        return d, *draft_choice(mtp, d, self.proposer.with_confidence)
-
-    def _candidates(self, d: torch.Tensor):
-        """SHARAR_MTP_SAMPLE: the draft head's rescored candidates (ids, FP32 logits) [b, r], for sampled batches."""
-        return draft_candidates(self.mtp, d, self.proposer.sample_width)
+        p = self.proposer
+        return d, *draft_outputs(mtp, d, p.with_confidence, p.sample_width if p.sample else 0)
 
     def capture(self, log=None) -> None:
         for b in self.sizes:
@@ -70,15 +69,10 @@ class DraftGraphs:
             self._plan(st, [torch.zeros(2, dtype=torch.int32, device=self.device) for _ in range(b)])
 
             def body():
-                st["out_hidden"], st["out_argmax"], st["out_confidence"] = self._forward(st)
-                if self.proposer.sample:  # one graph for both: greedy batches leave the candidates unread
-                    st["out_ids"], st["out_values"] = self._candidates(st["out_hidden"])
-
-            def warmup():
-                d = self._forward(st)
-                if self.proposer.sample:
-                    self._candidates(d[0])
-            self._graphs[b] = graph_set.capture(self._pool, body, warmup=warmup)
+                st["out_hidden"], st["out_argmax"], st["out_confidence"], cand = self._forward(st)
+                if cand is not None:  # one graph for both: greedy batches leave the candidates unread
+                    st["out_ids"], st["out_values"] = cand
+            self._graphs[b] = graph_set.capture(self._pool, body, warmup=lambda: self._forward(st))
             self._st[b] = st
             if log:
                 log(f"  captured draft graph for batch {b}")
