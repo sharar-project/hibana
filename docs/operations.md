@@ -98,7 +98,9 @@ DFlash2 drafts its whole block in one forward, then verifies only the drafts wor
   totals per batch bucket): seats go to each request in order of S, so a confident request verifies deep and an unsure
   one shallow. Steady state, the 27B's throughput settings at 10K context: x1.04 at 8 requests and x1.12 at 16 against
   one depth for the batch with the same scores, equal at 1-4. Packed rounds accept on the host:
-  `SHARAR_DEVICE_ACCEPT` applies to fixed-depth rounds only.
+  `SHARAR_DEVICE_ACCEPT` applies to fixed-depth rounds only. The rows a round verifies follow timed costs, so two
+  servers of the same build can verify differently and part at a near tie (one greedy h2h reply in 18 did); `exact`
+  keeps the fixed depth so its runs repeat.
 - **Sampled batches** verify one depth for every request, chosen before drafting from the drafts' survival per
   position over past rounds, so rejection sampling stays exact; a greedy batch with a constrained request (a grammar)
   verifies every request at the cap.
