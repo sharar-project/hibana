@@ -31,12 +31,12 @@ def add_engine_args(p: argparse.ArgumentParser) -> None:
     """`sharar engine`: the server itself, with every setting explicit (what `sharar serve` and the ranks run)."""
     p.add_argument("--target", default=None, help="pinned serving target (default: SHARAR_TARGET, else qwen38)")
     p.add_argument("--host", default=None, help="default: 127.0.0.1")
-    p.add_argument("--port", type=int, default=None, help="default: the target's, as `sharar serve` (27B 30001, Flash-Next 30004, Nemotron 30005)")
-    p.add_argument("--proposer", choices=("mtp", "dflash2"), default=None, help="default: the target's (27B dflash2, Flash-Next and Nemotron mtp)")
+    p.add_argument("--port", type=int, default=None, help="default: the target's, as `sharar serve` (27B 30001, Flash-Next 30004, Nemotron 30005, Bolt 30006)")
+    p.add_argument("--proposer", choices=("mtp", "dflash2"), default=None, help="default: the target's (27B and Bolt dflash2; Flash-Next and Super mtp)")
     p.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default=None, help="default: reconstruct")
     p.add_argument("--draft-precision", choices=("bf16", "fp8"), default=None, help="parallel draft matrix precision (default: the target's)")
     p.add_argument("--spec", type=int, default=None, help="draft tokens per round (0 = off; default: SHARAR_SPEC, else the proposer's validated depth)")
-    p.add_argument("--draft", default=None, help="DFlash2 checkpoint directory to serve instead of the pinned draft (default: SHARAR_DRAFT)")
+    p.add_argument("--draft", default=None, help="DFlash2/LiLiCorr checkpoint directory to serve instead of the pinned draft (default: SHARAR_DRAFT)")
     p.add_argument("--traces", default=None, help="directory for opt-in request traces (default: SHARAR_TRACES; unset disables recording)")
     p.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: SHARAR_TRACES_MAX_MIB or 32768)")
     p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request, up to 262144 (default: SHARAR_MAX_CONTEXT, else 262144)")
@@ -134,6 +134,8 @@ def run_engine(args, parser) -> int:
         parser.error(f"--max-batch must be in [1, {MAX_BATCH}]")
     spec_depths = args.spec_depths if args.spec_depths is not None else cfg.spec_depths
     target = args.target or cfg.target
+    if target == "bolt" and args.spec and (args.proposer != "dflash2" or not 1 <= args.spec <= 7):
+        parser.error("Bolt has no in-checkpoint MTP; use LiLiCorr DFlash2 at depth 1..7, or --spec 0")
     if args.tp > 1:
         family = targets.get(target).family
         if family not in ("qwen38", "flashnext"):
@@ -166,7 +168,7 @@ def engine_parser() -> argparse.ArgumentParser:
     return p
 
 
-def add_target(p: argparse.ArgumentParser, help: str = "27b (Qwen3.8-27B), flashnext (Qwen3.8-Flash-Next) or nemotron (Nemotron-3.5-Super)") -> None:
+def add_target(p: argparse.ArgumentParser, help: str = "27b, flashnext, nemotron (Super) or bolt (Nemotron Bolt)") -> None:
     p.add_argument("target", nargs="?", choices=TARGET_CHOICES, metavar="TARGET", help=help)
 
 
@@ -186,7 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request (default 262144)")
     p.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: the profile's)")
     p.add_argument("--traces", action="store_true", help="record each request's token IDs and speculative rounds (SHARAR_TRACES, else $SHARAR_RESULTS/traces)")
-    p.add_argument("--draft", default=None, help="serve this DFlash2 checkpoint directory instead of the publisher's draft")
+    p.add_argument("--draft", default=None, help="serve this DFlash2/LiLiCorr checkpoint directory instead of the publisher's draft")
     p.add_argument("--proposer", choices=("mtp", "dflash2"), default=None, help=argparse.SUPPRESS)
     p.add_argument("--spec", type=int, default=None, help=argparse.SUPPRESS)
     p.add_argument("--draft-precision", choices=("bf16", "fp8"), default=None, help=argparse.SUPPRESS)

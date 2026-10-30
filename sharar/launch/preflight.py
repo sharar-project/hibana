@@ -118,7 +118,7 @@ def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
 
     SHARAR_W3_CHECKPOINT=auto (the default) serves w3-checkpoints/<target>-current and keeps that link on the
     target's pinned published revision (weights/w3_checkpoint.fetch: a new pin downloads, a local calibration stays
-    with a note). Without one Flash-Next serves its FP8 trunk and the 27B nearest-rounded copies; Nemotron refuses
+    with a note; Bolt publishes none, so its link names a local calibration). Without one Flash-Next serves its FP8 trunk and the 27B nearest-rounded copies; Nemotron refuses
     to start (`w3_required`)."""
     if s.get("SHARAR_W3_DECODE", "0") != "1":
         return None
@@ -129,7 +129,8 @@ def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
             raise PreflightError(f"SHARAR_W3_CHECKPOINT={chosen} needs a completed manifest.json")
         return path
     current = s.w3_root / f"{s.target}-current"
-    if fetch:
+    from sharar.target import get as get_target
+    if fetch and get_target(s.target).w3_repo:  # a target without published copies serves a local calibration
         s.w3_root.mkdir(parents=True, exist_ok=True)
         env = {**os.environ, "HF_HUB_OFFLINE": "0"}
         r = subprocess.run([sys.executable, "-m", "sharar.weights.w3_checkpoint", "fetch", "--target", s.target, "--root", str(s.w3_root)],
@@ -150,7 +151,9 @@ def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
 
 def summary(s: Settings, host: dict[str, str], w3: Path | None, tp: int = 1) -> str:
     on = lambda v: "on" if v == "1" else "off"  # noqa: E731
-    if s.proposer == "mtp":
+    if not s.spec:
+        draft = "none"
+    elif s.proposer == "mtp":
         draft = "the model's own MTP head"
     elif s.draft_dir:
         draft = f"checkpoint {s.draft_dir}"

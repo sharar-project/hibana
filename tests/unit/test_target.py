@@ -2,14 +2,15 @@
 import pytest
 
 from sharar import config
-from sharar.target import DEFAULT_TARGET, FLASHNEXT, NEMOTRON, QWEN38, TARGETS, get
+from sharar.target import DEFAULT_TARGET, FLASHNEXT, NEMOTRON, NEMOTRON_BOLT, QWEN38, TARGETS, get
 from sharar.cache import ledger, state_pool
 from sharar.cache.spec_budget import verify_bytes
 
 
 def test_default_target_matches_the_pinned_constants():
     t = QWEN38
-    assert get(None) is DEFAULT_TARGET is t and get("qwen38") is t and TARGETS == {"qwen38": t, "flashnext": FLASHNEXT, "nemotron": NEMOTRON}
+    assert get(None) is DEFAULT_TARGET is t and get("qwen38") is t and TARGETS == {
+        "qwen38": t, "flashnext": FLASHNEXT, "nemotron": NEMOTRON, "bolt": NEMOTRON_BOLT}
     assert (t.model_id, t.model_revision, t.model_cache_key, t.architecture) == (config.MODEL_ID, config.MODEL_REVISION, config.MODEL_CACHE_KEY, config.MODEL_ARCHITECTURE)
     assert (t.hidden_size, t.num_layers, t.vocab_size, t.context_length) == (config.HIDDEN_SIZE, config.NUM_LAYERS, config.VOCAB_SIZE, config.CONTEXT_LENGTH)
     assert (t.num_attention_heads, t.num_kv_heads, t.head_dim, t.rotary_dim) == (config.NUM_ATTENTION_HEADS, config.NUM_KV_HEADS, config.HEAD_DIM, int(config.HEAD_DIM * config.PARTIAL_ROTARY_FACTOR))

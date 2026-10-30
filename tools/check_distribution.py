@@ -41,6 +41,7 @@ def main():
         wheel = next(artifacts.glob('*.whl'))
         required = ['sharar/kernels/csrc/fp8_gemv.cu', 'sharar/kernels/csrc/w3_gemm.cu',
                     'sharar/kernels/csrc/ple_gather.cpp',
+                    'sharar/kernels/csrc/ggml_codec.cuh', 'sharar/kernels/csrc/iq2_moe.cu',
                     'sharar/kernels/qsa/csrc/query_prep.cu',
                     'sharar/kernels/qsa/csrc/compression.cu',
                     'sharar/kernels/qsa/csrc/topk_pages.cu',
@@ -50,6 +51,8 @@ def main():
         with zipfile.ZipFile(wheel) as archive:
             for name in required:
                 assert archive.read(name) == (root / name).read_bytes(), f'missing or changed wheel asset: {name}'
+            notices = [name for name in archive.namelist() if name.endswith('/THIRD_PARTY_NOTICES.md')]
+            assert len(notices) == 1 and archive.read(notices[0]) == (root / 'THIRD_PARTY_NOTICES.md').read_bytes()
         installed = work / 'installed'
         run([sys.executable, '-m', 'pip', 'install', '--no-index', '--no-deps', '--target', str(installed), str(wheel)], cwd=work)
         env = {**os.environ, 'PYTHONPATH': str(installed), 'CUDA_VISIBLE_DEVICES': ''}
@@ -65,12 +68,16 @@ from sharar.kernels.w3 import pack, dequantize
 from sharar.weights.modelopt import Nvfp4Linear, swizzle_block_scales
 from sharar.weights.w3_checkpoint import CalibratedWeights
 from sharar.weights.w3_calibration import quantize
+from sharar.weights.ggml import GgmlLinear
 linear = Nvfp4Linear(weight=torch.full((128, 64), 0x22, dtype=torch.uint8),
     weight_scale_swizzled=swizzle_block_scales(torch.ones(128, 8)),
     alpha=torch.tensor(2.), input_scale_inv=torch.tensor(.5), out_features=128, in_features=128)
 weight = linear.dequantize()
 assert torch.equal(weight, torch.ones(128, 128))
 assert torch.isfinite(dequantize(pack(weight))).all()
+iq2 = torch.zeros(1, 1, 66, dtype=torch.uint8)
+iq2[..., :2] = torch.tensor([1.], dtype=torch.float16).view(torch.uint8)
+assert torch.equal(GgmlLinear(iq2, "IQ2_XXS").dequantize(), torch.ones(1, 256))
 '''], cwd=work, env=env)
     print('Source distribution, wheel assets, installed CUDA loader and CLI passed.')
 

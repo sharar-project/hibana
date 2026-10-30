@@ -242,10 +242,12 @@ class MtpProposer:
 
         Static shapes for graph capture: norm [b*steps, W] the verify rows, tokens and pages [b*steps] the
         verify block's inputs (the pending token, then the drafts) and pages, starts/counts [b] int64.
-        Every row's draft KV is projected and rows past a request's count land on the dummy page 0.
-        The projection sees all b*steps rows, the host path only a request's accepted rows, so with an
-        FP8 draft layer (one dynamic activation scale per call) the committed KV matches the host's to
-        FP8 rounding, not bitwise; drafts, and so round boundaries, can drift."""
+        Every row's draft KV is projected and rows past a request's count land on the draft cache's padding
+        pages, one each: written together to page 0, a duplicate-index write kept an arbitrary row, the padded
+        draft rows that attend to page 0 changed from run to run and Flash-Next's per-tensor activation scale
+        carried it into the real rows' drafts. The projection sees all b*steps rows, the host path only a
+        request's accepted rows, so with an FP8 draft layer (one dynamic activation scale per call) the committed
+        KV matches the host's to FP8 rounding, not bitwise; drafts, and so round boundaries, can drift."""
         fb = self._feedback_buffers()
         b = starts.shape[0]
         rows = norm[:b * steps].view(b, steps, -1)
@@ -253,7 +255,9 @@ class MtpProposer:
         offsets = torch.arange(steps, device=starts.device)
         positions = (starts[:, None] + offsets[None, :]).reshape(-1)
         valid = (offsets[None, :] < counts[:, None]).reshape(-1)
-        write = torch.where(valid, pages[:b * steps], torch.zeros_like(pages[:b * steps]))
+        spare = self.head.kv.padding_pages
+        dummy = spare[:b * steps].to(pages.dtype) if spare.numel() >= b * steps else torch.zeros_like(pages[:b * steps])
+        write = torch.where(valid, pages[:b * steps], dummy)
         self.head.write_kv(tokens[:b * steps], hidden, positions, write)
         fb["rows"][:b, :steps].copy_(rows)
         fb["last"][:b].copy_(rows[torch.arange(b, device=starts.device), (counts - 1).clamp(min=0)])

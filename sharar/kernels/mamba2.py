@@ -623,7 +623,9 @@ class AcceptedState:
     `run` advances each committed slot by its accepted count from them, every layer in one launch, on the caller's
     stream and with no host synchronization (it is captured inside the accept graphs)."""
 
-    def __init__(self, pool, batch: int, steps: int, key_heads: int = GROUPS):
+    def __init__(self, pool, batch: int, steps: int, key_heads: int = GROUPS, *, cuda: bool = False):
+        if cuda:
+            raise ValueError('Mamba accepted-state reconstruction uses its Triton verify arithmetic')
         layers, _, heads, _, _ = pool.ssm_all.shape
         conv_dim = pool.conv_all.shape[2]
         device = pool.ssm_all.device

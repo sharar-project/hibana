@@ -74,15 +74,19 @@ def test_speculative_batches_finish_and_return_every_page_and_slot(runtime, batc
     ex.ledger.check_floor()
 
 
-@pytest.mark.parametrize("graphs, batch", [(True, 1), (False, 4), (True, 4), (True, 6)])
-def test_repeat_runs_in_one_process_are_identical(runtime, graphs, batch):
+@pytest.mark.parametrize("graphs, batch, device_accept", [(True, 1, False), (False, 4, False), (True, 4, False), (True, 6, False),
+                                                            (True, 4, True), (True, 6, True)])
+def test_repeat_runs_in_one_process_are_identical(runtime, graphs, batch, device_accept):
     """Bit-identical run to run, eager or with CUDA graphs. Batches 4 and 6 with graphs cover padded rounds (requests
     finish at different rounds; six rows replay the batch-8 graphs with two padded rows): padded rows once wrote page 0
     together, in the target's verify graph and in the MTP draft graph, and the race reached the real rows through
-    the per-tensor activation scale."""
+    the per-tensor activation scale. With device acceptance (SHARAR_DEVICE_ACCEPT, on in fast and throughput) the
+    draft feedback's rows past a request's count did the same, and padded rows wrote their windows to the dummy slot."""
     ex, tok = runtime
     spec = ex.spec
-    vg, dg = spec.verify_graphs, spec.proposer.graphs
+    assert not device_accept or hasattr(spec.verify_graphs, "accept")
+    vg, dg, da = spec.verify_graphs, spec.proposer.graphs, spec.device_accept
+    spec.device_accept = device_accept
     ex.use_graphs = graphs
     if not graphs:
         spec.verify_graphs, spec.proposer.graphs = None, None
@@ -94,7 +98,7 @@ def test_repeat_runs_in_one_process_are_identical(runtime, graphs, batch):
             return [r.output_ids for r in ex.generate_batch([(chat(tok, p), SamplingParams(max_new_tokens=48)) for p in PROMPTS[:batch]])]
         assert run() == run() == run()
     finally:
-        spec.verify_graphs, spec.proposer.graphs = vg, dg
+        spec.verify_graphs, spec.proposer.graphs, spec.device_accept = vg, dg, da
         ex.use_graphs = True
 
 
