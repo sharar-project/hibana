@@ -180,7 +180,6 @@ class RaggedVerifyGraphs:
         self.max_context = spec.ex.max_context + spec.k
         self.budgets = {b: tuple(sorted(rows)) for b, rows in budgets.items()}
         self.sizes = tuple(sorted(budgets))
-        self.variants = ("dense",)
         self._pool = torch.cuda.graph_pool_handle()
         self._ws = torch.empty(256 * 1024 * 1024 * max(1, -(-spec.ex.max_batch // 64)), dtype=torch.uint8, device=self.device)
         self._st: dict[tuple[int, int], dict] = {}

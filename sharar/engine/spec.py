@@ -88,7 +88,7 @@ class SpecDecoder:
             # per request in packed graphs, accepted on the host. The block is drafted whole: one forward costs about
             # the same at any depth, and its draft graphs stay one per bucket. Packed verification needs Gated DeltaNet
             # recurrent layers and no side inputs: Flash-Next's QSA and PLE rows have none (under its expert budget
-            # verify rows cost little, so verifying fewer saved nothing there, #273), nor has Nemotron's Mamba-2.
+            # verify rows cost little, so verifying fewer saved nothing there), nor has Nemotron's Mamba-2.
             from sharar.engine.depth import ragged_budgets
             target = executor.target
             if not proposer.requirements.capabilities.scored_drafts:
@@ -207,17 +207,8 @@ class SpecDecoder:
             "relaxed_accepts": self.relaxed_accepts,
         }
         policy = getattr(self, "depth_policy", None)
-        if isinstance(policy, RowBudget):  # what it measured while serving
-            label = lambda b, s: f"{b}{':sampled' if s else ''}"  # noqa: E731
-            out["budget"] = {"acceptance": [round(a / t, 3) for a, t in zip(*policy.survival[False])],
-                             "sampled_acceptance": [round(a / t, 3) for a, t in zip(*policy.survival[True])],
-                             "shift": [round(v, 2) for v in policy.shift],
-                             "tokens_per_ms": {label(b, s): round(v, 3) for (b, s), v in policy.rate.items()},
-                             "overhead_ms": {label(b, s): round(v, 3) for (b, s), v in policy.overhead.items()},
-                             "depths": {str(b): {str(d): n for (bb, d), n in sorted(policy.chosen.items()) if bb == b}
-                                        for b in sorted({b for b, _ in policy.chosen})},
-                             "rows": {str(b): {str(r): n for (bb, r), n in sorted(policy.chosen_rows.items()) if bb == b}
-                                      for b in sorted({b for b, _ in policy.chosen_rows})}}
+        if isinstance(policy, RowBudget):
+            out["budget"] = policy.stats()
         if self.timing:  # phase split is only meaningful with the synchronizing timers on
             out.update({
                 "draft_ms_per_round": 1000 * self.draft_seconds / r,
@@ -345,19 +336,10 @@ class SpecDecoder:
             raise ValueError("proposer must return int64 [batch, k] on the target device")
         if getattr(self, "ragged_graphs", None) is not None and ex.use_graphs:
             return self._prepare_ragged(reqs, proposal, y, k, toks_t, poss_t, slots_t, new_pages, sampled, t0, timing)
-        y = y[:, :k]
-        proposal = Proposal(y, proposal.probabilities[:, :k] if proposal.probabilities is not None else None,
-                            proposal.support[:, :k] if proposal.support is not None else None,
-                            confidence=proposal.confidence[:, :k] if proposal.confidence is not None else None, columns=proposal.columns,
-                            acceptance=proposal.acceptance[:, :k] if proposal.acceptance is not None else None)
+        proposal = proposal.head(k)
+        y = proposal.tokens
         new_pages_flat = new_pages[:, :s_len].reshape(-1)
-        drafted_host = None
-        if any(r.grammar is not None for r in reqs) and y.device.type == "cuda":
-            host = torch.empty(y.shape, dtype=torch.int64, pin_memory=True)
-            host.copy_(y, non_blocking=True)
-            ready = torch.cuda.Event()
-            ready.record()
-            drafted_host = (host, ready)
+        drafted_host = self._drafted_host(reqs, y)
         if timing:
             torch.cuda.synchronize()
         t1 = time.perf_counter()
@@ -373,6 +355,18 @@ class SpecDecoder:
             kv_indptr.append(kv_indptr[-1] + kv_all[-1].shape[0])
         return Verification(list(reqs), proposal, sampled, tokens_v, positions, new_pages_flat,
                             slots_t, kv_all, t0, t1, drafted_host)
+
+    @staticmethod
+    def _drafted_host(reqs, drafts):
+        """A pinned host copy of the drafts and its ready event when a request is grammar-constrained: `_constrain`
+        walks the grammar over them while the verify graph runs."""
+        if not any(r.grammar is not None for r in reqs) or drafts.device.type != "cuda":
+            return None
+        host = torch.empty(drafts.shape, dtype=torch.int64, pin_memory=True)
+        host.copy_(drafts, non_blocking=True)
+        ready = torch.cuda.Event()
+        ready.record()
+        return host, ready
 
     def _prepare_ragged(self, reqs, proposal, y, k, toks_t, poss_t, slots_t, new_pages, sampled, t0, timing) -> Verification:
         """The round's packed verification: each request's depth (the policy's limits), its rows, then padding rows on
@@ -419,15 +413,8 @@ class SpecDecoder:
             starts = [sum(lengths[:i]) for i in range(b)]
             cells = torch.tensor([[starts[i] + j if j < n else -1 for j in range(cut)] for i, n in enumerate(limits)],
                                  dtype=torch.int64, pin_memory=d.type == "cuda").to(d, non_blocking=True)
-        proposal = Proposal(proposal.tokens[:, :cut], proposal.probabilities[:, :cut] if proposal.probabilities is not None else None,
-                            proposal.support[:, :cut] if proposal.support is not None else None,
-                            confidence=proposal.confidence[:, :cut] if proposal.confidence is not None else None,
-                            columns=proposal.columns)
-        drafted_host = None
-        if any(r.grammar is not None for r in reqs) and d.type == "cuda":
-            drafted_host = (torch.empty(proposal.tokens.shape, dtype=torch.int64, pin_memory=True), torch.cuda.Event())
-            drafted_host[0].copy_(proposal.tokens, non_blocking=True)
-            drafted_host[1].record()
+        proposal = proposal.head(cut)
+        drafted_host = self._drafted_host(reqs, proposal.tokens)
         if timing:
             torch.cuda.synchronize()
         t1 = time.perf_counter()

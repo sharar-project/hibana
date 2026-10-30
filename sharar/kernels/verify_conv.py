@@ -60,25 +60,19 @@ def verify_convolve(x, state, weight, slots, windows, steps, *, activation=True,
     if x.ndim != 2 or not x.is_contiguous() or x.dtype != torch.bfloat16:
         raise ValueError('verification convolution requires a contiguous BF16 matrix')
     rows, dim = x.shape
-    if rows_seq is not None:
-        if (rows_pos is None or rows_seq.shape != (rows,) or rows_pos.shape != (rows,) or rows_seq.dtype != torch.int32
-                or rows_pos.dtype != torch.int32 or not slots.is_contiguous() or windows.shape[0] < slots.shape[0]
-                or windows.shape[1] < steps or windows.shape[2:] != (dim, 3) or state.shape[1:] != (dim, 3)
-                or weight.shape != (dim, 4) or any(t.dtype != x.dtype for t in (state, weight, windows))):
-            raise ValueError('invalid ragged verification convolution geometry')
-        out = torch.empty_like(x)
-        _convolve[(triton.cdiv(x.numel(), 512),)](
-            x, state, weight, slots, windows, out, rows_seq, rows_pos, x.numel(), dim, steps,
-            *state.stride(), *weight.stride(), *windows.stride(), activation, True, 512, enable_fp_fusion=False)
-        return out
-    if (steps < 1 or rows % steps or slots.shape != (rows // steps,) or not slots.is_contiguous()
-            or state.shape[1:] != (dim, 3) or weight.shape != (dim, 4)
-            or windows.shape[0] < rows // steps or windows.shape[1] < steps
-            or windows.shape[2:] != (dim, 3)
+    ragged = rows_seq is not None
+    if ragged:  # each row names its sequence
+        layout_ok = (rows_pos is not None and rows_seq.shape == rows_pos.shape == (rows,)
+                     and rows_seq.dtype == rows_pos.dtype == torch.int32)
+    else:  # `steps` rows a sequence
+        layout_ok = steps >= 1 and rows % steps == 0 and slots.shape == (rows // steps,)
+    if (not layout_ok or not slots.is_contiguous() or state.shape[1:] != (dim, 3) or weight.shape != (dim, 4)
+            or windows.shape[0] < slots.shape[0] or windows.shape[1] < steps or windows.shape[2:] != (dim, 3)
             or any(t.dtype != x.dtype for t in (state, weight, windows))):
         raise ValueError('invalid verification convolution or state geometry')
     out = torch.empty_like(x)
     _convolve[(triton.cdiv(x.numel(), 512),)](
-        x, state, weight, slots, windows, out, slots, slots, x.numel(), dim, steps,
-        *state.stride(), *weight.stride(), *windows.stride(), activation, False, 512, enable_fp_fusion=False)
+        x, state, weight, slots, windows, out, rows_seq if ragged else slots, rows_pos if ragged else slots,
+        x.numel(), dim, steps, *state.stride(), *weight.stride(), *windows.stride(), activation, ragged, 512,
+        enable_fp_fusion=False)
     return out

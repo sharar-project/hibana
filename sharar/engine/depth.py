@@ -17,6 +17,7 @@ from collections import Counter
 import torch
 
 from sharar.engine import graph_set
+from sharar.kernels.w3 import MAX_ROWS
 
 
 class FixedDepth:
@@ -136,12 +137,12 @@ class AcceptanceDepth:
 
 def ragged_budgets(sizes, steps: int) -> dict[int, tuple[int, ...]]:
     """The row totals packed verify graphs are captured for, per batch bucket: multiples of the bucket from one row a
-    sequence (plain decode) to `steps`, and 128 (the 27B's 3-bit copies' limit) where it falls between."""
+    sequence (plain decode) to `steps`, and the 3-bit copies' row limit (w3.MAX_ROWS) where it falls between."""
     out = {}
     for b in sizes:
         rows = {b * m for m in (1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16) if m <= steps} | {b * steps}
-        if b < 128 < b * steps:
-            rows.add(128)
+        if b < MAX_ROWS < b * steps:
+            rows.add(MAX_ROWS)
         out[b] = tuple(sorted(rows))
     return out
 
@@ -193,16 +194,13 @@ class RowBudget:
         self._scored = 0
         self._round = None  # the last scored round's {id(request): its positions' probabilities}
 
-    def sizes_for(self, depth: int, sizes: tuple[int, ...]) -> tuple[int, ...]:
-        return sizes
-
     def rows(self, bucket: int, b: int, depth: int) -> int:
         """The rows a round of b requests at `depth` verifies in a graph of `bucket`."""
         needed = b * (depth + 1) + bucket - b  # the bucket's padded sequences take a row each
         return next(r for r in self.budgets[bucket] if r >= needed)
 
-    # A saving smaller than this (ms, or this share of the full round) is timing noise: one request on Flash-Next verifies
-    # 1 or 9 drafts in 16.6-18.1 ms (not even monotone), and verifying fewer there lost 4% of the tokens for no shorter round
+    # A saving smaller than this (ms, or this share of the full round) is within the timed graphs' noise: where fewer rows
+    # barely shorten the round, verifying fewer drafts would lose accepted tokens for no shorter round
     NOISE_MS, NOISE_SHARE = 1.0, 0.03
 
     def cost(self, bucket: int, rows: int, sampled: bool = False) -> float:
@@ -285,6 +283,18 @@ class RowBudget:
         for _, _, i in gains[:extra]:
             limits[i] += 1
         return limits, rows
+
+    def stats(self) -> dict:
+        """What the policy measured while serving."""
+        label = lambda b, s: f"{b}{':sampled' if s else ''}"  # noqa: E731
+        per_bucket = lambda counts: {str(b): {str(v): n for (bb, v), n in sorted(counts.items()) if bb == b}  # noqa: E731
+                                     for b in sorted({b for b, _ in counts})}
+        return {"acceptance": [round(a / t, 3) for a, t in zip(*self.survival[False])],
+                "sampled_acceptance": [round(a / t, 3) for a, t in zip(*self.survival[True])],
+                "shift": [round(v, 2) for v in self.shift],
+                "tokens_per_ms": {label(b, s): round(v, 3) for (b, s), v in self.rate.items()},
+                "overhead_ms": {label(b, s): round(v, 3) for (b, s), v in self.overhead.items()},
+                "depths": per_bucket(self.chosen), "rows": per_bucket(self.chosen_rows)}
 
     def observe(self, request, depth: int, accepted: int, rate: float = 0.02, limit: float = 4.0) -> None:
         """A request's round: `accepted` of its `depth` drafts; it tested positions up to the first rejected."""

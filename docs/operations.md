@@ -97,7 +97,8 @@ DFlash2 drafts its whole block in one forward, then verifies only the drafts wor
 - **Packed verification.** Each request verifies its own number of drafts (`spec_graphs.RaggedVerifyGraphs`, row
   totals per batch bucket): seats go to each request in order of S, so a confident request verifies deep and an unsure
   one shallow. Steady state, the 27B's throughput settings at 10K context: x1.04 at 8 requests and x1.12 at 16 against
-  one depth for the batch with the same scores, equal at 1-4.
+  one depth for the batch with the same scores, equal at 1-4. Packed rounds accept on the host:
+  `SHARAR_DEVICE_ACCEPT` applies to fixed-depth rounds only.
 - **Sampled batches** verify one depth for every request, chosen before drafting from the drafts' survival per
   position over past rounds, so rejection sampling stays exact; a greedy batch with a constrained request (a grammar)
   verifies every request at the cap.
@@ -106,7 +107,7 @@ DFlash2 drafts its whole block in one forward, then verifies only the drafts wor
   before the one-pass relaxed rule), the quick suite equal (pooled -0.4 pp, p 0.74). Not Flash-Next
   (`SHARAR_SPEC_POLICY=budget` is refused there): under its expert budget a verify forward reads the same experts
   whatever its rows, so verifying fewer saves nothing, and its depth caps (the experts each verified token keeps) leave
-  only moving rows between requests, measured at +1 to +5% greedy and slower under sampling (#273).
+  only moving rows between requests, measured at +1 to +5% greedy and slower under sampling.
 
 `/get_server_info` reports what it learned under `spec_stats.budget`: acceptance per position (greedy and sampled),
 the shift, tokens per ms and overhead per bucket, and the row totals (scored rounds) and depths (sampled or

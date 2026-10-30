@@ -125,7 +125,7 @@ draft and feedback graphs, device-resident acceptance, and retained features thr
   for 128 requests); `exact`, which reads every expert, drafts 7 (unmeasured). The depth tables stay: within them a
   verify row costs little, so adaptive verification ([the 27B's](operations.md#adaptive-verification-dflash2)) could
   only move rows between requests, and packed verification here measured +1 to +5% greedy at 8-128 requests and
-  lost under sampling and at one request (#273). On the h2h prompts, greedy at `fast`'s
+  lost under sampling and at one request. On the h2h prompts, greedy at `fast`'s
   top-2 within 1.0, the drafter emits 2.8 tokens a round at depth 3, 3.6 at 7 and 3.9 at 9, counting the first d
   drafts of a 10-row block (at 9: math 6.1, structured 5.7, code 5.4; chat 3.2, prose 2.7, multilingual 2.6).
 - **Acceptance.** `fast` and `throughput` accept a DFlash2 draft the target ranks top-2 within 1.0 logits, the 27B's

@@ -37,6 +37,12 @@ class Proposal:
     # It reads only the drafts before position j, never y_j, so a depth chosen from it keeps rejection sampling exact.
     acceptance: torch.Tensor | None = None
 
+    def head(self, n: int) -> "Proposal":
+        """The first n drafts of every request."""
+        cut = lambda t: t[:, :n] if t is not None else None  # noqa: E731
+        return Proposal(self.tokens[:, :n], cut(self.probabilities), cut(self.support), cut(self.confidence),
+                        self.columns, cut(self.acceptance))
+
 
 NUCLEUS_CANDIDATES = 1024  # top-p without top-k: candidates ranked before falling back to a full sort
 

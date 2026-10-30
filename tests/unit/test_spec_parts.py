@@ -243,7 +243,7 @@ def test_the_27b_carries_its_pinned_drafts_calibration():
     from sharar import target as targets
     weights = dict(targets.get("qwen38").draft_calibration)["dflash2"]
     assert len(weights) == 4 and weights[0] > 0  # a higher top probability, a likelier acceptance
-    assert targets.get("flashnext").draft_calibration == ()  # no adaptive verification there (#273)
+    assert targets.get("flashnext").draft_calibration == ()  # no adaptive verification there
 
 
 def test_ragged_budgets_cover_plain_decode_to_full_depth_and_128_rows():
@@ -286,8 +286,8 @@ def test_tensor_parallel_ranks_learn_the_same_round_times_at_the_same_round(monk
 
 
 def test_row_budget_verifies_every_draft_where_rows_are_free():
-    """A saving under the noise floor (1 ms, 3% of the round) is no saving: where 1 to 9 drafts verify in 16.6-18.1 ms
-    unsure drafts still all verify; a wide bucket's rows cost real time."""
+    """A saving under the noise floor (1 ms, 3% of the round) is no saving: where 1 to 9 drafts verify within 1.5 ms of
+    each other, unsure drafts still all verify; a wide bucket's rows cost real time."""
     from sharar.engine.depth import RowBudget, ragged_budgets
     budgets = ragged_budgets((1, 8), 10)
     policy = RowBudget(9, (1, 8), packed_rows=budgets)
