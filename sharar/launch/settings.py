@@ -141,6 +141,14 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
         elif profile == "fast":  # adaptive depth: h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
             # two Sparks: 0.14 drafted chat and prose too deep (-12%, -7% against depth 4); 0.2 keeps them within noise
             p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14" if tp == 1 else "0.2", SHARAR_SPEC_DEPTHS="2:4,4:4")
+    if profile == "throughput" and target == "qwen38" and (proposer or "dflash2") == "dflash2":
+        # adaptive verification (engine/depth.RowBudget): DFlash2's calibrated draft scores and the measured verify
+        # costs decide what each round verifies, a depth per request in packed graphs (one Spark against fixed 15,
+        # greedy / T 0.7: 8 requests x1.14 / x1.09, 16 x1.29 / x1.21; two Sparks +9 / +18% greedy; quick suite equal).
+        # `fast` keeps the fixed depth: at 1 and 4 requests it measured x0.96-1.05, for a host wait every round and
+        # eleven packed graphs a bucket; `exact` keeps it so its runs repeat. Flash-Next keeps its depth tables: under
+        # its expert budget verify rows cost little, so verifying fewer saved nothing
+        p["SHARAR_SPEC_POLICY"] = "budget"
     if profile != "exact" and tp == 1:
         # NVFP4 KV (cache/kv_pool.py): 4.5 bits a value where FP8 takes 8, so the same memory holds more tokens (the
         # 27B 16/9, Flash-Next ~1.4 beside its BF16 index keys): long contexts and concurrent requests, more cached
@@ -376,6 +384,9 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
         if wider and batch not in kept:
             kept[batch] = wider[0]
         values["SHARAR_SPEC_DEPTHS"] = ",".join(f"{b}:{d}" for b, d in sorted(kept.items()))
+    if defaults.get("SHARAR_SPEC_POLICY") == values.get("SHARAR_SPEC_POLICY") == "budget" and values.get("SHARAR_SPEC") == "0" \
+            and "SHARAR_SPEC_POLICY" not in {**user, **(overrides or {})}:
+        values.pop("SHARAR_SPEC_POLICY")  # plain decode: the profile's adaptive verification has nothing to verify
     values["SHARAR_PROFILE"] = profile
 
     home = Path(env.get("HOME") or Path.home())
@@ -392,6 +403,7 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     _check(batch.isdigit() and 1 <= int(batch) <= 128, "SHARAR_MAX_BATCH must be in [1, 128]")
     depths = values.get("SHARAR_SPEC_DEPTHS", "")
     _check(not depths or re.fullmatch(r"\d+:\d+(,\d+:\d+)*", depths) is not None, "SHARAR_SPEC_DEPTHS must be BUCKET:DEPTH pairs, e.g. 8:1,16:0")
+    _check(values.get("SHARAR_SPEC_POLICY", "fixed") in ("fixed", "budget"), "SHARAR_SPEC_POLICY must be fixed or budget")
     _check(values.get("SHARAR_FLASHNEXT_EXPERTS", "w3") in ("w3", "nvfp4"), "SHARAR_FLASHNEXT_EXPERTS must be w3 or nvfp4")
     _check(values.get("SHARAR_BOLT_EXPERTS", "b12x") in ("bf16", "fp8", "b12x"), "SHARAR_BOLT_EXPERTS must be bf16, fp8 or b12x")
     _check(values.get("SHARAR_DRAFT_HEAD", "fp8") in ("fp8", "w3", "w2"), "SHARAR_DRAFT_HEAD must be fp8, w3 or w2")
@@ -429,6 +441,16 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
         _check(kv_format in ("fp8", "sim-bf16"), "Bolt supports FP8 KV or sim-bf16 for parity")
     _check(proposer in ("mtp", "dflash2"), f"SHARAR_PROPOSER must be mtp or dflash2 (got {proposer!r})")
     _check(precision != "fp8" or (spec and proposer == "dflash2"), "FP8 draft precision requires enabled DFlash2 speculation")
+    if values.get("SHARAR_SPEC_POLICY") == "budget":
+        _check(name == "qwen38" and spec and proposer == "dflash2",
+               "SHARAR_SPEC_POLICY=budget (adaptive verification) serves the 27B's DFlash2 with SHARAR_SPEC above 0; "
+               "Flash-Next, Nemotron and MTP keep their depth tables (SHARAR_SPEC_POLICY=fixed)")
+        _check(not any(d == "0" for d in re.findall(r":(\d+)", depths)),
+               "SHARAR_SPEC_DEPTHS cannot name depth 0 (plain decode) under SHARAR_SPEC_POLICY=budget, which verifies "
+               "at least one draft a request: set SHARAR_SPEC_POLICY=fixed")
+        _check(float(values.get("SHARAR_SPEC_STEP_COST") or 0) == 0,
+               "SHARAR_SPEC_STEP_COST (adaptive depth) and SHARAR_SPEC_POLICY=budget (adaptive verification) exclude "
+               "each other: the budget decides each request's depth itself")
     max_context = int(values.get("SHARAR_MAX_CONTEXT") or DEFAULT_CONTEXT)
     _check(2 <= max_context <= DEFAULT_CONTEXT, f"SHARAR_MAX_CONTEXT must be in [2, {DEFAULT_CONTEXT}]")
     if tp > 1:

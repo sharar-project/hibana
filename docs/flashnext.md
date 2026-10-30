@@ -122,7 +122,10 @@ draft and feedback graphs, device-resident acceptance, and retained features thr
   at most 9 for one request and 7 for two to four (`SHARAR_SPEC=9`, `SHARAR_SPEC_DEPTHS=2:7,4:7`); `throughput` drafts as
   MTP, 4 and 3 from 16 requests (from 16, depth 5 decoded 9-10% slower than 3: its verification passes the 64 rows the
   3-bit copies serve; and the verify buffers hold every request slot at the deepest depth, 1.7 GiB at 4 and 3.4 at 9
-  for 128 requests); `exact`, which reads every expert, drafts 7 (unmeasured). On the h2h prompts, greedy at `fast`'s
+  for 128 requests); `exact`, which reads every expert, drafts 7 (unmeasured). The depth tables stay: within them a
+  verify row costs little, so adaptive verification ([the 27B's](operations.md#adaptive-verification-dflash2)) could
+  only move rows between requests, and packed verification here measured +1 to +5% greedy at 8-128 requests and
+  lost under sampling and at one request. On the h2h prompts, greedy at `fast`'s
   top-2 within 1.0, the drafter emits 2.8 tokens a round at depth 3, 3.6 at 7 and 3.9 at 9, counting the first d
   drafts of a 10-row block (at 9: math 6.1, structured 5.7, code 5.4; chat 3.2, prose 2.7, multilingual 2.6).
 - **Acceptance.** `fast` and `throughput` accept a DFlash2 draft the target ranks top-2 within 1.0 logits, the 27B's
