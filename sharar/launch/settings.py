@@ -141,12 +141,13 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
         elif profile == "fast":  # adaptive depth: h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
             # two Sparks: 0.14 drafted chat and prose too deep (-12%, -7% against depth 4); 0.2 keeps them within noise
             p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14" if tp == 1 else "0.2", SHARAR_SPEC_DEPTHS="2:4,4:4")
-    if profile != "exact" and target == "qwen38" and (proposer or "dflash2") == "dflash2":
+    if profile == "throughput" and target == "qwen38" and (proposer or "dflash2") == "dflash2":
         # adaptive verification (engine/depth.RowBudget): DFlash2's calibrated draft scores and the measured verify
-        # costs decide what each round verifies, a depth per request in packed graphs (one Spark against fixed 15:
-        # throughput 8 / 16 requests +13 / +28% greedy, two Sparks +9 / +18%; quick suite equal). `exact` keeps the
-        # fixed depth so its runs repeat. Flash-Next keeps its depth tables: under its expert budget verify rows
-        # cost little, so verifying fewer saved nothing
+        # costs decide what each round verifies, a depth per request in packed graphs (one Spark against fixed 15,
+        # greedy / T 0.7: 8 requests x1.14 / x1.09, 16 x1.29 / x1.21; two Sparks +9 / +18% greedy; quick suite equal).
+        # `fast` keeps the fixed depth: at 1 and 4 requests it measured x0.96-1.05, for a host wait every round and
+        # eleven packed graphs a bucket; `exact` keeps it so its runs repeat. Flash-Next keeps its depth tables: under
+        # its expert budget verify rows cost little, so verifying fewer saved nothing
         p["SHARAR_SPEC_POLICY"] = "budget"
     if profile != "exact" and tp == 1:
         # NVFP4 KV (cache/kv_pool.py): 4.5 bits a value where FP8 takes 8, so the same memory holds more tokens (the

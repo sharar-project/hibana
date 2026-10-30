@@ -348,17 +348,19 @@ def test_host_floor_setting(env, tmp_path):
         resolve(env, "flashnext", overrides={"SHARAR_MIN_AVAILABLE_KIB": str(16 * 2**20)})
 
 
-def test_adaptive_verification_for_dflash2_outside_exact(env):
-    # the 27B's DFlash2 verifies what its drafts' scores pay for in `fast` and `throughput`, on one Spark or two;
-    # Flash-Next keeps its depth tables and refuses the policy; `exact` keeps the fixed depth; MTP keeps its own
+def test_adaptive_verification_for_dflash2_in_throughput(env):
+    # the 27B's DFlash2 verifies what its drafts' scores pay for in `throughput`, on one Spark or two; `fast` and
+    # `exact` keep the fixed depth; Flash-Next keeps its depth tables and refuses the policy; MTP keeps its own
     for tp in (1, 2):
+        assert launch.profile_defaults("throughput", "qwen38", tp=tp)["SHARAR_SPEC_POLICY"] == "budget"
         for profile in ("fast", "throughput"):
-            assert launch.profile_defaults(profile, "qwen38", tp=tp)["SHARAR_SPEC_POLICY"] == "budget"
             assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "flashnext", tp=tp, proposer="dflash2")
             assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "flashnext", tp=tp)
             assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "qwen38", tp=tp, proposer="mtp")
-        assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults("exact", "qwen38", tp=tp)
-    assert resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "fixed"}).get("SHARAR_SPEC_POLICY") == "fixed"
+        for profile in ("exact", "fast"):
+            assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "qwen38", tp=tp)
+    assert resolve(env, "27b", "throughput", overrides={"SHARAR_SPEC_POLICY": "fixed"}).get("SHARAR_SPEC_POLICY") == "fixed"
+    assert resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "budget"}).get("SHARAR_SPEC_POLICY") == "budget"
     with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY=budget"):
         resolve(env, "flashnext", "fast", overrides={"SHARAR_PROPOSER": "dflash2", "SHARAR_SPEC_POLICY": "budget"})
     with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY"):
@@ -371,4 +373,4 @@ def test_adaptive_verification_for_dflash2_outside_exact(env):
             resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "budget", **overrides})
     with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY=budget"):
         resolve(env, "nemotron", "fast", overrides={"SHARAR_SPEC_POLICY": "budget"})
-    assert resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_DEPTHS": "16:4"}).get("SHARAR_SPEC_POLICY") == "budget"
+    assert resolve(env, "27b", "throughput", overrides={"SHARAR_SPEC_DEPTHS": "16:4"}).get("SHARAR_SPEC_POLICY") == "budget"
