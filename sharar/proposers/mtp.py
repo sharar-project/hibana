@@ -25,26 +25,23 @@ def draft_argmax(head, hidden: torch.Tensor) -> torch.Tensor:
     return head.draft_head.argmax(head.head_input(hidden))
 
 
-def draft_candidates(head, hidden: torch.Tensor, r: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """The draft head's r best tokens for each row: (ids int64 [rows, r], FP32 logits [rows, r]); with a 2-bit or 3-bit
-    shortlist head, its candidates rescored by the target's FP8 rows (`draft_head.ShortlistHead.candidates`)."""
-    return head.draft_head.candidates(head.head_input(hidden), r)
+CANDIDATES = 16  # a sampled MTP draft's law lives on the draft head's 16 best tokens (the 2-bit head's rescored shortlist)
 
 
-def draft_rows(requests, depth: int, width: int, tau: float, device):
-    """One round's per-row inputs of `draft_laws` on CUDA, one upload each: params float32 [b, 4] (temperature x tau,
+def draft_rows(requests, depth: int, width: int, device):
+    """One round's per-row inputs of `draft_laws` on CUDA, one upload each: params float32 [b, 4] (temperature,
     top_k within the candidates or 0, top_p, greedy) and Philox rng int64 [depth, b, 2], step j at the request's
     (seed, ROUND_STRIDE * round + DRAFT + j) (engine/sampling_rng.py)."""
     from sharar.engine import sampling_rng
-    params = sampling_rng.rows("mtp-draft-params", [[max(q.params.temperature, 1e-6) * tau, q.params.top_k if 0 < q.params.top_k < width else 0,
+    params = sampling_rng.rows("mtp-draft-params", [[max(q.params.temperature, 1e-6), q.params.top_k if 0 < q.params.top_k < width else 0,
                                                      q.params.top_p, float(q.params.greedy)] for q in requests], torch.float32, device)
     base = sampling_rng.offsets(requests, sampling_rng.DRAFT)
     rng = sampling_rng.rows("mtp-draft-rng", [[q.rng_seed, o + j] for j in range(depth) for q, o in zip(requests, base)], torch.int64, device)
     return params, rng.view(depth, len(requests), 2)
 
 
-def draft_laws(ids, logits, requests, tau: float, rows=None, j: int = 0):
-    """Sampled MTP drafts for step j: each row draws from its request's law (temperature x tau, top-k with ties, top-p,
+def draft_laws(ids, logits, requests, rows=None, j: int = 0):
+    """Sampled MTP drafts for step j: each row draws from its request's law (temperature, top-k with ties, top-p,
     as `rejection.distribution`) over its candidates, ids / logits [b, r]; greedy rows take the best candidate.
     Returns (tokens [b], laws [b, r]): the drafts and the realized law q each was drawn from, which the verifier tests
     them against exactly. CUDA (`rows` from `draft_rows`): one Philox draw per row, kernels/draft_selection.sampled_lattice
@@ -56,7 +53,7 @@ def draft_laws(ids, logits, requests, tau: float, rows=None, j: int = 0):
         tokens, laws = sampled_lattice(ids.view(b, 1, r), logits.float().contiguous().view(b, 1, 1, r).expand(b, 1, r, r), params, rng[j])
         return tokens[:, 0], laws[:, 0]
     from sharar.engine.rejection import small_laws
-    laws = small_laws(logits.float() / tau, [q.params for q in requests])
+    laws = small_laws(logits.float(), [q.params for q in requests])
     u = torch.stack([torch.rand(1, device=ids.device, generator=q.generator) for q in requests])  # [b, 1]
     cdf = laws.cumsum(-1)
     local = torch.searchsorted(cdf, (u * cdf[:, -1:]).contiguous(), right=True).clamp_max(r - 1)
@@ -77,7 +74,7 @@ def draft_outputs(head, hidden: torch.Tensor, with_confidence: bool, width: int)
     (ids, logits) [rows, width] or None)."""
     if not width:
         return (*draft_choice(head, hidden, with_confidence), None)
-    ids, values = draft_candidates(head, hidden, width)
+    ids, values = head.draft_head.candidates(head.head_input(hidden), width)  # rescored by the FP8 rows on a shortlist head
     token, conf = draft_choice(head, hidden, True) if with_confidence else (ids[..., 0], None)
     return token, conf, (ids, values)
 
@@ -99,8 +96,8 @@ class MtpProposer:
         self.with_confidence = current().trace_confidence
         cfg = current()
         self.sample = cfg.mtp_sample  # read once here: the draft graphs capture the candidates' outputs
-        self.sample_width = cfg.mtp_sample_candidates
-        self.draft_temperature = cfg.mtp_draft_temperature
+        self.sample_width = CANDIDATES
+        self._rows = None  # a sampled round's `draft_rows`
         self._fb = None  # device acceptance buffers (`_feedback_buffers`)
         self._host_tokens = torch.empty(context.max_batch * (k + 1), dtype=torch.int64,
                                         pin_memory=context.device.type == "cuda")
@@ -200,7 +197,7 @@ class MtpProposer:
         sampled = self.sample and any(not r.params.greedy for r in requests)
         laws, supports = [], []
         if sampled and self.context.device.type == "cuda":
-            self._rows = draft_rows(requests, self.k if depth is None else depth, self.sample_width, self.draft_temperature, self.context.device)
+            self._rows = draft_rows(requests, self.k if depth is None else depth, self.sample_width, self.context.device)
         hidden, token, conf, cand = self._step(inputs.tokens, torch.cat(hids), inputs.positions, pages[:, 0].contiguous(), kv, graphs, sampled)
         if sampled:
             token = self._draw(cand, requests, 0, laws, supports)
@@ -223,7 +220,7 @@ class MtpProposer:
     def _draw(self, cand, requests, j, laws, supports):
         """Step j's sampled draft from its candidates, its law and support appended for the verifier."""
         ids, values = cand
-        token, law = draft_laws(ids, values, requests, self.draft_temperature, getattr(self, "_rows", None), j)
+        token, law = draft_laws(ids, values, requests, self._rows, j)
         laws.append(law)
         supports.append(ids)
         return token

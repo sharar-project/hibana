@@ -55,8 +55,8 @@ class TargetHead:
     def candidates(self, x: torch.Tensor, r: int) -> tuple[torch.Tensor, torch.Tensor]:
         """The head's r best tokens: (global ids int64 [..., r], their FP32 logits [..., r]), descending. A sampled MTP
         draft's law lives on them (proposers/mtp.py)."""
-        values, ids = self.logits_fn(x).float().topk(r, dim=-1)
-        return ids, values
+        values, ids = self.logits_fn(x).topk(r, dim=-1)  # then FP32: exact for BF16, and r values instead of the vocabulary
+        return ids, values.float()
 
 
 def _weight_scale(lin) -> torch.Tensor | None:
@@ -154,8 +154,8 @@ class ShortlistHead:
             scale = _weight_scale(self.source)
             values, ids = values * (scale.float().reshape(()) if scale is not None else 1.0), cand.gather(-1, order)
         else:
-            values, local = logits.float().topk(r, dim=-1)
-            ids = self._global(local)
+            values, local = logits.topk(r, dim=-1)
+            values, ids = values.float(), self._global(local)
         return ids.view(*x.shape[:-1], r), values.view(*x.shape[:-1], r)
 
     def _shortlist(self, x: torch.Tensor, logits: torch.Tensor, r: int) -> tuple[torch.Tensor, torch.Tensor]:

@@ -56,7 +56,7 @@ class AcceptGraphs:
         self._graphs: dict[int, torch.cuda.CUDAGraph] = {}
         self._decide: dict[int, torch.cuda.CUDAGraph] = {}  # sampled batches: the decision, then the commit graph
         self._commit: dict[int, torch.cuda.CUDAGraph] = {}
-        self.sampled = spec.device.type == "cuda" and spec.proposer.requirements.name == "mtp"  # point-mass drafts
+        self.sampled = spec.device.type == "cuda" and spec.proposer.requirements.name == "mtp"  # MTP drafts
         # SHARAR_MTP_SAMPLE: a sampled batch's drafts come with their law q [b, k, W] on candidates [b, k, W]
         self.q_width = spec.proposer.sample_width if self.sampled and getattr(spec.proposer, "sample", False) else 0
 

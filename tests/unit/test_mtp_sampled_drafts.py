@@ -21,14 +21,8 @@ class _Req:
 
 
 def test_settings_parse_and_validate():
-    c = EngineConfig.from_env({})
-    assert (c.mtp_sample, c.mtp_sample_candidates, c.mtp_draft_temperature) == (False, 16, 1.0)
-    c = EngineConfig.from_env({"SHARAR_MTP_SAMPLE": "1", "SHARAR_MTP_SAMPLE_CANDIDATES": "8", "SHARAR_MTP_DRAFT_TEMPERATURE": "1.25"})
-    assert (c.mtp_sample, c.mtp_sample_candidates, c.mtp_draft_temperature) == (True, 8, 1.25)
-    with pytest.raises(ValueError, match="SHARAR_MTP_SAMPLE_CANDIDATES"):
-        EngineConfig.from_env({"SHARAR_MTP_SAMPLE_CANDIDATES": "33"})
-    with pytest.raises(ValueError, match="SHARAR_MTP_DRAFT_TEMPERATURE"):
-        EngineConfig.from_env({"SHARAR_MTP_DRAFT_TEMPERATURE": "0"})
+    assert not EngineConfig.from_env({}).mtp_sample
+    assert EngineConfig.from_env({"SHARAR_MTP_SAMPLE": "1"}).mtp_sample
 
 
 @pytest.mark.parametrize("profile", ["fast", "throughput"])
@@ -99,16 +93,15 @@ def test_draft_laws_cpu_match_the_request_law_and_draw_from_it():
     params = [SamplingParams(temperature=1.0, top_k=20, top_p=0.95), SamplingParams(temperature=0.7, top_k=5),
               SamplingParams(temperature=1.0, top_k=0, top_p=1.0), SamplingParams(temperature=0.0)]
     reqs = [_Req(p, 10 + i) for i, p in enumerate(params)]
-    for tau in (1.0, 1.4):
-        tokens, laws = draft_laws(ids, logits, reqs, tau)
-        assert torch.allclose(laws, small_laws(logits / tau, params))
-        assert torch.allclose(laws.sum(-1), torch.ones(b))
-        assert (laws[1] > 0).sum() <= 5 and laws[3].max() == 1 and laws[3, 0] == 1  # top-k; greedy: the best candidate
-        assert all(int(t) in row for t, row in zip(tokens.tolist(), ids.tolist()))
+    tokens, laws = draft_laws(ids, logits, reqs)
+    assert torch.allclose(laws, small_laws(logits, params))
+    assert torch.allclose(laws.sum(-1), torch.ones(b))
+    assert (laws[1] > 0).sum() <= 5 and laws[3].max() == 1 and laws[3, 0] == 1  # top-k; greedy: the best candidate
+    assert all(int(t) in row for t, row in zip(tokens.tolist(), ids.tolist()))
     # one row many times: the draws follow its law
     n = 20000
     rows = [_Req(params[0], 1000 + i) for i in range(n)]
-    tokens, laws = draft_laws(ids[:1].expand(n, r), logits[:1].expand(n, r), rows, 1.0)
+    tokens, laws = draft_laws(ids[:1].expand(n, r), logits[:1].expand(n, r), rows)
     freq = torch.bincount((ids[0].unsqueeze(0) == tokens.unsqueeze(1)).int().argmax(1), minlength=r).float() / n
     assert (freq - laws[0]).abs().max() < 0.015
 
@@ -124,7 +117,7 @@ def test_sampled_drafts_verify_to_the_target_law():
     hv, hi = head.topk(r)
     params = SamplingParams(temperature=1.0, top_k=20, top_p=0.95)
     reqs = [_Req(params, i) for i in range(n)]
-    tokens, laws = draft_laws(hi.expand(n, r), hv.expand(n, r), reqs, 1.0)
+    tokens, laws = draft_laws(hi.expand(n, r), hv.expand(n, r), reqs)
     logits = target.view(1, 1, v).expand(n, 2, v)  # k = 1 draft and the bonus row
     acc, corr, _, _ = verify_batch(tokens.view(n, 1), logits, [params] * n, [q.generator for q in reqs],
                                    laws.view(n, 1, r), hi.view(1, 1, r).expand(n, 1, r))
