@@ -79,7 +79,10 @@ once (`FlashNextIndexer._plan`) and ranks 256 rows per top-k.
   the depth d that maximizes the expected emitted tokens (1 - q^(d+1)) / (1 - q) per round cost
   1 + c (d - 1). `SHARAR_SPEC_STEP_COST` is c: 0.14 on one Spark (a round measured 31.5 ms at depth 1 and about
   4.3 ms per token more), 0.2 on two, where 0.14 drafted chat and prose too deep. A batch verifies the deepest depth
-  its requests want, up to 4 for two to four requests (`SHARAR_SPEC_DEPTHS=2:4,4:4`). The choice is made before
+  its requests want, up to 7 for two requests and 6 for three or four on one Spark (`SHARAR_SPEC_DEPTHS=2:7,4:6`; at
+  fixed depth two requests decoded 184.0 tok/s at 7 against 171.1 at 4, four 238.7 at 6 against 230.5), 4 on two
+  (`2:4,4:4`, unmeasured there). Under c = 0.14 a request wants past 4 only at q of 0.85 or more, so a batch goes
+  past 4 when one of its requests drafts that well. The choice is made before
   drafting, so drafting is not held up. `exact` keeps depth 4. `throughput` drafts 4 and verifies 3 from 9 requests up
   (`SHARAR_SPEC_DEPTHS=16:3,32:3,64:3,128:3`, with 3-bit experts on one Spark, where at 32-128 requests a verified row
   costs about 0.5 ms and depth 3 was the best fixed depth); with NVFP4 experts or on two Sparks only the 16-request

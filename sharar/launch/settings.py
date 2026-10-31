@@ -139,8 +139,11 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
                 if profile == "fast":
                     p.update(SHARAR_SPEC="9", SHARAR_SPEC_DEPTHS="2:7,4:7")
         elif profile == "fast":  # adaptive depth: h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
-            # two Sparks: 0.14 drafted chat and prose too deep (-12%, -7% against depth 4); 0.2 keeps them within noise
-            p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14" if tp == 1 else "0.2", SHARAR_SPEC_DEPTHS="2:4,4:4")
+            # two Sparks: 0.14 drafted chat and prose too deep (-12%, -7% against depth 4); 0.2 keeps them within noise.
+            # One Spark, two to four requests: caps 7 and 6, which a batch reaches when one request accepts well (fixed
+            # depth, 512 greedy tokens: two requests 184.0 tok/s at 7 against 171.1 at 4, four 238.7 at 6 against 230.5)
+            p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14" if tp == 1 else "0.2",
+                     SHARAR_SPEC_DEPTHS="2:7,4:6" if tp == 1 else "2:4,4:4")
     if profile == "throughput" and target == "qwen38" and (proposer or "dflash2") == "dflash2":
         # adaptive verification (engine/depth.RowBudget): DFlash2's calibrated draft scores and the measured verify
         # costs decide what each round verifies, a depth per request in packed graphs (one Spark against fixed 15,
