@@ -97,6 +97,20 @@ def test_exact_rows_are_unchanged_beside_relaxed_ones():
         assert torch.equal(a[1::2], b[1::2])
 
 
+def test_a_draft_its_law_never_gives_is_rejected():
+    """A drafted token with q(y) = 0 (a rounding edge of the draw) is rejected whatever s, as by the exact test."""
+    n, s = 2000, 5.0
+    q = torch.tensor([0.5, 0.5, 0.0, 0.0]).expand(n, 1, 4).contiguous()
+    tokens, support = torch.full((n, 1), 2), torch.arange(4).expand(n, 1, 4).contiguous()
+    gens = [torch.Generator().manual_seed(i) for i in range(n)]
+    accepted, _, flags, _ = verify_batch(tokens, P.log().expand(n, 2, 4).contiguous(), [params(s)] * n, gens, q, support)
+    assert int(accepted.sum()) == 0 and not flags.any()
+    p = P.unsqueeze(0).expand(2, 4).contiguous()
+    for i in range(200):
+        a, _, f = verify_rows(torch.tensor([2]), p, q[0], support[0], torch.Generator().manual_seed(i), math.exp(-s))
+        assert int(a) == 0 and not f.any()
+
+
 def test_flags_mark_only_the_boosted_accepts():
     n = 20_000
     tokens, logits, q, support = dflash2_rows(n, 3)

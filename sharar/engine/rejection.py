@@ -162,7 +162,7 @@ def verify_rows(tokens, p, q, support, generator, soft_scale: float = 1.0):
     threshold = torch.where(q_y > 0, threshold, torch.zeros_like(threshold))
     u = torch.rand(k, device=p.device, generator=generator)
     exact = u < threshold
-    ok = exact | (u * soft_scale * q_y < p_y) if soft_scale < 1 else exact
+    ok = exact | ((q_y > 0) & (u * soft_scale * q_y < p_y)) if soft_scale < 1 else exact  # a draft its law never gives: rejected
     prefix = torch.cumprod(ok.to(torch.int64), dim=0)
     accepted = prefix.sum()
     residual = corrected_distribution(p[:k], q_rows)
@@ -261,6 +261,8 @@ def verify_batch(tokens, logits, params, generators, q=None, support=None, rng=N
     if any(relaxed_rows):
         rule = _rows("rule", [[float(r), p.soft_scale] for p, r in zip(params, relaxed_rows)], dev)
         boosted = u[:, :k] * rule[:, 1:] * (1.0 if q is None else q_y) < p_y  # accept_soft: u q < e^s p
+        if q is not None:
+            boosted = boosted & (q_y > 0)  # a draft its law never gives: rejected, as by the exact test
         ok = exact | ((rule[:, :1] > 0) & boosted)  # rows not relaxed: exact
     prefix = torch.cumprod(ok.to(torch.int64), dim=1)
     accepted = prefix.sum(1)

@@ -103,9 +103,10 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
     if profile == "exact":
         p = {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_SOFT": "0", "SHARAR_W3_DECODE": "0", "SHARAR_DEVICE_ACCEPT": "0"}
     elif profile in ("fast", "throughput"):
-        # sampled requests at s = 0.5 (sampled with thinking on, 4 requests, one Spark): Flash-Next with MTP 216 tok/s
-        # against 183 exact, the 27B with DFlash2 195 against 165. Accepting outright every draft within the greedy
-        # K:M rule (257 and 196) cost long reasoning its accuracy: those tokens came out at the drafter's probability.
+        # sampled requests at s = 0.5 (sampled with thinking on, 4 requests, one Spark): the 27B with DFlash2 195 tok/s
+        # against 165 exact, Flash-Next with sampled MTP drafts 216 against 183. Accepting outright every draft within
+        # the greedy K:M rule (196 and 257) cost long reasoning its accuracy: those tokens came out at the drafter's
+        # probability.
         p = {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_SOFT": "0.5", "SHARAR_W3_DECODE": "1",
              "SHARAR_DEVICE_ACCEPT": "1" if flashnext else "0"}
     else:

@@ -62,7 +62,7 @@ def _verify(values, index, drafts, q, support, row_params, rng, accepted_out, co
                 q_at = tl.where(tokens == y, 1.0, 0.0)
             u = tl.sum(tl.where(c == 0, tl.rand(seed, offset + j + c * 0), 0.0), 0)
             exact = u < threshold
-            ok = exact | (relaxed & (u * soft_scale * q_y < p_y))
+            ok = exact | (relaxed & (q_y > 0) & (u * soft_scale * q_y < p_y))  # q_y 0: a draft its law never gives
             tl.store(flags_out + row * K + j, tl.where((alive > 0) & ok & (exact == 0), 1, 0).to(tl.int64))
             reject = (alive > 0) & (ok == 0)
             residual = tl.maximum(law - q_at, 0.0)
