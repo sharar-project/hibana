@@ -33,6 +33,15 @@ class Proposal:
     support: torch.Tensor | None = None  # int64 [B, k, C], unique per row
     confidence: torch.Tensor | None = None  # FP32 [B, k, 2]: the draft's top-1 probability and top-1 minus top-2 (SHARAR_TRACE_CONFIDENCE only)
     columns: DraftColumns | None = None  # sequential drafts: host copies of tokens' columns as they complete
+    # FP32 [B, k]: position j's probability of acceptance once positions < j were accepted (DFlash2's lattice).
+    # It reads only the drafts before position j, never y_j, so a depth chosen from it keeps rejection sampling exact.
+    acceptance: torch.Tensor | None = None
+
+    def head(self, n: int) -> "Proposal":
+        """The first n drafts of every request."""
+        cut = lambda t: t[:, :n] if t is not None else None  # noqa: E731
+        return Proposal(self.tokens[:, :n], cut(self.probabilities), cut(self.support), cut(self.confidence),
+                        self.columns, cut(self.acceptance))
 
 
 NUCLEUS_CANDIDATES = 1024  # top-p without top-k: candidates ranked before falling back to a full sort

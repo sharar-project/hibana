@@ -110,13 +110,17 @@ class ParallelProposer:
         self.requirements = ProposerRequirements(name, FeatureRequest(layers=model.features),
                                                 persistent_bytes=self.bytes, greedy_only=False, max_depth=getattr(model, 'max_depth', 15),
                                                 capabilities=Capabilities(device_feedback=True, checkpoint_cache=True,
-                                                                          stored_payload=True, short_drafts=True))
+                                                                          stored_payload=True, short_drafts=True, scored_drafts=True))
         self.attention = flashinfer.BatchPrefillWithPagedKVCacheWrapper(self.workspace, 'NHD')
         from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
         self.planner = AttentionPlanner(AttentionGeometry(model.heads, model.kv_heads, model.head_dim,
                                                           window_left=self.window - 1))
         self.graphs = None
         self.cache_hits = self.cache_fallbacks = 0
+        # the pinned draft's acceptance calibration (qwen38_config.DRAFT_CALIBRATION); the raw top probability for a
+        # checkpoint served with --draft
+        self.calibration = (1.0, 0.0, 0.0, 0.0)
+        self.score_drafts = False  # set by a depth policy that reads `Proposal.acceptance` (engine/depth.RowBudget with packed graphs)
 
     def bind_checkpoint_cache(self, pool):
         if self.feature_cache.entries:
@@ -256,7 +260,8 @@ class ParallelProposer:
         sampled = any(not r.params.greedy for r in requests)
         if not sampled:
             from sharar.kernels.draft_selection import greedy_lattice
-            return Proposal(greedy_lattice(candidates, scores))
+            tokens = greedy_lattice(candidates, scores)
+            return Proposal(tokens, acceptance=self.acceptance(candidates, scores, tokens) if self.score_drafts else None)
         # One batched walk of the lattice for every row (rejection.sample_lattice): each step draws from the
         # request's law over the candidates that follow its previous choice, with the request's own generator.
         if candidates.is_cuda:  # one fused kernel; Philox draws at each request's (seed, round offset)
@@ -270,7 +275,28 @@ class ParallelProposer:
             tokens_s, laws = sampled_lattice(candidates, scores, params, rng)
         else:
             tokens_s, laws = sample_lattice(candidates, scores, [r.params for r in requests], [r.generator for r in requests])
-        return Proposal(tokens_s, laws, candidates)
+        return Proposal(tokens_s, laws, candidates)  # sampled rounds verify one depth for all: no scores
+
+    def acceptance(self, candidates, scores, tokens):
+        """Each drafted position's calibrated probability of acceptance once the positions before it were accepted
+        (`Proposal.acceptance`, FP32 [B, k]): sigmoid(w . features), `self.calibration` the pinned draft's w."""
+        w = self.calibration
+        logit, gap, position = self.acceptance_features(candidates, scores, tokens)
+        return torch.sigmoid(w[0] * logit + w[1] * gap + w[2] * position + w[3])
+
+    @staticmethod
+    def acceptance_features(candidates, scores, tokens):
+        """The calibration's features per drafted position (FP32 [B, k] each): the logit of the top probability of the
+        lattice row the drafts before position j select, its top-1 minus top-2 log-probability, and j / 15. The row
+        depends on y_{j-1}, never on y_j (tools/fit_draft_calibration.py fits the weights)."""
+        batch, steps, width = candidates.shape
+        ranks = (candidates == tokens[..., None]).to(torch.int8).argmax(-1)
+        previous = torch.cat([torch.zeros_like(ranks[:, :1]), ranks[:, :-1]], dim=1)
+        rows = scores.float().log_softmax(-1).gather(2, previous[:, :, None, None].expand(batch, steps, 1, width))[:, :, 0]
+        top = rows.topk(2, dim=-1).values
+        logp = top[..., 0].clamp(max=-1e-6)
+        position = (torch.arange(steps, device=scores.device, dtype=torch.float32) / 15).expand(batch, steps)
+        return logp - torch.log(-torch.expm1(logp)), top[..., 0] - top[..., 1], position
 
     def select(self, hidden, anchor, anchor_features=None):
         if getattr(self.model, 'uses_context_anchor', False):

@@ -311,7 +311,7 @@ def test_profile_depths_stay_within_a_lower_batch_limit(env):
     cases = {("throughput", "64"): {"mtp": "16:3,32:3,64:3", "dflash2": "16:3,32:3,64:3"},
              ("throughput", "100"): {"mtp": "16:3,32:3,64:3,100:3", "dflash2": "16:3,32:3,64:3,100:3"},
              ("throughput", "12"): {"mtp": "12:3", "dflash2": "12:3"},
-             ("fast", "3"): {"mtp": "2:4,3:4", "dflash2": "2:7,3:7"}}
+             ("fast", "3"): {"mtp": "2:7,3:6", "dflash2": "2:7,3:7"}}
     for (profile, batch), want in cases.items():
         for proposer, depths in want.items():
             s = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": proposer, "SHARAR_MAX_BATCH": batch})
@@ -356,3 +356,31 @@ def test_host_floor_setting(env, tmp_path):
             resolve(env, "flashnext", overrides={"SHARAR_HOST_FLOOR_GIB": bad})
     with pytest.raises(ValueError, match="SHARAR_MIN_AVAILABLE_KIB is retired"):  # main's guard setting, e.g. its 16 GiB
         resolve(env, "flashnext", overrides={"SHARAR_MIN_AVAILABLE_KIB": str(16 * 2**20)})
+
+
+def test_adaptive_verification_for_dflash2_in_throughput(env):
+    # the 27B's DFlash2 verifies what its drafts' scores pay for in `throughput`, on one Spark or two; `fast` and
+    # `exact` keep the fixed depth; Flash-Next keeps its depth tables and refuses the policy; MTP keeps its own
+    for tp in (1, 2):
+        assert launch.profile_defaults("throughput", "qwen38", tp=tp)["SHARAR_SPEC_POLICY"] == "budget"
+        for profile in ("fast", "throughput"):
+            assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "flashnext", tp=tp, proposer="dflash2")
+            assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "flashnext", tp=tp)
+            assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "qwen38", tp=tp, proposer="mtp")
+        for profile in ("exact", "fast"):
+            assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "qwen38", tp=tp)
+    assert resolve(env, "27b", "throughput", overrides={"SHARAR_SPEC_POLICY": "fixed"}).get("SHARAR_SPEC_POLICY") == "fixed"
+    assert resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "budget"}).get("SHARAR_SPEC_POLICY") == "budget"
+    with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY=budget"):
+        resolve(env, "flashnext", "fast", overrides={"SHARAR_PROPOSER": "dflash2", "SHARAR_SPEC_POLICY": "budget"})
+    with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY"):
+        resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "auto"})
+    # only the 27B's DFlash2 with drafts: the profile's policy steps aside for plain decode, an explicit one is refused
+    assert resolve(env, "27b", "throughput", overrides={"SHARAR_SPEC": "0"}).get("SHARAR_SPEC_POLICY") == ""
+    for overrides in ({"SHARAR_SPEC": "0"}, {"SHARAR_PROPOSER": "mtp", "SHARAR_DRAFT_PRECISION": "bf16"},
+                      {"SHARAR_SPEC_DEPTHS": "16:0"}, {"SHARAR_SPEC_STEP_COST": "0.1"}):
+        with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY=budget"):
+            resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "budget", **overrides})
+    with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY=budget"):
+        resolve(env, "nemotron", "fast", overrides={"SHARAR_SPEC_POLICY": "budget"})
+    assert resolve(env, "27b", "throughput", overrides={"SHARAR_SPEC_DEPTHS": "16:4"}).get("SHARAR_SPEC_POLICY") == "budget"

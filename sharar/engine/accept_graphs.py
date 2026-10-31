@@ -16,7 +16,8 @@ emitted tokens, traces. Ownership stays with StateManager
 and with the proposer (`accepted_prepare` / `accepted_publish`).
 
 Padded rows of a bucket carry budget 0 and ring slot 0: they emit nothing,
-reconstruct nothing into the dummy recurrent slot and write the dummy ring.
+reconstruct nothing into the dummy recurrent slot, leave its convolution
+window as it was and write the dummy ring.
 
 Sampled batches of point-mass drafts (MTP) replay two graphs per bucket: a decision graph (the vocabulary
 top-k and kernels/sampled_verify.verify_candidates with Philox draws, which write the sampled target row: the drafts
@@ -130,9 +131,15 @@ class AcceptGraphs:
         slots = vst["slots"][:b]
         self.spec.replay.run(pool, slots, counts.to(torch.int32))
         rows = torch.arange(b, device=self.device)
-        pool.conv_all[:, slots.long()] = self.spec.conv_windows_all[:, rows, (counts - 1).clamp(min=0)]
+        # padded rows (count 0) share the dummy slot: they write back what it holds, as the host path leaves it,
+        # so the padded verify rows that read it do not change with what earlier rounds padded (Flash-Next's
+        # per-tensor activation scale carries the padded rows into the real ones)
+        live, last, at = counts > 0, (counts - 1).clamp(min=0), slots.long()
+        conv = self.spec.conv_windows_all[:, rows, last]
+        pool.conv_all[:, at] = torch.where(live.view(1, b, *[1] * (conv.dim() - 2)), conv, pool.conv_all[:, at])
         for name, win in self.spec.aux_windows.items():
-            pool.aux[name][slots.long()] = win[rows, (counts - 1).clamp(min=0)]
+            aux = win[rows, last]
+            pool.aux[name][at] = torch.where(live.view(b, *[1] * (aux.dim() - 1)), aux, pool.aux[name][at])
         n = b * s  # the verify rows and inputs, for a proposer fed the final-normalized rows (MTP)
         self.spec.proposer.feedback_device(vst["features"], meta[:, 1], meta[:, 2], counts, s,
                                            norm=vst["norm"][:n], tokens=vst["tokens"][:n], pages=vst["pages"][:n])

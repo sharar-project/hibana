@@ -79,7 +79,10 @@ once (`FlashNextIndexer._plan`) and ranks 256 rows per top-k.
   the depth d that maximizes the expected emitted tokens (1 - q^(d+1)) / (1 - q) per round cost
   1 + c (d - 1). `SHARAR_SPEC_STEP_COST` is c: 0.14 on one Spark (a round measured 31.5 ms at depth 1 and about
   4.3 ms per token more), 0.2 on two, where 0.14 drafted chat and prose too deep. A batch verifies the deepest depth
-  its requests want, up to 4 for two to four requests (`SHARAR_SPEC_DEPTHS=2:4,4:4`). The choice is made before
+  its requests want, up to 7 for two requests and 6 for three or four on one Spark (`SHARAR_SPEC_DEPTHS=2:7,4:6`; at
+  fixed depth two requests decoded 184.0 tok/s at 7 against 171.1 at 4, four 238.7 at 6 against 230.5), 4 on two
+  (`2:4,4:4`, unmeasured there). Under c = 0.14 a request wants past 4 only at q of 0.85 or more, so a batch goes
+  past 4 when one of its requests drafts that well. The choice is made before
   drafting, so drafting is not held up. `exact` keeps depth 4. `throughput` drafts 4 and verifies 3 from 9 requests up
   (`SHARAR_SPEC_DEPTHS=16:3,32:3,64:3,128:3`, with 3-bit experts on one Spark, where at 32-128 requests a verified row
   costs about 0.5 ms and depth 3 was the best fixed depth); with NVFP4 experts or on two Sparks only the 16-request
@@ -122,7 +125,10 @@ draft and feedback graphs, device-resident acceptance, and retained features thr
   at most 9 for one request and 7 for two to four (`SHARAR_SPEC=9`, `SHARAR_SPEC_DEPTHS=2:7,4:7`); `throughput` drafts as
   MTP, 4 and 3 from 16 requests (from 16, depth 5 decoded 9-10% slower than 3: its verification passes the 64 rows the
   3-bit copies serve; and the verify buffers hold every request slot at the deepest depth, 1.7 GiB at 4 and 3.4 at 9
-  for 128 requests); `exact`, which reads every expert, drafts 7 (unmeasured). On the h2h prompts, greedy at `fast`'s
+  for 128 requests); `exact`, which reads every expert, drafts 7 (unmeasured). The depth tables stay: within them a
+  verify row costs little, so adaptive verification ([the 27B's](operations.md#adaptive-verification-dflash2)) could
+  only move rows between requests, and packed verification here measured +1 to +5% greedy at 8-128 requests and
+  lost under sampling and at one request. On the h2h prompts, greedy at `fast`'s
   top-2 within 1.0, the drafter emits 2.8 tokens a round at depth 3, 3.6 at 7 and 3.9 at 9, counting the first d
   drafts of a 10-row block (at 9: math 6.1, structured 5.7, code 5.4; chat 3.2, prose 2.7, multilingual 2.6).
 - **Acceptance.** `fast` and `throughput` accept a greedy request's DFlash2 draft the target ranks top-2 within 1.0

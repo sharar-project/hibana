@@ -52,19 +52,23 @@ def test_feedback_token_hidden_alignment_and_stopped_rows(counts):
 class _RowHead:
     """write_kv with no cross-row arithmetic: each page keeps (token, hidden row, position)."""
     hidden_width = 2
+    PADDING = 100_000  # the draft cache's write-only padding pages start here
 
     def __init__(self):
-        self.bytes, self.kv = 0, {}
+        self.bytes, self.rows, self.writes = 0, {}, []
+        self.kv = SimpleNamespace(padding_pages=torch.arange(self.PADDING, self.PADDING + 64, dtype=torch.int32))
 
     def write_kv(self, tokens, hidden, positions, pages):
         for t, h, p, page in zip(tokens.tolist(), hidden.tolist(), positions.tolist(), pages.tolist()):
-            self.kv[page] = (t, h, p)
+            self.rows[page] = (t, h, p)
+            self.writes.append(page)
 
 
 @pytest.mark.parametrize('counts', [(1,), (5,), (1, 5, 2, 3), (3, 1, 0)])
 def test_device_feedback_matches_host_feedback(counts):
     """accepted_prepare + feedback_device + accepted_publish (device acceptance) commit the rows and the
-    pending input the host's accepted_batch commits; padded bucket rows (count 0) write only page 0."""
+    pending input the host's accepted_batch commits; rows past a request's count, and padded bucket rows (count 0),
+    write padding pages, one each (rows writing one page race)."""
     s = 5
     real = [c for c in counts if c]
     norm = torch.randn(len(counts), s, 2).to(torch.bfloat16)  # the verify rows
@@ -99,7 +103,10 @@ def test_device_feedback_matches_host_feedback(counts):
                 req.committed_len += len(out)
             proposer.accepted_publish(requests, outputs)
         results[path] = requests
-    assert {p: v for p, v in heads['device'].kv.items() if p} == heads['host'].kv
+    device = heads['device']
+    assert {p: v for p, v in device.rows.items() if p < device.PADDING} == heads['host'].rows
+    spare = [p for p in device.writes if p >= device.PADDING]
+    assert len(spare) == len(counts) * s - sum(counts) and len(set(spare)) == len(spare)
     for h, d in zip(results['host'], results['device']):
         sh, sd = h.proposer_state, d.proposer_state
         assert (sh.draft_pos, sh.pending_token) == (sd.draft_pos, sd.pending_token)
