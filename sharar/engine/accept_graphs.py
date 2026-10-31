@@ -171,7 +171,7 @@ class AcceptGraphs:
                 p = r.params
                 hp[i, 0], hp[i, 1], hp[i, 2] = max(p.temperature, 1e-6), float(p.top_k), p.top_p
                 if p.relaxed:
-                    hp[i, 3], hp[i, 4], hp[i, 5] = float(p.accept_top_k), float(p.accept_margin), p.soft_scale
+                    hp[i, 3], hp[i, 5] = 1.0, p.soft_scale
                 hr[i, 0], hr[i, 1] = r.rng_seed, o
             st["params"].copy_(hp, non_blocking=True)
             st["rng"].copy_(hr, non_blocking=True)
@@ -199,7 +199,7 @@ class AcceptGraphs:
             if not r.params.ignore_eos:
                 for m, tok in enumerate(r.params.stop_token_ids):
                     host_meta[i, 3 + m] = tok
-            if r.params.relaxed:
+            if any_relaxed and r.params.relaxed:
                 host_relax[0, i], host_relax[1, i] = float(r.params.accept_top_k), float(r.params.accept_margin)
             elif any_relaxed:
                 host_relax[0, i] = 1.0  # the host rule's exact row inside a relaxed batch

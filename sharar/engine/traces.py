@@ -54,7 +54,7 @@ def _record(req) -> dict:
         },
         "spec": None,
     }
-    if params.accept_soft != float("inf"):  # the soft relaxed rule; absent: the forced accept
+    if params.accept_soft > 0:  # a sampled request's relaxed rule; absent: exact
         doc["params"]["accept_soft"] = params.accept_soft
     rounds = req.trace_rounds
     if rounds:

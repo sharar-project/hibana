@@ -96,8 +96,8 @@ PROFILE_NAMES = launch.PROFILE_NAMES
 # EngineConfig fields the served arm must report exactly as the in-process arm installed them.
 CHECKED = ("target", "profile", "w3_decode", "w3_checkpoint", "stable_numerics", "flashnext_trunk",
            "trunk_keep_bf16", "draft_vocab", "draft_head",
-           "draft_head_rescore", "device_accept", "accept_default", "accept_default_sampled",
-           "accept_default_sampled_threshold", "qsa_sparse_graphs", "flashnext_experts", "ssm_state", "ssm_window",
+           "draft_head_rescore", "device_accept", "accept_default", "accept_soft",
+           "qsa_sparse_graphs", "flashnext_experts", "ssm_state", "ssm_window",
            "ssm_compensators", "bolt_experts")
 
 # Layer-3 stages: the sharar-eval suite each runs and the tasks its verdict reads (the suite's GSM8K-300 is the first
@@ -194,14 +194,8 @@ def arm_plan(s: launch.Settings) -> dict:
     spec = s.spec
     accept = accept_rule(s.get("SHARAR_ACCEPT_DEFAULT", "off")) if spec else "1:0.0"
     cenv["SHARAR_SPEC"], cenv["SHARAR_ACCEPT_DEFAULT"] = str(spec), accept
-    sampled_on = s.get("SHARAR_ACCEPT_DEFAULT_SAMPLED") == "1" and accept != "1:0.0"
-    # sampled requests' own K:M, as `sharar engine` records it: only while they are relaxed (an exact one turns them off)
-    threshold = s.get("SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD")
-    threshold = accept_rule(threshold) if threshold and sampled_on else ""
-    if threshold == "1:0.0":
-        sampled_on, threshold = False, ""
-    cenv["SHARAR_ACCEPT_DEFAULT_SAMPLED"] = "1" if sampled_on else "0"
-    cenv["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] = threshold
+    # sampled requests' s, as `sharar engine` records it (0 without speculation)
+    cenv["SHARAR_ACCEPT_SOFT"] = s.get("SHARAR_ACCEPT_SOFT", "0") if spec else "0"
     return {"target": s.target, "env": cenv, "proposer": s.proposer, "spec": spec,
             "verify_state": s.get("SHARAR_VERIFY_STATE", "reconstruct"), "draft_precision": s.get("SHARAR_DRAFT_PRECISION", "bf16"),
             "draft": str(s.draft_dir) if s.draft_dir else None, "accept": accept}

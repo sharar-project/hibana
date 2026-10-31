@@ -14,6 +14,13 @@ def test_defaults_match_the_old_module_defaults():
     assert not c.ssd and c.max_context is None and c.spec is None and c.cuda_arch == "12.1a"
 
 
+def test_accept_soft_is_a_finite_number_at_least_zero():
+    assert EngineConfig.from_env({}).accept_soft == 0.0 and EngineConfig.from_env({"SHARAR_ACCEPT_SOFT": "0.5"}).accept_soft == 0.5
+    for bad in ("inf", "nan", "-1", "x"):
+        with pytest.raises(ValueError, match="SHARAR_ACCEPT_SOFT must be a finite number >= 0"):
+            EngineConfig.from_env({"SHARAR_ACCEPT_SOFT": bad})
+
+
 def test_environment_names_are_unchanged():
     c = EngineConfig.from_env({"SHARAR_W3_DECODE": "1", "SHARAR_DRAFT_HEAD": "w3", "SHARAR_SPEC": "4", "SHARAR_QSA_SPARSE_GRAPHS": "0",
                                "SHARAR_SSD": "1", "SHARAR_MAX_CONTEXT": "0", "SHARAR_TRACES_MAX_MIB": "",

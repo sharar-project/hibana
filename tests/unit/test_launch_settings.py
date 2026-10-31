@@ -52,21 +52,28 @@ def test_an_explicit_setting_wins_over_the_profile(env, explicit):
 
 
 def test_profile_knobs():
-    pick = lambda p, t: {k: launch.profile_defaults(p, t)[k] for k in ("SHARAR_ACCEPT_DEFAULT", "SHARAR_ACCEPT_DEFAULT_SAMPLED", "SHARAR_W3_DECODE")}  # noqa: E731
-    assert pick("exact", "qwen38") == {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "0"}
-    assert pick("fast", "qwen38") == pick("fast", "flashnext") == {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "1", "SHARAR_W3_DECODE": "1"}
+    pick = lambda p, t: {k: launch.profile_defaults(p, t)[k] for k in ("SHARAR_ACCEPT_DEFAULT", "SHARAR_ACCEPT_SOFT", "SHARAR_W3_DECODE")}  # noqa: E731
+    assert pick("exact", "qwen38") == {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_SOFT": "0", "SHARAR_W3_DECODE": "0"}
+    assert pick("fast", "qwen38") == pick("fast", "flashnext") == {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_SOFT": "0.5", "SHARAR_W3_DECODE": "1"}
     with pytest.raises(ValueError, match="unknown serving profile"):
         launch.profile_defaults("turbo", "qwen38")
     with pytest.raises(ValueError, match="choose from exact, fast, throughput"):
         launch.profile_defaults("balanced", "qwen38")
 
 
-@pytest.mark.parametrize("profile, target, threshold", [
-    ("fast", "qwen38", "2:1.0"), ("throughput", "qwen38", "2:1.0"), ("fast", "flashnext", None), ("throughput", "flashnext", None),
-    ("exact", "qwen38", None)])
-def test_the_27b_samples_at_a_tighter_threshold_under_fast(profile, target, threshold):
-    # at 3:2.0 the 27B's sampled thinking looped to max_tokens in Claude Code sessions, at 2:1.0 it did not
-    assert launch.profile_defaults(profile, target).get("SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD") == threshold
+@pytest.mark.parametrize("profile, target, proposer, soft", [
+    ("fast", "qwen38", None, "0.5"), ("throughput", "qwen38", None, "0.5"), ("fast", "flashnext", None, "0.5"),
+    ("fast", "flashnext", "dflash2", "0.5"), ("throughput", "flashnext", None, "0.5"), ("exact", "qwen38", None, "0"),
+    ("exact", "flashnext", None, "0")])
+def test_sampled_requests_get_one_bounded_rule(profile, target, proposer, soft):
+    p = launch.profile_defaults(profile, target, proposer=proposer)
+    assert p["SHARAR_ACCEPT_SOFT"] == soft and not any("SAMPLED" in k for k in p)
+
+
+@pytest.mark.parametrize("value", ["inf", "nan", "-0.5", "x"])
+def test_accept_soft_must_be_finite_and_nonnegative(env, value):
+    with pytest.raises(ValueError, match="SHARAR_ACCEPT_SOFT"):
+        resolve({**env, "SHARAR_ACCEPT_SOFT": value}, "27b", "fast")
 
 
 @pytest.mark.parametrize("profile, target, w3", [
@@ -166,9 +173,9 @@ def test_the_engine_gets_explicit_flags_and_its_environment(env, tmp_path):
     args = s.engine_args()
     assert args[args.index("--port") + 1] == "30001" and args[args.index("--spec") + 1] == "15"
     assert args[args.index("--context-length") + 1] == "262144" and args[args.index("--draft-precision") + 1] == "fp8"
-    assert args[args.index("--accept-default") + 1] == "3:2.0" and args[args.index("--accept-default-sampled-threshold") + 1] == "2:1.0"
+    assert args[args.index("--accept-default") + 1] == "3:2.0" and args[args.index("--accept-soft") + 1] == "0.5"
     assert "--draft" not in args and args[args.index("--traces") + 1] == str(s.traces)
-    assert "--accept-soft" not in args  # unset: the forced accept
+    assert not any("sampled" in a for a in args)
     soft = resolve({**env, "SHARAR_DRAFT": "pinned", "SHARAR_ACCEPT_SOFT": "0.25"}, "27b", "fast").engine_args()
     assert soft[soft.index("--accept-soft") + 1] == "0.25"
     e = s.engine_env(tmp_path / "w3")

@@ -2,24 +2,18 @@
 import math
 from sharar.engine.sampler import InvalidRequest, SamplingParams
 
-# Relaxed acceptance applied to requests that set neither accept_top_k nor
-# accept_margin: ACCEPT_DEFAULT to greedy ones, ACCEPT_DEFAULT_SAMPLED to sampled
-# ones; (1, 0.0) means exact. Set once by serve() from --accept-default(-sampled)
-# and --accept-default-sampled-threshold.
+# The relaxed rules requests get when they do not set their own (set once by serve()): greedy requests that set
+# neither accept_top_k nor accept_margin get ACCEPT_DEFAULT ((1, 0.0): exact; --accept-default), sampled requests that
+# do not set accept_soft get ACCEPT_SOFT_DEFAULT (0: exact; --accept-soft). Sampled requests ignore accept_top_k and
+# accept_margin.
 ACCEPT_DEFAULT = (1, 0.0)
-ACCEPT_DEFAULT_SAMPLED = (1, 0.0)
-# accept_soft for requests that do not set it (--accept-soft; inf: the forced accept).
-ACCEPT_SOFT_DEFAULT = math.inf
+ACCEPT_SOFT_DEFAULT = 0.0
 
 
-def set_accept_default(top_k: int, margin: float, sampled: bool | tuple[int, float] = False, soft: float = math.inf) -> None:
-    """sampled: False keeps sampled requests exact, True gives them the greedy threshold, (K, M) their own."""
-    global ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED, ACCEPT_SOFT_DEFAULT
-    threshold = sampled if isinstance(sampled, tuple) else (top_k, margin) if sampled else (1, 0.0)
-    for k, m in ((top_k, margin), threshold):
-        SamplingParams(accept_top_k=k, accept_margin=m).validate()
-    SamplingParams(accept_soft=soft).validate()
-    ACCEPT_DEFAULT, ACCEPT_DEFAULT_SAMPLED, ACCEPT_SOFT_DEFAULT = (top_k, margin), threshold, soft
+def set_accept_default(top_k: int, margin: float, soft: float = 0.0) -> None:
+    global ACCEPT_DEFAULT, ACCEPT_SOFT_DEFAULT
+    SamplingParams(accept_top_k=top_k, accept_margin=margin, accept_soft=soft).validate()
+    ACCEPT_DEFAULT, ACCEPT_SOFT_DEFAULT = (top_k, margin), soft
 
 
 def parse_accept_default(text: str | None) -> tuple[int, float]:
@@ -62,10 +56,9 @@ def _sampling_from(body: dict, max_default: int = 512) -> SamplingParams:
         accept_margin=body.get("accept_margin", sp.get("accept_margin", 0.0)),
         accept_soft=soft if soft is not None else ACCEPT_SOFT_DEFAULT,
     )
-    default = ACCEPT_DEFAULT if params.greedy else ACCEPT_DEFAULT_SAMPLED
-    if ("accept_top_k" not in body and "accept_top_k" not in sp and "accept_margin" not in body and "accept_margin" not in sp
-            and default != (1, 0.0)):
-        params.accept_top_k, params.accept_margin = default
+    if (params.greedy and "accept_top_k" not in body and "accept_top_k" not in sp and "accept_margin" not in body
+            and "accept_margin" not in sp and ACCEPT_DEFAULT != (1, 0.0)):
+        params.accept_top_k, params.accept_margin = ACCEPT_DEFAULT
     params.validate()
     return params
 

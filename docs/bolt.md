@@ -69,7 +69,7 @@ top-k 20):
 | vLLM (b12x linears and MoE, exact) | 73.9 / 76.6 | 147.1 | 70.3 / 72.7 | 147.9 |
 | `exact` | 87.1 / 86.7 | 169.8 | 80.4 / 89.3 | 183.7 |
 | `fast` | 118.6 / 122.9 | 226.3 | 121.7 / 124.4 | 234.1 |
-| `fast` with relaxed acceptance, top-2 within 1.0 (`SHARAR_ACCEPT_DEFAULT=2:1.0`, `SHARAR_ACCEPT_DEFAULT_SAMPLED=1`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD=2:1.0`) | 141.4 / 143.1 | 261.5 | 135.5 / 140.5 | 260.9 |
+| `fast` with relaxed acceptance, top-2 within 1.0 for greedy and sampled requests (sampled: every such draft accepted outright, a rule since replaced by `accept_soft`) | 141.4 / 143.1 | 261.5 | 135.5 / 140.5 | 260.9 |
 
 Greedy, thinking off, mean and four streams: the 3-bit copies take `exact`'s 86.7 / 169.8 to 111.0 / 187.0, the
 int8 state to 114.2 / 213.7 and expert sharing to 121.7 / 228.9.
@@ -83,8 +83,9 @@ at the cap; IFEval (541, prompt-level strict) 85.0% against 84.8% (p 1.0). Greed
 1,000) with the 3-bit copies -0.1 points. Thinking on and greedy, the 3-bit copies score GPQA 74.2% against 73.7%
 and GSM8K (first 300) 97.3% against 96.3%.
 
-Relaxed acceptance is not a profile default: sampled with thinking on, top-2 within 1.0 costs `fast` GPQA 5.6 points
-(p 0.052; nine more answers at the cap), and greedy top-3 within 2.0 cost GPQA 8.6 points (p 0.02). Expert sharing
+Relaxed acceptance is not a profile default (`SHARAR_ACCEPT_DEFAULT=off`, `SHARAR_ACCEPT_SOFT=0`): sampled with
+thinking on, accepting every top-2-within-1.0 draft outright costs `fast` GPQA 5.6 points (p 0.052; nine more answers
+at the cap), and greedy top-3 within 2.0 cost GPQA 8.6 points (p 0.02); s = 0.5 is unmeasured on Bolt. Expert sharing
 at keep 4, 16 a request and 48 in all (8% faster than 6 / 20:64) thinks 1.23x longer on GPQA than no sharing
 (95% interval 1.07-1.43) and costs 6.6 points (p 0.011), mostly answers cut off at the cap.
 

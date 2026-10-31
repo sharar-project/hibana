@@ -6,7 +6,7 @@ from collections import Counter
 import pytest
 import torch
 
-from sharar.engine.rejection import distribution, plausible, small_laws, verify_rows
+from sharar.engine.rejection import distribution, small_laws, verify_rows
 from sharar.engine.sampler import SamplingParams
 
 DEV = torch.device("cuda")
@@ -51,12 +51,12 @@ def test_sampled_lattice_law_and_draws():
     assert not close(ref, got)
 
 
-@pytest.mark.parametrize("relaxed,has_q", [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize("relaxed,has_q", [(False, False), (True, False), (False, True), (True, True)])
 def test_verify_candidates_is_distributed_as_verify_rows(relaxed, has_q):
     from sharar.kernels.sampled_verify import verify_candidates
     torch.manual_seed(2)
     k, v, w, n = 3, 300, 6, 8000
-    params = SamplingParams(temperature=1.0, top_k=8, top_p=0.9, **({"accept_top_k": 3, "accept_margin": 1.0} if relaxed else {}))
+    params = SamplingParams(temperature=1.0, top_k=8, top_p=0.9, accept_soft=0.5 if relaxed else 0.0)
     logits = (torch.randn(1, k + 1, v, device=DEV) * 2).to(torch.bfloat16)
     p = distribution(logits[0], params)
     q = support = None
@@ -67,14 +67,13 @@ def test_verify_candidates_is_distributed_as_verify_rows(relaxed, has_q):
         y = support.gather(2, torch.multinomial(q[0], 1).view(1, k, 1)).view(1, k)
     else:
         y = torch.multinomial(p[:k], 1).view(1, k)
-    rel = plausible(y[0], p, params.accept_top_k, params.accept_margin) if params.relaxed else None
     ref = Counter()
     for seed in range(n):
         a, c, _ = verify_rows(y[0], p, None if q is None else q[0], None if q is None else support[0],
-                              torch.Generator(device=DEV).manual_seed(seed), relaxed=rel)
+                              torch.Generator(device=DEV).manual_seed(seed), soft_scale=params.soft_scale)
         ref[(int(a), int(c))] += 1
     values, index = logits.topk(params.top_k + 64, dim=-1)
-    rows = torch.tensor([[1.0, params.top_k, params.top_p, float(params.accept_top_k if relaxed else 0), float(params.accept_margin), 0, 0, 0]], device=DEV)
+    rows = torch.tensor([[1.0, params.top_k, params.top_p, float(relaxed), 0, params.soft_scale, 0, 0]], device=DEV)
     rng = torch.stack([torch.arange(n, device=DEV) * 104729 + 17, torch.full((n,), 32, device=DEV)], 1)
     rep = lambda t: None if t is None else t.expand(n, *t.shape[1:]).contiguous()  # noqa: E731
     a, c, _, fit = verify_candidates(rep(values), rep(index), rep(y), rep(rows), rng, rep(q), rep(support))
@@ -90,34 +89,32 @@ def test_verify_candidates_flags_ties_past_the_candidates():
     assert int(fit[0]) == 0
 
 
-@pytest.mark.parametrize("draft", ["mtp-plausible", "mtp-implausible", "dflash2"])
+@pytest.mark.parametrize("draft", ["mtp-top", "mtp-tail", "dflash2"])
 def test_verify_candidates_soft_law(draft):
-    """accept_soft s (row_params[5] = e^-s): the first token's law is min(q, c p) + (1 - alpha) (p - q)+ / Z with
-    c = e^s on the plausible set (tests/unit/test_accept_soft.py); s = inf (0 in the slot) is the forced accept."""
+    """accept_soft s (row_params[3] = 1, row_params[5] = e^-s): the first token's law is
+    min(q, e^s p) + (1 - alpha) (p - q)+ / Z (tests/unit/test_accept_soft.py); s = 0 is exact."""
     import math
     from sharar.kernels.sampled_verify import verify_candidates
-    p = torch.tensor([0.60, 0.30, 0.07, 0.03], device=DEV)  # top-2 within 1.0 plausible
+    p = torch.tensor([0.60, 0.30, 0.07, 0.03], device=DEV)
     q = torch.tensor([0.90, 0.06, 0.02, 0.02], device=DEV)
-    plaus = torch.tensor([True, True, False, False], device=DEV)
     n = 400_000
     torch.manual_seed(5)
     values = torch.cat([p.log(), torch.tensor([-30.0], device=DEV)]).expand(n, 2, 5).contiguous()  # top_k 4 drops the fifth
     index = torch.arange(5, device=DEV).expand(n, 2, 5).contiguous()
     rng = torch.stack([torch.arange(n, device=DEV) * 7919 + 1, torch.zeros(n, dtype=torch.int64, device=DEV)], 1)
-    for s in (0.0, 0.1, 0.25, 0.5, math.inf):
-        rows = torch.tensor([[1.0, 4, 1.0, 2, 1.0, math.exp(-s), 0, 0]], device=DEV).expand(n, 8).contiguous()
+    for s in (0.0, 0.1, 0.25, 0.5):
+        rows = torch.tensor([[1.0, 4, 1.0, float(s > 0), 0, math.exp(-s), 0, 0]], device=DEV).expand(n, 8).contiguous()
         if draft == "dflash2":
             drafts = torch.multinomial(q, n, replacement=True).view(n, 1)
             qq, support, point = q.expand(n, 1, 4).contiguous(), torch.arange(4, device=DEV).expand(n, 1, 4).contiguous(), q
         else:
-            y = 0 if draft == "mtp-plausible" else 2
+            y = 0 if draft == "mtp-top" else 2
             drafts, qq, support = torch.full((n, 1), y, device=DEV), None, None
             point = torch.nn.functional.one_hot(torch.tensor(y, device=DEV), 4).float()
         a, c, flags, fit = verify_candidates(values, index, drafts, rows, rng, qq, support)
         assert bool(fit.all())
         got = torch.bincount(torch.where(a > 0, drafts[:, 0], c), minlength=4).float() / n
-        cap = torch.where(plaus, torch.tensor(math.exp(s), device=DEV), torch.tensor(1.0, device=DEV)) * p
-        acc = torch.minimum(point, cap)
+        acc = torch.minimum(point, math.exp(s) * p)
         left = (p - point).clamp(min=0)
         law = acc + (1 - acc.sum()).clamp(min=0) * left / left.sum()
         assert (got - law).abs().max() < 0.004, (draft, s, got, law)

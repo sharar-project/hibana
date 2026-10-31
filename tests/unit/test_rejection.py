@@ -151,16 +151,6 @@ def test_candidate_nucleus_equals_the_full_sort():
             assert torch.equal(_nucleus(probs, top_p, top_k), ref)
 
 
-def test_plausible_uses_the_request_law():
-    from sharar.engine.rejection import plausible
-    p = torch.tensor([[0.5, 0.3, 0.2, 0.0], [0.6, 0.0, 0.1, 0.3], [0.25, 0.25, 0.25, 0.25]])
-    tokens = torch.tensor([1, 1, 3])
-    # row 0: rank 1, gap log(0.5/0.3)=0.51; row 1: zero probability; row 2: tie at the top
-    assert plausible(tokens, p, 2, 0.6).tolist() == [True, False, True]
-    assert plausible(tokens, p, 2, 0.5).tolist() == [False, False, True]
-    assert plausible(tokens, p, 1, 1.0).tolist() == [False, False, True]
-
-
 def test_relaxed_rows_accept_what_rejection_would_not():
     from sharar.engine.rejection import verify_rows
     k, V = 4, 6
@@ -172,9 +162,9 @@ def test_relaxed_rows_accept_what_rejection_would_not():
         a, c, rx = verify_rows(tokens, p, None, None, torch.Generator().manual_seed(seed))
         exact_accepts += int(a)
         assert not rx.any()
-        mask = torch.tensor([True, True, False, False])
-        a, c, rx = verify_rows(tokens, p, None, None, torch.Generator().manual_seed(seed), relaxed=mask)
-        relaxed_accepts += int(a)
-        assert int(a) >= 2  # the relaxed positions are always accepted
-        assert not (rx & ~mask).any() and not rx[int(a):].any()  # flags: relaxed-only accepts inside the prefix
+        # accept_soft s = log 40: u * q < 40 p accepts token 1 (p = 0.02) at u < 0.8
+        a2, c, rx = verify_rows(tokens, p, None, None, torch.Generator().manual_seed(seed), soft_scale=1 / 40)
+        relaxed_accepts += int(a2)
+        assert int(a2) >= int(a)  # the same uniforms: an exact accept stays an accept
+        assert not rx[:int(a)].any() and not rx[int(a2):].any()  # flags: relaxed-only accepts inside the prefix
     assert exact_accepts < 20 and relaxed_accepts >= 400

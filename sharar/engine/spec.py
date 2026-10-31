@@ -16,7 +16,7 @@ from sharar.engine.request import Request
 from sharar.engine.contracts import Proposer, StepInputs, VerifiedFeatures
 from sharar.engine.debug import debug_sync
 from sharar.engine import sampling_rng
-from sharar.engine.rejection import Proposal, distribution, plausible, verify_batch, verify_rows
+from sharar.engine.rejection import Proposal, distribution, verify_batch, verify_rows
 from sharar.engine import accept_graphs
 from sharar.engine.accept_graphs import AcceptGraphs
 
@@ -437,10 +437,9 @@ class SpecDecoder:
                     flag_rows.append(torch.zeros_like(match))
                 else:
                     p = distribution(z[i], req.params)
-                    relaxed_i = plausible(y[i], p, req.params.accept_top_k, req.params.accept_margin) if req.params.relaxed else None
                     a_t, c_t, rx_t = verify_rows(y[i], p, proposal.probabilities[i] if proposal.probabilities is not None else None,
                                                  proposal.support[i] if proposal.support is not None else None, req.generator,
-                                                 relaxed=relaxed_i, soft_scale=req.params.soft_scale)
+                                                 soft_scale=req.params.soft_scale)
                     acc_rows.append(a_t)
                     corr_rows.append(c_t)
                     flag_rows.append(rx_t.to(torch.int64))
