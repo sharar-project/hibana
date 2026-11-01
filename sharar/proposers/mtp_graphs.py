@@ -47,7 +47,8 @@ class DraftGraphs:
         check_context_capacity([p.shape[0] for p in kv_all], self.max_context)
         b = len(kv_all)
         indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_all]).cumsum(0).tolist()), dtype=torch.int32)  # host: no sync in plan()
-        self.mtp.attention.paged_prefill(st["wrapper"], torch.arange(0, b + 1, dtype=torch.int32), indptr, torch.cat(kv_all),
+        pages = kv_all[0] if b == 1 else torch.cat(kv_all)  # plan() copies the pages into the graph's buffer itself
+        self.mtp.attention.paged_prefill(st["wrapper"], torch.arange(0, b + 1, dtype=torch.int32), indptr, pages,
                                          torch.ones(b, dtype=torch.int32), causal=True, guard=False)  # graph-bound buffers
 
     def _forward(self, st: dict):

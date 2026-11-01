@@ -186,26 +186,29 @@ class MtpProposer:
 
     def propose(self, requests, pages, inputs, *, graphs, depth=None):
         """[batch, depth] drafts, one sequential head step each (depth: the round's verify depth, else k)."""
-        hids, kv = [], []
+        depth = self.k if depth is None else depth
+        hids, full = [], []
         for i, req in enumerate(requests):
             state = self._state(req)
             pos = req.context_len - 1
             if state.draft_pos != pos or state.pending_token != req.output_ids[-1]:
                 raise ValueError("draft pending input does not match committed prefix")
             hids.append(state.pending_hidden)
-            kv.append(torch.cat([req.pages[1:pos], pages[i, :1]]))
+            # every step's attended pages, built once a round: step j (from 1) attends the first pos - 1 + j of them
+            full.append(torch.cat([req.pages[1:pos], pages[i, :depth]]))
+        # each step's positions and pages, [depth, batch], so a step's row is a contiguous view and not a launch
+        steps = torch.arange(depth, device=inputs.positions.device).unsqueeze(1)
+        positions = inputs.positions.unsqueeze(0) + steps
+        step_pages = pages[:, :depth].t().contiguous()
         sampled = self.sample and any(not r.params.greedy for r in requests)
         laws, supports = [], []
         if sampled and self.context.device.type == "cuda":
-            self._rows = draft_rows(requests, self.k if depth is None else depth, self.sample_width, self.context.device)
-        hidden, token, conf, cand = self._step(inputs.tokens, torch.cat(hids), inputs.positions, pages[:, 0].contiguous(), kv, graphs, sampled)
-        if sampled:
-            token = self._draw(cand, requests, 0, laws, supports)
-        drafts, confs = [token], [conf]
-        self._column(0, token)
-        for j in range(2, (self.k if depth is None else depth) + 1):
-            kv = [torch.cat([r.pages[1:r.context_len - 1], pages[i, :j]]) for i, r in enumerate(requests)]
-            hidden, token, conf, cand = self._step(drafts[-1], hidden, inputs.positions + j - 1, pages[:, j - 1].contiguous(), kv, graphs, sampled)
+            self._rows = draft_rows(requests, depth, self.sample_width, self.context.device)
+        drafts, confs = [], []
+        hidden, token = torch.cat(hids), inputs.tokens
+        for j in range(1, depth + 1):
+            kv = [f[:r.context_len - 2 + j] for f, r in zip(full, requests)]
+            hidden, token, conf, cand = self._step(token, hidden, positions[j - 1], step_pages[j - 1], kv, graphs, sampled)
             if sampled:
                 token = self._draw(cand, requests, j - 1, laws, supports)
             drafts.append(token)
@@ -236,7 +239,9 @@ class MtpProposer:
         cand = None
         if graphs and self.graphs is not None:
             hidden, token, conf = self.graphs.run(tokens, hidden, positions, pages, kv)
-            hidden, token, conf = hidden.clone(), token.clone(), conf.clone() if conf is not None else None  # graph outputs are borrowed until next replay
+            # graph outputs are borrowed until the next replay: the drafts are kept, the hidden row only feeds the next
+            # step, whose run copies it into the graph's input before replaying
+            token, conf = token.clone(), conf.clone() if conf is not None else None
             if sampled:
                 cand = tuple(t.clone() for t in self.graphs.candidates(tokens.shape[0]))
         else:
