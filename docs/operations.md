@@ -157,8 +157,9 @@ faster and serves. Twelve warps of each block compute, 8 queries each with the p
 dims as the MMA's rows), while four load and convert the tiles; the splits of the context make whole waves of blocks.
 A 27B prefill against a cached prefix of at least 1,024 tokens runs the same tiles without the causal mask, 128
 (token, head) rows a block, and merges the chunk's own causal attention (FlashInfer's ragged prefill) into its output:
-1.6-1.7x less time than `fa2` and `merge_state` over 8-20K prefixes, so a 32K prompt prefills in 11.8 s instead of
-14.0. `SHARAR_VERIFY_ATTENTION=fa2` turns both off.
+1.8-2.2x less time than `fa2` and `merge_state` over 8-128K prefixes (a 2,048-token chunk over 128K: 74 against 161 ms
+a layer), so the 27B `fast` prefills a 32K prompt in 11.0 s and a 128K one in 74 s.
+`SHARAR_VERIFY_ATTENTION=fa2` turns both off.
 
 - **Speed.** Steady-state rounds of the 27B `fast` against `fa2` over NVFP4: 64K 75 against 81.5 ms with one request,
   109 against 139 ms with four (medians, GB10).
