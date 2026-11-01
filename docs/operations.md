@@ -151,15 +151,17 @@ with each page, and an SSD store keeps its KV format in its identity.
 Verification of more than 8 rows a request (the 27B's graphs) runs a GB10 kernel instead,
 [kernels/csrc/verify_attn.cu](../sharar/kernels/csrc/verify_attn.cu): one block a request, KV head and chunk of the
 context, the codes converted to FP16 once a tile in shared memory, both products on the FP16 tensor cores, the chunks
-merged by their log-sum-exps. At 16 rows it takes 1.3-1.55x less time than `fa2` over the same cache (1.9x with eight
-requests), at `fa2`'s precision or better against exact attention; up to 8 rows `fa2` is faster and serves. Two warps
-of each block load and convert the tiles while six compute. A 27B prefill against a cached prefix of at least 1,024
-tokens runs the same tiles without the causal mask, 128 (token, head) rows a block, and merges the chunk's own causal
-attention (FlashInfer's ragged prefill) into its output: 1.6-1.7x less time than `fa2` and `merge_state` over 8-20K
-prefixes, so a 32K prompt prefills in 11.8 s instead of 14.0. `SHARAR_VERIFY_ATTENTION=fa2` turns both off.
+merged by their log-sum-exps. At 16 rows it takes 2.1-2.2x less time than `fa2` over the same cache at 64-128K with
+one to four requests (3x with eight), at `fa2`'s precision or better against exact attention; up to 8 rows `fa2` is
+faster and serves. Twelve warps of each block compute, 8 queries each with the products transposed (pages and head
+dims as the MMA's rows), while four load and convert the tiles; the splits of the context make whole waves of blocks.
+A 27B prefill against a cached prefix of at least 1,024 tokens runs the same tiles without the causal mask, 128
+(token, head) rows a block, and merges the chunk's own causal attention (FlashInfer's ragged prefill) into its output:
+1.6-1.7x less time than `fa2` and `merge_state` over 8-20K prefixes, so a 32K prompt prefills in 11.8 s instead of
+14.0. `SHARAR_VERIFY_ATTENTION=fa2` turns both off.
 
-- **Speed.** Steady-state rounds of the 27B `fast` against `fa2` over NVFP4: 64K 77.6 against 83.0 ms with one request,
-  137.7 against 155.6 ms with four (FP8 KV's 146.0); within 2% at 10K.
+- **Speed.** Steady-state rounds of the 27B `fast` against `fa2` over NVFP4: 64K 75 against 81.5 ms with one request,
+  109 against 139 ms with four (medians, GB10).
 - **Accuracy.** Teacher-forced 256 tokens after 32K, 64K and 96K-token prompts against BF16 KV: mean KL 0.0063 where
   FP8 KV's is 0.0039, flat along the generation; argmax agreement 95.7-99.6% (FP8 96.1-99.6%). The lossy gate's
   in-process layers on its short prompts: KL 0.0055 against a floor of 0.0047, tokens a round unchanged.

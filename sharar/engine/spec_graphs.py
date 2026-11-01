@@ -27,15 +27,16 @@ def _prefill_wrapper(ws: torch.Tensor, st: dict) -> flashinfer.BatchPrefillWithP
 
 def _verify_attention(ex, st: dict, b: int, rows: int):
     """The 27B's verification of more than 8 rows a sequence over an NVFP4 cache runs kernels/csrc/verify_attn.cu
-    (16 rows: 1.3-1.5x FlashInfer's fa2 at 64-128K, 1.9x for eight requests); up to 8 rows fa2 is faster. Splits of
-    the context: about 128 blocks over the batch's KV heads (12 for one request, 2 from sixteen)."""
+    (16 rows: 2.1-2.2x FlashInfer's fa2 at 64-128K for one to four requests, 3x for eight); up to 8 rows fa2 is
+    faster. Splits of the context: whole waves of blocks (`verify_splits`)."""
     from sharar.engine.config import current
     pool = ex.kv_pool
     if (current().verify_attention != "auto" or ex.extras is not None or rows <= 8
             or not getattr(pool, "nvfp4", False)
             or (pool.num_kv_heads, pool.head_dim) != (4, 256) or ex.target.num_attention_heads != 24):
         return None
-    splits = max(2, min(12, -(-128 // (b * pool.num_kv_heads))))
+    from sharar.kernels.verify_attn_cuda import verify_splits
+    splits = verify_splits(b, pool.num_kv_heads, torch.cuda.get_device_properties(ex.device).multi_processor_count)
     return st["qo_indptr"], st["kv_indptr"], st["kv_indices"], splits
 
 
