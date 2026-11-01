@@ -40,12 +40,14 @@ class FlashNextIndexer:
         self.k_norm = w.get(f"{p}.k_layernorm.weight").to(device)
         self._prefill = None
         self._prefill_backend = "original"
+        self.cos_sin = None  # the attention's rotary table (`configure_prefill`), for the graph path's kernels
 
     def configure_prefill(self, target, cos_sin, *, sharded: bool = True) -> None:
         from sharar.engine.config import current
         from sharar.distributed import get_tp_info
         cfg = current()
         self._prefill = None
+        self.cos_sin = cos_sin
         # Replicated MTP attention is outside the target prefill setting.
         self._prefill_backend = cfg.qsa_prefill_backend if sharded else "original"
         if self._prefill_backend == "original":
@@ -119,6 +121,30 @@ class FlashNextIndexer:
             if score_exact.supported(q, aux, self.ratio, self.budget):
                 return score_exact.select_exact(q, aux, table, base, positions, gcap, d ** -0.5, segments, chunk or 256)
         return select_pages(q, aux, table, base, positions, self.ratio, self.budget, gcap, d ** -0.5, chunk)
+
+    def replay(self, x: torch.Tensor, ctx, token_pages: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor] | None:
+        """The graph path: `maintain`, then `select` in a selecting graph (`ctx.extras.qsa_table`), else None (dense).
+        On CUDA with the rotary table, two launches after the projection (`kernels/qsa/decode_prep.py`, the same
+        bits)."""
+        from sharar.kernels.qsa import decode_prep
+        side = ctx.extras
+        aux = ctx.kv_pool.page_aux[self.name]
+        sparse = side.qsa_table is not None
+        cos_sin = getattr(self, "cos_sin", None)
+        if not (x.is_cuda and decode_prep.supported(self, cos_sin)):
+            qk = self.maintain(x, ctx, token_pages)
+            if not sparse:
+                return None
+            return self.select(qk, ctx.positions, aux, side.qsa_table, side.qsa_indptr[side.qsa_row_seq], side.qsa_gcap)
+        qk = F.linear(x, self.qk)
+        prepped = decode_prep.prep(qk, aux, token_pages, ctx.positions, self.q_norm, cos_sin, self.heads, self.eps, sparse,
+                                   side.qsa_indptr, side.qsa_row_seq)
+        decode_prep.compress(aux, side.qsa_members, side.qsa_writes, ctx.positions, self.k_norm, cos_sin, self.eps)
+        if not sparse:
+            return None
+        from sharar.kernels.qsa.selection import select_pages
+        q, base = prepped
+        return select_pages(q, aux, side.qsa_table, base, ctx.positions, self.ratio, self.budget, side.qsa_gcap, self.dim ** -0.5)
 
     def maintain(self, x: torch.Tensor, ctx, token_pages: torch.Tensor) -> torch.Tensor:
         """Graph-safe key maintenance: store every row's raw key and compress every
