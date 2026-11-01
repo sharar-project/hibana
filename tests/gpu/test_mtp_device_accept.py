@@ -101,12 +101,15 @@ def test_mtp_pools_are_clean_after_device_rounds(runtime):
 
 @pytest.mark.parametrize('batch', [1, 3])
 @pytest.mark.parametrize('rounds', [1, 8])
-def test_mtp_sampled_device_round_matches_host_round(runtime, batch, rounds):
+@pytest.mark.parametrize('rule', [{}, {'accept_soft': 0.25}, {'accept_soft': 0.5}])
+def test_mtp_sampled_device_round_matches_host_round(runtime, batch, rounds, rule):
     """Sampled requests: the device path (decision and commit graphs) and the host path decide with the same
     kernel at the same Philox offsets, so the first round agrees exactly (tokens and committed state) and later
-    rounds up to the first whose counts differ (the device pass's draft feedback rounds differently, as greedy)."""
+    rounds up to the first whose counts differ (the device pass's draft feedback rounds differently, as greedy).
+    Exact and relaxed (accept_soft) rows alike."""
     ex, prompts = runtime
-    params = [SamplingParams(max_new_tokens=40, ignore_eos=True, temperature=1.0, top_k=20, top_p=0.95, seed=100 + i) for i in range(batch)]
+    params = [SamplingParams(max_new_tokens=40, ignore_eos=True, temperature=1.0, top_k=20, top_p=0.95, seed=100 + i, **rule)
+              for i in range(batch)]
     host = run_rounds(ex, prompts[:batch], params, rounds, device_accept=False)
     device = run_rounds(ex, prompts[:batch], params, rounds, device_accept=True)
     agree = next((j for j, (a, b) in enumerate(zip(device[3], host[3])) if a != b), min(len(device[3]), len(host[3])))

@@ -131,9 +131,10 @@ draft and feedback graphs, device-resident acceptance, and retained features thr
   lost under sampling and at one request. On the h2h prompts, greedy at `fast`'s
   top-2 within 1.0, the drafter emits 2.8 tokens a round at depth 3, 3.6 at 7 and 3.9 at 9, counting the first d
   drafts of a 10-row block (at 9: math 6.1, structured 5.7, code 5.4; chat 3.2, prose 2.7, multilingual 2.6).
-- **Acceptance.** `fast` and `throughput` accept a DFlash2 draft the target ranks top-2 within 1.0 logits, the 27B's
-  sampled rule: at Flash-Next's top-3 within 2.0, DFlash2 lost 3.3 points of GSM8K-300 one request at a time against
-  MTP with its 3-bit draft head; at top-2 within 1.0 it ties, for 5% fewer tokens a round there.
+- **Acceptance.** `fast` and `throughput` accept a greedy request's DFlash2 draft the target ranks top-2 within 1.0
+  logits (sampled requests: s = 0.5, as with MTP): at Flash-Next's top-3 within 2.0, DFlash2 lost 3.3 points of
+  GSM8K-300 one request at a time against MTP with its 3-bit draft head; at top-2 within 1.0 it ties, for 5% fewer
+  tokens a round there.
 - **Adaptive depth.** Off in every profile. With `SHARAR_SPEC_STEP_COST` (a DFlash2 round costs about 0.01 of a round
   more per depth), each request checks as deep as its recent acceptance pays for, up
   to its bucket's depth (`engine/depth.AcceptanceDepth`, [as for MTP](#the-mtp-draft)). Depth tables and adaptive

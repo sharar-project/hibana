@@ -158,7 +158,8 @@ The driver verifies `[pending, proposal...]` with greedy prefix acceptance or ex
 truncates to EOS/budget. For sampled verification, probabilities are FP32 after temperature/top-k/top-p and all
 selector effects: dense q is `[B,k,V]`, sparse q and its unique support `[B,k,C]`, and `None` means point-mass
 proposals. The verifier accepts with `min(1,p[y]/q[y])`, samples a rejection from normalized `max(p-q,0)`, draws a
-target bonus after full acceptance and consumes no target draws past the first rejection. Each sampled request owns
+target bonus after full acceptance and consumes no target draws past the first rejection; with `accept_soft` s > 0
+it also accepts y when u·q[y] < e^s·p[y] on the same draw u, the residual unchanged. Each sampled request owns
 its generator, seeded or not. MTP proposals are point masses; a `greedy_only` proposer uses ordinary decode for
 positive temperature. For an all-greedy DFlash2 batch, `kernels/draft_selection.py` walks the conditional selector
 lattice on the device with the same candidate rank and tie rules.

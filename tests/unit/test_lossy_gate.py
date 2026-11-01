@@ -67,13 +67,13 @@ def test_overrides_reach_the_in_process_arm(clean):
     assert plan["proposer"] == "dflash2" and plan["spec"] == 15 and plan["draft_precision"] == "fp8" and plan["draft"] is None
 
 
-def test_sampled_threshold_reaches_the_in_process_arm_as_serve_records_it(clean):
-    fast = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_DRAFT": "pinned"}))
-    assert fast["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "1" and fast["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] == "2:1.0"
-    off = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_DRAFT": "pinned", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0"}))
-    assert off["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "0" and off["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] == ""
-    exact = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_DRAFT": "pinned", "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD": "off"}))
-    assert exact["env"]["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "0"
+def test_sampled_rule_reaches_the_in_process_arm_as_serve_records_it(clean):
+    fast = gate.arm_plan(gate.resolve("flashnext", "fast", {}))
+    assert fast["env"]["SHARAR_ACCEPT_SOFT"] == "0.5"
+    off = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_DRAFT": "pinned"}))
+    assert off["env"]["SHARAR_ACCEPT_SOFT"] == "0"
+    nospec = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_SPEC": "0"}))
+    assert nospec["env"]["SHARAR_ACCEPT_SOFT"] == "0" and nospec["accept"] == "1:0.0"
 
 
 def test_served_arms_are_sharar_serve_in_the_foreground(clean):

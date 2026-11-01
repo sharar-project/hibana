@@ -16,6 +16,7 @@ and `install()` it (or use `using()`).
 from __future__ import annotations
 
 import dataclasses
+import math
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -63,6 +64,17 @@ def _positive(env: Mapping[str, str], name: str, default: int) -> int:
     return n
 
 
+def _accept_soft(env: Mapping[str, str]) -> float:
+    value = env.get("SHARAR_ACCEPT_SOFT") or "0"
+    try:
+        s = float(value)
+    except ValueError:
+        s = math.nan
+    if not math.isfinite(s) or s < 0:
+        raise ValueError(f"SHARAR_ACCEPT_SOFT must be a finite number >= 0 (0: exact), got {value!r}")
+    return s
+
+
 def _str(env: Mapping[str, str], name: str, default: str | None = None) -> str | None:
     value = env.get(name)
     return default if value in (None, "") else value
@@ -104,8 +116,7 @@ class EngineConfig:
     draft_head_rescore: int = 8               # SHARAR_DRAFT_HEAD_RESCORE (default 8, 16 for w2)
     device_accept: bool = False               # SHARAR_DEVICE_ACCEPT
     accept_default: str = "off"               # SHARAR_ACCEPT_DEFAULT: K:M for greedy requests that set neither field (off: exact)
-    accept_default_sampled: bool = False      # SHARAR_ACCEPT_DEFAULT_SAMPLED
-    accept_default_sampled_threshold: str | None = None  # SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD: K:M for sampled requests (unset: accept_default's)
+    accept_soft: float = 0.0                  # SHARAR_ACCEPT_SOFT: accept_soft s for sampled requests that do not set it (0: exact)
     qsa_sparse_graphs: bool = True            # SHARAR_QSA_SPARSE_GRAPHS=0: rows past the indexer budget run eagerly
     qsa_prefill_backend: str = "original"    # SHARAR_QSA_PREFILL_BACKEND: original, auto, optimized (SM121 TP1/TP2, <=32K)
     ple_resident: str = "auto"                 # SHARAR_PLE_RESIDENT: Flash-Next's PLE table in device memory, each tensor-parallel rank its share of the heads; auto: on two Sparks, 0: off
@@ -186,8 +197,7 @@ class EngineConfig:
             draft_head_rescore=_int(e, "SHARAR_DRAFT_HEAD_RESCORE", 16 if e.get("SHARAR_DRAFT_HEAD") == "w2" else 8),
             device_accept=_flag(e, "SHARAR_DEVICE_ACCEPT"),
             accept_default=e.get("SHARAR_ACCEPT_DEFAULT", "off"),
-            accept_default_sampled=_flag(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED"),
-            accept_default_sampled_threshold=_str(e, "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"),
+            accept_soft=_accept_soft(e),
             qsa_sparse_graphs=e.get("SHARAR_QSA_SPARSE_GRAPHS", "1") != "0",
             qsa_prefill_backend=_str(e, "SHARAR_QSA_PREFILL_BACKEND", "original"),
             ple_resident=e.get("SHARAR_PLE_RESIDENT", "auto"),

@@ -5,7 +5,7 @@ from collections import Counter
 
 import torch
 
-from sharar.engine.rejection import NUCLEUS_CANDIDATES, candidate_laws, distribution, plausible, verify_batch, verify_rows
+from sharar.engine.rejection import NUCLEUS_CANDIDATES, candidate_laws, distribution, verify_batch, verify_rows
 from sharar.engine.sampler import SamplingParams
 
 
@@ -50,14 +50,13 @@ def test_acceptance_and_correction_are_distributed_as_verify_rows():
     torch.manual_seed(0)
     k, v, n = 3, 40, 6000
     for params in (SamplingParams(temperature=1.0, top_k=6, top_p=0.9),
-                   SamplingParams(temperature=1.0, top_k=6, top_p=0.9, accept_top_k=3, accept_margin=1.0)):
+                   SamplingParams(temperature=1.0, top_k=6, top_p=0.9, accept_soft=0.5)):
         logits = torch.randn(1, k + 1, v) * 2
         p = distribution(logits[0], params)
         tokens = torch.multinomial(p[:k], 1).view(1, k)  # drafts the target can sample
-        relaxed = plausible(tokens[0], p, params.accept_top_k, params.accept_margin) if params.relaxed else None
 
         def ref(seed):
-            a, c, _ = verify_rows(tokens[0], p, None, None, torch.Generator().manual_seed(seed), relaxed=relaxed)
+            a, c, _ = verify_rows(tokens[0], p, None, None, torch.Generator().manual_seed(seed), soft_scale=params.soft_scale)
             return int(a), int(c)
 
         def new(seed):

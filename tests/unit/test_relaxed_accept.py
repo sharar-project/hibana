@@ -45,7 +45,7 @@ def test_params_validate_and_parse():
     SamplingParams(accept_top_k=2, accept_margin=1.0).validate()
     assert not SamplingParams().relaxed and not SamplingParams(accept_top_k=2).relaxed
     assert SamplingParams(accept_top_k=2, accept_margin=0.5).relaxed
-    SamplingParams(accept_top_k=2, accept_margin=1.0, temperature=0.7).validate()  # sampled requests may relax too
+    assert not SamplingParams(accept_top_k=2, accept_margin=1.0, temperature=0.7).relaxed  # K:M is the greedy rule
     for bad in (dict(accept_top_k=0), dict(accept_top_k=2.0), dict(accept_margin=-1.0), dict(accept_margin=float("nan"))):
         with pytest.raises(InvalidRequest):
             SamplingParams(**bad).validate()
@@ -116,33 +116,18 @@ def test_relaxed_positions_are_recorded(monkeypatch):
     assert all(j < r["a"] and r["y"][j] != r["z"][j] for r, j in offsets)  # accepted draft picks, not the argmax
 
 
-def test_accept_default_reaches_sampled_requests_only_when_enabled():
+def test_sampled_requests_get_the_soft_default_and_ignore_k_m():
     from sharar.api import validation
-    saved = validation.ACCEPT_DEFAULT, validation.ACCEPT_DEFAULT_SAMPLED
+    saved = validation.ACCEPT_DEFAULT, validation.ACCEPT_SOFT_DEFAULT
     try:
-        validation.set_accept_default(2, 1.0)
-        assert _sampling_from({"max_tokens": 4}).relaxed
-        assert not _sampling_from({"max_tokens": 4, "temperature": 0.7}).relaxed
-        validation.set_accept_default(2, 1.0, sampled=True)
-        assert _sampling_from({"max_tokens": 4, "temperature": 0.7}).relaxed
-        assert not _sampling_from({"max_tokens": 4, "temperature": 0.7, "accept_top_k": 1}).relaxed
-    finally:
-        validation.ACCEPT_DEFAULT, validation.ACCEPT_DEFAULT_SAMPLED = saved
-
-
-def test_sampled_requests_can_have_their_own_threshold():
-    from sharar.api import validation
-    saved = validation.ACCEPT_DEFAULT, validation.ACCEPT_DEFAULT_SAMPLED
-    try:
-        validation.set_accept_default(3, 2.0, sampled=(2, 1.0))
+        validation.set_accept_default(3, 2.0, soft=0.5)
         greedy, sampled = _sampling_from({"max_tokens": 4}), _sampling_from({"max_tokens": 4, "temperature": 1.0})
-        assert (greedy.accept_top_k, greedy.accept_margin) == (3, 2.0)
-        assert (sampled.accept_top_k, sampled.accept_margin) == (2, 1.0)
-        explicit = _sampling_from({"max_tokens": 4, "temperature": 1.0, "accept_top_k": 3, "accept_margin": 2.0})
-        assert (explicit.accept_top_k, explicit.accept_margin) == (3, 2.0)  # a request's own fields win
-        validation.set_accept_default(1, 0.0, sampled=(2, 1.0))  # independent of the greedy default
+        assert (greedy.accept_top_k, greedy.accept_margin, greedy.relaxed) == (3, 2.0, True)
+        assert (sampled.accept_top_k, sampled.accept_margin, sampled.accept_soft, sampled.relaxed) == (1, 0.0, 0.5, True)
+        assert not _sampling_from({"max_tokens": 4, "temperature": 1.0, "accept_soft": 0}).relaxed
+        explicit = _sampling_from({"max_tokens": 4, "temperature": 1.0, "accept_top_k": 1})
+        assert explicit.relaxed  # K:M fields do not turn a sampled request's rule off
+        validation.set_accept_default(1, 0.0, soft=0.5)  # independent of the greedy default
         assert not _sampling_from({"max_tokens": 4}).relaxed and _sampling_from({"max_tokens": 4, "temperature": 1.0}).relaxed
-        with pytest.raises(InvalidRequest):
-            validation.set_accept_default(3, 2.0, sampled=(0, 1.0))
     finally:
-        validation.ACCEPT_DEFAULT, validation.ACCEPT_DEFAULT_SAMPLED = saved
+        validation.ACCEPT_DEFAULT, validation.ACCEPT_SOFT_DEFAULT = saved

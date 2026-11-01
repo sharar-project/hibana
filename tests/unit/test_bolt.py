@@ -45,7 +45,7 @@ def test_profiles_and_pinned_lilicorr(tmp_path, profile, name):
     env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
     s = settings.resolve(name, profile, env=env)
     assert (s.target, s.port, s.service, s.spec) == ("bolt", 30006, "sharar-bolt", 7)
-    assert s.get("SHARAR_DEVICE_ACCEPT") == s.get("SHARAR_ACCEPT_DEFAULT_SAMPLED") == "0"
+    assert s.get("SHARAR_DEVICE_ACCEPT") == s.get("SHARAR_ACCEPT_SOFT") == "0"
     lossy = profile != "exact"
     knobs = ("SHARAR_W3_DECODE", "SHARAR_SSM_STATE", "SHARAR_ACCEPT_DEFAULT", "SHARAR_MOE_KEEP", "SHARAR_MOE_BUDGET")
     assert tuple(s.get(k) for k in knobs) == (("1", "int8", "off", "6", "20:64") if lossy else ("0", "fp32", "off", "0", "0"))

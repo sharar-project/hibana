@@ -27,15 +27,15 @@ class SamplingParams:
     stop_token_ids: tuple[int, ...] | None = None  # None: the served target's (`Target.stop_token_ids`, Executor.admit)
     ignore_eos: bool = False
     trace: bool = True  # may this request be written to the opt-in trace sink
-    # Relaxed speculative acceptance: a drafted token is also accepted when the
-    # target ranks it within its top accept_top_k and its log-probability is
-    # within accept_margin of the most likely token (for greedy requests the
-    # raw logits; for sampled requests the request's own tempered, top-k/top-p
-    # law, so a token the request could never sample is never accepted). Off
-    # unless both are set; outputs then are neither the exact greedy
-    # continuation nor exact samples of the target distribution.
+    # Relaxed speculative acceptance, one rule per kind of request; outputs then are neither the exact greedy
+    # continuation nor exact samples of the target distribution. Greedy requests: a drafted token is also accepted
+    # when the target ranks it within its top accept_top_k and within accept_margin of its argmax in logits (off
+    # unless both are set). Sampled requests ignore those two: a drafted token y is also accepted when
+    # u * q(y) < e^accept_soft * p(y) (u the exact test's uniform, q the draft's law, p the request's), so no token
+    # comes out more than e^accept_soft times as often as the target's law gives it, per token; 0 is exact.
     accept_top_k: int = 1
     accept_margin: float = 0.0
+    accept_soft: float = 0.0
     # Constrained output (engine/grammar.py Constraint): every emitted token must keep the output inside the grammar.
     constraint: object = None
     # The token position where the prompt's last message starts (the chat API renders the conversation without it; 0:
@@ -64,6 +64,8 @@ class SamplingParams:
             raise InvalidRequest("accept_top_k must be an integer >= 1")
         if type(self.accept_margin) not in (int, float) or not math.isfinite(self.accept_margin) or self.accept_margin < 0:
             raise InvalidRequest("accept_margin must be a finite number >= 0")
+        if type(self.accept_soft) not in (int, float) or not math.isfinite(self.accept_soft) or self.accept_soft < 0:
+            raise InvalidRequest("accept_soft must be a finite number >= 0")
         if type(self.message_boundary) is not int or self.message_boundary < 0:
             raise InvalidRequest("message_boundary must be an integer >= 0")
 
@@ -73,7 +75,13 @@ class SamplingParams:
 
     @property
     def relaxed(self) -> bool:
-        return self.accept_top_k > 1 and self.accept_margin > 0
+        """Is this request's relaxed rule on: K:M for a greedy request, accept_soft for a sampled one."""
+        return self.accept_top_k > 1 and self.accept_margin > 0 if self.greedy else self.accept_soft > 0
+
+    @property
+    def soft_scale(self) -> float:
+        """e^-accept_soft, the factor on a sampled draft's uniform in the relaxed test (1: exact)."""
+        return math.exp(-self.accept_soft)
 
 
 class Sampler:
