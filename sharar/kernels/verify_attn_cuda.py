@@ -19,6 +19,14 @@ def module():
     return load(name=f"sharar_verify_attn_{revision}", sources=[str(_SRC)], extra_cuda_cflags=["-O3", "--use_fast_math"], verbose=False)
 
 
+def verify_splits(batch: int, kv_heads: int, sms: int) -> int:
+    """Splits of the context for `verify_attention`: the fewest from 2 to 12 that leave the least of a last wave of
+    blocks (one a multiprocessor) idle, as the time a wave over the chunk takes. GB10 (48 SMs), 64K: one request 12, two 6,
+    four 3 (48 blocks; 8 splits left 128 blocks, two thirds of a wave short: 2.02 -> 1.66 ms), eight and sixteen 3."""
+    pairs = batch * kv_heads
+    return min(range(2, 13), key=lambda s: (-(-pairs * s // sms) / s, s))
+
+
 def verify_attention(q, cache, scales, kv_indptr, kv_indices, qo_indptr, sm_scale: float, splits: int = 16, out=None):
     """q [tokens, 24, 256] BF16 (at most 16 rows a sequence, qo_indptr [N + 1]); cache (k, v) [pages, 1, 4, 128] uint8
     NVFP4 codes with `scales` (k, v) [pages, 1, 4, 16] E4M3; kv_indptr [N + 1] / kv_indices each sequence's pages, its
