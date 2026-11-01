@@ -246,8 +246,8 @@ def _evict_ple(model) -> None:
 
 
 def _ple_stats(model) -> tuple[int, int]:
-    """Rows read from the page cache and through the threads so far (PleTable counters)."""
-    table = model.ple.table
+    """Rows read from the page cache and through the threads so far (PleTable counters); zeros without a PLE table."""
+    table = getattr(getattr(model, "ple", None), "table", None)
     return getattr(table, "hits", 0), getattr(table, "misses", 0)
 
 
