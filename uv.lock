@@ -46,7 +46,7 @@ constraints = [
     { name = "networkx", specifier = "==3.6.1" },
     { name = "ninja", specifier = "==1.13.2" },
     { name = "numpy", specifier = "==2.3.5" },
-    { name = "nvidia-cublas", specifier = "==13.1.1.3" },
+    { name = "nvidia-cublas", specifier = "==13.6.1.10" },
     { name = "nvidia-cuda-cupti", specifier = "==13.0.85" },
     { name = "nvidia-cuda-nvdisasm", specifier = "==13.3.73" },
     { name = "nvidia-cuda-nvrtc", specifier = "==13.0.88" },
@@ -98,6 +98,7 @@ constraints = [
     { name = "uvicorn", specifier = "==0.52.4" },
     { name = "xgrammar", specifier = "==0.2.8" },
 ]
+overrides = [{ name = "nvidia-cublas", specifier = "==13.6.1.10" }]
 
 [[package]]
 name = "absl-py"
@@ -652,13 +653,13 @@ wheels = [
 
 [[package]]
 name = "nvidia-cublas"
-version = "13.1.1.3"
+version = "13.6.1.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "nvidia-cuda-nvrtc" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a7/a1/0bd24ee8c8d03adac032fd2909426a00c88f8c57961b1277ded97f91119f/nvidia_cublas-13.1.1.3-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:b7a210458267ac818974c53038fbec2e969d5c99f305ab15c72522fa9f001dd5", size = 542848918, upload-time = "2026-04-08T18:46:22.985Z" },
+    { url = "https://files.pythonhosted.org/packages/42/51/a174a0e79793e528ef4645a9d554e3aa48fd8da3f9c9cf523c0176bb121b/nvidia_cublas-13.6.1.10-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:e05a431062a17cb9b02e2f37e67817b637051ce8fad57b388482c594396ddbb4", size = 518610411, upload-time = "2026-07-30T18:18:32.969Z" },
 ]
 
 [[package]]

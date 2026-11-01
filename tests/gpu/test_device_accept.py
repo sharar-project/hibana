@@ -97,8 +97,8 @@ def test_device_round_matches_host_round(runtime, batch, relaxed, rounds):
         assert [f[:3] for f in device[2]] == [f[:3] for f in host[2]]
         for (ssm_d, conv_d), (ssm_h, conv_h) in zip(device[1], host[1]):
             assert torch.equal(ssm_d, ssm_h) and torch.equal(conv_d, conv_h)
-        for ring_d, ring_h in zip(device[3], host[3]):
-            assert torch.allclose(ring_d.float(), ring_h.float(), rtol=1e-2, atol=1e-2)
+        for ring_d, ring_h in zip(device[3], host[3]):  # 2 bf16 ulps: cuBLAS splits K with bf16 partials at some row counts
+            assert torch.allclose(ring_d.float(), ring_h.float(), rtol=2e-2, atol=1e-2)
 
 
 def test_feedback_device_matches_host_feedback_rows(runtime):
