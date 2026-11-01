@@ -43,8 +43,8 @@ tokens per round when the speed change needs explaining. A lossy option is judge
 ## sharar-eval
 
 The quality suites, AIPerf speed and the HTTP serving benchmarks live in
-[sharar-eval](https://github.com/abdelfattah-lab/sharar-eval), pinned as the `eval` extra in `pyproject.toml`
-(`uv sync --extra eval`). It only talks to a running server, so the same commands measure other engines; its README
+[sharar-eval](https://github.com/abdelfattah-lab/sharar-eval), pinned as the `eval` dependency group in `pyproject.toml`
+(`uv sync --group eval`). It only talks to a running server, so the same commands measure other engines; its README
 lists them. Run by hand, it needs this configuration's results directory and model cache (`SHARAR_RESULTS`,
 `SHARAR_HF_CACHE`, as in `config/gb10.env`). This repository's tools run it with both set and the server managed:
 `tools/evaluate.py` (a build), `tools/h2h-pr.py` (a speed change against main;

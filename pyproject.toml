@@ -5,10 +5,23 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sharar"
 version = "0.0.1"
-description = "Thin single-target inference engine: Qwen3.8-27B NVFP4 on one NVIDIA GB10"
+description = "Local inference engine for Qwen3.8-27B, Qwen3.8-Flash-Next, Nemotron 3.5 Super and Nemotron 3.5 Bolt on one or two NVIDIA GB10 (DGX Spark)"
 readme = "README.md"
 requires-python = "==3.12.*"  # the tested interpreter: uv installs and uses a managed 3.12
 license = {file = "LICENSE"}
+authors = [{name = "Abdelfattah Lab"}]
+keywords = ["llm", "inference", "speculative-decoding", "nvfp4", "dgx-spark", "gb10", "cuda"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: GPU :: NVIDIA CUDA",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 # Exact CPU and GB10 environments are recorded in constraints/.
 dependencies = [
   "torch>=2.13,<2.14",
@@ -24,7 +37,6 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest==9.1.1", "httpx==0.28.1"]
-eval = ["sharar-eval @ git+https://github.com/abdelfattah-lab/sharar-eval@58ea950577947004861da46b11f62e7c052dc565"]
 
 # The GB10 environment: `uv sync` installs it (uv.lock pins every package; CPU CI uses pip and constraints/cpu.txt).
 [dependency-groups]
@@ -38,6 +50,11 @@ gb10 = [
   "ninja==1.13.2",  # first-use builds of the CUDA kernels
   "pytest==9.1.1",
   "httpx==0.28.1",
+]
+# Quality and speed benchmarks (`uv sync --group eval`); pyarrow also reads the calibration prompts' parquet files.
+eval = [
+  "sharar-eval @ git+https://github.com/abdelfattah-lab/sharar-eval@58ea950577947004861da46b11f62e7c052dc565",
+  "pyarrow",
 ]
 
 [tool.uv]
@@ -148,6 +165,11 @@ explicit = true
 name = "flashinfer-cu130"
 url = "https://flashinfer.ai/whl/cu130"
 explicit = true
+
+[project.urls]
+Homepage = "https://github.com/abdelfattah-lab/sharar"
+Repository = "https://github.com/abdelfattah-lab/sharar"
+Issues = "https://github.com/abdelfattah-lab/sharar/issues"
 
 [project.scripts]
 sharar = "sharar.cli:main"

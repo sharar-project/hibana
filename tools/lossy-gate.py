@@ -129,15 +129,15 @@ def engine_identity() -> str:
 
 
 def ensure_venv() -> None:
-    """The project's Python environment, as uv.lock pins it, with sharar-eval (`uv sync --frozen --extra eval`; quick
-    when it is current; without the extra, a sync would remove sharar-eval again)."""
+    """The project's Python environment, as uv.lock pins it, with sharar-eval (`uv sync --frozen --group eval`; quick
+    when it is current; without the group, a sync would remove sharar-eval again)."""
     uv = shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv")
-    subprocess.run([uv, "sync", "--frozen", "--quiet", "--extra", "eval"], cwd=REPO, env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(VENV)},
+    subprocess.run([uv, "sync", "--frozen", "--quiet", "--group", "eval"], cwd=REPO, env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(VENV)},
                    check=True)
 
 
 def sharar_eval(evals: Path | None, python: str | None) -> dict:
-    """Where sharar-eval runs: the `eval` extra in this project's environment (default), or a checkout given with
+    """Where sharar-eval runs: the `eval` dependency group in this project's environment (default), or a checkout given with
     --evals / SHARAR_EVALS, run from its own .venv (unreleased sharar-eval changes). Returns its Python, working
     directory, a label, its commit and the hash of its evals code (part of the baseline key)."""
     if evals is None:
@@ -146,11 +146,11 @@ def sharar_eval(evals: Path | None, python: str | None) -> dict:
         probe = "import json; from evals import suite; print(json.dumps([suite.installed_commit(), suite.evals_tree()]))"
         out = subprocess.run([python, "-c", probe], capture_output=True, text=True)
         if out.returncode:
-            raise SystemExit(f"sharar-eval is not installed in {VENV}: `uv sync --extra eval` ({out.stderr.strip()[-300:]})")
+            raise SystemExit(f"sharar-eval is not installed in {VENV}: `uv sync --group eval` ({out.stderr.strip()[-300:]})")
         commit, tree = json.loads(out.stdout)
-        return {"python": python, "cwd": REPO, "label": "eval extra", "commit": commit, "tree": tree}
+        return {"python": python, "cwd": REPO, "label": "eval group", "commit": commit, "tree": tree}
     if not (evals / "evals" / "suite.py").is_file():
-        raise SystemExit(f"{evals}: no sharar-eval checkout (or drop --evals / SHARAR_EVALS to use the eval extra)")
+        raise SystemExit(f"{evals}: no sharar-eval checkout (or drop --evals / SHARAR_EVALS to use the eval group)")
     python = python or str(evals / ".venv" / "bin" / "python")
     if not Path(python).is_file():
         raise SystemExit(f"{python} not found: run `uv sync` in {evals}")
@@ -658,7 +658,7 @@ def main(argv=None) -> int:
                     help="quick: the screen, then the full sets when close; hard / long / all: also sharar-eval's hard suite "
                          "(4-6 h per arm), long suite (RULER v2, ~3 h per arm) or both; agentic: Terminal-Bench 2.1 (~18 h per arm)")
     ap.add_argument("--evals", type=Path, default=Path(os.environ["SHARAR_EVALS"]) if os.environ.get("SHARAR_EVALS") else None,
-                    help="a sharar-eval checkout to run instead of the eval extra (default: SHARAR_EVALS, else the extra)")
+                    help="a sharar-eval checkout to run instead of the eval group (default: SHARAR_EVALS, else the group)")
     ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
                     help="sharar-eval's Python (default: this environment's, or the checkout's .venv)")
     ap.add_argument("--hold-minutes", type=float, default=45, help="longest GPU hold per phase")

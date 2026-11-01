@@ -23,8 +23,8 @@ Order: base then PR, `--repeats` times; the table averages the repeats. Results,
 to $SHARAR_RESULTS/reviews/<date>-h2h-<name>/; a rerun with the same --name skips what exists. The arms' worktrees
 are removed once the report is written.
 
-sharar-eval runs from this environment's `eval` extra (pinned in uv.lock), or from a checkout given with --evals /
-SHARAR_EVALS for unreleased sharar-eval changes, as `tools/evaluate.py` does.
+sharar-eval runs from this environment's `eval` dependency group (pinned in uv.lock), or from a checkout given with
+--evals / SHARAR_EVALS for unreleased sharar-eval changes, as `tools/evaluate.py` does.
 """
 from __future__ import annotations
 
@@ -181,7 +181,7 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=30100)
     ap.add_argument("--tp", type=int, choices=(1, 2), default=1, help="2: serve both arms on two Sparks")
     ap.add_argument("--evals", type=Path, default=Path(os.environ["SHARAR_EVALS"]) if os.environ.get("SHARAR_EVALS") else None,
-                    help="a sharar-eval checkout to run instead of the eval extra (default: SHARAR_EVALS, else the extra)")
+                    help="a sharar-eval checkout to run instead of the eval group (default: SHARAR_EVALS, else the group)")
     ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
                     help="sharar-eval's Python (default: this environment's, or the checkout's .venv)")
     args = ap.parse_args()

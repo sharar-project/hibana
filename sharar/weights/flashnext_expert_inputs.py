@@ -33,7 +33,10 @@ LETTERS = "ABCDEFGHIJ"
 
 
 def _parquet(repo: str, revision: str, path: str):
-    import pyarrow.parquet as pq
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise ImportError("the calibration prompts' parquet files need pyarrow: `uv sync --group eval`") from exc
     from huggingface_hub import hf_hub_download
     return pq.read_table(hf_hub_download(repo, path, repo_type="dataset", revision=revision)).to_pylist()
 

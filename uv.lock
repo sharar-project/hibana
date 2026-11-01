@@ -1092,15 +1092,16 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-eval = [
-    { name = "sharar-eval" },
-]
 test = [
     { name = "httpx" },
     { name = "pytest" },
 ]
 
 [package.dev-dependencies]
+eval = [
+    { name = "pyarrow" },
+    { name = "sharar-eval" },
+]
 gb10 = [
     { name = "b12x" },
     { name = "einops" },
@@ -1122,15 +1123,18 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.3,<2.4" },
     { name = "pytest", marker = "extra == 'test'", specifier = "==9.1.1" },
     { name = "safetensors", specifier = ">=0.5" },
-    { name = "sharar-eval", marker = "extra == 'eval'", git = "https://github.com/abdelfattah-lab/sharar-eval?rev=58ea950577947004861da46b11f62e7c052dc565" },
     { name = "tokenizers", specifier = ">=0.21" },
     { name = "torch", specifier = ">=2.13,<2.14", index = "https://download.pytorch.org/whl/cu130" },
     { name = "uvicorn", specifier = ">=0.52,<0.53" },
     { name = "xgrammar", specifier = "==0.2.8" },
 ]
-provides-extras = ["test", "eval"]
+provides-extras = ["test"]
 
 [package.metadata.requires-dev]
+eval = [
+    { name = "pyarrow" },
+    { name = "sharar-eval", git = "https://github.com/abdelfattah-lab/sharar-eval?rev=58ea950577947004861da46b11f62e7c052dc565" },
+]
 gb10 = [
     { name = "b12x", specifier = "==1.5.0" },
     { name = "einops", specifier = "==0.8.2" },
