@@ -43,8 +43,10 @@ def add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request, up to 262144 (default: SHARAR_MAX_CONTEXT, else 262144)")
     p.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: SHARAR_MAX_BATCH, else the profile's)")
     p.add_argument("--spec-depths", default=None, help="verify depth per batch bucket as BUCKET:DEPTH pairs, e.g. 8:1,16:0 (0: plain decode; default: SHARAR_SPEC_DEPTHS, else --spec everywhere)")
-    p.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests that do not set accept_top_k/accept_margin, as K:M (default: SHARAR_ACCEPT_DEFAULT, else the profile's); 'off' keeps every request exact")
-    p.add_argument("--accept-soft", type=float, default=None, help="relaxed acceptance for sampled requests that do not set accept_soft, as s: a draft is also accepted when u * q < e^s * p, so no token comes out more than e^s times as often as the target gives it (default: SHARAR_ACCEPT_SOFT, else 0, exact)")
+    p.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests without accept_top_k/accept_margin, as K:M "
+                   "(default: SHARAR_ACCEPT_DEFAULT, else the profile's); 'off' keeps every request exact")
+    p.add_argument("--accept-soft", type=float, default=None, help="relaxed acceptance for sampled requests without accept_soft, as s: no token comes out more than "
+                   "e^s times as often as the target gives it (default: SHARAR_ACCEPT_SOFT, else 0, exact)")
     p.add_argument("--tp", type=int, default=1, help="tensor-parallel ranks, one GPU (Spark) each; rank 0 serves HTTP")
     p.add_argument("--tp-rank", type=int, default=0, help="this process's tensor-parallel rank")
     p.add_argument("--tp-address", default=None, help="HOST:PORT on rank 0's host where the ranks meet (required with --tp > 1)")

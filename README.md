@@ -1,8 +1,19 @@
 # Sharar
 
-Sharar is a local inference engine for the NVIDIA GB10 (DGX Spark). It serves **Qwen3.8-27B** and
-**Qwen3.8-Flash-Next** (125B MoE) through OpenAI- and Anthropic-compatible APIs, with speculative decoding, prefix
-caching (with an optional NVMe tier for evicted prefixes), a 262K context, on one Spark or two.
+Sharar is a local inference engine for the NVIDIA GB10 (DGX Spark). It serves **Qwen3.8-27B**,
+**Qwen3.8-Flash-Next** (125B MoE), **Nemotron 3.5 Super** (120B-A12B) and **Nemotron 3.5 Bolt** (74B-A9B) through
+OpenAI- and Anthropic-compatible APIs, with speculative decoding, prefix caching (with an optional NVMe tier for
+evicted prefixes) and a 262K context: the Qwen models on one Spark or two, the Nemotron models on one.
+
+## Requirements
+
+- One NVIDIA GB10 (SM 12.1, a DGX Spark; two linked by their ConnectX ports for
+  [tensor parallel](docs/tensor-parallel.md)), `aarch64`, about 128 GB unified memory.
+- NVIDIA driver 580 or newer and the CUDA 13 toolkit in `/usr/local/cuda` (DGX OS ships it; the GB10 kernels compile
+  on first use).
+- [uv](https://docs.astral.sh/uv/), which installs the tested Python 3.12.
+- Disk for the model cache: about 26 GB for the 27B and 135 GB for Flash-Next, plus 10 GiB that the download check
+  keeps spare ([operations](docs/operations.md#prerequisites)).
 
 ## Quick start
 
@@ -31,7 +42,8 @@ uv run sharar launch claude   # Claude Code on the model (also opencode, aider, 
 | | |
 |---|---|
 | `sharar serve 27b` / `sharar serve flashnext` | Serve a model in the foreground (Flash-Next on port 30004) |
-| `sharar serve bolt` | Serve Nemotron 3.5 Bolt's packed text model on port 30006 |
+| `sharar serve nemotron` | Serve Nemotron 3.5 Super on port 30005, one Spark ([Nemotron](docs/nemotron.md)) |
+| `sharar serve bolt` | Serve Nemotron 3.5 Bolt's packed text model on port 30006, one Spark ([Bolt](docs/bolt.md)) |
 | `sharar serve 27b --detach` | The same as a background service; `sharar stop`, `sharar logs -f` |
 | `sharar serve 27b --exact` | The model's own outputs, for benchmarks (the default `fast` profile is faster and slightly lossy; also `--throughput`) |
 | `sharar serve 27b --tp 2` | Tensor-parallel on two Sparks linked by their ConnectX ports ([tensor parallel](docs/tensor-parallel.md)) |
@@ -65,10 +77,12 @@ behavior, update its page in the same pull request (`python3 tools/check_links.p
 |---|---|
 | [Operations](docs/operations.md) | Prerequisites, launcher settings, serving profiles, traces, the SSD tier |
 | [API](docs/api.md) | Endpoints, request controls, tool calls, constrained output, Anthropic Messages |
-| [Architecture](docs/architecture.md) | Package layout, the seams both targets share, capability matrix |
+| [Architecture](docs/architecture.md) | Package layout, the seams the targets share, capability matrix |
 | [Cache design](docs/cache_design.md) | GPU pools, the radix prefix cache and the SSD tier |
+| [Memory plan](docs/memory_plan.md) | How startup sizes the KV and state pools around the host floor |
 | [Interfaces](docs/interfaces.md) | Request ownership, proposer lifecycle, device-resident acceptance, failure handling |
-| [Flash-Next](docs/flashnext.md) | The second target: model, package, conventions, sparse attention, its MTP and DFlash2 drafts |
+| [Flash-Next](docs/flashnext.md) | Qwen3.8-Flash-Next: model, package, conventions, sparse attention, its MTP and DFlash2 drafts |
+| [Nemotron](docs/nemotron.md) | Nemotron 3.5 Super: the Mamba-2 and latent-MoE model as served, formats, its MTP draft |
 | [Nemotron Bolt](docs/bolt.md) | Packed IQ2/Q8/NVFP4 text inference on the Nemotron Mamba runtime |
 | [Tensor parallel](docs/tensor-parallel.md) | Two Sparks: setup, sharding, the RDMA all-reduce, limits |
 | [3-bit calibration](docs/w3-calibration.md) | Fitting and serving the calibrated 3-bit copies |

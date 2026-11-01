@@ -15,8 +15,8 @@ engine/     loop (engine thread, request tickets) and scheduler (admission, chun
             config (EngineConfig), contracts, traces
 cache/      KV pool, state pool, radix prefix cache (GPU and SSD), request state, SSD tier and store, ledger,
             speculation memory budget
-model/      Qwen38 (the 27B) and its layers; flashnext/ (the second target); mtp.py (27B MTP head);
-            parallel_draft.py (DFlash2 body); draft_linear.py
+model/      Qwen38 (the 27B) and its layers; flashnext/, nemotron/ (Super) and bolt/; mtp.py (27B MTP head);
+            parallel_draft.py (DFlash2 body); lilicorr.py (Bolt's LiLiCorr draft); draft_linear.py
 proposers/  factory; DFlash2 (parallel*), MTP (mtp*); draft heads (draft_head, draft_vocab)
 kernels/    dispatch (ops.py), attention planner, 3-bit GEMM and MoE, FP8 GEMV, fused Triton kernels, the RDMA
             one-shot all-reduce, vendored fla and qsa kernels
@@ -58,18 +58,18 @@ benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) th
 
 ## Capability matrix
 
-| Capability | 27B | Flash-Next | Nemotron ([details](nemotron.md)) |
-|---|---|---|---|
-| Served drafter | DFlash2, k=15 | MTP, k=4 (in `fast` up to 8, chosen per request), 2-bit draft head | its MTP head, k=3 (`fast` 5 for one request, 4 for two to four), 2-bit draft head |
-| Other drafters | MTP (BF16, unfused) | DFlash2, k=9 (`exact` 7, `throughput` 4), FP8, on one Spark (`SHARAR_PROPOSER=dflash2`) | none |
-| CUDA graphs: decode, verify, draft | yes | yes, dense and sparse-selecting variants | yes |
-| Device-resident acceptance | opt-in | on in `fast` and `throughput` | on in `fast` and `throughput` |
-| Exact / relaxed / sampled acceptance | yes | yes | yes |
-| Constrained output (JSON schema, forced tool calls) | yes | yes | not yet checked |
-| Calibrated 3-bit weights | layers and draft (decode copies) | trunk (decode copies) and routed experts (the only copy) | trunk (decode copies) and routed experts (the only copy) |
-| Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk; 3-bit routed experts (NVFP4 in `exact`; split by expert on two Sparks) | the checkpoint's: NVFP4 experts (3-bit in `fast` and `throughput`), FP8 Mamba/attention/head projections, BF16 router and latent projections |
-| Prefix cache, SSD tier, 262K context | yes | yes (sparse attention past 2,048 tokens) | yes (Mamba-2 state as the GDN's) |
-| Tensor parallel on two Sparks | yes | yes | no |
+| Capability | 27B | Flash-Next | Nemotron ([details](nemotron.md)) | Bolt ([details](bolt.md)) |
+|---|---|---|---|---|
+| Served drafter | DFlash2, k=15 | MTP, k=4 (in `fast` up to 8, chosen per request), 2-bit draft head | its MTP head, k=3 (`fast` 5 for one request, 4 for two to four), 2-bit draft head | LiLiCorr DFlash2, k=7 (`--spec` 1 to 7) |
+| Other drafters | MTP (BF16, unfused) | DFlash2, k=9 (`exact` 7, `throughput` 4), FP8, on one Spark (`SHARAR_PROPOSER=dflash2`) | none | none (no MTP head) |
+| CUDA graphs: decode, verify, draft | yes | yes, dense and sparse-selecting variants | yes | yes |
+| Device-resident acceptance | opt-in | on in `fast` and `throughput` | on in `fast` and `throughput` | opt-in |
+| Exact / relaxed / sampled acceptance | yes | yes | yes | yes (exact in every profile) |
+| Constrained output (JSON schema, forced tool calls) | yes | yes | not yet checked | not yet checked |
+| Calibrated 3-bit weights | layers and draft (decode copies) | trunk (decode copies) and routed experts (the only copy) | trunk (decode copies) and routed experts (the only copy) | trunk and vocabulary head (decode copies), from a local calibration |
+| Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk; 3-bit routed experts (NVFP4 in `exact`; split by expert on two Sparks) | the checkpoint's: NVFP4 experts (3-bit in `fast` and `throughput`), FP8 Mamba/attention/head projections, BF16 router and latent projections | the checkpoint's: IQ2_XXS experts, Q8_0 attention, latent and head projections, NVFP4 Mamba projections, BF16 router |
+| Prefix cache, SSD tier, 262K context | yes | yes (sparse attention past 2,048 tokens) | yes (Mamba-2 state as the GDN's) | yes (Mamba-2 state as Super's) |
+| Tensor parallel on two Sparks | yes | yes | no | no |
 
 ## Repository boundaries
 
@@ -91,4 +91,4 @@ benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) th
 
 ## Non-goals
 
-Serving two targets in one process, a general model zoo or plugin registry, and hardware other than the GB10.
+Serving more than one target in one process, a general model zoo or plugin registry, and hardware other than the GB10.

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Experimental CUDA adaptation; no production dispatch or CuTe dependency."""
+"""QSA key compression for the optimized prefill (`prefill.py`); CUDA adaptation without a CuTe dependency."""
 from functools import lru_cache
 import math
 from pathlib import Path
@@ -21,7 +21,7 @@ def load_compressor(build_directory=None):
     if build is not None:
         build.mkdir(parents=True, exist_ok=True)
     if torch.cuda.get_device_capability() != (12, 1):
-        raise RuntimeError('this initial experiment is compiled only for SM121')
+        raise RuntimeError('QSA key compression is compiled only for SM121')
     module = tvm_ffi.cpp.load('qsa_compress_fp32_rope',
         sources=str(Path(__file__).parent/'csrc/compression.cu'),
         extra_cuda_cflags=CUDA_FLAGS, build_directory=str(build) if build is not None else None)

@@ -1,4 +1,4 @@
-"""The lossy-change gate's host logic (tools/lossy-gate.py): profile resolution, statistics, verdict rules."""
+"""The lossy-change gate's host logic (tools/lossy_gate.py): profile resolution, statistics, verdict rules."""
 import importlib.util
 import math
 from importlib.machinery import SourceFileLoader
@@ -10,7 +10,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def _gate():
-    loader = SourceFileLoader("lossy_gate_tool", str(REPO / "tools" / "lossy-gate.py"))
+    loader = SourceFileLoader("lossy_gate_tool", str(REPO / "tools" / "lossy_gate.py"))
     spec = importlib.util.spec_from_loader("lossy_gate_tool", loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)

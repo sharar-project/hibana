@@ -20,3 +20,6 @@ results/
 
 # GB10 CI scratch (tools/ci/gb10.sh)
 ci-out/
+
+# Claude Code session state and worktrees
+.claude/
