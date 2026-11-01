@@ -53,7 +53,8 @@ checkpoint, pinned by revision in the target's config (`W3_REPO`, `W3_REVISION`)
   switches to the published copies (`fetch --target T --root R --switch`).
 
 Every target has one: Flash-Next's (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3-qad`: the 3-bit trunk trained by
-quantization-aware distillation, [below](#qad-trunk-flash-next), and the GPTQ routed experts) and the 27B's (`yemara/Qwen3.8-27B-NVFP4-sharar-w3`, GPTQ from the FP8 release on the `bc7984f`
+quantization-aware distillation, [below](#qad-trunk-flash-next), and the GPTQ routed experts) and the 27B's
+(`yemara/Qwen3.8-27B-NVFP4-sharar-w3`, GPTQ from the FP8 release on the `bc7984f`
 inputs), and Nemotron's (`shadowpa0327/NVIDIA-Nemotron-3.5-Super-NVFP4-sharar-w3`: the GPTQ trunk projections and
 routed experts; private), which its `fast` and `throughput` require: without one they refuse to start. To serve a new
 calibration, point the link at its directory or set
@@ -130,8 +131,11 @@ GPQA Diamond at 64K tokens, three seeds: 83.3% against 76.4% for `694e279` (pair
 and 86.4% exact; capped answers 18 a seed against 30. With the `fast` techniques (expert sharing 4:12:64, relaxed
 top-2 within 1.0), one seed, 82.3-82.8% at batch 8, 16 and 32 against 83.8% without them. LiveCodeBench v6 (131
 problems from 2025-02), one seed, 128K tokens: 84.7%; 73.3% counting only answers within 64K, against 77.1% exact at 64K.
-These are port numbers, not GB10 numbers: the lossy-change gate (`tools/lossy-gate.py --target flashnext --profile fast`)
-against `exact` is the check on a Spark.
+On one GB10, the lossy-change gate's in-process layers (`tools/lossy_gate.py --target flashnext --profile fast
+--through inprocess`, `fast` against `exact`): KL 0.066 against 0.099 for `694e279` (excess over the floor -39%),
+argmax agreement 92.3% against 90.3%, lower in every domain (code 0.021 against 0.038, math 0.015 against 0.036, prose
+0.082 against 0.162, chat 0.047 against 0.097, multilingual 0.131 against 0.159); decode x2.24 against x2.22 of
+`exact`, tokens a round x1.38 against x1.36.
 
 
 ## Nemotron
