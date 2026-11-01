@@ -48,6 +48,13 @@ class Verification:
 
 class SpecDecoder:
     aux_windows: dict = {}  # class attribute: test decoders skip __init__
+    # Called where a round's host waits for the GPU (a drafted column, the acceptance result): the engine loop hands
+    # streamed tokens to the HTTP side there, off the host's path between rounds (engine/loop.py).
+    on_wait = None
+
+    def waiting(self) -> None:
+        if self.on_wait is not None:
+            self.on_wait()
 
     @property
     def verify_depth(self) -> int:
@@ -328,6 +335,8 @@ class SpecDecoder:
         short = self.drafts_short
         proposed = self.proposer.propose(reqs, new_pages, inputs, graphs=ex.use_graphs, **({"depth": k} if short else {}))
         proposal = proposed if isinstance(proposed, Proposal) else Proposal(proposed)
+        if proposal.columns is not None:
+            proposal.columns.on_wait = self.waiting
         y = proposal.tokens
         s_len = k + 1
         sampled = any(not r.params.greedy for r in reqs)
@@ -605,6 +614,7 @@ class SpecDecoder:
             # Relaxed accepts inside the accepted prefix: drafted tokens the target
             # did not rank first. Downloaded with everything else, one sync.
             flags_t = (prefix.bool() & ~exact) if relaxed is not None else torch.zeros_like(exact)
+            self.waiting()
             packed = torch.cat([y, z, acc_t.unsqueeze(1).to(y.dtype), flags_t.to(y.dtype)], dim=1).tolist()
             y_l = [row[:k] for row in packed]
             z_l = [row[k:2 * k + 1] for row in packed]

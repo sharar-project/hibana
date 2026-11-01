@@ -18,10 +18,12 @@ class DraftColumns:
     step j + 1 still runs, instead of waiting for the whole block. `host` is pinned int64
     [k, max_batch], written by a non-blocking copy behind each step, then `events[j]` is recorded."""
 
-    def __init__(self, host: torch.Tensor, events: list, batch: int):
-        self.host, self.events, self.batch = host, events, batch
+    def __init__(self, host: torch.Tensor, events: list, batch: int, on_wait=None):
+        self.host, self.events, self.batch, self.on_wait = host, events, batch, on_wait
 
     def column(self, j: int) -> list[int]:
+        if self.on_wait is not None:
+            self.on_wait()
         self.events[j].synchronize()
         return self.host[j, :self.batch].tolist()
 
