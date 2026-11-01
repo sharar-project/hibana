@@ -195,11 +195,11 @@ def nemotron_defaults(profile: str) -> dict[str, str]:
          "SHARAR_DEVICE_ACCEPT": "0", "SHARAR_MAX_BATCH": "4", "SHARAR_SPEC": "3", "SHARAR_SSD": "1"}
     if profile == "exact":
         return p
-    # relaxed top-3 within 2.0 logits for greedy requests (sampled ones exact, from sampled MTP drafts; s unmeasured
-    # here), device-resident acceptance and both calibrated 3-bit copies (h2h at one request, depth 5: 54.6 -> 81.0
+    # relaxed top-3 within 2.0 logits for greedy requests, sampled ones relaxed by s = 0.5 (Flash-Next's setting) from
+    # sampled MTP drafts, device-resident acceptance and both calibrated 3-bit copies (h2h at one request, depth 5: 54.6 -> 81.0
     # tok/s); depth up to 6 for two requests and 5 for three or four (two requests, 512 greedy tokens: 128.6 tok/s at 6
     # against 116.3 at 4; four: 184.4 at 5 against 168.6)
-    p.update(SHARAR_ACCEPT_DEFAULT="3:2.0", SHARAR_ACCEPT_SOFT="0", SHARAR_MTP_SAMPLE="1", SHARAR_DEVICE_ACCEPT="1",
+    p.update(SHARAR_ACCEPT_DEFAULT="3:2.0", SHARAR_ACCEPT_SOFT="0.5", SHARAR_MTP_SAMPLE="1", SHARAR_DEVICE_ACCEPT="1",
              SHARAR_SPEC_DEPTHS="2:6,4:5", SHARAR_W3_DECODE="1")
     # adaptive depth for one request, up to 8 (engine/depth.AcceptanceDepth, docs/nemotron.md#adaptive-depth): a drafted
     # token costs about 2.2 ms against a depth-1 round's 39-41 ms, so 0.065; h2h against depth 5 greedy +3%, t=0.7 +6%

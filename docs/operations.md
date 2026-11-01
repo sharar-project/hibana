@@ -187,7 +187,7 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 | Knob | exact | fast (default) | throughput |
 |---|---|---|---|
 | Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-3 within 2.0 logits; Flash-Next DFlash2 top-2 within 1.0; Bolt off | as fast |
-| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_SOFT`, `accept_soft` in the [API](api.md)) | 0 (exact) | Flash-Next s = 0.5; the 27B, Nemotron and Bolt 0 (exact) | as fast |
+| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_SOFT`, `accept_soft` in the [API](api.md)) | 0 (exact) | Flash-Next and Nemotron s = 0.5; the 27B and Bolt 0 (exact) | as fast |
 | Sampled MTP drafts (`SHARAR_MTP_SAMPLE`, [below](#sampled-mtp-drafts)) | off | on where MTP drafts | as fast |
 | Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next and Nemotron also the routed experts; Bolt's trunk and vocabulary head) | off | on | on |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next and Nemotron | as fast |
