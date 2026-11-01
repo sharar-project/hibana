@@ -58,7 +58,7 @@ same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (defau
 
 | Setting | Launcher default | Override |
 |---|---|---|
-| Target | the one named on `serve` (`27b` or `flashnext`) | `SHARAR_TARGET`; Flash-Next reads its model from `SHARAR_FLASHNEXT_CACHE` and takes `SHARAR_FLASHNEXT_TRUNK=fp8\|bf16` |
+| Target | the one named on `serve` (`27b`, `flashnext`, `nemotron` or `bolt`) | `SHARAR_TARGET`; Flash-Next reads its model from `SHARAR_FLASHNEXT_CACHE` and takes `SHARAR_FLASHNEXT_TRUNK=fp8\|bf16` |
 | Serving profile | `fast` | `sharar serve --exact\|--fast\|--throughput` or `SHARAR_PROFILE` ([below](#serving-profiles)) |
 | Proposer / draft proposals | 27B: DFlash2, 15 (16 verify rows); Flash-Next: MTP, 4 (`fast`: up to 8, adaptive, below), or with `SHARAR_PROPOSER=dflash2` (one Spark) DFlash2, 9 (`exact`: 7, `throughput`: 4) | `SHARAR_PROPOSER`, `SHARAR_SPEC` (0 = plain decode; with adaptive depth, the cap) |
 | Draft precision | 27B: FP8; Flash-Next: BF16 (MTP), FP8 (DFlash2) | `SHARAR_DRAFT_PRECISION=bf16` for the 27B publisher's precision |
@@ -68,7 +68,7 @@ same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (defau
 | Adaptive verification (DFlash2) | the 27B's `throughput`: on; `exact`, `fast`: off; Flash-Next: none | `SHARAR_SPEC_POLICY=budget\|fixed`: the drafts' calibrated scores and the measured verify costs decide what each round verifies, up to `SHARAR_SPEC` ([below](#adaptive-verification-dflash2)); a `SHARAR_SPEC_DEPTHS` table caps each bucket (no 0 under it); not with `SHARAR_SPEC_STEP_COST` |
 | Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:7,4:6` on one Spark, `2:4,4:4` on two, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark), else `16:3`; Flash-Next DFlash2 `fast`: `2:7,4:7`, `throughput`: MTP's | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC` and `SHARAR_MAX_BATCH`, a limit between buckets verifying what the bucket it pads to does). The 3-bit copies serve calls of at most 128 rows on the 27B and 64 on Flash-Next, so wider verifications run the original weights |
 | Adaptive draft depth (MTP and DFlash2) | Flash-Next `fast` with MTP: on, 0.14 (0.2 on two Sparks); DFlash2: off | `SHARAR_SPEC_STEP_COST` (0 = the fixed depth): each request drafts as deep as its own recent acceptance pays for, up to the batch bucket's depth ([MTP](flashnext.md#the-mtp-draft), [DFlash2](flashnext.md#the-dflash2-draft)) |
-| Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext` | `sharar serve --port`, `SHARAR_PORT` / `SHARAR_SERVICE` |
+| Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext`, Nemotron 30005 / `sharar-nemotron`, Bolt 30006 / `sharar-bolt` | `sharar serve --port`, `SHARAR_PORT` / `SHARAR_SERVICE` |
 | Request traces | off | `sharar serve --traces` (in `$SHARAR_RESULTS/traces`) or `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
 | Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
 | Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `SHARAR_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
@@ -77,6 +77,26 @@ same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (defau
 
 For MTP on the 27B, use `SHARAR_PROPOSER=mtp SHARAR_SPEC=3 SHARAR_DRAFT_PRECISION=bf16`. `SHARAR_PROPOSER` is `mtp`
 or `dflash2`.
+
+Further settings, for tuning, diagnostics and the tools (defaults from `engine/config.py`, `launch/` and `tools/`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SHARAR_HOST` | `127.0.0.1` | The address the server listens on (`sharar serve --host`) |
+| `SHARAR_SSD_BLOCK_TOKENS` | 256 | Tokens per SSD-tier KV block; must divide the 2,048-token prefill chunk |
+| `SHARAR_SSD_WRITERS` | 4 | The SSD store's writer threads (at least 1) |
+| `SHARAR_SSD_STAGING_MIB` | 512 | Backup copies in flight to the SSD writers |
+| `SHARAR_SSD_CHUNK_MIB` | 256 | Each half of the SSD restore's staging buffer |
+| `SHARAR_SSM_WINDOW` | 16 | With an `int8` or `int4` recurrent state: committed tokens per requantization (8, 16 or 32) |
+| `SHARAR_SSM_COMPENSATORS` | 4 (8 for `int4`) | With an `int8` or `int4` recurrent state: FP16 rank-one outlier terms kept beside it (0 to 16) |
+| `SHARAR_GDN_PREFILL` | `auto` | GDN prefill kernels: `auto` (CuTe on SM12x where supported), `cute` or `triton` |
+| `SHARAR_TRUNK_KEEP_BF16` | unset | A diagnostic: a regex of Flash-Next trunk projections kept in BF16 |
+| `SHARAR_DEBUG_SYNC` | off | `1` synchronizes after each phase, so an asynchronous CUDA fault names the phase and batch that launched it |
+| `SHARAR_CUDA_ARCH` | `12.1a` | The architecture the CUDA kernels built on first use target |
+| `SHARAR_CLAUDE_MODEL` | `claude-sharar-qwen3.8` | The model id `sharar launch claude` gives Claude Code (it accepts only ids containing "claude") |
+| `SHARAR_CLAUDE_CONFIG` | `~/.claude-sharar` | Claude Code's configuration directory under `sharar launch claude`, apart from the user's own |
+| `SHARAR_EVALS` | unset (the `eval` group) | A sharar-eval checkout for `tools/evaluate.py`, `tools/h2h-pr.py` and `tools/lossy-gate.py` (`--evals`) |
+| `SHARAR_EVALS_PYTHON` | unset | That checkout's Python (`--python`; default its `.venv`) |
 
 ### Adaptive verification (DFlash2)
 
