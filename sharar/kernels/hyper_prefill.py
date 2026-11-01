@@ -35,16 +35,14 @@ def _sigmoid(x):
 
 
 @triton.jit
-def _stream(R, B, I, Y, W, Rstd, t, s: tl.constexpr, stride_r, stride_b, stride_y, H: tl.constexpr, eps, HAS_B: tl.constexpr,
-            BLOCK: tl.constexpr):
-    """Stream s of row t: hyper' (stored when HAS_B), its norm (returned as the BF16 value in FP32), 1/rms stored."""
+def _stream(I, Y, W, Rstd, t, s: tl.constexpr, x, b, stride_y, H: tl.constexpr, eps, HAS_B: tl.constexpr, BLOCK: tl.constexpr):
+    """Stream s of row t, x its loaded values (FP32): hyper' (stored when HAS_B), its norm (returned as the BF16 value
+    in FP32), 1/rms stored."""
     cols = tl.arange(0, BLOCK)
     mask = cols < H
     off = s * H + cols
-    x = tl.load(R + t * stride_r + off, mask=mask, other=0.0).to(tl.float32)
     if HAS_B:
         g = 2.0 * _sigmoid(tl.load(I + t * 4 + s))
-        b = tl.load(B + t * stride_b + cols, mask=mask, other=0.0).to(tl.float32)
         hb = (x + b * g).to(tl.bfloat16)
         tl.store(Y + t * stride_y + off, hb, mask=mask)
         x = hb.to(tl.float32)
@@ -77,10 +75,20 @@ def _quant_store(NQ, n, t, s: tl.constexpr, inv, stride_q, H: tl.constexpr, BLOC
 def _combine_norm_kernel(R, B, I, Y, W, WI, NQ, XS, Rstd, Inj, stride_r, stride_b, stride_y, stride_q, H: tl.constexpr, eps,
                          HAS_B: tl.constexpr, HAS_INJ: tl.constexpr, BLOCK: tl.constexpr):
     t = tl.program_id(0)
-    n0 = _stream(R, B, I, Y, W, Rstd, t, 0, stride_r, stride_b, stride_y, H, eps, HAS_B, BLOCK)
-    n1 = _stream(R, B, I, Y, W, Rstd, t, 1, stride_r, stride_b, stride_y, H, eps, HAS_B, BLOCK)
-    n2 = _stream(R, B, I, Y, W, Rstd, t, 2, stride_r, stride_b, stride_y, H, eps, HAS_B, BLOCK)
-    n3 = _stream(R, B, I, Y, W, Rstd, t, 3, stride_r, stride_b, stride_y, H, eps, HAS_B, BLOCK)
+    # the row's four streams and the block output are loaded before any store (a store would order the loads after it)
+    cols = tl.arange(0, BLOCK)
+    mask = cols < H
+    x0 = tl.load(R + t * stride_r + cols, mask=mask, other=0.0).to(tl.float32)
+    x1 = tl.load(R + t * stride_r + H + cols, mask=mask, other=0.0).to(tl.float32)
+    x2 = tl.load(R + t * stride_r + 2 * H + cols, mask=mask, other=0.0).to(tl.float32)
+    x3 = tl.load(R + t * stride_r + 3 * H + cols, mask=mask, other=0.0).to(tl.float32)
+    b = x0
+    if HAS_B:
+        b = tl.load(B + t * stride_b + cols, mask=mask, other=0.0).to(tl.float32)
+    n0 = _stream(I, Y, W, Rstd, t, 0, x0, b, stride_y, H, eps, HAS_B, BLOCK)
+    n1 = _stream(I, Y, W, Rstd, t, 1, x1, b, stride_y, H, eps, HAS_B, BLOCK)
+    n2 = _stream(I, Y, W, Rstd, t, 2, x2, b, stride_y, H, eps, HAS_B, BLOCK)
+    n3 = _stream(I, Y, W, Rstd, t, 3, x3, b, stride_y, H, eps, HAS_B, BLOCK)
     if HAS_INJ:
         tl.store(Inj + t * 4 + 0, _inject_dot(WI, 0, n0, n1, n2, n3, H, BLOCK))
         tl.store(Inj + t * 4 + 1, _inject_dot(WI, 1, n0, n1, n2, n3, H, BLOCK))
