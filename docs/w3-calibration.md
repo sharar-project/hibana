@@ -56,7 +56,7 @@ Every target has one: Flash-Next's (`yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3-q
 quantization-aware distillation, [below](#qad-trunk-flash-next), and the GPTQ routed experts) and the 27B's
 (`yemara/Qwen3.8-27B-NVFP4-sharar-w3`, GPTQ from the FP8 release on the `bc7984f`
 inputs), and Nemotron's (`shadowpa0327/NVIDIA-Nemotron-3.5-Super-NVFP4-sharar-w3`: the GPTQ trunk projections and
-routed experts; private), which its `fast` and `throughput` require: without one they refuse to start. To serve a new
+routed experts), which its `fast` and `throughput` require: without one they refuse to start. To serve a new
 calibration, point the link at its directory or set
 `SHARAR_W3_CHECKPOINT=/path/to/calibrated-w3`.
 

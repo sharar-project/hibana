@@ -23,7 +23,6 @@ MODEL_CACHE_KEY = "models--nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
 MODEL_ARCHITECTURE = "NemotronH_Omni_Reasoning_V3"
 # Calibrated 3-bit copies (GPTQ trunk projections and routed experts), Flash-Next's arrangement: fetched on serve into
 # $SHARAR_RESULTS/w3-checkpoints/nemotron-<revision> and linked as nemotron-current (`fast` and `throughput` need them).
-# Private until the redistribution terms of the NVFP4 export are checked.
 W3_REPO = "shadowpa0327/NVIDIA-Nemotron-3.5-Super-NVFP4-sharar-w3"
 W3_REVISION = "2ca8b352b0fbff1620117f86c023552e761a7e32"  # GPTQ trunk + GPTQ routed experts (MTP head's included)
 PREFIX = "language_model"
