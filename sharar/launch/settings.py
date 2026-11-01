@@ -103,11 +103,13 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
     if profile == "exact":
         p = {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_SOFT": "0", "SHARAR_W3_DECODE": "0", "SHARAR_DEVICE_ACCEPT": "0"}
     elif profile in ("fast", "throughput"):
-        # sampled requests at s = 0.5 (sampled with thinking on, 4 requests, one Spark): the 27B with DFlash2 195 tok/s
-        # against 165 exact, Flash-Next with sampled MTP drafts 216 against 183. Accepting outright every draft within
-        # the greedy K:M rule (196 and 257) cost long reasoning its accuracy: those tokens came out at the drafter's
-        # probability.
-        p = {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_SOFT": "0.5", "SHARAR_W3_DECODE": "1",
+        # sampled requests: Flash-Next s = 0.5, the 27B exact. Sampled with thinking on, 4 requests, one Spark: s = 0.5
+        # decodes Flash-Next (sampled MTP drafts) at 216 tok/s against 183 exact, the 27B (DFlash2) at 195 against 165.
+        # On GPQA-D thinking at a 64K cap (Flash-Next, 99 items, paired) s = 0.5 scored 81.8% against 84.8% exact
+        # (p 0.51) with 18% longer answers, so the faster decode buys little on long reasoning; the 27B stays exact.
+        # Accepting outright every draft within the greedy K:M rule (257 and 196 tok/s) cost long reasoning its
+        # accuracy: those tokens came out at the drafter's probability.
+        p = {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_SOFT": "0.5" if flashnext else "0", "SHARAR_W3_DECODE": "1",
              "SHARAR_DEVICE_ACCEPT": "1" if flashnext else "0"}
     else:
         raise ValueError(f"unknown serving profile {profile!r} (choose from {', '.join(PROFILE_NAMES)})")
@@ -188,11 +190,10 @@ def nemotron_defaults(profile: str) -> dict[str, str]:
          "SHARAR_DEVICE_ACCEPT": "0", "SHARAR_MAX_BATCH": "4", "SHARAR_SPEC": "3", "SHARAR_SSD": "1"}
     if profile == "exact":
         return p
-    # relaxed top-3 within 2.0 logits for greedy requests and s = 0.5 for sampled ones (Flash-Next's and the 27B's,
-    # unmeasured here), device-resident acceptance and both calibrated 3-bit copies (h2h at one request, depth 5: 54.6
+    # relaxed top-3 within 2.0 logits for greedy requests (sampled ones exact: s unmeasured here), device-resident acceptance and both calibrated 3-bit copies (h2h at one request, depth 5: 54.6
     # -> 81.0 tok/s); depth up to 6 for two requests and 5 for three or four (two requests, 512 greedy tokens: 128.6
     # tok/s at 6 against 116.3 at 4; four: 184.4 at 5 against 168.6)
-    p.update(SHARAR_ACCEPT_DEFAULT="3:2.0", SHARAR_ACCEPT_SOFT="0.5", SHARAR_DEVICE_ACCEPT="1",
+    p.update(SHARAR_ACCEPT_DEFAULT="3:2.0", SHARAR_ACCEPT_SOFT="0", SHARAR_DEVICE_ACCEPT="1",
              SHARAR_SPEC_DEPTHS="2:6,4:5", SHARAR_W3_DECODE="1")
     # adaptive depth for one request, up to 8 (engine/depth.AcceptanceDepth, docs/nemotron.md#adaptive-depth): a drafted
     # token costs about 2.2 ms against a depth-1 round's 39-41 ms, so 0.065; h2h against depth 5 greedy +3%, t=0.7 +6%

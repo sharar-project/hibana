@@ -54,7 +54,8 @@ def test_an_explicit_setting_wins_over_the_profile(env, explicit):
 def test_profile_knobs():
     pick = lambda p, t: {k: launch.profile_defaults(p, t)[k] for k in ("SHARAR_ACCEPT_DEFAULT", "SHARAR_ACCEPT_SOFT", "SHARAR_W3_DECODE")}  # noqa: E731
     assert pick("exact", "qwen38") == {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_SOFT": "0", "SHARAR_W3_DECODE": "0"}
-    assert pick("fast", "qwen38") == pick("fast", "flashnext") == {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_SOFT": "0.5", "SHARAR_W3_DECODE": "1"}
+    assert pick("fast", "qwen38") == {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_SOFT": "0", "SHARAR_W3_DECODE": "1"}
+    assert pick("fast", "flashnext") == {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_SOFT": "0.5", "SHARAR_W3_DECODE": "1"}
     with pytest.raises(ValueError, match="unknown serving profile"):
         launch.profile_defaults("turbo", "qwen38")
     with pytest.raises(ValueError, match="choose from exact, fast, throughput"):
@@ -62,7 +63,7 @@ def test_profile_knobs():
 
 
 @pytest.mark.parametrize("profile, target, proposer, soft", [
-    ("fast", "qwen38", None, "0.5"), ("throughput", "qwen38", None, "0.5"), ("fast", "flashnext", None, "0.5"),
+    ("fast", "qwen38", None, "0"), ("throughput", "qwen38", None, "0"), ("fast", "flashnext", None, "0.5"),
     ("fast", "flashnext", "dflash2", "0.5"), ("throughput", "flashnext", None, "0.5"), ("exact", "qwen38", None, "0"),
     ("exact", "flashnext", None, "0")])
 def test_sampled_requests_get_one_bounded_rule(profile, target, proposer, soft):
@@ -173,7 +174,7 @@ def test_the_engine_gets_explicit_flags_and_its_environment(env, tmp_path):
     args = s.engine_args()
     assert args[args.index("--port") + 1] == "30001" and args[args.index("--spec") + 1] == "15"
     assert args[args.index("--context-length") + 1] == "262144" and args[args.index("--draft-precision") + 1] == "fp8"
-    assert args[args.index("--accept-default") + 1] == "3:2.0" and args[args.index("--accept-soft") + 1] == "0.5"
+    assert args[args.index("--accept-default") + 1] == "3:2.0" and args[args.index("--accept-soft") + 1] == "0"
     assert "--draft" not in args and args[args.index("--traces") + 1] == str(s.traces)
     assert not any("sampled" in a for a in args)
     soft = resolve({**env, "SHARAR_DRAFT": "pinned", "SHARAR_ACCEPT_SOFT": "0.25"}, "27b", "fast").engine_args()

@@ -68,9 +68,9 @@ def test_overrides_reach_the_in_process_arm(clean):
 
 
 def test_sampled_rule_reaches_the_in_process_arm_as_serve_records_it(clean):
-    fast = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_DRAFT": "pinned"}))
+    fast = gate.arm_plan(gate.resolve("flashnext", "fast", {}))
     assert fast["env"]["SHARAR_ACCEPT_SOFT"] == "0.5"
-    off = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_DRAFT": "pinned", "SHARAR_ACCEPT_SOFT": "0"}))
+    off = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_DRAFT": "pinned"}))
     assert off["env"]["SHARAR_ACCEPT_SOFT"] == "0"
     nospec = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_SPEC": "0"}))
     assert nospec["env"]["SHARAR_ACCEPT_SOFT"] == "0" and nospec["accept"] == "1:0.0"

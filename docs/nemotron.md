@@ -49,7 +49,7 @@ The profiles (`nemotron_defaults` in `sharar/launch/settings.py`):
 | Profile | Settings |
 |---|---|
 | `exact` | MTP depth 3, exact acceptance, FP32 Mamba state, every token's 22 experts |
-| `fast` | both 3-bit copies, relaxed acceptance (greedy top 3 within 2.0 logits, sampled s = 0.5), device-resident acceptance, 2-bit draft head, adaptive depth up to 8 at one request (`SHARAR_SPEC_STEP_COST=0.065`, [below](#adaptive-depth)), up to 6 at two requests and 5 at three or four, FP16 Mamba state with stochastic rounding, expert sharing `SHARAR_MOE_KEEP=12` `SHARAR_MOE_BUDGET=48:128` |
+| `fast` | both 3-bit copies, relaxed acceptance for greedy requests (top 3 within 2.0 logits; sampled ones exact), device-resident acceptance, 2-bit draft head, adaptive depth up to 8 at one request (`SHARAR_SPEC_STEP_COST=0.065`, [below](#adaptive-depth)), up to 6 at two requests and 5 at three or four, FP16 Mamba state with stochastic rounding, expert sharing `SHARAR_MOE_KEEP=12` `SHARAR_MOE_BUDGET=48:128` |
 | `throughput` | `fast` up to 16 requests, depth 5 at five to eight and 3 past eight |
 
 Expert sharing (`moe.py`, `route_budget`): a verify call's rows share the experts they read. Each row is guaranteed

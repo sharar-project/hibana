@@ -64,9 +64,9 @@ def test_fast_and_throughput_share_experts_and_halve_the_state(env):
 def test_fast_and_throughput(env):
     fast, tput = resolve(env, "fast"), resolve(env, "throughput")
     for s in (fast, tput):
-        assert s.get("SHARAR_ACCEPT_DEFAULT") == "3:2.0" and s.get("SHARAR_ACCEPT_SOFT") == "0.5"
+        assert s.get("SHARAR_ACCEPT_DEFAULT") == "3:2.0" and s.get("SHARAR_ACCEPT_SOFT") == "0"  # sampled: exact
         args = s.engine_args()
-        assert args[args.index("--accept-soft") + 1] == "0.5"
+        assert args[args.index("--accept-soft") + 1] == "0"
         assert s.spec == 8 and s.get("SHARAR_SPEC_STEP_COST") == "0.065"  # adaptive depth for one request
     assert fast.get("SHARAR_MAX_BATCH") == "4" and tput.get("SHARAR_MAX_BATCH") == "16"
     assert fast.get("SHARAR_SPEC_DEPTHS") == "2:6,4:5" and tput.get("SHARAR_SPEC_DEPTHS") == "2:6,4:5,8:5,16:3"
