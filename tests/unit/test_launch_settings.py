@@ -65,7 +65,8 @@ def test_profile_knobs():
 @pytest.mark.parametrize("profile, target, proposer, soft", [
     ("fast", "qwen38", None, "0"), ("throughput", "qwen38", None, "0"), ("fast", "flashnext", None, "0.5"),
     ("fast", "flashnext", "dflash2", "0.5"), ("throughput", "flashnext", None, "0.5"), ("exact", "qwen38", None, "0"),
-    ("exact", "flashnext", None, "0")])
+    ("exact", "flashnext", None, "0"), ("fast", "nemotron", None, "0.5"), ("throughput", "nemotron", None, "0.5"),
+    ("exact", "nemotron", None, "0"), ("fast", "bolt", "dflash2", "0")])
 def test_sampled_requests_get_one_bounded_rule(profile, target, proposer, soft):
     p = launch.profile_defaults(profile, target, proposer=proposer)
     assert p["SHARAR_ACCEPT_SOFT"] == soft and not any("SAMPLED" in k for k in p)
