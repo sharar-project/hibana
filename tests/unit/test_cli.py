@@ -134,6 +134,27 @@ def test_two_spark_serve_stays_the_user_for_ssh(home, monkeypatch):
     assert cli.main(["serve", "27b"]) == 0 and wrapped == [True]
 
 
+def test_serve_needs_a_named_model(home, monkeypatch):
+    """Serving takes the GPU and may download a model: never one nobody named, but SHARAR_TARGET or the config file names one."""
+    started = []
+    monkeypatch.setattr(run.guard, "start_thread", lambda **kw: None)
+    monkeypatch.setattr(cli, "run_engine", lambda args, parser: started.append(os.environ["SHARAR_TARGET"]) or 0)
+    with pytest.raises(SystemExit, match="name a model: 27b, flashnext, nemotron or bolt"):
+        cli.main(["serve"])
+    assert started == []
+    (home / "none.env").write_text("SHARAR_TARGET=bolt\n")
+    assert cli.main(["serve"]) == 0 and started == ["bolt"]
+    os.environ["SHARAR_TARGET"] = "flashnext"  # not monkeypatch: it would restore the bolt serve installed, after `home`
+    assert cli.main(["serve"]) == 0 and started[-1] == "flashnext"
+
+
+def test_nothing_serving_names_every_target(home, capsys):
+    with pytest.raises(SystemExit, match="sharar serve 27b, flashnext, nemotron or bolt first"):
+        cli.main(["chat"])
+    assert run.status(cli.build_parser().parse_args(["status"])) == 0
+    assert "sharar serve 27b, flashnext, nemotron or bolt" in capsys.readouterr().out
+
+
 def test_serve_refuses_a_busy_port_and_bad_settings(home, monkeypatch):
     with pytest.raises(SystemExit, match="MAX_BATCH"):
         cli.main(["serve", "27b", "--max-batch", "500"])

@@ -3,6 +3,7 @@
     sharar serve 27b                 # Qwen3.8-27B on 127.0.0.1:30001, in the foreground (Ctrl-C stops it)
     sharar serve flashnext --detach  # Qwen3.8-Flash-Next on :30004 as a background service (sharar stop, sharar logs -f)
     sharar serve nemotron            # Nemotron-3.5-Super (120B-A12B, NVFP4) on :30005, one Spark
+    sharar serve bolt                # Nemotron-3.5-Bolt (74B-A9B, packed) on :30006, one Spark
     sharar serve 27b --tp 2          # tensor-parallel on two DGX Sparks
     sharar chat                      # chat with whichever target is serving
     sharar launch claude             # Claude Code (or opencode, aider) set up for the serving target
@@ -25,7 +26,7 @@ from sharar.launch.settings import PROFILE_NAMES, TARGET_CHOICES
 
 PROFILE_HELP = {"exact": "the target's own distribution: exact acceptance, no lossy weight copies (benchmarks)",
                 "fast": "the default: every measured speed option, lossy ones included (docs/operations.md#serving-profiles)",
-                "throughput": "fast with more requests at once (27B 16, Flash-Next 128, Nemotron 16) for evals and many agents"}
+                "throughput": "fast with more requests at once (27B 16, Flash-Next 128, Nemotron Super 16; Bolt as fast) for evals and many agents"}
 
 
 def add_engine_args(p: argparse.ArgumentParser) -> None:
@@ -170,13 +171,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     p = sub.add_parser("serve", help="serve a model (in the foreground; --detach for a background service)")
-    add_target(p, "27b, flashnext or nemotron (default: SHARAR_TARGET, else 27b)")
+    add_target(p, "27b, flashnext, nemotron (Super) or bolt (Nemotron Bolt); default: SHARAR_TARGET")
     g = p.add_mutually_exclusive_group()
     for name in PROFILE_NAMES:
         g.add_argument(f"--{name}", dest="profile", action="store_const", const=name, help=PROFILE_HELP[name])
     p.add_argument("-d", "--detach", action="store_true", help="run as a user systemd service (sharar stop | status | logs)")
     p.add_argument("--tp", type=int, choices=(1, 2), default=1, help="2: tensor-parallel on two DGX Sparks (docs/tensor-parallel.md)")
-    p.add_argument("--port", type=int, default=None, help="default: 30001 for the 27B, 30004 for Flash-Next, 30005 for Nemotron")
+    p.add_argument("--port", type=int, default=None, help="default: 30001 for the 27B, 30004 for Flash-Next, 30005 for Nemotron Super, 30006 for Bolt")
     p.add_argument("--host", default=None, help="default: 127.0.0.1")
     p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request (default 262144)")
     p.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: the profile's)")
@@ -209,7 +210,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=600)
 
     from sharar.launch.ctl import HARNESSES
-    p = sub.add_parser("launch", help="start a coding agent (claude, opencode, aider) set up for the serving model; `show` prints the settings for others")
+    p = sub.add_parser("launch", help="start a coding agent (claude, opencode or aider) set up for the serving model; `show` prints the settings for others")
     p.add_argument("harness", choices=HARNESSES)
     p.add_argument("--target", choices=TARGET_CHOICES, default=None, help="before the agent name; default: the target that is serving")
     p.add_argument("args", nargs=argparse.REMAINDER, help="passed to the agent unchanged")
@@ -279,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in ("chat", "launch", "verify"):
         s = run.serving(args.target)
         if s is None:
-            sys.exit("nothing is serving: sharar serve 27b (or flashnext, nemotron) first")
+            sys.exit(f"nothing is serving: {run.SERVE_HINT} first")
         if args.command == "chat":
             return ctl.cmd_chat(args, s)
         if args.command == "launch":

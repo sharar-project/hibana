@@ -24,6 +24,7 @@ ALIASES = {"27b": "qwen38", "27B": "qwen38", "qwen38": "qwen38", "qwen3.8-27b": 
            "bolt": "bolt", "nemotron-bolt": "bolt"}
 TARGET_CHOICES = ("27b", "flashnext", "nemotron", "bolt", "qwen38", "flash-next", "nemotron-super", "nemotron-bolt")
 SERVED = ("27b", "flashnext", "nemotron", "bolt")  # one name per target, in the order `status`, `stop` and the clients look
+SERVE_HINT = "sharar serve " + ", ".join(SERVED[:-1]) + " or " + SERVED[-1]  # what to run when nothing is serving
 
 # What each target serves when nothing else says so (port, service, drafter: the SHARAR_* keys), and what the launcher
 # knows of it: `recurrence` (`Target.recurrence`, the formats of SSM_STATES; default gdn), `w3_missing` (what the
