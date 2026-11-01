@@ -232,7 +232,7 @@ def _replay_graphs(ex) -> list[tuple[str, torch.cuda.CUDAGraph]]:
         out += [("verify", g) for g in graphs._graphs.values()]
         accept = getattr(graphs, "accept", None)
         if accept is not None:
-            out += [("accept", g) for g in accept._graphs.values()]
+            out += [("accept", g) for g in (*accept._graphs.values(), *accept._writes.values())]
     if ex.graphs is not None:
         out += [("decode", g) for g in ex.graphs._graphs.values()]
     return out
