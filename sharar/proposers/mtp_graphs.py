@@ -27,6 +27,11 @@ class DraftGraphs:
         self._ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=self.device)
         self._st: dict[int, dict] = {}
         self._graphs: dict[int, torch.cuda.CUDAGraph] = {}
+        # plan() writes its schedule into the wrapper's pinned buffer and queues the copy to the device behind the
+        # previous step's replay; the host plans every step of a round before the GPU reaches those copies, so with one
+        # buffer a step could read a later step's schedule (it changes with the attended length). One pinned buffer per
+        # step of a round (`run(step=)`), each reused only by the next round's same step, after the round's drafts ran.
+        self._pinned: list[torch.Tensor] = []
 
     def _static(self, b: int) -> dict:
         d = self.device
@@ -43,8 +48,14 @@ class DraftGraphs:
         st["wrapper"] = _prefill_wrapper(self._ws, st)
         return st
 
-    def _plan(self, st: dict, kv_all: list[torch.Tensor]) -> None:
+    def _plan(self, st: dict, kv_all: list[torch.Tensor], step: int = 0) -> None:
         check_context_capacity([p.shape[0] for p in kv_all], self.max_context)
+        wrapper = st["wrapper"]
+        if not self._pinned:
+            self._pinned.append(wrapper._pin_memory_int_workspace_buffer)
+        while len(self._pinned) <= step:
+            self._pinned.append(torch.empty_like(self._pinned[0], pin_memory=True))
+        wrapper._pin_memory_int_workspace_buffer = self._pinned[step]
         b = len(kv_all)
         indptr = torch.tensor([0] + list(torch.tensor([p.shape[0] for p in kv_all]).cumsum(0).tolist()), dtype=torch.int32)  # host: no sync in plan()
         pages = kv_all[0] if b == 1 else torch.cat(kv_all)  # plan() copies the pages into the graph's buffer itself
@@ -81,7 +92,9 @@ class DraftGraphs:
     def pick(self, b: int) -> int:
         return graph_set.pick(self.sizes, b)
 
-    def run(self, tokens: torch.Tensor, hidden: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, kv_all: list[torch.Tensor]):
+    def run(self, tokens: torch.Tensor, hidden: torch.Tensor, positions: torch.Tensor, pages: torch.Tensor, kv_all: list[torch.Tensor],
+            step: int = 0):
+        """One draft step (`step`: its index in the round, for the plan's pinned buffer)."""
         b = tokens.shape[0]
         size = self.pick(b)
         st = self._st[size]
@@ -94,7 +107,7 @@ class DraftGraphs:
             st["positions"][b:].zero_()
             st["pages"][b:].copy_(self.mtp.kv.pad_pages(size - b))  # distinct pages: rows writing one page race
         pad = [torch.zeros(2, dtype=torch.int32, device=self.device) for _ in range(size - b)]
-        self._plan(st, list(kv_all) + pad)
+        self._plan(st, list(kv_all) + pad, step)
         self._graphs[size].replay()
         self._last = size
         conf = st["out_confidence"]

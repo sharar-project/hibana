@@ -208,7 +208,7 @@ class MtpProposer:
         hidden, token = torch.cat(hids), inputs.tokens
         for j in range(1, depth + 1):
             kv = [f[:r.context_len - 2 + j] for f, r in zip(full, requests)]
-            hidden, token, conf, cand = self._step(token, hidden, positions[j - 1], step_pages[j - 1], kv, graphs, sampled)
+            hidden, token, conf, cand = self._step(token, hidden, positions[j - 1], step_pages[j - 1], kv, graphs, sampled, step=j - 1)
             if sampled:
                 token = self._draw(cand, requests, j - 1, laws, supports)
             drafts.append(token)
@@ -233,12 +233,12 @@ class MtpProposer:
             self._host_drafts[j, :token.shape[0]].copy_(token, non_blocking=True)
             self._draft_events[j].record()
 
-    def _step(self, tokens, hidden, positions, pages, kv, graphs, sampled=False):
+    def _step(self, tokens, hidden, positions, pages, kv, graphs, sampled=False, step=0):
         """One draft step: (hidden, argmax, confidence, candidates). Candidates (ids, logits) [b, r] only for a sampled
         batch, else None."""
         cand = None
         if graphs and self.graphs is not None:
-            hidden, token, conf = self.graphs.run(tokens, hidden, positions, pages, kv)
+            hidden, token, conf = self.graphs.run(tokens, hidden, positions, pages, kv, step=step)
             # graph outputs are borrowed until the next replay: the drafts are kept, the hidden row only feeds the next
             # step, whose run copies it into the graph's input before replaying
             token, conf = token.clone(), conf.clone() if conf is not None else None
