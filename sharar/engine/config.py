@@ -97,7 +97,7 @@ class EngineConfig:
     w3_warning: str | None = None             # SHARAR_W3_WARNING: why the launcher serves without the profile's calibrated copies
     stable_numerics: bool = False             # SHARAR_STABLE_NUMERICS: M-invariant prefill kernels
     gdn_prefill: str = "auto"                 # SHARAR_GDN_PREFILL: auto (CuTe on SM12x), cute, triton
-    ssm_state: str = "fp32"                   # SHARAR_SSM_STATE: recurrent state storage, fp32; int8 or int4 (LeapQuant per-window quantization, GDN or Mamba-2); Mamba-2 fp16_sr (FP16, stochastically rounded) (cache/ssm_format.py; lossy)
+    ssm_state: str = "fp32"                   # SHARAR_SSM_STATE: fp32 | int8, int4 (per-window, lossy) | fp16_sr (Mamba-2); cache/ssm_format.py
     ssm_window: int = 16                      # SHARAR_SSM_WINDOW: committed tokens per requantization (8, 16, 32)
     ssm_compensators: int | None = None       # SHARAR_SSM_COMPENSATORS: FP16 rank-one outlier terms kept beside the quantized state (0-16; unset: 4, or 8 for int4)
     flashnext_trunk: str = "fp8"              # SHARAR_FLASHNEXT_TRUNK: bf16 | fp8
@@ -107,8 +107,8 @@ class EngineConfig:
     # --- speculation
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
     spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
-    spec_step_cost: float = 0.0               # SHARAR_SPEC_STEP_COST: adaptive depth per request (engine/depth.AcceptanceDepth): one more drafted token's cost relative to a depth-1 round; SHARAR_SPEC is the cap (0: the fixed depth)
-    spec_policy: str = "fixed"                # SHARAR_SPEC_POLICY: fixed | budget (engine/depth.RowBudget: a scoring drafter's verified drafts from its scores and the measured costs, up to SHARAR_SPEC)
+    spec_step_cost: float = 0.0               # SHARAR_SPEC_STEP_COST: a drafted token's cost against a depth-1 round, for adaptive depth (engine/depth.py; 0: fixed)
+    spec_policy: str = "fixed"                # SHARAR_SPEC_POLICY: fixed | budget (engine/depth.RowBudget: verified drafts from scores and measured costs)
     draft_dir: str | None = None              # SHARAR_DRAFT
     host_floor_gib: float = HOST_FLOOR_KIB / 2**20  # SHARAR_HOST_FLOOR_GIB: MemAvailable the pools leave for the OS and other programs; admission holds and the guard acts under half of it
     draft_vocab: int = 0                      # SHARAR_DRAFT_VOCAB: reduced MTP draft vocabulary rows (0: full)
@@ -130,8 +130,8 @@ class EngineConfig:
     ssd_writers: int = 4                      # SHARAR_SSD_WRITERS: the store's writer threads (at least 1)
     ssd_staging_mib: int = 512                # SHARAR_SSD_STAGING_MIB: backup copies in flight to the writers
     ssd_chunk_mib: int = 256                  # SHARAR_SSD_CHUNK_MIB: each half of the restore staging buffer
-    verify_attention: str = "auto"            # SHARAR_VERIFY_ATTENTION: auto (the 27B's graph-bound verification of more than 8 rows a sequence, and its prefill against a cached prefix of at least 1K tokens, over an NVFP4 cache on kernels/csrc/verify_attn.cu) or fa2 (FlashInfer everywhere)
-    kv_format: str = "fp8"                    # SHARAR_KV_FORMAT: fp8 (the pool), nvfp4 (4.5 bits a value: the 27B 16/9 the tokens, Flash-Next ~1.4 beside its BF16 index keys; cache/kv_pool.py), or an accuracy screen: sim-fp4 / sim-k8v4 / sim-bf16 (a BF16 pool whose writes round through NVFP4; kernels/kv_fp4.py)
+    verify_attention: str = "auto"            # SHARAR_VERIFY_ATTENTION: auto (kernels/csrc/verify_attn.cu where the 27B's NVFP4 cache qualifies) | fa2 (FlashInfer)
+    kv_format: str = "fp8"                    # SHARAR_KV_FORMAT: fp8 | nvfp4 (4.5 bits a value) | sim-fp4, sim-k8v4, sim-bf16 (accuracy screens; kernels/kv_fp4.py)
     kv_pool_tokens: int | None = None         # SHARAR_KV_POOL_TOKENS: a fixed KV pool size, e.g. to compare the SSD tier on and off; unset: planned
     # --- traces
     traces: str | None = None                 # SHARAR_TRACES
@@ -140,8 +140,8 @@ class EngineConfig:
     # --- diagnostics and benchmark loader
     debug_sync: bool = False                  # SHARAR_DEBUG_SYNC
     bench_verify_state: str = "snapshots"     # SHARAR_BENCH_VERIFY_STATE
-    moe_keep: int = 0                         # SHARAR_MOE_KEEP=k: Flash-Next decode and verify forwards, the most top experts a token is guaranteed (alone: each token's top k); 0, or k of 10 and above: the served top-10
-    moe_budget: int = 0                       # SHARAR_MOE_BUDGET=[P:]B: with SHARAR_MOE_KEEP, a decode or verify forward reads at most B distinct experts, or min(B, P x its requests) (more only for the tokens' guaranteed experts): those with the most router probability across its tokens (model/flashnext/moe.py, route_budget); 0: off
+    moe_keep: int = 0                         # SHARAR_MOE_KEEP=k: top experts a token is guaranteed in decode and verify (0, or k >= the top-k: all)
+    moe_budget: int = 0                       # SHARAR_MOE_BUDGET=[P:]B: distinct experts a decode or verify forward reads, min(B, P x requests); 0: off (moe.py route_budget)
     moe_budget_per_request: int = 0           # the P of SHARAR_MOE_BUDGET=P:B
 
     def __post_init__(self) -> None:

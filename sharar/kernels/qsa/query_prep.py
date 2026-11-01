@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Experimental index-query prep/raw scatter; caller owns output and cache."""
+"""QSA index-query prep and raw scatter for the optimized prefill; caller owns output and cache."""
 from functools import lru_cache
 import math
 from pathlib import Path
@@ -15,7 +15,7 @@ def load_query_prep(build_directory=None):
     if build is not None:
         build.mkdir(parents=True, exist_ok=True)
     if torch.cuda.get_device_capability() != (12,1):
-        raise RuntimeError('query-prep experiment is compiled only for SM121')
+        raise RuntimeError('QSA query prep is compiled only for SM121')
     module = tvm_ffi.cpp.load('qsa_query_fp32_rope',
         sources=str(Path(__file__).parent/'csrc/query_prep.cu'),
         extra_cuda_cflags=CUDA_FLAGS,build_directory=str(build) if build is not None else None)
