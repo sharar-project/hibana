@@ -16,9 +16,11 @@
 //
 // `prefix_attn` runs the same tiles for a prefill chunk against its cached prefix (no causal mask), untransposed: a
 // block takes 128 consecutive (token, head) rows of one KV head's query group of a sequence, eight warps of 16 queries,
-// so every SM partition holds two of them and a converted tile serves a third more rows. Its merge folds in the chunk's
-// own causal attention (FlashInfer's ragged output and log-sum-exp), so the prefix needs no separate merge. GB10, a
-// 2,048-token chunk over an 8K prefix: 7.1 ms against 9.8 for FlashInfer's fa2 (42 -> 58 TFLOPS).
+// so every SM partition holds two of them and a converted tile serves a third more rows. The eight warps also load and
+// convert (at 255 registers a thread no producer warps fit), half of them converting after they compute so the
+// tensor cores stay busy. Its merge folds in the chunk's own causal attention (FlashInfer's ragged output and
+// log-sum-exp), so the prefix needs no separate merge. GB10, a 2,048-token chunk (a layer): 5.3 ms over an 8K prefix,
+// 74 ms over 128K (89 TFLOPS), against 9.9 and 161 for FlashInfer's fa2 and merge_state.
 
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
@@ -214,15 +216,17 @@ struct Tiles {
 
 // The pipeline over a chunk's `tiles` from page `lo`: STAGES - 1 raw tiles in flight; each iteration converts tile
 // it + 1 while it computes tile it, one barrier an iteration (it publishes tile it's conversion and frees tile it - 1's
-// raw stage and buffer). With PW producer warps (the MOVERS threads from `first`) the movers wait for their own copies
-// (one named barrier among them) and the compute warps never do; without, every warp loads, converts and computes.
-template <int PW, int MOVERS, class Compute>
+// raw stage and buffer).
+//
+// verify: PW producer warps (the MOVERS threads from `first`) load and convert, waiting for their own copies (one named
+// barrier among them); the compute warps never do.
+template <int MOVERS, class Compute>
 __device__ __forceinline__ void pipeline(const Tiles& tl, int first, int tiles, int lo, Compute compute) {
   const bool mover = static_cast<int>(threadIdx.x) >= first;
   int pg[Tiles::ITEMS<MOVERS>];  // producers: the pages of the next tile to load
   int lp[Tiles::LINES<MOVERS>];  // and of the next tile to prefetch into L2
   if (mover) {
-    if (PW && PREFETCH) {
+    if (PREFETCH) {
       for (int i = STAGES - 1; i < STAGES - 1 + PREFETCH; ++i) {
         tl.fetch_lines<MOVERS>(first, lo + i * BN, lp);
         tl.prefetch<MOVERS>(first, lp);
@@ -234,39 +238,59 @@ __device__ __forceinline__ void pipeline(const Tiles& tl, int first, int tiles, 
       if (i < tiles) tl.load<MOVERS>(first, i, lo + i * BN);
       cp_commit();
     }
-    if (PW) tl.fetch<MOVERS>(first, lo + (STAGES - 1) * BN, pg);
+    tl.fetch<MOVERS>(first, lo + (STAGES - 1) * BN, pg);
     cp_wait<STAGES - 2>();
-    if (PW) asm volatile("bar.sync 1, %0;" :: "n"(MOVERS));
+    asm volatile("bar.sync 1, %0;" :: "n"(MOVERS));
+    if (tiles > 0) tl.convert<MOVERS>(first, 0, 0);
   }
-  if (!PW) __syncthreads();
-  if (mover && tiles > 0) tl.convert<MOVERS>(first, 0, 0);
   for (int it = 0; it < tiles; ++it) {
-    if (PW) {
-      __syncthreads();  // tile it's conversion is published; tile it - 1's buffer and raw stage are free
-      if (mover) {
-        if (it + STAGES - 1 < tiles) {
-          tl.load<MOVERS>(first, (it + STAGES - 1) % STAGES, lo + (it + STAGES - 1) * BN, pg);
-          tl.fetch<MOVERS>(first, lo + (it + STAGES) * BN, pg);
-        }
-        if (PREFETCH && it + STAGES - 1 + PREFETCH < tiles) {
-          tl.prefetch<MOVERS>(first, lp);
-          tl.fetch_lines<MOVERS>(first, lo + (it + STAGES + PREFETCH) * BN, lp);
-        }
-        cp_commit();
-        cp_wait<STAGES - 2>();  // tile it + 1's raw rows
-        asm volatile("bar.sync 1, %0;" :: "n"(MOVERS));
-        if (it + 1 < tiles) tl.convert<MOVERS>(first, (it + 1) % STAGES, (it + 1) & 1);
-      } else {
-        compute(it & 1, lo + it * BN);
+    __syncthreads();  // tile it's conversion is published; tile it - 1's buffer and raw stage are free
+    if (mover) {
+      if (it + STAGES - 1 < tiles) {
+        tl.load<MOVERS>(first, (it + STAGES - 1) % STAGES, lo + (it + STAGES - 1) * BN, pg);
+        tl.fetch<MOVERS>(first, lo + (it + STAGES) * BN, pg);
       }
-    } else {
-      cp_wait<STAGES - 3 < 0 ? 0 : STAGES - 3>();  // tile it + 1's raw rows (and tile it's)
-      __syncthreads();
-      if (it + STAGES - 1 < tiles) tl.load<MOVERS>(first, (it + STAGES - 1) % STAGES, lo + (it + STAGES - 1) * BN);
+      if (PREFETCH && it + STAGES - 1 + PREFETCH < tiles) {
+        tl.prefetch<MOVERS>(first, lp);
+        tl.fetch_lines<MOVERS>(first, lo + (it + STAGES + PREFETCH) * BN, lp);
+      }
       cp_commit();
+      cp_wait<STAGES - 2>();  // tile it + 1's raw rows
+      asm volatile("bar.sync 1, %0;" :: "n"(MOVERS));
       if (it + 1 < tiles) tl.convert<MOVERS>(first, (it + 1) % STAGES, (it + 1) & 1);
+    } else {
       compute(it & 1, lo + it * BN);
     }
+  }
+}
+
+// prefix_attn: all THREADS load, convert and compute (its warps hold 255 registers, so no room for producers). Half
+// the warps (`early`) convert tile it + 1 before they compute tile it, half after, so an SM partition's two warps take
+// turns on the tensor cores instead of converting at once (32K prefix: 24.2 -> 19.4 ms); the pages of the next tile
+// to load are read a tile ahead.
+template <int THREADS, class Compute>
+__device__ __forceinline__ void prefix_pipeline(const Tiles& tl, int tiles, int lo, Compute compute, bool early) {
+  int pg[Tiles::ITEMS<THREADS>];
+#pragma unroll
+  for (int i = 0; i < STAGES - 1; ++i) {
+    if (i < tiles) tl.load<THREADS>(0, i, lo + i * BN);
+    cp_commit();
+  }
+  tl.fetch<THREADS>(0, lo + (STAGES - 1) * BN, pg);
+  cp_wait<STAGES - 2>();
+  __syncthreads();
+  if (tiles > 0) tl.convert<THREADS>(0, 0, 0);
+  for (int it = 0; it < tiles; ++it) {
+    cp_wait<0>();     // tile it + 1's raw rows
+    __syncthreads();  // tile it's conversion is published; tile it - 1's buffer and raw stage are free
+    if (it + STAGES - 1 < tiles) {
+      tl.load<THREADS>(0, (it + STAGES - 1) % STAGES, lo + (it + STAGES - 1) * BN, pg);
+      tl.fetch<THREADS>(0, lo + (it + STAGES) * BN, pg);
+    }
+    cp_commit();
+    if (early && it + 1 < tiles) tl.convert<THREADS>(0, (it + 1) % STAGES, (it + 1) & 1);
+    compute(it & 1, lo + it * BN);
+    if (!early && it + 1 < tiles) tl.convert<THREADS>(0, (it + 1) % STAGES, (it + 1) & 1);
   }
 }
 
@@ -341,8 +365,10 @@ __global__ void __launch_bounds__(W * 32, 1) prefix_kernel(const Params p) {
           mma_f16(s[j], qa[c + 1], b[2], b[3]);
         }
       }
-      // scale, mask, online softmax (rows g: s[.][0..1]; g + 8: s[.][2..3])
+      // scale, mask the pages past the chunk (only a last tile has them; a query past the rows, Q zero, needs none:
+      // its output is never written), online softmax (rows g: s[.][0..1]; g + 8: s[.][2..3])
       float mnew[2] = {mrow[0], mrow[1]};
+      const bool tail = start + BN > hi;
 #pragma unroll
       for (int j = 0; j < BN / 8; ++j) {
 #pragma unroll
@@ -350,7 +376,7 @@ __global__ void __launch_bounds__(W * 32, 1) prefix_kernel(const Params p) {
           const int h = e >> 1;
           const int tok = start + j * 8 + 2 * t + (e & 1);
           const float x = s[j][e] * p.scale_log2;
-          s[j][e] = (tok < hi && live[h]) ? x : -INFINITY;
+          s[j][e] = !tail || tok < hi ? x : -INFINITY;
           mnew[h] = fmaxf(mnew[h], s[j][e]);
         }
       }
@@ -379,10 +405,13 @@ __global__ void __launch_bounds__(W * 32, 1) prefix_kernel(const Params p) {
         rsum[h] += __shfl_xor_sync(0xffffffffu, rsum[h], 2);
         lrow[h] = lrow[h] * alpha[h] + rsum[h];
       }
+      // (exact to skip: a warp none of whose maxima moved scales by 1)
+      if (__any_sync(0xffffffffu, alpha[0] != 1.f || alpha[1] != 1.f)) {
 #pragma unroll
-      for (int n = 0; n < D / 8; ++n) {
-        acc[n][0] *= alpha[0]; acc[n][1] *= alpha[0];
-        acc[n][2] *= alpha[1]; acc[n][3] *= alpha[1];
+        for (int n = 0; n < D / 8; ++n) {
+          acc[n][0] *= alpha[0]; acc[n][1] *= alpha[0];
+          acc[n][2] *= alpha[1]; acc[n][3] *= alpha[1];
+        }
       }
       // O += P V: P's accumulators are the A fragments of k16 steps (pages 16 kk .. 16 kk + 15)
 #pragma unroll
@@ -406,7 +435,7 @@ __global__ void __launch_bounds__(W * 32, 1) prefix_kernel(const Params p) {
       }
     }
   };
-  pipeline<0, W * 32>(tl, 0, tiles, lo, compute);
+  prefix_pipeline<W * 32>(tl, tiles, lo, compute, (warp & 4) == 0);
   if (!warp_live) return;
   // the chunk's normalized output and log-sum-exp (base 2) a query
 #pragma unroll
@@ -438,7 +467,8 @@ __device__ __forceinline__ uint32_t movt(uint32_t x) {
 // warps load and convert the tiles.
 template <int W, int PW>
 __global__ void __launch_bounds__((W + PW) * 32, 1) verify_kernel(const Params p) {
-  constexpr int MOVERS = (PW ? PW : W) * 32, FIRST = PW ? W * 32 : 0;  // the threads that load and convert
+  static_assert(PW > 0, "verify: producer warps load and convert");
+  constexpr int MOVERS = PW * 32, FIRST = W * 32;  // the threads that load and convert
   extern __shared__ __align__(16) uint8_t smem[];
   const int seq = blockIdx.x, kvh = blockIdx.y, split = blockIdx.z;
   const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
@@ -570,7 +600,7 @@ __global__ void __launch_bounds__((W + PW) * 32, 1) verify_kernel(const Params p
       }
     }
   };
-  pipeline<PW, MOVERS>(tl, FIRST, tiles, lo, compute);
+  pipeline<MOVERS>(tl, FIRST, tiles, lo, compute);
   if (!warp_live) return;
   // the chunk's normalized output and log-sum-exp (base 2) a query
 #pragma unroll
