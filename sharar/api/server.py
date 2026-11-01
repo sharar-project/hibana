@@ -390,6 +390,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         messages = body.get("messages") or []
         if not messages:
             raise HTTPException(400, "messages required")
+        messages = _text_only(messages)
         kwargs, thinking = _template_kwargs(body)
         tools = None if body.get("tool_choice") == "none" else body.get("tools")  # "none": generate without tool schemas
         messages, stopped = _guard(messages, body)
@@ -650,6 +651,27 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         return await _messages_errors(count, http)
 
     return app
+
+
+_OPENAI_MEDIA = ("image_url", "input_audio", "file", "image")
+
+
+def _text_only(messages: list) -> list:
+    """The served models read text only. A media part a tool returned becomes the note the Messages API uses (an agent
+    reading a PNG keeps going); one anywhere else is a 400, not a reply about content the model never saw."""
+    out = []
+    for i, message in enumerate(messages):
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list) or not any(isinstance(p, dict) and p.get("type") in _OPENAI_MEDIA for p in content):
+            out.append(message)
+            continue
+        if message.get("role") != "tool":
+            kind = next(p["type"] for p in content if isinstance(p, dict) and p.get("type") in _OPENAI_MEDIA)
+            raise InvalidRequest(f"messages[{i}]: {kind} content is not supported; this server runs a text-only model")
+        content = [{"type": "text", "text": messages_api.MEDIA_NOTE.format(kind="image" if "image" in p["type"] else p["type"])}
+                   if isinstance(p, dict) and p.get("type") in _OPENAI_MEDIA else p for p in content]
+        out.append({**message, "content": content})
+    return out
 
 
 def _text_of(content) -> str:

@@ -14,7 +14,10 @@ from sharar.weights.modelopt import unswizzle_block_scales
 
 @pytest.fixture(scope='module')
 def draft():
-    snap = draft_snapshot('dflash2', None, NEMOTRON_BOLT)
+    try:
+        snap = draft_snapshot('dflash2', None, NEMOTRON_BOLT)
+    except FileNotFoundError as exc:
+        pytest.skip(str(exc))
     if not (snap / 'model.safetensors').is_file():
         pytest.skip('pinned Bolt LiLiCorr snapshot is not cached')
     target = SimpleNamespace(device=torch.device('cuda'), target=NEMOTRON_BOLT,
