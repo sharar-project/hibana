@@ -202,7 +202,7 @@ captured graph per batch bucket of each verify depth: it decides acceptance with
 (`engine/accept.py`) from the verify graph's static outputs, reconstructs the state and commits the convolution
 windows for exactly those counts, and calls the proposer's `feedback_device`; the host reads one packed result and
 only publishes. All-greedy batches take it; all-sampled batches of MTP drafts (point masses, or sampled drafts with q on
-`SHARAR_MTP_SAMPLE_CANDIDATES` candidates; `top_k` at most 64, no
+the draft head's 16 candidates; `top_k` at most 64, no
 constraint) first replay a decision graph and fall back to the host when a row's distribution does not fit its
 candidates. Mixed batches, requests with more than `accept.MAX_STOPS` stop token ids and other proposers stay on the
 host path.

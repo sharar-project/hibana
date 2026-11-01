@@ -225,21 +225,20 @@ A new lossy option enters `fast` (and so `throughput`) only through the lossy-ch
 ### Sampled MTP drafts
 
 With `SHARAR_MTP_SAMPLE=1` a batch with a sampled request does not draft the MTP head's argmax: each step draws its
-draft from the request's own law (its temperature, top-k and top-p; `SHARAR_MTP_DRAFT_TEMPERATURE` multiplies the
-temperature) over the draft head's `SHARAR_MTP_SAMPLE_CANDIDATES` (16) best tokens, on Flash-Next and Nemotron the 2-bit
-head's shortlist rescored by the target's FP8 rows. The draw is a Philox uniform at the request's draft offset
+draft from the request's own law (its temperature, top-k and top-p) over the draft head's 16 best tokens, on
+Flash-Next and Nemotron the 2-bit head's shortlist rescored by the target's FP8 rows. The draw is a Philox uniform at the request's draft offset
 (engine/sampling_rng.py), so a seeded request stays reproducible; the drafted token feeds the next MTP step. The
 verifier gets that law q and its candidates and accepts each draft with probability min(1, p/q), sampling the
 residual max(p - q, 0) at the first rejection (engine/rejection.py; on the device with `SHARAR_DEVICE_ACCEPT`): what is
 emitted is the target's law p whatever q is, and a token outside the candidates still comes out through the residual.
-An argmax draft is accepted with probability p(argmax); a sampled one with sum over tokens of min(p, q).
+An argmax draft is accepted with probability p(argmax); a sampled one with sum over tokens of min(p, q). The sampled
+rule s tests the draft against the same q (u · q(y) < e^s · p(y)), so its bound holds as with any drafter.
 
 Measured on the SGLang port (Flash-Next QAD 3-bit, MTP depth 4, H100, 40 GPQA-Diamond prompts, T 1.0, top-p 0.95,
-top-k 20), tokens a round: argmax drafts 2.55 exact, 4.17 relaxed 3:2.0; sampled drafts 3.13 exact (3.15 on the
-head's top 16, 3.07-3.13 at draft temperature 0.8-1.3); +16-19% tok/s at 4 and 16 requests over argmax exact. The
-relaxed rule is faster but its sampled output moves toward the argmax (GPQA-D at 256K, 4 requests: 73.7% against 90.9%
-exact, 50 answers cut at the length cap), so the profiles verify sampled MTP drafts exactly. Greedy requests are
-unchanged (argmax drafts and `SHARAR_ACCEPT_DEFAULT`).
+top-k 20), tokens a round: argmax drafts 2.55 exact; sampled drafts 3.13 exact (3.15 on the head's top 16, 3.07-3.13 at
+draft temperatures 0.8-1.3, so drafts use the request's own); +16-19% tok/s at 4 and 16 requests over argmax exact.
+On one Spark (Flash-Next `fast`, sampled with thinking on, 4 requests) sampled drafts decode 183 tok/s exact and 216 at
+the profile's s = 0.5. Greedy requests are unchanged (argmax drafts and `SHARAR_ACCEPT_DEFAULT`).
 
 ## Request traces
 

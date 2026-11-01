@@ -26,22 +26,20 @@ def test_settings_parse_and_validate():
 
 
 @pytest.mark.parametrize("profile", ["fast", "throughput"])
-def test_mtp_profiles_sample_their_drafts_and_verify_sampled_requests_exactly(profile):
+def test_mtp_profiles_sample_their_drafts(profile):
     for p in (launch.profile_defaults(profile, "flashnext"), launch.profile_defaults(profile, "flashnext", proposer="mtp"),
               launch.profile_defaults(profile, "qwen38", proposer="mtp"), launch.profile_defaults(profile, "nemotron")):
-        assert p["SHARAR_MTP_SAMPLE"] == "1" and p["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "0", p
-        assert "SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD" not in p
+        assert p["SHARAR_MTP_SAMPLE"] == "1", p
         assert p["SHARAR_ACCEPT_DEFAULT"] == "3:2.0"  # greedy requests keep the relaxed rule
-    # DFlash2 drafts are sampled already: its sampled rule is unchanged
+    # DFlash2 drafts are sampled already
     for p in (launch.profile_defaults(profile, "flashnext", proposer="dflash2"), launch.profile_defaults(profile, "qwen38")):
-        assert "SHARAR_MTP_SAMPLE" not in p and p["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "1"
-    assert launch.profile_defaults(profile, "qwen38")["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] == "2:1.0"
+        assert "SHARAR_MTP_SAMPLE" not in p
 
 
 def test_exact_profiles_keep_argmax_drafts():
     for target in ("flashnext", "qwen38", "nemotron"):
         p = launch.profile_defaults("exact", target)
-        assert "SHARAR_MTP_SAMPLE" not in p and p["SHARAR_ACCEPT_DEFAULT_SAMPLED"] == "0"
+        assert "SHARAR_MTP_SAMPLE" not in p and p["SHARAR_ACCEPT_SOFT"] == "0"
 
 
 def test_target_head_candidates_are_its_best_logits():
