@@ -35,16 +35,14 @@ def _sigmoid(x):
 
 
 @triton.jit
-def _stream(R, B, I, Y, W, Rstd, t, s: tl.constexpr, stride_r, stride_b, stride_y, H: tl.constexpr, eps, HAS_B: tl.constexpr,
-            BLOCK: tl.constexpr):
-    """Stream s of row t: hyper' (stored when HAS_B), its norm (returned as the BF16 value in FP32), 1/rms stored."""
+def _stream(I, Y, W, Rstd, t, s: tl.constexpr, x, b, stride_y, H: tl.constexpr, eps, HAS_B: tl.constexpr, BLOCK: tl.constexpr):
+    """Stream s of row t, x its loaded values (FP32): hyper' (stored when HAS_B), its norm (returned as the BF16 value
+    in FP32), 1/rms stored."""
     cols = tl.arange(0, BLOCK)
     mask = cols < H
     off = s * H + cols
-    x = tl.load(R + t * stride_r + off, mask=mask, other=0.0).to(tl.float32)
     if HAS_B:
         g = 2.0 * _sigmoid(tl.load(I + t * 4 + s))
-        b = tl.load(B + t * stride_b + cols, mask=mask, other=0.0).to(tl.float32)
         hb = (x + b * g).to(tl.bfloat16)
         tl.store(Y + t * stride_y + off, hb, mask=mask)
         x = hb.to(tl.float32)
@@ -77,10 +75,20 @@ def _quant_store(NQ, n, t, s: tl.constexpr, inv, stride_q, H: tl.constexpr, BLOC
 def _combine_norm_kernel(R, B, I, Y, W, WI, NQ, XS, Rstd, Inj, stride_r, stride_b, stride_y, stride_q, H: tl.constexpr, eps,
                          HAS_B: tl.constexpr, HAS_INJ: tl.constexpr, BLOCK: tl.constexpr):
     t = tl.program_id(0)
-    n0 = _stream(R, B, I, Y, W, Rstd, t, 0, stride_r, stride_b, stride_y, H, eps, HAS_B, BLOCK)
-    n1 = _stream(R, B, I, Y, W, Rstd, t, 1, stride_r, stride_b, stride_y, H, eps, HAS_B, BLOCK)
-    n2 = _stream(R, B, I, Y, W, Rstd, t, 2, stride_r, stride_b, stride_y, H, eps, HAS_B, BLOCK)
-    n3 = _stream(R, B, I, Y, W, Rstd, t, 3, stride_r, stride_b, stride_y, H, eps, HAS_B, BLOCK)
+    # the row's four streams and the block output are loaded before any store (a store would order the loads after it)
+    cols = tl.arange(0, BLOCK)
+    mask = cols < H
+    x0 = tl.load(R + t * stride_r + cols, mask=mask, other=0.0).to(tl.float32)
+    x1 = tl.load(R + t * stride_r + H + cols, mask=mask, other=0.0).to(tl.float32)
+    x2 = tl.load(R + t * stride_r + 2 * H + cols, mask=mask, other=0.0).to(tl.float32)
+    x3 = tl.load(R + t * stride_r + 3 * H + cols, mask=mask, other=0.0).to(tl.float32)
+    b = x0
+    if HAS_B:
+        b = tl.load(B + t * stride_b + cols, mask=mask, other=0.0).to(tl.float32)
+    n0 = _stream(I, Y, W, Rstd, t, 0, x0, b, stride_y, H, eps, HAS_B, BLOCK)
+    n1 = _stream(I, Y, W, Rstd, t, 1, x1, b, stride_y, H, eps, HAS_B, BLOCK)
+    n2 = _stream(I, Y, W, Rstd, t, 2, x2, b, stride_y, H, eps, HAS_B, BLOCK)
+    n3 = _stream(I, Y, W, Rstd, t, 3, x3, b, stride_y, H, eps, HAS_B, BLOCK)
     if HAS_INJ:
         tl.store(Inj + t * 4 + 0, _inject_dot(WI, 0, n0, n1, n2, n3, H, BLOCK))
         tl.store(Inj + t * 4 + 1, _inject_dot(WI, 1, n0, n1, n2, n3, H, BLOCK))
@@ -118,7 +126,7 @@ def combine_norm(hyper: torch.Tensor, block: torch.Tensor | None, inj: torch.Ten
 
 @triton.jit
 def _up_gate_mean_kernel(A, Wq, WS, Hp, Rstd, Nw, Out, Amax, T, stride_a, stride_w, stride_h, stride_o, H: tl.constexpr, K: tl.constexpr,
-                         BM: tl.constexpr, BN: tl.constexpr, KP: tl.constexpr):
+                         BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr):
     pm = tl.program_id(0)
     pn = tl.program_id(1)
     rm = pm * BM + tl.arange(0, BM)
@@ -126,16 +134,15 @@ def _up_gate_mean_kernel(A, Wq, WS, Hp, Rstd, Nw, Out, Amax, T, stride_a, stride
     mm = rm < T
     mn = rn < H
     ws = tl.load(WS)
-    # the activations once per program: the first KP columns and the (at most 64) after them
-    k1 = tl.arange(0, KP)
-    k2 = KP + tl.arange(0, 64)
-    a1 = tl.load(A + rm[:, None] * stride_a + k1[None, :], mask=mm[:, None], other=0.0)
-    a2 = tl.load(A + rm[:, None] * stride_a + k2[None, :], mask=mm[:, None] & (k2[None, :] < K), other=0.0)
     mix = tl.zeros((BM, BN), dtype=tl.float32)
     for s in tl.static_range(4):
-        w1 = tl.load(Wq + (s * H + rn)[None, :] * stride_w + k1[:, None], mask=mn[None, :], other=0.0)
-        w2 = tl.load(Wq + (s * H + rn)[None, :] * stride_w + k2[:, None], mask=mn[None, :] & (k2[:, None] < K), other=0.0)
-        acc = tl.dot(a2, w2.to(tl.bfloat16), tl.dot(a1, w1.to(tl.bfloat16)))
+        # BK columns of K at a time (a pipelined loop): the products accumulate in the same order as one dot over K
+        acc = tl.zeros((BM, BN), dtype=tl.float32)
+        for k0 in tl.range(0, K, BK):
+            kk = k0 + tl.arange(0, BK)
+            a = tl.load(A + rm[:, None] * stride_a + kk[None, :], mask=mm[:, None] & (kk[None, :] < K), other=0.0)
+            w = tl.load(Wq + (s * H + rn)[None, :] * stride_w + kk[:, None], mask=mn[None, :] & (kk[:, None] < K), other=0.0)
+            acc = tl.dot(a, w.to(tl.bfloat16), acc)
         u = (acc * ws).to(tl.bfloat16).to(tl.float32)
         x = tl.load(Hp + rm[:, None] * stride_h + (s * H + rn)[None, :], mask=mm[:, None] & mn[None, :], other=0.0).to(tl.float32)
         r = tl.load(Rstd + rm * 4 + s, mask=mm, other=0.0)
@@ -156,15 +163,14 @@ def up_gate_mean(a: torch.Tensor, up_w: torch.Tensor, up_scale: torch.Tensor, hy
     -> (mixed, the max |mixed| of each output tile, fp32)."""
     t, k = a.shape
     assert up_w.shape == (4 * hidden, k) and a.stride(1) == 1 and up_w.stride(1) == 1
-    kp = triton.next_power_of_2(k) // 2 if k & (k - 1) else k
-    assert k - kp <= 64 or kp == k, "the kernel splits K into a power of two and at most 64 more"
-    # 32 x 64 tiles: larger ones spill (the four streams' accumulators and the hoisted activations)
+    # 32 x 64 tiles, K 64 at a time in three stages (8,192 rows: 1.68 -> 1.30 ms against hoisting all of K;
+    # larger tiles spill or lose occupancy)
     bm, bn = 32, 64
     grid = (triton.cdiv(t, bm), triton.cdiv(hidden, bn))
     out = torch.empty((t, hidden), dtype=torch.bfloat16, device=a.device)
     parts = torch.empty((grid[0] * grid[1],), dtype=torch.float32, device=a.device)
     _up_gate_mean_kernel[grid](a, up_w, up_scale, hyper, rstd, norm, out, parts, t, a.stride(0), up_w.stride(0), hyper.stride(0), out.stride(0),
-                               hidden, k, BM=bm, BN=bn, KP=kp, num_warps=4, num_stages=2)
+                               hidden, k, BM=bm, BN=bn, BK=64, num_warps=4, num_stages=3)
     return out, parts
 
 
