@@ -12,8 +12,8 @@ evicted prefixes) and a 262K context: the Qwen models on one Spark or two, the N
 - NVIDIA driver 580 or newer and the CUDA 13 toolkit in `/usr/local/cuda` (DGX OS ships it; the GB10 kernels compile
   on first use).
 - [uv](https://docs.astral.sh/uv/), which installs the tested Python 3.12.
-- Disk for the model cache: about 26 GB for the 27B and 135 GB for Flash-Next, plus 10 GiB that the download check
-  keeps spare ([operations](docs/operations.md#prerequisites)).
+- Disk for the model cache: about 26 GB for the 27B, 135 GB for Flash-Next, 75 GB for Nemotron Super and 25 GB for
+  Bolt, plus 10 GiB that the download check keeps spare ([operations](docs/operations.md#prerequisites)).
 
 ## Quick start
 
@@ -30,12 +30,13 @@ In another terminal:
 
 ```bash
 uv run sharar chat            # chat in the terminal
-uv run sharar launch claude   # Claude Code on the model (also opencode, aider, codex; `show` for other tools)
+uv run sharar launch claude   # Claude Code on the model (also opencode, aider; `show` for other tools)
 ```
 
 (`source .venv/bin/activate` lets you drop the `uv run`.) The first serve downloads the model (26 GB for the 27B,
-135 GB for Flash-Next) and its calibrated 3-bit checkpoint. Any OpenAI-compatible client works against
-`http://127.0.0.1:30001/v1`, and Anthropic clients against `http://127.0.0.1:30001` ([API](docs/api.md)).
+135 GB for Flash-Next, 75 GB for Nemotron Super, 25 GB for Bolt) and its calibrated 3-bit checkpoint (Bolt publishes
+none: [Bolt](docs/bolt.md)). Any OpenAI-compatible client works against `http://127.0.0.1:30001/v1`, and Anthropic
+clients against `http://127.0.0.1:30001` ([API](docs/api.md)).
 
 ## Commands
 
@@ -49,7 +50,7 @@ uv run sharar launch claude   # Claude Code on the model (also opencode, aider, 
 | `sharar serve 27b --tp 2` | Tensor-parallel on two Sparks linked by their ConnectX ports ([tensor parallel](docs/tensor-parallel.md)) |
 | `sharar status` | What is serving, with which settings |
 | `sharar cache` | What is cached on the GPU and on the SSD tier (`$SHARAR_RESULTS/ssd/<target>`, up to `SHARAR_SSD_GIB`) |
-| `sharar chat`, `sharar launch claude\|opencode\|aider\|codex\|show` | Use the serving model |
+| `sharar chat`, `sharar launch claude\|opencode\|aider\|show` | Use the serving model |
 
 `sharar <command> --help` lists the options. Settings (cache and results locations, profiles, ports) are flags, then
 `SHARAR_*` environment variables, then an optional `config/gb10.env` ([example](config/gb10.env.example),

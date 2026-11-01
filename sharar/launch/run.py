@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from sharar.launch import ctl, guard, preflight, service
-from sharar.launch.settings import SERVED, Settings, resolve
+from sharar.launch.settings import SERVE_HINT, SERVED, Settings, config_file, read_config_file, resolve
 
 
 def engine_runtime_env() -> dict[str, str]:
@@ -52,6 +52,9 @@ def settings_for(args, **kw) -> Settings:
 
 
 def serve(args) -> int:
+    if not args.target and not (os.environ.get("SHARAR_TARGET") or read_config_file(config_file()).get("SHARAR_TARGET")):
+        # serving takes the GPU and may start a download of 26-135 GB: only on a model someone named
+        sys.exit("sharar serve: name a model: 27b, flashnext, nemotron or bolt (or set SHARAR_TARGET)")
     try:
         s = settings_for(args, traces=args.traces, tp=args.tp)
     except ValueError as exc:
@@ -139,7 +142,7 @@ def status(args) -> int:
         traces = (info.get("scheduler") or {}).get("traces") or info.get("traces")
         print(f"  traces: {traces['records']} recorded, {traces['bytes'] / 2**20:.0f} MiB" if traces else "  traces: off")
     if not any_up:
-        print("nothing is serving (sharar serve 27b, flashnext or nemotron)")
+        print(f"nothing is serving ({SERVE_HINT})")
     return 0
 
 

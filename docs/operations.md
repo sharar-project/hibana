@@ -20,7 +20,7 @@ drafter `incoai/Qwen3.8-27B-DFlash2` at `dedf8df`), `flashnext` (`RadixArk/Qwen3
 `7b71922`, its own MTP head, or the DFlash2 drafter `incoai/Qwen3.8-Flash-Next-DFlash2` at `a22a174` on one Spark),
 and on one Spark `nemotron` ([Nemotron 3.5 Super](nemotron.md)) and `bolt` ([Nemotron 3.5 Bolt](bolt.md)).
 `sharar serve` downloads whatever the cache lacks (about 26 GB for the 27B, 135 GB for
-Flash-Next) after checking free disk; serving itself runs offline.
+Flash-Next, 75 GB for Nemotron Super, 25 GB for Bolt) after checking free disk; serving itself runs offline.
 
 ## Install and serve
 

@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from sharar.launch.settings import Settings, model_config
+from sharar.launch.settings import SERVE_HINT, Settings, model_config
 
 
 def server_info(port: str) -> dict | None:
@@ -62,7 +62,7 @@ def cmd_launch(args, s: Settings, dry: bool = False) -> int:
             info = json.loads(r.read())
     except Exception:  # noqa: BLE001 - not serving
         if not dry:
-            sys.exit(f"nothing is serving at {url}: sharar serve 27b (or flashnext, nemotron) first")
+            sys.exit(f"nothing is serving at {url}: {SERVE_HINT} first")
         info = {}
     context = int(info.get("context_length", 262144))
     alias, display = ALIASES[s.target]
