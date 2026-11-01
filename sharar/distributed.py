@@ -162,6 +162,16 @@ def all_reduce_min(*values: int) -> list[int]:
     return t.tolist()
 
 
+def all_reduce_max(values: list[float]) -> list[float]:
+    """The element-wise maximum over ranks of host-side floats: one value every rank measured on its own GPU (the
+    depth policy's costs and round times; a tensor-parallel round takes the slower rank's time)."""
+    if _TP_INFO.size == 1:
+        return list(values)
+    t = torch.tensor(values, dtype=torch.float64, device="cuda")
+    dist.all_reduce(t, op=dist.ReduceOp.MAX)
+    return t.tolist()
+
+
 def common_values(values: list[int]) -> list[int]:
     """The values every rank holds, in this rank's order: the SSD tier's stored prefixes after a restart (no rank
     restores a prefix another rank lacks)."""

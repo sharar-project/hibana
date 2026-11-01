@@ -390,6 +390,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         messages = body.get("messages") or []
         if not messages:
             raise HTTPException(400, "messages required")
+        messages = _text_only(messages)
         kwargs, thinking = _template_kwargs(body)
         tools = None if body.get("tool_choice") == "none" else body.get("tools")  # "none": generate without tool schemas
         messages, stopped = _guard(messages, body)
@@ -569,7 +570,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             raise InvalidRequest(f"prompt is too long: {len(ids)} tokens > {limit - 1} maximum")
         if isinstance(max_tokens, (int, float)) and not isinstance(max_tokens, bool):
             max_tokens = min(max_tokens, limit - len(ids))  # clients size max_tokens for a larger window
-        sampling = {k: body[k] for k in ("temperature", "top_p", "top_k", "trace", "accept_top_k", "accept_margin") if k in body}
+        sampling = {k: body[k] for k in ("temperature", "top_p", "top_k", "trace", "accept_top_k", "accept_margin", "accept_soft") if k in body}
         # Anthropic's default temperature, and both targets' generation_config (top_p 0.95 and top_k 20 are the
         # chat defaults). Claude Code sends no sampling fields; greedy thinking looped to max_tokens in its sessions.
         sampling.setdefault("temperature", 1.0)
@@ -650,6 +651,27 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         return await _messages_errors(count, http)
 
     return app
+
+
+_OPENAI_MEDIA = ("image_url", "input_audio", "file", "image")
+
+
+def _text_only(messages: list) -> list:
+    """The served models read text only. A media part a tool returned becomes the note the Messages API uses (an agent
+    reading a PNG keeps going); one anywhere else is a 400, not a reply about content the model never saw."""
+    out = []
+    for i, message in enumerate(messages):
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list) or not any(isinstance(p, dict) and p.get("type") in _OPENAI_MEDIA for p in content):
+            out.append(message)
+            continue
+        if message.get("role") != "tool":
+            kind = next(p["type"] for p in content if isinstance(p, dict) and p.get("type") in _OPENAI_MEDIA)
+            raise InvalidRequest(f"messages[{i}]: {kind} content is not supported; this server runs a text-only model")
+        content = [{"type": "text", "text": messages_api.MEDIA_NOTE.format(kind="image" if "image" in p["type"] else p["type"])}
+                   if isinstance(p, dict) and p.get("type") in _OPENAI_MEDIA else p for p in content]
+        out.append({**message, "content": content})
+    return out
 
 
 def _text_of(content) -> str:
@@ -761,14 +783,13 @@ def _persist_prefixes(ex, engine, log) -> None:
 def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp", state_strategy: str = "snapshots", draft_precision: str = 'bf16',
           traces: str | None = None, traces_max_mib: int = 32768, draft_dir: str | None = None,
           accept_default: tuple[int, float] = (1, 0.0), target: str | None = None, max_context: int | None = None,
-          accept_default_sampled: bool | tuple[int, float] = False, max_batch: int = 4) -> None:
+          max_batch: int = 4, accept_soft: float = 0.0) -> None:
     from sharar.cache.spec_budget import SpecConfig
     from sharar.api.validation import set_accept_default
 
-    if accept_default != (1, 0.0) and not spec:
+    if (accept_default != (1, 0.0) or accept_soft) and not spec:
         raise ValueError('a relaxed acceptance default requires speculation')
-    set_accept_default(*accept_default, sampled=accept_default_sampled)
-    from sharar.api.validation import ACCEPT_DEFAULT_SAMPLED as sampled_threshold
+    set_accept_default(*accept_default, soft=accept_soft)
 
     if not spec and draft_precision != 'bf16':
         raise ValueError('draft precision requires speculation')
@@ -846,8 +867,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
                         "draft_precision": draft_precision, "draft": getattr(ex.spec.proposer.model, "source", None)
                         if hasattr(ex.spec.proposer, "model") else None,
                         "accept_default": {"accept_top_k": accept_default[0], "accept_margin": accept_default[1],
-                                           "sampled": sampled_threshold != (1, 0.0), "sampled_accept_top_k": sampled_threshold[0],
-                                           "sampled_accept_margin": sampled_threshold[1]}} if spec else None,
+                                           "accept_soft": accept_soft}} if spec else None,
         "attention_backend": "flashinfer",
         # the chunked GDN prefill (kernels/gdn_prefill.backend): CuTe on SM12x for the FP32 state, else Triton
         "gdn_backend": current().gdn_prefill if current().gdn_prefill != "auto" else

@@ -114,6 +114,9 @@ def main():
         # Compiles anything new at this batch size; short prompts, since only the shapes matter.
         ex.generate_batch([(prompts[i][:512], SamplingParams(max_new_tokens=32, ignore_eos=True)) for i in range(b)])
         p = point(ex, prompts, b, args, params)
+        budget = ex.spec.stats().get("budget") if ex.spec is not None else None
+        if budget is not None:
+            p["budget"] = budget  # what adaptive verification learned so far
         out["points"].append(p)
         print(f"[{out['ssm_state']}] batch {b:2d}: {p['tok_s']:.1f} tok/s, {p['ms_per_round']:.1f} ms/round, "
               f"{p['tokens_per_request_round']:.2f} tokens/request/round ({p['rounds']} rounds, {p['prompts']} prompts)", flush=True)

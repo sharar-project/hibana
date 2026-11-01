@@ -10,7 +10,7 @@
   environment (and the user's config file), from this checkout's engine and Python environment (`uv sync --frozen`).
   The run records the commit; uncommitted engine changes are refused unless --allow-dirty (and then recorded as a
   hash). To evaluate another revision, run this tool from a worktree of it.
-- **What runs.** sharar-eval (the `eval` extra of this environment, or a checkout with `--evals`) against the server:
+- **What runs.** sharar-eval (the `eval` group of this environment, or a checkout with `--evals`) against the server:
   - `--suite quick|full|hard|long|agentic|all`, or `--tasks a,b` with `--limit N` (`evals.suite`); `--max-tokens N`
     replaces every task's token cap (a capped answer scores as wrong; needs sharar-eval with `run --max-tokens`);
     `--thinking` (`--reasoning-effort`), `--temperature T` and `--seed S` set the suite's requests (default greedy,
@@ -31,7 +31,7 @@
 - **`--baseline DIR`.** An earlier evaluate output directory. The suite is paired with it item by item
   (`evals.suite compare`), and speed reuses its frozen inputs and reports the TPS change.
 
-This reuses the lossy gate's served-arm machinery (tools/lossy-gate.py: settings resolution,
+This reuses the lossy gate's served-arm machinery (tools/lossy_gate.py: settings resolution,
 GPU window, memory-floor watch, suite runner) without its in-process configuration check: there is
 no in-process arm to compare with, so /get_server_info is recorded instead.
 """
@@ -39,27 +39,17 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
 import time
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-
-
-def load_gate():
-    loader = SourceFileLoader("lossy_gate", str(REPO / "tools" / "lossy-gate.py"))
-    module = importlib.util.module_from_spec(importlib.util.spec_from_loader("lossy_gate", loader))
-    loader.exec_module(module)
-    return module
-
-
-gate = load_gate()
+sys.path.insert(0, str(REPO / "tools"))  # tools/lossy_gate.py, whose served-arm machinery this reuses
+import lossy_gate as gate  # noqa: E402
 log = gate.log
 
 
@@ -112,7 +102,7 @@ def main(argv=None) -> int:
     ap.add_argument("--baseline", type=Path, default=None, help="an earlier evaluate output directory to pair with")
     ap.add_argument("--port", type=int, default=30200, help="30200-30299")
     ap.add_argument("--evals", type=Path, default=Path(os.environ["SHARAR_EVALS"]) if os.environ.get("SHARAR_EVALS") else None,
-                    help="a sharar-eval checkout to run instead of the eval extra (default: SHARAR_EVALS, else the extra)")
+                    help="a sharar-eval checkout to run instead of the eval group (default: SHARAR_EVALS, else the group)")
     ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
                     help="sharar-eval's Python (default: this environment's, or the checkout's .venv)")
     ap.add_argument("--hold-hours", type=float, default=48, help="longest GPU window")
@@ -168,7 +158,7 @@ def main(argv=None) -> int:
     if args.dry_run:
         print(json.dumps({"run_dir": str(run_dir), "engine": engine, **manifest}, indent=1))
         return 0
-    if ev["label"] != "eval extra":  # the extra's sync ran in gate.sharar_eval; a checkout's run keeps whatever is installed
+    if ev["label"] != "eval group":  # the group's sync ran in gate.sharar_eval; a checkout's run keeps whatever is installed
         subprocess.run([gate.shutil.which("uv") or str(Path.home() / ".local" / "bin" / "uv"), "sync", "--frozen", "--quiet",
                         "--inexact"], cwd=REPO, env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(gate.VENV)}, check=True)
     run_dir.mkdir(parents=True, exist_ok=True)

@@ -16,9 +16,11 @@ emitted tokens, traces. Ownership stays with StateManager
 and with the proposer (`accepted_prepare` / `accepted_publish`).
 
 Padded rows of a bucket carry budget 0 and ring slot 0: they emit nothing,
-reconstruct nothing into the dummy recurrent slot and write the dummy ring.
+reconstruct nothing into the dummy recurrent slot, leave its convolution
+window as it was and write the dummy ring.
 
-Sampled batches of point-mass drafts (MTP) replay two graphs per bucket: a decision graph (the vocabulary
+Sampled batches of MTP drafts replay two graphs per bucket (point-mass drafts, or with SHARAR_MTP_SAMPLE the drafts'
+law q on their candidates, copied into the decision graph's static q / support first): a decision graph (the vocabulary
 top-k and kernels/sampled_verify.verify_candidates with Philox draws, which write the sampled target row: the drafts
 up to the accepted count, then the correction) and the commit graph above on that row, exact rule only. Between
 them the host reads whether every row's law fit its candidates; if one did not, nothing has been written yet and
@@ -54,7 +56,9 @@ class AcceptGraphs:
         self._graphs: dict[int, torch.cuda.CUDAGraph] = {}
         self._decide: dict[int, torch.cuda.CUDAGraph] = {}  # sampled batches: the decision, then the commit graph
         self._commit: dict[int, torch.cuda.CUDAGraph] = {}
-        self.sampled = spec.device.type == "cuda" and spec.proposer.requirements.name == "mtp"  # point-mass drafts
+        self.sampled = spec.device.type == "cuda" and spec.proposer.requirements.name == "mtp"  # MTP drafts
+        # SHARAR_MTP_SAMPLE: a sampled batch's drafts come with their law q [b, k, W] on candidates [b, k, W]
+        self.q_width = spec.proposer.sample_width if self.sampled and getattr(spec.proposer, "sample", False) else 0
 
     @staticmethod
     def supported(spec) -> bool:
@@ -65,7 +69,12 @@ class AcceptGraphs:
         return all(r.params.greedy and (r.params.ignore_eos or len(r.params.stop_token_ids) <= MAX_STOPS) for r in requests)
 
     def eligible_sampled(self, requests, proposal) -> bool:
-        return (self.sampled and proposal.probabilities is None and proposal.support is None
+        if self.q_width:  # the captured decision reads q on W candidates
+            law = (proposal.probabilities is not None and proposal.support is not None
+                   and proposal.support.shape[-1] == self.q_width and proposal.probabilities.shape == proposal.support.shape)
+        else:
+            law = proposal.probabilities is None and proposal.support is None
+        return (self.sampled and law
                 and all(not r.params.greedy and 0 < r.params.top_k <= SAMPLED_TOP_K and r.params.constraint is None
                         and (r.params.ignore_eos or len(r.params.stop_token_ids) <= MAX_STOPS) for r in requests))
 
@@ -97,6 +106,9 @@ class AcceptGraphs:
             "fit": torch.zeros(b, dtype=torch.int32, device=d),
             "host_fit": torch.zeros(b, dtype=torch.int32, pin_memory=pin),
             "fit_event": torch.cuda.Event(),
+            # SHARAR_MTP_SAMPLE: the drafts' law and its candidates (padded rows: q 0, so their drafts reject)
+            "q": torch.zeros((b, k, self.q_width), dtype=torch.float32, device=d) if self.q_width else None,
+            "support": torch.zeros((b, k, self.q_width), dtype=torch.int64, device=d) if self.q_width else None,
         }
 
     def _decide_body(self, b: int, st: dict) -> None:
@@ -107,7 +119,7 @@ class AcceptGraphs:
         logits = vst["logits"][:b * s].view(b, s, -1)
         values, index = logits.topk(SAMPLED_CANDIDATES, dim=-1)
         y = st["y"]
-        accepted, correction, flags, fit = verify_candidates(values, index, y, st["params"], st["rng"])
+        accepted, correction, flags, fit = verify_candidates(values, index, y, st["params"], st["rng"], st["q"], st["support"])
         offsets = torch.arange(s, device=self.device).unsqueeze(0)
         drafted = torch.cat([y, y[:, -1:]], dim=1)
         st["z_s"].copy_(torch.where(offsets < accepted.unsqueeze(1), drafted, correction.unsqueeze(1)))
@@ -130,9 +142,15 @@ class AcceptGraphs:
         slots = vst["slots"][:b]
         self.spec.replay.run(pool, slots, counts.to(torch.int32))
         rows = torch.arange(b, device=self.device)
-        pool.conv_all[:, slots.long()] = self.spec.conv_windows_all[:, rows, (counts - 1).clamp(min=0)]
+        # padded rows (count 0) share the dummy slot: they write back what it holds, as the host path leaves it,
+        # so the padded verify rows that read it do not change with what earlier rounds padded (Flash-Next's
+        # per-tensor activation scale carries the padded rows into the real ones)
+        live, last, at = counts > 0, (counts - 1).clamp(min=0), slots.long()
+        conv = self.spec.conv_windows_all[:, rows, last]
+        pool.conv_all[:, at] = torch.where(live.view(1, b, *[1] * (conv.dim() - 2)), conv, pool.conv_all[:, at])
         for name, win in self.spec.aux_windows.items():
-            pool.aux[name][slots.long()] = win[rows, (counts - 1).clamp(min=0)]
+            aux = win[rows, last]
+            pool.aux[name][at] = torch.where(live.view(b, *[1] * (aux.dim() - 1)), aux, pool.aux[name][at])
         n = b * s  # the verify rows and inputs, for a proposer fed the final-normalized rows (MTP)
         self.spec.proposer.feedback_device(vst["features"], meta[:, 1], meta[:, 2], counts, s,
                                            norm=vst["norm"][:n], tokens=vst["tokens"][:n], pages=vst["pages"][:n])
@@ -171,13 +189,19 @@ class AcceptGraphs:
                 p = r.params
                 hp[i, 0], hp[i, 1], hp[i, 2] = max(p.temperature, 1e-6), float(p.top_k), p.top_p
                 if p.relaxed:
-                    hp[i, 3], hp[i, 4] = float(p.accept_top_k), float(p.accept_margin)
+                    hp[i, 3], hp[i, 5] = 1.0, p.soft_scale
                 hr[i, 0], hr[i, 1] = r.rng_seed, o
             st["params"].copy_(hp, non_blocking=True)
             st["rng"].copy_(hr, non_blocking=True)
             st["y"][:b].copy_(y[:, :k])
             if size > b:
                 st["y"][b:].zero_()
+            if self.q_width:
+                st["q"][:b].copy_(batch.proposal.probabilities[:, :k])
+                st["support"][:b].copy_(batch.proposal.support[:, :k])
+                if size > b:
+                    st["q"][b:].zero_()
+                    st["support"][b:].zero_()
             self._decide[size].replay()
             st["host_fit"].copy_(st["fit"], non_blocking=True)
             st["fit_event"].record()
@@ -199,7 +223,7 @@ class AcceptGraphs:
             if not r.params.ignore_eos:
                 for m, tok in enumerate(r.params.stop_token_ids):
                     host_meta[i, 3 + m] = tok
-            if r.params.relaxed:
+            if any_relaxed and r.params.relaxed:
                 host_relax[0, i], host_relax[1, i] = float(r.params.accept_top_k), float(r.params.accept_margin)
             elif any_relaxed:
                 host_relax[0, i] = 1.0  # the host rule's exact row inside a relaxed batch

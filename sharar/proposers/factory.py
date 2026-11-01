@@ -13,8 +13,7 @@ def draft_snapshot(proposer, draft_dir=None, target=None):
     name, revision = target.draft_pin(proposer)
     if draft_dir is None:
         # In the target's cache or its hub/, where the launcher downloads it (launch/preflight.py checks both)
-        beside = target.snapshot_dir().parents[2]
-        root = beside.parent if beside.name == "hub" else beside
+        root = target.cache_root()
         snapshots = [base / ("models--" + name.replace("/", "--")) / "snapshots" / revision for base in (root, root / "hub")]
         return next((snap for snap in snapshots if (snap / "config.json").is_file()), snapshots[0])
     directory = Path(draft_dir)
@@ -66,6 +65,9 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
             from sharar.model.lilicorr import LiLiCorrDraftModel
             cls = LiLiCorrDraftModel
         adapter = ParallelProposer(cls(snapshot, model, context.max_context, precision=draft_precision), context, k, proposer)
+        calibration = dict(model.target.draft_calibration).get(proposer)
+        if draft_dir is None and calibration is not None:  # the pinned draft's own fit; --draft checkpoints score raw
+            adapter.calibration = calibration
     else:
         raise ValueError(f"unknown proposer {proposer!r}")
     return adapter

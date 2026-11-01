@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -42,9 +43,10 @@ def add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request, up to 262144 (default: SHARAR_MAX_CONTEXT, else 262144)")
     p.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: SHARAR_MAX_BATCH, else the profile's)")
     p.add_argument("--spec-depths", default=None, help="verify depth per batch bucket as BUCKET:DEPTH pairs, e.g. 8:1,16:0 (0: plain decode; default: SHARAR_SPEC_DEPTHS, else --spec everywhere)")
-    p.add_argument("--accept-default-sampled", action="store_true", default=None, help="also apply the relaxed acceptance default to sampled requests (default: SHARAR_ACCEPT_DEFAULT_SAMPLED=1, else greedy only)")
-    p.add_argument("--accept-default-sampled-threshold", default=None, help="with --accept-default-sampled, the K:M sampled requests get instead of --accept-default's (default: SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD)")
-    p.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests that do not set accept_top_k/accept_margin, as K:M (default: SHARAR_ACCEPT_DEFAULT, else the profile's); 'off' keeps every request exact")
+    p.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests without accept_top_k/accept_margin, as K:M "
+                   "(default: SHARAR_ACCEPT_DEFAULT, else the profile's); 'off' keeps every request exact")
+    p.add_argument("--accept-soft", type=float, default=None, help="relaxed acceptance for sampled requests without accept_soft, as s: no token comes out more than "
+                   "e^s times as often as the target gives it (default: SHARAR_ACCEPT_SOFT, else 0, exact)")
     p.add_argument("--tp", type=int, default=1, help="tensor-parallel ranks, one GPU (Spark) each; rank 0 serves HTTP")
     p.add_argument("--tp-rank", type=int, default=0, help="this process's tensor-parallel rank")
     p.add_argument("--tp-address", default=None, help="HOST:PORT on rank 0's host where the ranks meet (required with --tp > 1)")
@@ -113,17 +115,11 @@ def run_engine(args, parser) -> int:
         accept_default = parse_accept_default(args.accept_default if args.accept_default is not None else cfg.accept_default)
     except ValueError as exc:
         parser.error(str(exc))
-    accept_default_sampled = bool(args.accept_default_sampled if args.accept_default_sampled is not None else cfg.accept_default_sampled)
-    sampled_threshold = args.accept_default_sampled_threshold or cfg.accept_default_sampled_threshold
-    if accept_default_sampled and sampled_threshold:
-        try:
-            accept_default_sampled = parse_accept_default(sampled_threshold)
-        except ValueError as exc:
-            parser.error(str(exc))
-        if accept_default_sampled == (1, 0.0):
-            accept_default_sampled = False
+    accept_soft = args.accept_soft if args.accept_soft is not None else cfg.accept_soft
+    if not math.isfinite(accept_soft) or accept_soft < 0:
+        parser.error("--accept-soft must be a finite number >= 0")
     if not args.spec:
-        accept_default, accept_default_sampled = (1, 0.0), False  # no speculation, nothing to relax
+        accept_default, accept_soft = (1, 0.0), 0.0  # no speculation, nothing to relax
     max_context = args.context_length if args.context_length is not None else cfg.max_context
     from sharar.engine.profile import MAX_CONTEXT
     if max_context is not None and not 2 <= max_context <= MAX_CONTEXT:
@@ -147,16 +143,13 @@ def run_engine(args, parser) -> int:
     # One configuration for the process: the environment with the command line applied.
     engine_config.install(cfg.replace(spec=str(args.spec), traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
                                       target=target, max_context=max_context, accept_default=f"{accept_default[0]}:{accept_default[1]}",
-                                      accept_default_sampled=bool(accept_default_sampled), max_batch=max_batch,
-                                      accept_default_sampled_threshold=(f"{accept_default_sampled[0]}:{accept_default_sampled[1]}"
-                                                                        if isinstance(accept_default_sampled, tuple) else None),
-                                      spec_depths=spec_depths if args.spec else None))
+                                      max_batch=max_batch, spec_depths=spec_depths if args.spec else None,
+                                      accept_soft=accept_soft))
     from sharar.api.server import serve
     serve(args.host, args.port, spec=args.spec, proposer=args.proposer, state_strategy=args.verify_state,
           draft_precision=args.draft_precision, traces=traces, traces_max_mib=max_mib, draft_dir=draft_dir,
           accept_default=accept_default, target=target,
-          max_context=max_context, max_batch=max_batch,
-          accept_default_sampled=accept_default_sampled)
+          max_context=max_context, max_batch=max_batch, accept_soft=accept_soft)
     if args.tp > 1:
         close_distributed()
     return 0

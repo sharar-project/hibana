@@ -15,17 +15,12 @@ $SHARAR_RESULTS/w3-checkpoints/flashnext-current in the fast profile).
     SHARAR_TARGET=flashnext python3 -m sharar.weights.flashnext_w3_calibrate --inputs calibration-inputs.json --output DIR
 """
 import argparse
-import hashlib
 import json
 import re
 import time
 from pathlib import Path
 
 import torch
-
-
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 class Covariances:
@@ -73,7 +68,7 @@ def main():
     from sharar.model.flashnext.model import FlashNext
     from sharar.target import FLASHNEXT
     from sharar.weights.w3_calibration import quantize
-    from sharar.weights.w3_checkpoint import FORMAT_VERSION, save_weight
+    from sharar.weights.w3_checkpoint import FORMAT_VERSION, save_weight, sha256
     install(current().replace(flashnext_trunk="bf16", w3_decode=False, w3_checkpoint=None))
     if (args.output / "manifest.json").exists():
         raise SystemExit("refusing to overwrite a finished calibration")

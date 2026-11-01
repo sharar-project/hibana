@@ -2,7 +2,7 @@
 
 [Nemotron Bolt](bolt.md) uses the same Mamba runtime with a separate packed checkpoint and per-block expert geometry.
 
-The third serving target (`sharar serve nemotron`, `sharar/model/nemotron/`), on one Spark. Checkpoint:
+A serving target (`sharar serve nemotron`, `sharar/model/nemotron/`), on one Spark. Checkpoint:
 `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` at `6aae0d6` (NVIDIA's ModelOpt export: NVFP4 routed and shared
 experts, FP8 Mamba, attention and lm_head projections, BF16 embeddings, router and latent projections). The text model
 and its MTP head are served; the C-RADIO vision tower and its projector are never read. Settings: `TARGET_SETTINGS`
@@ -49,7 +49,7 @@ The profiles (`nemotron_defaults` in `sharar/launch/settings.py`):
 | Profile | Settings |
 |---|---|
 | `exact` | MTP depth 3, exact acceptance, FP32 Mamba state, every token's 22 experts |
-| `fast` | both 3-bit copies, relaxed acceptance (top 3 within 2.0 logits, greedy and sampled), device-resident acceptance, 2-bit draft head, adaptive depth up to 8 at one request (`SHARAR_SPEC_STEP_COST=0.065`, [below](#adaptive-depth)), up to 6 at two requests and 5 at three or four, FP16 Mamba state with stochastic rounding, expert sharing `SHARAR_MOE_KEEP=12` `SHARAR_MOE_BUDGET=48:128` |
+| `fast` | both 3-bit copies, relaxed acceptance for greedy requests (top 3 within 2.0 logits; sampled ones exact), device-resident acceptance, 2-bit draft head, adaptive depth up to 8 at one request (`SHARAR_SPEC_STEP_COST=0.065`, [below](#adaptive-depth)), up to 6 at two requests and 5 at three or four, FP16 Mamba state with stochastic rounding, expert sharing `SHARAR_MOE_KEEP=12` `SHARAR_MOE_BUDGET=48:128` |
 | `throughput` | `fast` up to 16 requests, depth 5 at five to eight and 3 past eight |
 
 Expert sharing (`moe.py`, `route_budget`): a verify call's rows share the experts they read. Each row is guaranteed
@@ -58,7 +58,7 @@ summed routing weight, and every row also takes its other top-22 experts that th
 The KV cache is FP8 only: NVFP4 KV (`SHARAR_KV_FORMAT=nvfp4`) and the `sim-*` screens are not supported yet (the
 attention's fused K/V writer serves the FP8 pool), and the launcher and the executor refuse them.
 
-Measured (Sharar, spark-9931; h2h median, `tools/h2h-pr.py`, greedy; tok/s) and GSM8K-300 paired against `exact`:
+Measured (Sharar, spark-9931; h2h median, `tools/h2h_pr.py`, greedy; tok/s) and GSM8K-300 paired against `exact`:
 
 | Profile | 1 request | 4 streams | GSM8K-300 |
 |---|---|---|---|

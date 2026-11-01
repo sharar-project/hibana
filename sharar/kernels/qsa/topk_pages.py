@@ -16,7 +16,7 @@ from .compression import CUDA_FLAGS
 def load_topk_pages(build_directory=None):
     import tvm_ffi.cpp
     if torch.cuda.get_device_capability() != (12, 1):
-        raise RuntimeError('this experiment is compiled only for SM121')
+        raise RuntimeError('QSA top-k page selection is compiled only for SM121')
     build = Path(build_directory).resolve() if build_directory is not None else None
     if build is not None:
         build.mkdir(parents=True, exist_ok=True)

@@ -62,7 +62,7 @@ def test_each_target_serves_its_own_pinned_draft(monkeypatch, tmp_path):
     assert FLASHNEXT.draft_pin("dflash2") == flashnext.DRAFT_PINS["dflash2"] != QWEN38.draft_pin("dflash2")
     with pytest.raises(ValueError, match="no pinned mtp draft"):
         FLASHNEXT.draft_pin("mtp")
-    monkeypatch.setattr(Target, "snapshot_dir", lambda self, cache_dir=None: tmp_path / "models--target" / "snapshots" / "revision")
+    monkeypatch.setattr(Target, "cache_root", lambda self, cache_dir=None: tmp_path)
     name, revision = FLASHNEXT.draft_pin("dflash2")
     repo = f"models--{name.replace('/', '--')}"
     assert draft_snapshot("dflash2", None, FLASHNEXT) == tmp_path / repo / "snapshots" / revision  # beside the target
@@ -70,9 +70,8 @@ def test_each_target_serves_its_own_pinned_draft(monkeypatch, tmp_path):
     hub.mkdir(parents=True)
     (hub / "config.json").write_text("{}")
     assert draft_snapshot("dflash2", None, FLASHNEXT) == hub
-    # a target under the cache's hub/ finds a draft in hub/ or beside it, the two places the launcher's preflight checks
-    monkeypatch.setattr(Target, "snapshot_dir", lambda self, cache_dir=None: tmp_path / "hub" / "models--target" / "snapshots" / "revision")
-    assert draft_snapshot("dflash2", None, FLASHNEXT) == hub
+    # with no target snapshot cached at all: the draft is found from the cache root alone
+    assert not (tmp_path / "models--target").exists()
     (hub / "config.json").unlink()
     root = tmp_path / repo / "snapshots" / revision
     root.mkdir(parents=True)

@@ -15,8 +15,10 @@ from sharar.engine.context import ForwardContext
 from sharar.engine.request import Request
 from sharar.engine.contracts import Proposer, StepInputs, VerifiedFeatures
 from sharar.engine.debug import debug_sync
-from sharar.engine import sampling_rng
-from sharar.engine.rejection import Proposal, distribution, plausible, verify_batch, verify_rows
+from sharar.engine.depth import RowBudget
+from sharar.distributed import all_reduce_max, get_tp_info
+from sharar.engine import graph_set, sampling_rng
+from sharar.engine.rejection import Proposal, distribution, verify_batch, verify_rows
 from sharar.engine import accept_graphs
 from sharar.engine.accept_graphs import AcceptGraphs
 
@@ -36,6 +38,12 @@ class Verification:
     # Constrained requests (engine/grammar.py): the drafted tokens on their way to the host, (pinned tensor, event),
     # copied right after drafting so the grammar walk runs while the GPU verifies.
     drafted_host: tuple | None = None
+    # A packed verification (RaggedVerifyGraphs): (bucket, rows, every sequence's rows, unpacked width, each request's
+    # acceptance limit, each draft's packed row for the relaxed rule: int64 [b, width - 1], -1 past the request's limit,
+    # None without relaxed requests), the bucket's slots and every sequence's KV pages, padded sequences included.
+    ragged: tuple | None = None
+    slots_all: torch.Tensor | None = None
+    kv_all: list | None = None
 
 
 class SpecDecoder:
@@ -72,6 +80,31 @@ class SpecDecoder:
             # Adaptive depth per request: the depth above is the cap, and every depth below it verifies.
             from sharar.engine.depth import AcceptanceDepth
             self.depth_policy = AcceptanceDepth(self.depth_policy, current().spec_step_cost)
+            self.verify_depths = self.depth_policy.verify_depths
+        if current().spec_policy not in ("fixed", "budget"):
+            raise ValueError("SHARAR_SPEC_POLICY must be fixed or budget")
+        if current().spec_policy == "budget":
+            # Adaptive verification (engine/depth.RowBudget): the drafts' scores decide what a round verifies, a depth
+            # per request in packed graphs, accepted on the host. The block is drafted whole: one forward costs about
+            # the same at any depth, and its draft graphs stay one per bucket. Packed verification needs Gated DeltaNet
+            # recurrent layers and no side inputs: Flash-Next's QSA and PLE rows have none (under its expert budget
+            # verify rows cost little, so verifying fewer saved nothing there), nor has Nemotron's Mamba-2.
+            from sharar.engine.depth import ragged_budgets
+            target = executor.target
+            if not proposer.requirements.capabilities.scored_drafts:
+                raise ValueError("SHARAR_SPEC_POLICY=budget needs a drafter that scores its drafts (DFlash2): use fixed")
+            if current().spec_step_cost:
+                raise ValueError("SHARAR_SPEC_STEP_COST (adaptive depth) does not combine with SHARAR_SPEC_POLICY=budget")
+            if getattr(executor, "extras", None) is not None or getattr(target, "recurrence", "gdn") != "gdn":
+                raise ValueError(f"SHARAR_SPEC_POLICY=budget verifies packed rows, which {target.name} does not support: use fixed")
+            sizes = capture_sizes(executor.max_batch)
+            caps = policy.depths if policy is not None else None  # a depth table caps each bucket's depth
+            if caps and 0 in caps.values():
+                raise ValueError("SHARAR_SPEC_POLICY=budget verifies at least one draft a request: a depth table of "
+                                 "plain decode (0) needs SHARAR_SPEC_POLICY=fixed")
+            self.depth_policy = RowBudget(self.k, sizes, packed_rows=ragged_budgets(sizes, self.steps), caps=caps)
+            proposer.score_drafts = True
+            self.short_drafts = False  # else the proposer's capability (`drafts_short`)
             self.verify_depths = self.depth_policy.verify_depths
         self.width_graphs = {}
         self.device = executor.device
@@ -113,6 +146,7 @@ class SpecDecoder:
         # Set by benchmarks: synchronize around the draft/verify/accept phases
         # to attribute time. Off in serving so the host can queue graphs ahead.
         self.timing = False
+        self._round_timings: list[tuple] = []  # finished rounds' (batch, rows, events, tokens, sampled) for the depth policy
         # Pinned staging for the per-round host -> device upload: rows are
         # pending token, its position, state slot; one non-blocking copy.
         self._host_rows = torch.empty((3, n), dtype=torch.int64, pin_memory=self.device.type == "cuda")
@@ -133,15 +167,20 @@ class SpecDecoder:
         from sharar.engine.spec_graphs import VerifyGraphs
 
         policy = self.depth_policy
+        if isinstance(policy, RowBudget):
+            from sharar.engine.spec_graphs import RaggedVerifyGraphs
+            self.ragged_graphs = RaggedVerifyGraphs(self, policy.budgets)
+            self.ragged_graphs.capture(log=log)
         for depth in self.verify_depths:
             graphs = VerifyGraphs(self, depth, sizes=policy.sizes_for(depth, capture_sizes(self.ex.max_batch)))
             graphs.capture(log=log)
             self.width_graphs[depth] = graphs
-        self.verify_graphs = self.width_graphs.get(self.k) or self.width_graphs[max(self.width_graphs)]
-        if self.proposer.requirements.capabilities.short_drafts:  # draft graphs at the verify graphs' (depth, buckets)
+        self.verify_graphs = (self.width_graphs.get(self.k) or self.width_graphs[max(self.width_graphs)]) if self.width_graphs else None
+        if self.drafts_short:  # draft graphs at the verify graphs' (depth, buckets)
             self.proposer.capture_graphs(log=log, depths={d: g.sizes for d, g in self.width_graphs.items()})
         else:
             self.proposer.capture_graphs(log=log)
+        self.measure_costs(log=log)
         if AcceptGraphs.supported(self):  # captured whenever possible so the path can be switched at run time
             for graphs in self.width_graphs.values():
                 graphs.accept = AcceptGraphs(self, graphs)
@@ -167,6 +206,9 @@ class SpecDecoder:
             "round_ms": 1000 * (self.draft_seconds + self.verify_seconds + self.accept_seconds) / r,
             "relaxed_accepts": self.relaxed_accepts,
         }
+        policy = getattr(self, "depth_policy", None)
+        if isinstance(policy, RowBudget):
+            out["budget"] = policy.stats()
         if self.timing:  # phase split is only meaningful with the synchronizing timers on
             out.update({
                 "draft_ms_per_round": 1000 * self.draft_seconds / r,
@@ -175,6 +217,35 @@ class SpecDecoder:
                 "accept_split_ms": [round(1000 * x / r, 1) for x in (self.accept_decide_seconds, self.accept_commit_seconds, self.accept_feedback_seconds)],
             })
         return out
+
+    COST_CONTEXT = 4096  # cached tokens per request while measuring verify costs
+
+    @property
+    def drafts_short(self) -> bool:
+        """Whether a round drafts only the depth it verifies (Capabilities.short_drafts), unless packed rows draft a
+        block drafter's whole block."""
+        return getattr(self, "short_drafts", self.proposer.requirements.capabilities.short_drafts)
+
+    def measure_costs(self, log=None) -> None:
+        """The measured costs `RowBudget` decides from: each captured verify graph's time per batch bucket."""
+        policy = self.depth_policy
+        if not isinstance(policy, RowBudget):
+            return
+        ragged = self.ragged_graphs
+        context = min(self.COST_CONTEXT, self.ex.max_context - 1)  # the graphs hold max_context + k cached tokens
+        for b in ragged.sizes:
+            for rows in ragged.budgets[b]:
+                policy.costs[b, rows] = ragged.time_replay(b, rows, context)
+        self._common_costs()
+        if log:
+            for b in ragged.sizes:
+                log(f"  verify cost, batch {b}: " + ", ".join(f"{r} rows {policy.costs[b, r]:.1f}" for r in ragged.budgets[b]) + " ms")
+
+    def _common_costs(self) -> None:
+        """Tensor-parallel ranks decide alike only from the same numbers: every rank keeps the slowest rank's costs."""
+        costs = self.depth_policy.costs
+        keys = sorted(costs)
+        costs.update(zip(keys, all_reduce_max([costs[k] for k in keys])))
 
     def ingest_prefill(self, req, ids, start, result) -> None:
         self.proposer.ingest_prefill(req, ids, start, result)
@@ -189,17 +260,52 @@ class SpecDecoder:
     @torch.inference_mode()
     def round(self, reqs: list[Request]) -> None:
         debug_sync("before spec round", reqs)
+        learn = getattr(self.depth_policy, "observe_round", None) if self.device.type == "cuda" else None
+        if learn is not None:
+            self._learn_round(learn)
+            start = torch.cuda.Event(enable_timing=True)
+            start.record()
+            emitted = self.emitted
         batch = self.prepare(reqs)
         debug_sync("after draft (prepare)", reqs)
         self.verify(batch)
         debug_sync("after verify and accept", reqs)
+        if learn is not None:
+            end = torch.cuda.Event(enable_timing=True)
+            end.record()
+            depth = batch.proposal.tokens.shape[1]
+            rows = batch.ragged[1] if batch.ragged is not None else graph_set.pick(self.depth_policy.sizes, len(reqs)) * (depth + 1)
+            self._round_timings.append((len(reqs), rows, start, end, self.emitted - emitted, batch.sampled))
+
+    TP_LEARN_EVERY = 8  # tensor-parallel rounds whose times the ranks exchange at once
+
+    def _learn_round(self, learn) -> None:
+        """Finished rounds' GPU times to the depth policy. One Spark: the previous round's, once the GPU finished it
+        (never waits). Tensor-parallel ranks must decide alike, so they learn the same times at the same round: every
+        TP_LEARN_EVERY rounds, the slowest rank's times of the rounds before the last (one small all-reduce)."""
+        pending = self._round_timings
+        if get_tp_info().size == 1:
+            if pending and pending[-1][3].query():
+                b, rows, start, end, tokens, sampled = pending[-1]
+                learn(b, rows, start.elapsed_time(end), tokens, sampled=sampled)
+            pending.clear()
+            return
+        if len(pending) <= self.TP_LEARN_EVERY:
+            return
+        done, self._round_timings = pending[:self.TP_LEARN_EVERY], pending[self.TP_LEARN_EVERY:]
+        for t in done:
+            t[3].synchronize()
+        times = all_reduce_max([start.elapsed_time(end) for _, _, start, end, *_ in done])
+        for (b, rows, _, _, tokens, sampled), ms in zip(done, times):
+            learn(b, rows, ms, tokens, sampled=sampled)
 
     def prepare(self, reqs: list[Request]) -> Verification:
         """Reserve and draft one target verification batch."""
         ex = self.ex
         policy = getattr(self, 'depth_policy', None)
         k = policy.choose(reqs) if policy is not None else self.k
-        if k not in getattr(self, 'verify_depths', (self.k,)) or not 1 <= k <= self.k:
+        packed = isinstance(policy, RowBudget)  # packed graphs hold every depth up to k
+        if not (1 <= k <= self.k if packed else k in getattr(self, 'verify_depths', (self.k,))):
             raise ValueError('uncaptured verification depth')
         b_sz = len(reqs)
         d = self.device
@@ -219,7 +325,7 @@ class SpecDecoder:
         rows = host[:, :b_sz].to(d, non_blocking=True)
         toks_t, poss_t, slots_t = rows[0], rows[1], rows[2].to(torch.int32)
         inputs = StepInputs(toks_t, poss_t, slots_t)
-        short = self.proposer.requirements.capabilities.short_drafts
+        short = self.drafts_short
         proposed = self.proposer.propose(reqs, new_pages, inputs, graphs=ex.use_graphs, **({"depth": k} if short else {}))
         proposal = proposed if isinstance(proposed, Proposal) else Proposal(proposed)
         y = proposal.tokens
@@ -228,18 +334,12 @@ class SpecDecoder:
         if (y.shape != (b_sz, k if short else self.k) or y.dtype != torch.int64 or y.device.type != self.device.type
                 or (self.device.index is not None and y.device.index != self.device.index)):
             raise ValueError("proposer must return int64 [batch, k] on the target device")
-        y = y[:, :k]
-        proposal = Proposal(y, proposal.probabilities[:, :k] if proposal.probabilities is not None else None,
-                            proposal.support[:, :k] if proposal.support is not None else None,
-                            confidence=proposal.confidence[:, :k] if proposal.confidence is not None else None, columns=proposal.columns)
+        if getattr(self, "ragged_graphs", None) is not None and ex.use_graphs:
+            return self._prepare_ragged(reqs, proposal, y, k, toks_t, poss_t, slots_t, new_pages, sampled, t0, timing)
+        proposal = proposal.head(k)
+        y = proposal.tokens
         new_pages_flat = new_pages[:, :s_len].reshape(-1)
-        drafted_host = None
-        if any(r.grammar is not None for r in reqs) and y.device.type == "cuda":
-            host = torch.empty(y.shape, dtype=torch.int64, pin_memory=True)
-            host.copy_(y, non_blocking=True)
-            ready = torch.cuda.Event()
-            ready.record()
-            drafted_host = (host, ready)
+        drafted_host = self._drafted_host(reqs, y)
         if timing:
             torch.cuda.synchronize()
         t1 = time.perf_counter()
@@ -256,7 +356,96 @@ class SpecDecoder:
         return Verification(list(reqs), proposal, sampled, tokens_v, positions, new_pages_flat,
                             slots_t, kv_all, t0, t1, drafted_host)
 
+    @staticmethod
+    def _drafted_host(reqs, drafts):
+        """A pinned host copy of the drafts and its ready event when a request is grammar-constrained: `_constrain`
+        walks the grammar over them while the verify graph runs."""
+        if not any(r.grammar is not None for r in reqs) or drafts.device.type != "cuda":
+            return None
+        host = torch.empty(drafts.shape, dtype=torch.int64, pin_memory=True)
+        host.copy_(drafts, non_blocking=True)
+        ready = torch.cuda.Event()
+        ready.record()
+        return host, ready
+
+    def _prepare_ragged(self, reqs, proposal, y, k, toks_t, poss_t, slots_t, new_pages, sampled, t0, timing) -> Verification:
+        """The round's packed verification: each request's depth (the policy's limits), its rows, then padding rows on
+        its own reserved pages and the bucket's padded sequences, to the captured row total."""
+        ex, d, policy, graphs = self.ex, self.device, self.depth_policy, self.ragged_graphs
+        b = len(reqs)
+        bucket = graph_set.pick(graphs.sizes, b)
+        if sampled or any(r.grammar is not None for r in reqs):
+            limits, rows = policy.allot(reqs, None, k)  # one depth for all, chosen before drafting
+        else:
+            limits, rows = policy.allot(reqs, proposal.acceptance, k)
+        width, steps = max(limits) + 1, self.steps
+        lengths = [n + 1 for n in limits]
+        padded = [1] * (bucket - b)
+        spare = rows - sum(lengths) - len(padded)
+        for group, cap in ((padded, steps), (lengths, steps)):  # the padded sequences first, then the requests' own
+            for i in range(len(group)):
+                add = min(spare, cap - group[i])
+                group[i] += add
+                spare -= add
+        assert spare == 0, (rows, limits)
+        drafts = proposal.tokens
+        if drafts.shape[1] < steps - 1:  # a short draft: the rows past it pad (never within a limit, which is at most k)
+            drafts = torch.nn.functional.pad(drafts, (0, steps - 1 - drafts.shape[1]))
+        blocks = torch.cat([toks_t.unsqueeze(1), drafts], dim=1).reshape(-1)  # [b * steps]: pending, then drafts
+        index = [i * steps + j for i, n in enumerate(lengths) for j in range(n)]
+        local = [j for n in lengths for j in range(n)]
+        seq = [i for i, n in enumerate(lengths) for _ in range(n)]
+        host = torch.tensor([index, local, seq], dtype=torch.int64, pin_memory=d.type == "cuda").to(d, non_blocking=True)
+        tokens = blocks.index_select(0, host[0])
+        positions = poss_t.index_select(0, host[2]) + host[1]
+        pages = new_pages.reshape(-1).index_select(0, host[0]).to(torch.int32)
+        kv_all = [ex.state.step_pages(r)[:r.committed_len + n] for r, n in zip(reqs, lengths)]
+        if padded:
+            pad_rows = sum(padded)
+            tokens = torch.cat([tokens, torch.zeros(pad_rows, dtype=tokens.dtype, device=d)])
+            positions = torch.cat([positions, torch.zeros(pad_rows, dtype=positions.dtype, device=d)])
+            pages = torch.cat([pages, ex.kv_pool.pad_pages(pad_rows).to(torch.int32)])
+            kv_all += [torch.zeros(n + 1, dtype=torch.int32, device=d) for n in padded]
+        slots_all = torch.cat([slots_t, torch.zeros(len(padded), dtype=slots_t.dtype, device=d)])
+        cut = width - 1
+        cells = None
+        if not sampled and any(r.params.relaxed for r in reqs):
+            starts = [sum(lengths[:i]) for i in range(b)]
+            cells = torch.tensor([[starts[i] + j if j < n else -1 for j in range(cut)] for i, n in enumerate(limits)],
+                                 dtype=torch.int64, pin_memory=d.type == "cuda").to(d, non_blocking=True)
+        proposal = proposal.head(cut)
+        drafted_host = self._drafted_host(reqs, proposal.tokens)
+        if timing:
+            torch.cuda.synchronize()
+        t1 = time.perf_counter()
+        return Verification(list(reqs), proposal, sampled, tokens, positions, pages, slots_t, kv_all[:b], t0, t1, drafted_host,
+                            ragged=(bucket, rows, lengths + padded, width, limits, cells), slots_all=slots_all, kv_all=kv_all)
+
+    def _verify_ragged(self, batch: Verification) -> None:
+        bucket, rows, lengths, width, limits, cells = batch.ragged
+        st = self.ragged_graphs.run(bucket, rows, lengths, width, batch.tokens, batch.positions, batch.pages,
+                                    batch.slots_all, batch.kv_all)
+        reqs = batch.requests
+        b = len(reqs)
+        n = b * width
+        y = batch.proposal.tokens
+        logits, z_flat = st["logits"], st["argmax"][:n]  # logits packed: [rows, V]
+        if batch.sampled or any(r.grammar is not None for r in reqs):  # the rows they read, unpacked: [b * width, V]
+            logits = logits.index_select(0, st["unpack"][:n])
+            if self._constrain(batch, logits):
+                z_flat = logits.argmax(-1)
+            cells = self._cells(b, width, y.shape[1])
+        norm = st["norm"][:n].view(b, width, -1).clone() if self.proposer.requirements.features.final_norm else None
+        layers = {lid: value[:n].view(b, width, -1).clone() for lid, value in st["features"].items()} if st["features"] else None
+        z = logits.view(b, width, -1) if batch.sampled else z_flat.view(b, width).clone()
+        relaxed = None if batch.sampled else self._relaxed_matches(reqs, logits, y, cells)
+        self._accept(reqs, y, z, VerifiedFeatures(norm, layers), batch.started, batch.prepared,
+                     proposal=batch.proposal if batch.sampled else None, relaxed=relaxed, confidence=batch.proposal.confidence,
+                     limits=None if batch.sampled else limits)
+
     def verify(self, batch: Verification) -> None:
+        if batch.ragged is not None:
+            return self._verify_ragged(batch)
         b_sz, k = batch.proposal.tokens.shape
         s_len = k + 1
         seqs = [(r.context_len - 1, s_len, pages) for r, pages in zip(batch.requests, batch.kv_pages)]
@@ -280,7 +469,8 @@ class SpecDecoder:
             norm = norm_rows.view(b_sz, s_len, -1).clone() if self.proposer.requirements.features.final_norm else None
             layers = {lid: value.view(b_sz, s_len, -1).clone() for lid, value in layers.items()} if layers else None
             z = z_flat.view(b_sz, s_len, -1) if batch.sampled else z_flat.view(b_sz, s_len).clone()
-            relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens, b_sz, s_len)
+            relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens,
+                                                                        self._cells(b_sz, s_len, k))
             self._accept_batch(batch, z, VerifiedFeatures(norm, layers), relaxed=relaxed)
             return
         ctx = self.context(batch, self._eager_wrapper())
@@ -300,25 +490,34 @@ class SpecDecoder:
         other's plan before the GPU read it (illegal memory access under load)."""
         return getattr(self.ex, "_verify_prefill", self.ex._paged_prefill)  # test doubles have only one
 
-    def _relaxed_matches(self, reqs, logits, y, b_sz: int, s_len: int):
-        """[b, k] bool: drafted token within the request's top-k and logit margin of the target's argmax.
+    def _cells(self, b_sz: int, s_len: int, k: int) -> torch.Tensor:
+        """Each draft's verify row in [b * s_len, V] logits, request i's row j at i * s_len + j: int64 [b, k]."""
+        return torch.arange(b_sz * s_len, device=self.device).view(b_sz, s_len)[:, :k]
+
+    def _relaxed_matches(self, reqs, logits, y, cells):
+        """[b, k] bool: drafted token y[i, j] within the request's top-k and logit margin of the target's argmax, in
+        the logits row cells[i, j] (-1: a draft the round does not verify, never a match).
 
         None when no request in the batch asked for relaxed acceptance, so the
         default path is untouched. Rows of exact requests get top-k 1 and margin 0,
         which reduces to the argmax test."""
         if not any(r.params.relaxed for r in reqs):
             return None
-        k = y.shape[1]
+        b_sz, k = y.shape
         host = self._host_relax
         for i, r in enumerate(reqs):
             host[0, i] = float(r.params.accept_top_k)
             host[1, i] = float(r.params.accept_margin)
         thresholds = host[:, :b_sz].to(self.device, non_blocking=True)
-        rows = logits.view(b_sz, s_len, -1)[:, :k]  # row j predicts drafted token y_j
-        ly = rows.gather(-1, y.unsqueeze(-1)).squeeze(-1).float()
-        lmax = rows.max(-1).values.float()
-        rank = (rows > ly.unsqueeze(-1)).sum(-1).float()
-        return (rank < thresholds[0].unsqueeze(1)) & ((lmax - ly) <= thresholds[1].unsqueeze(1))
+        if logits.is_cuda:  # one pass over each row (kernels/relaxed_rank.py)
+            from sharar.kernels.relaxed_rank import rank_gap
+            above, gap = (t.view(b_sz, k) for t in rank_gap(logits, cells.reshape(-1), y.reshape(-1)))
+        else:
+            rows = logits[cells.clamp(min=0)]  # [b, k, V]: row j predicts drafted token y_j
+            ly = rows.gather(-1, y.unsqueeze(-1)).squeeze(-1).float()
+            above = (rows > ly.unsqueeze(-1)).sum(-1)
+            gap = (rows.max(-1).values.float() - ly).masked_fill(cells < 0, float("inf"))
+        return (above < thresholds[0].unsqueeze(1)) & (gap <= thresholds[1].unsqueeze(1))
 
     def _constrain(self, batch: Verification, logits: torch.Tensor) -> bool:
         """Mask the verified rows of constrained requests by their grammar (engine/grammar.py), in place.
@@ -378,14 +577,16 @@ class SpecDecoder:
         logits = self.ex.model.logits(out["norm"])
         self._constrain(batch, logits)
         z = logits.view(b_sz, s_len, -1) if batch.sampled else logits.argmax(-1).view(b_sz, s_len)
-        relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens, b_sz, s_len)
+        relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens,
+                                                                    self._cells(b_sz, s_len, k))
         self._accept_batch(batch, z, VerifiedFeatures(norm, layers), relaxed=relaxed)
 
     def _accept_batch(self, batch, z, features, relaxed=None):
         self._accept(batch.requests, batch.proposal.tokens, z, features, batch.started, batch.prepared,
                      proposal=batch.proposal if batch.sampled else None, relaxed=relaxed, confidence=batch.proposal.confidence)
 
-    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, relaxed=None, confidence=None) -> None:
+    def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, relaxed=None, confidence=None,
+                limits=None) -> None:
         if self.timing:
             torch.cuda.synchronize()
         t2 = time.perf_counter()
@@ -396,6 +597,9 @@ class SpecDecoder:
         if proposal is None:
             exact = (y == z[:, :k])
             match = exact if relaxed is None else (exact | relaxed)
+            if limits is not None:  # a request's drafts past its own depth were not verified for it
+                limit_t = torch.tensor(limits, device=y.device)
+                match = match & (torch.arange(k, device=y.device)[None, :] < limit_t[:, None])
             prefix = torch.cumprod(match.int(), dim=1)
             acc_t = prefix.sum(dim=1)
             # Relaxed accepts inside the accepted prefix: drafted tokens the target
@@ -410,7 +614,7 @@ class SpecDecoder:
         else:
             # Sampled batch: acceptance and the correction/bonus token are
             # computed on the device and downloaded once with the drafts. Point-mass
-            # drafts (MTP) and sparse draft laws (DFlash2) verify the whole batch on
+            # drafts (MTP's argmax) and sparse draft laws (DFlash2, MTP's sampled drafts) verify the whole batch on
             # each row's candidates (`rejection.verify_batch`); dense draft laws, and
             # laws wider than the candidates, verify row by row (`verify_rows`).
             acc_rows, corr_rows, target_rows, flag_rows = [], [], [], []
@@ -437,10 +641,9 @@ class SpecDecoder:
                     flag_rows.append(torch.zeros_like(match))
                 else:
                     p = distribution(z[i], req.params)
-                    relaxed_i = plausible(y[i], p, req.params.accept_top_k, req.params.accept_margin) if req.params.relaxed else None
                     a_t, c_t, rx_t = verify_rows(y[i], p, proposal.probabilities[i] if proposal.probabilities is not None else None,
                                                  proposal.support[i] if proposal.support is not None else None, req.generator,
-                                                 relaxed=relaxed_i)
+                                                 soft_scale=req.params.soft_scale)
                     acc_rows.append(a_t)
                     corr_rows.append(c_t)
                     flag_rows.append(rx_t.to(torch.int64))
@@ -497,16 +700,17 @@ class SpecDecoder:
                                 aux={name: win[i, count - 1] for name, win in self.aux_windows.items()})
             for tok in emitted:
                 r.push(int(tok))
-            self.proposed += k
+            depth = k if limits is None else limits[i]
+            self.proposed += depth
             self.accepted += a
             self.emitted += len(emitted)
             if observe is not None:
-                observe(r, k, a)
+                observe(r, depth, a)
             relaxed_here = min(used[i], count)  # stop truncation can cut accepted tokens
             self.relaxed_accepts += relaxed_here
             r.spec_relaxed += relaxed_here
             r.spec_rounds += 1
-            r.spec_proposed += k
+            r.spec_proposed += depth
             r.spec_accepted += a
             r.spec_emitted += count
         if self.timing:

@@ -70,7 +70,7 @@ The loader stages each mapped tensor in ordinary CPU storage before copying it t
 the GB10 than copying from the memory map.
 
 A fitted artifact is a candidate until it passes the lossy-change gate
-(`tools/lossy-gate.py`) against the intended serving profile.
+(`tools/lossy_gate.py`) against the intended serving profile.
 
 ## Routed experts (Flash-Next)
 

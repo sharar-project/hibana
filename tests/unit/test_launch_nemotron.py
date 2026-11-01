@@ -27,7 +27,7 @@ def test_names_port_service_and_drafter(env, name):
 
 def test_exact_is_the_target_alone(env):
     s = resolve(env, "exact")
-    assert (s.spec, s.get("SHARAR_ACCEPT_DEFAULT"), s.get("SHARAR_ACCEPT_DEFAULT_SAMPLED"), s.get("SHARAR_DEVICE_ACCEPT"),
+    assert (s.spec, s.get("SHARAR_ACCEPT_DEFAULT"), s.get("SHARAR_ACCEPT_SOFT"), s.get("SHARAR_DEVICE_ACCEPT"),
             s.get("SHARAR_MOE_KEEP"), s.get("SHARAR_SPEC_DEPTHS"), s.get("SHARAR_MAX_BATCH")) == (3, "off", "0", "0", "", "", "4")
     args = s.engine_args()
     assert args[args.index("--spec") + 1] == "3" and args[args.index("--accept-default") + 1] == "off"
@@ -64,8 +64,10 @@ def test_fast_and_throughput_share_experts_and_halve_the_state(env):
 def test_fast_and_throughput(env):
     fast, tput = resolve(env, "fast"), resolve(env, "throughput")
     for s in (fast, tput):
-        assert s.get("SHARAR_ACCEPT_DEFAULT") == "3:2.0" and s.get("SHARAR_ACCEPT_DEFAULT_SAMPLED") == "1"
-        assert "--accept-default-sampled" in s.engine_args()
+        assert s.get("SHARAR_ACCEPT_DEFAULT") == "3:2.0" and s.get("SHARAR_ACCEPT_SOFT") == "0"  # sampled: exact
+        assert s.get("SHARAR_MTP_SAMPLE") == "1"  # from sampled MTP drafts
+        args = s.engine_args()
+        assert args[args.index("--accept-soft") + 1] == "0"
         assert s.spec == 8 and s.get("SHARAR_SPEC_STEP_COST") == "0.065"  # adaptive depth for one request
     assert fast.get("SHARAR_MAX_BATCH") == "4" and tput.get("SHARAR_MAX_BATCH") == "16"
     assert fast.get("SHARAR_SPEC_DEPTHS") == "2:6,4:5" and tput.get("SHARAR_SPEC_DEPTHS") == "2:6,4:5,8:5,16:3"

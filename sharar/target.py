@@ -88,6 +88,9 @@ class Target:
     mtp_layers: int = 0
     # Pinned block drafters trained on this target's features: (proposer, repository, revision).
     draft_pins: tuple[tuple[str, str, str], ...] = ()
+    # each pinned draft's acceptance calibration (adaptive verification ranks verify seats by it): name -> the weights
+    # of sigmoid(w . [logit p, gap, j / 15, 1]) (proposers/parallel.ParallelProposer.acceptance_features)
+    draft_calibration: tuple[tuple[str, tuple[float, ...]], ...] = ()
     # A request's default stop ids (the chat template's end of turn, then end of text).
     stop_token_ids: tuple[int, ...] = (248046, 248044)  # Qwen3.8: <|im_end|>, <|endoftext|>
     # Puzzle MoE blocks: (checkpoint index, expert count, intermediate width, top-k).
@@ -175,13 +178,18 @@ class Target:
                 return repo, revision
         raise ValueError(f"{self.name} has no pinned {proposer} draft")
 
-    def snapshot_dir(self, cache_dir: str | os.PathLike | None = None) -> Path:
-        """Return the pinned snapshot directory or raise if it is incomplete."""
+    def cache_root(self, cache_dir: str | os.PathLike | None = None) -> Path:
+        """This target's model cache: `cache_dir`, its own cache setting, or SHARAR_HF_CACHE (HF_HOME)."""
         from sharar.engine.config import current
         cfg = current()
-        root = Path(cache_dir or cfg.model_cache(self.cache_env) or cfg.hf_cache or "")
-        if not str(root):
+        root = cache_dir or cfg.model_cache(self.cache_env) or cfg.hf_cache
+        if not root:
             raise FileNotFoundError("set SHARAR_HF_CACHE (or HF_HOME) to the model cache")
+        return Path(root)
+
+    def snapshot_dir(self, cache_dir: str | os.PathLike | None = None) -> Path:
+        """Return the pinned snapshot directory or raise if it is incomplete."""
+        root = self.cache_root(cache_dir)
         for base in (root, root / "hub"):
             snap = base / self.model_cache_key / "snapshots" / self.model_revision
             if (snap / "config.json").is_file() and (snap / "model.safetensors.index.json").is_file():
@@ -290,6 +298,7 @@ def _qwen38() -> Target:
         max_position_embeddings=c.MAX_POSITION_EMBEDDINGS, nvfp4_group_size=c.NVFP4_GROUP_SIZE,
         weight_load_peak_bytes=c.WEIGHT_LOAD_PEAK_BYTES, w3_repo=c.W3_REPO, w3_revision=c.W3_REVISION,
         draft_pins=tuple((name, *pin) for name, pin in c.DRAFT_PINS.items()),
+        draft_calibration=tuple(c.DRAFT_CALIBRATION.items()),
     )
 
 

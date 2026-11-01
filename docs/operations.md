@@ -15,9 +15,10 @@ unified memory, NVIDIA driver 580 or newer, the CUDA 13 toolkit in `/usr/local/c
 and Sharar compile their GB10 kernels on first use) and [uv](https://docs.astral.sh/uv/). `--detach` also needs a
 user systemd session (`loginctl enable-linger` keeps it after logout).
 
-Two targets, one per process, chosen by name: `27b` (`RadixArk/Qwen3.8-27B-NVFP4` at `319f741`, with the DFlash2
-drafter `incoai/Qwen3.8-27B-DFlash2` at `dedf8df`) and `flashnext` (`RadixArk/Qwen3.8-Flash-Next-NVFP4` at
-`7b71922`, its own MTP head, or the DFlash2 drafter `incoai/Qwen3.8-Flash-Next-DFlash2` at `a22a174` on one Spark).
+Four targets, one per process, chosen by name: `27b` (`RadixArk/Qwen3.8-27B-NVFP4` at `319f741`, with the DFlash2
+drafter `incoai/Qwen3.8-27B-DFlash2` at `dedf8df`), `flashnext` (`RadixArk/Qwen3.8-Flash-Next-NVFP4` at
+`7b71922`, its own MTP head, or the DFlash2 drafter `incoai/Qwen3.8-Flash-Next-DFlash2` at `a22a174` on one Spark),
+and on one Spark `nemotron` ([Nemotron 3.5 Super](nemotron.md)) and `bolt` ([Nemotron 3.5 Bolt](bolt.md)).
 `sharar serve` downloads whatever the cache lacks (about 26 GB for the 27B, 135 GB for
 Flash-Next) after checking free disk; serving itself runs offline.
 
@@ -57,16 +58,17 @@ same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (defau
 
 | Setting | Launcher default | Override |
 |---|---|---|
-| Target | the one named on `serve` (`27b` or `flashnext`) | `SHARAR_TARGET`; Flash-Next reads its model from `SHARAR_FLASHNEXT_CACHE` and takes `SHARAR_FLASHNEXT_TRUNK=fp8\|bf16` |
+| Target | the one named on `serve` (`27b`, `flashnext`, `nemotron` or `bolt`) | `SHARAR_TARGET`; Flash-Next reads its model from `SHARAR_FLASHNEXT_CACHE` and takes `SHARAR_FLASHNEXT_TRUNK=fp8\|bf16` |
 | Serving profile | `fast` | `sharar serve --exact\|--fast\|--throughput` or `SHARAR_PROFILE` ([below](#serving-profiles)) |
 | Proposer / draft proposals | 27B: DFlash2, 15 (16 verify rows); Flash-Next: MTP, 4 (`fast`: up to 8, adaptive, below), or with `SHARAR_PROPOSER=dflash2` (one Spark) DFlash2, 9 (`exact`: 7, `throughput`: 4) | `SHARAR_PROPOSER`, `SHARAR_SPEC` (0 = plain decode; with adaptive depth, the cap) |
 | Draft precision | 27B: FP8; Flash-Next: BF16 (MTP), FP8 (DFlash2) | `SHARAR_DRAFT_PRECISION=bf16` for the 27B publisher's precision |
 | Draft checkpoint | the publisher's pinned draft | `sharar serve --draft DIR` or `SHARAR_DRAFT=/dir`: a DFlash2 checkpoint of the same architecture, trained on the served target's features |
 | Accepted state | reconstruction | `SHARAR_VERIFY_STATE` |
 | Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K; 4.5 GiB as NVFP4) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
-| Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:4,4:4`, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark), else `16:3`; Flash-Next DFlash2 `fast`: `2:7,4:7`, `throughput`: MTP's | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC` and `SHARAR_MAX_BATCH`, a limit between buckets verifying what the bucket it pads to does). The 3-bit copies serve calls of at most 128 rows on the 27B and 64 on Flash-Next, so wider verifications run the original weights |
+| Adaptive verification (DFlash2) | the 27B's `throughput`: on; `exact`, `fast`: off; Flash-Next: none | `SHARAR_SPEC_POLICY=budget\|fixed`: the drafts' calibrated scores and the measured verify costs decide what each round verifies, up to `SHARAR_SPEC` ([below](#adaptive-verification-dflash2)); a `SHARAR_SPEC_DEPTHS` table caps each bucket (no 0 under it); not with `SHARAR_SPEC_STEP_COST` |
+| Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:7,4:6` on one Spark, `2:4,4:4` on two, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark), else `16:3`; Flash-Next DFlash2 `fast`: `2:7,4:7`, `throughput`: MTP's | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC` and `SHARAR_MAX_BATCH`, a limit between buckets verifying what the bucket it pads to does). The 3-bit copies serve calls of at most 128 rows on the 27B and 64 on Flash-Next, so wider verifications run the original weights |
 | Adaptive draft depth (MTP and DFlash2) | Flash-Next `fast` with MTP: on, 0.14 (0.2 on two Sparks); DFlash2: off | `SHARAR_SPEC_STEP_COST` (0 = the fixed depth): each request drafts as deep as its own recent acceptance pays for, up to the batch bucket's depth ([MTP](flashnext.md#the-mtp-draft), [DFlash2](flashnext.md#the-dflash2-draft)) |
-| Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext` | `sharar serve --port`, `SHARAR_PORT` / `SHARAR_SERVICE` |
+| Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext`, Nemotron 30005 / `sharar-nemotron`, Bolt 30006 / `sharar-bolt` | `sharar serve --port`, `SHARAR_PORT` / `SHARAR_SERVICE` |
 | Request traces | off | `sharar serve --traces` (in `$SHARAR_RESULTS/traces`) or `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
 | Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
 | Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `SHARAR_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
@@ -75,6 +77,66 @@ same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (defau
 
 For MTP on the 27B, use `SHARAR_PROPOSER=mtp SHARAR_SPEC=3 SHARAR_DRAFT_PRECISION=bf16`. `SHARAR_PROPOSER` is `mtp`
 or `dflash2`.
+
+Further settings, for tuning, diagnostics and the tools (defaults from `engine/config.py`, `launch/` and `tools/`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SHARAR_HOST` | `127.0.0.1` | The address the server listens on (`sharar serve --host`) |
+| `SHARAR_SSD_BLOCK_TOKENS` | 256 | Tokens per SSD-tier KV block; must divide the 2,048-token prefill chunk |
+| `SHARAR_SSD_WRITERS` | 4 | The SSD store's writer threads (at least 1) |
+| `SHARAR_SSD_STAGING_MIB` | 512 | Backup copies in flight to the SSD writers |
+| `SHARAR_SSD_CHUNK_MIB` | 256 | Each half of the SSD restore's staging buffer |
+| `SHARAR_SSM_WINDOW` | 16 | With an `int8` or `int4` recurrent state: committed tokens per requantization (8, 16 or 32) |
+| `SHARAR_SSM_COMPENSATORS` | 4 (8 for `int4`) | With an `int8` or `int4` recurrent state: FP16 rank-one outlier terms kept beside it (0 to 16) |
+| `SHARAR_GDN_PREFILL` | `auto` | GDN prefill kernels: `auto` (CuTe on SM12x where supported), `cute` or `triton` |
+| `SHARAR_TRUNK_KEEP_BF16` | unset | A diagnostic: a regex of Flash-Next trunk projections kept in BF16 |
+| `SHARAR_DEBUG_SYNC` | off | `1` synchronizes after each phase, so an asynchronous CUDA fault names the phase and batch that launched it |
+| `SHARAR_CUDA_ARCH` | `12.1a` | The architecture the CUDA kernels built on first use target |
+| `SHARAR_CLAUDE_MODEL` | `claude-sharar-qwen3.8` | The model id `sharar launch claude` gives Claude Code (it accepts only ids containing "claude") |
+| `SHARAR_CLAUDE_CONFIG` | `~/.claude-sharar` | Claude Code's configuration directory under `sharar launch claude`, apart from the user's own |
+| `SHARAR_EVALS` | unset (the `eval` group) | A sharar-eval checkout for `tools/evaluate.py`, `tools/h2h_pr.py` and `tools/lossy_gate.py` (`--evals`) |
+| `SHARAR_EVALS_PYTHON` | unset | That checkout's Python (`--python`; default its `.venv`) |
+
+### Adaptive verification (DFlash2)
+
+DFlash2 drafts its whole block in one forward, then verifies only the drafts worth their time
+(`engine/depth.RowBudget`, `SHARAR_SPEC_POLICY=budget`):
+
+- **Scores.** Each draft's probability of acceptance, given the drafts before it were accepted:
+  `sigmoid(w . (logit p, gap, j / 15, 1))`, with p the top probability of the lattice row the earlier drafts select,
+  gap its top-1 minus top-2 log-probability, and w the pinned draft's calibration (`DRAFT_CALIBRATION` in the target's
+  config; `tools/fit_draft_calibration.py` fits one; a `--draft` checkpoint scores the raw probability). A log-odds
+  shift per position, learned from the positions the target tested, corrects it while serving. Request i's draft j is
+  worth its survival S_ij = q_i1 ... q_ij: acceptance stops at the first rejection.
+- **Costs.** After graph capture every verify graph is timed per batch bucket and row total (random tokens, 4K cached
+  tokens a row; on two Sparks the slower rank's time); what the graphs do not cover (drafting, acceptance, feedback,
+  longer contexts) is a moving mean of each round's GPU time beyond its graph. The table carries the hardware's steps:
+  the 27B's 3-bit copies serve calls of at most 128 rows.
+- **Rule.** Verify the seats that maximize sum(S) - rate x cost(rows), rate the batch bucket's measured tokens per ms.
+  One scored round in 16 verifies every draft, so deep positions keep being tested.
+- **Packed verification.** Each request verifies its own number of drafts (`spec_graphs.RaggedVerifyGraphs`, row
+  totals per batch bucket): seats go to each request in order of S, so a confident request verifies deep and an unsure
+  one shallow. Steady state, the 27B's throughput settings at 10K context: x1.04 at 8 requests and x1.12 at 16 against
+  one depth for the batch with the same scores, equal at 1-4. Packed rounds accept on the host:
+  `SHARAR_DEVICE_ACCEPT` applies to fixed-depth rounds only. The rows a round verifies follow timed costs, so two
+  servers of the same build can verify differently and part at a near tie (one greedy h2h reply in 18 did); `exact`
+  keeps the fixed depth so its runs repeat.
+- **Sampled batches** verify one depth for every request, chosen before drafting from the drafts' survival per
+  position over past rounds, so rejection sampling stays exact; a greedy batch with a constrained request (a grammar)
+  verifies every request at the cap.
+- **Where it is on.** The 27B's `throughput`, against its fixed 15 (one Spark, greedy / T 0.7): 8 requests x1.14 /
+  x1.09, 16 x1.29 / x1.21; two Sparks +9 / +18% greedy (measured before the one-pass relaxed rule); the quick suite
+  equal (pooled -0.4 pp, p 0.74). Not `fast`: at 1 and 4 requests it measured x0.96 to x1.05, and it costs a host wait
+  every round and eleven packed graphs a batch bucket (`SHARAR_SPEC_POLICY=budget` turns it on). Not Flash-Next
+  (`SHARAR_SPEC_POLICY=budget` is refused there): under its expert budget a verify forward reads the same experts
+  whatever its rows, so verifying fewer saves nothing, and its depth caps (the experts each verified token keeps) leave
+  only moving rows between requests, measured at +1 to +5% greedy and slower under sampling.
+
+`/get_server_info` reports what it learned under `spec_stats.budget`: acceptance per position (greedy and sampled),
+the shift, tokens per ms and overhead per bucket, and the row totals (scored rounds) and depths (sampled or
+constrained rounds) it verified. MTP keeps its own depth tables and adaptive depth (`SHARAR_SPEC_DEPTHS`, `SHARAR_SPEC_STEP_COST`
+above).
 
 ### NVFP4 KV
 
@@ -122,7 +184,8 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 | Knob | exact | fast (default) | throughput |
 |---|---|---|---|
 | Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-3 within 2.0 logits; Flash-Next DFlash2 top-2 within 1.0; Bolt off | as fast |
-| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_DEFAULT_SAMPLED`, `SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD`) | off | Flash-Next top-3 within 2.0 (DFlash2 top-2 within 1.0); the 27B top-2 within 1.0 (at 3:2.0 its sampled thinking looped in Claude Code sessions) | as fast |
+| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_SOFT`, `accept_soft` in the [API](api.md)) | 0 (exact) | Flash-Next s = 0.5; the 27B, Nemotron and Bolt 0 (exact) | as fast |
+| Sampled MTP drafts (`SHARAR_MTP_SAMPLE`, [below](#sampled-mtp-drafts)) | off | on where MTP drafts | as fast |
 | Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next and Nemotron also the routed experts; Bolt's trunk and vocabulary head) | off | on | on |
 | Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next and Nemotron | as fast |
 | NVFP4 KV cache (`SHARAR_KV_FORMAT`, [below](#nvfp4-kv)) | FP8 | one Spark: NVFP4 (the 27B and Flash-Next; Nemotron serves FP8 only); two Sparks FP8 | as fast |
@@ -131,9 +194,16 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 | Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
 | Reduced recurrent state (`SHARAR_SSM_STATE`) | off (FP32) | Nemotron: FP16 with stochastic rounding; Bolt: int8; else FP32 | 8-bit GDN state; Nemotron FP16 with stochastic rounding; Bolt int8 |
 
-Relaxed acceptance accepts a drafted token the target ranks within its top-k and within a logit margin of its
-argmax, so outputs are no longer the target's exact greedy continuation; a request can pin exact acceptance with
-`accept_top_k: 1` ([API](api.md)). The 3-bit copies (3.25 bits per weight, tensor-core kernels for calls of at
+Relaxed acceptance for greedy requests accepts a drafted token the target ranks within its top-k and within a logit
+margin of its argmax, so outputs are no longer the target's exact greedy continuation; a request can pin exact
+acceptance with `accept_top_k: 1` ([API](api.md)). Sampled requests have one rule, s: a drafted token y is also
+accepted when u · q(y) < e^s · p(y), so no token comes out more than e^s times as often as the target's law gives
+it; `accept_soft: 0` pins exact sampling. Sampled with thinking on at 4 requests on one Spark, s = 0.5 decodes
+Flash-Next with MTP at 216 tok/s against 183 exact, and the 27B with DFlash2 at 195 against 165. On GPQA-D with thinking
+at a 64K cap (Flash-Next, 99 items, paired) s = 0.5 scored 81.8% against 84.8% exact (p 0.51) with answers 18% longer,
+so on long reasoning the faster decode buys little: `fast` sets s = 0.5 on Flash-Next and keeps the 27B exact.
+Accepting outright every draft within a K:M rule (257 and 196) cost long reasoning its accuracy: those tokens came out
+at the drafter's probability rather than the target's. The 3-bit copies (3.25 bits per weight, tensor-core kernels for calls of at
 most 128 rows on the 27B, 64 on Flash-Next) cover the 27B's MLPs, FP8 projections and FP8 draft (+9.8 GiB resident) and Flash-Next's trunk and FP8 DFlash2 draft; Flash-Next's
 3-bit routed experts replace the NVFP4 ones at every row count (17 GiB less resident). The 27B's lm_head keeps its
 original format; Flash-Next's has a 3-bit copy, read by calls of at most 64 rows (decode, verify and DFlash2's draft
@@ -171,6 +241,25 @@ Four of the knobs take more than the table shows:
 
 A new lossy option enters `fast` (and so `throughput`) only through the lossy-change gate
 ([CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option)).
+
+
+### Sampled MTP drafts
+
+With `SHARAR_MTP_SAMPLE=1` a batch with a sampled request does not draft the MTP head's argmax: each step draws its
+draft from the request's own law (its temperature, top-k and top-p) over the draft head's 16 best tokens, on
+Flash-Next and Nemotron the 2-bit head's shortlist rescored by the target's FP8 rows. The draw is a Philox uniform at the request's draft offset
+(engine/sampling_rng.py), so a seeded request stays reproducible; the drafted token feeds the next MTP step. The
+verifier gets that law q and its candidates and accepts each draft with probability min(1, p/q), sampling the
+residual max(p - q, 0) at the first rejection (engine/rejection.py; on the device with `SHARAR_DEVICE_ACCEPT`): what is
+emitted is the target's law p whatever q is, and a token outside the candidates still comes out through the residual.
+An argmax draft is accepted with probability p(argmax); a sampled one with sum over tokens of min(p, q). The sampled
+rule s tests the draft against the same q (u · q(y) < e^s · p(y)), so its bound holds as with any drafter.
+
+Measured on the SGLang port (Flash-Next QAD 3-bit, MTP depth 4, H100, 40 GPQA-Diamond prompts, T 1.0, top-p 0.95,
+top-k 20), tokens a round: argmax drafts 2.55 exact; sampled drafts 3.13 exact (3.15 on the head's top 16, 3.07-3.13 at
+draft temperatures 0.8-1.3, so drafts use the request's own); +16-19% tok/s at 4 and 16 requests over argmax exact.
+On one Spark (Flash-Next `fast`, sampled with thinking on, 4 requests) sampled drafts decode 183 tok/s exact and 216 at
+the profile's s = 0.5. Greedy requests are unchanged (argmax drafts and `SHARAR_ACCEPT_DEFAULT`).
 
 ## Request traces
 

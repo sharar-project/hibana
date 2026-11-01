@@ -52,21 +52,29 @@ def test_an_explicit_setting_wins_over_the_profile(env, explicit):
 
 
 def test_profile_knobs():
-    pick = lambda p, t: {k: launch.profile_defaults(p, t)[k] for k in ("SHARAR_ACCEPT_DEFAULT", "SHARAR_ACCEPT_DEFAULT_SAMPLED", "SHARAR_W3_DECODE")}  # noqa: E731
-    assert pick("exact", "qwen38") == {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "0"}
-    assert pick("fast", "qwen38") == pick("fast", "flashnext") == {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "1", "SHARAR_W3_DECODE": "1"}
+    pick = lambda p, t: {k: launch.profile_defaults(p, t)[k] for k in ("SHARAR_ACCEPT_DEFAULT", "SHARAR_ACCEPT_SOFT", "SHARAR_W3_DECODE")}  # noqa: E731
+    assert pick("exact", "qwen38") == {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_SOFT": "0", "SHARAR_W3_DECODE": "0"}
+    assert pick("fast", "qwen38") == {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_SOFT": "0", "SHARAR_W3_DECODE": "1"}
+    assert pick("fast", "flashnext") == {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_SOFT": "0.5", "SHARAR_W3_DECODE": "1"}
     with pytest.raises(ValueError, match="unknown serving profile"):
         launch.profile_defaults("turbo", "qwen38")
     with pytest.raises(ValueError, match="choose from exact, fast, throughput"):
         launch.profile_defaults("balanced", "qwen38")
 
 
-@pytest.mark.parametrize("profile, target, threshold", [
-    ("fast", "qwen38", "2:1.0"), ("throughput", "qwen38", "2:1.0"), ("fast", "flashnext", None), ("throughput", "flashnext", None),
-    ("exact", "qwen38", None)])
-def test_the_27b_samples_at_a_tighter_threshold_under_fast(profile, target, threshold):
-    # at 3:2.0 the 27B's sampled thinking looped to max_tokens in Claude Code sessions, at 2:1.0 it did not
-    assert launch.profile_defaults(profile, target).get("SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD") == threshold
+@pytest.mark.parametrize("profile, target, proposer, soft", [
+    ("fast", "qwen38", None, "0"), ("throughput", "qwen38", None, "0"), ("fast", "flashnext", None, "0.5"),
+    ("fast", "flashnext", "dflash2", "0.5"), ("throughput", "flashnext", None, "0.5"), ("exact", "qwen38", None, "0"),
+    ("exact", "flashnext", None, "0")])
+def test_sampled_requests_get_one_bounded_rule(profile, target, proposer, soft):
+    p = launch.profile_defaults(profile, target, proposer=proposer)
+    assert p["SHARAR_ACCEPT_SOFT"] == soft and not any("SAMPLED" in k for k in p)
+
+
+@pytest.mark.parametrize("value", ["inf", "nan", "-0.5", "x"])
+def test_accept_soft_must_be_finite_and_nonnegative(env, value):
+    with pytest.raises(ValueError, match="SHARAR_ACCEPT_SOFT"):
+        resolve({**env, "SHARAR_ACCEPT_SOFT": value}, "27b", "fast")
 
 
 @pytest.mark.parametrize("profile, target, w3", [
@@ -166,8 +174,11 @@ def test_the_engine_gets_explicit_flags_and_its_environment(env, tmp_path):
     args = s.engine_args()
     assert args[args.index("--port") + 1] == "30001" and args[args.index("--spec") + 1] == "15"
     assert args[args.index("--context-length") + 1] == "262144" and args[args.index("--draft-precision") + 1] == "fp8"
-    assert args[args.index("--accept-default") + 1] == "3:2.0" and args[args.index("--accept-default-sampled-threshold") + 1] == "2:1.0"
+    assert args[args.index("--accept-default") + 1] == "3:2.0" and args[args.index("--accept-soft") + 1] == "0"
     assert "--draft" not in args and args[args.index("--traces") + 1] == str(s.traces)
+    assert not any("sampled" in a for a in args)
+    soft = resolve({**env, "SHARAR_DRAFT": "pinned", "SHARAR_ACCEPT_SOFT": "0.25"}, "27b", "fast").engine_args()
+    assert soft[soft.index("--accept-soft") + 1] == "0.25"
     e = s.engine_env(tmp_path / "w3")
     assert e["SHARAR_W3_CHECKPOINT"] == str(tmp_path / "w3") and e["SHARAR_SSD_DIR"] == str(s.ssd)
     assert "SHARAR_DRAFT" not in e and "SHARAR_TRACES" not in e  # the flags carry them
@@ -301,7 +312,7 @@ def test_profile_depths_stay_within_a_lower_batch_limit(env):
     cases = {("throughput", "64"): {"mtp": "16:3,32:3,64:3", "dflash2": "16:3,32:3,64:3"},
              ("throughput", "100"): {"mtp": "16:3,32:3,64:3,100:3", "dflash2": "16:3,32:3,64:3,100:3"},
              ("throughput", "12"): {"mtp": "12:3", "dflash2": "12:3"},
-             ("fast", "3"): {"mtp": "2:4,3:4", "dflash2": "2:7,3:7"}}
+             ("fast", "3"): {"mtp": "2:7,3:6", "dflash2": "2:7,3:7"}}
     for (profile, batch), want in cases.items():
         for proposer, depths in want.items():
             s = resolve(env, "flashnext", profile, overrides={"SHARAR_PROPOSER": proposer, "SHARAR_MAX_BATCH": batch})
@@ -346,3 +357,31 @@ def test_host_floor_setting(env, tmp_path):
             resolve(env, "flashnext", overrides={"SHARAR_HOST_FLOOR_GIB": bad})
     with pytest.raises(ValueError, match="SHARAR_MIN_AVAILABLE_KIB is retired"):  # main's guard setting, e.g. its 16 GiB
         resolve(env, "flashnext", overrides={"SHARAR_MIN_AVAILABLE_KIB": str(16 * 2**20)})
+
+
+def test_adaptive_verification_for_dflash2_in_throughput(env):
+    # the 27B's DFlash2 verifies what its drafts' scores pay for in `throughput`, on one Spark or two; `fast` and
+    # `exact` keep the fixed depth; Flash-Next keeps its depth tables and refuses the policy; MTP keeps its own
+    for tp in (1, 2):
+        assert launch.profile_defaults("throughput", "qwen38", tp=tp)["SHARAR_SPEC_POLICY"] == "budget"
+        for profile in ("fast", "throughput"):
+            assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "flashnext", tp=tp, proposer="dflash2")
+            assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "flashnext", tp=tp)
+            assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "qwen38", tp=tp, proposer="mtp")
+        for profile in ("exact", "fast"):
+            assert "SHARAR_SPEC_POLICY" not in launch.profile_defaults(profile, "qwen38", tp=tp)
+    assert resolve(env, "27b", "throughput", overrides={"SHARAR_SPEC_POLICY": "fixed"}).get("SHARAR_SPEC_POLICY") == "fixed"
+    assert resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "budget"}).get("SHARAR_SPEC_POLICY") == "budget"
+    with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY=budget"):
+        resolve(env, "flashnext", "fast", overrides={"SHARAR_PROPOSER": "dflash2", "SHARAR_SPEC_POLICY": "budget"})
+    with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY"):
+        resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "auto"})
+    # only the 27B's DFlash2 with drafts: the profile's policy steps aside for plain decode, an explicit one is refused
+    assert resolve(env, "27b", "throughput", overrides={"SHARAR_SPEC": "0"}).get("SHARAR_SPEC_POLICY") == ""
+    for overrides in ({"SHARAR_SPEC": "0"}, {"SHARAR_PROPOSER": "mtp", "SHARAR_DRAFT_PRECISION": "bf16"},
+                      {"SHARAR_SPEC_DEPTHS": "16:0"}, {"SHARAR_SPEC_STEP_COST": "0.1"}):
+        with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY=budget"):
+            resolve(env, "27b", "fast", overrides={"SHARAR_SPEC_POLICY": "budget", **overrides})
+    with pytest.raises(ValueError, match="SHARAR_SPEC_POLICY=budget"):
+        resolve(env, "nemotron", "fast", overrides={"SHARAR_SPEC_POLICY": "budget"})
+    assert resolve(env, "27b", "throughput", overrides={"SHARAR_SPEC_DEPTHS": "16:4"}).get("SHARAR_SPEC_POLICY") == "budget"

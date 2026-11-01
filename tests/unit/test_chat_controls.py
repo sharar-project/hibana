@@ -143,3 +143,33 @@ def test_chat_default_temperature_is_openais(body, expected):
         assert (params.temperature, params.greedy) == expected
         assert (params.top_p, params.top_k) == (0.95, 20)
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('part', [{'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,iVBOR'}},
+                                  {'type': 'input_audio', 'input_audio': {'data': '', 'format': 'wav'}}])
+def test_media_in_a_user_turn_is_rejected_before_render_and_submit(part):
+    """The served models read text only: a reply about an image the model never saw is worse than a 400."""
+    async def scenario():
+        engine = SimpleNamespace(submit=AsyncMock())
+        tok, template = SimpleNamespace(encode=Mock()), SimpleNamespace(render=Mock())
+        app = create_app(engine, tok, template, {})
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+            response = await client.post('/v1/chat/completions', json={
+                'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': 'what is this?'}, part]}]})
+        assert response.status_code == 400
+        assert response.json()['error']['type'] == 'invalid_request_error'
+        assert part['type'] in response.json()['error']['message']
+        template.render.assert_not_called()
+        engine.submit.assert_not_awaited()
+    asyncio.run(scenario())
+
+
+def test_an_image_a_tool_returned_becomes_a_text_note():
+    from sharar.api.server import _text_only
+    turns = [{'role': 'user', 'content': 'read board.png'},
+             {'role': 'tool', 'tool_call_id': 'c1', 'content': [{'type': 'text', 'text': 'board.png:'},
+                                                                 {'type': 'image_url', 'image_url': {'url': 'x'}}]}]
+    out = _text_only(turns)
+    assert out[0] is turns[0]
+    assert out[1]['content'] == [{'type': 'text', 'text': 'board.png:'},
+                                 {'type': 'text', 'text': '[image omitted: this model reads text only and cannot see it]'}]

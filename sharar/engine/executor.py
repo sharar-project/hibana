@@ -700,16 +700,20 @@ class Executor:
         if self.max_batch > 4:
             self.flush_cache()  # sixteen live warmup rows need every state slot the plan guarantees
         if self.spec is not None:
-            # Two speculative rounds at batch 1 and 2 so the first real request
-            # does not pay the lazy kernel loads of the verify/accept path. The
-            # random prompts can emit EOS; ignore it so every step keeps four live rows.
-            spec_params = SamplingParams(max_new_tokens=12 if self.max_batch <= 4 else 64, ignore_eos=True)
+            # A speculative round at batch 1, up to 2 and each captured size up to 16, so no
+            # real request pays the lazy kernel loads of the verify/accept path. The
+            # random prompts can emit EOS; ignore it so every request stays live, and
+            # leave each request tokens for every round at the full depth (adaptive
+            # verification may verify all of it).
+            rounds = 2 + sum(1 for size in (4, 8, 16) if size <= self.max_batch)
+            spec_params = SamplingParams(max_new_tokens=max(12 if self.max_batch <= 4 else 64, 1 + rounds * self.spec.steps),
+                                         ignore_eos=True)
             d = self.admit(random_ids(50, 14, *text), spec_params)
             e = self.admit(random_ids(60, 15, *text), spec_params)
             self.prefill(d)
             self.prefill(e)
             self.decode_step([d])
-            self.decode_step([d, e])
+            self.decode_step([d, e][:self.max_batch])
             live = [d, e]
             for size in (4, 8, 16):  # every captured size, so no round pays a first-use compile
                 if self.max_batch < size:

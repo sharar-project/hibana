@@ -8,6 +8,7 @@ imports torch, so the launcher stays fast and testable on a CPU.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -53,9 +54,9 @@ SSM_STATES = {"gdn": ("fp32", "int8", "int4"), "mamba2": ("fp32", "fp16_sr", "in
 
 # The serving profiles: the default of every speed/fidelity knob a setting does not fix.
 #   exact     the target's own distribution: exact acceptance, no lossy weight copies (benchmarks)
-#   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy requests and
-#             Flash-Next's sampled ones, top-2 within 1.0 for the 27B's sampled ones (at 3:2.0 its sampled thinking looped
-#             in Claude Code sessions), the calibrated 3-bit copies, device-resident acceptance on Flash-Next,
+#   fast      (default) everything measured to be worth it: relaxed top-3 within 2.0 logits for greedy requests,
+#             relaxed s = 0.5 for sampled ones (no token more than e^0.5 times as often as the target's law gives it),
+#             the calibrated 3-bit copies, device-resident acceptance on Flash-Next,
 #             and Flash-Next's draft depth per request (up to 8 for one request, 4 for two or more; the others
 #             verify 4 drafts), and Flash-Next's budgeted expert selection (a decode or verify forward reads at most
 #             12 experts a request, 16 for a request alone, 64 in all, chosen by router probability across its tokens;
@@ -79,7 +80,7 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
         # exact: the checkpoint encodings, all nine routed experts, FP32 state and exact verification of LiLiCorr's
         # seven drafts. Routed experts on b12x's fused MoE (BF16 activations, as vLLM serves them).
         p = {"SHARAR_SPEC": "7", "SHARAR_W3_DECODE": "0", "SHARAR_ACCEPT_DEFAULT": "off",
-             "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_DEVICE_ACCEPT": "0", "SHARAR_MAX_BATCH": "4",
+             "SHARAR_ACCEPT_SOFT": "0", "SHARAR_DEVICE_ACCEPT": "0", "SHARAR_MAX_BATCH": "4",
              "SHARAR_SSM_STATE": "fp32", "SHARAR_KV_FORMAT": "fp8", "SHARAR_SSD": "1",
              "SHARAR_MOE_KEEP": "0", "SHARAR_MOE_BUDGET": "0", "SHARAR_BOLT_EXPERTS": "b12x"}
         if profile == "exact":
@@ -100,14 +101,23 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
         return nemotron_defaults(profile)
     flashnext = target == "flashnext"
     if profile == "exact":
-        p = {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "0", "SHARAR_DEVICE_ACCEPT": "0"}
+        p = {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_SOFT": "0", "SHARAR_W3_DECODE": "0", "SHARAR_DEVICE_ACCEPT": "0"}
     elif profile in ("fast", "throughput"):
-        p = {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "1", "SHARAR_W3_DECODE": "1",
+        # sampled requests: Flash-Next s = 0.5, the 27B exact. Sampled with thinking on, 4 requests, one Spark: s = 0.5
+        # decodes Flash-Next (sampled MTP drafts) at 216 tok/s against 183 exact, the 27B (DFlash2) at 195 against 165.
+        # On GPQA-D thinking at a 64K cap (Flash-Next, 99 items, paired) s = 0.5 scored 81.8% against 84.8% exact
+        # (p 0.51) with 18% longer answers, so the faster decode buys little on long reasoning; the 27B stays exact.
+        # Accepting outright every draft within the greedy K:M rule (257 and 196 tok/s) cost long reasoning its
+        # accuracy: those tokens came out at the drafter's probability.
+        p = {"SHARAR_ACCEPT_DEFAULT": "3:2.0", "SHARAR_ACCEPT_SOFT": "0.5" if flashnext else "0", "SHARAR_W3_DECODE": "1",
              "SHARAR_DEVICE_ACCEPT": "1" if flashnext else "0"}
-        if not flashnext:
-            p["SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"] = "2:1.0"
     else:
         raise ValueError(f"unknown serving profile {profile!r} (choose from {', '.join(PROFILE_NAMES)})")
+    if profile != "exact" and (proposer or ("mtp" if flashnext else "dflash2")) == "mtp":
+        # sampled MTP drafts (proposers/mtp.draft_laws): a sampled request draws each draft from its own law over the
+        # draft head's 16 rescored candidates, and the sampled rule tests the draft against that law, which raises
+        # acceptance without changing what the rule emits (operations.md#sampled-mtp-drafts)
+        p["SHARAR_MTP_SAMPLE"] = "1"
     p["SHARAR_MAX_BATCH"] = "4"
     if flashnext and profile != "exact":
         # budgeted expert selection in decode and verify forwards: at most 12 experts a request (16 for a request alone),
@@ -132,15 +142,26 @@ def profile_defaults(profile: str, target: str, flashnext_experts: str = "w3", t
             if profile == "exact":
                 p["SHARAR_SPEC"] = "7"
             else:
-                # top-2 within 1.0, the 27B's sampled rule: at Flash-Next's top-3 within 2.0, DFlash2 lost 3.3 points of
-                # GSM8K-300 one request at a time against MTP with its 3-bit draft head (-6.2 to -0.4); at 2:1.0 it ties
-                # (-0.3, -2.9 to +2.2) for 5% fewer tokens a round there
+                # top-2 within 1.0: at Flash-Next's top-3 within 2.0, DFlash2 lost 3.3 points of GSM8K-300 one request
+                # at a time against MTP with its 3-bit draft head (-6.2 to -0.4); at 2:1.0 it ties (-0.3, -2.9 to +2.2)
+                # for 5% fewer tokens a round there
                 p["SHARAR_ACCEPT_DEFAULT"] = "2:1.0"
                 if profile == "fast":
                     p.update(SHARAR_SPEC="9", SHARAR_SPEC_DEPTHS="2:7,4:7")
         elif profile == "fast":  # adaptive depth: h2h greedy median 92.2 -> 101.3 tok/s, 4 streams within noise
-            # two Sparks: 0.14 drafted chat and prose too deep (-12%, -7% against depth 4); 0.2 keeps them within noise
-            p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14" if tp == 1 else "0.2", SHARAR_SPEC_DEPTHS="2:4,4:4")
+            # two Sparks: 0.14 drafted chat and prose too deep (-12%, -7% against depth 4); 0.2 keeps them within noise.
+            # One Spark, two to four requests: caps 7 and 6, which a batch reaches when one request accepts well (fixed
+            # depth, 512 greedy tokens: two requests 184.0 tok/s at 7 against 171.1 at 4, four 238.7 at 6 against 230.5)
+            p.update(SHARAR_SPEC="8", SHARAR_SPEC_STEP_COST="0.14" if tp == 1 else "0.2",
+                     SHARAR_SPEC_DEPTHS="2:7,4:6" if tp == 1 else "2:4,4:4")
+    if profile == "throughput" and target == "qwen38" and (proposer or "dflash2") == "dflash2":
+        # adaptive verification (engine/depth.RowBudget): DFlash2's calibrated draft scores and the measured verify
+        # costs decide what each round verifies, a depth per request in packed graphs (one Spark against fixed 15,
+        # greedy / T 0.7: 8 requests x1.14 / x1.09, 16 x1.29 / x1.21; two Sparks +9 / +18% greedy; quick suite equal).
+        # `fast` keeps the fixed depth: at 1 and 4 requests it measured x0.96-1.05, for a host wait every round and
+        # eleven packed graphs a bucket; `exact` keeps it so its runs repeat. Flash-Next keeps its depth tables: under
+        # its expert budget verify rows cost little, so verifying fewer saved nothing
+        p["SHARAR_SPEC_POLICY"] = "budget"
     if profile != "exact" and tp == 1:
         # NVFP4 KV (cache/kv_pool.py): 4.5 bits a value where FP8 takes 8, so the same memory holds more tokens (the
         # 27B 16/9, Flash-Next ~1.4 beside its BF16 index keys): long contexts and concurrent requests, more cached
@@ -170,14 +191,15 @@ def nemotron_defaults(profile: str) -> dict[str, str]:
     if profile not in PROFILE_NAMES:
         raise ValueError(f"unknown serving profile {profile!r} (choose from {', '.join(PROFILE_NAMES)})")
     # exact: depth 3, the best exact depth (one request 38.0 tok/s; depth 4 37.7)
-    p = {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_DEFAULT_SAMPLED": "0", "SHARAR_W3_DECODE": "0",
+    p = {"SHARAR_ACCEPT_DEFAULT": "off", "SHARAR_ACCEPT_SOFT": "0", "SHARAR_W3_DECODE": "0",
          "SHARAR_DEVICE_ACCEPT": "0", "SHARAR_MAX_BATCH": "4", "SHARAR_SPEC": "3", "SHARAR_SSD": "1"}
     if profile == "exact":
         return p
-    # relaxed top-3 within 2.0 logits for greedy and sampled requests, device-resident acceptance and both calibrated
-    # 3-bit copies (h2h at one request, depth 5: 54.6 -> 81.0 tok/s); depth up to 6 for two requests and 5 for three or
-    # four (two requests, 512 greedy tokens: 128.6 tok/s at 6 against 116.3 at 4; four: 184.4 at 5 against 168.6)
-    p.update(SHARAR_ACCEPT_DEFAULT="3:2.0", SHARAR_ACCEPT_DEFAULT_SAMPLED="1", SHARAR_DEVICE_ACCEPT="1",
+    # relaxed top-3 within 2.0 logits for greedy requests (sampled ones exact, from sampled MTP drafts; s unmeasured
+    # here), device-resident acceptance and both calibrated 3-bit copies (h2h at one request, depth 5: 54.6 -> 81.0
+    # tok/s); depth up to 6 for two requests and 5 for three or four (two requests, 512 greedy tokens: 128.6 tok/s at 6
+    # against 116.3 at 4; four: 184.4 at 5 against 168.6)
+    p.update(SHARAR_ACCEPT_DEFAULT="3:2.0", SHARAR_ACCEPT_SOFT="0", SHARAR_MTP_SAMPLE="1", SHARAR_DEVICE_ACCEPT="1",
              SHARAR_SPEC_DEPTHS="2:6,4:5", SHARAR_W3_DECODE="1")
     # adaptive depth for one request, up to 8 (engine/depth.AcceptanceDepth, docs/nemotron.md#adaptive-depth): a drafted
     # token costs about 2.2 ms against a depth-1 round's 39-41 ms, so 0.065; h2h against depth 5 greedy +3%, t=0.7 +6%
@@ -324,11 +346,8 @@ class Settings:
                 "--context-length", str(self.max_context), "--max-batch", self.get("SHARAR_MAX_BATCH", "4"),
                 "--draft-precision", self.get("SHARAR_DRAFT_PRECISION", "bf16"),
                 "--accept-default", self.get("SHARAR_ACCEPT_DEFAULT", "off")]
-        accept, sampled = self.get("SHARAR_ACCEPT_DEFAULT", "off"), self.get("SHARAR_ACCEPT_DEFAULT_SAMPLED", "0")
-        if sampled == "1" and accept != "off":
-            args.append("--accept-default-sampled")
-            if self.get("SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD"):
-                args += ["--accept-default-sampled-threshold", self.get("SHARAR_ACCEPT_DEFAULT_SAMPLED_THRESHOLD")]
+        if self.get("SHARAR_ACCEPT_SOFT"):
+            args += ["--accept-soft", self.get("SHARAR_ACCEPT_SOFT")]
         if self.get("SHARAR_SPEC_DEPTHS") and self.spec:
             args += ["--spec-depths", self.get("SHARAR_SPEC_DEPTHS")]
         if self.draft_dir is not None:
@@ -338,6 +357,13 @@ class Settings:
         if tp > 1:
             args += ["--tp", str(tp)]
         return args
+
+
+def _finite_nonnegative(text: str) -> bool:
+    try:
+        return math.isfinite(float(text)) and float(text) >= 0
+    except ValueError:
+        return False
 
 
 def _check(cond: bool, message: str) -> None:
@@ -376,6 +402,9 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
         if wider and batch not in kept:
             kept[batch] = wider[0]
         values["SHARAR_SPEC_DEPTHS"] = ",".join(f"{b}:{d}" for b, d in sorted(kept.items()))
+    if defaults.get("SHARAR_SPEC_POLICY") == values.get("SHARAR_SPEC_POLICY") == "budget" and values.get("SHARAR_SPEC") == "0" \
+            and "SHARAR_SPEC_POLICY" not in {**user, **(overrides or {})}:
+        values.pop("SHARAR_SPEC_POLICY")  # plain decode: the profile's adaptive verification has nothing to verify
     values["SHARAR_PROFILE"] = profile
 
     home = Path(env.get("HOME") or Path.home())
@@ -386,12 +415,14 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
 
     # validation (the engine checks the rest)
     _check(values.get("SHARAR_DRAFT_PRECISION", "bf16") in ("bf16", "fp8"), "SHARAR_DRAFT_PRECISION must be bf16 or fp8")
-    for key in ("SHARAR_W3_DECODE", "SHARAR_DEVICE_ACCEPT", "SHARAR_ACCEPT_DEFAULT_SAMPLED"):
+    for key in ("SHARAR_W3_DECODE", "SHARAR_DEVICE_ACCEPT", "SHARAR_MTP_SAMPLE"):
         _check(values.get(key, "0") in ("0", "1"), f"{key} must be 0 or 1")
+    _check(_finite_nonnegative(values.get("SHARAR_ACCEPT_SOFT", "0")), "SHARAR_ACCEPT_SOFT must be a finite number >= 0 (0: exact)")
     batch = values.get("SHARAR_MAX_BATCH", "4")
     _check(batch.isdigit() and 1 <= int(batch) <= 128, "SHARAR_MAX_BATCH must be in [1, 128]")
     depths = values.get("SHARAR_SPEC_DEPTHS", "")
     _check(not depths or re.fullmatch(r"\d+:\d+(,\d+:\d+)*", depths) is not None, "SHARAR_SPEC_DEPTHS must be BUCKET:DEPTH pairs, e.g. 8:1,16:0")
+    _check(values.get("SHARAR_SPEC_POLICY", "fixed") in ("fixed", "budget"), "SHARAR_SPEC_POLICY must be fixed or budget")
     _check(values.get("SHARAR_FLASHNEXT_EXPERTS", "w3") in ("w3", "nvfp4"), "SHARAR_FLASHNEXT_EXPERTS must be w3 or nvfp4")
     _check(values.get("SHARAR_BOLT_EXPERTS", "b12x") in ("bf16", "fp8", "b12x"), "SHARAR_BOLT_EXPERTS must be bf16, fp8 or b12x")
     _check(values.get("SHARAR_DRAFT_HEAD", "fp8") in ("fp8", "w3", "w2"), "SHARAR_DRAFT_HEAD must be fp8, w3 or w2")
@@ -429,6 +460,16 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
         _check(kv_format in ("fp8", "sim-bf16"), "Bolt supports FP8 KV or sim-bf16 for parity")
     _check(proposer in ("mtp", "dflash2"), f"SHARAR_PROPOSER must be mtp or dflash2 (got {proposer!r})")
     _check(precision != "fp8" or (spec and proposer == "dflash2"), "FP8 draft precision requires enabled DFlash2 speculation")
+    if values.get("SHARAR_SPEC_POLICY") == "budget":
+        _check(name == "qwen38" and spec and proposer == "dflash2",
+               "SHARAR_SPEC_POLICY=budget (adaptive verification) serves the 27B's DFlash2 with SHARAR_SPEC above 0; "
+               "Flash-Next, Nemotron and MTP keep their depth tables (SHARAR_SPEC_POLICY=fixed)")
+        _check(not any(d == "0" for d in re.findall(r":(\d+)", depths)),
+               "SHARAR_SPEC_DEPTHS cannot name depth 0 (plain decode) under SHARAR_SPEC_POLICY=budget, which verifies "
+               "at least one draft a request: set SHARAR_SPEC_POLICY=fixed")
+        _check(float(values.get("SHARAR_SPEC_STEP_COST") or 0) == 0,
+               "SHARAR_SPEC_STEP_COST (adaptive depth) and SHARAR_SPEC_POLICY=budget (adaptive verification) exclude "
+               "each other: the budget decides each request's depth itself")
     max_context = int(values.get("SHARAR_MAX_CONTEXT") or DEFAULT_CONTEXT)
     _check(2 <= max_context <= DEFAULT_CONTEXT, f"SHARAR_MAX_CONTEXT must be in [2, {DEFAULT_CONTEXT}]")
     if tp > 1:

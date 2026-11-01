@@ -130,7 +130,10 @@ buckets and a bucket at depth 0 decodes plainly while the proposer still ingests
 with `Capabilities.short_drafts` (MTP and DFlash2) gets `propose(..., depth=d)` and drafts only those `d` tokens (a
 DFlash2 round runs one block of the anchor and `d` masked rows), and its `capture_graphs(log, depths={d: buckets})`
 receives the verify graphs' pairs (DFlash2 captures a draft graph at each; MTP's one-step graphs serve every depth);
-others draft `k` and the first `d` are verified.
+others draft `k` and the first `d` are verified. A proposer with `Capabilities.scored_drafts` (DFlash2) fills
+`Proposal.acceptance` with each drafted position's probability of acceptance once `score_drafts` is set; adaptive
+verification (`engine/depth.RowBudget`) then has it draft `k` and decides after drafting what the round verifies:
+a depth per request in packed verify graphs, accepted on the host (a target without side inputs: the 27B).
 
 - `ingest_prefill(req, ids, start, result)` consumes each freshly computed chunk; `start(req, token)` publishes the
   first emitted token; `ready(req)` decides whether a request may enter speculation (otherwise it decodes plainly).
@@ -155,8 +158,11 @@ The driver verifies `[pending, proposal...]` with greedy prefix acceptance or ex
 truncates to EOS/budget. For sampled verification, probabilities are FP32 after temperature/top-k/top-p and all
 selector effects: dense q is `[B,k,V]`, sparse q and its unique support `[B,k,C]`, and `None` means point-mass
 proposals. The verifier accepts with `min(1,p[y]/q[y])`, samples a rejection from normalized `max(p-q,0)`, draws a
-target bonus after full acceptance and consumes no target draws past the first rejection. Each sampled request owns
-its generator, seeded or not. MTP proposals are point masses; a `greedy_only` proposer uses ordinary decode for
+target bonus after full acceptance and consumes no target draws past the first rejection; with `accept_soft` s > 0
+it also accepts y when u·q[y] < e^s·p[y] on the same draw u, the residual unchanged. Each sampled request owns
+its generator, seeded or not. MTP proposals are point masses, or with `SHARAR_MTP_SAMPLE` (on in `fast` and `throughput`)
+a sampled batch's drafts drawn from each request's law over the draft head's candidates, with that law as sparse q
+([operations](operations.md#sampled-mtp-drafts)); a `greedy_only` proposer uses ordinary decode for
 positive temperature. For an all-greedy DFlash2 batch, `kernels/draft_selection.py` walks the conditional selector
 lattice on the device with the same candidate rank and tie rules.
 
@@ -195,7 +201,8 @@ that declares `device_feedback`, `engine/accept_graphs.py` replaces the host's `
 captured graph per batch bucket of each verify depth: it decides acceptance with the host's rule
 (`engine/accept.py`) from the verify graph's static outputs, reconstructs the state and commits the convolution
 windows for exactly those counts, and calls the proposer's `feedback_device`; the host reads one packed result and
-only publishes. All-greedy batches take it; all-sampled batches of point-mass drafts (MTP, `top_k` at most 64, no
+only publishes. All-greedy batches take it; all-sampled batches of MTP drafts (point masses, or sampled drafts with q on
+the draft head's 16 candidates; `top_k` at most 64, no
 constraint) first replay a decision graph and fall back to the host when a row's distribution does not fit its
 candidates. Mixed batches, requests with more than `accept.MAX_STOPS` stop token ids and other proposers stay on the
 host path.

@@ -6,7 +6,7 @@
 #   Cleanup:  tools/ci/gb10.sh --cleanup
 #
 # Stages (each needs the one before it to pass, so old code is never tested):
-#   venv      the Python environment for this checkout: `uv sync --frozen --extra eval` into UV_PROJECT_ENVIRONMENT (default
+#   venv      the Python environment for this checkout: `uv sync --frozen --group eval` into UV_PROJECT_ENVIRONMENT (default
 #             ~/sharar-ci/venv, kept between runs; uv.lock decides what it holds)
 #   gpu       tests/unit and tests/gpu from it (`uv run pytest`, SHARAR_RUN_GPU=1, under the memory guard)
 #   serve     serve each target from it (`sharar serve <target>` in the foreground on port 30011, 32K context) and
@@ -24,7 +24,7 @@
 # "gave way" (exit 0). A skipped or interrupted nightly run is not recorded as tested.
 #
 # Settings come from ~/sharar-ci/gb10.env (SHARAR_CONFIG_FILE): SHARAR_HF_CACHE, SHARAR_RESULTS,
-# optionally SHARAR_FLASHNEXT_CACHE. sharar-eval is the `eval` extra of the environment the venv stage syncs.
+# optionally SHARAR_FLASHNEXT_CACHE. sharar-eval is the `eval` dependency group of the environment the venv stage syncs.
 set -Euo pipefail
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 cd "$(dirname "$SELF")/../.."
@@ -123,7 +123,7 @@ for root in filter(None, sys.argv[1:]):
 
 # ---- stages (each runs in its own session: `gb10.sh --stage NAME`) ----
 stage_venv() {
-  uv sync --frozen --quiet --extra eval
+  uv sync --frozen --quiet --group eval
 }
 
 # tests/unit too: some unit tests need the model or the GPU and only run here. Test temp files go in ci-out/ on
