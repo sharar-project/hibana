@@ -69,7 +69,13 @@ graph-safe key maintenance; once any row is past it, a second set of graphs sele
 (`kernels/qsa/selection.py` scores every visible group through the plan's page table in one Triton kernel, takes
 the top 512 of a fixed-width buffer and assembles the pages in a second kernel), so no shape depends on the context.
 `SHARAR_QSA_SPARSE_GRAPHS=0` keeps rows past the budget eager. Eager prefill computes the forward's indexer layout
-once (`FlashNextIndexer._plan`) and ranks 256 rows per top-k.
+once (`FlashNextIndexer._plan`) and ranks 256 rows per top-k. On SM121 its selection runs CUDA kernels with the same
+result (`kernels/qsa/score_exact.py`: the Triton scorer's FP32 order, 64 rows sharing each key load, and a two-pass
+top-512 with Torch's tie order): every chunk in `exact`, and in `fast` the chunks past 32K, where the optimized
+prefill kernels (`SHARAR_QSA_PREFILL_BACKEND`, [operations.md](operations.md#serving-profiles)) stop. One GB10, one
+cold prefill in 8K chunks (mean of 3 after a warmup), before -> after: `fast` 64K 19.36 -> 18.70 s and 128K
+43.63 -> 38.90 s (indexer 7.80 -> 3.29 s: scores 5.60 -> 2.28, top-k and assembly 1.68 -> 0.59); `exact` 64K
+19.95 -> 18.87 s and 128K 43.96 -> 38.92 s, with the same first tokens and greedy continuations.
 
 ## The MTP draft
 

@@ -240,7 +240,9 @@ Four of the knobs take more than the table shows:
 - **`SHARAR_QSA_PREFILL_BACKEND=original|auto|optimized`** (Flash-Next): `auto` runs the optimized SM121 sparse
   eager prefill through 32K where eligible and the original elsewhere; `optimized` requires it. Its score
   arithmetic and tie order differ, so `exact` keeps `original`; it makes 8K and 32K prefill 3-4% faster with
-  RULER v2 at 32K unchanged. `SHARAR_STABLE_NUMERICS=1` makes `auto` use the original.
+  RULER v2 at 32K unchanged. `SHARAR_STABLE_NUMERICS=1` makes `auto` use the original. The original's eager
+  prefill selection runs SM121 kernels with the same pages (`exact`, and `fast` past 32K: 128K prefill -11%,
+  [flashnext.md](flashnext.md#sparse-attention-past-2048-tokens)).
 
 A new lossy option enters `fast` (and so `throughput`) only through the lossy-change gate
 ([CONTRIBUTING](../CONTRIBUTING.md#judge-a-lossy-option)).
