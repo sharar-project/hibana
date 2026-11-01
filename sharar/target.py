@@ -178,13 +178,18 @@ class Target:
                 return repo, revision
         raise ValueError(f"{self.name} has no pinned {proposer} draft")
 
-    def snapshot_dir(self, cache_dir: str | os.PathLike | None = None) -> Path:
-        """Return the pinned snapshot directory or raise if it is incomplete."""
+    def cache_root(self, cache_dir: str | os.PathLike | None = None) -> Path:
+        """This target's model cache: `cache_dir`, its own cache setting, or SHARAR_HF_CACHE (HF_HOME)."""
         from sharar.engine.config import current
         cfg = current()
-        root = Path(cache_dir or cfg.model_cache(self.cache_env) or cfg.hf_cache or "")
-        if not str(root):
+        root = cache_dir or cfg.model_cache(self.cache_env) or cfg.hf_cache
+        if not root:
             raise FileNotFoundError("set SHARAR_HF_CACHE (or HF_HOME) to the model cache")
+        return Path(root)
+
+    def snapshot_dir(self, cache_dir: str | os.PathLike | None = None) -> Path:
+        """Return the pinned snapshot directory or raise if it is incomplete."""
+        root = self.cache_root(cache_dir)
         for base in (root, root / "hub"):
             snap = base / self.model_cache_key / "snapshots" / self.model_revision
             if (snap / "config.json").is_file() and (snap / "model.safetensors.index.json").is_file():

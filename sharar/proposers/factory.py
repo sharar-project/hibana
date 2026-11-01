@@ -13,8 +13,7 @@ def draft_snapshot(proposer, draft_dir=None, target=None):
     name, revision = target.draft_pin(proposer)
     if draft_dir is None:
         # In the target's cache or its hub/, where the launcher downloads it (launch/preflight.py checks both)
-        beside = target.snapshot_dir().parents[2]
-        root = beside.parent if beside.name == "hub" else beside
+        root = target.cache_root()
         snapshots = [base / ("models--" + name.replace("/", "--")) / "snapshots" / revision for base in (root, root / "hub")]
         return next((snap for snap in snapshots if (snap / "config.json").is_file()), snapshots[0])
     directory = Path(draft_dir)
