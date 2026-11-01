@@ -95,7 +95,7 @@ Further settings, for tuning, diagnostics and the tools (defaults from `engine/c
 | `SHARAR_CUDA_ARCH` | `12.1a` | The architecture the CUDA kernels built on first use target |
 | `SHARAR_CLAUDE_MODEL` | `claude-sharar-qwen3.8` | The model id `sharar launch claude` gives Claude Code (it accepts only ids containing "claude") |
 | `SHARAR_CLAUDE_CONFIG` | `~/.claude-sharar` | Claude Code's configuration directory under `sharar launch claude`, apart from the user's own |
-| `SHARAR_EVALS` | unset (the `eval` group) | A sharar-eval checkout for `tools/evaluate.py`, `tools/h2h-pr.py` and `tools/lossy-gate.py` (`--evals`) |
+| `SHARAR_EVALS` | unset (the `eval` group) | A sharar-eval checkout for `tools/evaluate.py`, `tools/h2h_pr.py` and `tools/lossy_gate.py` (`--evals`) |
 | `SHARAR_EVALS_PYTHON` | unset | That checkout's Python (`--python`; default its `.venv`) |
 
 ### Adaptive verification (DFlash2)

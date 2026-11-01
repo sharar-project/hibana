@@ -60,7 +60,7 @@ tier. NVIDIA publishes no 3-bit copies for Bolt: `fast` serves `w3-checkpoints/b
 directory (a link to a local calibration) or `SHARAR_W3_CHECKPOINT=DIR`, and without one the checkpoint encodings
 with a warning.
 
-One GB10, LiLiCorr at seven drafts, the 22 h2h prompts at 256 forced tokens (`tools/h2h-pr.py`'s method), tok/s for
+One GB10, LiLiCorr at seven drafts, the 22 h2h prompts at 256 forced tokens (`tools/h2h_pr.py`'s method), tok/s for
 one request (median / mean) and four streams; sampled at the checkpoint's defaults (temperature 1.0, top-p 0.95,
 top-k 20):
 

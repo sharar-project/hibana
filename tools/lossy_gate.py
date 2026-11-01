@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """The lossy-change gate: one scorecard, paired against a baseline profile, for a lossy speed option.
 
-    tools/lossy-gate.py --target flashnext --name fast --profile fast
-    tools/lossy-gate.py --target flashnext --name recal --profile fast --env SHARAR_W3_CHECKPOINT=/path/to/candidate
-    tools/lossy-gate.py --target qwen38 --name fewer-experts --profile exact --env SHARAR_X=1 --through full
-    tools/lossy-gate.py --target flashnext --name experts3 --profile fast --env SHARAR_W3_CHECKPOINT=/path --battery hard
-    tools/lossy-gate.py --target flashnext --name kv-fp4 --profile fast --env SHARAR_X=1 --battery long
+    tools/lossy_gate.py --target flashnext --name fast --profile fast
+    tools/lossy_gate.py --target flashnext --name recal --profile fast --env SHARAR_W3_CHECKPOINT=/path/to/candidate
+    tools/lossy_gate.py --target qwen38 --name fewer-experts --profile exact --env SHARAR_X=1 --through full
+    tools/lossy_gate.py --target flashnext --name experts3 --profile fast --env SHARAR_W3_CHECKPOINT=/path --battery hard
+    tools/lossy_gate.py --target flashnext --name kv-fp4 --profile fast --env SHARAR_X=1 --battery long
 
 A candidate is a serving profile (`--profile`, default exact) plus `--env KEY=VALUE` overrides, resolved for the
 target exactly as `sharar serve <target> --<profile>` resolves them with those settings in its environment
@@ -627,7 +627,7 @@ def summary_md(card: dict) -> str:
             for side in ("base", "cand"):
                 lines.append(f"Needles ({'baseline' if side == 'base' else 'candidate'}): {nd[side]['correct']}/{nd[side]['n']} correct; decode tok/s {nd[side]['decode_tps']}")
         lines.append("")
-    lines += ["Rules: `tools/lossy-gate.py` docstring and CONTRIBUTING.md (Judge a lossy option).", ""]
+    lines += ["Rules: `tools/lossy_gate.py` docstring and CONTRIBUTING.md (Judge a lossy option).", ""]
     return "\n".join(lines)
 
 

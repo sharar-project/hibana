@@ -47,20 +47,20 @@ The quality suites, AIPerf speed and the HTTP serving benchmarks live in
 (`uv sync --group eval`). It only talks to a running server, so the same commands measure other engines; its README
 lists them. Run by hand, it needs this configuration's results directory and model cache (`SHARAR_RESULTS`,
 `SHARAR_HF_CACHE`, as in `config/gb10.env`). This repository's tools run it with both set and the server managed:
-`tools/evaluate.py` (a build), `tools/h2h-pr.py` (a speed change against main;
-[CONTRIBUTING](../CONTRIBUTING.md#run-checks)) and `tools/lossy-gate.py` (a lossy option).
+`tools/evaluate.py` (a build), `tools/h2h_pr.py` (a speed change against main;
+[CONTRIBUTING](../CONTRIBUTING.md#run-checks)) and `tools/lossy_gate.py` (a lossy option).
 
 ## The lossy-change gate
 
-`tools/lossy-gate.py` judges a lossy option ([when](../CONTRIBUTING.md#judge-a-lossy-option)); its docstring is the
+`tools/lossy_gate.py` judges a lossy option ([when](../CONTRIBUTING.md#judge-a-lossy-option)); its docstring is the
 canonical description of the three layers (distribution distance, speculation health, a served task battery) and
 the verdict rules.
 
 ```bash
-tools/lossy-gate.py --target flashnext --name fast --profile fast                  # a profile against exact
-tools/lossy-gate.py --target flashnext --name recal --profile fast --env SHARAR_W3_CHECKPOINT=/path/to/candidate  # a new calibration against exact
-tools/lossy-gate.py --target qwen38 --name x --profile exact --env SHARAR_X=1 --through inprocess   # layers 1-2 only
-tools/lossy-gate.py --target flashnext --name fast --profile fast --report           # rebuild the scorecard
+tools/lossy_gate.py --target flashnext --name fast --profile fast                  # a profile against exact
+tools/lossy_gate.py --target flashnext --name recal --profile fast --env SHARAR_W3_CHECKPOINT=/path/to/candidate  # a new calibration against exact
+tools/lossy_gate.py --target qwen38 --name x --profile exact --env SHARAR_X=1 --through inprocess   # layers 1-2 only
+tools/lossy_gate.py --target flashnext --name fast --profile fast --report           # rebuild the scorecard
 ```
 
 Do not wrap it in `flock`: it takes `$SHARAR_RESULTS/.gpu.lock` for each phase (at most `--hold-minutes`,

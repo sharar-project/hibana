@@ -58,7 +58,7 @@ summed routing weight, and every row also takes its other top-22 experts that th
 The KV cache is FP8 only: NVFP4 KV (`SHARAR_KV_FORMAT=nvfp4`) and the `sim-*` screens are not supported yet (the
 attention's fused K/V writer serves the FP8 pool), and the launcher and the executor refuse them.
 
-Measured (Sharar, spark-9931; h2h median, `tools/h2h-pr.py`, greedy; tok/s) and GSM8K-300 paired against `exact`:
+Measured (Sharar, spark-9931; h2h median, `tools/h2h_pr.py`, greedy; tok/s) and GSM8K-300 paired against `exact`:
 
 | Profile | 1 request | 4 streams | GSM8K-300 |
 |---|---|---|---|

@@ -2,8 +2,8 @@
 """Speed of a branch against a base, served, as every speed PR reports it: sharar-eval's h2h on `fast` and
 `throughput`, the two checkouts alternated, one Markdown table to paste.
 
-    tools/h2h-pr.py --target flashnext --pr my-branch
-    tools/h2h-pr.py --target 27b --pr origin/perf/x --base origin/main --repeats 2 --modes greedy,t07,t10
+    tools/h2h_pr.py --target flashnext --pr my-branch
+    tools/h2h_pr.py --target 27b --pr origin/perf/x --base origin/main --repeats 2 --modes greedy,t07,t10
 
 Each arm is a git worktree of its ref under the run directory, served by this checkout's Python environment
 (`uv sync`; the two refs must share `uv.lock`) with `sharar serve <target> --fast|--throughput` on --port, the
@@ -32,7 +32,6 @@ import argparse
 import contextlib
 import datetime as dt
 import fcntl
-import importlib.util
 import json
 import os
 import shutil
@@ -42,22 +41,13 @@ import subprocess
 import sys
 import time
 import urllib.request
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 VENV = Path(os.environ.get("UV_PROJECT_ENVIRONMENT") or REPO / ".venv")
 sys.path.insert(0, str(REPO))
-
-
-def load_gate():
-    loader = SourceFileLoader("lossy_gate", str(REPO / "tools" / "lossy-gate.py"))
-    module = importlib.util.module_from_spec(importlib.util.spec_from_loader("lossy_gate", loader))
-    loader.exec_module(module)
-    return module
-
-
-gate = load_gate()
+sys.path.insert(0, str(REPO / "tools"))  # tools/lossy_gate.py, whose served-arm machinery this reuses
+import lossy_gate as gate  # noqa: E402
 log, available_gib, health = gate.log, gate.available_gib, gate.health
 
 

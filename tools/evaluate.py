@@ -31,7 +31,7 @@
 - **`--baseline DIR`.** An earlier evaluate output directory. The suite is paired with it item by item
   (`evals.suite compare`), and speed reuses its frozen inputs and reports the TPS change.
 
-This reuses the lossy gate's served-arm machinery (tools/lossy-gate.py: settings resolution,
+This reuses the lossy gate's served-arm machinery (tools/lossy_gate.py: settings resolution,
 GPU window, memory-floor watch, suite runner) without its in-process configuration check: there is
 no in-process arm to compare with, so /get_server_info is recorded instead.
 """
@@ -39,27 +39,17 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
 import time
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-
-
-def load_gate():
-    loader = SourceFileLoader("lossy_gate", str(REPO / "tools" / "lossy-gate.py"))
-    module = importlib.util.module_from_spec(importlib.util.spec_from_loader("lossy_gate", loader))
-    loader.exec_module(module)
-    return module
-
-
-gate = load_gate()
+sys.path.insert(0, str(REPO / "tools"))  # tools/lossy_gate.py, whose served-arm machinery this reuses
+import lossy_gate as gate  # noqa: E402
 log = gate.log
 
 

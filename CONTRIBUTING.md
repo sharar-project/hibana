@@ -49,10 +49,10 @@ the GPU suite, then is measured against main, paired item by item, as [evaluatio
 describes; bit-identical outputs are neither required nor a substitute. When a change alters a default or adds a
 setting, update [operations](docs/operations.md) in the same change.
 
-A change meant to make serving faster posts `tools/h2h-pr.py`'s table in its pull request, so changes compare on one
+A change meant to make serving faster posts `tools/h2h_pr.py`'s table in its pull request, so changes compare on one
 workload and their gains stack:
 
-    tools/h2h-pr.py --target flashnext --pr <branch>      # and --target 27b when the change touches the 27B
+    tools/h2h_pr.py --target flashnext --pr <branch>      # and --target 27b when the change touches the 27B
 
 It serves main and the branch in turn and runs sharar-eval's h2h on `fast` (1 and 4 requests) and `throughput`
 (8 to 128 closed-loop streams), greedy and T 0.7; the tool's docstring has the details. About 1.5 hours a target;
@@ -65,11 +65,11 @@ a reduced draft vocabulary). It never enters the `exact` profile, and it enters 
 through the lossy-change gate, which pairs the candidate against `exact` on the same engine:
 
 ```bash
-tools/lossy-gate.py --target flashnext --name my-option --profile exact --env SHARAR_X=1
-tools/lossy-gate.py --target qwen38 --name fast --profile fast
+tools/lossy_gate.py --target flashnext --name my-option --profile exact --env SHARAR_X=1
+tools/lossy_gate.py --target qwen38 --name fast --profile fast
 ```
 
-The layers, the verdict rules and the outputs are in the docstring of [`tools/lossy-gate.py`](tools/lossy-gate.py);
+The layers, the verdict rules and the outputs are in the docstring of [`tools/lossy_gate.py`](tools/lossy_gate.py);
 [evaluation](docs/evaluation.md#the-lossy-change-gate) covers running it.
 
 ## Add a setting
