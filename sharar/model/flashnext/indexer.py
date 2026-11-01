@@ -101,16 +101,23 @@ class FlashNextIndexer:
             return None
         # scores and top-k in chunks of 256 rows (a bounded score buffer); the queries' norm and rotation, and the
         # selection after the top-k, for every row at once (row by row the same bits)
-        return self.select(qk, ctx.positions, aux, plan["table"], plan["base"], plan["gcap"], chunk=256)
+        # (eager prefill on SM121: the same selection from faster kernels, `kernels/qsa/score_exact.py`)
+        segments = [n for _, n, _ in ctx.extras.qsa_seqs] if getattr(ctx, "mode", None) == "prefill" else None
+        return self.select(qk, ctx.positions, aux, plan["table"], plan["base"], plan["gcap"], chunk=256, segments=segments)
 
     def select(self, qk: torch.Tensor, positions: torch.Tensor, aux: torch.Tensor, table: torch.Tensor, base: torch.Tensor,
-               gcap: int, chunk: int | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+               gcap: int, chunk: int | None = None, segments: list[int] | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """Selection for rows at `positions` from their index projections `qk`; `base` is each
-        row's offset in the flat page `table`, `gcap` the groups the widest row may see."""
+        row's offset in the flat page `table`, `gcap` the groups the widest row may see. `segments`: each sequence's
+        row count, in row order, when eager rows may take the SM121 kernels of the same selection (`score_exact.py`)."""
         from sharar.kernels.qsa.selection import select_pages
         t, h, d = qk.shape[0], self.heads, self.dim
         q = gemma_rms(qk[:, : h * d].reshape(t, h, d), self.q_norm, self.eps)
         q = rope_neox(q, positions, self.rotary_dim, self.theta)
+        if segments is not None:
+            from sharar.kernels.qsa import score_exact
+            if score_exact.supported(q, aux, self.ratio, self.budget):
+                return score_exact.select_exact(q, aux, table, base, positions, gcap, d ** -0.5, segments, chunk or 256)
         return select_pages(q, aux, table, base, positions, self.ratio, self.budget, gcap, d ** -0.5, chunk)
 
     def maintain(self, x: torch.Tensor, ctx, token_pages: torch.Tensor) -> torch.Tensor:
