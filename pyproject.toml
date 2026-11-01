@@ -9,7 +9,7 @@ description = "Local inference engine for Qwen3.8-27B, Qwen3.8-Flash-Next, Nemot
 readme = "README.md"
 requires-python = "==3.12.*"  # the tested interpreter: uv installs and uses a managed 3.12
 license = {file = "LICENSE"}
-authors = [{name = "Abdelfattah Lab"}]
+authors = [{name = "Yahya Emara"}, {name = "Chi-Chih Chang"}, {name = "Abdelfattah Lab"}]
 keywords = ["llm", "inference", "speculative-decoding", "nvfp4", "dgx-spark", "gb10", "cuda"]
 classifiers = [
   "Development Status :: 3 - Alpha",
