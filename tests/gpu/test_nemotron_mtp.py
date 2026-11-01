@@ -131,7 +131,7 @@ def chain(proposer, b: int, context: int, pages, tokens, hidden, steps: int, gra
     for j in range(steps):
         kv = [torch.cat([p[1:context], p[context:context + j + 1]]) for p in pages]
         write = torch.stack([p[context + j] for p in pages]).contiguous()
-        hidden, tokens, _ = proposer._step(tokens, hidden, positions + j, write, kv, graphs)
+        hidden, tokens, _, _ = proposer._step(tokens, hidden, positions + j, write, kv, graphs)
         out.append((hidden.clone(), tokens.clone()))
     return out
 
