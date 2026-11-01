@@ -23,8 +23,8 @@ Also run `python3 tools/check_links.py` for documentation links, and `.venv-cpu/
 wheel and probe installed runtime assets outside the checkout. CI runs these
 checks; a source-only or editable installation does not validate packaging.
 
-The GPU suite (`tests/gpu`, about 15 minutes, both targets) runs with `SHARAR_RUN_GPU=1`; without it the GPU
-modules are not collected:
+The GPU suite (`tests/gpu`, every target; a module on a real checkpoint skips without it) runs with
+`SHARAR_RUN_GPU=1`; without it the GPU modules are not collected:
 
 ```bash
 SHARAR_RUN_GPU=1 uv run pytest tests/unit tests/gpu      # or: tools/check.sh gpu-suite

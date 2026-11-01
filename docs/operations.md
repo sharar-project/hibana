@@ -15,9 +15,10 @@ unified memory, NVIDIA driver 580 or newer, the CUDA 13 toolkit in `/usr/local/c
 and Sharar compile their GB10 kernels on first use) and [uv](https://docs.astral.sh/uv/). `--detach` also needs a
 user systemd session (`loginctl enable-linger` keeps it after logout).
 
-Two targets, one per process, chosen by name: `27b` (`RadixArk/Qwen3.8-27B-NVFP4` at `319f741`, with the DFlash2
-drafter `incoai/Qwen3.8-27B-DFlash2` at `dedf8df`) and `flashnext` (`RadixArk/Qwen3.8-Flash-Next-NVFP4` at
-`7b71922`, its own MTP head, or the DFlash2 drafter `incoai/Qwen3.8-Flash-Next-DFlash2` at `a22a174` on one Spark).
+Four targets, one per process, chosen by name: `27b` (`RadixArk/Qwen3.8-27B-NVFP4` at `319f741`, with the DFlash2
+drafter `incoai/Qwen3.8-27B-DFlash2` at `dedf8df`), `flashnext` (`RadixArk/Qwen3.8-Flash-Next-NVFP4` at
+`7b71922`, its own MTP head, or the DFlash2 drafter `incoai/Qwen3.8-Flash-Next-DFlash2` at `a22a174` on one Spark),
+and on one Spark `nemotron` ([Nemotron 3.5 Super](nemotron.md)) and `bolt` ([Nemotron 3.5 Bolt](bolt.md)).
 `sharar serve` downloads whatever the cache lacks (about 26 GB for the 27B, 135 GB for
 Flash-Next) after checking free disk; serving itself runs offline.
 

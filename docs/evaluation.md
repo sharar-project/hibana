@@ -25,7 +25,7 @@ tools/evaluate.py --target flashnext --profile exact --suite quick --speed \
   directory, the AIPerf run, `/get_server_info` and the logs. A rerun with the same `--name` resumes.
 
 Two runs of the same build differ by under 1% in AIPerf TPS and by about ±1 point on GSM8K (300) and
-HumanEval at p ≥ 0.45 (both targets): served batches change rounding, so quality is compared
+HumanEval at p ≥ 0.45 (the 27B and Flash-Next): served batches change rounding, so quality is compared
 item by item with a paired test, never on point estimates.
 
 ## Judge a change to arithmetic
@@ -80,7 +80,7 @@ America/New_York):
 
 - **Nightly, 01:00** (skipped when main is unchanged): brings the runner's Python environment up to date
   (`UV_PROJECT_ENVIRONMENT`, default `~/sharar-ci/venv`), runs `tests/unit` and `tests/gpu` from it, then serves and verifies
-  both targets.
+  the 27B and Flash-Next.
 - **Weekly, Sunday 02:00:** `tools/evaluate.py` per target on the fast profile, AIPerf speed plus GSM8K (300)
   and HumanEval, paired with `$SHARAR_RESULTS/ci/baseline-<target>` (re-point the link to adopt a newer run).
   It fails on more than 5% lower TPS or a quality loss of at least 1 point at p < 0.05.
