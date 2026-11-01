@@ -129,7 +129,7 @@ The verifier accepts flat proposals: MTP k≤8, DFlash2 k≤15.
 External sampled proposals include their actual transformed conditional q,
 including selector effects. `engine/rejection.py` is the common reference
 algorithm; test tiny distributions independently of model rounding. Sampled
-requests are verified as point masses (MTP) or with their q (DFlash2); a
+requests are verified as point masses (MTP's argmax drafts) or with their q (DFlash2, and MTP's sampled drafts); a
 `greedy_only` proposer's sampled requests use ordinary decode. Tree proposals are not implemented.
 Declare prospective memory in `cache/spec_budget.py`, and retain/restore draft
 features through identity-keyed metadata without taking ownership of target

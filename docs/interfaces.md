@@ -160,7 +160,9 @@ selector effects: dense q is `[B,k,V]`, sparse q and its unique support `[B,k,C]
 proposals. The verifier accepts with `min(1,p[y]/q[y])`, samples a rejection from normalized `max(p-q,0)`, draws a
 target bonus after full acceptance and consumes no target draws past the first rejection; with `accept_soft` s > 0
 it also accepts y when u·q[y] < e^s·p[y] on the same draw u, the residual unchanged. Each sampled request owns
-its generator, seeded or not. MTP proposals are point masses; a `greedy_only` proposer uses ordinary decode for
+its generator, seeded or not. MTP proposals are point masses, or with `SHARAR_MTP_SAMPLE` (on in `fast` and `throughput`)
+a sampled batch's drafts drawn from each request's law over the draft head's candidates, with that law as sparse q
+([operations](operations.md#sampled-mtp-drafts)); a `greedy_only` proposer uses ordinary decode for
 positive temperature. For an all-greedy DFlash2 batch, `kernels/draft_selection.py` walks the conditional selector
 lattice on the device with the same candidate rank and tie rules.
 
@@ -199,7 +201,8 @@ that declares `device_feedback`, `engine/accept_graphs.py` replaces the host's `
 captured graph per batch bucket of each verify depth: it decides acceptance with the host's rule
 (`engine/accept.py`) from the verify graph's static outputs, reconstructs the state and commits the convolution
 windows for exactly those counts, and calls the proposer's `feedback_device`; the host reads one packed result and
-only publishes. All-greedy batches take it; all-sampled batches of point-mass drafts (MTP, `top_k` at most 64, no
+only publishes. All-greedy batches take it; all-sampled batches of MTP drafts (point masses, or sampled drafts with q on
+the draft head's 16 candidates; `top_k` at most 64, no
 constraint) first replay a decision graph and fall back to the host when a row's distribution does not fit its
 candidates. Mixed batches, requests with more than `accept.MAX_STOPS` stop token ids and other proposers stay on the
 host path.

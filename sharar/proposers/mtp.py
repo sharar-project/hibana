@@ -25,6 +25,41 @@ def draft_argmax(head, hidden: torch.Tensor) -> torch.Tensor:
     return head.draft_head.argmax(head.head_input(hidden))
 
 
+CANDIDATES = 16  # a sampled MTP draft's law lives on the draft head's 16 best tokens (the 2-bit head's rescored shortlist)
+
+
+def draft_rows(requests, depth: int, width: int, device):
+    """One round's per-row inputs of `draft_laws` on CUDA, one upload each: params float32 [b, 4] (temperature,
+    top_k within the candidates or 0, top_p, greedy) and Philox rng int64 [depth, b, 2], step j at the request's
+    (seed, ROUND_STRIDE * round + DRAFT + j) (engine/sampling_rng.py)."""
+    from sharar.engine import sampling_rng
+    params = sampling_rng.rows("mtp-draft-params", [[max(q.params.temperature, 1e-6), q.params.top_k if 0 < q.params.top_k < width else 0,
+                                                     q.params.top_p, float(q.params.greedy)] for q in requests], torch.float32, device)
+    base = sampling_rng.offsets(requests, sampling_rng.DRAFT)
+    rng = sampling_rng.rows("mtp-draft-rng", [[q.rng_seed, o + j] for j in range(depth) for q, o in zip(requests, base)], torch.int64, device)
+    return params, rng.view(depth, len(requests), 2)
+
+
+def draft_laws(ids, logits, requests, rows=None, j: int = 0):
+    """Sampled MTP drafts for step j: each row draws from its request's law (temperature, top-k with ties, top-p,
+    as `rejection.distribution`) over its candidates, ids / logits [b, r]; greedy rows take the best candidate.
+    Returns (tokens [b], laws [b, r]): the drafts and the realized law q each was drawn from, which the verifier tests
+    them against exactly. CUDA (`rows` from `draft_rows`): one Philox draw per row, kernels/draft_selection.sampled_lattice
+    (DFlash2's sampled walk) with one step; else each request's generator."""
+    b, r = ids.shape
+    if ids.is_cuda:
+        from sharar.kernels.draft_selection import sampled_lattice
+        params, rng = rows
+        tokens, laws = sampled_lattice(ids.view(b, 1, r), logits.float().contiguous().view(b, 1, 1, r).expand(b, 1, r, r), params, rng[j])
+        return tokens[:, 0], laws[:, 0]
+    from sharar.engine.rejection import small_laws
+    laws = small_laws(logits.float(), [q.params for q in requests])
+    u = torch.stack([torch.rand(1, device=ids.device, generator=q.generator) for q in requests])  # [b, 1]
+    cdf = laws.cumsum(-1)
+    local = torch.searchsorted(cdf, (u * cdf[:, -1:]).contiguous(), right=True).clamp_max(r - 1)
+    return ids.gather(1, local).squeeze(1), laws
+
+
 def draft_choice(head, hidden: torch.Tensor, with_confidence: bool) -> tuple[torch.Tensor, torch.Tensor | None]:
     """`draft_argmax`, and with `with_confidence` the draft head's [rows, 2] confidence in it (SHARAR_TRACE_CONFIDENCE)."""
     if not with_confidence:
@@ -32,11 +67,25 @@ def draft_choice(head, hidden: torch.Tensor, with_confidence: bool) -> tuple[tor
     return head.draft_head.argmax_confidence(head.head_input(hidden))
 
 
+def draft_outputs(head, hidden: torch.Tensor, with_confidence: bool, width: int):
+    """`draft_choice`, and with SHARAR_MTP_SAMPLE (`width` > 0) the draft head's candidates from the same head pass:
+    the draft is then their first, the head's best (its argmax, ties aside; a shortlist head ranks max(rescore, width)
+    candidates by the FP8 rows), unless the confidence trace reads the head's own logits. Returns (token, confidence,
+    (ids, logits) [rows, width] or None)."""
+    if not width:
+        return (*draft_choice(head, hidden, with_confidence), None)
+    ids, values = head.draft_head.candidates(head.head_input(hidden), width)  # rescored by the FP8 rows on a shortlist head
+    token, conf = draft_choice(head, hidden, True) if with_confidence else (ids[..., 0], None)
+    return token, conf, (ids, values)
+
+
 class MtpProposer:
     def __init__(self, head, context: ProposerContext, k: int = 3):
         self.head, self.context, self.k = head, context, k
-        # Drafts are the head's argmax: deterministic proposals, so sampled requests verify them
-        # exactly as point masses (engine/rejection.py), like the parallel drafts.
+        # Greedy batches draft the head's argmax: deterministic proposals, verified as point masses (engine/rejection.py).
+        # With SHARAR_MTP_SAMPLE a batch with a sampled request draws each draft from the request's law over the head's
+        # rescored candidates (`draft_laws`) and hands that law to the verifier, which accepts against it exactly: the
+        # acceptance rate rises from p(argmax) to sum(min(p, q)) with the emitted law unchanged.
         self.requirements = ProposerRequirements("mtp", FeatureRequest(final_norm=True), persistent_bytes=head.bytes,
                                                  greedy_only=False, max_depth=8,
                                                  capabilities=Capabilities(device_feedback=True, draft_head=getattr(head, "DRAFT_HEADS", False),
@@ -45,6 +94,10 @@ class MtpProposer:
         # The draft's confidence per step for the trace round records (SHARAR_TRACE_CONFIDENCE); read once
         # here, the draft graphs capture the extra output.
         self.with_confidence = current().trace_confidence
+        cfg = current()
+        self.sample = cfg.mtp_sample  # read once here: the draft graphs capture the candidates' outputs
+        self.sample_width = CANDIDATES
+        self._rows = None  # a sampled round's `draft_rows`
         self._fb = None  # device acceptance buffers (`_feedback_buffers`)
         self._host_tokens = torch.empty(context.max_batch * (k + 1), dtype=torch.int64,
                                         pin_memory=context.device.type == "cuda")
@@ -141,32 +194,56 @@ class MtpProposer:
                 raise ValueError("draft pending input does not match committed prefix")
             hids.append(state.pending_hidden)
             kv.append(torch.cat([req.pages[1:pos], pages[i, :1]]))
-        hidden, token, conf = self._step(inputs.tokens, torch.cat(hids), inputs.positions, pages[:, 0].contiguous(), kv, graphs)
+        sampled = self.sample and any(not r.params.greedy for r in requests)
+        laws, supports = [], []
+        if sampled and self.context.device.type == "cuda":
+            self._rows = draft_rows(requests, self.k if depth is None else depth, self.sample_width, self.context.device)
+        hidden, token, conf, cand = self._step(inputs.tokens, torch.cat(hids), inputs.positions, pages[:, 0].contiguous(), kv, graphs, sampled)
+        if sampled:
+            token = self._draw(cand, requests, 0, laws, supports)
         drafts, confs = [token], [conf]
         self._column(0, token)
         for j in range(2, (self.k if depth is None else depth) + 1):
             kv = [torch.cat([r.pages[1:r.context_len - 1], pages[i, :j]]) for i, r in enumerate(requests)]
-            hidden, token, conf = self._step(drafts[-1], hidden, inputs.positions + j - 1, pages[:, j - 1].contiguous(), kv, graphs)
+            hidden, token, conf, cand = self._step(drafts[-1], hidden, inputs.positions + j - 1, pages[:, j - 1].contiguous(), kv, graphs, sampled)
+            if sampled:
+                token = self._draw(cand, requests, j - 1, laws, supports)
             drafts.append(token)
             confs.append(conf)
             self._column(j - 1, token)
         columns = DraftColumns(self._host_drafts, self._draft_events, len(requests)) if self._draft_events is not None else None
         confidence = torch.stack(confs, dim=1) if self.with_confidence else None
+        if sampled:
+            return Proposal(torch.stack(drafts, dim=1), torch.stack(laws, dim=1), torch.stack(supports, dim=1), confidence=confidence, columns=columns)
         return Proposal(torch.stack(drafts, dim=1), confidence=confidence, columns=columns)
+
+    def _draw(self, cand, requests, j, laws, supports):
+        """Step j's sampled draft from its candidates, its law and support appended for the verifier."""
+        ids, values = cand
+        token, law = draft_laws(ids, values, requests, self._rows, j)
+        laws.append(law)
+        supports.append(ids)
+        return token
 
     def _column(self, j: int, token: torch.Tensor) -> None:
         if self._draft_events is not None:
             self._host_drafts[j, :token.shape[0]].copy_(token, non_blocking=True)
             self._draft_events[j].record()
 
-    def _step(self, tokens, hidden, positions, pages, kv, graphs):
+    def _step(self, tokens, hidden, positions, pages, kv, graphs, sampled=False):
+        """One draft step: (hidden, argmax, confidence, candidates). Candidates (ids, logits) [b, r] only for a sampled
+        batch, else None."""
+        cand = None
         if graphs and self.graphs is not None:
             hidden, token, conf = self.graphs.run(tokens, hidden, positions, pages, kv)
             hidden, token, conf = hidden.clone(), token.clone(), conf.clone() if conf is not None else None  # graph outputs are borrowed until next replay
+            if sampled:
+                cand = tuple(t.clone() for t in self.graphs.candidates(tokens.shape[0]))
         else:
             hidden = self.head.forward(tokens, hidden, positions, pages, [1] * len(kv), kv)
-            token, conf = draft_choice(self.head, hidden, self.with_confidence)
-        return hidden, token, conf
+            token, conf, cand = draft_outputs(self.head, hidden, self.with_confidence, self.sample_width if self.sample else 0)
+            cand = cand if sampled else None
+        return hidden, token, conf, cand
 
     def accepted_batch(self, requests, emitted, features):
         # The normal acceptance download completes the preceding upload. Keep

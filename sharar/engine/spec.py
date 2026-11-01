@@ -614,7 +614,7 @@ class SpecDecoder:
         else:
             # Sampled batch: acceptance and the correction/bonus token are
             # computed on the device and downloaded once with the drafts. Point-mass
-            # drafts (MTP) and sparse draft laws (DFlash2) verify the whole batch on
+            # drafts (MTP's argmax) and sparse draft laws (DFlash2, MTP's sampled drafts) verify the whole batch on
             # each row's candidates (`rejection.verify_batch`); dense draft laws, and
             # laws wider than the candidates, verify row by row (`verify_rows`).
             acc_rows, corr_rows, target_rows, flag_rows = [], [], [], []

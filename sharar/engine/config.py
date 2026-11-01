@@ -115,6 +115,7 @@ class EngineConfig:
     draft_head: str = "fp8"                   # SHARAR_DRAFT_HEAD: fp8 (the target's head), w3 or w2
     draft_head_rescore: int = 8               # SHARAR_DRAFT_HEAD_RESCORE (default 8, 16 for w2)
     device_accept: bool = False               # SHARAR_DEVICE_ACCEPT
+    mtp_sample: bool = False                  # SHARAR_MTP_SAMPLE: sampled requests draft from the MTP head's law on its rescored candidates instead of its argmax, verified against that law
     accept_default: str = "off"               # SHARAR_ACCEPT_DEFAULT: K:M for greedy requests that set neither field (off: exact)
     accept_soft: float = 0.0                  # SHARAR_ACCEPT_SOFT: accept_soft s for sampled requests that do not set it (0: exact)
     qsa_sparse_graphs: bool = True            # SHARAR_QSA_SPARSE_GRAPHS=0: rows past the indexer budget run eagerly
@@ -196,6 +197,7 @@ class EngineConfig:
             draft_head=_str(e, "SHARAR_DRAFT_HEAD", "fp8"),
             draft_head_rescore=_int(e, "SHARAR_DRAFT_HEAD_RESCORE", 16 if e.get("SHARAR_DRAFT_HEAD") == "w2" else 8),
             device_accept=_flag(e, "SHARAR_DEVICE_ACCEPT"),
+            mtp_sample=_flag(e, "SHARAR_MTP_SAMPLE"),
             accept_default=e.get("SHARAR_ACCEPT_DEFAULT", "off"),
             accept_soft=_accept_soft(e),
             qsa_sparse_graphs=e.get("SHARAR_QSA_SPARSE_GRAPHS", "1") != "0",
