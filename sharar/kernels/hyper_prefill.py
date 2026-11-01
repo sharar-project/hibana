@@ -126,7 +126,7 @@ def combine_norm(hyper: torch.Tensor, block: torch.Tensor | None, inj: torch.Ten
 
 @triton.jit
 def _up_gate_mean_kernel(A, Wq, WS, Hp, Rstd, Nw, Out, Amax, T, stride_a, stride_w, stride_h, stride_o, H: tl.constexpr, K: tl.constexpr,
-                         BM: tl.constexpr, BN: tl.constexpr, KP: tl.constexpr):
+                         BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr):
     pm = tl.program_id(0)
     pn = tl.program_id(1)
     rm = pm * BM + tl.arange(0, BM)
@@ -134,16 +134,15 @@ def _up_gate_mean_kernel(A, Wq, WS, Hp, Rstd, Nw, Out, Amax, T, stride_a, stride
     mm = rm < T
     mn = rn < H
     ws = tl.load(WS)
-    # the activations once per program: the first KP columns and the (at most 64) after them
-    k1 = tl.arange(0, KP)
-    k2 = KP + tl.arange(0, 64)
-    a1 = tl.load(A + rm[:, None] * stride_a + k1[None, :], mask=mm[:, None], other=0.0)
-    a2 = tl.load(A + rm[:, None] * stride_a + k2[None, :], mask=mm[:, None] & (k2[None, :] < K), other=0.0)
     mix = tl.zeros((BM, BN), dtype=tl.float32)
     for s in tl.static_range(4):
-        w1 = tl.load(Wq + (s * H + rn)[None, :] * stride_w + k1[:, None], mask=mn[None, :], other=0.0)
-        w2 = tl.load(Wq + (s * H + rn)[None, :] * stride_w + k2[:, None], mask=mn[None, :] & (k2[:, None] < K), other=0.0)
-        acc = tl.dot(a2, w2.to(tl.bfloat16), tl.dot(a1, w1.to(tl.bfloat16)))
+        # BK columns of K at a time (a pipelined loop): the products accumulate in the same order as one dot over K
+        acc = tl.zeros((BM, BN), dtype=tl.float32)
+        for k0 in tl.range(0, K, BK):
+            kk = k0 + tl.arange(0, BK)
+            a = tl.load(A + rm[:, None] * stride_a + kk[None, :], mask=mm[:, None] & (kk[None, :] < K), other=0.0)
+            w = tl.load(Wq + (s * H + rn)[None, :] * stride_w + kk[:, None], mask=mn[None, :] & (kk[:, None] < K), other=0.0)
+            acc = tl.dot(a, w.to(tl.bfloat16), acc)
         u = (acc * ws).to(tl.bfloat16).to(tl.float32)
         x = tl.load(Hp + rm[:, None] * stride_h + (s * H + rn)[None, :], mask=mm[:, None] & mn[None, :], other=0.0).to(tl.float32)
         r = tl.load(Rstd + rm * 4 + s, mask=mm, other=0.0)
@@ -164,15 +163,14 @@ def up_gate_mean(a: torch.Tensor, up_w: torch.Tensor, up_scale: torch.Tensor, hy
     -> (mixed, the max |mixed| of each output tile, fp32)."""
     t, k = a.shape
     assert up_w.shape == (4 * hidden, k) and a.stride(1) == 1 and up_w.stride(1) == 1
-    kp = triton.next_power_of_2(k) // 2 if k & (k - 1) else k
-    assert k - kp <= 64 or kp == k, "the kernel splits K into a power of two and at most 64 more"
-    # 32 x 64 tiles: larger ones spill (the four streams' accumulators and the hoisted activations)
+    # 32 x 64 tiles, K 64 at a time in three stages (8,192 rows: 1.68 -> 1.30 ms against hoisting all of K;
+    # larger tiles spill or lose occupancy)
     bm, bn = 32, 64
     grid = (triton.cdiv(t, bm), triton.cdiv(hidden, bn))
     out = torch.empty((t, hidden), dtype=torch.bfloat16, device=a.device)
     parts = torch.empty((grid[0] * grid[1],), dtype=torch.float32, device=a.device)
     _up_gate_mean_kernel[grid](a, up_w, up_scale, hyper, rstd, norm, out, parts, t, a.stride(0), up_w.stride(0), hyper.stride(0), out.stride(0),
-                               hidden, k, BM=bm, BN=bn, KP=kp, num_warps=4, num_stages=2)
+                               hidden, k, BM=bm, BN=bn, BK=64, num_warps=4, num_stages=3)
     return out, parts
 
 
