@@ -34,7 +34,7 @@ constexpr int G = 6;                // query heads a KV head
 constexpr int VERIFY_WARPS = 12;    // 8 queries each: 96 = 16 rows x 6 heads
 constexpr int PREFIX_WARPS = 8;     // prefill against a prefix: 128 (token, head) rows a block
 // verify: four more warps load and convert while the twelve compute (a layer over 64K contexts, 16 rows a request, the
-// same splits: 2.31 -> 1.86 ms at four requests; 12 + 4 warps hold at most 128 registers a thread, so no more)
+// same splits: 2.36 -> 1.85 ms at four requests; 12 + 4 warps hold at most 128 registers a thread, so no more)
 constexpr int VERIFY_PRODUCERS = 4;
 // verify: tiles pulled into L2 past the newest load (64K: one request 0.46 -> 0.44 ms, four 1.68 -> 1.66)
 constexpr int PREFETCH = 2;
