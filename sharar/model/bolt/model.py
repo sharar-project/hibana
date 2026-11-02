@@ -179,7 +179,7 @@ class Bolt(Nemotron):
                         f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB)")
             self.final_norm = RMSNorm(w.get(f"{BACKBONE}.norm_f.weight").to(self.device), target.rms_norm_eps)
             self.lm_head = PackedLinear.load(w, ["language_model.lm_head"], self.device)
-            self.vision = self.load_vision(w, log)
+            self.vision = self.load_vision(w, log) if cfg.vision else None
             if calibrated is not None:
                 self.w3_identity = self.attach_calibrated(calibrated, log)
             self.draft_lm_head = None

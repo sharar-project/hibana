@@ -132,8 +132,9 @@ class Nemotron:
         self.device = torch.device(device)
         cfg = target.load_model_config(snap)
         expert_blocks = w3_expert_blocks(calibrated, target.layer_types_of(cfg))
+        vision = current().vision
         check_load_headroom(target.weight_load_peak_bytes - (w3_expert_saving(target, len(expert_blocks)) if expert_blocks else 0)
-                            + (VISION_BYTES if current().vision else 0))
+                            + (VISION_BYTES if vision else 0))
         self.target = target
         self.eos = cfg["llm_config"]["eos_token_id"]
         started = time.perf_counter()
@@ -169,7 +170,7 @@ class Nemotron:
             raise
         self.final_norm = RMSNorm(w.get(f"{BACKBONE}.norm_f.weight").to(self.device), target.rms_norm_eps)
         self.lm_head = load_fp8_linear(w, [f"{PREFIX}.lm_head"], self.device)
-        self.vision = self.load_vision(w, log)
+        self.vision = self.load_vision(w, log) if vision else None
         w.close()
         # the W3 checkpoint serving the experts: `NemotronMtpHead` loads the MTP head's from it when it carries them
         self.w3_experts = calibrated if expert_blocks else None
@@ -189,9 +190,7 @@ class Nemotron:
                 f"({self.stream_bytes / 1e9:.2f} GB per decode token)")
 
     def load_vision(self, w, log=print):
-        """The vision tower and projector with SHARAR_VISION=1 (`vision.py`), else None."""
-        if not current().vision:
-            return None
+        """The vision tower and projector (`vision.py`), served with SHARAR_VISION=1."""
         from sharar.model.nemotron.vision import RadioVision
         vision = RadioVision(w, self.device)
         if log:
