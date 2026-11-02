@@ -197,7 +197,7 @@ class MtpProposer:
             # every step's attended pages, built once a round: step j (from 1) attends the first pos - 1 + j of them
             full.append(torch.cat([req.pages[1:pos], pages[i, :depth]]))
         # each step's positions and pages, [depth, batch], so a step's row is a contiguous view and not a launch
-        steps = torch.arange(depth, device=inputs.positions.device).unsqueeze(1)
+        steps = torch.arange(depth, dtype=inputs.positions.dtype, device=inputs.positions.device).unsqueeze(1)
         positions = inputs.positions.unsqueeze(0) + steps
         step_pages = pages[:, :depth].t().contiguous()
         sampled = self.sample and any(not r.params.greedy for r in requests)
