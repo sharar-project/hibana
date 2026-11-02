@@ -6,9 +6,10 @@ replays, the median of seven. Entries that beat the heuristic by less than 3% ar
 it. The comment gives the heuristic's time and the measured one. Split-K reorders the FP32 sums: outputs differ from
 the heuristic's at most by 1.3e-4 relative L2.
 
-The largest gains are the narrow-N, long-K NVFP4 GEMMs (Mamba out_proj [4096, 8192] and the LiLiCorr drafter's down
-[4096, 12288] and fc [4096, 24576]): the heuristic splits K four ways over 32 N tiles, about 120 GB/s; 64-wide N tiles
-with deeper K tiles reach 190-235 GB/s.
+`profiling/bolt_linear_tuning.py` surveys the served plans and sweeps a shape again. The largest gains are the
+narrow-N, long-K NVFP4 GEMMs (Mamba out_proj [4096, 8192] and the LiLiCorr drafter's down [4096, 12288] and fc [4096,
+24576]): the heuristic splits K four ways over 32 N tiles, about 120 GB/s; 64-wide N tiles with deeper K tiles reach
+190-235 GB/s.
 """
 
 # (recipe, N, K, rows) -> (tile_m, tile_n, tile_k, split_k); tile_m None: b12x's own row tile
@@ -28,13 +29,13 @@ CONFIGS = {
     ('nvfp4', 18560, 4096, 14): (None, 64, 256, 1),  # 227 -> 205 us
     ('nvfp4', 18560, 4096, 28): (16, 64, 128, 1),  # 348 -> 214 us
     ('nvfp4', 18560, 4096, 32): (16, 64, 128, 1),  # 351 -> 217 us
-    # lm_head: [131072, 4096] q8_0
-    ('q8_0', 131072, 4096, 1): (32, 64, 256, 8),  # 3225 -> 2961 us
-    ('q8_0', 131072, 4096, 7): (32, 128, 256, 1),  # 3136 -> 3042 us
-    ('q8_0', 131072, 4096, 14): (32, 128, 256, 1),  # 3431 -> 3079 us
-    ('q8_0', 131072, 4096, 16): (32, 64, 256, 1),  # 3525 -> 3200 us
-    ('q8_0', 131072, 4096, 28): (None, 64, 256, 1),  # 3334 -> 2994 us
-    ('q8_0', 131072, 4096, 32): (16, 64, 256, 1),  # 3551 -> 3014 us
+    # lm_head: [131072, 4096] q8_0 (re-swept on b12x 1.5.0; the first sweep's entries had fallen behind the heuristic)
+    ('q8_0', 131072, 4096, 7): (32, 64, 256, 8),  # 3838 -> 2882 us
+    ('q8_0', 131072, 4096, 8): (32, 64, 256, 8),  # 3767 -> 2900 us
+    ('q8_0', 131072, 4096, 14): (32, 64, 256, 8),  # 4033 -> 3164 us
+    ('q8_0', 131072, 4096, 16): (32, 64, 256, 8),  # 4016 -> 3183 us
+    ('q8_0', 131072, 4096, 28): (None, 64, 256, 2),  # 3828 -> 3140 us
+    ('q8_0', 131072, 4096, 32): (16, 64, 256, 2),  # 4058 -> 3115 us
     # shared_up: [5376, 4096] iq2_xxs
     ('iq2_xxs', 5376, 4096, 1): (8, 64, 256, 1),  # 35 -> 32 us
     ('iq2_xxs', 5376, 4096, 7): (8, 64, 256, 1),  # 37 -> 32 us
