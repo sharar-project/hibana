@@ -289,6 +289,84 @@ def test_selecting_graph_matches_the_eager_selection():
             assert torch.equal(out_pages[i].sort().values, want_pages[i].sort().values), f"step {step} row {i}"
 
 
+@pytest.mark.parametrize("budget,lengths,depth", [(64, (400, 700), 1), (64, (130, 701, 333, 999), 8), (2048, (2500,), 10),
+                                                   (2048, (100, 1500), 6), (64, (5,), 1)])
+@pytest.mark.parametrize("graph", [False, True])
+def test_replay_kernels_are_the_torch_maintenance_and_selection(budget, lengths, depth, graph):
+    """`FlashNextIndexer.replay` with the rotary table (`kernels/qsa/decode_prep.py`) against itself without it
+    (`maintain` + `select` in torch), verification-shaped (`depth` rows a sequence, the members of a row's group
+    written by the same forward), eager and as a captured graph: the same raw and compressed keys on every page
+    but the dummy one and the same selection, bitwise; the queries and their bases too."""
+    from sharar.cache.kv_pool import KvPool
+    from sharar.kernels.qsa import decode_prep
+    from sharar.model.flashnext.indexer import FlashNextIndexer
+    from sharar.model.flashnext.reference import gemma_rms, rope_neox
+    from sharar.model.rope import PartialRotary
+    from sharar.target import FLASHNEXT
+    dev, hidden, ratio, cap, steps = torch.device("cuda"), 256, 4, 4096, 6
+    ix = _indexer(hidden, budget, ratio, dev)
+    ix.q_norm, ix.k_norm = ix.q_norm.to(torch.bfloat16), ix.k_norm.to(torch.bfloat16)  # as the checkpoint ships them
+    rope = PartialRotary(256, ix.rotary_dim, ix.theta, cap + 64, dev)
+    pools = [KvPool(len(lengths) * cap + 64, dev, target=FLASHNEXT) for _ in range(2)]
+    for pool in pools:
+        ix.register(pool)
+    perm = (torch.randperm(len(lengths) * cap + 63, device=dev) + 1).to(torch.int32)
+    seqs_pages = [perm[i * cap:(i + 1) * cap] for i in range(len(lengths))]
+    xs = [(torch.randn(cap, hidden, device=dev) * 2).to(torch.bfloat16) for _ in lengths]
+    for pool in pools:
+        for pages, x, n in zip(seqs_pages, xs, lengths):
+            ix.run(x[:n], SimpleNamespace(kv_pool=pool, positions=torch.arange(n, device=dev), extras=SimpleNamespace(qsa_seqs=[(0, n, pages[:n])])), pages[:n])
+    b, rows = len(lengths), len(lengths) * depth
+    sparse = any(n + steps * depth >= ix.width for n in lengths)
+
+    def static(pool):
+        st = {"x": torch.zeros(rows, hidden, dtype=torch.bfloat16, device=dev), "pos": torch.zeros(rows, dtype=torch.int64, device=dev),
+              "page": torch.zeros(rows, dtype=torch.int32, device=dev), "table": torch.cat(seqs_pages),
+              "indptr": torch.arange(0, (b + 1) * cap, cap, dtype=torch.int32, device=dev),
+              "row_seq": torch.arange(b, device=dev).repeat_interleave(depth)}
+        side = SimpleNamespace(qsa_members=torch.zeros(rows, ratio, dtype=torch.int32, device=dev), qsa_writes=torch.zeros(rows, dtype=torch.int32, device=dev),
+                               qsa_table=st["table"] if sparse else None, qsa_indptr=st["indptr"], qsa_row_seq=st["row_seq"], qsa_gcap=cap // ratio)
+        return st, SimpleNamespace(kv_pool=pool, positions=st["pos"], extras=side)
+
+    runs = []
+    for pool, fused in zip(pools, (False, True)):
+        ix.cos_sin = rope.cos_sin if fused else None
+        assert decode_prep.supported(ix, ix.cos_sin) == fused
+        st, ctx = static(pool)
+        body = lambda st=st, ctx=ctx: ix.replay(st["x"], ctx, st["page"])  # noqa: E731
+        if graph:
+            body()
+            g = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(g):
+                out = body()
+        runs.append((st, ctx, (lambda g=g, out=out: (g.replay(), out)[1]) if graph else body))
+    for step in range(steps):
+        seqs = [(n + step * depth, depth, pages[: n + (step + 1) * depth]) for n, pages in zip(lengths, seqs_pages)]
+        x = torch.cat([xs[i][s[0]: s[0] + depth] for i, s in enumerate(seqs)])
+        pos = torch.cat([torch.arange(s[0], s[0] + depth) for s in seqs])
+        page = torch.cat([p[s[0]:s[0] + depth] for s, p in zip(seqs, seqs_pages)])
+        members, writes = FlashNextIndexer.static_rows(seqs, ratio, dev)
+        outs = []
+        for st, ctx, run in runs:
+            st["x"].copy_(x); st["pos"].copy_(pos); st["page"].copy_(page)
+            ctx.extras.qsa_members.copy_(members); ctx.extras.qsa_writes.copy_(writes)
+            outs.append(run())
+        # page 0 is the dummy page every row that completes no group writes: its last writer is unspecified
+        diff = (pools[0].page_aux[ix.name] != pools[1].page_aux[ix.name]).flatten(1).any(1).nonzero().flatten().tolist()
+        assert diff in ([], [0]), f"step {step}: pages {diff[:8]}"
+        if sparse:
+            assert torch.equal(outs[0][0], outs[1][0]) and torch.equal(outs[0][1], outs[1][1]), f"step {step}"
+        else:
+            assert outs[0] is None and outs[1] is None
+    # the queries and bases alone, against the reference definitions
+    qk = (torch.randn(rows, 5 * 128, device=dev) * 3).to(torch.bfloat16)
+    pos = torch.randint(0, cap + 64, (rows,), device=dev)
+    st, ctx = static(pools[1])
+    q, base = decode_prep.prep(qk, pools[1].page_aux[ix.name], st["page"], pos, ix.q_norm, rope.cos_sin, 4, ix.eps, True, st["indptr"], st["row_seq"])
+    want = rope_neox(gemma_rms(qk[:, :512].reshape(rows, 4, 128), ix.q_norm, ix.eps), pos, ix.rotary_dim, ix.theta)
+    assert torch.equal(q, want) and torch.equal(base, st["indptr"][st["row_seq"]])
+
+
 @pytest.mark.parametrize("rows,chunk", [(1000, 256), (4096, 256), (300, 256), (256, 256)])
 @pytest.mark.parametrize("ties", [False, True])
 def test_chunked_selection_is_the_selection_per_chunk(rows, chunk, ties):

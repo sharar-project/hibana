@@ -108,7 +108,10 @@ class HyperConnection:
         if self.fused:
             from sharar.kernels import flashnext_fused as fk
             if then is not None and then.fused:
-                y, n, parts = fk.inject_combine_norm(hyper, block_output, self.inject(normed), self.hc, self.hidden, then.norm, then.eps)
+                # the inject GEMV inside the launch where it is cuBLAS's bits (verify rows), else cuBLAS's output
+                wi = self.inject.weight
+                inj = (normed, wi) if fk.inject_splits(normed.shape[0], wi.shape[1], wi.device) and wi.dtype == torch.bfloat16 else self.inject(normed)
+                y, n, parts = fk.inject_combine_norm(hyper, block_output, inj, self.hc, self.hidden, then.norm, then.eps)
                 return y, (n, parts)
             out = fk.inject_combine(hyper, block_output, self.inject(normed), self.hc, self.hidden)
             return (out, None) if then is not None else out

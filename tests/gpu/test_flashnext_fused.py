@@ -281,6 +281,68 @@ def test_inject_combine_norm_bitwise(t, scale):
     assert torch.equal(_bits(y), _bits(y_ref)) and torch.equal(_bits(n), _bits(n_ref)) and torch.equal(parts, parts_ref)
 
 
+def _inject_operands(t: int, kind: int, seed: int):
+    """Inject GEMV operands [t, HC*H] x [HC, HC*H]: plain, cancelling inside every 256 / 448 block (the per-split FP32
+    partials' low bits reach the BF16 output), wide per-16 scales, or one huge cancelling pair among small values
+    per split chunk (the split sum's order decides)."""
+    k = HC * H
+    g = torch.Generator(device="cuda").manual_seed(seed)
+    x = torch.randn(t, k, device="cuda", generator=g)
+    w = torch.randn(HC, k, device="cuda", generator=g) * 0.02
+    if kind in (1, 2):
+        blk = 256 if kind == 1 else 448
+        n = k // blk * blk
+        xb, wb = x[:, :n].view(t, -1, blk), w[:, :n].view(HC, -1, blk)
+        xb[..., blk // 2:] = xb[..., :blk // 2].flip(-1)
+        wb[..., blk // 2:] = -wb[..., :blk // 2].flip(-1)
+        x[:, torch.randint(0, k, (16,), device="cuda", generator=g)] *= 1.01
+    elif kind == 3:
+        x = x * torch.exp2(torch.randint(-20, 20, (k // 16,), device="cuda", generator=g).float()).repeat_interleave(16)
+    elif kind == 4:
+        x, w = torch.zeros_like(x), torch.zeros_like(w)
+        for step in (256, 448):
+            idx = torch.arange(0, k, step, device="cuda")
+            vals = torch.randint(1, 64, (t, idx.numel()), device="cuda", generator=g).float()
+            vals[:, :2] = torch.tensor([2.0 ** 30, -(2.0 ** 30)], device="cuda")
+            x[:, idx] = vals[:, torch.randperm(idx.numel(), device="cuda", generator=g)]
+            w[:, idx] = 1.0
+    return x.to(torch.bfloat16), w.to(torch.bfloat16)
+
+
+@pytest.mark.parametrize("t", list(range(1, 36)) + [64, 123])
+def test_inject_logits_are_cublas(t):
+    """The inject GEMV inside `inject_combine_norm` is cuBLAS's BF16 x @ W^T bitwise at every row count it covers
+    (`inject_splits`); the rows it leaves to cuBLAS stay there."""
+    if fk.inject_splits(t, HC * H, torch.device("cuda")) is None:
+        assert t == 1 or t > 32 or torch.cuda.get_device_capability() != (12, 1)
+        return
+    for kind in range(5):
+        for seed in range(3):
+            x, w = _inject_operands(t, kind, seed * 7 + t)
+            assert torch.equal(_bits(fk.inject_logits(x, w)), _bits(x @ w.T)), (kind, seed)
+
+
+@pytest.mark.parametrize("t", [2, 5, 8, 16, 17, 28, 32])
+def test_inject_combine_norm_with_the_gemv_bitwise(t):
+    """`inject_combine_norm` given (x, W) is the call given cuBLAS's x @ W^T, outputs and maxima, also captured."""
+    hyper = torch.randn(t, HC * H, device="cuda").to(torch.bfloat16)
+    block = torch.randn(t, H, device="cuda").to(torch.bfloat16)
+    w = (torch.randn(HC * H, device="cuda") * 0.5).to(torch.bfloat16)
+    for kind in range(5):
+        x, wi = _inject_operands(t, kind, t)
+        want = fk.inject_combine_norm(hyper, block, x @ wi.T, HC, H, w, 1e-6)
+        got = fk.inject_combine_norm(hyper, block, (x, wi), HC, H, w, 1e-6)
+        for a, b in zip(got, want):
+            assert torch.equal(_bits(a) if a.dtype == torch.bfloat16 else a, _bits(b) if b.dtype == torch.bfloat16 else b), kind
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        out = fk.inject_combine_norm(hyper, block, (x, wi), HC, H, w, 1e-6)
+    x.copy_(torch.randn_like(x)); hyper.copy_(torch.randn_like(hyper))
+    g.replay()
+    want = fk.inject_combine_norm(hyper, block, x @ wi.T, HC, H, w, 1e-6)
+    assert all(torch.equal(a, b) for a, b in zip(out, want))
+
+
 @pytest.mark.parametrize("rows", [1, 3, 4, 5, 16])
 @pytest.mark.parametrize("shape,act", [((320, 10240), fk.ACT_NONE), ((10240, 320), fk.ACT_SILU), ((2560, 640), fk.ACT_SILU_MUL), ((13312, 2560), fk.ACT_NONE),
                                        ((2560, 2560), fk.ACT_SILU)])
