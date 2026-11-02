@@ -6,6 +6,8 @@ W4A16 recipe (vLLM's B12xNvFp4W4A16LinearKernel), Q8_0 and IQ2_XXS through the p
 """
 
 import dataclasses
+import logging
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import torch
@@ -23,6 +25,20 @@ class PlanRows:
     """The row counts a block-quant plan runs: `exact` get their own tuned programs, the rest share `capacity`'s."""
     capacity: int = CAPACITY
     exact: tuple[int, ...] = ()
+
+
+@contextmanager
+def preparing_on_first_use():
+    """Bolt's loaders prepare their b12x plans by first use, on the loading thread (b12x compiles on the thread that
+    owns its preparation session, and the engine's inference thread does not): b12x's warning for each such plan is
+    noise there (105 lines a Bolt start), so its preparation log shows errors only meanwhile."""
+    log = logging.getLogger("b12x.preparation")
+    level = log.level
+    log.setLevel(logging.ERROR)
+    try:
+        yield
+    finally:
+        log.setLevel(level)
 
 
 def graph_rows(cfg) -> tuple[int, ...]:

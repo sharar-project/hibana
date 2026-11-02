@@ -235,7 +235,10 @@ def test_launch_sets_up_each_agent_for_the_serving_target(home, monkeypatch, tmp
     cli.main(["launch", "claude", "-p", "fix it"])
     command, env = launched[-1]
     assert command == ["claude", "-p", "fix it"] and env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:30001"
-    assert "ANTHROPIC_API_KEY" not in env and env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "131072" and "claude" in env["ANTHROPIC_MODEL"]
+    assert "ANTHROPIC_API_KEY" not in env and env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "131072"
+    assert env["ANTHROPIC_MODEL"] == "claude-sharar-qwen3.8-27b"  # contains "claude" and names the serving model
+    cli.main(["launch", "--target", "nemotron", "claude"])
+    assert launched[-1][1]["ANTHROPIC_MODEL"] == "claude-sharar-nemotron-3.5-super"
     cli.main(["launch", "--target", "flashnext", "opencode"])
     command, env = launched[-1]
     config = json.loads(Path(env["OPENCODE_CONFIG"]).read_text())

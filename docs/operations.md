@@ -20,7 +20,8 @@ drafter `incoai/Qwen3.8-27B-DFlash2` at `dedf8df`), `flashnext` (`RadixArk/Qwen3
 `7b71922`, its own MTP head, or the DFlash2 drafter `incoai/Qwen3.8-Flash-Next-DFlash2` at `a22a174` on one Spark),
 and on one Spark `nemotron` ([Nemotron 3.5 Super](nemotron.md)) and `bolt` ([Nemotron 3.5 Bolt](bolt.md)).
 `sharar serve` downloads whatever the cache lacks (about 26 GB for the 27B, 135 GB for
-Flash-Next, 75 GB for Nemotron Super, 25 GB for Bolt) after checking free disk; serving itself runs offline.
+Flash-Next, 75 GB for Nemotron Super, 25 GB for Bolt, and in `fast` and `throughput` the calibrated 3-bit checkpoint:
+10, 51 and 49 GB, none for Bolt) after checking free disk; serving itself runs offline.
 
 ## Install and serve
 
@@ -94,7 +95,7 @@ Further settings, for tuning, diagnostics and the tools (defaults from `engine/c
 | `SHARAR_TRUNK_KEEP_BF16` | unset | A diagnostic: a regex of Flash-Next trunk projections kept in BF16 |
 | `SHARAR_DEBUG_SYNC` | off | `1` synchronizes after each phase, so an asynchronous CUDA fault names the phase and batch that launched it |
 | `SHARAR_CUDA_ARCH` | `12.1a` | The architecture the CUDA kernels built on first use target |
-| `SHARAR_CLAUDE_MODEL` | `claude-sharar-qwen3.8` | The model id `sharar launch claude` gives Claude Code (it accepts only ids containing "claude") |
+| `SHARAR_CLAUDE_MODEL` | `claude-sharar-<model>`, e.g. `claude-sharar-nemotron-3.5-super` | The model id `sharar launch claude` gives Claude Code (it accepts only ids containing "claude") |
 | `SHARAR_CLAUDE_CONFIG` | `~/.claude-sharar` | Claude Code's configuration directory under `sharar launch claude`, apart from the user's own |
 | `SHARAR_EVALS` | unset (the `eval` group) | A sharar-eval checkout for `tools/evaluate.py`, `tools/h2h_pr.py` and `tools/lossy_gate.py` (`--evals`) |
 | `SHARAR_EVALS_PYTHON` | unset | That checkout's Python (`--python`; default its `.venv`) |
