@@ -55,11 +55,8 @@ CLIP normalization. The API writes `<img>`, one placeholder per embedding and `<
 cache, the SSD tier and the Mamba-state snapshots key on the image, and the model reads them as the `<image>` token,
 whose embedding rows prefill replaces with the encoder's output (`ForwardContext.media_rows`). Attention has no
 positional encoding, so nothing else changes. The MTP head drafts over the placeholder token at image positions;
-drafts only propose, so this moves acceptance, not output.
-
-Checked against Transformers' `RadioModel` with the checkpoint's weights and the checkpoint's projector code
-(`tests/gpu/test_nemotron_vision.py`): tower features cosine 0.99998, embeddings 0.9996 to 1.0, on square, wide and
-tall tiles, for Super and Bolt.
+drafts only propose, so this moves acceptance, not output. `tests/gpu/test_nemotron_vision.py` checks the encoder
+against Transformers' `RadioModel` carrying the checkpoint's weights and the checkpoint's projector code.
 
 ## Serving
 

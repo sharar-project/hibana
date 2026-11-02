@@ -73,7 +73,7 @@ def test_mtp_reconstruction_commits_real_batches(model, state_format):
     torch.cuda.empty_cache()
 
 
-def test_an_image_reads_alike_in_one_chunk_across_chunks_and_in_a_batch(model):
+def test_an_image_is_read_in_one_chunk_across_chunks_in_a_batch_and_after_a_cache_hit(model):
     """A prompt with an image (`engine/media.py`), its placeholders prefilled in one chunk, in chunks that split the
     image, and in a batched prefill beside a text request: each reads the code written in the image. A second request
     for the same prompt resumes from the cached prefix at a state snapshot inside the image and encodes the image again
@@ -91,8 +91,7 @@ def test_an_image_reads_alike_in_one_chunk_across_chunks_and_in_a_batch(model):
         loaded.vision = loaded.load_vision(w, log=None)
         w.close()
     img = PILImage.new("RGB", (900, 300), "white")
-    font = ImageFont.truetype("DejaVuSans.ttf", 56) if _has_font() else ImageFont.load_default(56)
-    ImageDraw.Draw(img).text((40, 110), "CODE: BLUE-7429", font=font, fill="black")
+    ImageDraw.Draw(img).text((40, 110), "CODE: BLUE-7429", font=ImageFont.load_default(56), fill="black")
     pixels = v.preprocess(np.array(img))
     n = v.image_tokens(pixels)
     head = tok.encode("<|im_start|>system\n<|im_end|>\n<|im_start|>user\n")
@@ -116,7 +115,8 @@ def test_an_image_reads_alike_in_one_chunk_across_chunks_and_in_a_batch(model):
             ex = Executor(loaded, num_pages=8192, num_slots=8, max_batch=2, max_context=2048)
             outputs = []
             for chunk in (None, 100, 64):  # one chunk; chunks of 100 and 64 split the image's span
-                req = ex.admit(request().prompt_ids, request().params, request())
+                req = request()
+                ex.admit(req.prompt_ids, req.params, req)
                 while not req.prefill_done:
                     ex.prefill(req, max_tokens=chunk)
                 outputs.append(answer(req, ex))
@@ -143,12 +143,3 @@ def test_an_image_reads_alike_in_one_chunk_across_chunks_and_in_a_batch(model):
         torch.cuda.empty_cache()
     print(outputs)
     assert all("BLUE-7429" in o for o in outputs), outputs
-
-
-def _has_font() -> bool:
-    from PIL import ImageFont
-    try:
-        ImageFont.truetype("DejaVuSans.ttf", 10)
-        return True
-    except OSError:
-        return False
