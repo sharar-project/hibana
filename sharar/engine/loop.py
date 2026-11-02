@@ -62,6 +62,14 @@ class EngineLoop:
         self.sched = sched
         self.grammars = grammars  # ranks above 0 compile request constraints again from their source
         sched.on_progress = self._publish
+        # Streamed tokens of a speculative round go out during the next round's first wait for the GPU, not between
+        # the rounds: the HTTP thread's work on them (detokenizing, sending) took the GIL while this thread prepared
+        # the next draft, and the GPU waited for both. `_held`: some request's tokens wait for that point;
+        # `_waited`: the current step reached one (else the step's tokens go out after it, as before).
+        self._held = self._waited = False
+        spec = getattr(sched.ex, "spec", None)
+        if spec is not None:
+            spec.on_wait = self._on_wait
         self.tp = get_tp_info()
         self._recv_commands = self._recv_commands_rank0 if self.tp.is_primary() else self._recv_commands_rank1
         self._applied: list[tuple] = []  # commands applied since the last broadcast
@@ -222,6 +230,7 @@ class EngineLoop:
                 if self.stop:
                     break  # a rank above 0 received the primary's ("stop",)
                 if self.sched.active:
+                    self._waited = False
                     self.sched.step()
                 else:
                     self.sched.idle()
@@ -280,16 +289,30 @@ class EngineLoop:
         if self.tp.size > 1:
             os._exit(1)
 
+    def _on_wait(self) -> None:
+        """The engine waits for the GPU inside a round (SpecDecoder.on_wait): hand over the held tokens now."""
+        self._waited = True
+        if self._held:
+            self._deliver(hold=False)
+
     def _publish(self) -> None:
-        # Hand over requests that arrived during the step, then deliver tokens.
+        # Hand over requests that arrived during the step, then deliver tokens: a running request's tokens wait for
+        # the next round's GPU wait when this step had one (`_on_wait`); first tokens and finished requests go now.
         self._recv_commands()
+        self._deliver(hold=self._waited and bool(self.sched.running))
+
+    def _deliver(self, hold: bool) -> None:
         done = []
+        self._held = False
         for rid, t in self.tickets.items():
-            new = t.req.new_tokens()
             if t.req.finished:
-                done.append((rid, t, new))
-            elif new:
-                _notify(t.loop, t.queue.put_nowait, (new, False, t.req.finish_reason))
+                done.append((rid, t, t.req.new_tokens()))
+            elif hold and t.req.stream_cursor and len(t.req.output_ids) > t.req.stream_cursor:
+                self._held = True
+            else:
+                new = t.req.new_tokens()
+                if new:
+                    _notify(t.loop, t.queue.put_nowait, (new, False, t.req.finish_reason))
         for rid, t, new in done:
             # The HTTP loop may consume the final event immediately, so retire
             # its ticket before handing completion across the thread boundary.

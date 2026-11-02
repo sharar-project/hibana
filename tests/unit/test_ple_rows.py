@@ -79,7 +79,8 @@ class _Hash:
     multipliers = torch.tensor([1000003, 999983, 1000033], dtype=torch.int64)
     vocab_sizes = torch.tensor([53, 59, 61, 67], dtype=torch.int64)
     offsets = torch.tensor([0, 53, 112, 173], dtype=torch.int64)
-    ngram_ids, token_ids, _hash, rows_for = PleLayer.ngram_ids, PleLayer.token_ids, PleLayer._hash, PleLayer.rows_for
+    ngram_ids, token_ids, _hash, rows_for, column_ids = (PleLayer.ngram_ids, PleLayer.token_ids, PleLayer._hash, PleLayer.rows_for,
+                                                        PleLayer.column_ids)
     device_rows, resident = PleLayer.device_rows, None
 
 
@@ -91,6 +92,20 @@ def test_column_hash_matches_the_sequence_hash():
         ext = [EOS, EOS] + ids.tolist() if history is None else history.tolist() + ids.tolist()
         hist = torch.tensor([ext[j:j + 2] for j in range(len(ids))])
         assert torch.equal(h.token_ids(ids, hist, EOS), full)
+        assert (h.column_ids(ids.numpy(), hist[:, 1].numpy(), hist[:, 0].numpy(), EOS) == full.numpy()).all()
+
+
+def test_column_hash_in_numpy_wraps_as_torch():
+    """Token ids whose products overflow int64 (the served multipliers are large): numpy's wrapping product, xor and
+    floor remainder give torch's ids bit for bit."""
+    h = _Hash()
+    h.multipliers = torch.tensor([6364136223846793005, -7046029254386353131, 3935559000370003845], dtype=torch.int64)
+    rng = np.random.default_rng(3)
+    for _ in range(5):
+        cur, b1, b2 = (torch.from_numpy(rng.integers(0, 1 << 20, 64)) for _ in range(3))
+        b1[::7], b2[::5] = EOS, EOS
+        want = h.token_ids(cur, torch.stack([b2, b1], 1), EOS)
+        assert (h.column_ids(cur.numpy(), b1.numpy(), b2.numpy(), EOS) == want.numpy()).all()
 
 
 class _Event:

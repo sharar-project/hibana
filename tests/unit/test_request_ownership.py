@@ -104,6 +104,44 @@ def test_terminal_notification_observes_retired_ticket(monkeypatch, reason):
     asyncio.run(scenario())
 
 
+def test_streamed_tokens_wait_for_the_next_rounds_gpu_wait():
+    """After a step whose round waited for the GPU, a running request's new tokens are held until the next round's
+    wait (SpecDecoder.on_wait), off the host's path between rounds; first tokens and finished requests go at once, and
+    a step without a wait delivers as before."""
+    async def scenario():
+        ex = FakeExecutor()
+        ex.spec = SimpleNamespace(on_wait=None)
+        engine = EngineLoop(Scheduler(ex))
+        assert ex.spec.on_wait == engine._on_wait
+        loop = asyncio.get_running_loop()
+        active = engine.sched.submit([2], SamplingParams(max_new_tokens=8))
+        ending = engine.sched.submit([3], SamplingParams(max_new_tokens=2))
+        engine.sched.running += [active, ending]
+        tickets = [Ticket(queue=asyncio.Queue(), loop=loop, ready=loop.create_future(), req=req) for req in (active, ending)]
+        engine.tickets.update((t.req.request_id, t) for t in tickets)
+        engine._waited = True  # the step's round waited for the GPU
+        active.push(5)
+        ending.push(6)
+        engine._publish()  # first tokens go now
+        assert await asyncio.wait_for(tickets[0].queue.get(), 2) == ([5], False, '')
+        assert await asyncio.wait_for(tickets[1].queue.get(), 2) == ([6], False, '')
+        active.push(7)
+        ending.push(8)  # finishes (length)
+        engine._publish()
+        assert await asyncio.wait_for(tickets[1].queue.get(), 2) == ([8], True, 'length')
+        await asyncio.sleep(0)
+        assert tickets[0].queue.empty() and engine._held
+        engine._on_wait()  # the next round waits for the GPU
+        assert await asyncio.wait_for(tickets[0].queue.get(), 2) == ([7], False, '')
+        assert not engine._held
+        active.push(9)
+        engine._waited = False  # a step without a wait (plain decode, prefill): delivered after it
+        engine._publish()
+        assert await asyncio.wait_for(tickets[0].queue.get(), 2) == ([9], False, '')
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('accepted', range(4))
 @pytest.mark.parametrize('budget', range(1, 5))
 @pytest.mark.parametrize('stop_kind', ['length', 'eos'])

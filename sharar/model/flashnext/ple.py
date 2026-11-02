@@ -267,6 +267,23 @@ class PleLayer:
             blocks.append(torch.remainder(mix[:, None], self.vocab_sizes[lo:hi][None]) + self.offsets[lo:hi][None])
         return torch.cat(blocks, dim=-1)
 
+    def column_ids(self, cur: np.ndarray, back1: np.ndarray, back2: np.ndarray, eos: int) -> np.ndarray:
+        """`token_ids` in numpy for one verification column (int64 [N] each -> [N, heads]): the same wrapping int64
+        arithmetic and floor remainder, without a dozen small torch calls on the host while the GPU waits for the
+        column's rows (the last drafted token's rows precede the verify graph)."""
+        if self.ngram != 3:
+            raise NotImplementedError("the PLE hash is spelled out for 3-grams")
+        mult, sizes, offsets = self.multipliers.numpy(), self.vocab_sizes.numpy(), self.offsets.numpy()
+        back2 = np.where((back1 == eos) | (back2 == eos), np.int64(eos), back2)
+        shifted = [cur, back1, back2]
+        out = np.empty((cur.shape[0], self.heads), dtype=np.int64)
+        mix = shifted[0] * mult[0]
+        for n in range(2, self.ngram + 1):
+            mix = mix ^ (shifted[n - 1] * mult[n - 1])
+            lo, hi = (n - 2) * self.heads_per_ngram, (n - 1) * self.heads_per_ngram
+            out[:, lo:hi] = np.remainder(mix[:, None], sizes[None, lo:hi]) + offsets[None, lo:hi]
+        return out
+
     def rows_for(self, ids: torch.Tensor, seqs: list[tuple[int, int]], histories: torch.Tensor | None, eos: int) -> torch.Tensor:
         """Gather the table rows for `ids` (host int64 [T]) laid out as `seqs` (start, length) -> device uint8 [T, heads, ROW_BYTES]."""
         parts = []
