@@ -144,8 +144,10 @@ def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
         raise PreflightError(f"{s.profile} serves {s.target}'s calibrated 3-bit copies and none is available: fetch them "
                              f"(python -m sharar.weights.w3_checkpoint fetch --target {s.target} --root {s.w3_root}), set "
                              "SHARAR_W3_CHECKPOINT, or serve --exact")
-    s.warnings.append("no calibrated 3-bit checkpoint: " + TARGET_SETTINGS[s.target]["w3_missing"].format(profile=s.profile)
-                      + "; calibrate with docs/w3-calibration.md or set SHARAR_W3_CHECKPOINT")
+    missing = TARGET_SETTINGS[s.target].get("w3_missing")
+    if missing:
+        s.warnings.append(f"no calibrated 3-bit checkpoint: {missing.format(profile=s.profile)}; calibrate with "
+                          "docs/w3-calibration.md or set SHARAR_W3_CHECKPOINT")
     return None
 
 
@@ -169,7 +171,8 @@ def summary(s: Settings, host: dict[str, str], w3: Path | None, tp: int = 1) -> 
              f"  speculation: {s.proposer}, {s.spec} drafts, draft {draft}",
              f"  acceptance: greedy {s.get('SHARAR_ACCEPT_DEFAULT')}, sampled "
              + (f"s={soft}" if float(soft) > 0 else "exact"),
-             f"  3-bit copies: {on(s.get('SHARAR_W3_DECODE'))}{f' ({w3})' if w3 else ''}; device-resident acceptance: {on(s.get('SHARAR_DEVICE_ACCEPT'))}",
+             f"  3-bit copies: {on(s.engine_env(w3).get('SHARAR_W3_DECODE'))}{f' ({w3})' if w3 else ''}; "
+             f"device-resident acceptance: {on(s.get('SHARAR_DEVICE_ACCEPT'))}",
              f"  context {s.max_context} tokens, up to {s.get('SHARAR_MAX_BATCH')} requests"
              + (f", verify depth by batch {s.get('SHARAR_SPEC_DEPTHS')}" if s.get("SHARAR_SPEC_DEPTHS") else "")
              + (", adaptive verification (DFlash2's draft scores)" if s.get("SHARAR_SPEC_POLICY") == "budget" else ""),

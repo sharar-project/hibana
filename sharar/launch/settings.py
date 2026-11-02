@@ -27,8 +27,9 @@ SERVED = ("27b", "flashnext", "nemotron", "bolt")  # one name per target, in the
 SERVE_HINT = "sharar serve " + ", ".join(SERVED[:-1]) + " or " + SERVED[-1]  # what to run when nothing is serving
 
 # What each target serves when nothing else says so (port, service, drafter: the SHARAR_* keys), and what the launcher
-# knows of it: `recurrence` (`Target.recurrence`, the formats of SSM_STATES; default gdn), `w3_missing` (what the
-# 3-bit profiles serve without a calibrated checkpoint), `w3_calibrated_only` (no nearest-rounded copies then),
+# knows of it: `recurrence` (`Target.recurrence`, the formats of SSM_STATES; default gdn), `w3_missing` (the warning
+# when the 3-bit profiles serve without a calibrated checkpoint: what they serve instead; none for a target that
+# publishes no copies, as Bolt, whose own calibration is optional), `w3_calibrated_only` (no nearest-rounded copies then),
 # `w3_required` (no fallback: the 3-bit profiles refuse to start without one) and `fp8_kv_only` (its attention writes
 # the FP8 pool only).
 TARGET_SETTINGS = {
@@ -47,8 +48,7 @@ TARGET_SETTINGS = {
                  "w3_calibrated_only": True, "w3_required": True, "fp8_kv_only": True},
     "bolt": {"SHARAR_SERVICE": "sharar-bolt", "SHARAR_PORT": "30006", "SHARAR_PROPOSER": "dflash2",
              "SHARAR_DRAFT": "pinned", "SHARAR_DRAFT_PRECISION": "bf16", "SHARAR_VERIFY_STATE": "reconstruct",
-             "SHARAR_VISION": "1", "recurrence": "mamba2", "w3_calibrated_only": True,
-             "w3_missing": "serving the checkpoint encodings, about 25% slower single-stream than {profile} with them"},
+             "SHARAR_VISION": "1", "recurrence": "mamba2", "w3_calibrated_only": True},
 }
 # The recurrent-state formats each recurrence stores (SHARAR_SSM_STATE, cache/ssm_format.py): the per-window integer
 # formats on both, Mamba-2's FP16 with stochastic rounding.

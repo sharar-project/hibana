@@ -173,3 +173,28 @@ def test_an_image_a_tool_returned_becomes_a_text_note():
     assert out[0] is turns[0]
     assert out[1]['content'] == [{'type': 'text', 'text': 'board.png:'},
                                  {'type': 'text', 'text': '[image omitted: this model reads text only and cannot see it]'}]
+
+
+@pytest.mark.parametrize('target,vocab', [('nemotron', 131072), ('bolt', 131072), ('qwen38', 248320)])
+def test_constraints_are_built_for_the_served_targets_vocabulary(monkeypatch, target, vocab):
+    """The grammar's masks cover the served target's logits: a Nemotron mask sized for the 27B's 248,320 tokens failed
+    every fill and left each constrained request unconstrained for its first token, then finished it."""
+    from sharar import target as targets
+    from sharar.engine import grammar
+    from sharar.engine.sampler import InvalidRequest
+    built = []
+
+    def from_tokenizer(tokenizer, vocab_size, stop_ids):
+        built.append((vocab_size, tuple(stop_ids)))
+        raise InvalidRequest('stop here')
+    monkeypatch.setattr(grammar.Grammars, 'from_tokenizer', staticmethod(from_tokenizer))
+
+    async def scenario():
+        engine = SimpleNamespace(submit=AsyncMock())
+        tok = SimpleNamespace(_tok=object(), encode=Mock(return_value=[1]))
+        app = create_app(engine, tok, SimpleNamespace(render=Mock(return_value='p')), {'target': target})
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+            await client.post('/v1/chat/completions', json={
+                'messages': [{'role': 'user', 'content': 'hi'}], 'response_format': {'type': 'json_object'}})
+    asyncio.run(scenario())
+    assert built == [(vocab, tuple(targets.get(target).stop_token_ids))]
