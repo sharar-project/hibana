@@ -21,6 +21,7 @@ import dataclasses
 import weakref
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 
@@ -105,14 +106,13 @@ class FlashNextExtras:
         elif self._staged is not None:
             self._staged.synchronize()  # the previous upload has read the staging rows (it precedes the last verify)
         host = self._staging[:b * (k + 1)].numpy().reshape(b, k + 1, heads, ROW_BYTES)
-        seqs = [self._history(r, r.context_len - 1) + [r.output_ids[-1]] for r in reqs]
+        # each request's two tokens before the block, its pending token, then the drafted columns as they land
+        seqs = np.empty((b, k + 3), dtype=np.int64)
+        seqs[:, :3] = [self._history(r, r.context_len - 1) + [r.output_ids[-1]] for r in reqs]
         for j in range(k + 1):
             if j:
-                for seq, token in zip(seqs, columns.column(j - 1)):
-                    seq.append(token)
-            ids = torch.tensor([seq[-1] for seq in seqs], dtype=torch.int64)
-            histories = torch.tensor([seq[-3:-1] for seq in seqs], dtype=torch.int64)
-            host[:, j] = self.ple.table.gather(self.ple.token_ids(ids, histories, self.eos).numpy())
+                seqs[:, j + 2] = columns.column(j - 1)
+            host[:, j] = self.ple.table.gather(self.ple.column_ids(seqs[:, j + 2], seqs[:, j + 1], seqs[:, j], self.eos))
         out.copy_(self._staging[:b * (k + 1)], non_blocking=True)
         if self._staged is not None:
             self._staged.record()

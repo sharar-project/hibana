@@ -3,15 +3,18 @@
 After the verify graph, the host path downloads the argmax rows, decides
 acceptance on the host and only then launches the accepted-state
 reconstruction, the convolution copies and the draft feedback, one small
-launch at a time; the GPU idles while the host works. Here one captured
-graph per batch bucket does all of that from the verify graph's static
-outputs: `accept.accept_block` decides the counts (exact or relaxed rule,
-budget clamp, stop tokens), `AcceptedState.run` reconstructs the committed
+launch at a time; the GPU idles while the host works. Here two captured
+graphs per batch bucket do all of that from the verify graph's static
+outputs: the decision, `accept.accept_block` (exact or relaxed rule, budget
+clamp, stop tokens), writes the counts and one packed result; the writes
+replay right behind it: `AcceptedState.run` reconstructs the committed
 recurrent state for exactly those counts, the convolution windows are
 committed, and the proposer's `feedback_device` projects and scatters the
-accepted rows into its rings. The host then reads one packed result through a
-pinned buffer and an event, and only publishes: pages, committed lengths,
-emitted tokens, traces. Ownership stays with StateManager
+accepted rows into its rings. The host reads the packed result through a
+pinned buffer and an event recorded between the two, and only publishes:
+pages, committed lengths, emitted tokens, traces. It does so, and prepares and
+queues the next round's drafts, while the writes run (1.6 ms on Flash-Next at
+one request, 4.8 ms at four), so the GPU does not wait for that host work. Ownership stays with StateManager
 (`authorize_reconstruction` before the replay, `publish_reconstructed` after)
 and with the proposer (`accepted_prepare` / `accepted_publish`).
 
@@ -56,6 +59,9 @@ class AcceptGraphs:
         self._graphs: dict[int, torch.cuda.CUDAGraph] = {}
         self._decide: dict[int, torch.cuda.CUDAGraph] = {}  # sampled batches: the decision, then the commit graph
         self._commit: dict[int, torch.cuda.CUDAGraph] = {}
+        # The writes for the counts either decision graph decided, replayed right behind it: the host reads the counts
+        # and prepares the next round while they run (`round`).
+        self._writes: dict[int, torch.cuda.CUDAGraph] = {}
         self.sampled = spec.device.type == "cuda" and spec.proposer.requirements.name == "mtp"  # MTP drafts
         # SHARAR_MTP_SAMPLE: a sampled batch's drafts come with their law q [b, k, W] on candidates [b, k, W]
         self.q_width = spec.proposer.sample_width if self.sampled and getattr(spec.proposer, "sample", False) else 0
@@ -94,6 +100,7 @@ class AcceptGraphs:
             "host_meta": torch.full((b, META), -1, dtype=torch.int64, pin_memory=pin),
             # y [k] | z [s] | accepted | count | flags [k]
             "packet": torch.zeros((b, 2 * k + s + 2), dtype=torch.int64, device=d),
+            "counts": torch.zeros(b, dtype=torch.int64, device=d),
             "host_packet": torch.zeros((b, 2 * k + s + 2), dtype=torch.int64, pin_memory=pin),
             "event": torch.cuda.Event(),
             # sampled batches: per-row sampling parameters and Philox (seed, offset), the decision's outputs
@@ -126,7 +133,9 @@ class AcceptGraphs:
         st["flags_s"].copy_(flags)
         st["fit"].copy_(fit)
 
-    def _body(self, b: int, st: dict, sampled: bool = False) -> None:
+    def _counts_body(self, b: int, st: dict, sampled: bool = False) -> None:
+        """The decision: accepted counts, emitted counts and relaxed flags into the packet the host reads, and the
+        counts for `_writes_body`."""
         vst = self.vg._st[b]
         k, s = self.k, self.s
         meta = st["meta"]
@@ -138,6 +147,15 @@ class AcceptGraphs:
             z = vst["argmax"][:b * s].view(b, s)
             logits = vst["logits"][:b * s].view(b, s, -1)[:, :k]
             accepted, counts, flags = accept_block(st["y"], z, logits, st["relax"], meta[:, 0], meta[:, 3:])
+        st["counts"].copy_(counts)
+        st["packet"].copy_(torch.cat([st["y"], z, accepted.unsqueeze(1), counts.unsqueeze(1), flags.to(torch.int64)], dim=1))
+
+    def _writes_body(self, b: int, st: dict) -> None:
+        """The writes for the decided counts: the committed recurrent state, convolution windows and side state,
+        and the proposer's feedback."""
+        vst = self.vg._st[b]
+        s = self.s
+        meta, counts = st["meta"], st["counts"]
         pool = self.ex.state_pool
         slots = vst["slots"][:b]
         self.spec.replay.run(pool, slots, counts.to(torch.int32))
@@ -154,17 +172,17 @@ class AcceptGraphs:
         n = b * s  # the verify rows and inputs, for a proposer fed the final-normalized rows (MTP)
         self.spec.proposer.feedback_device(vst["features"], meta[:, 1], meta[:, 2], counts, s,
                                            norm=vst["norm"][:n], tokens=vst["tokens"][:n], pages=vst["pages"][:n])
-        st["packet"].copy_(torch.cat([st["y"], z, accepted.unsqueeze(1), counts.unsqueeze(1), flags.to(torch.int64)], dim=1))
 
     def capture(self, log=None) -> None:
         for b in self.vg.sizes:
             st = self._static(b)
             self._st[b] = st
-            self._graphs[b] = graph_set.capture(self._pool, lambda: self._body(b, st))
+            self._graphs[b] = graph_set.capture(self._pool, lambda: self._counts_body(b, st))
             if self.sampled:
                 st["params"][:, :3] = 1.0  # a valid law for every row while capturing (temperature, top_k, top_p)
                 self._decide[b] = graph_set.capture(self._pool, lambda: self._decide_body(b, st))
-                self._commit[b] = graph_set.capture(self._pool, lambda: self._body(b, st, sampled=True))
+                self._commit[b] = graph_set.capture(self._pool, lambda: self._counts_body(b, st, sampled=True))
+            self._writes[b] = graph_set.capture(self._pool, lambda: self._writes_body(b, st))
         if log:
             log(f"  captured device accept graphs: {len(self._graphs)}" + (f" (+{len(self._decide)} sampled)" if self.sampled else ""))
 
@@ -239,7 +257,11 @@ class AcceptGraphs:
             (self._commit if sampled else self._graphs)[size].replay()
             st["host_packet"].copy_(st["packet"], non_blocking=True)
             st["event"].record()
+            # The writes queue behind the decision; the host waits for the decision only and publishes, and the next
+            # round's drafts queue behind the writes on the same stream, so the GPU does not wait for the host here.
+            self._writes[size].replay()
             t2 = time.perf_counter()
+            spec.waiting()
             st["event"].synchronize()
             packet = st["host_packet"][:b].tolist()
             counts = [row[k + s + 1] for row in packet]

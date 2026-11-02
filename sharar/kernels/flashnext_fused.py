@@ -126,15 +126,87 @@ def inject_combine(hyper: torch.Tensor, block: torch.Tensor, inj: torch.Tensor, 
 
 
 # ---- residual injection, then the next hyper-connection's grouped norm of its result (one pass) ----
+# The inject logits inj = x @ W^T (x [T, K], W [hc, K] BF16) can be computed in the same launch, bitwise as cuBLAS
+# computes them on GB10 for the verify rows: a WMMA split-K GEMM (`cutlass_80_wmma_tensorop_bf16_s161616gemm`, 2 to 16
+# rows: 40 splits of 256; 17 to 123 rows: 23 splits of 448) whose splits chain BF16 m16n8k16 MMAs in ascending k, store
+# their FP32 partials rounded to BF16, and `splitKreduce` adds those in split order in FP32, rounded to BF16. Each
+# program recomputes its stream's logit with the same MMAs (the splits on the M and N dimensions of one dot, its diagonal
+# taken) and the same sequential sum. tests/gpu/test_flashnext_fused.py checks it against cuBLAS at every row count.
+INJECT_K = 10240
+# (up to rows, splits, split length) for K = INJECT_K; cuBLAS's 23 splits hold to 123 rows, but past 32 the per-row
+# programs cost more than the launches they save
+INJECT_SPLITS = ((16, 40, 256), (32, 23, 448))
+
+
+def inject_splits(rows: int, k: int, device: torch.device):
+    """(splits, length) of cuBLAS's split-K inject GEMM for `rows` x `k`, or None (cuBLAS keeps it)."""
+    if k != INJECT_K or rows < 2 or device.type != "cuda" or torch.cuda.get_device_capability(device) != (12, 1):
+        return None
+    for top, splits, length in INJECT_SPLITS:
+        if rows <= top:
+            return splits, length
+    return None
+
+
 @triton.jit
-def _inject_norm_kernel(R, B, I, Y, W, N, Amax, stride_r, stride_b, stride_i, stride_y, stride_n, H: tl.constexpr, eps,
-                        BLOCK: tl.constexpr):
+def _inject_logit(X, WI, Scratch, t, s, stride_x, K: tl.constexpr, NSPLIT: tl.constexpr, KLEN: tl.constexpr,
+                  SP: tl.constexpr, BK: tl.constexpr):
+    """x[t] . W[s] as cuBLAS's split-K GEMM: split i's partial is the diagonal (i, i) of [W chunks] @ [x chunks]^T
+    (SP >= NSPLIT), one chained BF16 MMA per 16 of k, rounded to BF16; the partials are added in split order through
+    `Scratch` (SP FP32 a program)."""
+    sp = tl.arange(0, SP)
+    kk = tl.arange(0, BK)
+    acc = tl.zeros((SP, SP), tl.float32)
+    for j in range(KLEN // BK):  # a dot over BK chains its BK / 16 MMAs in k order, one MMA a dot would too
+        k = j * BK
+        ka = sp[:, None] * KLEN + k + kk[None, :]
+        a = tl.load(WI + s * K + ka, mask=(sp[:, None] < NSPLIT) & (ka < K), other=0.0)
+        kb = sp[None, :] * KLEN + k + kk[:, None]
+        b = tl.load(X + t * stride_x + kb, mask=(sp[None, :] < NSPLIT) & (kb < K), other=0.0)
+        acc = tl.dot(a, b, acc)
+    part = tl.sum(tl.where(sp[:, None] == sp[None, :], acc, 0.0), 1)  # one term a row: exact
+    base = Scratch + (t * tl.num_programs(1) + s) * SP
+    tl.store(base + sp, part.to(tl.bfloat16).to(tl.float32))
+    tl.debug_barrier()
+    total = tl.load(base)
+    for i in tl.static_range(1, NSPLIT):
+        total += tl.load(base + i)
+    return total.to(tl.bfloat16).to(tl.float32)
+
+
+@triton.jit
+def _inject_logits_kernel(X, WI, Scratch, Out, stride_x, K: tl.constexpr, NSPLIT: tl.constexpr, KLEN: tl.constexpr,
+                          SP: tl.constexpr, BK: tl.constexpr):
     t = tl.program_id(0)
     s = tl.program_id(1)
+    tl.store(Out + t * tl.num_programs(1) + s, _inject_logit(X, WI, Scratch, t, s, stride_x, K, NSPLIT, KLEN, SP, BK).to(tl.bfloat16))
+
+
+def inject_logits(x: torch.Tensor, wi: torch.Tensor) -> torch.Tensor:
+    """x @ wi^T [T, hc] BF16 as `inject_combine_norm` computes it inside (the bitwise check against cuBLAS)."""
+    t, k = x.shape
+    nsplit, klen = inject_splits(t, k, x.device)
+    sp = triton.next_power_of_2(nsplit)
+    out = torch.empty((t, wi.shape[0]), dtype=torch.bfloat16, device=x.device)
+    scratch = torch.empty((t * wi.shape[0] * sp,), dtype=torch.float32, device=x.device)
+    _inject_logits_kernel[(t, wi.shape[0])](x, wi, scratch, out, x.stride(0), K=k, NSPLIT=nsplit, KLEN=klen, SP=sp, BK=64, num_warps=8)
+    return out
+
+
+@triton.jit
+def _inject_norm_kernel(R, B, I, Y, W, N, Amax, X, WI, Scratch, stride_r, stride_b, stride_i, stride_y, stride_n, stride_x,
+                        H: tl.constexpr, eps, BLOCK: tl.constexpr, GEMV: tl.constexpr, K: tl.constexpr,
+                        NSPLIT: tl.constexpr, KLEN: tl.constexpr, SP: tl.constexpr, BK: tl.constexpr):
+    t = tl.program_id(0)
+    s = tl.program_id(1)
+    if GEMV:
+        inj = _inject_logit(X, WI, Scratch, t, s, stride_x, K, NSPLIT, KLEN, SP, BK)
+    else:
+        inj = tl.load(I + t * stride_i + s).to(tl.float32)
     cols = tl.arange(0, BLOCK)
     mask = cols < H
     off = s * H + cols
-    g = 2.0 * _sigmoid(tl.load(I + t * stride_i + s).to(tl.float32))
+    g = 2.0 * _sigmoid(inj)
     r = tl.load(R + t * stride_r + off, mask=mask, other=0.0).to(tl.float32)
     b = tl.load(B + t * stride_b + cols, mask=mask, other=0.0).to(tl.float32)
     hb = (r + b * g).to(tl.bfloat16)
@@ -148,15 +220,28 @@ def _inject_norm_kernel(R, B, I, Y, W, N, Amax, stride_r, stride_b, stride_i, st
     tl.store(Amax + t * tl.num_programs(1) + s, tl.max(tl.where(mask, tl.abs(yb.to(tl.float32)), 0.0), 0))
 
 
-def inject_combine_norm(hyper: torch.Tensor, block: torch.Tensor, inj: torch.Tensor, hc: int, hidden: int, weight: torch.Tensor, eps: float):
+def inject_combine_norm(hyper: torch.Tensor, block: torch.Tensor, inj, hc: int, hidden: int, weight: torch.Tensor, eps: float):
     """`inject_combine`, then `grouped_gemma_rms(..., amax=True)` of its result with `weight`, in one pass (the
-    result is not read back): -> (hyper', normed, block maxima), each bitwise the two kernels'."""
+    result is not read back): -> (hyper', normed, block maxima), each bitwise the two kernels'. `inj`: the logits
+    [T, hc], or (x, W) when `inject_splits` covers the shape: x @ W^T computed inside, cuBLAS's bits."""
     t = hyper.shape[0]
     y = torch.empty_like(hyper)
     normed = torch.empty_like(hyper)
     parts = torch.empty((t * hc,), dtype=torch.float32, device=hyper.device)
-    _inject_norm_kernel[(t, hc)](hyper, block, inj, y, weight, normed, parts, hyper.stride(0), block.stride(0), inj.stride(0),
-                                 y.stride(0), normed.stride(0), hidden, eps, BLOCK=triton.next_power_of_2(hidden), num_warps=8)
+    if isinstance(inj, tuple):
+        x, wi = inj
+        nsplit, klen = inject_splits(t, x.shape[1], x.device)
+        assert x.stride(1) == 1 and wi.is_contiguous() and wi.shape == (hc, x.shape[1]) and x.dtype == wi.dtype == torch.bfloat16
+        sp = triton.next_power_of_2(nsplit)
+        scratch = torch.empty((t * hc * sp,), dtype=torch.float32, device=hyper.device)
+        i_ptr, stride_i, gemv, k = x, 0, True, x.shape[1]
+    else:
+        x = wi = scratch = i_ptr = inj
+        stride_i, gemv, k, nsplit, klen, sp = inj.stride(0), False, 16, 1, 16, 16
+    _inject_norm_kernel[(t, hc)](hyper, block, i_ptr, y, weight, normed, parts, x, wi, scratch, hyper.stride(0), block.stride(0),
+                                 stride_i, y.stride(0), normed.stride(0), x.stride(0), hidden, eps,
+                                 BLOCK=triton.next_power_of_2(hidden), GEMV=gemv, K=k, NSPLIT=nsplit, KLEN=klen, SP=sp,
+                                 BK=64, num_warps=8)
     return y, normed, parts
 
 
