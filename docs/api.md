@@ -112,18 +112,24 @@ engine.
 Nemotron Super and Bolt serve their checkpoints' vision encoder (`SHARAR_VISION`, on for both; `/get_server_info`
 reports `vision`). A chat message's content can then hold images: OpenAI `image_url` parts (or `input_image`) with a
 `data:` URL, and on Messages `image` blocks with a base64 source, in user turns and in `tool_result` content (an agent's
-screenshot is read, not replaced by a note). The server fetches nothing: an `http(s)` URL is a 400, as are undecodable
-data, more than 32 MiB encoded or 64 megapixels. PNG, JPEG, WebP and GIF (its first frame) decode with Pillow; alpha is
-dropped.
+screenshot is read, not replaced by a note). The server fetches nothing. PNG, JPEG, WebP and GIF (its first frame)
+decode with Pillow, upright by their EXIF orientation; alpha is dropped. A 400 names the image that cannot be read: an
+`http(s)` URL, data that is not one of those formats or does not decode, more than 32 MiB encoded or 64 megapixels, an
+image so narrow that its short side gets no patch (beyond about 13,000 : 1), or more than 100 images in a request. In a
+tool result such an image becomes a note saying why (`[image omitted: ...]`) and the turn goes on.
 
 Each image is resized to one tile of 16-pixel patches (between 1,024 and 13,312, keeping its aspect ratio) and costs a
-quarter as many prompt tokens, plus `<img>` and `</img>`: 256 for a small image, about 2,040 for 1920 x 1080, at most 3,328. `usage` counts them,
-and `/v1/messages/count_tokens` includes them. The template writes `<image>` per image (`<image N>` labels before each
-when a message has several); a message whose text already contains `<image>` places its images there itself, and the
-count must match (400 otherwise). Images are encoded at their first prefill chunk (about 30 ms for a 1,024-patch tile,
-0.7 s for a full one, on one GB10) and their prefix is cached like text: a later turn that sends the same image again
-resumes from the cached prefix, image included, without encoding it again. The checkpoint's video and audio inputs are
-not served (`input_audio`, `file`, `video_url` and Messages `document` blocks are a 400, or a note inside a tool
+quarter as many prompt tokens, plus `<img>` and `</img>`: 256 for a small image, about 2,040 for 1920 x 1080, at most
+3,328. `usage` counts them, and `/v1/messages/count_tokens` includes them, from the images' headers only. Together with
+the text they must fit the context. The template writes `<image>` for each image part (`<image N>` labels before each
+when a message has several); `<image>`, `<img>` and `</img>` in a request's own text are read as text.
+
+A request's image is decoded once by the server to check it; the engine decodes it again only when its span is to be
+encoded, on a worker thread from the request's admission, so an image in a cached prefix is never decoded or encoded
+again: a later turn that sends the same image resumes from the cached prefix, image included. The encode (about 30 ms
+for a 1,024-patch tile, 0.7 s for a full one, on one GB10) runs on its own CUDA stream; while other requests decode, a
+prefill chunk ends before an image still encoding, so their tokens keep coming. The checkpoint's video and audio inputs
+are not served (`input_audio`, `file`, `video_url` and Messages `document` blocks are a 400, or a note inside a tool
 result). The 27B and Flash-Next refuse images; their vision towers are not loaded.
 
 With thinking off the models sometimes still reason about an image and end it with `</think>`; as NVIDIA's reasoning

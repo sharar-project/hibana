@@ -92,7 +92,11 @@ new `Target.family`; model-specific facts become optional `Target` fields
 `StatePool.register_aux` (`register_state`), per-page rows through
 `KvPool.register_page_aux` (`register_pages`), side inputs a forward needs
 through `forward_extras()` on `ForwardContext.extras` (never new
-`ForwardContext` fields or model checks in `engine/`), and a family's model cache is named by
+`ForwardContext` fields or model checks in `engine/`; the one exception is
+image input, a request input every target with a vision tower shares: the
+model's optional `vision`, typed by `engine/contracts.VisionEncoder`, is all
+`engine/` reads of it, and its embeddings reach prefill as
+`ForwardContext.media_rows` / `media_embeds`), and a family's model cache is named by
 `Target.cache_env`. `sharar/model/flashnext/` is the worked example. The
 engine, pools and graphs read `executor.target`; do not add module-level
 constants for a new model, and keep `config.py` describing the 27B for the

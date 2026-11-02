@@ -53,7 +53,9 @@ preprocessing is the checkpoint's: one tile of 1,024 to 13,312 patches with even
 CLIP normalization. The API writes `<img>`, one placeholder per embedding and `</img>` in place of each `<image>`
 ([API](api.md#images)); the placeholders carry ids drawn from the image's bytes (`engine/media.py`), so the prefix
 cache, the SSD tier and the Mamba-state snapshots key on the image, and the model reads them as the `<image>` token,
-whose embedding rows prefill replaces with the encoder's output (`ForwardContext.media_rows`). Attention has no
+whose embedding rows prefill replaces with the encoder's output (`ForwardContext.media_rows`). The encoder runs on its
+own CUDA stream ahead of that prefill (`engine/media.Encoder`), with at most 470 MiB transient (a full tile; the plan
+counts 600). Attention has no
 positional encoding, so nothing else changes. The MTP head drafts over the placeholder token at image positions;
 drafts only propose, so this moves acceptance, not output. `tests/gpu/test_nemotron_vision.py` checks the encoder
 against Transformers' `RadioModel` carrying the checkpoint's weights and the checkpoint's projector code.
