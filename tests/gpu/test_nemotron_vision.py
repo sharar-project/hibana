@@ -107,7 +107,7 @@ def test_encoder_matches_the_reference(pair, size):
         features = ref(pixels.unsqueeze(0).cuda()).features[0]
         expected = reference_projector(features, rows, cols, head)
         got = ours.encode(pixels)
-    assert got.shape == expected.shape == (v.image_tokens(pixels), ours.hidden)
+    assert got.shape == expected.shape == (v.image_tokens(size[1], size[0]), ours.hidden)
     c = cos(got, expected)
     print(f"{name} {size}: {rows}x{cols} patches, embeddings cos {c:.6f}")
     assert c >= EMBED_COS, (name, size, c)
@@ -121,3 +121,26 @@ def test_tower_matches_the_reference(pair):
         c = cos(ours.tower(pixels), ref(pixels.unsqueeze(0).cuda()).features[0])
     print(f"{name}: tower cos {c:.6f}")
     assert c >= TILE_COS, (name, c)
+
+
+@pytest.mark.parametrize("rows,cols", [(32, 32), (68, 120), (120, 68), (104, 128), (130, 102), (6, 208), (8, 250), (2, 2)])
+def test_positions_are_the_cropped_square_bitwise(pair, rows, cols):
+    """`_positions` computes only the tile's crop of the position table resized to the larger side's square; on CUDA
+    its values are the square's."""
+    _, ours, _, _ = pair
+    side = max(rows, cols)
+    square = F.interpolate(ours.pos, size=(side, side), mode="bilinear", align_corners=False).to(torch.bfloat16)
+    assert torch.equal(ours._positions(rows, cols), square[0, :, :rows, :cols].flatten(1).t())
+
+
+def test_an_extreme_tile_encodes_in_bounded_memory(pair):
+    """A 100,000 x 50 image: a 2 x 4,560-patch tile, whose square position table would take 106 GB."""
+    _, ours, _, _ = pair
+    pixels = v.preprocess(image(50, 100_000, seed=5))
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    base = torch.cuda.memory_allocated()
+    out = ours.encode(pixels)
+    torch.cuda.synchronize()
+    assert out.shape == (v.image_tokens(100_000, 50), ours.hidden) == (2280, ours.hidden)
+    assert torch.cuda.max_memory_allocated() - base <= v.ENCODE_BYTES

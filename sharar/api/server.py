@@ -60,8 +60,10 @@ def _memory_gib() -> dict:
 
 def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, describe: dict, grammars: Grammars | None = None,
                vision=None) -> FastAPI:
-    """`vision`: the target's vision encoder (`model.vision`) when it serves image input, else None."""
+    """`vision`: the target's vision encoder (`model.vision`, engine/contracts.VisionEncoder) when it serves image
+    input, else None."""
     MODEL_ID = describe.get("model_path", targets.DEFAULT_TARGET.model_id)  # the served checkpoint id, reported as the model name
+    markers = media.Markers(tok, vision) if vision is not None else None
     @asynccontextmanager
     async def lifespan(app):
         yield
@@ -148,19 +150,22 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                 return ids, detok.text, reason
 
     async def _chat_prompt(messages: list[dict], tools: list | None, thinking: bool, kwargs: dict,
-                           boundary: bool = True) -> tuple[list[int], bool, int, tuple]:
+                           boundary: bool = True, decode: bool = True) -> tuple[list[int], bool, int, tuple]:
         """Render and encode a chat. Returns (ids, whether the output starts inside a thinking block, with
         `boundary` the token position where its last message starts: `SamplingParams.message_boundary`, 0 if unknown,
-        and the prompt's images for the engine: api/media.py). The boundary costs one more render, of the
-        conversation without its last message, and no second encode."""
+        and the prompt's images for the engine: api/media.py, which with `decode` also checks that new ones decode).
+        The boundary costs one more render, of the conversation without its last message, and no second encode."""
         folded = fold_system_messages(_tool_arguments_as_objects(messages))
-        images = await asyncio.to_thread(media.prepare, folded, vision) if vision is not None else []
+        images = []
+        if vision is not None:
+            folded, images = await asyncio.to_thread(media.prepare, folded, vision, decode)
+            folded, tools = media.escape(folded), media.escape(tools)
         head = ""  # rendered before the full prompt: the template's last render is the one tests and logs look at
         if boundary and len(folded) > 1:
             with contextlib.suppress(Exception):  # a template that rejects a partial conversation: no boundary
                 head = tmpl.render(folded[:-1], add_generation_prompt=False, enable_thinking=thinking, tools=tools, **kwargs)
         rendered = tmpl.render(folded, enable_thinking=thinking, tools=tools, **kwargs)
-        ids, at = _message_boundary(tok, rendered, head)
+        ids, at = _message_boundary(markers or tok, rendered, head)
         ids, at, prompt_media = media.expand(ids, at, images, vision) if images else (ids, at, ())
         return ids, thinking and rendered.rstrip().endswith("<think>"), at, prompt_media
 
@@ -537,7 +542,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         except EngineUnavailable:
             return error(503, "overloaded_error", "engine unavailable")
 
-    async def _messages_prompt(body: dict, choice: str, boundary: bool = True) -> tuple[messages_api.MessagesRequest, list[dict] | None,
+    async def _messages_prompt(body: dict, choice: str, boundary: bool = True, decode: bool = True) -> tuple[messages_api.MessagesRequest, list[dict] | None,
                                                                                     list[int], bool, int, tuple]:
         req = messages_api.parse_request(body, images=vision is not None)
         req.messages, req.stopped = _guard(req.messages, body)
@@ -546,7 +551,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             thinking = req.thinking
         tools = None if choice == "none" else req.tools
         try:
-            ids, in_reasoning, at, prompt_media = await _chat_prompt(req.messages, tools, thinking, kwargs, boundary)
+            ids, in_reasoning, at, prompt_media = await _chat_prompt(req.messages, tools, thinking, kwargs, boundary, decode)
         except TemplateError as exc:
             raise InvalidRequest(f"the conversation cannot be rendered: {exc}")
         return req, tools, ids, in_reasoning, at, prompt_media
@@ -653,8 +658,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     @app.post("/v1/messages/count_tokens")
     async def count_tokens(http: HttpRequest):
         async def count(body: dict, http: HttpRequest):
-            # A forced tool_choice does not change the prompt.
-            _, _, ids, _, _, _ = await _messages_prompt(body, messages_api.tool_choice(body), boundary=False)
+            # A forced tool_choice does not change the prompt; an image's count needs only its header.
+            _, _, ids, _, _, _ = await _messages_prompt(body, messages_api.tool_choice(body), boundary=False, decode=False)
             return {"input_tokens": len(ids)}
         return await _messages_errors(count, http)
 
@@ -677,9 +682,8 @@ def _text_only(messages: list, images: bool = False) -> list:
             continue
         if message.get("role") != "tool":
             kind = next(p["type"] for p in content if isinstance(p, dict) and p.get("type") in unreadable)
-            what = "a text-only model" if not images else "a model that reads text and images"
-            raise InvalidRequest(f"messages[{i}]: {kind} content is not supported; this server runs {what}")
-        content = [{"type": "text", "text": messages_api.MEDIA_NOTE.format(kind="image" if "image" in p["type"] else p["type"])}
+            raise messages_api.unsupported(kind, f"messages[{i}]", images)
+        content = [{"type": "text", "text": messages_api.media_note("image" if "image" in p["type"] else p["type"], images)}
                    if isinstance(p, dict) and p.get("type") in unreadable else p for p in content]
         out.append({**message, "content": content})
     return out

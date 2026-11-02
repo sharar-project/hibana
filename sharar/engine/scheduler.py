@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from sharar.engine.request import Request
 from sharar.engine.contracts import ExecutionBackend
@@ -110,7 +110,8 @@ class Scheduler:
         if len(self.queue) >= self.cfg.max_queued:
             self.metrics.rejected += 1
             raise QueueFull(f"{len(self.queue)} requests queued")
-        req = Request(prompt_ids=list(prompt_ids), params=params, request_id=self._next_id, media=tuple(media))
+        req = Request(prompt_ids=list(prompt_ids), params=params, request_id=self._next_id,
+                      media=tuple(replace(m) for m in media))  # each request's own encode state
         self._next_id += 1
         if self.sink is not None and params.trace:
             req.trace_rounds = []
@@ -228,7 +229,9 @@ class Scheduler:
         token; ties keep admission order), except that a request passed over
         prefill_max_waits steps in a row goes first. A request prefilling
         alone, with nothing decoding, takes solo_chunk_size: no other request's
-        decode waits on the longer step."""
+        decode waits on the longer step. While requests decode, a chunk ends
+        before an image whose encode is still running (`prefill_ready`), so
+        their rounds go on beside the encode instead of waiting for it."""
         # on_progress may cancel an admitted request between the two chunks.
         # Remove it before reserving the next prefill chunk.
         self._reap()
@@ -238,10 +241,13 @@ class Scheduler:
         chunks: list[tuple[Request, int]] = []
         waits = self._prefill_waits
         order = sorted(self.prefilling, key=lambda r: (waits.get(r.request_id, 0) < self.cfg.prefill_max_waits, r.prefill_len - r.prefill_pos))
+        ready = getattr(self.ex, "prefill_ready", None)  # not in ExecutionBackend: test executors lack it
         for req in order:
             if budget <= 0:
                 break
             n = min(budget, chunk, req.prefill_len - req.prefill_pos)
+            if req.media and n > 0 and ready is not None:
+                n = ready(req, n, wait=not self.running)
             if n > 0:
                 chunks.append((req, n))
                 budget -= n

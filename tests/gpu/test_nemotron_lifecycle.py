@@ -78,22 +78,22 @@ def test_an_image_is_read_in_one_chunk_across_chunks_in_a_batch_and_after_a_cach
     image, and in a batched prefill beside a text request: each reads the code written in the image. A second request
     for the same prompt resumes from the cached prefix at a state snapshot inside the image and encodes the image again
     for the placeholders after it."""
+    import io
     from PIL import Image as PILImage, ImageDraw, ImageFont
-    import numpy as np
     from sharar.engine import media
     from sharar.engine.request import Request
     from sharar.model.nemotron import vision as v
     from sharar.weights.safetensors import SnapshotWeights
 
     loaded, tok = model
-    with config.using(config.current().replace(vision=True)):
-        w = SnapshotWeights(NEMOTRON.snapshot_dir())
-        loaded.vision = loaded.load_vision(w, log=None)
-        w.close()
+    w = SnapshotWeights(NEMOTRON.snapshot_dir())
+    loaded.vision = loaded.load_vision(w, log=None)
+    w.close()
     img = PILImage.new("RGB", (900, 300), "white")
     ImageDraw.Draw(img).text((40, 110), "CODE: BLUE-7429", font=ImageFont.load_default(56), fill="black")
-    pixels = v.preprocess(np.array(img))
-    n = v.image_tokens(pixels)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    n = v.image_tokens(900, 300)
     head = tok.encode("<|im_start|>system\n<|im_end|>\n<|im_start|>user\n")
     tail = tok.encode("What is the code in the image? Reply with the code only.<|im_end|>\n<|im_start|>assistant\n"
                       "<think></think>")
@@ -102,7 +102,7 @@ def test_an_image_is_read_in_one_chunk_across_chunks_in_a_batch_and_after_a_cach
 
     def request():
         return Request(prompt_ids=list(prompt), params=SamplingParams(max_new_tokens=8),
-                       media=(media.Image(start=len(head) + 1, ids=ids, pixels=pixels),))
+                       media=(media.Image(start=len(head) + 1, ids=ids, data=buf.getvalue()),))
 
     def answer(req, ex):
         while not req.finished:

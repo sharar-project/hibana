@@ -32,6 +32,9 @@ PREFIX_TOKENS = 10  # 3 class + 7 register tokens, prepended to the patches and 
 POS_GRID = 128  # the position table covers 2048 / 16 patches a side
 LN_EPS, RMS_EPS = 1e-6, 1e-5
 VISION_BYTES = 1_850_000_000  # the tower and projector (BF16) and the FP32 position table as loaded: the load's headroom
+# One encode's device memory beyond its output, which runs on the executor's side stream: at most 470 MiB measured
+# (a full 13,312-patch tile; 302 MiB at 2 x 4,560 patches), with room for the allocator's blocks
+ENCODE_BYTES = 600 * 2**20
 
 # tokenizer.json of both checkpoints: <image> (config.json img_context_token_id), <img>, </img>
 IMAGE_TOKEN, IMAGE_START, IMAGE_END = 18, 19, 20
@@ -42,11 +45,15 @@ IDENTITY = b"nemotron c-radio: one 16-pixel tile of 1024-13312 patches, bicubic 
 
 def target_patches(width: int, height: int, budget: int = MAX_PATCHES) -> tuple[int, int]:
     """(w, h) in patches for a `width` x `height` image: scaled down to `budget` patches, up to MIN_PATCHES, each side
-    even (the reference's `_compute_target_patches`, including its rounding)."""
+    even (the reference's `_compute_target_patches`, including its rounding). ValueError for an image so narrow that its
+    short side scales to no patch (the reference divides by zero there)."""
     patch_h = round(height / PATCH + 0.5)
     patch_w = round(width / PATCH + 0.5)
     factor = min(math.sqrt(budget / (patch_h * patch_w)), 1.0)
     h, w = math.floor(factor * patch_h), math.floor(factor * patch_w)
+    if not h or not w:
+        raise ValueError(f"a {width} x {height} image is too narrow: in at most {MAX_PATCHES:,} patches of {PATCH} pixels "
+                         "its short side gets none")
     if budget > MIN_PATCHES and h * w < MIN_PATCHES:
         up = math.sqrt(MIN_PATCHES / (h * w))
         h, w = math.ceil(up * h), math.ceil(up * w)
@@ -57,9 +64,10 @@ def target_patches(width: int, height: int, budget: int = MAX_PATCHES) -> tuple[
     return w, h
 
 
-def image_tokens(pixels: torch.Tensor) -> int:
-    """The embeddings `encode` makes of a preprocessed tile [3, H, W]."""
-    return (pixels.shape[1] // PATCH) * (pixels.shape[2] // PATCH) // MERGE**2
+def image_tokens(width: int, height: int) -> int:
+    """The embeddings `encode` makes of a `width` x `height` image (`target_patches`; ValueError as there)."""
+    w, h = target_patches(width, height)
+    return w * h // MERGE**2
 
 
 def preprocess(rgb: np.ndarray) -> torch.Tensor:
@@ -81,9 +89,11 @@ def pixel_shuffle(x: torch.Tensor) -> torch.Tensor:
 
 
 class RadioVision:
-    """The tower and projector on the device; `encode` turns one preprocessed tile into embeddings."""
+    """The tower and projector on the device (engine/contracts.VisionEncoder); `encode` turns one preprocessed tile into
+    embeddings."""
 
     image_token, image_start, image_end, identity = IMAGE_TOKEN, IMAGE_START, IMAGE_END, IDENTITY
+    workspace_bytes = ENCODE_BYTES
     preprocess = staticmethod(preprocess)
     tokens = staticmethod(image_tokens)
 
@@ -115,10 +125,12 @@ class RadioVision:
         return sum(t.numel() * t.element_size() for t in tensors)
 
     def _positions(self, rows: int, cols: int) -> torch.Tensor:
-        """The position table resized to the larger side and cropped to the tile (the reference's CPE)."""
-        side = max(rows, cols)
-        pos = F.interpolate(self.pos, size=(side, side), mode="bilinear", align_corners=False).to(torch.bfloat16)
-        return pos[0, :, :rows, :cols].flatten(1).t()
+        """The position table resized to a square of the larger side and cropped to the tile (the reference's CPE). Only
+        the crop is computed: the bilinear kernel at the square's scale writes the same values (bitwise on CUDA) and
+        rows * cols of them, where the square of a 2 x 4564-patch tile would be 106 GB."""
+        scale = max(rows, cols) / POS_GRID
+        pos = torch.ops.aten.upsample_bilinear2d(self.pos, [rows, cols], False, scale, scale).to(torch.bfloat16)
+        return pos[0].flatten(1).t()
 
     @torch.inference_mode()
     def encode(self, pixels: torch.Tensor) -> torch.Tensor:
