@@ -101,9 +101,9 @@ engine.
   characters) is allowed; whitespace runs inside JSON are capped at 24 characters.
 - JSON schemas compile with xgrammar's `from_json_schema` (properties in the schema's order); a schema it cannot
   compile returns 400. `json_object` is any JSON object.
-- Forced tool calls follow Qwen3.8's XML call format with the tools' function and parameter names; parameter values
-  are free text (without `</`) and are cast by the usual tool-call parser. The parsed calls come back as `tool_calls`
-  (`tool_use` blocks on Messages).
+- Forced tool calls follow the XML call format the Qwen3.8 and Nemotron templates share, with the tools' function and
+  parameter names; parameter values are free text (without `</`) and are cast by the usual tool-call parser. The
+  parsed calls come back as `tool_calls` (`tool_use` blocks on Messages).
 - A forced `tool_choice` cannot be combined with a JSON `response_format`; either needs `tools` / a schema.
 - `/get_server_info` counts constrained requests by kind (`constrained`).
 

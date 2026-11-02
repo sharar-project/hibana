@@ -97,9 +97,9 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
     def _constraint(spec: tuple[str, object], tools: list | None, in_reasoning: bool):
         """The request's Constraint (engine/grammar.py); compiling runs off the event loop."""
-        if grammar_builder[0] is None:
-            grammar_builder[0] = Grammars.from_tokenizer(tok._tok, describe.get("vocab_size", targets.DEFAULT_TARGET.vocab_size),
-                                                         targets.get(describe.get("target")).stop_token_ids)
+        if grammar_builder[0] is None:  # the served target's vocabulary: the masks cover its logits rows
+            served = targets.get(describe.get("target"))
+            grammar_builder[0] = Grammars.from_tokenizer(tok._tok, served.vocab_size, served.stop_token_ids)
         g, (kind, arg), armed = grammar_builder[0], spec, not in_reasoning
         try:
             constraint = (g.tool_call(tools or [], arg, armed) if kind == "tool_call" else

@@ -68,7 +68,7 @@ benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) th
 | CUDA graphs: decode, verify, draft | yes | yes, dense and sparse-selecting variants | yes | yes |
 | Device-resident acceptance | opt-in | on in `fast` and `throughput` | on in `fast` and `throughput` | opt-in |
 | Exact / relaxed / sampled acceptance | yes | yes | yes | yes (exact in every profile) |
-| Constrained output (JSON schema, forced tool calls) | yes | yes | not yet checked | not yet checked |
+| Constrained output (JSON schema, forced tool calls) | yes | yes | yes | yes |
 | Calibrated 3-bit weights | layers and draft (decode copies) | trunk (decode copies) and routed experts (the only copy) | trunk (decode copies) and routed experts (the only copy) | trunk and vocabulary head (decode copies), from a local calibration |
 | Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk; 3-bit routed experts (NVFP4 in `exact`; split by expert on two Sparks) | the checkpoint's: NVFP4 experts (3-bit in `fast` and `throughput`), FP8 Mamba/attention/head projections, BF16 router and latent projections | the checkpoint's: IQ2_XXS experts, Q8_0 attention, latent and head projections, NVFP4 Mamba projections, BF16 router |
 | Prefix cache, SSD tier, 262K context | yes | yes (sparse attention past 2,048 tokens) | yes (Mamba-2 state as the GDN's) | yes (Mamba-2 state as Super's) |
