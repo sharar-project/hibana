@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from contextlib import closing
 from importlib.metadata import version
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from sharar.engine.config import current
 from sharar.kernels import ggml_bf16, ops
 from sharar.model.bolt import tuning
 from sharar.model.bolt.config import BOLT
-from sharar.model.bolt.linear import PackedLinear, PlanRows, graph_rows
+from sharar.model.bolt.linear import PackedLinear, PlanRows, graph_rows, preparing_on_first_use
 from sharar.model.nemotron.attention import NemotronAttention
 from sharar.model.nemotron.mamba import NemotronMamba
 from sharar.model.nemotron.model import BACKBONE, Block, Nemotron, drop_page_cache
@@ -166,7 +167,7 @@ class Bolt(Nemotron):
         started = time.perf_counter()
         w = SnapshotWeights(snap)
         self.layers = []
-        try:
+        with preparing_on_first_use(), closing(w):
             self.embed = w.get(f"{BACKBONE}.embeddings.weight").to(self.device).contiguous()
             if self.embed.shape != (BOLT.vocab, BOLT.hidden) or self.embed.dtype != torch.bfloat16:
                 raise ValueError("unexpected Bolt BF16 embedding shape")
@@ -198,8 +199,6 @@ class Bolt(Nemotron):
                 # the head reads at most the graphs' rows (longer calls chunk): a prefill capacity would hold a
                 # [4096, 131072] workspace
                 lin.prepare(PlanRows(2 * max(rows), rows) if lin is self.lm_head else PlanRows(exact=rows))
-        finally:
-            w.close()
         torch.cuda.synchronize()
         drop_page_cache(snap)
         moes = [layer.mixer for layer in self.layers if layer.kind == "moe"]

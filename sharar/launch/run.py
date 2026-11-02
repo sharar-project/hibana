@@ -89,6 +89,7 @@ def serve(args) -> int:
         return tp.serve(s, w3)
     install_env({**s.engine_env(w3), **engine_runtime_env()})
     guard.start_thread(floor=guard.guard_kib(s.values))
+    sys.stdout.reconfigure(line_buffering=True)  # output sent to a file shows each line as it is written, as a terminal does
     from sharar.cli import engine_parser, run_engine
     parser = engine_parser()
     return run_engine(parser.parse_args(s.engine_args()), parser)

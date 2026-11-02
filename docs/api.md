@@ -189,8 +189,8 @@ docs and keeps its own config directory (`~/.claude-sharar`). Claude Code only a
 ```bash
 export ANTHROPIC_BASE_URL=http://<host>:30001
 export ANTHROPIC_AUTH_TOKEN=sharar                  # not checked
-export ANTHROPIC_MODEL=claude-sharar-qwen3.8        # must contain "claude"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-sharar-qwen3.8   # background tasks and titles
+export ANTHROPIC_MODEL=claude-sharar-nemotron-3.5-super      # must contain "claude"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-sharar-nemotron-3.5-super   # background tasks and titles
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144        # the server's --context-length
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1   # no telemetry or update checks
 claude

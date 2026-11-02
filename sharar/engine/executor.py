@@ -417,8 +417,8 @@ class Executor:
         self.cache.evict(need_pages=self.kv_pool.num_pages, need_slots=self.state_pool.num_slots)  # evicts every unlocked leaf
         ssd.drain(self.cache)
         if log:
-            log(f"ssd tier: persisted {ssd.tails - before} cached prefixes ({ssd.used / 2**30:.1f} GiB stored, "
-                f"{ssd.store.write_errors} write errors)")
+            log(f"ssd tier: persisted {ssd.tails - before} more cached prefixes; the tier holds {ssd.used / 2**30:.1f} GiB "
+                f"({ssd.store.write_errors} write errors)")
         return ssd.tails - before
 
     def retract(self, req: Request) -> None:

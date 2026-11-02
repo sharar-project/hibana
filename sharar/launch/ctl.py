@@ -78,7 +78,7 @@ def cmd_launch(args, s: Settings, dry: bool = False) -> int:
     if args.harness == "claude":
         # Claude Code only accepts model ids containing "claude"; its own config directory keeps the user's
         # Anthropic login, settings and history untouched (the first launch asks the onboarding questions).
-        model = os.environ.get("SHARAR_CLAUDE_MODEL", "claude-sharar-qwen3.8")
+        model = os.environ.get("SHARAR_CLAUDE_MODEL", f"claude-sharar-{alias}")
         for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE"):
             henv.pop(k, None)
         henv.update(ANTHROPIC_BASE_URL=url, ANTHROPIC_AUTH_TOKEN="sharar", ANTHROPIC_MODEL=model,

@@ -12,8 +12,9 @@ evicted prefixes) and a 262K context: the Qwen models on one Spark or two, the N
 - NVIDIA driver 580 or newer and the CUDA 13 toolkit in `/usr/local/cuda` (DGX OS ships it; the GB10 kernels compile
   on first use).
 - [uv](https://docs.astral.sh/uv/), which installs the tested Python 3.12.
-- Disk for the model cache: about 26 GB for the 27B, 135 GB for Flash-Next, 75 GB for Nemotron Super and 25 GB for
-  Bolt, plus 10 GiB that the download check keeps spare ([operations](docs/operations.md#prerequisites)).
+- Disk for the model and, for the default `fast` profile, its calibrated 3-bit checkpoint: about 125 GB for Nemotron
+  Super (75 + 49), 25 GB for Bolt (no checkpoint), 36 GB for the 27B (26 + 10) and 186 GB for Flash-Next (135 + 51),
+  plus 10 GiB that the download check keeps spare ([operations](docs/operations.md#prerequisites)).
 
 ## Quick start
 
@@ -21,10 +22,12 @@ Install [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/insta
 
 ```bash
 git clone https://github.com/abdelfattah-lab/sharar && cd sharar
-uv sync                       # the Python environment: pinned CUDA 13 PyTorch, FlashInfer (a few GB)
-uv run sharar serve 27b       # Qwen3.8-27B on http://127.0.0.1:30001 (Ctrl-C stops it)
-uv run sharar serve 27b --tp 2  # or across two Sparks linked by their ConnectX ports (one Spark unless asked)
+uv sync                         # the Python environment: pinned CUDA 13 PyTorch, FlashInfer (7 GB, about a minute)
+uv run sharar serve nemotron    # Nemotron 3.5 Super on http://127.0.0.1:30005 (Ctrl-C stops it)
 ```
+
+`serve bolt` (port 30006), `serve 27b` (30001) and `serve flashnext` (30004) serve the others; the Qwen models also
+run across two Sparks linked by their ConnectX ports with `--tp 2` ([tensor parallel](docs/tensor-parallel.md)).
 
 In another terminal:
 
@@ -33,10 +36,12 @@ uv run sharar chat            # chat in the terminal
 uv run sharar launch claude   # Claude Code on the model (also opencode, aider; `show` for other tools)
 ```
 
-(`source .venv/bin/activate` lets you drop the `uv run`.) The first serve downloads the model (26 GB for the 27B,
-135 GB for Flash-Next, 75 GB for Nemotron Super, 25 GB for Bolt) and its calibrated 3-bit checkpoint (Bolt publishes
-none: [Bolt](docs/bolt.md)). Any OpenAI-compatible client works against `http://127.0.0.1:30001/v1`, and Anthropic
-clients against `http://127.0.0.1:30001` ([API](docs/api.md)).
+(`source .venv/bin/activate` lets you drop the `uv run`.) The first serve downloads what the cache lacks, the model
+and its 3-bit checkpoint (sizes above; Super's 49 GB took 7 minutes at about 115 MB/s), and builds the GB10 kernels
+once (about 2.5 minutes); later serves start in under a minute. Any OpenAI-compatible client works against
+`http://127.0.0.1:<port>/v1` and Anthropic clients against `http://127.0.0.1:<port>` ([API](docs/api.md)). Nemotron
+Super and Bolt also read images: `image_url` parts and Anthropic image blocks, a pasted or read screenshot in Claude
+Code included ([images](docs/api.md#images)).
 
 ## Commands
 
