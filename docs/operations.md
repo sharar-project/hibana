@@ -73,6 +73,7 @@ same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (defau
 | Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
 | Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `SHARAR_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
 | Flash-Next PLE table on two Sparks | each rank's half of the heads in device memory (23.8 GiB per rank; [tensor parallel](tensor-parallel.md)) | `SHARAR_PLE_RESIDENT=0` reads it from the memory maps on the host, as one Spark does (which prefetches a prompt's later chunks into the page cache) |
+| Image input | Nemotron and Bolt: on (their vision encoder, 1.6 GiB); the 27B and Flash-Next: none | `SHARAR_VISION=0` leaves the encoder's memory to the pools; images are then a 400 ([API](api.md#images)) |
 | Shape-stable prefill numerics | off | `SHARAR_STABLE_NUMERICS=1` (M-invariant kernels for the three row-count-dependent ops; see [limits](#numerical-limits)) |
 
 For MTP on the 27B, use `SHARAR_PROPOSER=mtp SHARAR_SPEC=3 SHARAR_DRAFT_PRECISION=bf16`. `SHARAR_PROPOSER` is `mtp`

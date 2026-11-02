@@ -265,7 +265,7 @@ class Recording:
         if prefetch is not None:
             self.prefetch = lambda ids, reserve: (self.calls.append(("prefetch", len(ids), reserve)), prefetch)[1]
 
-    def validate_request(self, ids, params):
+    def validate_request(self, ids, params, media=()):
         params.validate()
 
     def admission_reserve(self, req, limit):
@@ -407,7 +407,7 @@ def chat_app(engine, render, tok):
 def test_the_chat_api_reports_where_the_last_message_starts(offsets):
     submitted, renders = [], []
 
-    async def submit(ids, params):
+    async def submit(ids, params, media=()):
         submitted.append((ids, params))
         queue = asyncio.Queue()
         queue.put_nowait(([ord("k")], True, "stop"))

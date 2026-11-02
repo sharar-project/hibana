@@ -5,10 +5,12 @@ system text and text blocks become content parts (the template concatenates
 them), assistant ``tool_use`` blocks become ``tool_calls`` with the input
 object as arguments, ``thinking`` blocks become ``reasoning_content``, and
 ``tool_result`` blocks become ``tool`` messages in their original order.
-Images and documents are rejected (a text-only model), except inside a
+On a server with a vision encoder (``images``), ``image`` blocks in user
+turns and tool results become image parts in place (api/media.py reads
+them). Otherwise images, and documents always, are rejected, except inside a
 ``tool_result``: there the agent fetched them, not the user, so each becomes a
 short text note and the turn goes on (Claude Code read a PNG and quit on
-the 400).
+the 400); so does an image there that cannot be read.
 Custom tools become OpenAI function schemas; typed Anthropic tools (server
 tools such as web search) have no rendering and are dropped. Unknown
 top-level fields are ignored; unknown content blocks are rejected.
@@ -29,7 +31,18 @@ from sharar.engine.sampler import InvalidRequest
 
 SIGNATURE = "sharar-unsigned"
 _UNSUPPORTED_MEDIA = ("image", "document")
-MEDIA_NOTE = "[{kind} omitted: this model reads text only and cannot see it]"
+MEDIA_NOTE = "[{kind} omitted: {why}]"
+
+
+def media_note(kind: str, images: bool) -> str:
+    """The text a tool result's `kind` content becomes when the model cannot read it (`images`: it reads images)."""
+    return MEDIA_NOTE.format(kind=kind, why="this model reads text and images only" if images else
+                             "this model reads text only and cannot see it")
+
+
+def unsupported(kind: str, where: str, images: bool) -> InvalidRequest:
+    return InvalidRequest(f"{where}: {kind} content is not supported; this server runs "
+                          + ("a model that reads text and images" if images else "a text-only model"))
 
 
 @dataclass
@@ -46,13 +59,13 @@ class MessagesRequest:
     stopped: object = None  # refusal_guard.Refusals when the server ends this turn itself
 
 
-def parse_request(body: dict) -> MessagesRequest:
-    """Translate the prompt-shaping fields; raises InvalidRequest."""
+def parse_request(body: dict, images: bool = False) -> MessagesRequest:
+    """Translate the prompt-shaping fields; raises InvalidRequest. `images`: the server reads image blocks."""
     breakpoints: list[tuple] = []
     messages: list[dict] = []
     system = body.get("system")
     if isinstance(system, list):
-        parts = _text_parts(system, "system", ("system",), breakpoints)
+        parts = _text_parts(system, "system", ("system",), breakpoints, images)
         if parts:
             messages.append({"role": "system", "content": parts})
     elif isinstance(system, str):
@@ -70,15 +83,17 @@ def parse_request(body: dict) -> MessagesRequest:
         content = turn.get("content")
         if turn["role"] == "system":  # instructions at this point of the conversation (see server.fold_system_messages)
             if isinstance(content, list):
-                content = _text_parts(content, f"messages.{m}.content", ("messages", m), breakpoints)
+                content = _text_parts(content, f"messages.{m}.content", ("messages", m), breakpoints, images)
             elif not isinstance(content, str):
                 raise InvalidRequest(f"messages.{m}.content must be a string or a list of text blocks")
             messages.append({"role": "system", "content": content})
         elif isinstance(content, str):
             messages.append({"role": turn["role"], "content": content})
         elif isinstance(content, list):
-            convert = _user_turn if turn["role"] == "user" else _assistant_turn
-            messages += convert(content, m, breakpoints)
+            if turn["role"] == "user":
+                messages += _user_turn(content, m, breakpoints, images)
+            else:
+                messages += _assistant_turn(content, m, breakpoints, images)
         else:
             raise InvalidRequest(f"messages.{m}.content must be a string or a list of content blocks")
 
@@ -108,10 +123,10 @@ def _thinking(value) -> bool | None:
     raise InvalidRequest("thinking.type must be 'enabled', 'adaptive' or 'disabled'")
 
 
-def _check_block(block, where: str) -> str:
+def _check_block(block, where: str, images: bool = False) -> str:
     kind = block.get("type") if isinstance(block, dict) else None
-    if kind in _UNSUPPORTED_MEDIA:
-        raise InvalidRequest(f"{where}: {kind} content is not supported; this server runs a text-only model")
+    if kind in _UNSUPPORTED_MEDIA and not (images and kind == "image"):
+        raise unsupported(kind, where, images)
     if not isinstance(kind, str):
         raise InvalidRequest(f"{where}: content blocks must be objects with a type")
     return kind
@@ -123,10 +138,10 @@ def _text(block: dict, where: str) -> dict:
     return {"type": "text", "text": block["text"]}
 
 
-def _text_parts(blocks: list, where: str, path: tuple, breakpoints: list[tuple]) -> list[dict]:
+def _text_parts(blocks: list, where: str, path: tuple, breakpoints: list[tuple], images: bool = False) -> list[dict]:
     parts = []
     for b, block in enumerate(blocks):
-        if _check_block(block, f"{where}.{b}") != "text":
+        if _check_block(block, f"{where}.{b}", images) != "text":
             raise InvalidRequest(f"{where}.{b}: only text blocks are supported here, got '{block['type']}'")
         parts.append(_text(block, f"{where}.{b}"))
         if block.get("cache_control") is not None:
@@ -134,24 +149,30 @@ def _text_parts(blocks: list, where: str, path: tuple, breakpoints: list[tuple])
     return parts
 
 
-def _user_turn(blocks: list, m: int, breakpoints: list[tuple]) -> list[dict]:
-    """Text runs become user messages and tool results become tool messages, in order."""
+def _image(block: dict, where: str) -> dict:
+    if not isinstance(block.get("source"), dict):
+        raise InvalidRequest(f"{where}: an image block needs a source")
+    return {"type": "image", "source": block["source"]}
+
+
+def _user_turn(blocks: list, m: int, breakpoints: list[tuple], images: bool = False) -> list[dict]:
+    """Text and image runs become user messages and tool results become tool messages, in order."""
     out: list[dict] = []
     text: list[dict] = []
     for b, block in enumerate(blocks):
         where = f"messages.{m}.content.{b}"
-        kind = _check_block(block, where)
+        kind = _check_block(block, where, images)
         if kind == "text":
             text.append(_text(block, where))
+        elif kind == "image":
+            text.append(_image(block, where))
         elif kind == "tool_result":
             if text:
                 out.append({"role": "user", "content": text})
                 text = []
             content = block.get("content")
             if isinstance(content, list):
-                content = _text_parts([{"type": "text", "text": MEDIA_NOTE.format(kind=part["type"])}
-                                       if isinstance(part, dict) and part.get("type") in _UNSUPPORTED_MEDIA else part
-                                       for part in content], f"{where}.content", (), [])
+                content = _tool_content(content, f"{where}.content", images)
             elif content is None:
                 content = ""
             elif not isinstance(content, str):
@@ -169,13 +190,30 @@ def _user_turn(blocks: list, m: int, breakpoints: list[tuple]) -> list[dict]:
     return out
 
 
-def _assistant_turn(blocks: list, m: int, breakpoints: list[tuple]) -> list[dict]:
+def _tool_content(parts: list, where: str, images: bool) -> list[dict]:
+    """A tool result's blocks: text, images when the server reads them (api/media.py notes one it cannot read), and a
+    note for other media."""
+    out = []
+    for p, part in enumerate(parts):
+        kind = part.get("type") if isinstance(part, dict) else None
+        if images and kind == "image":
+            out.append({"type": "image", "source": part.get("source")})
+        elif kind in _UNSUPPORTED_MEDIA:
+            out.append({"type": "text", "text": media_note(kind, images)})
+        elif _check_block(part, f"{where}.{p}") != "text":
+            raise InvalidRequest(f"{where}.{p}: only text blocks are supported here, got '{part['type']}'")
+        else:
+            out.append(_text(part, f"{where}.{p}"))
+    return out
+
+
+def _assistant_turn(blocks: list, m: int, breakpoints: list[tuple], images: bool = False) -> list[dict]:
     text: list[dict] = []
     reasoning: list[str] = []
     calls: list[dict] = []
     for b, block in enumerate(blocks):
         where = f"messages.{m}.content.{b}"
-        kind = _check_block(block, where)
+        kind = _check_block(block, where, images)
         if kind == "text":
             text.append(_text(block, where))
         elif kind == "thinking":

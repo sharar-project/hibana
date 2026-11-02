@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """NVIDIA-Nemotron-3.5-Super's text model assembled for the engine: 88 pre-norm residual blocks (40 Mamba-2, 40
-latent MoE, 8 attention), the final norm and the FP8 lm_head. The vision tower and its projector are never read.
+latent MoE, 8 attention), the final norm and the FP8 lm_head; with SHARAR_VISION=1 also the vision tower and its
+projector (`vision.py`), whose embeddings replace an image's placeholder rows in prefill.
 
 `forward()` follows the 27B's contract (`ForwardContext` prefill / decode / verify; `norm` is the final norm the head
 reads, `pre_norm` the residual stream before it, which the MTP head consumes). Block indices are the checkpoint's, so
@@ -30,6 +31,7 @@ from sharar.model.nemotron.config import PREFIX
 from sharar.model.nemotron.mamba import NemotronMamba
 from sharar.model.nemotron.moe import NemotronMoe, expert_names
 from sharar.model.nemotron.norm import RMSNorm
+from sharar.model.nemotron.vision import VISION_BYTES
 from sharar.target import NEMOTRON, Target
 from sharar.weights import files
 from sharar.weights.modelopt import load_fp8_linear
@@ -130,7 +132,9 @@ class Nemotron:
         self.device = torch.device(device)
         cfg = target.load_model_config(snap)
         expert_blocks = w3_expert_blocks(calibrated, target.layer_types_of(cfg))
-        check_load_headroom(target.weight_load_peak_bytes - (w3_expert_saving(target, len(expert_blocks)) if expert_blocks else 0))
+        vision = current().vision
+        check_load_headroom(target.weight_load_peak_bytes - (w3_expert_saving(target, len(expert_blocks)) if expert_blocks else 0)
+                            + (VISION_BYTES if vision else 0))
         self.target = target
         self.eos = cfg["llm_config"]["eos_token_id"]
         started = time.perf_counter()
@@ -166,6 +170,7 @@ class Nemotron:
             raise
         self.final_norm = RMSNorm(w.get(f"{BACKBONE}.norm_f.weight").to(self.device), target.rms_norm_eps)
         self.lm_head = load_fp8_linear(w, [f"{PREFIX}.lm_head"], self.device)
+        self.vision = self.load_vision(w, log) if vision else None
         w.close()
         # the W3 checkpoint serving the experts: `NemotronMtpHead` loads the MTP head's from it when it carries them
         self.w3_experts = calibrated if expert_blocks else None
@@ -183,6 +188,14 @@ class Nemotron:
         if log:
             log(f"  weights loaded in {time.perf_counter() - started:.0f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated "
                 f"({self.stream_bytes / 1e9:.2f} GB per decode token)")
+
+    def load_vision(self, w, log=print):
+        """The vision tower and projector (`vision.py`), served with SHARAR_VISION=1."""
+        from sharar.model.nemotron.vision import RadioVision
+        vision = RadioVision(w, self.device)
+        if log:
+            log(f"  vision: C-RADIO tower and projector ({vision.bytes / 2**30:.2f} GiB)")
+        return vision
 
     def linears(self):
         """Every FP8 projection by name (`weights/linear.py`): Mamba in/out, attention qkv/o, and the lm_head. The
@@ -234,6 +247,8 @@ class Nemotron:
             from sharar.kernels.mamba2 import prepare_prefill
             prepare_prefill(ctx, input_ids.shape[0], self.device)
         hidden = self.embed_ids(input_ids)
+        if ctx.media_rows is not None:
+            hidden.index_copy_(0, ctx.media_rows, ctx.media_embeds)
         ctx.capture = capture
         out: dict = {"input_ids": input_ids, "positions": ctx.positions}
         if capture:

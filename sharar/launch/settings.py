@@ -41,12 +41,13 @@ TARGET_SETTINGS = {
                   "w3_missing": "serving the FP8 trunk, about 24% slower single-stream than {profile} with it"},
     # its own MTP head (the depth is the profile's), one Spark only; the draft steps read a 2-bit copy of the FP8
     # lm_head, its top 16 rescored by the FP8 rows (lossless: acceptance checks every draft against the target)
+    # Both Nemotron checkpoints serve their vision encoder (image input; SHARAR_VISION=0 leaves its 1.7 GiB to the pools)
     "nemotron": {"SHARAR_SERVICE": "sharar-nemotron", "SHARAR_PORT": "30005", "SHARAR_PROPOSER": "mtp",
-                 "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_HEAD": "w2", "recurrence": "mamba2",
+                 "SHARAR_VERIFY_STATE": "reconstruct", "SHARAR_DRAFT_HEAD": "w2", "SHARAR_VISION": "1", "recurrence": "mamba2",
                  "w3_calibrated_only": True, "w3_required": True, "fp8_kv_only": True},
     "bolt": {"SHARAR_SERVICE": "sharar-bolt", "SHARAR_PORT": "30006", "SHARAR_PROPOSER": "dflash2",
              "SHARAR_DRAFT": "pinned", "SHARAR_DRAFT_PRECISION": "bf16", "SHARAR_VERIFY_STATE": "reconstruct",
-             "recurrence": "mamba2", "w3_calibrated_only": True,
+             "SHARAR_VISION": "1", "recurrence": "mamba2", "w3_calibrated_only": True,
              "w3_missing": "serving the checkpoint encodings, about 25% slower single-stream than {profile} with them"},
 }
 # The recurrent-state formats each recurrence stores (SHARAR_SSM_STATE, cache/ssm_format.py): the per-window integer

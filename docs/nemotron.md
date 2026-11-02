@@ -5,8 +5,8 @@
 A serving target (`sharar serve nemotron`, `sharar/model/nemotron/`), on one Spark. Checkpoint:
 `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` at `6aae0d6` (NVIDIA's ModelOpt export: NVFP4 routed and shared
 experts, FP8 Mamba, attention and lm_head projections, BF16 embeddings, router and latent projections). The text model
-and its MTP head are served; the C-RADIO vision tower and its projector are never read. Settings: `TARGET_SETTINGS`
-and `nemotron_defaults` in `sharar/launch/settings.py`.
+and its MTP head are served, and the C-RADIO vision tower and its projector for image input ([images](#images)).
+Settings: `TARGET_SETTINGS` and `nemotron_defaults` in `sharar/launch/settings.py`.
 
 ## The model as served
 
@@ -41,6 +41,24 @@ them as the only expert copy, at every call size (the MTP head's load with the d
 | `moe.py` | the latent MoE block: fused router and `fc1_latent` GEMM, the routing kernels, budgeted expert selection |
 | `mtp.py` | `NemotronMtpHead`: the checkpoint's MTP layer for the `mtp` proposer |
 | `norm.py` | plain RMSNorm (weight, not Gemma's 1 + w) |
+| `vision.py` | `RadioVision`: the C-RADIO tower and `mlp1` projector, and the image preprocessing; Bolt's too |
+
+## Images
+
+With `SHARAR_VISION=1` (both Nemotron targets' launcher default) the model loads the checkpoint's BF16 vision weights
+(1.6 GiB, taken from the pools): C-RADIO, a ViT-H/16 of 32 blocks at width 1280 behind 3 class and 7 register tokens
+with a position table interpolated to the tile, then the tower's final LayerNorm (Super has one, Bolt does not), pixel
+shuffle of each 2 x 2 patch block into a 5120-wide token, and `mlp1` (RMSNorm, 5120 -> 20480, ReLU², -> 4096). The
+preprocessing is the checkpoint's: one tile of 1,024 to 13,312 patches with even sides, bicubic with antialiasing,
+CLIP normalization. The API writes `<img>`, one placeholder per embedding and `</img>` in place of each `<image>`
+([API](api.md#images)); the placeholders carry ids drawn from the image's bytes (`engine/media.py`), so the prefix
+cache, the SSD tier and the Mamba-state snapshots key on the image, and the model reads them as the `<image>` token,
+whose embedding rows prefill replaces with the encoder's output (`ForwardContext.media_rows`). The encoder runs on its
+own CUDA stream ahead of that prefill (`engine/media.Encoder`), with at most 470 MiB transient (a full tile; the plan
+counts 600). Attention has no
+positional encoding, so nothing else changes. The MTP head drafts over the placeholder token at image positions;
+drafts only propose, so this moves acceptance, not output. `tests/gpu/test_nemotron_vision.py` checks the encoder
+against Transformers' `RadioModel` carrying the checkpoint's weights and the checkpoint's projector code.
 
 ## Serving
 

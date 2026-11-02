@@ -15,7 +15,7 @@ def engine_answering(outputs):
     """A fake engine whose k-th submission streams outputs[k]."""
     submitted = []
 
-    async def submit(ids, params):
+    async def submit(ids, params, media=()):
         k = len(submitted)
         submitted.append((ids, params))
         queue = asyncio.Queue()

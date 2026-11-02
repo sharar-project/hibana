@@ -25,6 +25,7 @@ from sharar.model.nemotron.mamba import NemotronMamba
 from sharar.model.nemotron.model import BACKBONE, Block, Nemotron, drop_page_cache
 from sharar.model.nemotron.moe import NemotronMoe, route_budget, route_topk
 from sharar.model.nemotron.norm import RMSNorm
+from sharar.model.nemotron.vision import VISION_BYTES
 from sharar.weights.safetensors import SnapshotWeights
 
 
@@ -159,7 +160,7 @@ class Bolt(Nemotron):
         if cfg.kv_format not in ("fp8", "sim-bf16"):
             raise ValueError("Bolt currently supports FP8 KV (sim-bf16 for parity)")
         target.load_model_config(snap)
-        check_load_headroom(target.weight_load_peak_bytes)
+        check_load_headroom(target.weight_load_peak_bytes + (VISION_BYTES if cfg.vision else 0))
         self.target, self.device = target, torch.device(device)
         self.eos, self.w3_identity, self.mtp_experts3 = 11, None, None
         started = time.perf_counter()
@@ -178,6 +179,7 @@ class Bolt(Nemotron):
                         f"{torch.cuda.memory_allocated() / 2**30:.1f} GiB)")
             self.final_norm = RMSNorm(w.get(f"{BACKBONE}.norm_f.weight").to(self.device), target.rms_norm_eps)
             self.lm_head = PackedLinear.load(w, ["language_model.lm_head"], self.device)
+            self.vision = self.load_vision(w, log) if cfg.vision else None
             if calibrated is not None:
                 self.w3_identity = self.attach_calibrated(calibrated, log)
             self.draft_lm_head = None

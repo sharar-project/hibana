@@ -33,6 +33,7 @@ dependencies = [
   "uvicorn>=0.52,<0.53",
   "xgrammar==0.2.8",  # constrained output (sharar/engine/grammar.py)
   "huggingface_hub>=1.30",  # model and 3-bit checkpoint downloads
+  "pillow>=11",  # decoding image input (sharar/api/media.py)
 ]
 
 [project.optional-dependencies]
@@ -123,6 +124,7 @@ constraint-dependencies = [
   "nvidia-nvshmem-cu13==3.4.5",
   "nvidia-nvtx==13.0.85",
   "packaging==26.3",
+  "pillow==13.0.0",
   "pluggy==1.6.0",
   "protobuf==7.36.1",
   "pydantic==2.13.5",

@@ -45,6 +45,9 @@ class ForwardContext:
     seq_prefix_lens: list[int] = field(default_factory=list)  # tokens already in state/pages per seq
     seq_lens: list[int] = field(default_factory=list)  # new tokens per seq
     checkpoint_seqs: list[int] = field(default_factory=list)  # sequence index of each checkpoint
+    # images in a prefill (engine/media.py): the rows whose input embedding is an image's (int64), and those embeddings
+    media_rows: torch.Tensor | None = None
+    media_embeds: torch.Tensor | None = None
     gdn_plan: GdnPrefillPlan | None = field(default=None, init=False, repr=False)
 
     # speculative verify: k+1 tokens per sequence; GDN runs the recurrent

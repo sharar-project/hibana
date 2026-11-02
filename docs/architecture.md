@@ -47,7 +47,10 @@ benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) th
   the defaults ([operations](operations.md#serving-profiles)).
 - **Model contract.** A model exposes `forward`, `logits`, `linears()`, `register_pages`, `register_state` and
   `forward_extras()`; side inputs (Flash-Next's PLE rows and sparse-attention bookkeeping) travel on
-  `ForwardContext.extras`, so `engine/` holds no model-specific code.
+  `ForwardContext.extras`, so `engine/` holds no model-specific code. Image input is the one exception, as a request
+  input every vision target shares: a model with it has `vision`, the `VisionEncoder` contract (`engine/contracts.py`:
+  its image tokens, placeholder count, preprocessing and `encode`), the only part of it `engine/` reads; a request's
+  images ride on `Request.media` and reach prefill as `ForwardContext.media_rows` / `media_embeds` (`engine/media.py`).
 - **Speculator parts.** A proposer declares its `Capabilities` (sampled, depth, graphs, device acceptance,
   checkpoint cache, stored payload, ...); the engine reads the flags instead of probing methods. Draft heads
   (`proposers/draft_head.py`) and the depth policy (`engine/depth.py`) are shared.
@@ -70,6 +73,7 @@ benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) th
 | Weight formats | NVFP4 MLPs, FP8 projections | FP8 trunk; 3-bit routed experts (NVFP4 in `exact`; split by expert on two Sparks) | the checkpoint's: NVFP4 experts (3-bit in `fast` and `throughput`), FP8 Mamba/attention/head projections, BF16 router and latent projections | the checkpoint's: IQ2_XXS experts, Q8_0 attention, latent and head projections, NVFP4 Mamba projections, BF16 router |
 | Prefix cache, SSD tier, 262K context | yes | yes (sparse attention past 2,048 tokens) | yes (Mamba-2 state as the GDN's) | yes (Mamba-2 state as Super's) |
 | Tensor parallel on two Sparks | yes | yes | no | no |
+| Image input ([API](api.md#images)) | no | no | yes | yes |
 
 ## Repository boundaries
 

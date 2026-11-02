@@ -24,7 +24,7 @@ speculative scratch capacity.
 
 | Field | Supported behavior |
 |---|---|
-| `messages` | Nonempty conversation rendered with the pinned snapshot template |
+| `messages` | Nonempty conversation rendered with the pinned snapshot template; `image_url` parts on a target serving images ([images](#images)) |
 | `stream` | Server-sent events ending with `[DONE]` |
 | `max_tokens` / `max_completion_tokens` | Requested output budget |
 | `temperature`, `top_p`, `top_k`, `seed` | Validated sampling parameters. An omitted `temperature` is OpenAI's 1.0 (with top_p 0.95 and top_k 20, the models' own generation config); send `temperature: 0` for greedy. OpenCode sends no sampling fields, and greedy thinking looped until `max_tokens` in its runs. `/v1/completions` and `/generate` keep greedy as their default |
@@ -107,6 +107,34 @@ engine.
 - A forced `tool_choice` cannot be combined with a JSON `response_format`; either needs `tools` / a schema.
 - `/get_server_info` counts constrained requests by kind (`constrained`).
 
+## Images
+
+Nemotron Super and Bolt serve their checkpoints' vision encoder (`SHARAR_VISION`, on for both; `/get_server_info`
+reports `vision`). A chat message's content can then hold images: OpenAI `image_url` parts (or `input_image`) with a
+`data:` URL, and on Messages `image` blocks with a base64 source, in user turns and in `tool_result` content (an agent's
+screenshot is read, not replaced by a note). The server fetches nothing. PNG, JPEG, WebP and GIF (its first frame)
+decode with Pillow, upright by their EXIF orientation; alpha is dropped. A 400 names the image that cannot be read: an
+`http(s)` URL, data that is not one of those formats or does not decode, more than 32 MiB encoded or 64 megapixels, an
+image so narrow that its short side gets no patch (beyond about 13,000 : 1), or more than 100 images in a request. In a
+tool result such an image becomes a note saying why (`[image omitted: ...]`) and the turn goes on.
+
+Each image is resized to one tile of 16-pixel patches (between 1,024 and 13,312, keeping its aspect ratio) and costs a
+quarter as many prompt tokens, plus `<img>` and `</img>`: 256 for a small image, about 2,040 for 1920 x 1080, at most
+3,328. `usage` counts them, and `/v1/messages/count_tokens` includes them, from the images' headers only. Together with
+the text they must fit the context. The template writes `<image>` for each image part (`<image N>` labels before each
+when a message has several); `<image>`, `<img>` and `</img>` in a request's own text are read as text.
+
+A request's image is decoded once by the server to check it; the engine decodes it again only when its span is to be
+encoded, on a worker thread from the request's admission, so an image in a cached prefix is never decoded or encoded
+again: a later turn that sends the same image resumes from the cached prefix, image included. The encode (about 30 ms
+for a 1,024-patch tile, 0.7 s for a full one, on one GB10) runs on its own CUDA stream; while other requests decode, a
+prefill chunk ends before an image still encoding, so their tokens keep coming. The checkpoint's video and audio inputs
+are not served (`input_audio`, `file`, `video_url` and Messages `document` blocks are a 400, or a note inside a tool
+result). The 27B and Flash-Next refuse images; their vision towers are not loaded.
+
+With thinking off the models sometimes still reason about an image and end it with `</think>`; as NVIDIA's reasoning
+parser does, everything is then content.
+
 ## Anthropic Messages
 
 `POST /v1/messages` translates the request into the chat input above and
@@ -131,8 +159,8 @@ prompt length as `{"input_tokens": N}`.
 `cache_control` markers are accepted and not acted on; the prefix cache
 reuses shared prefixes regardless. `metadata`, other top-level fields,
 `anthropic-version`, `anthropic-beta`, `x-api-key` and `?beta=true` are
-ignored. HTTP 400 in Anthropic's error shape: `image` and `document` blocks
-(text-only model), other content block types, an unknown `tool_choice`
+ignored. HTTP 400 in Anthropic's error shape: `document` blocks, `image` blocks
+on a target without image input ([images](#images)), other content block types, an unknown `tool_choice`
 type, a forced `tool_choice` without `tools`, a `tool` choice without a name
 or naming a tool not among them, a missing `max_tokens`, and a prompt that
 fills the context (`prompt is too long: N tokens > M maximum`).
