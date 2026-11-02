@@ -24,7 +24,7 @@ speculative scratch capacity.
 
 | Field | Supported behavior |
 |---|---|
-| `messages` | Nonempty conversation rendered with the pinned snapshot template |
+| `messages` | Nonempty conversation rendered with the pinned snapshot template; `image_url` parts on a target serving images ([images](#images)) |
 | `stream` | Server-sent events ending with `[DONE]` |
 | `max_tokens` / `max_completion_tokens` | Requested output budget |
 | `temperature`, `top_p`, `top_k`, `seed` | Validated sampling parameters. An omitted `temperature` is OpenAI's 1.0 (with top_p 0.95 and top_k 20, the models' own generation config); send `temperature: 0` for greedy. OpenCode sends no sampling fields, and greedy thinking looped until `max_tokens` in its runs. `/v1/completions` and `/generate` keep greedy as their default |
@@ -107,6 +107,28 @@ engine.
 - A forced `tool_choice` cannot be combined with a JSON `response_format`; either needs `tools` / a schema.
 - `/get_server_info` counts constrained requests by kind (`constrained`).
 
+## Images
+
+Nemotron Super and Bolt serve their checkpoints' vision encoder (`SHARAR_VISION`, on for both; `/get_server_info`
+reports `vision`). A chat message's content can then hold images: OpenAI `image_url` parts (or `input_image`) with a
+`data:` URL, and on Messages `image` blocks with a base64 source, in user turns and in `tool_result` content (an agent's
+screenshot is read, not replaced by a note). The server fetches nothing: an `http(s)` URL is a 400, as are undecodable
+data, more than 32 MiB encoded or 64 megapixels. PNG, JPEG, WebP and GIF (its first frame) decode with Pillow; alpha is
+dropped.
+
+Each image is resized to one tile of 16-pixel patches (between 1,024 and 13,312, keeping its aspect ratio) and costs a
+quarter as many prompt tokens, plus `<img>` and `</img>`: 256 for a small image, about 2,040 for 1920 x 1080, at most 3,328. `usage` counts them,
+and `/v1/messages/count_tokens` includes them. The template writes `<image>` per image (`<image N>` labels before each
+when a message has several); a message whose text already contains `<image>` places its images there itself, and the
+count must match (400 otherwise). Images are encoded at their first prefill chunk (about 30 ms for a 1,024-patch tile,
+0.7 s for a full one, on one GB10) and their prefix is cached like text: a later turn that sends the same image again
+resumes from the cached prefix, image included, without encoding it again. The checkpoint's video and audio inputs are
+not served (`input_audio`, `file`, `video_url` and Messages `document` blocks are a 400, or a note inside a tool
+result). The 27B and Flash-Next refuse images; their vision towers are not loaded.
+
+With thinking off the models sometimes still reason about an image and end it with `</think>`; as NVIDIA's reasoning
+parser does, everything is then content.
+
 ## Anthropic Messages
 
 `POST /v1/messages` translates the request into the chat input above and
@@ -131,8 +153,8 @@ prompt length as `{"input_tokens": N}`.
 `cache_control` markers are accepted and not acted on; the prefix cache
 reuses shared prefixes regardless. `metadata`, other top-level fields,
 `anthropic-version`, `anthropic-beta`, `x-api-key` and `?beta=true` are
-ignored. HTTP 400 in Anthropic's error shape: `image` and `document` blocks
-(text-only model), other content block types, an unknown `tool_choice`
+ignored. HTTP 400 in Anthropic's error shape: `document` blocks, `image` blocks
+on a target without image input ([images](#images)), other content block types, an unknown `tool_choice`
 type, a forced `tool_choice` without `tools`, a `tool` choice without a name
 or naming a tool not among them, a missing `max_tokens`, and a prompt that
 fills the context (`prompt is too long: N tokens > M maximum`).

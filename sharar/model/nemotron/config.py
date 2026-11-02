@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Pinned NVIDIA-Nemotron-3.5-Super checkpoint and geometry (NVIDIA's ModelOpt NVFP4 export; the text model and its
-MTP head are served, the C-RADIO vision tower and its projector are never read).
+"""Pinned NVIDIA-Nemotron-3.5-Super checkpoint and geometry (NVIDIA's ModelOpt NVFP4 export; the text model, its
+MTP head and, with SHARAR_VISION, the C-RADIO vision tower and its projector are served: vision.py).
 
 The text model is 88 blocks, each one mixer behind a pre-norm and a residual: 40 Mamba-2, 40 latent MoE and 8
 attention. `sharar.target` names every block by its checkpoint index, so pools and features use the checkpoint's

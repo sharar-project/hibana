@@ -70,6 +70,7 @@ constraints = [
     { name = "nvidia-nvshmem-cu13", specifier = "==3.4.5" },
     { name = "nvidia-nvtx", specifier = "==13.0.85" },
     { name = "packaging", specifier = "==26.3" },
+    { name = "pillow", specifier = "==13.0.0" },
     { name = "pluggy", specifier = "==1.6.0" },
     { name = "protobuf", specifier = "==7.36.1" },
     { name = "pydantic", specifier = "==2.13.5" },
@@ -898,6 +899,17 @@ wheels = [
 ]
 
 [[package]]
+name = "pillow"
+version = "13.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/a4/9cc30690a394a8305e8be4c9036aa16d0dfddadd09079860b582f562496d/pillow-13.0.0.tar.gz", hash = "sha256:cdcd1ba258178f7356d74170c9a81ba4eab6a5d55748bc402a5a2a6fe6be3510", size = 47058631, upload-time = "2026-10-16T22:18:09.718Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3b/bb/9e30e8ed18c20800ee327a12107d5249ad8dc444867b3adfcc21654e3c71/pillow-13.0.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8bf295fe459343bc6093c8e5e0df60bfa189e0fcb775a22e2c2488fdeccc6c0d", size = 6519309, upload-time = "2026-10-16T22:15:48.14Z" },
+    { url = "https://files.pythonhosted.org/packages/26/9b/f38b7c4d8f599537e2d1a6d546cec9beef7536ff8f5c49a3f9c78179d8ac/pillow-13.0.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:4bd024d567eca931b668978d672dba914d4b8e2628e2c3073a2ad178de8a2620", size = 6618042, upload-time = "2026-10-16T22:15:52.054Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/ed/d504165ef79af6fafe25c76726cf30f544cc236002f7ed054f1d51adc4ff/pillow-13.0.0-pp312-pypy312_pp80-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:93ff9c9c3663ce23aaa5d0b6b6abac55359e2a0c06c7e30f3771829af816be63", size = 5464358, upload-time = "2026-10-16T22:18:02.779Z" },
+]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1085,6 +1097,7 @@ dependencies = [
     { name = "huggingface-hub" },
     { name = "jinja2" },
     { name = "numpy" },
+    { name = "pillow" },
     { name = "safetensors" },
     { name = "tokenizers" },
     { name = "torch" },
@@ -1122,6 +1135,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=1.30" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "numpy", specifier = ">=2.3,<2.4" },
+    { name = "pillow", specifier = ">=11" },
     { name = "pytest", marker = "extra == 'test'", specifier = "==9.1.1" },
     { name = "safetensors", specifier = ">=0.5" },
     { name = "tokenizers", specifier = ">=0.21" },

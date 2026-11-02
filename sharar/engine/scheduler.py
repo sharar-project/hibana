@@ -105,12 +105,12 @@ class Scheduler:
 
 
     # ---- API ----
-    def submit(self, prompt_ids: list[int], params: SamplingParams) -> Request:
-        self.ex.validate_request(prompt_ids, params)
+    def submit(self, prompt_ids: list[int], params: SamplingParams, media: tuple = ()) -> Request:
+        self.ex.validate_request(prompt_ids, params, media)
         if len(self.queue) >= self.cfg.max_queued:
             self.metrics.rejected += 1
             raise QueueFull(f"{len(self.queue)} requests queued")
-        req = Request(prompt_ids=list(prompt_ids), params=params, request_id=self._next_id)
+        req = Request(prompt_ids=list(prompt_ids), params=params, request_id=self._next_id, media=tuple(media))
         self._next_id += 1
         if self.sink is not None and params.trace:
             req.trace_rounds = []

@@ -104,6 +104,7 @@ class EngineConfig:
     trunk_keep_bf16: str | None = None        # SHARAR_TRUNK_KEEP_BF16: regex of Flash-Next projections kept BF16
     flashnext_experts: str = "w3"             # SHARAR_FLASHNEXT_EXPERTS: w3 (the W3 checkpoint's 3-bit routed experts when it carries them) | nvfp4
     bolt_experts: str = "b12x"                # SHARAR_BOLT_EXPERTS: b12x fused MoE (BF16 activations) | fp8 grouped native IQ2 | bf16 Triton weight-only
+    vision: bool = False                      # SHARAR_VISION: load the checkpoint's vision encoder for image input (Nemotron Super and Bolt; about 1.7 GiB)
     # --- speculation
     spec: str | None = None                   # SHARAR_SPEC as given ("auto"/unset: the proposer's default depth)
     spec_depths: str | None = None            # SHARAR_SPEC_DEPTHS: verify depth per batch bucket, "8:1,16:0" (0: plain decode; unset: SHARAR_SPEC everywhere)
@@ -187,6 +188,7 @@ class EngineConfig:
             trunk_keep_bf16=_str(e, "SHARAR_TRUNK_KEEP_BF16"),
             flashnext_experts=_str(e, "SHARAR_FLASHNEXT_EXPERTS", "w3"),
             bolt_experts=_str(e, "SHARAR_BOLT_EXPERTS", "b12x"),
+            vision=_flag(e, "SHARAR_VISION"),
             spec=_str(e, "SHARAR_SPEC"),
             spec_depths=_str(e, "SHARAR_SPEC_DEPTHS"),
             spec_step_cost=float(_str(e, "SHARAR_SPEC_STEP_COST") or 0.0),

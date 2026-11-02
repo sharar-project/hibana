@@ -26,6 +26,7 @@ from jinja2 import TemplateError
 from sharar import target as targets
 from sharar.cache.ledger import after_plan_bytes
 from sharar.distributed import get_tp_info
+from sharar.api import media
 from sharar.api import messages as messages_api
 from sharar.api import refusal_guard
 from sharar.api.chat_template import ChatTemplate
@@ -57,7 +58,9 @@ def _memory_gib() -> dict:
             "rss": gib(rss)}
 
 
-def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, describe: dict, grammars: Grammars | None = None) -> FastAPI:
+def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, describe: dict, grammars: Grammars | None = None,
+               vision=None) -> FastAPI:
+    """`vision`: the target's vision encoder (`model.vision`) when it serves image input, else None."""
     MODEL_ID = describe.get("model_path", targets.DEFAULT_TARGET.model_id)  # the served checkpoint id, reported as the model name
     @asynccontextmanager
     async def lifespan(app):
@@ -144,23 +147,26 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             if finished:
                 return ids, detok.text, reason
 
-    def _chat_prompt(messages: list[dict], tools: list | None, thinking: bool, kwargs: dict,
-                     boundary: bool = True) -> tuple[list[int], bool, int]:
-        """Render and encode a chat. Returns (ids, whether the output starts inside a thinking block, and with
-        `boundary` the token position where its last message starts: `SamplingParams.message_boundary`, 0 if unknown).
-        The boundary costs one more render, of the conversation without its last message, and no second encode."""
+    async def _chat_prompt(messages: list[dict], tools: list | None, thinking: bool, kwargs: dict,
+                           boundary: bool = True) -> tuple[list[int], bool, int, tuple]:
+        """Render and encode a chat. Returns (ids, whether the output starts inside a thinking block, with
+        `boundary` the token position where its last message starts: `SamplingParams.message_boundary`, 0 if unknown,
+        and the prompt's images for the engine: api/media.py). The boundary costs one more render, of the
+        conversation without its last message, and no second encode."""
         folded = fold_system_messages(_tool_arguments_as_objects(messages))
+        images = await asyncio.to_thread(media.prepare, folded, vision) if vision is not None else []
         head = ""  # rendered before the full prompt: the template's last render is the one tests and logs look at
         if boundary and len(folded) > 1:
             with contextlib.suppress(Exception):  # a template that rejects a partial conversation: no boundary
                 head = tmpl.render(folded[:-1], add_generation_prompt=False, enable_thinking=thinking, tools=tools, **kwargs)
         rendered = tmpl.render(folded, enable_thinking=thinking, tools=tools, **kwargs)
         ids, at = _message_boundary(tok, rendered, head)
-        return ids, thinking and rendered.rstrip().endswith("<think>"), at
+        ids, at, prompt_media = media.expand(ids, at, images, vision) if images else (ids, at, ())
+        return ids, thinking and rendered.rstrip().endswith("<think>"), at, prompt_media
 
-    async def _submit(ids: list[int], params) -> Ticket:
+    async def _submit(ids: list[int], params, prompt_media: tuple = ()) -> Ticket:
         try:
-            return await engine.submit(ids, params)
+            return await engine.submit(ids, params, prompt_media)
         except QueueFull as exc:
             raise HTTPException(429, str(exc))
 
@@ -390,13 +396,13 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         messages = body.get("messages") or []
         if not messages:
             raise HTTPException(400, "messages required")
-        messages = _text_only(messages)
+        messages = _text_only(messages, images=vision is not None)
         kwargs, thinking = _template_kwargs(body)
         tools = None if body.get("tool_choice") == "none" else body.get("tools")  # "none": generate without tool schemas
         messages, stopped = _guard(messages, body)
         if stopped is not None:
             return _chat_stopped(body, refusal_guard.stop_message(stopped))
-        ids, in_reasoning, boundary = _chat_prompt(messages, tools, thinking, kwargs)
+        ids, in_reasoning, boundary, prompt_media = await _chat_prompt(messages, tools, thinking, kwargs)
         # Without max_tokens (or max_completion_tokens) a reply may run to the end of the context window, as in the
         # OpenAI API, vLLM and SGLang: a fixed default cut off clients that leave it unset (Aider) mid-thought.
         limit = describe.get("context_length", targets.DEFAULT_TARGET.context_length)
@@ -415,8 +421,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         if n > 1:
             if body.get("stream"):
                 raise InvalidRequest("n > 1 requires stream: false")
-            return await _chat_choices(ids, params, stop, in_reasoning, tools, n, http)
-        ticket = await _submit(ids, params)
+            return await _chat_choices(ids, params, stop, in_reasoning, tools, n, http, prompt_media)
+        ticket = await _submit(ids, params, prompt_media)
         cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
         include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
@@ -482,16 +488,17 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         return {"id": cid, "object": "chat.completion", "created": created, "model": MODEL_ID,
                 "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}], "usage": usage}
 
-    async def _chat_choices(ids, params, stop, in_reasoning, tools, n, http):
+    async def _chat_choices(ids, params, stop, in_reasoning, tools, n, http, prompt_media=()):
         """n choices from one prefill. A one-token primer prefills the prompt
         and, when the engine reaps it at the start of its next step, publishes
         it to the prefix cache; the n samples are admitted after that reap, so
         each resumes from the cached prompt (at most 64 tokens re-prefilled)
         and they decode side by side. Seeds are seed + i when a seed is given."""
-        primer = await _submit(ids, dataclasses.replace(params, max_new_tokens=1, trace=False, seed=None))
+        primer = await _submit(ids, dataclasses.replace(params, max_new_tokens=1, trace=False, seed=None), prompt_media)
         await _collect(primer, Detokenizer(tok, []), http)
         base = params.seed
-        tickets = [await _submit(ids, dataclasses.replace(params, seed=None if base is None else base + i)) for i in range(n)]
+        tickets = [await _submit(ids, dataclasses.replace(params, seed=None if base is None else base + i), prompt_media)
+                   for i in range(n)]
         results = await asyncio.gather(*[_collect(t, Detokenizer(tok, stop), http) for t in tickets])
         choices, completion, reasoning_total = [], 0, 0
         for i, (out, text, reason) in enumerate(results):
@@ -530,18 +537,19 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         except EngineUnavailable:
             return error(503, "overloaded_error", "engine unavailable")
 
-    def _messages_prompt(body: dict, choice: str, boundary: bool = True) -> tuple[messages_api.MessagesRequest, list[dict] | None, list[int], bool, int]:
-        req = messages_api.parse_request(body)
+    async def _messages_prompt(body: dict, choice: str, boundary: bool = True) -> tuple[messages_api.MessagesRequest, list[dict] | None,
+                                                                                    list[int], bool, int, tuple]:
+        req = messages_api.parse_request(body, images=vision is not None)
         req.messages, req.stopped = _guard(req.messages, body)
         kwargs, thinking = _template_kwargs(body)
         if req.thinking is not None:
             thinking = req.thinking
         tools = None if choice == "none" else req.tools
         try:
-            ids, in_reasoning, at = _chat_prompt(req.messages, tools, thinking, kwargs, boundary)
+            ids, in_reasoning, at, prompt_media = await _chat_prompt(req.messages, tools, thinking, kwargs, boundary)
         except TemplateError as exc:
             raise InvalidRequest(f"the conversation cannot be rendered: {exc}")
-        return req, tools, ids, in_reasoning, at
+        return req, tools, ids, in_reasoning, at, prompt_media
 
     @app.post("/v1/messages")
     async def messages(http: HttpRequest):
@@ -561,7 +569,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         max_tokens = body.get("max_tokens")
         if max_tokens is None:
             raise InvalidRequest("max_tokens is required")
-        req, tools, ids, in_reasoning, boundary = _messages_prompt(body, choice)
+        req, tools, ids, in_reasoning, boundary, prompt_media = await _messages_prompt(body, choice)
         messages_stats["server_tools_ignored"] += req.ignored_tools
         if req.stopped is not None:
             return _messages_stopped(body, model, refusal_guard.stop_message(req.stopped))
@@ -581,7 +589,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                 raise InvalidRequest("a tool_choice that requires a call needs tools")
             params.constraint = await asyncio.to_thread(_constraint, forced, tools, in_reasoning)
         stop = _stops({"stop": body.get("stop_sequences")})
-        ticket = await _submit(ids, params)
+        ticket = await _submit(ids, params, prompt_media)
         mid = messages_api.new_id("msg")
 
         def usage(n_out: int) -> dict:
@@ -646,30 +654,33 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     async def count_tokens(http: HttpRequest):
         async def count(body: dict, http: HttpRequest):
             # A forced tool_choice does not change the prompt.
-            _, _, ids, _, _ = _messages_prompt(body, messages_api.tool_choice(body), boundary=False)
+            _, _, ids, _, _, _ = await _messages_prompt(body, messages_api.tool_choice(body), boundary=False)
             return {"input_tokens": len(ids)}
         return await _messages_errors(count, http)
 
     return app
 
 
-_OPENAI_MEDIA = ("image_url", "input_audio", "file", "image")
+_OPENAI_MEDIA = ("image_url", "input_image", "image", "input_audio", "file", "video_url", "input_video", "video")
 
 
-def _text_only(messages: list) -> list:
-    """The served models read text only. A media part a tool returned becomes the note the Messages API uses (an agent
-    reading a PNG keeps going); one anywhere else is a 400, not a reply about content the model never saw."""
+def _text_only(messages: list, images: bool = False) -> list:
+    """Media parts the model cannot read (all of them, or with `images` all but images: api/media.py). One a tool
+    returned becomes the note the Messages API uses (an agent reading a PNG keeps going); one anywhere else is a 400,
+    not a reply about content the model never saw."""
+    unreadable = tuple(k for k in _OPENAI_MEDIA if not (images and k in media.IMAGE_PARTS))
     out = []
     for i, message in enumerate(messages):
         content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, list) or not any(isinstance(p, dict) and p.get("type") in _OPENAI_MEDIA for p in content):
+        if not isinstance(content, list) or not any(isinstance(p, dict) and p.get("type") in unreadable for p in content):
             out.append(message)
             continue
         if message.get("role") != "tool":
-            kind = next(p["type"] for p in content if isinstance(p, dict) and p.get("type") in _OPENAI_MEDIA)
-            raise InvalidRequest(f"messages[{i}]: {kind} content is not supported; this server runs a text-only model")
+            kind = next(p["type"] for p in content if isinstance(p, dict) and p.get("type") in unreadable)
+            what = "a text-only model" if not images else "a model that reads text and images"
+            raise InvalidRequest(f"messages[{i}]: {kind} content is not supported; this server runs {what}")
         content = [{"type": "text", "text": messages_api.MEDIA_NOTE.format(kind="image" if "image" in p["type"] else p["type"])}
-                   if isinstance(p, dict) and p.get("type") in _OPENAI_MEDIA else p for p in content]
+                   if isinstance(p, dict) and p.get("type") in unreadable else p for p in content]
         out.append({**message, "content": content})
     return out
 
@@ -875,10 +886,11 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "kv_cache_dtype": "float8_e4m3fn",
         "mamba_ssm_dtype": "float32" if ex.ssm_format.kind == "fp32" else ex.ssm_format.describe(),
         "traces": {"dir": str(sink.directory), "max_mib": traces_max_mib} if sink is not None else None,
+        "vision": getattr(model, "vision", None) is not None,  # image input (SHARAR_VISION)
     }
     engine = EngineLoop(sched)
     engine.start()
-    app = create_app(engine, tok, tmpl, describe)
+    app = create_app(engine, tok, tmpl, describe, vision=getattr(model, "vision", None))
     log(f"serving on http://{host}:{port}")
     try:
         _serve_http(app, host, port)

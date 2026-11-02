@@ -75,7 +75,7 @@ class FakeExecutor:
         self.decode_batches = []
         self.released = []
 
-    def validate_request(self, ids, params):
+    def validate_request(self, ids, params, media=()):
         params.validate()
         if params.stop_token_ids is None:  # Executor.validate_request: the target's (here the default target's)
             params.stop_token_ids = DEFAULT_TARGET.stop_token_ids

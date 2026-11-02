@@ -5,7 +5,9 @@ system text and text blocks become content parts (the template concatenates
 them), assistant ``tool_use`` blocks become ``tool_calls`` with the input
 object as arguments, ``thinking`` blocks become ``reasoning_content``, and
 ``tool_result`` blocks become ``tool`` messages in their original order.
-Images and documents are rejected (a text-only model), except inside a
+On a server with a vision encoder (``images``), ``image`` blocks in user
+turns and tool results become image parts in place (api/media.py decodes
+them). Otherwise images, and documents always, are rejected, except inside a
 ``tool_result``: there the agent fetched them, not the user, so each becomes a
 short text note and the turn goes on (Claude Code read a PNG and quit on
 the 400).
@@ -46,8 +48,8 @@ class MessagesRequest:
     stopped: object = None  # refusal_guard.Refusals when the server ends this turn itself
 
 
-def parse_request(body: dict) -> MessagesRequest:
-    """Translate the prompt-shaping fields; raises InvalidRequest."""
+def parse_request(body: dict, images: bool = False) -> MessagesRequest:
+    """Translate the prompt-shaping fields; raises InvalidRequest. `images`: the server reads image blocks."""
     breakpoints: list[tuple] = []
     messages: list[dict] = []
     system = body.get("system")
@@ -77,8 +79,10 @@ def parse_request(body: dict) -> MessagesRequest:
         elif isinstance(content, str):
             messages.append({"role": turn["role"], "content": content})
         elif isinstance(content, list):
-            convert = _user_turn if turn["role"] == "user" else _assistant_turn
-            messages += convert(content, m, breakpoints)
+            if turn["role"] == "user":
+                messages += _user_turn(content, m, breakpoints, images)
+            else:
+                messages += _assistant_turn(content, m, breakpoints)
         else:
             raise InvalidRequest(f"messages.{m}.content must be a string or a list of content blocks")
 
@@ -134,24 +138,30 @@ def _text_parts(blocks: list, where: str, path: tuple, breakpoints: list[tuple])
     return parts
 
 
-def _user_turn(blocks: list, m: int, breakpoints: list[tuple]) -> list[dict]:
-    """Text runs become user messages and tool results become tool messages, in order."""
+def _image(block: dict, where: str) -> dict:
+    if not isinstance(block.get("source"), dict):
+        raise InvalidRequest(f"{where}: an image block needs a source")
+    return {"type": "image", "source": block["source"]}
+
+
+def _user_turn(blocks: list, m: int, breakpoints: list[tuple], images: bool = False) -> list[dict]:
+    """Text and image runs become user messages and tool results become tool messages, in order."""
     out: list[dict] = []
     text: list[dict] = []
     for b, block in enumerate(blocks):
         where = f"messages.{m}.content.{b}"
-        kind = _check_block(block, where)
+        kind = "image" if images and isinstance(block, dict) and block.get("type") == "image" else _check_block(block, where)
         if kind == "text":
             text.append(_text(block, where))
+        elif kind == "image":
+            text.append(_image(block, where))
         elif kind == "tool_result":
             if text:
                 out.append({"role": "user", "content": text})
                 text = []
             content = block.get("content")
             if isinstance(content, list):
-                content = _text_parts([{"type": "text", "text": MEDIA_NOTE.format(kind=part["type"])}
-                                       if isinstance(part, dict) and part.get("type") in _UNSUPPORTED_MEDIA else part
-                                       for part in content], f"{where}.content", (), [])
+                content = _tool_content(content, f"{where}.content", images)
             elif content is None:
                 content = ""
             elif not isinstance(content, str):
@@ -166,6 +176,22 @@ def _user_turn(blocks: list, m: int, breakpoints: list[tuple]) -> list[dict]:
             breakpoints.append(("messages", m, b))
     if text or not out:
         out.append({"role": "user", "content": text})
+    return out
+
+
+def _tool_content(parts: list, where: str, images: bool) -> list[dict]:
+    """A tool result's blocks: text, images when the server reads them, and a note for other media."""
+    out = []
+    for p, part in enumerate(parts):
+        kind = part.get("type") if isinstance(part, dict) else None
+        if images and kind == "image":
+            out.append(_image(part, f"{where}.{p}"))
+        elif kind in _UNSUPPORTED_MEDIA:
+            out.append({"type": "text", "text": MEDIA_NOTE.format(kind=kind)})
+        elif _check_block(part, f"{where}.{p}") != "text":
+            raise InvalidRequest(f"{where}.{p}: only text blocks are supported here, got '{part['type']}'")
+        else:
+            out.append(_text(part, f"{where}.{p}"))
     return out
 
 

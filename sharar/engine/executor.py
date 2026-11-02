@@ -17,6 +17,7 @@ from sharar.engine.context import ForwardContext
 from sharar.engine.graphs import DecodeGraphs
 from sharar.engine.request import Request, State
 from sharar.engine.grammar import sample_masks
+from sharar.engine.media import check as check_media, rows as media_rows, text_ids
 from sharar.engine.sampling_rng import request_seed
 from sharar.engine.sampler import InvalidRequest, Sampler, SamplingParams
 from sharar.cache.kv_pool import KV_DTYPE, KvPool
@@ -250,12 +251,18 @@ class Executor:
 
 
     # ---- lifecycle ----
-    def validate_request(self, prompt_ids: list[int], params: SamplingParams) -> None:
+    def validate_request(self, prompt_ids: list[int], params: SamplingParams, media: tuple = ()) -> None:
         params.validate()
         if not isinstance(prompt_ids, list) or not prompt_ids:
             raise InvalidRequest("prompt must be a non-empty token list")
+        if media and getattr(self.model, "vision", None) is None:
+            raise InvalidRequest("this server runs without a vision encoder: images are not supported")
         vocab = self.target.vocab_size
-        if any(type(t) is not int or not 0 <= t < vocab for t in prompt_ids):
+        try:
+            text = check_media(prompt_ids, media) if media else prompt_ids  # every image's placeholders as 0
+        except ValueError as exc:
+            raise InvalidRequest(str(exc)) from None
+        if any(type(t) is not int or not 0 <= t < vocab for t in text):
             raise InvalidRequest(f"token IDs must be integers in [0, {vocab})")
         stops = self.target.stop_token_ids if params.stop_token_ids is None else params.stop_token_ids
         if not isinstance(stops, (tuple, list)) or any(type(t) is not int or not 0 <= t < vocab for t in stops):
@@ -269,7 +276,7 @@ class Executor:
             raise InvalidRequest("request plus speculative scratch exceeds KV pool capacity")
 
     def admit(self, prompt_ids: list[int], params: SamplingParams, req: Request | None = None) -> Request:
-        self.validate_request(prompt_ids, params)
+        self.validate_request(prompt_ids, params, req.media if req is not None else ())
         if params.stop_token_ids is None:
             params = replace(params, stop_token_ids=self.target.stop_token_ids)
         if req is None:
@@ -531,6 +538,23 @@ class Executor:
                 self.state.discard_private(req)
             raise
 
+    def _model_ids(self, req: Request, ids: list[int]) -> list[int]:
+        """Prompt ids as the model reads them: an image's placeholder ids become the image token (engine/media.py)."""
+        return text_ids(ids, self.model.vision.image_token) if req.media else ids
+
+    def _image_rows(self, ctx: ForwardContext, spans: list[tuple[Request, int, int, int]]) -> None:
+        """Set the prefill rows of `spans` [(request, start, end, its first row)] that are image placeholders and their
+        embeddings, encoding an image when its span is first reached."""
+        rows, pieces = [], []
+        for req, start, end, offset in spans:
+            if req.media:
+                r, p = media_rows(req.media, start, end, offset, self.model.vision.encode)
+                rows += r
+                pieces += p
+        if rows:
+            ctx.media_rows = upload(rows, torch.int64, self.device)
+            ctx.media_embeds = torch.cat(pieces)
+
     def _prepare_single_prefill(self, req: Request, max_tokens: int | None) -> PrefillBatch:
         """Prefill up to `max_tokens` of the remaining prompt (all of it by
         default). Each chunk continues from the state and pages left by the
@@ -540,7 +564,7 @@ class Executor:
         n = req.prefill_len
         start = req.prefill_pos
         end = n if max_tokens is None else min(n, start + max_tokens)
-        new_ids = req.prefill_ids[start:end]
+        new_ids = self._model_ids(req, req.prefill_ids[start:end])
         t = len(new_ids)
         assert t > 0, (start, end)
         ids = upload(new_ids, torch.int64, self.device)
@@ -556,6 +580,7 @@ class Executor:
             prefix_len=start,
             prefix_pages=req.pages[:start] if start else None,
         )
+        self._image_rows(ctx, [(req, start, end, 0)])
         if start:
             ctx.prefix_attention = self._prefix_attention([t], [start], req.pages[:start])
             if ctx.prefix_attention is None:
@@ -580,11 +605,12 @@ class Executor:
         started = time.perf_counter()
         ids_list, pos_list, page_list, cu, kv_indptr, kv_indices = [], [], [], [0], [0], []
         seq_slots, prefix_lens, seq_lens = [], [], []
-        boundaries = []
+        boundaries, spans = [], []
         for si, (req, n_new) in enumerate(chunks):
             start = req.prefill_pos
             end = start + n_new
-            ids_list += req.prefill_ids[start:end]
+            spans.append((req, start, end, cu[-1]))
+            ids_list += self._model_ids(req, req.prefill_ids[start:end])
             pos_list += list(range(start, end))
             page_list.append(req.pages[start:end])
             cu.append(cu[-1] + n_new)
@@ -609,6 +635,7 @@ class Executor:
             checkpoint_slots=[s for _, _, s in checkpoints],
             checkpoint_seqs=[i for i, _, _ in checkpoints],
         )
+        self._image_rows(ctx, spans)
         if any(prefix_lens):
             ctx.prefix_attention = self._prefix_attention(seq_lens, prefix_lens, torch.cat(kv_indices))
             if ctx.prefix_attention is None:
@@ -644,7 +671,8 @@ class Executor:
                 rows = {"norm": out["norm"][cu[i]:cu[i + 1]]}
                 if "features" in out:
                     rows["features"] = {lid: value[cu[i]:cu[i + 1]] for lid, value in out["features"].items()}
-                self.spec.ingest_prefill(req, req.prefill_ids[req.prefill_pos:req.prefill_pos + n_new], req.prefill_pos, rows)
+                self.spec.ingest_prefill(req, self._model_ids(req, req.prefill_ids[req.prefill_pos:req.prefill_pos + n_new]),
+                                         req.prefill_pos, rows)
         for req, n_new in chunks:  # the drafter ingested every row's chunk: each row's snapshots go in, its lock moves
             end = req.prefill_pos + n_new
             self.state.commit_prefill(req, end)
@@ -663,7 +691,7 @@ class Executor:
         req, t = batch.chunks[0]
         start, n, started = req.prefill_pos, req.prefill_len, batch.started
         end = start + t
-        new_ids = req.prefill_ids[start:end]
+        new_ids = self._model_ids(req, req.prefill_ids[start:end])
         self.state.commit_prefill(req, end)
         self._chunk_checkpoint(req, end)
         if self.spec is not None:

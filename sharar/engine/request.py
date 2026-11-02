@@ -25,6 +25,7 @@ class Request(RequestState):
     prompt_ids: list[int]
     params: SamplingParams
     request_id: int = 0
+    media: tuple = ()  # the prompt's images (engine/media.Image), whose placeholder ids are in prompt_ids
     state: State = State.QUEUED
     output_ids: list[int] = field(default_factory=list)
     # resources

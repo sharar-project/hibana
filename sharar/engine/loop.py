@@ -104,10 +104,10 @@ class EngineLoop:
                 raise EngineUnavailable("engine unavailable")
             self.inbox.put(cmd)
 
-    async def submit(self, prompt_ids: list[int], params: SamplingParams) -> Ticket:
+    async def submit(self, prompt_ids: list[int], params: SamplingParams, media: tuple = ()) -> Ticket:
         loop = asyncio.get_running_loop()
         ticket = Ticket(queue=asyncio.Queue(), loop=loop, ready=loop.create_future())
-        self._enqueue(("submit", prompt_ids, params, ticket))
+        self._enqueue(("submit", prompt_ids, params, ticket, media))
         try:
             await ticket.ready
         except asyncio.CancelledError:
@@ -134,11 +134,11 @@ class EngineLoop:
 
     # ---- engine thread ----
     def _apply(self, cmd: tuple):
-        """Apply one scheduler command, alike on every rank: ("submit", ids, params), ("cancel", request_id),
+        """Apply one scheduler command, alike on every rank: ("submit", ids, params, media), ("cancel", request_id),
         ("flush",) or ("stop",). The primary records it for the other ranks."""
         kind, result = cmd[0], None
         if kind == "submit":
-            result = self.sched.submit(cmd[1], cmd[2])
+            result = self.sched.submit(*cmd[1:])
         elif kind == "cancel":
             req = next((r for r in (*self.sched.queue, *self.sched.prefilling, *self.sched.running) if r.request_id == cmd[1]), None)
             if req is not None:
@@ -176,11 +176,11 @@ class EngineLoop:
     def _handle(self, cmd) -> None:
         kind = cmd[0]
         if kind == "submit":
-            _, ids, params, ticket = cmd
+            _, ids, params, ticket, media = cmd
             if self.tp.size > 1 and not params.greedy and params.seed is None:
                 params.seed = secrets.randbits(64)  # every rank samples with the same generator
             try:
-                req = self._apply(("submit", ids, params))
+                req = self._apply(("submit", ids, params, media))
             except (QueueFull, InvalidRequest) as exc:
                 _notify(ticket.loop, _resolve, ticket.ready, None, exc)
                 return

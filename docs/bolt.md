@@ -3,7 +3,8 @@
 `sharar serve bolt` serves the text backbone of
 `nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB` on one Spark, on port 30006.
 `nemotron-bolt` is an alias. The checkpoint is pinned in `sharar/model/bolt/config.py` and downloaded by
-the normal launcher. The C-RADIO vision encoder and projector are not loaded.
+the normal launcher. Image input runs Super's image path on Bolt's own vision weights (C-RADIO and the projector,
+without the final LayerNorm; [Super's images](nemotron.md#images), [API](api.md#images)).
 
 ```bash
 sharar serve bolt
@@ -100,8 +101,8 @@ The five-layer draft uses six target feature taps, block-local grouped convoluti
 sliding attention with learned virtual sinks. The two-layer LiLiCorr head scores transitions between eight
 candidates per position; sampled proposals carry the actual conditional probabilities to the target verifier.
 Draft features and projected KV follow the parallel adapter's request, prefix-cache and SSD lifecycle. Shorter
-drafts use the learned slot prefix without resizing parameters. Tensor parallel and image/video
-inputs are not implemented for this target. BF16 KV (`SHARAR_KV_FORMAT=sim-bf16`, with SSD off) is available for
+drafts use the learned slot prefix without resizing parameters. Tensor parallel and video input are not
+implemented for this target. BF16 KV (`SHARAR_KV_FORMAT=sim-bf16`, with SSD off) is available for
 numerical parity; packed NVFP4 KV is not enabled.
 
 ## Validation

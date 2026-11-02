@@ -71,3 +71,84 @@ def test_mtp_reconstruction_commits_real_batches(model, state_format):
         del ex
     gc.collect()
     torch.cuda.empty_cache()
+
+
+def test_an_image_reads_alike_in_one_chunk_across_chunks_and_in_a_batch(model):
+    """A prompt with an image (`engine/media.py`), its placeholders prefilled in one chunk, in chunks that split the
+    image, and in a batched prefill beside a text request: each reads the code written in the image. A second request
+    for the same prompt resumes from the cached prefix at a state snapshot inside the image and encodes the image again
+    for the placeholders after it."""
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+    import numpy as np
+    from sharar.engine import media
+    from sharar.engine.request import Request
+    from sharar.model.nemotron import vision as v
+    from sharar.weights.safetensors import SnapshotWeights
+
+    loaded, tok = model
+    with config.using(config.current().replace(vision=True)):
+        w = SnapshotWeights(NEMOTRON.snapshot_dir())
+        loaded.vision = loaded.load_vision(w, log=None)
+        w.close()
+    img = PILImage.new("RGB", (900, 300), "white")
+    font = ImageFont.truetype("DejaVuSans.ttf", 56) if _has_font() else ImageFont.load_default(56)
+    ImageDraw.Draw(img).text((40, 110), "CODE: BLUE-7429", font=font, fill="black")
+    pixels = v.preprocess(np.array(img))
+    n = v.image_tokens(pixels)
+    head = tok.encode("<|im_start|>system\n<|im_end|>\n<|im_start|>user\n")
+    tail = tok.encode("What is the code in the image? Reply with the code only.<|im_end|>\n<|im_start|>assistant\n"
+                      "<think></think>")
+    ids = media.placeholder_ids(b"lifecycle", n)
+    prompt = head + [v.IMAGE_START, *ids, v.IMAGE_END] + tail
+
+    def request():
+        return Request(prompt_ids=list(prompt), params=SamplingParams(max_new_tokens=8),
+                       media=(media.Image(start=len(head) + 1, ids=ids, pixels=pixels),))
+
+    def answer(req, ex):
+        while not req.finished:
+            ex.decode_step([req])
+        return tok.decode(req.output_ids)
+
+    try:
+        with config.using(config.current().replace(target="nemotron", kv_format="fp8", w3_decode=False,
+                                                   w3_checkpoint=None, ssd=False, vision=True)):
+            ex = Executor(loaded, num_pages=8192, num_slots=8, max_batch=2, max_context=2048)
+            outputs = []
+            for chunk in (None, 100, 64):  # one chunk; chunks of 100 and 64 split the image's span
+                req = ex.admit(request().prompt_ids, request().params, request())
+                while not req.prefill_done:
+                    ex.prefill(req, max_tokens=chunk)
+                outputs.append(answer(req, ex))
+                ex.release(req)
+                ex.flush_cache()
+            text_req = ex.admit(tok.encode("<|im_start|>user\nSay hi.<|im_end|>\n<|im_start|>assistant\n<think></think>"),
+                                SamplingParams(max_new_tokens=8))
+            req = ex.admit(prompt, SamplingParams(max_new_tokens=8), request())
+            ex.prefill_batch([(text_req, text_req.prefill_len), (req, 200)])
+            ex.prefill_batch([(req, req.prefill_len - req.prefill_pos)])
+            outputs.append(answer(req, ex))
+            cached = ex.admit(prompt, SamplingParams(max_new_tokens=8), request())  # the same image: a cache hit
+            assert len(head) + 1 < cached.prefill_pos < len(prompt), cached.prefill_pos
+            while not cached.prefill_done:
+                ex.prefill(cached)
+            outputs.append(answer(cached, ex))
+            for r in (text_req, req, cached):
+                ex.release(r)
+            ex.flush_cache()
+            del ex
+    finally:
+        loaded.vision = None
+        gc.collect()
+        torch.cuda.empty_cache()
+    print(outputs)
+    assert all("BLUE-7429" in o for o in outputs), outputs
+
+
+def _has_font() -> bool:
+    from PIL import ImageFont
+    try:
+        ImageFont.truetype("DejaVuSans.ttf", 10)
+        return True
+    except OSError:
+        return False
