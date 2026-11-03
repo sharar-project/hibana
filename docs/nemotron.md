@@ -144,6 +144,10 @@ Against caps of 4 (h2h closed-loop streams, two repeats): 2 streams greedy 118.5
 - Thinking off renders as `<|im_start|>assistant\n<think></think>` with no newline after it (the snapshot's
   `chat_template.jinja`), and the template opens every chat with a system turn, empty when none is given. Thinking on
   ends the prompt with `<think>\n`, so the reasoning parser starts inside the block as it does for Qwen.
+- The template drops the reasoning of assistant turns before the last user message unless `truncate_history_thinking`
+  is false, which `Target.template_defaults` sets. Dropped, every new user message rewrote tokens the prefix cache
+  held, from the previous task's first reply on: in six-task Claude Code sessions each new task re-prefilled
+  2-109K tokens (up to 45 s to the first token), and kept, the same tasks prefilled 209K tokens in all instead of 536K.
 - Router logits must be FP32: a block's selection bias spans under 0.1, so the 22nd and 23rd choices sit a median
   7e-4 to 1.6e-3 apart and BF16 logits change the top-22 set of 9-22% of rows.
 - The routing weights come from the plain sigmoid, the bias only steers the choice; `routed_scaling_factor` (5) rides
