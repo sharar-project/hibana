@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from sharar.engine.sampler import InvalidRequest
 
 SIGNATURE = "sharar-unsigned"
+BILLING_HEADER = "x-anthropic-billing-header:"
 _UNSUPPORTED_MEDIA = ("image", "document")
 MEDIA_NOTE = "[{kind} omitted: {why}]"
 
@@ -66,6 +67,10 @@ def parse_request(body: dict, images: bool = False) -> MessagesRequest:
     system = body.get("system")
     if isinstance(system, list):
         parts = _text_parts(system, "system", ("system",), breakpoints, images)
+        # Claude Code's billing attribution, a hash of the session's first message at the prompt's start: kept, a new
+        # session in a project resumed none of the 12.9K-token system prompt and tools the last one cached (10.7-12.9K
+        # without it)
+        parts = [p for p in parts if not (p.get("type") == "text" and p.get("text", "").startswith(BILLING_HEADER))]
         if parts:
             messages.append({"role": "system", "content": parts})
     elif isinstance(system, str):

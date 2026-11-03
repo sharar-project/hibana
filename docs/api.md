@@ -24,7 +24,7 @@ speculative scratch capacity.
 
 | Field | Supported behavior |
 |---|---|
-| `messages` | Nonempty conversation rendered with the pinned snapshot template; `image_url` parts on a target serving images ([images](#images)) |
+| `messages` | Nonempty conversation rendered with the pinned snapshot template; `image_url` parts on a target serving images ([images](#images)). Earlier assistant turns' `reasoning_content` is rendered on every target (Nemotron's template variable `truncate_history_thinking` defaults to false here; `chat_template_kwargs` can set it), so a new user turn appends to the cached prompt instead of changing it |
 | `stream` | Server-sent events ending with `[DONE]` |
 | `max_tokens` / `max_completion_tokens` | Requested output budget |
 | `temperature`, `top_p`, `top_k`, `seed` | Validated sampling parameters. An omitted `temperature` is OpenAI's 1.0 (with top_p 0.95 and top_k 20, the models' own generation config); send `temperature: 0` for greedy. OpenCode sends no sampling fields, and greedy thinking looped until `max_tokens` in its runs. `/v1/completions` and `/generate` keep greedy as their default |
@@ -200,7 +200,9 @@ Claude Code sends system messages inside `messages` (its environment block
 after the first user turn); they are rendered in place as user turns in
 `<system-reminder>` tags, since the template accepts one leading system
 message and moving them would change the cached prefix. Several leading
-system messages (OpenAI clients such as OpenCode) are merged. It asks for
+system messages (OpenAI clients such as OpenCode) are merged. The system block
+that starts with `x-anthropic-billing-header:` (a hash of the session's first message) is not rendered, so a new
+session in the same project resumes the system prompt and tools the previous one cached. It asks for
 32,000 output tokens; the server caps `max_tokens` at the remaining context
 and answers `prompt is too long` when a conversation fills it.
 The OpenAI chat endpoint handles role `developer` the same way as `system`.

@@ -93,6 +93,8 @@ class Target:
     draft_calibration: tuple[tuple[str, tuple[float, ...]], ...] = ()
     # A request's default stop ids (the chat template's end of turn, then end of text).
     stop_token_ids: tuple[int, ...] = (248046, 248044)  # Qwen3.8: <|im_end|>, <|endoftext|>
+    # Chat template variables the server renders with unless a request's chat_template_kwargs sets them.
+    template_defaults: tuple[tuple[str, object], ...] = ()
     # Puzzle MoE blocks: (checkpoint index, expert count, intermediate width, top-k).
     moe_block_specs: tuple[tuple[int, int, int, int], ...] = ()
     # The recurrent layers' recurrence: "gdn" (Gated DeltaNet) or "mamba2"; it picks the state formats
@@ -354,6 +356,10 @@ def _nemotron() -> Target:
         recurrence="mamba2", mtp_prefix=f"{c.PREFIX}.mtp.", first_text_token=c.FIRST_TEXT_TOKEN,
         moe_latent_size=c.MOE_LATENT_SIZE, routed_scaling_factor=c.ROUTED_SCALING_FACTOR,
         kv_formats=("fp8",),
+        # The template drops earlier turns' reasoning by default, so each new user message changed tokens the prefix
+        # cache already held: an agent's next task re-prefilled the whole previous one. Kept, a conversation renders
+        # append-only, as the Qwen3.8 templates do by default (their preserve_thinking).
+        template_defaults=(("truncate_history_thinking", False),),
     )
 
 

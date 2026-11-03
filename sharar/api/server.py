@@ -824,7 +824,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     from sharar.engine.scheduler import SchedulerConfig
     snap = served.snapshot_dir()
     tok = SnapshotTokenizer(snap)
-    tmpl = ChatTemplate(snap)
+    tmpl = ChatTemplate(snap, served.template_defaults)
     log(f"loading {served.name}: {served.model_id}@{served.model_revision[:8]}")
     model = targets.load_model(served, snap, log=log)
     from sharar.engine.config import current

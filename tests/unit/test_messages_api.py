@@ -98,6 +98,16 @@ def test_string_and_block_system_prompts():
     assert rendered_messages(tmpl)[0]['role'] == 'user'
 
 
+def test_claude_code_billing_header_is_not_rendered():
+    """The per-session hash at the system prompt's start would keep two sessions from sharing their cached prefix."""
+    blocks = [{'type': 'text', 'text': 'x-anthropic-billing-header: cc_version=2.1.306.fa0; cc_entrypoint=sdk-cli;'},
+              {'type': 'text', 'text': 'You are a CLI.'}]
+    _, _, tmpl = post(body(system=blocks))
+    assert rendered_messages(tmpl)[0] == {'role': 'system', 'content': [{'type': 'text', 'text': 'You are a CLI.'}]}
+    _, _, tmpl = post(body(system=blocks[:1]))
+    assert rendered_messages(tmpl)[0]['role'] == 'user'
+
+
 def test_tool_history_translates_in_order():
     turns = [
         {'role': 'user', 'content': 'weather?'},

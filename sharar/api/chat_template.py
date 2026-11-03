@@ -12,7 +12,8 @@ def _raise_exception(message: str):
 
 
 class ChatTemplate:
-    def __init__(self, snap: Path):
+    def __init__(self, snap: Path, defaults: tuple[tuple[str, object], ...] = ()):
+        self.defaults = dict(defaults)  # the target's template variables; a render's own kwargs win
         env = jinja2.Environment(
             loader=jinja2.BaseLoader(),
             trim_blocks=True,
@@ -39,5 +40,5 @@ class ChatTemplate:
             add_generation_prompt=add_generation_prompt,
             enable_thinking=enable_thinking,
             tools=tools,
-            **kwargs,
+            **{**self.defaults, **kwargs},
         )
