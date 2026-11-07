@@ -70,8 +70,12 @@ class NemotronMamba:
         storage = dict(layer=self.index,
                        window=(window.layout, window.layer[self.layer_id]) if window is not None else None)
         if ctx is None or ctx.mode == "prefill":
-            y = mamba2.prefill(zxbcdt, self.params, conv, ssm, mamba2.prepare_prefill(ctx, x.shape[0], x.device),
-                               **storage)
+            normalized = mamba2.prefill(zxbcdt, self.params, conv, ssm,
+                                        mamba2.prepare_prefill(ctx, x.shape[0], x.device),
+                                        normalize=True, out_scale=self.out_proj.input_scale, **storage)
+            if self.out_proj.input_scale is None:
+                return self.out_proj(normalized)
+            return ops.fp8_linear(None, self.out_proj, x_q=normalized)
         elif ctx.mode == "verify":
             y = mamba2.verify(zxbcdt, self.params, conv, ssm, ctx.seq_slots, ctx.verify_steps,
                               ctx.verify_conv_windows.get(self.layer_id),

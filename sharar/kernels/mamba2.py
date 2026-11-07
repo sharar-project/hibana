@@ -50,6 +50,9 @@ same bits. GB10 has no cvt.rs, so the rounding is integer arithmetic on the FP32
   convolves to the same bits on every path.
 - `gated_rmsnorm` fuses the gate, the grouped RMS norm, the weight and the out projection's FP8 input quantization.
   The norm spans 16 heads, so it is not fused into the per-head recurrence.
+- Normalized BF16 prefill on GB10 groups those 16 heads in one scan CTA and fuses the gate/norm epilogue;
+  a rolling convolution reuses the preceding inputs. This path starts at 2048 packed tokens and keeps state
+  passing, rounding and window quantization separate. Other contracts use the separate scan and norm.
 
 A quantized pool (`SsmFormat` int8 / int4, every path's `window` argument) stores LeapQuant's per-window state
 (`cache/ssm_format.py`): a quantized boundary state plus the window's committed records. Mamba-2's update is a
@@ -322,6 +325,52 @@ def _conv_prefill_kernel(X, sx, W, Bias, State, s_slot, s_ch, s_tap, Cu, Slots, 
         new = tl.where((idx >= 0)[:, None], own, old)
         tl.debug_barrier()
         tl.store(state_base[None, :] + k[:, None] * s_tap, new, km[:, None] & cm[None, :])
+
+
+@triton.jit
+def _rolling_tap(X, sx, State, base, s_tap, s0, t, n, ch, mask, init):
+    own = tl.load(X + (s0 + t).to(tl.int64) * sx + ch, mask & (t >= 0) & (t < n), 0).to(tl.float32)
+    old = tl.load(State + base + (t + 3) * s_tap, mask & (t < 0) & init, 0).to(tl.float32)
+    return tl.where(t < 0, old, own)
+
+
+@triton.jit
+def _conv_rolling_kernel(X, sx, W, Bias, State, s_slot, s_ch, s_tap, Cu, Slots, HasInit, Out, so,
+                         C: tl.constexpr, BLOCK_T: tl.constexpr, BLOCK_C: tl.constexpr):
+    """Keep the three preceding inputs in registers across a four-token tile."""
+    seq, tb, cb = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    s0 = tl.load(Cu + seq).to(tl.int64)
+    n = tl.load(Cu + seq + 1) - s0
+    t0 = tb * BLOCK_T
+    if t0 >= n:
+        return
+    ch = cb * BLOCK_C + tl.arange(0, BLOCK_C)
+    mask = ch < C
+    slot = tl.load(Slots + seq).to(tl.int64)
+    init = tl.load(HasInit + seq) != 0
+    base = slot * s_slot + ch * s_ch
+    bias = tl.load(Bias + ch, mask, 0).to(tl.float32)
+    w0 = tl.load(W + ch * 4, mask, 0).to(tl.float32)
+    w1 = tl.load(W + ch * 4 + 1, mask, 0).to(tl.float32)
+    w2 = tl.load(W + ch * 4 + 2, mask, 0).to(tl.float32)
+    w3 = tl.load(W + ch * 4 + 3, mask, 0).to(tl.float32)
+    x0 = _rolling_tap(X, sx, State, base, s_tap, s0, t0 - 3, n, ch, mask, init)
+    x1 = _rolling_tap(X, sx, State, base, s_tap, s0, t0 - 2, n, ch, mask, init)
+    x2 = _rolling_tap(X, sx, State, base, s_tap, s0, t0 - 1, n, ch, mask, init)
+    for j in tl.static_range(BLOCK_T):
+        t = t0 + j
+        x3 = tl.load(X + (s0 + t) * sx + ch, mask & (t < n), 0).to(tl.float32)
+        y = _conv_value(bias, w0, w1, w2, w3, x0, x1, x2, x3)
+        tl.store(Out + (s0 + t) * so + ch, y.to(Out.dtype.element_ty), mask & (t < n))
+        x0, x1, x2 = x1, x2, x3
+    if tb == 0:
+        n0 = _rolling_tap(X, sx, State, base, s_tap, s0, n - 3, n, ch, mask, init)
+        n1 = _rolling_tap(X, sx, State, base, s_tap, s0, n - 2, n, ch, mask, init)
+        n2 = _rolling_tap(X, sx, State, base, s_tap, s0, n - 1, n, ch, mask, init)
+        tl.debug_barrier()
+        tl.store(State + base, n0, mask)
+        tl.store(State + base + s_tap, n1, mask)
+        tl.store(State + base + 2 * s_tap, n2, mask)
 
 
 @triton.jit
@@ -1018,8 +1067,12 @@ def _chunk_scan_kernel(CB, X, Cm, sx, Dt, DACs, Entering, Dskip, Y, sy, CuChunks
 
 def prefill(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor, ssm_state: torch.Tensor,
             plan: Mamba2PrefillPlan, *, layer: int = 0,
-            window: tuple[WindowLayout, dict] | None = None) -> torch.Tensor:
-    """Packed varlen prefill: returns y [T, d_inner] bf16 (before the gated norm).
+            window: tuple[WindowLayout, dict] | None = None, normalize: bool = False,
+            out_scale: torch.Tensor | None = None) -> torch.Tensor:
+    """Packed varlen prefill: returns y [T, d_inner] BF16, or gated normalized output with `normalize`.
+
+    Normalized output is BF16 unless `out_scale` requests FP8. GB10's large BF16-output forwards
+    fuse scan, gate and grouped norm; other contracts retain the separate kernels.
 
     Each sequence continues from its slot's conv and SSM state when it has a prefix (zero otherwise); its final
     states replace them, and each checkpoint slot receives the conv window and SSM state at its boundary. An FP16
@@ -1027,6 +1080,8 @@ def prefill(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor
     With window = (layout, this layer's region views) the SSM states are quantized: the recurrence runs on FP32
     copies of the sequences' states (`plan.seq_rows`, checkpoints in `plan.chunk_scratch`), and the final and
     checkpoint states are quantized back as new boundary states."""
+    if out_scale is not None and not normalize:
+        raise ValueError("prefill out_scale requires normalize=True")
     sr = window is None and _check_state(ssm_state, params, plan.chunk_last)
     _, xbc, dt = _split(zxbcdt, params)
     t, c = xbc.shape
@@ -1034,13 +1089,17 @@ def prefill(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor
         raise ValueError("the prefill plan covers a different token count")
     dev = xbc.device
     H, P, N, G = params.heads, params.head_dim, params.state, params.groups
+    fused = (normalize and out_scale is None and zxbcdt.dtype == torch.bfloat16
+             and t >= 2048 and (H, P, N, G, CHUNK) == (128, 64, 128, 8, 128)
+             and torch.cuda.get_device_capability(dev) == (12, 1))
     conv = torch.empty((t, c), dtype=torch.bfloat16, device=dev)
     nseq = len(plan.seq_lens)
     if plan.num_checkpoints:  # reads the inputs only; checkpoint slots are not any sequence's own
         _conv_checkpoint_kernel[(plan.num_checkpoints, triton.cdiv(c, 1024))](
             xbc, xbc.stride(0), conv_state, *conv_state.stride(), plan.checkpoint_ends, plan.checkpoint_slots, c, 1024)
-    block_t, block_c = 8, 256  # larger token tiles spill (44 GB/s at 32 x 256 against 210 here)
-    _conv_prefill_kernel[(nseq, triton.cdiv(max(plan.seq_lens), block_t), triton.cdiv(c, block_c))](
+    block_t, block_c = (4, 512) if fused else (8, 256)
+    conv_kernel = _conv_rolling_kernel if fused else _conv_prefill_kernel
+    conv_kernel[(nseq, triton.cdiv(max(plan.seq_lens), block_t), triton.cdiv(c, block_c))](
         xbc, xbc.stride(0), params.conv_weight, params.conv_bias, conv_state, *conv_state.stride(), plan.cu_seqlens,
         plan.slots, plan.has_initial_state, conv, conv.stride(0), c, block_t, block_c, num_warps=4)
     nc = plan.num_chunks
@@ -1070,8 +1129,11 @@ def prefill(zxbcdt: torch.Tensor, params: Mamba2Params, conv_state: torch.Tensor
     cb = torch.empty((nc, G, CHUNK, CHUNK), dtype=torch.float32, device=dev)
     _bmm_chunk_kernel[(triton.cdiv(CHUNK, 64) ** 2, nc * G)](
         cm, bm, conv.stride(0), cb, plan.cu_chunks, N, G, CHUNK, 64, 64, 64, num_warps=4, num_stages=2)
+    if fused:
+        from sharar.kernels.mamba2_prefill import scan_norm
+        return scan_norm(cb, x, cm, dt_out, da_cs, entering, zxbcdt, params, plan, CHUNK)
     y = torch.empty((t, params.d_inner), dtype=torch.bfloat16, device=dev)
     _chunk_scan_kernel[(triton.cdiv(CHUNK, 32) * triton.cdiv(P, 64), nc, H)](
         cb, x, cm, conv.stride(0), dt_out, da_cs, entering, params.D, y, y.stride(0), plan.cu_chunks, nc,
         H, P, N, G, CHUNK, 32, 64, 32, num_warps=4, num_stages=2)
-    return y
+    return gated_rmsnorm(y, zxbcdt[:, :params.d_inner], params, out_scale) if normalize else y
