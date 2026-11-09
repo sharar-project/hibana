@@ -123,6 +123,70 @@ def _positions(start, rows, steps=1):
     return torch.tensor([s + t for s in start[:rows] for t in range(steps)], dtype=torch.int64, device=DEV)
 
 
+@pytest.mark.parametrize("lengths,prefixes", [([2048], [0]), ([2048], [2048]),
+                                           ([2048, 257], [17, 2180]), ([2048, 1, 3], [0, 7, 128])])
+@pytest.mark.parametrize("fmt", FORMATS)
+def test_normalized_prefill_matches_separate_scan_and_norm(layer, lengths, prefixes, fmt, monkeypatch):
+    """Exercise the served fusion, ragged tails, interior checkpoints and untouched slots."""
+    from sharar.kernels import mamba2_prefill
+    params, _ = layer
+    slots = [3, 1, 5][:len(lengths)]
+    checkpoints = [(i, min(127, n - 1), 6 + i) for i, n in enumerate(lengths) if n > 128]
+    plan = m.plan_prefill(lengths, prefixes, slots, DEV, checkpoints)
+    zx = _inputs(layer, sum(lengths), 1237)
+    conv, ssm = _pools(10, fmt=fmt)
+    conv0, ssm0 = conv.clone(), ssm.clone()
+    expected = m.gated_rmsnorm(m.prefill(zx, params, conv, ssm, plan), zx[:, :DI], params)
+    ref_conv, ref_ssm = conv.clone(), ssm.clone()
+    conv.copy_(conv0)
+    ssm.copy_(ssm0)
+    calls = []
+    original = mamba2_prefill.scan_norm
+    def counted(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(mamba2_prefill, "scan_norm", counted)
+    actual = m.prefill(zx, params, conv, ssm, plan, normalize=True)
+    assert bool(calls) == (torch.cuda.get_device_capability() == (12, 1))
+    torch.testing.assert_close(actual, expected, rtol=4e-3, atol=4e-3)
+    assert torch.equal(conv, ref_conv)
+    assert torch.equal(ssm, ref_ssm)
+    # Graph capture must use the same slot/plan addresses without host device-value reads.
+    torch.cuda.synchronize()
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        conv.copy_(conv0)
+        ssm.copy_(ssm0)
+        captured = m.prefill(zx, params, conv, ssm, plan, normalize=True)
+    g.replay()
+    torch.testing.assert_close(captured, expected, rtol=4e-3, atol=4e-3)
+    assert torch.equal(conv, ref_conv)
+    assert torch.equal(ssm, ref_ssm)
+
+
+@pytest.mark.parametrize("fmt,t,quant", [("fp32", 17, False), ("sr", 17, False),
+                                      ("fp32", 2048, True)])
+def test_normalized_prefill_fallbacks(layer, fmt, t, quant, monkeypatch):
+    from sharar.kernels import mamba2_prefill
+    params, _ = layer
+    plan = m.plan_prefill([t], [17], [1], DEV)
+    zx = _inputs(layer, t, 421)
+    conv, ssm = _pools(2, fmt=fmt)
+    conv0, ssm0 = conv.clone(), ssm.clone()
+    scale = torch.tensor(0.125, device=DEV) if quant else None
+    expected = m.gated_rmsnorm(m.prefill(zx, params, conv, ssm, plan), zx[:, :DI], params, scale)
+    ref_conv, ref_ssm = conv.clone(), ssm.clone()
+    conv.copy_(conv0)
+    ssm.copy_(ssm0)
+    def fail(*args, **kwargs):
+        raise AssertionError("unsupported contract must use the separate kernels")
+    monkeypatch.setattr(mamba2_prefill, "scan_norm", fail)
+    actual = m.prefill(zx, params, conv, ssm, plan, normalize=True, out_scale=scale)
+    assert torch.equal(actual.view(torch.uint8), expected.view(torch.uint8))
+    assert torch.equal(conv, ref_conv)
+    assert torch.equal(ssm, ref_ssm)
+
+
 @pytest.mark.parametrize("fmt", FORMATS)
 def test_decode_matches_reference(layer, fmt):
     params, _ = layer
@@ -497,6 +561,46 @@ class _WindowPool:
     def state(self, slots, j=0):
         from sharar.kernels import ssm_window as W
         return torch.stack([W.reference_state(self.layout, self.views(j), s).float() for s in slots])
+
+
+@pytest.mark.parametrize("bits", [8, 4])
+def test_window_normalized_prefill_preserves_checkpoint_bytes(layer, bits, monkeypatch):
+    from sharar.kernels import mamba2_prefill
+    params, _ = layer
+    pool = _WindowPool(1, 10, bits)
+    pool.seed([3, 4, 5], seed=19)
+    lengths, prefixes, slots = [2048, 3, 257], [0, 17, 2180], [3, 4, 5]
+    plan = m.plan_prefill(lengths, prefixes, slots, DEV, [(0, 127, 6), (0, 128, 7), (2, 3, 8)])
+    zx = _inputs(layer, sum(lengths), 927)
+    conv0, bytes0 = pool.conv_all.clone(), pool.ssm_all.clone()
+    expected = m.gated_rmsnorm(m.prefill(zx, params, pool.conv_all[0], pool.ssm_all[0], plan,
+                                        window=pool.arg()), zx[:, :DI], params)
+    ref_conv, ref_bytes = pool.conv_all.clone(), pool.ssm_all.clone()
+    pool.conv_all.copy_(conv0)
+    pool.ssm_all.copy_(bytes0)
+    calls = []
+    original = mamba2_prefill.scan_norm
+    def counted(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(mamba2_prefill, "scan_norm", counted)
+    actual = m.prefill(zx, params, pool.conv_all[0], pool.ssm_all[0], plan,
+                       window=pool.arg(), normalize=True)
+    assert bool(calls) == (torch.cuda.get_device_capability() == (12, 1))
+    torch.testing.assert_close(actual, expected, rtol=4e-3, atol=4e-3)
+    assert torch.equal(pool.conv_all, ref_conv)
+    assert torch.equal(pool.ssm_all, ref_bytes)
+    torch.cuda.synchronize()
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        pool.conv_all.copy_(conv0)
+        pool.ssm_all.copy_(bytes0)
+        captured = m.prefill(zx, params, pool.conv_all[0], pool.ssm_all[0], plan,
+                             window=pool.arg(), normalize=True)
+    g.replay()
+    torch.testing.assert_close(captured, expected, rtol=4e-3, atol=4e-3)
+    assert torch.equal(pool.conv_all, ref_conv)
+    assert torch.equal(pool.ssm_all, ref_bytes)
 
 
 @pytest.mark.parametrize("bits", [8, 4])

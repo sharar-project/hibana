@@ -105,6 +105,23 @@ drafts use the learned slot prefix without resizing parameters. Tensor parallel 
 implemented for this target. BF16 KV (`SHARAR_KV_FORMAT=sim-bf16`, with SSD off) is available for
 numerical parity; packed NVFP4 KV is not enabled.
 
+## Prefill kernels
+
+On GB10, BF16 normalized prefills with at least 2,048 packed tokens use a rolling width-4 convolution and
+a fused scan, SiLU gate and grouped RMSNorm ([kernel](../sharar/kernels/mamba2_prefill.py)). Each scan CTA
+owns the 16 heads sharing B/C and 32 output tokens. It tiles the entering-state reduction, shares C/CB operands,
+and keeps the gated values on-chip, avoiding the global scan-output write/read. The BF16 scan rounding boundary
+and BF16 normalized-value/weight product are preserved.
+
+FP32 state passing, FP16 stochastic rounding, integer-window materialization/quantization and checkpoint
+writes keep their existing arithmetic and layouts. Small prefills, other geometries/devices and FP8 normalized
+output retain the separate scan and norm. Decode and verification use their existing kernels.
+
+`python -m profiling.mamba_prefill --snapshot /path/to/snapshot --state-format int8` compares the separate
+and fused cores, including checkpoints and all core stages. CUDA-graph GPU time and direct-call wall time
+(including allocations/dispatch) are reported separately. Projection GEMMs and plan preparation are excluded.
+`--random` runs without a checkpoint; `--tokens`, `--batches` and `--prefixes` select the workload.
+
 ## Validation
 
 `tests/gpu/test_bolt_kernels.py` checks each packed encoding against dequantized BF16 matmul, including routed
