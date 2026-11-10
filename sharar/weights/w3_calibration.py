@@ -82,22 +82,13 @@ class _ColumnBlock:
 
 @torch.no_grad()
 def quantize(weight: torch.Tensor, covariance: torch.Tensor, *, damping: float = .01,
-             codebook="lloyd", capture: bool = True, rows_per_chunk: int = 1024, unbias: str | None = None):
-    """Calibrate a matrix, returning kernel-ready weights and a small report.
-
-    `unbias` rescales each row through its row scale (the format and the bytes do not change) so that the
-    quantized row's projection on the exact row keeps the exact row's energy: c = w w^T / w_q w^T ("weight"),
-    or the same under the covariance, c = w H w^T / w_q H w^T ("output"). The quantizer is MSE-optimal per
-    matrix, which shrinks each row by about its relative error squared (3 to 10% on the Flash-Next trunk);
-    through a deep residual trunk the shrinkage adds coherently. On Flash-Next's decode path "weight"
-    removed more of the added KL than "output": the calibration covariance under-states the shrinkage."""
+             codebook="lloyd", capture: bool = True, rows_per_chunk: int = 1024):
+    """Calibrate a matrix, returning kernel-ready weights and a small report."""
     n, k = weight.shape
     if n % 128 or k % 128 or covariance.shape != (k, k):
         raise ValueError("calibration needs aligned [N,K] weights and [K,K] covariance")
     if not 0 < damping < 1 or rows_per_chunk % 128 or rows_per_chunk < 128:
         raise ValueError("invalid damping or row chunk size")
-    if unbias not in (None, "weight", "output"):
-        raise ValueError("unbias is None, 'weight' or 'output'")
     if not torch.isfinite(weight).all() or not torch.isfinite(covariance).all():
         raise ValueError("calibration inputs must be finite")
     levels = w3._codebook(codebook)
@@ -110,7 +101,7 @@ def quantize(weight: torch.Tensor, covariance: torch.Tensor, *, damping: float =
     del h
     inverse = torch.linalg.cholesky(torch.cholesky_inverse(chol), upper=True)
     del chol
-    packed, gains = [], []
+    packed = []
     block = None
     for start in range(0, n, rows_per_chunk):
         original = weight[start:start + rows_per_chunk].float()
@@ -126,19 +117,9 @@ def quantize(weight: torch.Tensor, covariance: torch.Tensor, *, damping: float =
             codes[:, col:end].copy_(q)
             if end < k:
                 work[:, end:].sub_(errors @ inverse[col:end, end:])
-        if unbias:
-            dequantized = torch.tensor(levels, device=weight.device)[codes.long()] * effective.repeat_interleave(w3.GROUP, dim=1)
-            projected = original @ covariance.float() if unbias == "output" else original
-            gain = ((original * projected).sum(1) / (dequantized * projected).sum(1).clamp_min(1e-30)).clamp(1.0, 1.5)
-            row_scale = row_scale * gain
-            gains.append(gain)
-            del dequantized, projected
         packed.append(w3.pack_codes(codes, scales, row_scale, levels))
         del work, codes
     result = w3.W3Weight(*(torch.cat([getattr(p, key) for p in packed]) for key in ("planes", "scales", "row_scale")),
                          n, k, levels, w3.lut_of(levels))
     report = {"method": "gptq", "damping": damping, "group_size": 32, "scale_grid": [.6, .7, .8, .9, 1.0], "bytes": result.bytes}
-    if unbias:
-        gain = torch.cat(gains)
-        report.update(unbias=unbias, gain_mean=round(gain.mean().item(), 5), gain_max=round(gain.max().item(), 5))
     return result, report

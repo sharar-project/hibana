@@ -99,16 +99,14 @@ def capture(args) -> None:
 
     from sharar import target as targets
     from sharar.engine.config import current, install
+    from sharar.weights.calibration_inputs import load_samples
     install(current().replace(target="bolt", w3_decode=False, w3_checkpoint=None))
     t = targets.get("bolt")
     act = args.activations
     if (act / "capture.json").exists():
         raise SystemExit(f"{act} holds a finished capture")
     act.mkdir(parents=True, exist_ok=True)
-    samples = [s["input_ids"] for s in json.loads(args.inputs.read_text())["samples"]]
-    samples = samples[:args.limit] if args.limit else samples
-    if not samples or any(not ids or len(ids) > 4096 for ids in samples):
-        raise ValueError("calibration samples must have between 1 and 4096 tokens")
+    samples = load_samples(args.inputs, t, args.limit, max_tokens=4096)
     model = targets.load_model(t, t.snapshot_dir(), log=print)
     names = set(projection_names(t))
     linears = [(n, lin) for n, lin in model.linears() if n in names]
@@ -158,16 +156,14 @@ def fit(args) -> None:
         raise SystemExit("refusing to overwrite a finished calibration")
     out.mkdir(parents=True, exist_ok=True)
     skip = re.compile(args.exclude) if args.exclude else None
-    grid = [float(x) for x in args.scale_grid.split(",")]
     names = [n for n in projection_names(t) if not (skip and skip.search(n)) and not (args.only and not re.search(args.only, n))]
     manifest = {"format": FORMAT_VERSION, "target": t.name, "target_revision": t.model_revision,
                 "source": "checkpoint NVFP4 / Q8_0 projections (PackedLinear.dequantize)", "method": args.method,
                 "inputs_sha256": captured["inputs_sha256"], "samples": captured["samples"], "tokens": captured["tokens"],
                 "probe_tokens": captured["probe_tokens"], "damping": args.damping, "rows_per_chunk": args.rows_per_chunk,
-                "exclude": args.exclude, "act_order": args.act_order, "scale_grid": grid, "only": args.only,
+                "exclude": args.exclude, "only": args.only,
                 "weights": {}, "reports": {}}
-    identity = ("format", "target_revision", "method", "inputs_sha256", "damping", "rows_per_chunk", "exclude",
-                "act_order", "scale_grid", "only")
+    identity = ("format", "target_revision", "method", "inputs_sha256", "damping", "rows_per_chunk", "exclude", "only")
     progress = out / "progress.json"
     if progress.exists():
         if not args.resume:
@@ -193,8 +189,7 @@ def fit(args) -> None:
                   "nearest": errors(weight, w3.dequantize(nearest), h, a["probes"])}
         if args.method == "gptq":
             del nearest
-            packed, fitted = quantize(weight, h, damping=args.damping, rows_per_chunk=args.rows_per_chunk,
-                                      act_order=args.act_order, ratios=tuple(grid))
+            packed, fitted = quantize(weight, h, damping=args.damping, rows_per_chunk=args.rows_per_chunk)
             report.update(fitted)
             report["gptq"] = errors(weight, w3.dequantize(packed), h, a["probes"])
         else:
@@ -225,7 +220,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="command", required=True)
     c = sub.add_parser("capture", help="covariances and held-out probes of every fitted projection's input (loads the model)")
-    c.add_argument("--inputs", type=Path, required=True, help="frozen samples: {'samples': [{'input_ids': [...]}, ...]} (nemotron_w3_inputs)")
+    c.add_argument("--inputs", type=Path, required=True, help="calibration_inputs build --target bolt")
     c.add_argument("--activations", type=Path, required=True)
     c.add_argument("--probe-every", type=int, default=8, help="hold every N-th sample out of the covariances as probes (0: none)")
     c.add_argument("--limit", type=int, default=0, help="first N samples only (0: all)")
@@ -236,8 +231,6 @@ def main(argv=None):
     f.add_argument("--damping", type=float, default=0.01)
     f.add_argument("--rows-per-chunk", type=int, default=1024)
     f.add_argument("--exclude", default="", help="regex of names to keep on their checkpoint encoding (e.g. lm_head)")
-    f.add_argument("--act-order", action="store_true", help="GPTQ in decreasing input energy, static groups (w3_calibration.quantize)")
-    f.add_argument("--scale-grid", default="0.6,0.7,0.8,0.9,1.0", help="clipping ratios the group scales try")
     f.add_argument("--only", default="", help="regex: fit only these names (the manifest covers them alone)")
     f.add_argument("--device", default="cuda")
     f.add_argument("--resume", action="store_true")

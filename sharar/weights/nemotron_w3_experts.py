@@ -6,7 +6,7 @@ The source is the checkpoint's NVFP4 experts, dequantized (there is no BF16 expe
 (`flashnext_w3_experts.py`): each expert's up [2688, 1024] (fc1, the latent width in, the checkpoint's row order) and
 down [1024, 2688] (fc2) into the W3 format (an eight-level E4M3 codebook, an E4M3 scale per 32 weights, an FP32 row
 multiplier), served by `kernels/w3_moe.py`'s ReLU^2 geometry (`model/nemotron/moe.py`, SHARAR_W3_DECODE=1
-SHARAR_W3_CHECKPOINT=DIR). The samples are `nemotron_w3_inputs` with `--knowledge`.
+SHARAR_W3_CHECKPOINT=DIR). The samples are the trunk's (`calibration_inputs build --target nemotron`).
 
 - `capture`: prefills the samples through the serving model (FP8 trunk, NVFP4 experts) and stores, for every MoE
   block, the expert inputs as the block's routing produced them: the BF16 latent rows [rows, 1024], the top-22 ids and
@@ -22,7 +22,7 @@ SHARAR_W3_CHECKPOINT=DIR). The samples are `nemotron_w3_inputs` with `--knowledg
   block's pooled one. Each finished block is recorded in progress.json (resumable); only a complete run publishes
   manifest.json. `--source` copies another W3 checkpoint's (trunk) entries in, verified.
 
-    python3 -m sharar.weights.nemotron_w3_experts capture --inputs nemotron-expert-inputs.json --activations ACT
+    python3 -m sharar.weights.nemotron_w3_experts capture --inputs nemotron-calibration-inputs.json --activations ACT
     python3 -m sharar.weights.nemotron_w3_experts fit --activations ACT --source TRUNK --output DIR
 """
 from __future__ import annotations
@@ -62,7 +62,7 @@ def capture(args) -> None:
     from sharar.model.nemotron.moe import NemotronMoe
     from sharar.model.nemotron.mtp import NemotronMtpHead
     from sharar.target import NEMOTRON
-    from sharar.weights.nemotron_w3_inputs import load_samples
+    from sharar.weights.calibration_inputs import load_samples
     from sharar.weights.safetensors import SnapshotWeights
     from sharar.weights.w3_checkpoint import sha256
     install(current().replace(target="nemotron", w3_decode=False, w3_checkpoint=None))
@@ -70,7 +70,7 @@ def capture(args) -> None:
     if (out / "capture.json").exists():
         raise SystemExit("refusing to overwrite a finished capture")
     out.mkdir(parents=True, exist_ok=True)
-    samples = load_samples(args.inputs, args.limit)
+    samples = load_samples(args.inputs, NEMOTRON, args.limit, max_tokens=4096)
     names = block_names(NEMOTRON)
     progress_path = out / "progress.json"
     done = json.loads(progress_path.read_text()) if args.resume and progress_path.is_file() else {"samples": 0, "rows": {n: 0 for n in names}}
@@ -402,7 +402,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="command", required=True)
     c = sub.add_parser("capture", help="store every MoE block's routed latent rows over the calibration samples")
-    c.add_argument("--inputs", type=Path, required=True, help="nemotron_w3_inputs output with --knowledge")
+    c.add_argument("--inputs", type=Path, required=True, help="calibration_inputs build --target nemotron (the trunk's samples)")
     c.add_argument("--activations", type=Path, required=True)
     c.add_argument("--limit", type=int, default=0)
     c.add_argument("--resume", action="store_true", help="continue an interrupted capture after its whole samples")

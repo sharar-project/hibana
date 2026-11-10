@@ -67,7 +67,7 @@ def capture(args) -> None:
 
     from sharar import target as targets
     from sharar.engine.config import current, install
-    from sharar.weights.nemotron_w3_inputs import load_samples
+    from sharar.weights.calibration_inputs import load_samples
     from sharar.weights.w3_calibrate import InputCovariances
     from sharar.weights.w3_checkpoint import sha256
     install(current().replace(target="nemotron", w3_decode=False, w3_checkpoint=None))
@@ -76,9 +76,7 @@ def capture(args) -> None:
     if (act / "capture.json").exists():
         raise SystemExit(f"{act} holds a finished capture")
     act.mkdir(parents=True, exist_ok=True)
-    samples = load_samples(args.inputs, args.limit)
-    if not samples or any(not ids or len(ids) > 4096 for ids in samples):
-        raise ValueError("calibration samples must have between 1 and 4096 tokens")
+    samples = load_samples(args.inputs, t, args.limit, max_tokens=4096)
     held = [args.probe_every > 0 and i % args.probe_every == args.probe_every - 1 for i in range(len(samples))]
     model = targets.load_model(t, t.snapshot_dir(), log=print)
     linears = list(model.linears())
@@ -149,9 +147,9 @@ def fit(args) -> None:
     manifest = {"format": FORMAT_VERSION, "target": t.name, "target_revision": t.model_revision,
                 "source": "served FP8 projections (load_fp8_linear)", "method": "gptq",
                 "inputs_sha256": captured["inputs_sha256"], "samples": captured["samples"], "tokens": captured["tokens"],
-                "probe_tokens": captured["probe_tokens"], "damping": args.damping, "unbias": args.unbias,
+                "probe_tokens": captured["probe_tokens"], "damping": args.damping,
                 "rows_per_chunk": args.rows_per_chunk, "exclude": args.exclude, "weights": {}, "reports": {}}
-    identity = ("format", "target_revision", "method", "inputs_sha256", "damping", "unbias", "rows_per_chunk", "exclude")
+    identity = ("format", "target_revision", "method", "inputs_sha256", "damping", "rows_per_chunk", "exclude")
     progress = out / "progress.json"
     if progress.exists():
         if not args.resume:
@@ -178,7 +176,7 @@ def fit(args) -> None:
         h = a["h"] / float(a["rows"].item())
         report = {"rows": int(a["rows"].item()), "probe_rows": int(a["probes"].shape[0]),
                   "nearest": errors(weight, w3.dequantize(w3.pack(weight)), h, a["probes"])}
-        packed, fitted = quantize(weight, h, damping=args.damping, unbias=args.unbias, rows_per_chunk=args.rows_per_chunk)
+        packed, fitted = quantize(weight, h, damping=args.damping, rows_per_chunk=args.rows_per_chunk)
         report.update(fitted)
         report["gptq"] = errors(weight, w3.dequantize(packed), h, a["probes"])
         manifest["weights"][name] = save_weight(out / f"{name}.safetensors", packed)
@@ -206,7 +204,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="command", required=True)
     c = sub.add_parser("capture", help="covariances and held-out probes of every projection's input (loads the model)")
-    c.add_argument("--inputs", type=Path, required=True, help="frozen samples: {'samples': [{'input_ids': [...]}, ...]} (nemotron_w3_inputs)")
+    c.add_argument("--inputs", type=Path, required=True, help="calibration_inputs build --target nemotron")
     c.add_argument("--activations", type=Path, required=True)
     c.add_argument("--probe-every", type=int, default=8, help="hold every N-th sample out of the covariances as probes (0: none)")
     c.add_argument("--limit", type=int, default=0, help="first N samples only (0: all)")
@@ -214,7 +212,6 @@ def main(argv=None):
     f.add_argument("--activations", type=Path, required=True)
     f.add_argument("--output", type=Path, required=True)
     f.add_argument("--damping", type=float, default=0.01)
-    f.add_argument("--unbias", choices=("weight", "output"), help="per-row gain correction through the row scales (w3_calibration.quantize)")
     f.add_argument("--rows-per-chunk", type=int, default=1024)
     f.add_argument("--exclude", default="", help="regex of names to leave FP8 (e.g. lm_head)")
     f.add_argument("--device", default="cuda", help="cpu fits without the GPU (about 15 minutes for all 97 on the GB10's cores)")

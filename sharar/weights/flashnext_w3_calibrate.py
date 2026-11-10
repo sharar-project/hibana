@@ -4,8 +4,8 @@
 GPTQ (sharar/weights/w3_calibration.py, the pass that took the 27B's 3-bit copies
 from GSM8K 92.0 to 94.5%) fitted from the checkpoint's BF16 trunk. Inputs are the
 activations each projection sees on the serving path: the model loads with the
-BF16 trunk, an Executor prefills the frozen calibration samples (the 27B's set;
-both targets share the tokenizer), and every TrunkLinear call adds x^T x to its
+BF16 trunk, an Executor prefills the calibration samples (`calibration_inputs build
+--target flashnext`), and every TrunkLinear call adds x^T x to its
 projection's covariance. Every projection `FlashNext.linears()` lists whose shape
 the 3-bit kernel tiles (N and K multiples of 128) is fitted; the rank-320
 hyper-connection mixers stay FP8. The output loads with
@@ -55,26 +55,25 @@ class Covariances:
 @torch.inference_mode()
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--inputs", type=Path, required=True, help="frozen calibration samples: {'samples': [{'input_ids': [...]}, ...]}")
+    ap.add_argument("--inputs", type=Path, required=True, help="calibration_inputs build --target flashnext")
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--damping", type=float, default=0.01)
     ap.add_argument("--limit", type=int, default=0, help="first N samples only (0: all)")
     ap.add_argument("--exclude", default="", help="regex of linears() names to leave out (e.g. lm_head)")
-    ap.add_argument("--unbias", choices=("weight", "output"), help="per-row gain correction through the row scales (w3_calibration.quantize)")
     args = ap.parse_args()
     from sharar.engine.config import current, install
     from sharar.engine.executor import Executor
     from sharar.engine.sampler import SamplingParams
     from sharar.model.flashnext.model import FlashNext
     from sharar.target import FLASHNEXT
+    from sharar.weights.calibration_inputs import load_samples
     from sharar.weights.w3_calibration import quantize
     from sharar.weights.w3_checkpoint import FORMAT_VERSION, save_weight, sha256
     install(current().replace(flashnext_trunk="bf16", w3_decode=False, w3_checkpoint=None))
     if (args.output / "manifest.json").exists():
         raise SystemExit("refusing to overwrite a finished calibration")
     args.output.mkdir(parents=True, exist_ok=True)
-    samples = [s["input_ids"] for s in json.loads(args.inputs.read_text())["samples"]]
-    samples = samples[:args.limit] if args.limit else samples
+    samples = load_samples(args.inputs, FLASHNEXT, args.limit, max_tokens=8192)
     model = FlashNext(FLASHNEXT.snapshot_dir(), precision="bf16")
     ex = Executor(model, num_pages=40000, num_slots=8, max_context=32768, log=print)
     skip = re.compile(args.exclude) if args.exclude else None
@@ -94,13 +93,13 @@ def main():
                 print(f"  covariances: {i + 1}/{len(samples)} samples ({time.perf_counter() - started:.0f}s)", flush=True)
     manifest = {"format": FORMAT_VERSION, "target": FLASHNEXT.name, "target_revision": FLASHNEXT.model_revision,
                 "source": "checkpoint BF16 trunk", "inputs_sha256": sha256(args.inputs), "samples": len(samples),
-                "tokens": sum(map(len, samples)), "damping": args.damping, "exclude": args.exclude, "unbias": args.unbias, "weights": {}, "reports": {}}
+                "tokens": sum(map(len, samples)), "damping": args.damping, "exclude": args.exclude, "weights": {}, "reports": {}}
     for j, (name, lin) in enumerate(linears):
         if name not in cov.matrices:
             print(f"  {name}: never called on the calibration path, left out", flush=True)
             continue
         weight = lin.dequantize()  # the BF16 checkpoint weights (the model loaded with the BF16 trunk)
-        w3weight, report = quantize(weight, cov.matrices.pop(name), damping=args.damping, unbias=args.unbias)
+        w3weight, report = quantize(weight, cov.matrices.pop(name), damping=args.damping)
         report["rows"] = cov.rows[name]
         manifest["weights"][name] = save_weight(args.output / f"{name}.safetensors", w3weight)
         manifest["reports"][name] = report

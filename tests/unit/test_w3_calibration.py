@@ -35,30 +35,6 @@ def test_gptq_reduces_error_on_correlated_inputs():
 
 
 
-def test_unbias_restores_the_row_gain_without_changing_codes():
-    """The MSE-optimal codes shrink each row; `unbias` scales it back through the row scale only."""
-    generator = torch.Generator().manual_seed(23)
-    x = torch.randn(1024, 256, generator=generator)
-    x[:, 1::2] = x[:, ::2] * .9 + x[:, 1::2] * .1
-    weight = torch.randn(128, 256, generator=generator) * .1
-    covariance = x.T @ x / len(x)
-    plain, _ = quantize(weight, covariance, capture=False)
-    shrink = ((w3.dequantize(plain) * weight).sum(1) / weight.square().sum(1)).mean()
-    assert shrink < .99
-    for mode, gram in (("weight", torch.eye(256)), ("output", covariance)):
-        packed, report = quantize(weight, covariance, capture=False, unbias=mode)
-        assert torch.equal(packed.planes, plain.planes) and torch.equal(packed.scales, plain.scales)
-        projected = weight @ gram
-        before = (w3.dequantize(plain) * projected).sum(1) / (weight * projected).sum(1)
-        gain = (w3.dequantize(packed) * projected).sum(1) / (weight * projected).sum(1)
-        shrunk = before < 1  # rows that were not shrunk keep their scale (the correction never shrinks)
-        assert shrunk.float().mean() > .5
-        assert torch.allclose(gain[shrunk], torch.ones_like(gain[shrunk]), atol=1e-4)
-        assert torch.equal(gain[~shrunk], before[~shrunk])
-        assert report["unbias"] == mode and report["gain_mean"] > 1
-    with pytest.raises(ValueError, match="unbias"):
-        quantize(weight, covariance, capture=False, unbias="rows")
-
 def test_checkpoint_round_trip_and_identity_checks(tmp_path):
     weight = w3.pack(torch.randn(128, 128))
     entry = save_weight(tmp_path / 'layer.safetensors', weight)
