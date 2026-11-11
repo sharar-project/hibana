@@ -1,12 +1,12 @@
 # Third-party notices
 
-Sharar is an independent engine. It vendors a small number of kernels and
+Hibana is an independent engine. It vendors a small number of kernels and
 ports a small amount of model and weight-layout code. Every vendored or ported
 file keeps its original copyright header, and this file lists the origins.
 Verify the license text of each upstream at the exact commit before vendoring
 a new file, and add a row here in the same commit.
 
-| Origin | What Sharar takes from it | License |
+| Origin | What Hibana takes from it | License |
 |---|---|---|
 | SGLang, <https://github.com/sgl-project/sglang>, snapshot `6d34a4d3ce1005593fdb89478651ded47c0d5277` | Qwen3.8 hybrid model math, ModelOpt NVFP4/FP8 weight layout handling, GDN backend structure, reasoning and tool-call parsers | Apache License 2.0 |
 | SGLang, <https://github.com/sgl-project/sglang>, snapshot `6b36f9d0a214890ad458e21ae4f0982229368b1e` | DFlash2 model equations, YaRN, selector and block-local convolution semantics in `hibana/model/parallel_draft.py`; license checked at this commit | Apache License 2.0 |

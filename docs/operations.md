@@ -1,6 +1,6 @@
-# Operate Sharar
+# Operate Hibana
 
-`sharar serve bolt` serves the packed Nemotron 3.5 Bolt text model on port 30006 on b12x's GEMMs and fused MoE.
+`hibana serve bolt` serves the packed Nemotron 3.5 Bolt text model on port 30006 on b12x's GEMMs and fused MoE.
 `exact` serves the checkpoint encodings, all nine routed experts and FP32 Mamba state; `fast` and `throughput` add
 the calibrated 3-bit copies (a local calibration: `w3-checkpoints/bolt-current` or `HIBANA_W3_CHECKPOINT`), the int8
 Mamba state and expert sharing. Every profile serves FP8 KV and SSD caching, and the pinned companion LiLiCorr
@@ -12,65 +12,78 @@ activations. See [Bolt](bolt.md) for formats, measurements, limits and validatio
 
 One NVIDIA GB10 (SM 12.1, a DGX Spark; two for [tensor parallel](tensor-parallel.md)), `aarch64`, about 128 GB
 unified memory, NVIDIA driver 580 or newer, the CUDA 13 toolkit in `/usr/local/cuda` (DGX OS ships it; FlashInfer
-and Sharar compile their GB10 kernels on first use) and [uv](https://docs.astral.sh/uv/). `--detach` also needs a
+and Hibana compile their GB10 kernels on first use) and [uv](https://docs.astral.sh/uv/). `--detach` also needs a
 user systemd session (`loginctl enable-linger` keeps it after logout).
 
 Four targets, one per process, chosen by name: `27b` (`RadixArk/Qwen3.8-27B-NVFP4` at `319f741`, with the DFlash2
 drafter `incoai/Qwen3.8-27B-DFlash2` at `dedf8df`), `flashnext` (`RadixArk/Qwen3.8-Flash-Next-NVFP4` at
 `7b71922`, its own MTP head, or the DFlash2 drafter `incoai/Qwen3.8-Flash-Next-DFlash2` at `a22a174` on one Spark),
 and on one Spark `nemotron` ([Nemotron 3.5 Super](nemotron.md)) and `bolt` ([Nemotron 3.5 Bolt](bolt.md)).
-`sharar serve` downloads whatever the cache lacks (about 26 GB for the 27B, 135 GB for
+`hibana serve` downloads whatever the cache lacks (about 26 GB for the 27B, 135 GB for
 Flash-Next, 75 GB for Nemotron Super, 25 GB for Bolt, and in `fast` and `throughput` the calibrated 3-bit checkpoint:
 10, 51 and 49 GB, none for Bolt) after checking free disk; serving itself runs offline.
 
 ## Install and serve
 
 ```bash
-uv sync                           # .venv from uv.lock: CUDA 13 PyTorch, FlashInfer, the serving packages, sharar (editable)
-uv run sharar serve 27b           # or flashnext; in the foreground, Ctrl-C drains and stops
-uv run sharar serve 27b --detach  # or as a user systemd service: sharar status | logs -f | stop
-uv run sharar verify              # health, the pinned model, a short exact answer
+uv sync                           # .venv from uv.lock: CUDA 13 PyTorch, FlashInfer, the serving packages, hibana (editable)
+uv run hibana serve 27b           # or flashnext; in the foreground, Ctrl-C drains and stops
+uv run hibana serve 27b --detach  # or as a user systemd service: hibana status | logs -f | stop
+uv run hibana verify              # health, the pinned model, a short exact answer
 ```
 
 `uv.lock` pins every package; the GB10 group of `pyproject.toml` takes torch from the cu130 index and FlashInfer's JIT
 cache from FlashInfer's, constrained to the tested versions in `constraints/`. `uv run` keeps `.venv` in step with
-the lock, so after `git pull` the next `uv run sharar serve` uses the new code and packages (a running server keeps
+the lock, so after `git pull` the next `uv run hibana serve` uses the new code and packages (a running server keeps
 the code it started with).
 
-`sharar serve` resolves the settings (below), checks the host (one GB10, driver, 24 GiB available above the host floor), downloads
+`hibana serve` resolves the settings (below), checks the host (one GB10, driver, 24 GiB available above the host floor), downloads
 missing snapshots, keeps the 3-bit checkpoint on its pinned revision, prints what it will serve, and runs the server
 in its own process with the memory guard as a thread: when `MemAvailable` stays under half the host floor for six seconds it
 stops the server (SIGTERM, then SIGKILL after 15 s), before unified memory pages the weights. The scheduler already holds
-new admissions under that threshold. `--detach` runs the same command as the user systemd service `sharar-qwen38` or
-`sharar-flashnext`, logging to `$HIBANA_RESULTS/logs/<service>.log` (the previous run's is `.log.1`); `sharar stop`
+new admissions under that threshold. `--detach` runs the same command as the user systemd service `hibana-qwen38` or
+`hibana-flashnext`, logging to `$HIBANA_RESULTS/logs/<service>.log` (the previous run's is `.log.1`); `hibana stop`
 sends it SIGTERM, so it drains and, with the SSD tier on, stores its cached prefixes. Automatic KV capacity depends
 on available memory.
+
+### Upgrading from Sharar
+
+Hibana was called Sharar. What was set up under that name keeps working:
+
+- `sharar` is the same command as `hibana`.
+- A `SHARAR_*` setting, in the environment or a config file, is read as its `HIBANA_*` name unless that is set too.
+- `~/.local/share/sharar` (results, 3-bit checkpoints, the SSD tier), `~/.config/sharar/sharar.env`, `~/.config/sharar`
+  (the opencode and aider files) and `~/.claude-sharar` (Claude Code's login under `hibana launch claude`) are used
+  while their `hibana` counterparts do not exist; rename them to switch.
+- Detached services are `hibana-<target>` now: stop a running `sharar-<target>` service
+  (`systemctl --user stop sharar-qwen38`) before serving from the new checkout.
+- The GB10 kernels build once more, under their new names.
 
 ## Settings
 
 Every setting is a `HIBANA_*` name. Order, first wins ([hibana/launch/settings.py](../hibana/launch/settings.py)):
-the command line (`sharar serve --help`), the environment, the config file (`HIBANA_CONFIG_FILE`, else
-`config/gb10.env` in the checkout, else `~/.config/sharar/sharar.env`; [example](../config/gb10.env.example)), the
+the command line (`hibana serve --help`), the environment, the config file (`HIBANA_CONFIG_FILE`, else
+`config/gb10.env` in the checkout, else `~/.config/hibana/hibana.env`; [example](../config/gb10.env.example)), the
 target's settings (port, service, drafter), the profile's defaults, then the built-in defaults: models in
 `HIBANA_HF_CACHE` (default `$HF_HOME`, else `~/.cache/huggingface`; Flash-Next in `HIBANA_FLASHNEXT_CACHE`, default the
 same) and results, traces, 3-bit checkpoints and logs in `HIBANA_RESULTS` (default
-`~/.local/share/sharar`). The server reads the resolved settings once into `EngineConfig`
+`~/.local/share/hibana`; [the former names](#upgrading-from-sharar) are read too). The server reads the resolved settings once into `EngineConfig`
 ([engine/config.py](../hibana/engine/config.py)); `/get_server_info` reports them under `config`.
 
 | Setting | Launcher default | Override |
 |---|---|---|
 | Target | the one named on `serve` (`27b`, `flashnext`, `nemotron` or `bolt`) | `HIBANA_TARGET`; Flash-Next reads its model from `HIBANA_FLASHNEXT_CACHE` and takes `HIBANA_FLASHNEXT_TRUNK=fp8\|bf16` |
-| Serving profile | `fast` | `sharar serve --exact\|--fast\|--throughput` or `HIBANA_PROFILE` ([below](#serving-profiles)) |
+| Serving profile | `fast` | `hibana serve --exact\|--fast\|--throughput` or `HIBANA_PROFILE` ([below](#serving-profiles)) |
 | Proposer / draft proposals | 27B: DFlash2, 15 (16 verify rows); Flash-Next: MTP, 4 (`fast`: up to 8, adaptive, below), or with `HIBANA_PROPOSER=dflash2` (one Spark) DFlash2, 9 (`exact`: 7, `throughput`: 4) | `HIBANA_PROPOSER`, `HIBANA_SPEC` (0 = plain decode; with adaptive depth, the cap) |
 | Draft precision | 27B: FP8; Flash-Next: BF16 (MTP), FP8 (DFlash2) | `HIBANA_DRAFT_PRECISION=bf16` for the 27B publisher's precision |
-| Draft checkpoint | the publisher's pinned draft | `sharar serve --draft DIR` or `HIBANA_DRAFT=/dir`: a DFlash2 checkpoint of the same architecture, trained on the served target's features |
+| Draft checkpoint | the publisher's pinned draft | `hibana serve --draft DIR` or `HIBANA_DRAFT=/dir`: a DFlash2 checkpoint of the same architecture, trained on the served target's features |
 | Accepted state | reconstruction | `HIBANA_VERIFY_STATE` |
-| Context per request (prompt plus output) | 262,144 | `HIBANA_MAX_CONTEXT` / `sharar serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K; 4.5 GiB as NVFP4) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
+| Context per request (prompt plus output) | 262,144 | `HIBANA_MAX_CONTEXT` / `hibana serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K; 4.5 GiB as NVFP4) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
 | Adaptive verification (DFlash2) | the 27B's `throughput`: on; `exact`, `fast`: off; Flash-Next: none | `HIBANA_SPEC_POLICY=budget\|fixed`: the drafts' calibrated scores and the measured verify costs decide what each round verifies, up to `HIBANA_SPEC` ([below](#adaptive-verification-dflash2)); a `HIBANA_SPEC_DEPTHS` table caps each bucket (no 0 under it); not with `HIBANA_SPEC_STEP_COST` |
 | Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:7,4:6` on one Spark, `2:4,4:4` on two, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark), else `16:3`; Flash-Next DFlash2 `fast`: `2:7,4:7`, `throughput`: MTP's | `HIBANA_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `HIBANA_SPEC` and `HIBANA_MAX_BATCH`, a limit between buckets verifying what the bucket it pads to does). The 3-bit copies serve calls of at most 128 rows on the 27B and 64 on Flash-Next, so wider verifications run the original weights |
 | Adaptive draft depth (MTP and DFlash2) | Flash-Next `fast` with MTP: on, 0.14 (0.2 on two Sparks); DFlash2: off | `HIBANA_SPEC_STEP_COST` (0 = the fixed depth): each request drafts as deep as its own recent acceptance pays for, up to the batch bucket's depth ([MTP](flashnext.md#the-mtp-draft), [DFlash2](flashnext.md#the-dflash2-draft)) |
-| Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext`, Nemotron 30005 / `sharar-nemotron`, Bolt 30006 / `sharar-bolt` | `sharar serve --port`, `HIBANA_PORT` / `HIBANA_SERVICE` |
-| Request traces | off | `sharar serve --traces` (in `$HIBANA_RESULTS/traces`) or `HIBANA_TRACES=/dir` (cap `HIBANA_TRACES_MAX_MIB`, 32768) |
+| Port / service (with `--detach`) | 27B 30001 / `hibana-qwen38`, Flash-Next 30004 / `hibana-flashnext`, Nemotron 30005 / `hibana-nemotron`, Bolt 30006 / `hibana-bolt` | `hibana serve --port`, `HIBANA_PORT` / `HIBANA_SERVICE` |
+| Request traces | off | `hibana serve --traces` (in `$HIBANA_RESULTS/traces`) or `HIBANA_TRACES=/dir` (cap `HIBANA_TRACES_MAX_MIB`, 32768) |
 | Calibrated 3-bit checkpoint | `$HIBANA_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `HIBANA_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
 | Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `HIBANA_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
 | Flash-Next PLE table on two Sparks | each rank's half of the heads in device memory (23.8 GiB per rank; [tensor parallel](tensor-parallel.md)) | `HIBANA_PLE_RESIDENT=0` reads it from the memory maps on the host, as one Spark does (which prefetches a prompt's later chunks into the page cache) |
@@ -84,7 +97,7 @@ Further settings, for tuning, diagnostics and the tools (defaults from `engine/c
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `HIBANA_HOST` | `127.0.0.1` | The address the server listens on (`sharar serve --host`) |
+| `HIBANA_HOST` | `127.0.0.1` | The address the server listens on (`hibana serve --host`) |
 | `HIBANA_SSD_BLOCK_TOKENS` | 256 | Tokens per SSD-tier KV block; must divide the 2,048-token prefill chunk |
 | `HIBANA_SSD_WRITERS` | 4 | The SSD store's writer threads (at least 1) |
 | `HIBANA_SSD_STAGING_MIB` | 512 | Backup copies in flight to the SSD writers |
@@ -95,8 +108,8 @@ Further settings, for tuning, diagnostics and the tools (defaults from `engine/c
 | `HIBANA_TRUNK_KEEP_BF16` | unset | A diagnostic: a regex of Flash-Next trunk projections kept in BF16 |
 | `HIBANA_DEBUG_SYNC` | off | `1` synchronizes after each phase, so an asynchronous CUDA fault names the phase and batch that launched it |
 | `HIBANA_CUDA_ARCH` | `12.1a` | The architecture the CUDA kernels built on first use target |
-| `HIBANA_CLAUDE_MODEL` | `claude-sharar-<model>`, e.g. `claude-sharar-nemotron-3.5-super` | The model id `sharar launch claude` gives Claude Code (it accepts only ids containing "claude") |
-| `HIBANA_CLAUDE_CONFIG` | `~/.claude-sharar` | Claude Code's configuration directory under `sharar launch claude`, apart from the user's own |
+| `HIBANA_CLAUDE_MODEL` | `claude-hibana-<model>`, e.g. `claude-hibana-nemotron-3.5-super` | The model id `hibana launch claude` gives Claude Code (it accepts only ids containing "claude") |
+| `HIBANA_CLAUDE_CONFIG` | `~/.claude-hibana` | Claude Code's configuration directory under `hibana launch claude`, apart from the user's own |
 | `HIBANA_EVALS` | unset (the `eval` group) | A sharar-eval checkout for `tools/evaluate.py`, `tools/h2h_pr.py` and `tools/lossy_gate.py` (`--evals`) |
 | `HIBANA_EVALS_PYTHON` | unset | That checkout's Python (`--python`; default its `.venv`) |
 
@@ -217,7 +230,7 @@ weights and CUDA graphs are lossless and on in every profile. Benchmarks and gat
 
 Four of the knobs take more than the table shows:
 
-- **`HIBANA_MAX_BATCH`** (`sharar serve --max-batch`, 1-128; graph buckets 1, 2, 4, ... 128). Above four, the pool
+- **`HIBANA_MAX_BATCH`** (`hibana serve --max-batch`, 1-128; graph buckets 1, 2, 4, ... 128). Above four, the pool
   guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full
   context.
 - **`HIBANA_MOE_KEEP=k`, `HIBANA_MOE_BUDGET=[P:]B`** (Flash-Next): a decode or verify forward reads at most B distinct
@@ -270,7 +283,7 @@ the profile's s = 0.5. Greedy requests are unchanged (argmax drafts and `HIBANA_
 
 ## Request traces
 
-Traces are off unless asked for (`sharar serve --traces`, or `HIBANA_TRACES` naming a directory). Each finished
+Traces are off unless asked for (`hibana serve --traces`, or `HIBANA_TRACES` naming a directory). Each finished
 request is then appended as one JSON line: prompt and output token IDs, sampling parameters, the cached prefix length
 and, for speculative requests, every verification round with the accepted count, the draft's proposals, the target's
 argmax rows (sampled rows keep only the correction token) and the offsets accepted under the relaxed rule (`rx`).
@@ -278,14 +291,14 @@ They measure speculation on real traffic, such as acceptance by draft depth. No 
 Files rotate at 64 MiB, and the oldest file is deleted above the cap (32 GiB by default). Writing happens on a
 separate thread and never blocks the engine; a full queue or disk counts as `dropped` in `/get_server_info` under
 `traces`. Any request can opt out with `"trace": false`; the benchmark and accuracy clients do, so the directory
-holds the user's own traffic. `sharar traces --dir DIR` summarizes a directory. The traces are the user's prompts and
+holds the user's own traffic. `hibana traces --dir DIR` summarizes a directory. The traces are the user's prompts and
 stay on this machine unless the user copies them elsewhere.
 
 **Draft confidence (MTP).** With `HIBANA_TRACE_CONFIDENCE=1` beside `HIBANA_TRACES`, each round record also carries
 the MTP draft's top-1 probability `p1` and top-1/top-2 margin `m` per drafted position, the calibration data for
 adaptive draft depth. It is read when the proposer is built; off, nothing changes.
 
-Inspect `sharar status`, `sharar logs` (detached servers), `/health` and `/get_server_info` for status.
+Inspect `hibana status`, `hibana logs` (detached servers), `/health` and `/get_server_info` for status.
 The latter reports draft precision, scheduler settings, KV/state geometry and
 cache statistics: locks by owner, snapshots (spare and not), evictions by reason, pruned dead-KV nodes, full
 re-prefills, resumes from a branching point, the evictable totals, and the drafters' resume hits and fallbacks
@@ -301,7 +314,7 @@ evicted prefix of 4,096 tokens or more goes to `$HIBANA_RESULTS/ssd/<target>` (`
 another drive; capacity `HIBANA_SSD_GIB`, default 200, never filling the drive) instead of being dropped,
 and its next request reads it back instead of prefilling again. At shutdown the server writes every cached prefix
 there, so stored prefixes survive restarts and reboots. `cache.ssd` in `/get_server_info` reports usage and
-restores; `sharar cache` prints the GPU cache and the SSD tier, or with nothing serving, what the store holds.
+restores; `hibana cache` prints the GPU cache and the SSD tier, or with nothing serving, what the store holds.
 Measure it on a real NVMe: a filesystem on a loop device without direct I/O caps reads near 1 GB/s and serves
 fresh data from the host page cache. How it works: [cache design](cache_design.md).
 
@@ -309,8 +322,8 @@ While host `MemAvailable` is under half the host floor the scheduler holds new
 admissions (`floor_holds` in `/get_server_info`) so running requests can
 finish and release memory before the memory guard has to act.
 
-**Host floor.** The MemAvailable Sharar leaves for the OS and other programs (a client, an agent, the page cache):
-6 GiB, `HIBANA_HOST_FLOOR_GIB` to change it. The pools get everything else, once Sharar's own allocations after them
+**Host floor.** The MemAvailable Hibana leaves for the OS and other programs (a client, an agent, the page cache):
+6 GiB, `HIBANA_HOST_FLOOR_GIB` to change it. The pools get everything else, once Hibana's own allocations after them
 are counted: the drafter, the SSD tier's staging, FlashInfer's workspaces, the CUDA graphs, the GPU memory the first
 prefill takes outside PyTorch, and the activation blocks PyTorch keeps cached (the server log's "counted after the
 pools" line; `/get_server_info`'s `after_plan_gib`). Admission holds, and the memory guard stops the server, only under
@@ -320,9 +333,9 @@ PyTorch's allocated and reserved bytes, now and at their peak, and the process's
 
 ## Development
 
-`uv run sharar ...` runs this checkout's code (the editable install); the checks are in
+`uv run hibana ...` runs this checkout's code (the editable install); the checks are in
 [CONTRIBUTING](../CONTRIBUTING.md#run-checks). Reserve an exclusive GPU window (`flock $HIBANA_RESULTS/.gpu.lock ...`)
-before loading a model; `uv run sharar dev --help` lists the in-process diagnostics.
+before loading a model; `uv run hibana dev --help` lists the in-process diagnostics.
 
 ## Numerical limits
 

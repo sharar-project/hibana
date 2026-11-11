@@ -43,7 +43,7 @@ diagnostics, not held-out quality evidence.
 
 The profiles that use 3-bit copies (`fast`, `throughput`)
 serve `$HIBANA_RESULTS/w3-checkpoints/<target>-current` (`qwen38-current`,
-`flashnext-current`, `nemotron-current`). Every `sharar serve` (one Spark or two) keeps that link on the target's published
+`flashnext-current`, `nemotron-current`). Every `hibana serve` (one Spark or two) keeps that link on the target's published
 checkpoint, pinned by revision in the target's config (`W3_REPO`, `W3_REVISION`)
 (`python -m hibana.weights.w3_checkpoint fetch`; `HF_TOKEN` is passed through for a private repository):
 

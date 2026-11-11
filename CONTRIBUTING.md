@@ -1,6 +1,6 @@
-# Contributing to Sharar
+# Contributing to Hibana
 
-Sharar specializes in local inference on one GB10. Keep the current Qwen
+Hibana specializes in local inference on one GB10. Keep the current Qwen
 target checkpoint, its vocabulary head and the numerical serving profile fixed
 unless a change explicitly validates a new one. Favor a small implementation with
 explicit tensor ownership over a registry or framework. Read [the architecture](docs/architecture.md) and
@@ -32,7 +32,7 @@ HIBANA_RUN_GPU=1 uv run pytest tests/gpu/test_qsa.py -x
 ```
 
 `tests/conftest.py` points it at the model caches, the calibrated 3-bit checkpoint and `$HIBANA_RESULTS` as
-`sharar serve` resolves them (the environment wins). Preserve frozen
+`hibana serve` resolves them (the environment wins). Preserve frozen
 workload content and checksums (`tools/gate/workloads/`, `profiling/workloads/`,
 `hibana/benchmark_workloads.py`) when moving readers.
 
@@ -142,7 +142,7 @@ StateManager commit and stop/continuation tests.
 
 ## Change the drafter
 
-Sharar serves the publisher's drafters; `--draft DIR` serves another DFlash2
+Hibana serves the publisher's drafters; `--draft DIR` serves another DFlash2
 checkpoint of the same architecture, trained elsewhere (a trainer on recorded
 traffic is archived at the tag `archive/draft-training`). Trace format changes
 bump `FORMAT_VERSION` in `engine/traces.py` and keep the reader accepting older

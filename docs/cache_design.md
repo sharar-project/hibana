@@ -120,7 +120,7 @@ flush        nothing is placed or inserted; locked paths stay until their locks 
 ```
 
 This is SGLang's `checkpoint` lock move (one lock per request, moved after each chunk, the insert cut back to the
-last saved state), with Sharar's drafter metadata: the lock stays at the matched node until the first chunk's ingest,
+last saved state), with Hibana's drafter metadata: the lock stays at the matched node until the first chunk's ingest,
 because MTP's row and DFlash2's window are read then. Between scheduler steps a running request pins at most two
 slots, its own and its locked snapshot, so the startup slot floor (`2 x HIBANA_MAX_BATCH + 1` and the SSD restore's
 slot, `ledger.py`) is all admission ever waits on; there is no admission reserve.
@@ -164,7 +164,7 @@ snapshot, a restore in flight, or the free list, and every KV page by one of a n
 restore or the free list; no request owns a private snapshot; a request reads the tree's pages exactly up to its lock;
 no dead KV is left.
 
-**Stats.** `cache_stats` (`/get_server_info`, `sharar cache`) reports the locks by owner kind, the snapshots (spare
+**Stats.** `cache_stats` (`/get_server_info`, `hibana cache`) reports the locks by owner kind, the snapshots (spare
 and not), evictions by reason (`slots`, `kv`, `flush`, `superseded`) and spare, pruned nodes, full re-prefills
 (admissions that found the prompt's KV but no snapshot to resume from), resumes from a branching point, the evictable
 totals, and the drafters' resume hits and fallbacks (`draft_resumes`).
@@ -263,7 +263,7 @@ after each file (`direct_writes` in `cache.ssd.store` says which). A prefix whos
 copy at once is dropped and counted in `evict_dropped`; for its tail, eviction waits for room. A restart lists the
 stored prefixes again only for the same target revision, decode weights, geometry, recurrent-state format and
 prefill numerics, and deletes another format's at startup.
-`cache.ssd` in `/get_server_info` reports usage, restores and read GB/s; `sharar cache` shows what the tier holds.
+`cache.ssd` in `/get_server_info` reports usage, restores and read GB/s; `hibana cache` shows what the tier holds.
 
 ## Restore pipeline
 

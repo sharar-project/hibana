@@ -15,7 +15,7 @@ structural types in `engine/contracts.py` (which imports no GPU backend), not a 
 Model facts live in a `Target` value (`hibana/target.py`): the pinned checkpoint, the layer kinds, the attention and
 recurrent head shapes, the vocabulary, the serving profile and the load budget. The executor reads `model.target`
 once and sizes the pools, the ledger, the attention plans and the verify buffers from it. One process serves one
-target, chosen at launch (`sharar serve TARGET`, `HIBANA_TARGET`); nothing is discovered at run time. Device
+target, chosen at launch (`hibana serve TARGET`, `HIBANA_TARGET`); nothing is discovered at run time. Device
 constraints are in `hardware/gb10.py` and serving limits in `engine/profile.py`. Kernels take their shapes from the
 tensors and the target, but are validated only for the pinned targets.
 

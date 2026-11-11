@@ -1,4 +1,4 @@
-# Profiling Sharar
+# Profiling Hibana
 
 In-process tools that look inside the engine: they load the model and kernels themselves, so they run from the
 Python environment (`uv run python -m profiling.<tool>` in the checkout), on an exclusive, guarded GPU.
@@ -14,8 +14,8 @@ To measure a served build (quality suites, AIPerf speed, a lossy option) use the
 | `flashnext_profile.py` | Kernel-level breakdown of eager Flash-Next decode steps (torch profiler) plus graph-replay step time |
 | `flashnext_quant.py` | Flash-Next trunk quantization error against the BF16 trunk on the serving path: argmax agreement, truncated KL and NLL, dense and sparse regions, with a rounding-noise control |
 | `prefill_gemm_tactics.py` | Every CUTLASS FP4 tactic for the 27B's MLP GEMMs at prefill row counts: bitwise equality with the default dispatch and time; the input to `hibana/kernels/prefill_gemm.py`'s table |
-| `tp_comm.py` | Two Sparks: the RDMA one-shot all-reduce against NCCL's ring per message size, bitwise check, inside a CUDA graph after GPU work and back to back (`sharar dev tp-comm` runs both ranks) |
-| `tp_draft_head.py` | Two Sparks: the vocabulary-parallel draft head against the whole-vocabulary one (`sharar dev tp-draft-head`) |
+| `tp_comm.py` | Two Sparks: the RDMA one-shot all-reduce against NCCL's ring per message size, bitwise check, inside a CUDA graph after GPU work and back to back (`hibana dev tp-comm` runs both ranks) |
+| `tp_draft_head.py` | Two Sparks: the vocabulary-parallel draft head against the whole-vocabulary one (`hibana dev tp-draft-head`) |
 | `ssd_turns.py` | Concurrent multi-turn conversations over HTTP with a small KV pool, so returning turns restore from the SSD tier: time to first token of later turns, gaps in everyone else's stream (a restore that pauses the batch), restore counters. Compares the SSD tier against `HIBANA_SSD=0` |
 | `tp_serve_bench.py` | Served speed over HTTP on one Spark or two: single-stream decode, 4 and 16 concurrent requests, long-prompt time to first token |
 | `decode_curve.py` | Decode speed against concurrency at a populated 10K-token context, prefill excluded (the benchmark prompts of `hibana.benchmark_workloads`, request index varied): steady-state ms per round, tokens per round and output tokens/s per batch size, served `throughput`-profile settings by default. The common curve for comparing a change (run control and candidate alternately) |

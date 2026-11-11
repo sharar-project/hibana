@@ -1,14 +1,14 @@
 # Memory plan
 
-The GB10 has one physical memory for the OS, every program and the GPU. At startup Sharar sizes its two pools, the
+The GB10 has one physical memory for the OS, every program and the GPU. At startup Hibana sizes its two pools, the
 KV pool and the state pool, from what is available, so that everything it allocates leaves the host floor free
 (`cache/ledger.py`, `engine/executor.py`). The cache policy decides what the pools hold; see the
 [cache design](cache_design.md#glossary) for its terms (KV page, state slot, snapshot, lock, spare).
 
 ## Terms
 
-- **Host floor** (`HIBANA_HOST_FLOOR_GIB`, default 6 GiB): the MemAvailable Sharar leaves for the OS and other
-  programs: a client or agent on the same Spark, the page cache. The pools get everything else once Sharar's own
+- **Host floor** (`HIBANA_HOST_FLOOR_GIB`, default 6 GiB): the MemAvailable Hibana leaves for the OS and other
+  programs: a client or agent on the same Spark, the page cache. The pools get everything else once Hibana's own
   allocations are counted. Preflight also wants the 24 GiB load peak above it.
 - **Guard threshold**: half the host floor (3 GiB by default). Under it other programs have used more than the floor
   left them: admission holds (`floor_holds` in `/get_server_info`), and after three samples in a row (6 s) the memory
@@ -25,7 +25,7 @@ KV pool and the state pool, from what is available, so that everything it alloca
   last chunk end and its reply end) against its 32K tokens of KV pages. About 17% state slots with INT8 state, 34%
   with FP32; at least 96 state slots, and never more than 60% of that memory.
 - **Post-plan allocations** (`ledger.after_plan_bytes`; `after_plan_gib` in `/get_server_info`; the server log's
-  "counted after the pools" line): what Sharar allocates after the pools, counted by size:
+  "counted after the pools" line): what Hibana allocates after the pools, counted by size:
   - workspaces: FlashInfer's decode, prefill and verify workspaces, as allocated;
   - graphs: the CUDA graphs for the batch buckets up to `HIBANA_MAX_BATCH` (an estimate from the maximum batch);
   - first use: GPU memory the first prefill allocates outside PyTorch, never freed (measured 2.18 GiB on Flash-Next);

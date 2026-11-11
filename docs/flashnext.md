@@ -1,6 +1,6 @@
-# Qwen3.8-Flash-Next in Sharar
+# Qwen3.8-Flash-Next in Hibana
 
-The second serving target (`sharar serve flashnext`, `hibana/model/flashnext/`). Checkpoint:
+The second serving target (`hibana serve flashnext`, `hibana/model/flashnext/`). Checkpoint:
 `RadixArk/Qwen3.8-Flash-Next-NVFP4` (ModelOpt NVFP4 W4A4 routed experts, everything else BF16; 135 GB,
 206 shards). Settings: `TARGET_SETTINGS` in `hibana/launch/settings.py`.
 

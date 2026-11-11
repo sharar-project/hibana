@@ -1,4 +1,4 @@
-# Evaluating Sharar
+# Evaluating Hibana
 
 How a build or a change is measured from the outside. For looking inside the engine (round cost, kernel
 breakdowns, quantization error) see [profiling](../profiling/README.md).
@@ -65,7 +65,7 @@ tools/lossy_gate.py --target flashnext --name fast --profile fast --report      
 
 Do not wrap it in `flock`: it takes `$HIBANA_RESULTS/.gpu.lock` for each phase (at most `--hold-minutes`,
 default 45) and waits while another model server or GPU process runs. Layer 3 serves each arm with
-`sharar serve <target> --<profile>` on `--port` (30100 by default) without the SSD tier, checks that
+`hibana serve <target> --<profile>` on `--port` (30100 by default) without the SSD tier, checks that
 `/get_server_info` reports the in-process arm's configuration, and adds sharar-eval's longer suites with
 `--battery hard|long|all|agentic`. The baseline arm is cached in `$HIBANA_RESULTS/reviews/lossy-gate-baselines/` and
 reused by every candidate. A rerun with the same `--name` resumes; `--through` stops after `inprocess` or `screen`,
@@ -79,12 +79,12 @@ layers 2 and 3.
 America/New_York):
 
 - **Nightly, 01:00** (skipped when main is unchanged): brings the runner's Python environment up to date
-  (`UV_PROJECT_ENVIRONMENT`, default `~/sharar-ci/venv`), runs `tests/unit` and `tests/gpu` from it, then serves and verifies
+  (`UV_PROJECT_ENVIRONMENT`, default `~/hibana-ci/venv`), runs `tests/unit` and `tests/gpu` from it, then serves and verifies
   the 27B and Flash-Next.
 - **Weekly, Sunday 02:00:** `tools/evaluate.py` per target on the fast profile, AIPerf speed plus GSM8K (300)
   and HumanEval, paired with `$HIBANA_RESULTS/ci/baseline-<target>` (re-point the link to adopt a newer run).
   It fails on more than 5% lower TPS or a quality loss of at least 1 point at p < 0.05.
 
-The checks never hold anyone up: they skip when the GPU lock is held or awaited, another Sharar service, GPU
+The checks never hold anyone up: they skip when the GPU lock is held or awaited, another Hibana service, GPU
 container or GPU process runs, or memory is short, and give way mid-run on the same signs. Settings are in
-`~/sharar-ci/gb10.env` on the runner; the script's header has the details.
+`~/hibana-ci/gb10.env` on the runner (or the former `~/sharar-ci`); the script's header has the details.

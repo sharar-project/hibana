@@ -1,8 +1,8 @@
-# NVIDIA-Nemotron-3.5-Super in Sharar
+# NVIDIA-Nemotron-3.5-Super in Hibana
 
 [Nemotron Bolt](bolt.md) uses the same Mamba runtime with a separate packed checkpoint and per-block expert geometry.
 
-A serving target (`sharar serve nemotron`, `hibana/model/nemotron/`), on one Spark. Checkpoint:
+A serving target (`hibana serve nemotron`, `hibana/model/nemotron/`), on one Spark. Checkpoint:
 `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` at `6aae0d6` (NVIDIA's ModelOpt export: NVFP4 routed and shared
 experts, FP8 Mamba, attention and lm_head projections, BF16 embeddings, router and latent projections). The text model
 and its MTP head are served, and the C-RADIO vision tower and its projector for image input ([images](#images)).
@@ -17,7 +17,7 @@ sigmoids renormalized, scaled by 5) that work in a 1,024-wide latent space betwe
 an NVFP4 shared expert on the full 4,096 hidden; both use ReLU², not SwiGLU. The checkpoint's own MTP layer (an
 attention block and an MoE block) is the drafter.
 
-Formats are the checkpoint's: the routed NVFP4 experts through Sharar's small-call kernels for calls of up to 16 rows
+Formats are the checkpoint's: the routed NVFP4 experts through Hibana's small-call kernels for calls of up to 16 rows
 (`kernels/nemotron_moe.py`: router, routing, experts, shared expert and `fc2_latent` in four chained launches) and
 FlashInfer's b12x MoE beyond (fc1 is `up_proj` alone), FP8 GEMVs for the Mamba and attention projections and the head,
 FP32 router logits. 66.4 GiB of weights are resident after the load (78 s from the page cache); the KV cache is small
@@ -76,7 +76,7 @@ summed routing weight, and every row also takes its other top-22 experts that th
 The KV cache is FP8 only: NVFP4 KV (`HIBANA_KV_FORMAT=nvfp4`) and the `sim-*` screens are not supported yet (the
 attention's fused K/V writer serves the FP8 pool), and the launcher and the executor refuse them.
 
-Measured (Sharar, spark-9931; h2h median, `tools/h2h_pr.py`, greedy; tok/s) and GSM8K-300 paired against `exact`:
+Measured (Hibana, spark-9931; h2h median, `tools/h2h_pr.py`, greedy; tok/s) and GSM8K-300 paired against `exact`:
 
 | Profile | 1 request | 4 streams | GSM8K-300 |
 |---|---|---|---|
@@ -89,7 +89,7 @@ a slot at 8 bits against 82 in FP16 and 162 in FP32. The 8-bit windows are ungat
 32K 88.5 against FP32's 87.0 (100 items paired, +1.5 pp [-2.0, +5.2]) and GSM8K-50 48 against 49, at a KL against
 `exact` of 0.018 (the screen's floor, `exact` at another call shape, is 0.017); in place of FP16-SR on the 3-bit stack
 they add a KL of 0.010. Decode with every request on its own 10K-token context (`profiling/decode_curve.py`:
-`throughput`'s settings without expert sharing, depth 3; Sharar, spark-2f9d; tok/s, tokens per request per round
+`throughput`'s settings without expert sharing, depth 3; Hibana, spark-2f9d; tok/s, tokens per request per round
 3.45-3.62 in every cell):
 
 | Requests | FP32 | FP16-SR | int8 | int8 against FP16-SR |
