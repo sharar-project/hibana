@@ -1,6 +1,6 @@
 """Stand-ins for the SGLang helpers the vendored kernels call.
 
-Sharar targets one CUDA device, so every platform probe collapses to a constant.
+Hibana targets one CUDA device, so every platform probe collapses to a constant.
 """
 
 from __future__ import annotations

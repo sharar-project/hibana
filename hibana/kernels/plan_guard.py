@@ -15,11 +15,11 @@ import torch
 
 
 def plan(wrapper, *args, **kwargs) -> None:
-    event = getattr(wrapper, "_sharar_plan_event", None)
+    event = getattr(wrapper, "_hibana_plan_event", None)
     if event is not None:
         event.synchronize()
     wrapper.plan(*args, **kwargs)
     if torch.cuda.is_available():
         event = torch.cuda.Event()
         event.record()
-        wrapper._sharar_plan_event = event
+        wrapper._hibana_plan_event = event

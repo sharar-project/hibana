@@ -19,7 +19,7 @@ def test_no_sglang_imports_in_source():
 
     root = pathlib.Path(__file__).resolve().parents[2]
     offenders = []
-    for path in list((root / "sharar").rglob("*.py")) + list((root / "tests").rglob("*.py")) + list((root / "profiling").rglob("*.py")) + list((root / "tools").rglob("*.py")):
+    for path in list((root / "hibana").rglob("*.py")) + list((root / "tests").rglob("*.py")) + list((root / "profiling").rglob("*.py")) + list((root / "tools").rglob("*.py")):
         for line in path.read_text().splitlines():
             stripped = line.strip()
             if stripped.startswith(("import sglang", "from sglang")):

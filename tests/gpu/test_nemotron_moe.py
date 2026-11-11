@@ -4,7 +4,7 @@
   dequantized weights in BF16: the semantics (FP32 router, bias for the choice only, renormalized sigmoid weights times
   5, latent experts, shared expert on x).
 - The served block against the reference with its activations rounded to NVFP4 as the kernels round them. Calls of
-  at most 16 rows take Sharar's kernels (`kernels/nemotron_moe.py`): cosine >= 0.9999 (0.999997 measured), their router
+  at most 16 rows take Hibana's kernels (`kernels/nemotron_moe.py`): cosine >= 0.9999 (0.999997 measured), their router
   kernel's routing bitwise route_topk's, and the budgeted path. Larger calls take FlashInfer's b12x MoE (fused
   router|fc1 GEMM, routing kernel, b12x ReLU², NVFP4 shared expert, fc2 addmm), whose routed sum is checked against
   FlashInfer's `cutlass_fused_moe` on the same pairs (`cutlass_routed`, the test's reference: it is deterministic and
@@ -119,7 +119,7 @@ def test_block_matches_reference(weights, moe, m):
     with torch.inference_mode():
         out = moe(x, None)
         assert out.dtype == torch.bfloat16 and out.shape == x.shape
-        b12x = m > moe.SMALL_ROWS  # b12x rounds less exactly than cutlass and Sharar's kernels
+        b12x = m > moe.SMALL_ROWS  # b12x rounds less exactly than cutlass and Hibana's kernels
         assert cos(out, moe.reference(x, quantize_activations=True)) > (B12X_BLOCK_COS if b12x else 0.9999)
         assert cos(out, moe.reference(x)) > 0.998
 

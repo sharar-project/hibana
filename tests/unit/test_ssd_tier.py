@@ -345,7 +345,7 @@ def test_the_plan_reserve_does_not_grow_with_the_context():
 
 def test_a_store_kept_in_memory_is_refused(tmp_path, monkeypatch):
     mounts = "tmpfs /tmp tmpfs rw 0 0\n/dev/nvme0n1p2 / ext4 rw 0 0\n/dev/nvme1n1 /mnt/my\\040ssd xfs rw 0 0\n"
-    assert memory_backed("/tmp/sharar-ssd", mounts) == "tmpfs" and memory_backed("/tmp", mounts) == "tmpfs"
+    assert memory_backed("/tmp/hibana-ssd", mounts) == "tmpfs" and memory_backed("/tmp", mounts) == "tmpfs"
     assert memory_backed("/tmpx/a", mounts) is None and memory_backed("/home/u", mounts) is None
     assert memory_backed("/mnt/my ssd/x", mounts) is None
     monkeypatch.setattr(ssd_store, "memory_backed", lambda path: "tmpfs")

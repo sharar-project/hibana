@@ -117,7 +117,7 @@ class Encoder:
     def __init__(self, vision, device: torch.device):
         self.vision = vision
         self.stream = torch.cuda.Stream(device) if device.type == "cuda" else None
-        self._worker = ThreadPoolExecutor(1, thread_name_prefix="sharar-images")
+        self._worker = ThreadPoolExecutor(1, thread_name_prefix="hibana-images")
 
     def prefetch(self, media: tuple[Image, ...], pos: int) -> None:
         """Start making the pixels of every image whose span ends past prompt position `pos` (a request's cached prefix

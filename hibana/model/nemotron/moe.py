@@ -348,7 +348,7 @@ def load_experts(w, prefix: str, experts: int, device) -> dict[str, torch.Tensor
 
 class NemotronMoe:
     SHARE_MIN = 8  # budgeted selection: under a binding cap each token keeps at least its top SHARE_MIN
-    # calls of at most this many rows take Sharar's kernels, the fastest at every M of 1-16 (block 1, 16 rows: 3481 us
+    # calls of at most this many rows take Hibana's kernels, the fastest at every M of 1-16 (block 1, 16 rows: 3481 us
     # against b12x's 3591; `kernels/csrc/nemotron_moe.cu`)
     SMALL_ROWS = 16
 

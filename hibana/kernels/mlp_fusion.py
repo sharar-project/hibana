@@ -141,7 +141,7 @@ def _edit(source: str, edits) -> str:
 
 
 def _module(source: str, namespace: dict, label: str) -> dict:
-    filename = f"<sharar-mlp-fusion-{label}>"
+    filename = f"<hibana-mlp-fusion-{label}>"
     linecache.cache[filename] = (len(source), None, source.splitlines(keepends=True), filename)
     owned = dict(namespace)
     exec(compile(source, filename, "exec"), owned)
@@ -267,7 +267,7 @@ def _kernel(device_index: int):
         function = wrapper._compile_block_scaled_gemm
         compile_gemm = FunctionType(function.__code__, compile_fn, function.__name__, function.__defaults__,
                                     function.__closure__)
-        compiled, _ = compile_gemm({}, ("sharar_mlp_fusion",), lambda: Kernel(16, (128, 128), (1, 1), tile_k=128,
+        compiled, _ = compile_gemm({}, ("hibana_mlp_fusion",), lambda: Kernel(16, (128, 128), (1, 1), tile_k=128,
                                                                                 use_m1_non_tma_c=True),
                                    ab_cutlass_dtype=cutlass.Uint8, sf_dtype=cutlass.Float8E4M3FN,
                                    c_cutlass_dtype=cutlass.BFloat16, ab_assumed_align=32, cluster_shape_mn=(1, 1),

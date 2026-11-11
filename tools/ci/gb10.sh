@@ -7,10 +7,10 @@
 #
 # Stages (each needs the one before it to pass, so old code is never tested):
 #   venv      the Python environment for this checkout: `uv sync --frozen --group eval` into UV_PROJECT_ENVIRONMENT (default
-#             ~/sharar-ci/venv, kept between runs; uv.lock decides what it holds)
+#             $CI_HOME/venv, kept between runs; uv.lock decides what it holds)
 #   gpu       tests/unit and tests/gpu from it (`uv run pytest`, HIBANA_RUN_GPU=1, under the memory guard)
-#   serve     serve each target from it (`sharar serve <target>` in the foreground on port 30011, 32K context) and
-#             check it (`sharar verify`)
+#   serve     serve each target from it (`hibana serve <target>` in the foreground on port 30011, 32K context) and
+#             check it (`hibana verify`)
 #   evaluate  each target, fast profile (tools/evaluate.py): AIPerf speed (code, design, reasoning) and, so that a
 #             speed gain from wrongly accepted drafts cannot pass, GSM8K (first 300) and HumanEval (164); paired with
 #             that target's baseline. Fails on more than 5% lower TPS or a quality loss of at least 1 point (p < 0.05,
@@ -23,8 +23,9 @@
 # checks' own processes); on any sign of someone else's work it stops the checks' processes and ends the run as
 # "gave way" (exit 0). A skipped or interrupted nightly run is not recorded as tested.
 #
-# Settings come from ~/sharar-ci/gb10.env (HIBANA_CONFIG_FILE): HIBANA_HF_CACHE, HIBANA_RESULTS,
-# optionally HIBANA_FLASHNEXT_CACHE. sharar-eval is the `eval` dependency group of the environment the venv stage syncs.
+# Settings come from $CI_HOME/gb10.env (HIBANA_CONFIG_FILE): HIBANA_HF_CACHE, HIBANA_RESULTS,
+# optionally HIBANA_FLASHNEXT_CACHE. CI_HOME is ~/hibana-ci, or the former ~/sharar-ci while only that exists, whose
+# SHARAR_* names are read as HIBANA_*. sharar-eval is the `eval` dependency group of the environment the venv stage syncs.
 set -Euo pipefail
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 cd "$(dirname "$SELF")/../.."
@@ -37,12 +38,15 @@ MAX_SPEED_DROP=5      # percent
 MIN_QUALITY_DROP=1.0  # points
 MAX_P=0.05
 
-export HIBANA_CONFIG_FILE="${HIBANA_CONFIG_FILE:-$HOME/sharar-ci/gb10.env}"
+CI_HOME="$HOME/hibana-ci"
+[[ -d "$CI_HOME" || ! -d "$HOME/sharar-ci" ]] || CI_HOME="$HOME/sharar-ci"
+export HIBANA_CONFIG_FILE="${HIBANA_CONFIG_FILE:-$CI_HOME/gb10.env}"
 [[ -r "$HIBANA_CONFIG_FILE" ]] || { echo "missing config $HIBANA_CONFIG_FILE" >&2; exit 2; }
 set -a; source "$HIBANA_CONFIG_FILE"; set +a
+for v in $(compgen -v SHARAR_); do n="HIBANA_${v#SHARAR_}"; [[ -n "${!n+x}" ]] || export "$n=${!v}"; done
 : "${HIBANA_HF_CACHE:?set HIBANA_HF_CACHE in $HIBANA_CONFIG_FILE}"
 : "${HIBANA_RESULTS:?set HIBANA_RESULTS in $HIBANA_CONFIG_FILE}"
-export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$HOME/sharar-ci/venv}"
+export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$CI_HOME/venv}"
 export PATH="$HOME/.local/bin:$PATH"   # uv
 LOCK="$HIBANA_RESULTS/.gpu.lock"
 SESSIONS="$OUT/sessions"   # the session ids of this run's processes (lock holders among them are ours)
@@ -71,10 +75,10 @@ foreign_work() {
     docker inspect -f '{{range .HostConfig.Devices}}{{.PathOnHost}} {{end}}{{len .HostConfig.DeviceRequests}}' "$name" 2>/dev/null \
       | grep -qE '/dev/nvidia|[1-9]$' && why+=("container $name has the GPU")
   done < <(command -v docker >/dev/null && docker ps --format '{{.Names}}')
-  # Detached Sharar services (someone serving or training with --detach).
+  # Detached Hibana services (someone serving or training with --detach).
   while read -r name; do
     [[ -n "$name" ]] && why+=("service $name runs")
-  done < <(systemctl --user list-units --state=active --plain --no-legend 'sharar-*.service' 2>/dev/null | awk '{print $1}')
+  done < <(systemctl --user list-units --state=active --plain --no-legend 'hibana-*.service' 'sharar-*.service' 2>/dev/null | awk '{print $1}')
   # GPU processes outside these checks' sessions.
   while IFS=, read -r pid _; do
     pid="${pid// /}"; [[ "$pid" =~ ^[0-9]+$ ]] || continue
@@ -139,7 +143,7 @@ stage_gpu() {
   return "$rc"
 }
 
-# Each target in the foreground on SERVE_PORT, 32K context, the pinned draft, nothing recorded; `sharar verify`, then
+# Each target in the foreground on SERVE_PORT, 32K context, the pinned draft, nothing recorded; `hibana verify`, then
 # SIGTERM (as Ctrl-C).
 stage_serve() {
   local target pid waited rc=0 log
@@ -147,7 +151,7 @@ stage_serve() {
   for target in 27b flashnext; do
     evict_models
     log="$OUT/serve-$target.log"
-    HIBANA_SSD=0 HIBANA_DRAFT=pinned HIBANA_TRACES=off uv run --frozen sharar serve "$target" --port "$SERVE_PORT" --context-length 32768 >"$log" 2>&1 8>&- &
+    HIBANA_SSD=0 HIBANA_DRAFT=pinned HIBANA_TRACES=off uv run --frozen hibana serve "$target" --port "$SERVE_PORT" --context-length 32768 >"$log" 2>&1 8>&- &
     pid=$!
     waited=0
     until curl -fs "http://127.0.0.1:$SERVE_PORT/health" >/dev/null 2>&1; do
@@ -157,7 +161,7 @@ stage_serve() {
       sleep 5; waited=$(( waited + 5 ))
     done
     if (( waited < 900 )) && curl -fs "http://127.0.0.1:$SERVE_PORT/health" >/dev/null 2>&1; then
-      if uv run --frozen sharar verify "$target" --url "http://127.0.0.1:$SERVE_PORT"; then
+      if uv run --frozen hibana verify "$target" --url "http://127.0.0.1:$SERVE_PORT"; then
         echo "$target: verified (healthy after ${waited}s)" >>"$OUT/notes-serve"
       else
         echo "$target: verification failed"; tail -n 100 "$log"; rc=1

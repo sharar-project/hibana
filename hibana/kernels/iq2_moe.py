@@ -32,7 +32,7 @@ def _module():
     from torch.utils.cpp_extension import load
     from hibana.engine.config import current
     os.environ.setdefault("TORCH_CUDA_ARCH_LIST", current().cuda_arch)
-    return load(name=f"sharar_iq2_moe_{_source_revision()[:16]}", sources=[str(_SRC)],
+    return load(name=f"hibana_iq2_moe_{_source_revision()[:16]}", sources=[str(_SRC)],
                 extra_cuda_cflags=["-O3", "--use_fast_math", "-lineinfo"], verbose=False)
 
 

@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 
 from hibana.engine.sampler import InvalidRequest
 
-SIGNATURE = "sharar-unsigned"
+SIGNATURE = "hibana-unsigned"
 BILLING_HEADER = "x-anthropic-billing-header:"
 _UNSUPPORTED_MEDIA = ("image", "document")
 MEDIA_NOTE = "[{kind} omitted: {why}]"

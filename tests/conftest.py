@@ -18,7 +18,7 @@ _load_env()
 
 
 def _gpu_environment() -> None:
-    """With HIBANA_RUN_GPU=1 the suite runs against the real checkpoints: the paths and 3-bit copies `sharar serve` would
+    """With HIBANA_RUN_GPU=1 the suite runs against the real checkpoints: the paths and 3-bit copies `hibana serve` would
     use (hibana/launch/settings.py), unless the environment sets them: `HIBANA_RUN_GPU=1 uv run pytest tests/gpu`."""
     if os.environ.get("HIBANA_RUN_GPU") != "1":
         return

@@ -2,7 +2,7 @@
 heads it replaces, on two Sparks with a random Flash-Next-sized lm_head: the same picks, captured in a CUDA graph,
 and the time per draft step.
 
-    sharar dev tp-draft-head      (both ranks; rank 0 prints)
+    hibana dev tp-draft-head      (both ranks; rank 0 prints)
 """
 import argparse
 import time

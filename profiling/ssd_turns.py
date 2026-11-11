@@ -1,6 +1,6 @@
 """Concurrent multi-turn conversations against a server, the workload an SSD-tier restore stalls.
 
-    HIBANA_KV_POOL_TOKENS=49152 uv run sharar serve 27b --fast --port 30000      # small pool: conversations get evicted
+    HIBANA_KV_POOL_TOKENS=49152 uv run hibana serve 27b --fast --port 30000      # small pool: conversations get evicted
     uv run python profiling/ssd_turns.py --url http://127.0.0.1:30000 --label async
 
 `--convs` conversations (the frozen 10K-token prompts of `profiling/inputs.py`) run at once, each in its own thread.

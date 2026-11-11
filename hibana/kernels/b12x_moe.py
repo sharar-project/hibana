@@ -12,7 +12,7 @@ of its own shape, kept for the graph's life (b12x's cached workspace can be real
 
 Not deterministic: two calls on the same inputs agree to cosine 0.9997-0.99996 (block 1, M 1-600), and against the
 reference with NVFP4 activations a block through it reaches 0.9993-0.99996 where cutlass reaches 0.9994-0.99999 and
-Sharar's small-call kernels 0.999998; GSM8K (exact, 300 paired) with it past 16 rows: 97.7% against 97.7%."""
+Hibana's small-call kernels 0.999998; GSM8K (exact, 300 paired) with it past 16 rows: 97.7% against 97.7%."""
 
 from __future__ import annotations
 

@@ -50,9 +50,9 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
     NP2_STATELEN: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
-    KEY_DIM: tl.constexpr = 0,  # sharar: > 0 writes the [q | k | v] features as three contiguous [seqlen, width] blocks
+    KEY_DIM: tl.constexpr = 0,  # hibana: > 0 writes the [q | k | v] features as three contiguous [seqlen, width] blocks
 ):
-    total_tokens = seqlen  # sharar: `seqlen` becomes this sequence's length below; the packed blocks span the batch
+    total_tokens = seqlen  # hibana: `seqlen` becomes this sequence's length below; the packed blocks span the batch
     conv_states_ptr = initial_states_ptr
     conv_state_indices_ptr = cache_indices_ptr
     stride_conv_state_seq = stride_istate_seq
@@ -297,7 +297,7 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
             idx_feats < dim
         )  # token-index  # feature-index
         if KEY_DIM > 0:
-            # sharar: q (features [0, K)), k ([K, 2K)) and v ([2K, dim)) each in its own row-major block, so the
+            # hibana: q (features [0, K)), k ([K, 2K)) and v ([2K, dim)) each in its own row-major block, so the
             # delta rule reads them without copies; the values are the same.
             section = tl.where(idx_feats < KEY_DIM, 0, tl.where(idx_feats < 2 * KEY_DIM, KEY_DIM, 2 * KEY_DIM))
             width = tl.where(idx_feats < 2 * KEY_DIM, KEY_DIM, dim - 2 * KEY_DIM)
@@ -338,7 +338,7 @@ def causal_conv1d_fn(
     cache_indices: (batch,) int32 conv-state slot per sequence; pad_slot_id entries are skipped.
     has_initial_state: (batch,) bool.
     activation: None, "silu" or "swish".
-    key_dim: sharar: when > 0, the output's storage holds q (features [0, key_dim)), k ([key_dim, 2 key_dim)) and
+    key_dim: hibana: when > 0, the output's storage holds q (features [0, key_dim)), k ([key_dim, 2 key_dim)) and
         v (the rest) as three contiguous [cu_seq_len, width] blocks instead of the (dim, cu_seq_len) layout.
 
     out: same shape as `x`

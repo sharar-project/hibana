@@ -22,7 +22,7 @@ def module():
     from hibana.engine.config import current
     os.environ.setdefault("TORCH_CUDA_ARCH_LIST", current().cuda_arch)
     revision = hashlib.sha256(_SRC.read_bytes()).hexdigest()[:12]
-    return load(name=f"sharar_gdn_verify_{revision}", sources=[str(_SRC)], extra_cuda_cflags=["-O3", "--use_fast_math"],
+    return load(name=f"hibana_gdn_verify_{revision}", sources=[str(_SRC)], extra_cuda_cflags=["-O3", "--use_fast_math"],
                 verbose=False)
 
 

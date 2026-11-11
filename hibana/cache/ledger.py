@@ -33,12 +33,12 @@ SHARED_REQUESTS = 4
 
 def host_floor_bytes() -> int:
     """The host floor (HIBANA_HOST_FLOOR_GIB, default 6 GiB): the MemAvailable the pools leave for the OS and other
-    programs once everything Sharar allocates is counted."""
+    programs once everything Hibana allocates is counted."""
     from hibana.engine.config import current
     return int(current().host_floor_gib * GIB)
 
 
-# What Sharar allocates after the pools are planned, counted so that the plan leaves the floor free. Measured on
+# What Hibana allocates after the pools are planned, counted so that the plan leaves the floor free. Measured on
 # Flash-Next, one Spark, HIBANA_MAX_BATCH=64: the first prefill takes 2.12 GiB of GPU memory outside PyTorch (the
 # driver's per-process count; never freed), and PyTorch keeps 0.87 GiB of activation blocks cached beyond what is
 # allocated. Neither grew with requests, context or prefill.
@@ -68,7 +68,7 @@ def workspace_bytes(max_batch: int) -> int:
 
 
 def after_plan_bytes(max_batch: int) -> dict[str, int]:
-    """Sharar's own allocations after the pool plan, by part."""
+    """Hibana's own allocations after the pool plan, by part."""
     return {"workspaces": workspace_bytes(max_batch), "graphs": graph_bytes(max_batch), "first_use": FIRST_USE_BYTES,
             "activations": ACTIVATION_BYTES}
 
@@ -92,7 +92,7 @@ def check_load_headroom(peak_bytes: int) -> None:
 class Plan:
     kv_tokens: int
     state_slots: int
-    after_pools_bytes: int  # what Sharar allocates after the pools: drafter, SSD staging, workspaces, graphs, first use, activations
+    after_pools_bytes: int  # what Hibana allocates after the pools: drafter, SSD staging, workspaces, graphs, first use, activations
 
 
 @dataclass
@@ -128,7 +128,7 @@ class Ledger:
         cached_prompt_tokens: int = SHARED_CONTEXT,
         restore_slots: int = 0,
     ) -> Plan:
-        """Size the pools from what is available now: everything but the floor and `future_bytes`, what Sharar
+        """Size the pools from what is available now: everything but the floor and `future_bytes`, what Hibana
         allocates after the pools (the drafter, the SSD tier's staging, and `after_plan_bytes`: workspaces, CUDA
         graphs, the first prefill's allocations outside PyTorch, cached activations).
 

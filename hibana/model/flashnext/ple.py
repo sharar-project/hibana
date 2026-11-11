@@ -38,7 +38,7 @@ def _native():
         import hashlib
         from torch.utils.cpp_extension import load
         revision = hashlib.sha256(_NATIVE_SRC.read_bytes()).hexdigest()[:16]
-        _native_module = load(name=f"sharar_ple_gather_{revision}", sources=[str(_NATIVE_SRC)], extra_cflags=["-O3"], verbose=False)
+        _native_module = load(name=f"hibana_ple_gather_{revision}", sources=[str(_NATIVE_SRC)], extra_cflags=["-O3"], verbose=False)
     return _native_module
 
 

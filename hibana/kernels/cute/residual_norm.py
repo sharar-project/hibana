@@ -2,7 +2,7 @@
 # use this file except in compliance with the License. You may obtain a copy of the License at
 # http://www.apache.org/licenses/LICENSE-2.0. Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
-# Modified by Sharar: quantizing epilogues.
+# Modified by Hibana: quantizing epilogues.
 """The 27B's prefill residual norms with their quantization fused in (from FlashInfer 0.6.17's CuTe
 `FusedAddRMSNormKernel`, `flashinfer/norm/kernels/fused_add_rmsnorm.py`; the epilogues come from the FlashPrefill V2 work).
 
@@ -363,7 +363,7 @@ class ResidualNormKernel(FusedAddRMSNormKernel):
         w = tXrW.load().to(Float32)
         y = h * rstd * (w + Float32(weight_bias))
 
-        # sharar: the epilogues read the BF16-rounded output, as the separate quantizers read it back from memory.
+        # hibana: the epilogues read the BF16-rounded output, as the separate quantizers read it back from memory.
         if cutlass.const_expr(self.out == "fp8"):
             tXrO.store(y.to(mX.element_type))
             if row_in_bounds:

@@ -243,8 +243,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     @app.get("/metrics")
     async def metrics():
         st = engine.stats()
-        lines = [f"sharar_{k} {v}" for k, v in st.items() if isinstance(v, (int, float))]
-        lines += [f"sharar_messages_{k} {v}" for k, v in messages_stats.items()]
+        lines = [f"hibana_{k} {v}" for k, v in st.items() if isinstance(v, (int, float))]
+        lines += [f"hibana_messages_{k} {v}" for k, v in messages_stats.items()]
         return PlainTextResponse("\n".join(lines) + "\n")
 
     @app.post("/flush_cache")

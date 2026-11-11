@@ -4,8 +4,8 @@ The launcher and the CLI pass settings as `HIBANA_*` environment variables;
 `EngineConfig.from_env()` reads them once. The field defaults are the library's
 baseline (no lossy option, no SSD tier) that tests and benchmarks build on; a
 served engine's defaults are the target's and the profile's
-(`hibana/launch/settings.py`), which `sharar engine` resolves beneath the
-environment as `sharar serve` does. `sharar serve` and the benchmark loader install the result
+(`hibana/launch/settings.py`), which `hibana engine` resolves beneath the
+environment as `hibana serve` does. `hibana serve` and the benchmark loader install the result
 before building the model; modules read `current()` where they construct
 things (a model, a linear, a proposer, a graph set), never at import, and the
 few per-call checks read one attribute of the installed value. Tests and

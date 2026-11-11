@@ -25,7 +25,7 @@ def _module():
     # One build per source revision (as kernels/w3.py): checkouts of different revisions share the build cache.
     revision = hashlib.sha256(_SRC.read_bytes()).hexdigest()[:16]
     return load(
-        name=f"sharar_fp8_gemv_{revision}",
+        name=f"hibana_fp8_gemv_{revision}",
         sources=[str(_SRC)],
         extra_cuda_cflags=["-O3", "--use_fast_math"],
         verbose=False,

@@ -1,4 +1,4 @@
-"""CLI drivers for generation and profiling (`sharar dev generate`, `sharar dev profile`) and the loader the profilers share."""
+"""CLI drivers for generation and profiling (`hibana dev generate`, `hibana dev profile`) and the loader the profilers share."""
 
 from __future__ import annotations
 

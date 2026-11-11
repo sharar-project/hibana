@@ -55,7 +55,7 @@ def ahead(path: Path, sha256: str | None = None) -> None:
     with _lock:
         if path not in _pending:
             if _pool is None:
-                _pool = ThreadPoolExecutor(WORKERS, thread_name_prefix="sharar-read")
+                _pool = ThreadPoolExecutor(WORKERS, thread_name_prefix="hibana-read")
             _pending[path] = _pool.submit(read, path, sha256)
 
 

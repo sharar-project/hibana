@@ -2,7 +2,7 @@
 # use this file except in compliance with the License. You may obtain a copy of the License at
 # http://www.apache.org/licenses/LICENSE-2.0. Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
-# Modified by Sharar: separate outputs and the FP8 epilogue.
+# Modified by Hibana: separate outputs and the FP8 epilogue.
 """Nemotron's residual norms in one launch: FlashInfer 0.6.17's CuTe `FusedAddRMSNormKernel` (the kernel
 `flashinfer.norm.fused_add_rmsnorm` runs on SM121) at weight_bias 0, with outputs of their own and
 `residual_norm.py`'s FP8 epilogue.
@@ -109,7 +109,7 @@ class NemotronNormKernel(FusedAddRMSNormKernel):
         tWgW = thr_copy_W.partition_S(gW)
         tWrW = cute.make_fragment_like(tWgW)
         tXrW = thr_copy_X.retile(tWrW)
-        # sharar: the outputs' own destinations (FlashInfer stores back into gX and gR)
+        # hibana: the outputs' own destinations (FlashInfer stores back into gX and gR)
         tXgO = thr_copy_O.partition_D(gO)
         tRgO = thr_copy_O.partition_D(gRO)
         tXrO = cute.make_fragment_like(tXgO)

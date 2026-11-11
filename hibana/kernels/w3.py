@@ -253,7 +253,7 @@ def _module():
     # Images can restore older source timestamps into a shared build cache.
     # Separate source revisions so Ninja cannot reuse another revision's object.
     revision = hashlib.sha256(_SRC.read_bytes()).hexdigest()[:16]
-    return load(name=f"sharar_w3_gemm_{revision}", sources=[str(_SRC)], extra_cuda_cflags=["-O3", "--use_fast_math"], verbose=False)
+    return load(name=f"hibana_w3_gemm_{revision}", sources=[str(_SRC)], extra_cuda_cflags=["-O3", "--use_fast_math"], verbose=False)
 
 
 _WORKSPACE: dict[torch.device, tuple[torch.Tensor, torch.Tensor]] = {}

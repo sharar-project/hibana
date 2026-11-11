@@ -98,7 +98,7 @@ def generate(args) -> None:
     items = json.loads(args.prompts.read_text())["items"]
 
     def ask(it):
-        body = {"model": "sharar", "messages": [{"role": "user", "content": it["prompt"]}], "temperature": args.temperature,
+        body = {"model": "hibana", "messages": [{"role": "user", "content": it["prompt"]}], "temperature": args.temperature,
                 "max_tokens": args.max_tokens, "chat_template_kwargs": {"enable_thinking": args.thinking}, "trace": False}
         req = urllib.request.Request(args.url.rstrip("/") + "/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=3600) as r:

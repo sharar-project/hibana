@@ -251,7 +251,7 @@ class SsdStore:
         self.last_error = None
         self.direct = hasattr(os, "O_DIRECT")  # until the filesystem refuses it
         for i, q in enumerate(self.queues):
-            threading.Thread(target=self._writer, args=(q,), name=f"sharar-ssd-writer-{i}", daemon=True).start()
+            threading.Thread(target=self._writer, args=(q,), name=f"hibana-ssd-writer-{i}", daemon=True).start()
         if log:
             log(f"  ssd store: {self.dir}")
 

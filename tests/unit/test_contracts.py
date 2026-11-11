@@ -189,7 +189,7 @@ def test_profile_limits_and_load_budget(monkeypatch):
 def test_control_modules_import_without_gpu_backends():
     code = '''
 import builtins, importlib.abc, sys, torch
-# CUDA PyTorch probes Triton during its own initialization. Check Sharar's
+# CUDA PyTorch probes Triton during its own initialization. Check Hibana's
 # imports after that bootstrap, including imports already in sys.modules.
 original_import = builtins.__import__
 def checked_import(name, *args, **kwargs):

@@ -1,6 +1,6 @@
 """Tensor-parallel communication between two Sparks: the RDMA one-shot all-reduce against NCCL's ring.
 
-Run on both Sparks at once (`sharar dev tp-comm` starts both ranks). For each message size it checks that
+Run on both Sparks at once (`hibana dev tp-comm` starts both ranks). For each message size it checks that
 `hibana.distributed.all_reduce` (the RDMA one-shot up to `ONE_SHOT_MAX_BYTES`, NCCL above) gives NCCL's sum bit for
 bit on both ranks, then times both: inside a CUDA graph after about 100 us of GPU work per collective, as serving
 runs them, and back to back. Rank 0 prints us per collective and the effective rate (message bytes / time).
@@ -133,7 +133,7 @@ def main() -> None:
         print(f"NCCL {'.'.join(map(str, torch.cuda.nccl.version()))}, variables: {args.nccl_env}")
         rate = lambda kib, us: f"{kib * 1024 / us / 1e3:5.1f} GB/s"  # noqa: E731
         print(f"{'message':>9} {'path':>14} {'exact':>6} | {'in a graph, after GPU work':^40} | {'back to back':^20}")
-        print(f"{'':>9} {'':>14} {'':>6} | {'NCCL ring':^19} {'sharar':^20} | {'NCCL':>9} {'sharar':>9}")
+        print(f"{'':>9} {'':>14} {'':>6} | {'NCCL ring':^19} {'hibana':^20} | {'NCCL':>9} {'hibana':>9}")
         for kib, one_shot, exact, t in rows:
             (ring, ring_b2b), (ours, ours_b2b) = t["ring"], t["ours"]
             print(f"{kib:>6} KiB {'RDMA one-shot' if one_shot else 'NCCL ring':>14} {str(exact):>6} | "

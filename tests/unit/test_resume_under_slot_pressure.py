@@ -9,7 +9,7 @@ been ingested; only then does `StateManager.checkpoint` move it to the request's
 node is stripped first: the drafter misses, and (before the stand-in row) the request never drafted and cached its own
 snapshots without rows, so later turns missed too.
 
-Sharar's own Scheduler, Executor, StateManager, RadixCache, StatePool, KvPool allocator, SpecDecoder and MtpProposer
+Hibana's own Scheduler, Executor, StateManager, RadixCache, StatePool, KvPool allocator, SpecDecoder and MtpProposer
 run; only the models are stubs:
 - the target is an exact recurrence per state slot, s = (31 s + token) mod 97, written to the slot and to every
   prefill checkpoint the executor plans; a token's final-norm row is (s after it, its position); the logits pick 7;
@@ -360,7 +360,7 @@ def run_turn(h, prompt, out=72, others=0, boundary=0):
 
 def table(h, turns):
     yes = {None: "-", True: "yes", False: "NO"}
-    rows = [f"sharar: {BUILD}", "turn  prompt resume evicted window snapshot@ingest row@ingest locked@ingest lock-after "
+    rows = [f"hibana: {BUILD}", "turn  prompt resume evicted window snapshot@ingest row@ingest locked@ingest lock-after "
                                 "drafter drafted rounds"]
     dash = lambda v: "-" if v is None else v  # noqa: E731
     rows += [f"{i:4d} {t.request.prefill_len:7d} {t.resume:6d} {t.evicted:7d} {dash(t.window):>6} {yes[t.snapshot]:>15} "

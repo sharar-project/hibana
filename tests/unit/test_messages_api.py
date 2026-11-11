@@ -605,7 +605,7 @@ def test_claude_code_request_shape_renders(snapshot):
 
     tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
     request = {
-        'model': 'claude-sharar-qwen3.8', 'max_tokens': 32000, 'stream': False,
+        'model': 'claude-hibana-qwen3.8', 'max_tokens': 32000, 'stream': False,
         'thinking': {'type': 'adaptive', 'display': 'omitted'}, 'output_config': {'effort': 'high'},
         'context_management': {'edits': [{'type': 'clear_thinking_20251015', 'keep': 'all'}]},
         'metadata': {'user_id': '{}'}, 'tools': TOOLS,
@@ -701,7 +701,7 @@ def test_tool_call_in_unclosed_thinking_is_a_tool_use(stream):
 @pytest.mark.parametrize('stream', [False, True])
 def test_chat_tool_call_in_unclosed_reasoning_is_a_tool_call(stream):
     openai_tools = [{'type': 'function', 'function': {'name': t['name'], 'parameters': t['input_schema']}} for t in TOOLS]
-    payload = {'model': 'sharar', 'stream': stream, 'tools': openai_tools, 'chat_template_kwargs': {'enable_thinking': True},
+    payload = {'model': 'hibana', 'stream': stream, 'tools': openai_tools, 'chat_template_kwargs': {'enable_thinking': True},
                'messages': [{'role': 'user', 'content': 'weather?'}]}
     response, _, _ = post(payload, '\nLet me check.\n\n' + CALL, path='/v1/chat/completions', chunk=2)
     if stream:

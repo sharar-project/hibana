@@ -320,7 +320,7 @@ class SsdTier:
         self.evict_dropped = 0  # leaves eviction dropped instead of waiting for the writers
         self.room_waits = self.room_wait_writes = 0  # waits for staging room, and the writes they waited for
         self.room_wait_seconds = self.room_wait_max = 0.0
-        self._pool = ThreadPoolExecutor(8, thread_name_prefix="sharar-ssd-read")  # parallel O_DIRECT reads keep the drive's queue full
+        self._pool = ThreadPoolExecutor(8, thread_name_prefix="hibana-ssd-read")  # parallel O_DIRECT reads keep the drive's queue full
         # backup copies run on their own stream, so they overlap the model's kernels instead of sitting between them;
         # every free of pages or a slot first makes the main stream wait for them (`fence`)
         self._copies = torch.cuda.Stream(device) if device.type == "cuda" else None
@@ -337,7 +337,7 @@ class SsdTier:
         # largest drafter payload written so far): background gathers leave it free for eviction's tail
         self._tail_room = self._tail_charge(self.block - 1, [t for _, t in self._state(0)])
         # asynchronous restores (`restore_async`): one at a time; a worker thread reads, the engine thread scatters
-        self._worker = ThreadPoolExecutor(1, thread_name_prefix="sharar-ssd-restore")
+        self._worker = ThreadPoolExecutor(1, thread_name_prefix="hibana-ssd-restore")
         self._job: _Restore | None = None  # the restore in flight
         self._held: list = []  # (job, since) of landed restores, locking their nodes until their requests are admitted
         self._tail_nodes: dict[str, Node] = {}  # tails in flight: key -> the node they are for (pruned if the write fails)

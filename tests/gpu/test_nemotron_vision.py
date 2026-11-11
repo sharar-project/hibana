@@ -38,7 +38,7 @@ def _snapshot(name):
 
 @pytest.fixture(scope="module", params=["nemotron", "bolt"])
 def pair(request):
-    """(Sharar's RadioVision, Transformers' RadioModel with the same weights, the projector tensors) for one checkpoint."""
+    """(Hibana's RadioVision, Transformers' RadioModel with the same weights, the projector tensors) for one checkpoint."""
     import json
     from hibana.weights.safetensors import SnapshotWeights
     snap = _snapshot(request.param)
@@ -114,7 +114,7 @@ def test_encoder_matches_the_reference(pair, size):
 
 
 def test_tower_matches_the_reference(pair):
-    """The tower alone, before the projector: Sharar's blocks against Transformers' layers."""
+    """The tower alone, before the projector: Hibana's blocks against Transformers' layers."""
     name, ours, ref, head = pair
     pixels = v.preprocess(image(700, 900, seed=3))
     with torch.inference_mode():

@@ -82,7 +82,7 @@ class EngineLoop:
         self.last_stats: dict = {}
         self._latency_finished = -1
         self._latencies: tuple[float, ...] = ()
-        self.thread = threading.Thread(target=self._run, name="sharar-engine", daemon=True)
+        self.thread = threading.Thread(target=self._run, name="hibana-engine", daemon=True)
 
     def start(self) -> None:
         self.thread.start()
@@ -248,7 +248,7 @@ class EngineLoop:
                 self._apply(("stop",))
                 self._broadcast_applied()
         except Exception as exc:
-            logging.exception("sharar engine failed")
+            logging.exception("hibana engine failed")
             self._fail(exc)
         finally:
             if self.failure is None and (self.tickets or self.sched.active or not self.inbox.empty()):

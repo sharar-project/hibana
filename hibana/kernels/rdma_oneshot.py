@@ -5,7 +5,7 @@ DGX Spark has no GPUDirect RDMA, so NCCL stages each step of its ring through ho
 move the bytes both ways. This exchanges the two partials once, through cudaHostAlloc buffers registered with both
 RDMA devices, and adds them: about 19 us, bitwise NCCL's sum. The devices are the ones with an IPv4 RoCE v2 GID (the
 connected ConnectX-7 halves), paired in name order with the peer's (on two Sparks, the same-named ones). Builds against the ibverbs headers:
-the system's, else the copy `sharar serve --tp 2` unpacks into the Python environment (hibana/launch/tp.py).
+the system's, else the copy `hibana serve --tp 2` unpacks into the Python environment (hibana/launch/tp.py).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ IPV4_GID = "0000:0000:0000:0000:0000:ffff:"
 @lru_cache(maxsize=1)
 def _module():
     os.environ.setdefault("TORCH_CUDA_ARCH_LIST", current().cuda_arch)
-    return load(name="sharar_rdma_oneshot", sources=[str(_SRC)], extra_cuda_cflags=["-O3"],
+    return load(name="hibana_rdma_oneshot", sources=[str(_SRC)], extra_cuda_cflags=["-O3"],
                 extra_include_paths=[str(Path(sys.prefix) / "ibverbs/usr/include")],
                 extra_ldflags=["-l:libibverbs.so.1"], verbose=False)
 

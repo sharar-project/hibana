@@ -4,7 +4,7 @@ A trace is the token-level record of one served request: prompt and output
 token IDs, sampling parameters and every verification round (accepted count,
 the draft's proposals and the target's argmax rows). They are for measuring
 speculation on real traffic (acceptance per depth, the input of adaptive depth
-calibration); `sharar traces` summarizes a directory.
+calibration); `hibana traces` summarizes a directory.
 
 The sink never blocks the engine thread: records are a few lists handed to one
 writer thread. Files rotate, and the oldest file is pruned above the byte cap.
@@ -84,7 +84,7 @@ class TraceSink:
         self._sizes = {path: self._size(path) for path in self._files()}
         self._stored_bytes = sum(self._sizes.values())
         self._disk_usage = (len(self._sizes), self._stored_bytes)
-        self._thread = threading.Thread(target=self._run, name="sharar-traces", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="hibana-traces", daemon=True)
         self._thread.start()
 
     # ---- engine thread ----

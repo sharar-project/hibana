@@ -20,4 +20,4 @@ def module():
     from hibana.engine.config import current
     os.environ.setdefault("TORCH_CUDA_ARCH_LIST", current().cuda_arch)
     revision = hashlib.sha256(_SRC.read_bytes()).hexdigest()[:16]  # one build per source revision (as kernels/w3.py)
-    return load(name=f"sharar_kv_copy_{revision}", sources=[str(_SRC)], extra_cuda_cflags=["-O3"], verbose=False)
+    return load(name=f"hibana_kv_copy_{revision}", sources=[str(_SRC)], extra_cuda_cflags=["-O3"], verbose=False)

@@ -180,7 +180,7 @@ def mix(nq: torch.Tensor, xs: torch.Tensor, rstd: torch.Tensor, hyper: torch.Ten
     ws = down.scale.reshape(1, 1).expand(1, down.out_features).contiguous()
     d = torch._scaled_mm(nq, down.weight.T, scale_a=xs, scale_b=ws, out_dtype=torch.bfloat16)
     mixed, parts = up_gate_mean(torch.nn.functional.silu(d), up.weight, up.scale, hyper, rstd, norm, hidden)
-    mixed._sharar_amax_parts = parts  # for `fp8_input`
+    mixed._hibana_amax_parts = parts  # for `fp8_input`
     return mixed
 
 
@@ -189,12 +189,12 @@ def fp8_input(x: torch.Tensor):
     tile maxima `up_gate_mean` wrote and kept on the tensor, so every projection of the block (GDN in_qkv and in_z, the
     attention's qkv, the shared expert) reads the same E4M3 copy. Bitwise the quantization each would do itself
     (`draft_fp8.quant_dynamic`: the same maximum, scale and rounding). -> (fp8 like x, scale [1, 1]) or None."""
-    cached = getattr(x, "_sharar_fp8", None)
+    cached = getattr(x, "_hibana_fp8", None)
     if cached is not None:
         return cached
-    parts = getattr(x, "_sharar_amax_parts", None)
+    parts = getattr(x, "_hibana_amax_parts", None)
     if parts is None:
         return None
     from hibana.kernels.flashnext_fused import quant_fp8_parts
-    x._sharar_fp8 = quant_fp8_parts(x, parts)
-    return x._sharar_fp8
+    x._hibana_fp8 = quant_fp8_parts(x, parts)
+    return x._hibana_fp8

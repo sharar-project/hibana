@@ -27,7 +27,7 @@ def _module():
     from hibana.engine.config import current
     os.environ.setdefault("TORCH_CUDA_ARCH_LIST", current().cuda_arch)
     revision = hashlib.sha256(_SRC.read_bytes()).hexdigest()[:16]
-    return load(name=f"sharar_nemotron_moe_{revision}", sources=[str(_SRC)], extra_cuda_cflags=["-O3"], verbose=False)
+    return load(name=f"hibana_nemotron_moe_{revision}", sources=[str(_SRC)], extra_cuda_cflags=["-O3"], verbose=False)
 
 
 _COUNTERS: dict[torch.device, torch.Tensor] = {}
