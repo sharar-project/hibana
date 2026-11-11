@@ -5,17 +5,17 @@ import gc
 import pytest
 import torch
 
-from sharar.engine.sampler import SamplingParams
+from hibana.engine.sampler import SamplingParams
 from tests.gpu.test_mtp_device_accept import run_rounds
 
 
 @pytest.fixture(scope='module')
 def runtime(qwen38):
-    from sharar import config
-    from sharar.engine.config import current, using
-    from sharar.engine.executor import Executor
-    from sharar.engine.prompts import PARAGRAPH
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana import config
+    from hibana.engine.config import current, using
+    from hibana.engine.executor import Executor
+    from hibana.engine.prompts import PARAGRAPH
+    from hibana.tokenizer import SnapshotTokenizer
     gc.collect()  # the previous module's executor
     torch.cuda.empty_cache()
     with torch.inference_mode(), using(current().replace(spec_depths="8:2")):

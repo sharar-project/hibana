@@ -1,8 +1,8 @@
 # Qwen3.8-Flash-Next in Sharar
 
-The second serving target (`sharar serve flashnext`, `sharar/model/flashnext/`). Checkpoint:
+The second serving target (`sharar serve flashnext`, `hibana/model/flashnext/`). Checkpoint:
 `RadixArk/Qwen3.8-Flash-Next-NVFP4` (ModelOpt NVFP4 W4A4 routed experts, everything else BF16; 135 GB,
-206 shards). Settings: `TARGET_SETTINGS` in `sharar/launch/settings.py`.
+206 shards). Settings: `TARGET_SETTINGS` in `hibana/launch/settings.py`.
 
 ## The model as served
 
@@ -30,7 +30,7 @@ prompt's first prefill chunk starts reading the rows of the rest of the prompt i
 
 | File | Role |
 |---|---|
-| `config.py` | pinned revision and geometry; `sharar/target.py` builds `FLASHNEXT` from it |
+| `config.py` | pinned revision and geometry; `hibana/target.py` builds `FLASHNEXT` from it |
 | `reference.py` | plain-torch Gemma norm, NeoX RoPE and QSA token mask (the indexer and the QSA tests) |
 | `hyper.py` | hyper-connection mix/combine and the grouped Gemma norm |
 | `linear.py` | `TrunkLinear`: FP8 at load (`SHARAR_FLASHNEXT_TRUNK=bf16` for parity) with its 3-bit copy |

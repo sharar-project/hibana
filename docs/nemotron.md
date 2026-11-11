@@ -2,11 +2,11 @@
 
 [Nemotron Bolt](bolt.md) uses the same Mamba runtime with a separate packed checkpoint and per-block expert geometry.
 
-A serving target (`sharar serve nemotron`, `sharar/model/nemotron/`), on one Spark. Checkpoint:
+A serving target (`sharar serve nemotron`, `hibana/model/nemotron/`), on one Spark. Checkpoint:
 `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` at `6aae0d6` (NVIDIA's ModelOpt export: NVFP4 routed and shared
 experts, FP8 Mamba, attention and lm_head projections, BF16 embeddings, router and latent projections). The text model
 and its MTP head are served, and the C-RADIO vision tower and its projector for image input ([images](#images)).
-Settings: `TARGET_SETTINGS` and `nemotron_defaults` in `sharar/launch/settings.py`.
+Settings: `TARGET_SETTINGS` and `nemotron_defaults` in `hibana/launch/settings.py`.
 
 ## The model as served
 
@@ -34,7 +34,7 @@ them as the only expert copy, at every call size (the MTP head's load with the d
 
 | File | Role |
 |---|---|
-| `config.py` | pinned revision, geometry and the block pattern; `sharar/target.py` builds `NEMOTRON` from it |
+| `config.py` | pinned revision, geometry and the block pattern; `hibana/target.py` builds `NEMOTRON` from it |
 | `model.py` | `Nemotron`: the model contract; block indices are the checkpoint's, so the Mamba blocks are the target's recurrent layers and the attention blocks its KV layers |
 | `mamba.py`, `kernels/mamba2.py` | the Mamba-2 mixer on the recurrent-layer contract (prefill checkpoints, decode in place, verify by snapshots or reconstruction) |
 | `attention.py` | the 27B's attention module without gate, norms and rotary |
@@ -62,7 +62,7 @@ against Transformers' `RadioModel` carrying the checkpoint's weights and the che
 
 ## Serving
 
-The profiles (`nemotron_defaults` in `sharar/launch/settings.py`):
+The profiles (`nemotron_defaults` in `hibana/launch/settings.py`):
 
 | Profile | Settings |
 |---|---|

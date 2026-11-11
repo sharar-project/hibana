@@ -26,8 +26,8 @@ from pathlib import Path
 import torch
 from torch.profiler import ProfilerActivity, profile
 
-from sharar.engine.run import _load
-from sharar.engine.sampler import SamplingParams
+from hibana.engine.run import _load
+from hibana.engine.sampler import SamplingParams
 
 PROMPTS = {
     "code": "Write a Python module implementing an LRU cache class with get, put, delete and resize, plus a thread-safe wrapper. Include docstrings and pytest unit tests.",

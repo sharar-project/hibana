@@ -38,7 +38,7 @@ def main():
     if args.compare:
         compare(*args.compare)
         return
-    from sharar.engine.run import _load
+    from hibana.engine.run import _load
     from profiling.flashnext_round import EXTRA_PROMPTS, PROMPTS, _params, chat_ids
     model, ex, tok = _load(graphs=True, spec=args.spec)
     texts = {**PROMPTS, **EXTRA_PROMPTS,

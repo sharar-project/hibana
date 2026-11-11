@@ -2,11 +2,11 @@ import subprocess
 import sys
 
 
-def test_sharar_never_imports_sglang():
+def test_hibana_never_imports_sglang():
     code = (
         "import sys, importlib; "
-        "mods = ['sharar', 'sharar.config', 'sharar.cli', 'sharar.engine.prompts', "
-        "'sharar.weights.modelopt']; "
+        "mods = ['hibana', 'hibana.config', 'hibana.cli', 'hibana.engine.prompts', "
+        "'hibana.weights.modelopt']; "
         "[importlib.import_module(m) for m in mods]; "
         "print(any(m.split('.')[0] == 'sglang' for m in sys.modules))"
     )

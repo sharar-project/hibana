@@ -1,6 +1,6 @@
 """Opt-in GB10 continuation/ownership checks with the pinned real checkpoint.
 
-Run with SHARAR_RUN_GPU=1 (and `python -m sharar.launch.guard --pid PID` watching the test process).
+Run with SHARAR_RUN_GPU=1 (and `python -m hibana.launch.guard --pid PID` watching the test process).
 Pools are deliberately bounded so the test does not size itself to all RAM.
 """
 
@@ -9,18 +9,18 @@ import json
 import pytest
 import torch
 
-from sharar import config
-from sharar.engine.executor import Executor
-from sharar.engine.sampler import InvalidRequest, SamplingParams
-from sharar.engine.scheduler import Scheduler
-from sharar.cache.radix import RadixCache
-from sharar.engine.prompts import NEEDLE, build_prompts, random_ids
-from sharar.tokenizer import SnapshotTokenizer
+from hibana import config
+from hibana.engine.executor import Executor
+from hibana.engine.sampler import InvalidRequest, SamplingParams
+from hibana.engine.scheduler import Scheduler
+from hibana.cache.radix import RadixCache
+from hibana.engine.prompts import NEEDLE, build_prompts, random_ids
+from hibana.tokenizer import SnapshotTokenizer
 
 
 
 def test_cache_restore_matches_manual_restore_at_every_layer(setup, tmp_path):
-    from sharar.engine.cache_trace import run
+    from hibana.engine.cache_trace import run
     configure, _ = setup
     ex, _ = configure(True, 'cold')
     spec = ex.spec
@@ -300,8 +300,8 @@ def test_canaries_answer_exactly(setup, graphs):
 @pytest.mark.parametrize('graphs', [False, True])
 @pytest.mark.parametrize('features', [False, True])
 def test_ngram_real_target_cache_and_feature_lifetimes(runtime, graphs, features):
-    from sharar.engine.contracts import FeatureRequest, ProposerContext, ProposerRequirements
-    from sharar.engine.spec import SpecDecoder
+    from hibana.engine.contracts import FeatureRequest, ProposerContext, ProposerRequirements
+    from hibana.engine.spec import SpecDecoder
     from tests.ngram_proposer import NGramProposer
 
     ex, prompts = runtime
@@ -360,8 +360,8 @@ def test_ngram_real_target_cache_and_feature_lifetimes(runtime, graphs, features
 
 
 def test_selected_features_are_post_block_residual_streams(runtime):
-    from sharar.engine.context import scratch_prefill_context
-    from sharar.engine.contracts import FeatureRequest
+    from hibana.engine.context import scratch_prefill_context
+    from hibana.engine.contracts import FeatureRequest
 
     ex, prompts = runtime
     ids = torch.tensor(prompts['rand8'], device=ex.device)

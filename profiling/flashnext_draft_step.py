@@ -24,18 +24,18 @@ from types import SimpleNamespace
 import torch
 from torch.profiler import ProfilerActivity, profile
 
-from sharar.model.flashnext.hyper import HyperConnection
-from sharar.model.flashnext.linear import TrunkLinear
-from sharar.model.flashnext.model import PREFIX
-from sharar.model.rope import PartialRotary
-from sharar.target import FLASHNEXT
-from sharar.weights.safetensors import SnapshotWeights
+from hibana.model.flashnext.hyper import HyperConnection
+from hibana.model.flashnext.linear import TrunkLinear
+from hibana.model.flashnext.model import PREFIX
+from hibana.model.rope import PartialRotary
+from hibana.target import FLASHNEXT
+from hibana.weights.safetensors import SnapshotWeights
 
 
 def load(device, max_batch: int, k: int, max_context: int):
-    from sharar.engine.config import current
-    from sharar.model.flashnext.mtp import FlashNextMtpHead
-    from sharar.proposers.mtp import MtpProposer
+    from hibana.engine.config import current
+    from hibana.model.flashnext.mtp import FlashNextMtpHead
+    from hibana.proposers.mtp import MtpProposer
     t = FLASHNEXT
     snap = t.snapshot_dir()
     w = SnapshotWeights(snap)

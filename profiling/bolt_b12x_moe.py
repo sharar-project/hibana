@@ -25,13 +25,13 @@ import sys
 import torch
 import torch.nn.functional as F
 
-from sharar.engine import config
-from sharar.kernels import ggml_bf16
-from sharar.launch.guard import start_thread
-from sharar.model.bolt.config import BOLT
-from sharar.model.bolt.model import BoltMoe
-from sharar.target import NEMOTRON_BOLT
-from sharar.weights.safetensors import SnapshotWeights
+from hibana.engine import config
+from hibana.kernels import ggml_bf16
+from hibana.launch.guard import start_thread
+from hibana.model.bolt.config import BOLT
+from hibana.model.bolt.model import BoltMoe
+from hibana.target import NEMOTRON_BOLT
+from hibana.weights.safetensors import SnapshotWeights
 
 
 def others():
@@ -66,11 +66,11 @@ def graph_times(runs, calls):
 def load_sibling(root):
     """Import frozen development modules without altering serving dispatch."""
     for name in ('ggml', 'iq2_moe'):
-        spec = importlib.util.spec_from_file_location(f'sharar.kernels.{name}', root / 'sharar/kernels' / f'{name}.py')
+        spec = importlib.util.spec_from_file_location(f'hibana.kernels.{name}', root / 'hibana/kernels' / f'{name}.py')
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
-        setattr(sys.modules['sharar.kernels'], name, module)
+        setattr(sys.modules['hibana.kernels'], name, module)
     return module
 
 
@@ -87,7 +87,7 @@ def main():
     ap.add_argument('--root', type=Path, help='pinned FlashInfer source checkout, instead of installed b12x')
     ap.add_argument('--package', type=Path, help='unpacked b12x 1.5.0 package directory')
     ap.add_argument('--snapshot', type=Path)
-    ap.add_argument('--sibling', type=Path, help='frozen source tree containing sharar/kernels/iq2_moe.py')
+    ap.add_argument('--sibling', type=Path, help='frozen source tree containing hibana/kernels/iq2_moe.py')
     ap.add_argument('--random-routes', action='store_true')
     ap.add_argument('--layer', type=int, default=1)
     ap.add_argument('--rows', type=int, nargs='+', default=[1, 8, 32])

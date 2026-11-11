@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Decode speed against concurrency at a fixed long context, prefill excluded: the steady-state speculative round
 with every request active on a populated 10,000-token context (KV cache and recurrent state), on the frozen
-benchmark prompts of `sharar.benchmark_workloads` (code, design, reasoning).
+benchmark prompts of `hibana.benchmark_workloads` (code, design, reasoning).
 
 For each batch size B, the script prefills B requests untimed and decodes them round by round: it skips `--warmup`
 rounds, then times the next `--rounds` while every request is still active. The B prompts are the three workloads in
@@ -25,13 +25,13 @@ from pathlib import Path
 
 import torch
 
-from sharar import benchmark_workloads
-from sharar import target as targets
-from sharar.cache.spec_budget import SpecConfig
-from sharar.engine.config import current
-from sharar.engine.executor import Executor
-from sharar.engine.sampler import SamplingParams
-from sharar.tokenizer import SnapshotTokenizer
+from hibana import benchmark_workloads
+from hibana import target as targets
+from hibana.cache.spec_budget import SpecConfig
+from hibana.engine.config import current
+from hibana.engine.executor import Executor
+from hibana.engine.sampler import SamplingParams
+from hibana.tokenizer import SnapshotTokenizer
 
 
 def benchmark_prompts(encode, count: int, length: int = 10000) -> list[list[int]]:

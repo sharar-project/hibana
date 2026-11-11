@@ -1,4 +1,4 @@
-"""The `sharar` command (sharar/cli.py, sharar/launch/): what each subcommand starts, without a GPU, systemd or a server."""
+"""The `sharar` command (hibana/cli.py, hibana/launch/): what each subcommand starts, without a GPU, systemd or a server."""
 import json
 import os
 import subprocess
@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from sharar import cli
-from sharar.launch import ctl, preflight, run, service
+from hibana import cli
+from hibana.launch import ctl, preflight, run, service
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -26,7 +26,7 @@ def home(monkeypatch, tmp_path):
     monkeypatch.setattr(preflight, "check_host", lambda floor_kib=None: {"gpu": "GB10", "memory": "128 GiB"})
     monkeypatch.setattr(preflight, "ensure_snapshots", lambda s, log=print, fetch=True: [])
     monkeypatch.setattr(preflight, "ensure_w3", lambda s, log=print, fetch=True: tmp_path / "w3" if s.get("SHARAR_W3_DECODE") == "1" else None)
-    from sharar.launch import lxcfs
+    from hibana.launch import lxcfs
     monkeypatch.setattr(lxcfs, "reexec_if_needed", lambda: None)
     saved = dict(os.environ)  # serve installs the engine's settings into this process's environment
     yield tmp_path
@@ -35,7 +35,7 @@ def home(monkeypatch, tmp_path):
 
 
 def test_importing_the_cli_does_not_import_torch():
-    out = subprocess.run([sys.executable, "-c", "import sys, sharar.cli, sharar.launch.run; print('torch' in sys.modules)"],
+    out = subprocess.run([sys.executable, "-c", "import sys, hibana.cli, hibana.launch.run; print('torch' in sys.modules)"],
                          capture_output=True, text=True, cwd=ROOT)
     assert out.stdout.strip() == "False"
 
@@ -60,7 +60,7 @@ def test_serve_runs_the_engine_in_the_foreground(home, monkeypatch):
 
 
 def test_engine_by_hand_serves_what_serve_would(home):
-    from sharar.engine.config import EngineConfig
+    from hibana.engine.config import EngineConfig
 
     args = cli.engine_parser().parse_args(["--target", "flashnext"])
     cfg = EngineConfig.from_env(cli.resolved_engine_env(args))
@@ -76,7 +76,7 @@ def test_engine_by_hand_serves_what_serve_would(home):
 @pytest.mark.parametrize("profile", ["--exact", "--fast", "--throughput"])
 @pytest.mark.parametrize("target", ["27b", "flashnext"])
 def test_engine_resolution_keeps_what_serve_prepared(home, monkeypatch, target, profile):
-    from sharar.engine.config import EngineConfig
+    from hibana.engine.config import EngineConfig
 
     started = []
     monkeypatch.setattr(run.guard, "start_thread", lambda **kw: None)
@@ -126,7 +126,7 @@ def test_cache_without_a_server_counts_the_store_on_disk(home, monkeypatch, caps
 def test_two_spark_serve_stays_the_user_for_ssh(home, monkeypatch):
     """The CPU-list namespace makes the process root, and ssh would read root's keys: on two Sparks only the ranks
     restart themselves in it, never the launcher that mirrors the checkout over ssh."""
-    from sharar.launch import lxcfs
+    from hibana.launch import lxcfs
     wrapped = []
     monkeypatch.setattr(lxcfs, "reexec_if_needed", lambda: wrapped.append(True))
     monkeypatch.setattr(run, "serve", lambda args: 0)
@@ -184,7 +184,7 @@ def test_service_start_composes_systemd_run(home, monkeypatch, tmp_path):
     service.start("sharar-x", ["serve", "27b"], log, "Sharar test")
     cmd = calls[-1]
     assert cmd[:2] == ["systemd-run", "--user"] and cmd[cmd.index("--unit") + 1] == "sharar-x"
-    assert cmd[-5:] == [sys.executable, "-m", "sharar", "serve", "27b"]
+    assert cmd[-5:] == [sys.executable, "-m", "hibana", "serve", "27b"]
     assert f"StandardOutput=append:{log}" in cmd and f"SHARAR_RESULTS={home / 'results'}" in cmd
     assert (tmp_path / "logs" / "unit.log.1").read_text() == "old run"
 
@@ -259,7 +259,7 @@ def test_launch_and_chat_need_a_server(home):
 
 def test_rank0_gets_the_resolved_settings_not_the_callers(monkeypatch):
     """SHARAR_TRACES=off in the caller's environment must not reach rank 0, which would read it as a trace directory."""
-    from sharar.launch import tp
+    from hibana.launch import tp
     started = []
 
     class FakePopen:
@@ -271,6 +271,6 @@ def test_rank0_gets_the_resolved_settings_not_the_callers(monkeypatch):
     monkeypatch.setenv("SHARAR_TRACES", "off")
     monkeypatch.setenv("SHARAR_SPEC", "9")
     monkeypatch.setenv("HOME_MARKER", "kept")
-    tp.Pair("peer-host", {"SHARAR_SPEC": "4", "SHARAR_TARGET": "qwen38"}, "sharar", ["engine"]).start()
+    tp.Pair("peer-host", {"SHARAR_SPEC": "4", "SHARAR_TARGET": "qwen38"}, "hibana", ["engine"]).start()
     (_, rank1_env), (_, rank0_env) = started
     assert "SHARAR_TRACES" not in rank0_env and rank0_env["SHARAR_SPEC"] == "4" and rank0_env["HOME_MARKER"] == "kept"

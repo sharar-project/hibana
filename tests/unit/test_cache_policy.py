@@ -15,13 +15,13 @@ import httpx
 import pytest
 import torch
 
-from sharar.cache.radix import RadixCache
-from sharar.cache.request_state import StateManager
-from sharar.cache.snapshot import Snapshot, get_priority
-from sharar.engine.executor import Executor
-from sharar.engine.request import Request
-from sharar.engine.sampler import InvalidRequest, SamplingParams
-from sharar.engine.scheduler import QueueFull, Scheduler, SchedulerConfig
+from hibana.cache.radix import RadixCache
+from hibana.cache.request_state import StateManager
+from hibana.cache.snapshot import Snapshot, get_priority
+from hibana.engine.executor import Executor
+from hibana.engine.request import Request
+from hibana.engine.sampler import InvalidRequest, SamplingParams
+from hibana.engine.scheduler import QueueFull, Scheduler, SchedulerConfig
 from tests.unit.test_checkpoint_retention import States
 from tests.unit.test_radix import FakePool, make, snaps
 from tests.unit.test_resume_under_slot_pressure import depth, draw, harness, run_turn
@@ -399,7 +399,7 @@ def test_a_turn_that_drops_the_last_message_resumes_at_its_start():
 
 
 def chat_app(engine, render, tok):
-    from sharar.api.server import create_app
+    from hibana.api.server import create_app
     return create_app(engine, tok, SimpleNamespace(render=render), {})
 
 
@@ -563,7 +563,7 @@ def test_cache_trace_runs_on_the_cache_policy(tmp_path, monkeypatch):
     (prototype 3's version crashed, its second run matching the first's checkpoint), and the last resumes at the cold
     run's last chunk end with its exact state."""
     import contextlib
-    from sharar.engine import cache_trace
+    from hibana.engine import cache_trace
 
     @contextlib.contextmanager
     def fake_trace(model, position):

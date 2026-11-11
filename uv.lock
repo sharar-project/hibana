@@ -436,6 +436,81 @@ wheels = [
 ]
 
 [[package]]
+name = "hibana"
+version = "0.1.0"
+source = { editable = "." }
+default-groups = ["gb10"]
+dependencies = [
+    { name = "fastapi" },
+    { name = "huggingface-hub" },
+    { name = "jinja2" },
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "safetensors" },
+    { name = "tokenizers" },
+    { name = "torch" },
+    { name = "uvicorn" },
+    { name = "xgrammar" },
+]
+
+[package.optional-dependencies]
+test = [
+    { name = "httpx" },
+    { name = "pytest" },
+]
+
+[package.dev-dependencies]
+eval = [
+    { name = "pyarrow" },
+    { name = "sharar-eval" },
+]
+gb10 = [
+    { name = "b12x" },
+    { name = "einops" },
+    { name = "flashinfer-jit-cache" },
+    { name = "flashinfer-python" },
+    { name = "httpx" },
+    { name = "ninja" },
+    { name = "pytest" },
+    { name = "torch" },
+    { name = "triton" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.141,<0.142" },
+    { name = "httpx", marker = "extra == 'test'", specifier = "==0.28.1" },
+    { name = "huggingface-hub", specifier = ">=1.30" },
+    { name = "jinja2", specifier = ">=3.1" },
+    { name = "numpy", specifier = ">=2.3,<2.4" },
+    { name = "pillow", specifier = ">=11" },
+    { name = "pytest", marker = "extra == 'test'", specifier = "==9.1.1" },
+    { name = "safetensors", specifier = ">=0.5" },
+    { name = "tokenizers", specifier = ">=0.21" },
+    { name = "torch", specifier = ">=2.13,<2.14", index = "https://download.pytorch.org/whl/cu130" },
+    { name = "uvicorn", specifier = ">=0.52,<0.53" },
+    { name = "xgrammar", specifier = "==0.2.8" },
+]
+provides-extras = ["test"]
+
+[package.metadata.requires-dev]
+eval = [
+    { name = "pyarrow" },
+    { name = "sharar-eval", git = "https://github.com/abdelfattah-lab/sharar-eval?rev=58ea950577947004861da46b11f62e7c052dc565" },
+]
+gb10 = [
+    { name = "b12x", specifier = "==1.5.0" },
+    { name = "einops", specifier = "==0.8.2" },
+    { name = "flashinfer-jit-cache", specifier = "==0.6.17+cu130", index = "https://flashinfer.ai/whl/cu130" },
+    { name = "flashinfer-python", specifier = "==0.6.17" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "ninja", specifier = "==1.13.2" },
+    { name = "pytest", specifier = "==9.1.1" },
+    { name = "torch", specifier = "==2.13.0+cu130", index = "https://download.pytorch.org/whl/cu130" },
+    { name = "triton", specifier = "==3.7.1" },
+]
+
+[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -1085,81 +1160,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a9/5a/0db4da3bc908df06e5efae42b44e75c81dd52716e10192ff36d0c1c8e379/setuptools-78.1.0.tar.gz", hash = "sha256:18fd474d4a82a5f83dac888df697af65afa82dec7323d09c3e37d1f14288da54", size = 1367827, upload-time = "2025-03-25T22:49:35.332Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/21/f43f0a1fa8b06b32812e0975981f4677d28e0f3271601dc88ac5a5b83220/setuptools-78.1.0-py3-none-any.whl", hash = "sha256:3e386e96793c8702ae83d17b853fb93d3e09ef82ec62722e61da5cd22376dcd8", size = 1256108, upload-time = "2025-03-25T22:49:33.13Z" },
-]
-
-[[package]]
-name = "sharar"
-version = "0.1.0"
-source = { editable = "." }
-default-groups = ["gb10"]
-dependencies = [
-    { name = "fastapi" },
-    { name = "huggingface-hub" },
-    { name = "jinja2" },
-    { name = "numpy" },
-    { name = "pillow" },
-    { name = "safetensors" },
-    { name = "tokenizers" },
-    { name = "torch" },
-    { name = "uvicorn" },
-    { name = "xgrammar" },
-]
-
-[package.optional-dependencies]
-test = [
-    { name = "httpx" },
-    { name = "pytest" },
-]
-
-[package.dev-dependencies]
-eval = [
-    { name = "pyarrow" },
-    { name = "sharar-eval" },
-]
-gb10 = [
-    { name = "b12x" },
-    { name = "einops" },
-    { name = "flashinfer-jit-cache" },
-    { name = "flashinfer-python" },
-    { name = "httpx" },
-    { name = "ninja" },
-    { name = "pytest" },
-    { name = "torch" },
-    { name = "triton" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = ">=0.141,<0.142" },
-    { name = "httpx", marker = "extra == 'test'", specifier = "==0.28.1" },
-    { name = "huggingface-hub", specifier = ">=1.30" },
-    { name = "jinja2", specifier = ">=3.1" },
-    { name = "numpy", specifier = ">=2.3,<2.4" },
-    { name = "pillow", specifier = ">=11" },
-    { name = "pytest", marker = "extra == 'test'", specifier = "==9.1.1" },
-    { name = "safetensors", specifier = ">=0.5" },
-    { name = "tokenizers", specifier = ">=0.21" },
-    { name = "torch", specifier = ">=2.13,<2.14", index = "https://download.pytorch.org/whl/cu130" },
-    { name = "uvicorn", specifier = ">=0.52,<0.53" },
-    { name = "xgrammar", specifier = "==0.2.8" },
-]
-provides-extras = ["test"]
-
-[package.metadata.requires-dev]
-eval = [
-    { name = "pyarrow" },
-    { name = "sharar-eval", git = "https://github.com/abdelfattah-lab/sharar-eval?rev=58ea950577947004861da46b11f62e7c052dc565" },
-]
-gb10 = [
-    { name = "b12x", specifier = "==1.5.0" },
-    { name = "einops", specifier = "==0.8.2" },
-    { name = "flashinfer-jit-cache", specifier = "==0.6.17+cu130", index = "https://flashinfer.ai/whl/cu130" },
-    { name = "flashinfer-python", specifier = "==0.6.17" },
-    { name = "httpx", specifier = "==0.28.1" },
-    { name = "ninja", specifier = "==1.13.2" },
-    { name = "pytest", specifier = "==9.1.1" },
-    { name = "torch", specifier = "==2.13.0+cu130", index = "https://download.pytorch.org/whl/cu130" },
-    { name = "triton", specifier = "==3.7.1" },
 ]
 
 [[package]]

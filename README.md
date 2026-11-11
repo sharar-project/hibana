@@ -157,7 +157,7 @@ uv run pytest tests/unit                      # CPU tests
 SHARAR_RUN_GPU=1 uv run pytest tests/gpu      # GPU suite (the GPU to itself)
 ```
 
-The engine is `sharar/`, in-process profilers are in `profiling/`, and checks and gates in `tools/`. Quality and
+The engine is `hibana/`, in-process profilers are in `profiling/`, and checks and gates in `tools/`. Quality and
 speed benchmarks live in [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval). Read
 [CONTRIBUTING.md](CONTRIBUTING.md) before changing the engine. Work in progress is tracked in
 [issues](https://github.com/abdelfattah-lab/sharar/issues). Apache 2.0 ([license](LICENSE),

@@ -2,8 +2,8 @@
 import pytest
 from pathlib import Path
 
-from sharar.engine import config
-from sharar.engine.config import EngineConfig
+from hibana.engine import config
+from hibana.engine.config import EngineConfig
 
 
 def test_defaults_match_the_old_module_defaults():
@@ -102,7 +102,7 @@ def test_empty_qsa_prefill_environment_uses_default():
 def test_no_module_reads_sharar_variables_at_import():
     import pathlib
     import re
-    root = pathlib.Path(__file__).resolve().parents[2] / "sharar"
+    root = pathlib.Path(__file__).resolve().parents[2] / "hibana"
     offenders = []
     for path in root.rglob("*.py"):
         rel = path.relative_to(root).as_posix()

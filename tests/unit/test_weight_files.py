@@ -7,9 +7,9 @@ import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
-from sharar.model.flashnext.moe import load_nvfp4_experts
-from sharar.weights import files
-from sharar.weights.safetensors import SnapshotWeights
+from hibana.model.flashnext.moe import load_nvfp4_experts
+from hibana.weights import files
+from hibana.weights.safetensors import SnapshotWeights
 
 
 def _tensors(seed=0):

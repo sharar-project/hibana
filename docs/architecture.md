@@ -43,7 +43,7 @@ benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) th
 - **One speculative round.** `SpecDecoder` drives every proposer: reserve, propose, verify (graph or eager),
   accept (exact, relaxed or sampled rejection), commit, feed back.
 - **Configuration.** Every `SHARAR_*` setting is a field of one `EngineConfig` (`engine/config.py`), built at
-  startup and reported by `/get_server_info`. The serving profiles (`sharar/launch/settings.py`) set
+  startup and reported by `/get_server_info`. The serving profiles (`hibana/launch/settings.py`) set
   the defaults ([operations](operations.md#serving-profiles)).
 - **Model contract.** A model exposes `forward`, `logits`, `linears()`, `register_pages`, `register_state` and
   `forward_extras()`; side inputs (Flash-Next's PLE rows and sparse-attention bookkeeping) travel on
@@ -79,7 +79,7 @@ benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) th
 
 | Code | Where | Why |
 |---|---|---|
-| Engine, models, kernels, weights, cache, proposers | `sharar/` | Proposers share the verify graphs, state ownership, kernels and draft heads with the target. |
+| Engine, models, kernels, weights, cache, proposers | `hibana/` | Proposers share the verify graphs, state ownership, kernels and draft heads with the target. |
 | HTTP evals and speed benchmarks | [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval) | They import nothing from `sharar` and run against any server. |
 | In-process profilers and the lossy gate's in-process layers | `profiling/`, `tools/gate/` | They reach into engine internals and version with them. |
 | Target-model and drafter training (distillation, LoRA, drafter adaptation) | a separate repository when it starts | Its own dependencies; uses Sharar as the rollout server and `--draft DIR` to serve a drafter. Drafter training on recorded traffic left this repository at the tag `archive/draft-training`. |

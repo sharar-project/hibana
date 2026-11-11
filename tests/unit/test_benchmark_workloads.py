@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from sharar.benchmark_workloads import materialize
+from hibana.benchmark_workloads import materialize
 
 SOURCE_SHA256 = "534d0490fb307754cea397cbf0ef816dc4abd2c2ff9e72f73c39db1ce1ba276d"  # request_state_7aebbe6.txt
 
@@ -21,7 +21,7 @@ def digest(value):
     ('reasoning', 'fced3b9d8b1cafb6d661e1f604d171681751e555530b97b0ad6b4ef66f79ed40'),
 ])
 def test_builtin_workloads_match_frozen_aiperf_baseline(snapshot, case, expected):
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.tokenizer import SnapshotTokenizer
 
     ids = materialize(SnapshotTokenizer(snapshot).encode, case, 10000)
     assert len(ids) == 10000
@@ -29,5 +29,5 @@ def test_builtin_workloads_match_frozen_aiperf_baseline(snapshot, case, expected
 
 
 def test_packaged_source_fixture_stays_frozen():
-    from sharar.benchmark_workloads import frozen_source
+    from hibana.benchmark_workloads import frozen_source
     assert hashlib.sha256(frozen_source().encode()).hexdigest() == SOURCE_SHA256

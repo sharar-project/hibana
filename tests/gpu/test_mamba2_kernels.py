@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Mamba-2 mixer kernels (`sharar/kernels/mamba2.py`) against a plain FP32 sequential recurrence.
+"""Mamba-2 mixer kernels (`hibana/kernels/mamba2.py`) against a plain FP32 sequential recurrence.
 
 The reference convolves each token from its three-token window (rounding the activation to BF16, as every path
 does before the scan), then steps h' = exp(dt A) h + dt x B^T, y = h' C + D x token by token. Prefill (chunked
@@ -22,7 +22,7 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
-from sharar.kernels import mamba2 as m
+from hibana.kernels import mamba2 as m
 
 FORMATS = ("fp32", "sr")
 DTYPE = {"fp32": torch.float32, "sr": torch.float16}
@@ -39,7 +39,7 @@ def _layer0():
     """Layer 0's mixer tensors and its pre-norm weight, or None without the checkpoint."""
     import os
     from pathlib import Path
-    from sharar.target import NEMOTRON
+    from hibana.target import NEMOTRON
     try:
         snap = NEMOTRON.snapshot_dir()
     except FileNotFoundError:  # the shard is enough here: fall back to the default HF cache, index or not
@@ -128,7 +128,7 @@ def _positions(start, rows, steps=1):
 @pytest.mark.parametrize("fmt", FORMATS)
 def test_normalized_prefill_matches_separate_scan_and_norm(layer, lengths, prefixes, fmt, monkeypatch):
     """Exercise the served fusion, ragged tails, interior checkpoints and untouched slots."""
-    from sharar.kernels import mamba2_prefill
+    from hibana.kernels import mamba2_prefill
     params, _ = layer
     slots = [3, 1, 5][:len(lengths)]
     checkpoints = [(i, min(127, n - 1), 6 + i) for i, n in enumerate(lengths) if n > 128]
@@ -167,7 +167,7 @@ def test_normalized_prefill_matches_separate_scan_and_norm(layer, lengths, prefi
 @pytest.mark.parametrize("fmt,t,quant", [("fp32", 17, False), ("sr", 17, False),
                                       ("fp32", 2048, True)])
 def test_normalized_prefill_fallbacks(layer, fmt, t, quant, monkeypatch):
-    from sharar.kernels import mamba2_prefill
+    from hibana.kernels import mamba2_prefill
     params, _ = layer
     plan = m.plan_prefill([t], [17], [1], DEV)
     zx = _inputs(layer, t, 421)
@@ -538,7 +538,7 @@ class _WindowPool:
     """The state pool a WindowState and the window paths read: FP32-free byte rows plus BF16 conv windows."""
 
     def __init__(self, layers, slots, bits):
-        from sharar.cache.ssm_format import WindowLayout, WindowPool
+        from hibana.cache.ssm_format import WindowLayout, WindowPool
         self.layer_ids = [2 * j for j in range(layers)]
         self.layout = WindowLayout(G, H, N, P, WINDOW, RANK[bits], bits)
         self.ssm_all = torch.zeros((layers, slots, self.layout.nbytes), dtype=torch.uint8, device=DEV)
@@ -553,19 +553,19 @@ class _WindowPool:
 
     def seed(self, slots, seed=1, j=0):
         """Quantize random states into `slots` and return the states they now hold, FP32 [len(slots), H, P, N]."""
-        from sharar.kernels import ssm_window as W
+        from hibana.kernels import ssm_window as W
         t = torch.tensor(slots, dtype=torch.int32, device=DEV)
         W.quantize(self.layout, self.views(j), _pools(len(slots), seed=seed)[1], t)
         return self.state(slots, j)
 
     def state(self, slots, j=0):
-        from sharar.kernels import ssm_window as W
+        from hibana.kernels import ssm_window as W
         return torch.stack([W.reference_state(self.layout, self.views(j), s).float() for s in slots])
 
 
 @pytest.mark.parametrize("bits", [8, 4])
 def test_window_normalized_prefill_preserves_checkpoint_bytes(layer, bits, monkeypatch):
-    from sharar.kernels import mamba2_prefill
+    from hibana.kernels import mamba2_prefill
     params, _ = layer
     pool = _WindowPool(1, 10, bits)
     pool.seed([3, 4, 5], seed=19)
@@ -611,7 +611,7 @@ def test_window_verify_and_commit_follow_the_recurrence(layer, batch, steps, log
     recurrence from the state the slot holds, the pool untouched, the ring's records the recurrence's own, and the
     commit of every count leaves the recurrence's state (exactly up to the FP16 records while the window has room,
     within one quantization when it folds)."""
-    from sharar.kernels import ssm_window as W
+    from hibana.kernels import ssm_window as W
     params, _ = layer
     pool = _WindowPool(1, 8, bits)
     slots_l = [5, 2, 7][:batch]
@@ -682,7 +682,7 @@ def test_window_prefill_quantizes_the_fp32_prefill(layer, bits):
     pool = _WindowPool(1, 12, bits)
     lens, prefixes, slots = [300, 1, 129, 133, 2], [0, 5, 0, 70, 3], [3, 4, 5, 6, 7]
     checkpoints = [(0, 128, 8), (0, 200, 9), (3, 58, 10), (3, 3, 11)]
-    from sharar.kernels import ssm_window as W
+    from hibana.kernels import ssm_window as W
     pool.seed(slots, seed=6)
     held = W.materialize(pool.layout, pool.views(), torch.tensor(slots, dtype=torch.int32, device=DEV))
     conv = pool.conv_all[0]
@@ -704,7 +704,7 @@ def test_window_prefill_quantizes_the_fp32_prefill(layer, bits):
 
 def test_window_paths_under_graphs(layer):
     """verify + commit and decode on a quantized pool capture into CUDA graphs and replay as they ran eagerly."""
-    from sharar.kernels import ssm_window as W
+    from hibana.kernels import ssm_window as W
     params, _ = layer
     pool = _WindowPool(2, 6, 8)
     for j in range(2):

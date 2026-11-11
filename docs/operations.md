@@ -48,14 +48,14 @@ on available memory.
 
 ## Settings
 
-Every setting is a `SHARAR_*` name. Order, first wins ([sharar/launch/settings.py](../sharar/launch/settings.py)):
+Every setting is a `SHARAR_*` name. Order, first wins ([hibana/launch/settings.py](../hibana/launch/settings.py)):
 the command line (`sharar serve --help`), the environment, the config file (`SHARAR_CONFIG_FILE`, else
 `config/gb10.env` in the checkout, else `~/.config/sharar/sharar.env`; [example](../config/gb10.env.example)), the
 target's settings (port, service, drafter), the profile's defaults, then the built-in defaults: models in
 `SHARAR_HF_CACHE` (default `$HF_HOME`, else `~/.cache/huggingface`; Flash-Next in `SHARAR_FLASHNEXT_CACHE`, default the
 same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (default
 `~/.local/share/sharar`). The server reads the resolved settings once into `EngineConfig`
-([engine/config.py](../sharar/engine/config.py)); `/get_server_info` reports them under `config`.
+([engine/config.py](../hibana/engine/config.py)); `/get_server_info` reports them under `config`.
 
 | Setting | Launcher default | Override |
 |---|---|---|
@@ -151,7 +151,7 @@ attention reads them; the scales are per-page rows (`KvPool.page_aux`), so the p
 with each page, and an SSD store keeps its KV format in its identity.
 
 Verification of more than 8 rows a request (the 27B's graphs) runs a GB10 kernel instead,
-[kernels/csrc/verify_attn.cu](../sharar/kernels/csrc/verify_attn.cu): one block a request, KV head and chunk of the
+[kernels/csrc/verify_attn.cu](../hibana/kernels/csrc/verify_attn.cu): one block a request, KV head and chunk of the
 context, the codes converted to FP16 once a tile in shared memory, both products on the FP16 tensor cores, the chunks
 merged by their log-sum-exps. At 16 rows it takes 2.1-2.2x less time than `fa2` over the same cache at 64-128K with
 one to four requests (3x with eight), at `fa2`'s precision or better against exact attention; up to 8 rows `fa2` is
@@ -183,7 +183,7 @@ a layer), so the 27B `fast` prefills a 32K prompt in 11.0 s and a 128K one in 74
 ## Serving profiles
 
 A profile sets the default of every speed/fidelity knob (`profile_defaults` in
-[sharar/launch/settings.py](../sharar/launch/settings.py)); a knob set on the command line, in the environment or in
+[hibana/launch/settings.py](../hibana/launch/settings.py)); a knob set on the command line, in the environment or in
 the config file wins. `/get_server_info` reports the profile under `config`.
 
 | Knob | exact | fast (default) | throughput |
@@ -233,7 +233,7 @@ Four of the knobs take more than the table shows:
   row's other top-22 experts ride along when the forward reads them anyway, and fills the cap by summed routing weight
   ([how](nemotron.md#serving)).
 - **`SHARAR_SSM_STATE=fp32|int8|int4|fp16_sr`**: the integer formats quantize each recurrent layer's state per window as
-  in LeapQuant ([arXiv 2609.38166](https://arxiv.org/abs/2609.38166); `sharar/cache/ssm_format.py`), a fraction of
+  in LeapQuant ([arXiv 2609.38166](https://arxiv.org/abs/2609.38166); `hibana/cache/ssm_format.py`), a fraction of
   FP32's memory per slot, and need `SHARAR_VERIFY_STATE=reconstruct` (with `snapshots` the state stays FP32). The
   saving pays with many requests (on one Spark the 27B decodes 30% faster at 16) but not at one, where it also
   delays a long prompt's first token, so `fast` keeps FP32. Nemotron's Mamba-2 state also takes `fp16_sr` (stochastic

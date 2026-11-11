@@ -2,7 +2,7 @@
 import pytest
 import torch
 
-from sharar.kernels.relaxed_rank import SKIPPED, rank_gap
+from hibana.kernels.relaxed_rank import SKIPPED, rank_gap
 
 
 @pytest.mark.parametrize('vocab', [248320, 1000, 5])

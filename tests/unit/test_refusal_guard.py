@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from sharar.api import refusal_guard
+from hibana.api import refusal_guard
 from tests.unit.test_messages_api import post, sse_events
 
 REFUSAL = "This command requires approval"

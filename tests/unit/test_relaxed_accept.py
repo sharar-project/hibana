@@ -2,9 +2,9 @@
 import pytest
 import torch
 
-from sharar.api.validation import _sampling_from
-from sharar.engine.contracts import ProposerContext, ProposerRequirements
-from sharar.engine.sampler import InvalidRequest, SamplingParams
+from hibana.api.validation import _sampling_from
+from hibana.engine.contracts import ProposerContext, ProposerRequirements
+from hibana.engine.sampler import InvalidRequest, SamplingParams
 from tests.unit.test_runtime_safety import tiny_executor
 
 
@@ -87,7 +87,7 @@ def test_mixed_batch_keeps_exact_rows_exact(monkeypatch):
 
 
 def test_server_default_applies_only_to_greedy_requests_that_do_not_choose(monkeypatch):
-    from sharar.api import validation
+    from hibana.api import validation
     monkeypatch.setattr(validation, "ACCEPT_DEFAULT", (2, 1.0))
     assert _sampling_from({"max_tokens": 4}).relaxed  # greedy, silent: default applies
     p = _sampling_from({"max_tokens": 4, "accept_top_k": 1})
@@ -117,7 +117,7 @@ def test_relaxed_positions_are_recorded(monkeypatch):
 
 
 def test_sampled_requests_get_the_soft_default_and_ignore_k_m():
-    from sharar.api import validation
+    from hibana.api import validation
     saved = validation.ACCEPT_DEFAULT, validation.ACCEPT_SOFT_DEFAULT
     try:
         validation.set_accept_default(3, 2.0, soft=0.5)

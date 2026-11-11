@@ -8,7 +8,7 @@ uv run sharar dev tp-comm              # the RDMA one-shot all-reduce against NC
 uv run sharar dev tp-draft-head        # the vocabulary-parallel draft head against the whole-vocabulary one
 ```
 
-`--tp 2` is the single-Spark command with the peer added (`sharar/launch/tp.py`): the same settings, preflight,
+`--tp 2` is the single-Spark command with the peer added (`hibana/launch/tp.py`): the same settings, preflight,
 downloads and 3-bit checkpoint, then rank 0 here and rank 1 on the peer, the host at the other end of the RoCE link
 that answers ssh (or `SHARAR_TP_PEER`). Before each serve it mirrors the checkout to the same path on the peer
 (`rsync --delete`, `.git` included: it replaces whatever is at that path there), syncs the peer's Python environment
@@ -17,7 +17,7 @@ only what changed). Both ranks run `sharar engine ... --tp 2 --tp-rank R`; when 
 `EngineConfig` it resolved, so rank 1 serves with rank 0's settings and the paths in them must exist on both Sparks.
 SIGTERM or Ctrl-C reaches rank 0 alone: it drains its requests, and the stop it broadcasts ends rank 1; with the SSD
 tier on, both store their cached prefixes first (below). In LXD/Incus containers whose CPU set has holes, each rank restarts
-itself in a namespace whose CPU lists agree with `/proc/cpuinfo` (`sharar/launch/lxcfs.py`), which keeps
+itself in a namespace whose CPU lists agree with `/proc/cpuinfo` (`hibana/launch/lxcfs.py`), which keeps
 `import torch` from corrupting its heap.
 
 Both Sparks need the same user and paths (the checkout, the model cache, `$SHARAR_RESULTS`). The RDMA all-reduce is a
@@ -39,7 +39,7 @@ stored. The tier runs on both ranks or on neither (a store that cannot open turn
 
 ## Design
 
-SGLang's layout, with mini-sglang's names (`sharar/distributed.py`, `sharar/weights/sharding.py`):
+SGLang's layout, with mini-sglang's names (`hibana/distributed.py`, `hibana/weights/sharding.py`):
 
 | Projection | Role | Per rank |
 |---|---|---|

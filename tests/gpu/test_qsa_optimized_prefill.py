@@ -1,8 +1,8 @@
 """Opt-in runtime QSA path, using synthetic actual-head geometry."""
 import pytest
 import torch
-from sharar.engine.config import EngineConfig,using
-from sharar.target import FLASHNEXT
+from hibana.engine.config import EngineConfig,using
+from hibana.target import FLASHNEXT
 
 @pytest.mark.parametrize('batch,length,prefix',[(1,4096,0),(2,4096,0),(1,2048,8192),(1,257,2049)])
 @pytest.mark.parametrize('backend', ['auto', 'optimized'])

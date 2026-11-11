@@ -1,10 +1,10 @@
-"""`sharar serve`'s settings (sharar/launch/settings.py): sources, profiles, validation, what the engine receives."""
+"""`sharar serve`'s settings (hibana/launch/settings.py): sources, profiles, validation, what the engine receives."""
 import pytest
 
-from sharar.launch import settings as launch
-from sharar.model import qwen38_config
-from sharar.model.flashnext import config as flashnext
-from sharar.target import FLASHNEXT, QWEN38
+from hibana.launch import settings as launch
+from hibana.model import qwen38_config
+from hibana.model.flashnext import config as flashnext
+from hibana.target import FLASHNEXT, QWEN38
 
 
 @pytest.fixture
@@ -211,7 +211,7 @@ def test_flashnext_without_a_checkpoint_serves_its_fp8_trunk(env):
 
 @pytest.mark.parametrize("policy", ["auto", "cute", "triton"])
 def test_gdn_prefill_backend_reaches_engine_through_the_launcher(env, policy):
-    from sharar.engine.config import EngineConfig
+    from hibana.engine.config import EngineConfig
     resolved = resolve({**env, "SHARAR_GDN_PREFILL": policy}, "27b")
     engine_env = resolved.engine_env(None)
     assert engine_env["SHARAR_GDN_PREFILL"] == policy
@@ -220,7 +220,7 @@ def test_gdn_prefill_backend_reaches_engine_through_the_launcher(env, policy):
 
 @pytest.mark.parametrize("policy", ["original", "auto", "optimized"])
 def test_qsa_prefill_backend_reaches_engine(env, policy):
-    from sharar.engine.config import EngineConfig
+    from hibana.engine.config import EngineConfig
     resolved = resolve({**env, "SHARAR_QSA_PREFILL_BACKEND": policy}, "flashnext")
     engine_env = resolved.engine_env(None)
     assert engine_env["SHARAR_QSA_PREFILL_BACKEND"] == policy
@@ -298,7 +298,7 @@ def test_flashnext_serves_dflash2_on_request(env, profile):
 
 
 def test_moe_budget_setting():
-    from sharar.engine.config import EngineConfig
+    from hibana.engine.config import EngineConfig
     assert (EngineConfig.from_env({"SHARAR_MOE_BUDGET": "64"}).moe_budget, EngineConfig.from_env({"SHARAR_MOE_BUDGET": "64"}).moe_budget_per_request) == (64, 0)
     cfg = EngineConfig.from_env({"SHARAR_MOE_BUDGET": "12:64"})
     assert (cfg.moe_budget, cfg.moe_budget_per_request) == (64, 12)
@@ -322,9 +322,9 @@ def test_profile_depths_stay_within_a_lower_batch_limit(env):
 
 
 def test_preflight_fetches_the_targets_own_drafter(env):
-    from sharar.launch.preflight import pinned_snapshots
-    from sharar.model import qwen38_config
-    from sharar.model.flashnext import config as flashnext_config
+    from hibana.launch.preflight import pinned_snapshots
+    from hibana.model import qwen38_config
+    from hibana.model.flashnext import config as flashnext_config
     for target, config in (("27b", qwen38_config), ("flashnext", flashnext_config)):
         s = resolve(env, target, "fast", overrides={"SHARAR_PROPOSER": "dflash2"})
         assert pinned_snapshots(s)[-1][1:] == config.DRAFT_PINS["dflash2"], target
@@ -345,7 +345,7 @@ def test_both_targets_keep_nvfp4_kv_in_fast_and_throughput_on_one_spark(env):
 
 
 def test_host_floor_setting(env, tmp_path):
-    from sharar.launch import guard
+    from hibana.launch import guard
     default = resolve(env, "flashnext").values
     assert guard.floor_kib(default) == 6 * 2**20  # the GB10 default
     assert guard.guard_kib(default) == 3 * 2**20  # the guard acts at half the floor

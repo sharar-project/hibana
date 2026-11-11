@@ -31,8 +31,8 @@ def qwen38():
 
     import torch
 
-    from sharar import config
-    from sharar.model.qwen38 import Qwen38
+    from hibana import config
+    from hibana.model.qwen38 import Qwen38
     config.check()
     gc.collect()
     torch.cuda.empty_cache()

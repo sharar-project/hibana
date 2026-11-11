@@ -5,9 +5,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.cache.snapshot import Snapshot
-from sharar.engine.contracts import ProposerContext, VerifiedFeatures
-from sharar.proposers.parallel import DraftState, FeatureCache, ParallelProposer
+from hibana.cache.snapshot import Snapshot
+from hibana.engine.contracts import ProposerContext, VerifiedFeatures
+from hibana.proposers.parallel import DraftState, FeatureCache, ParallelProposer
 
 
 class MarkedModel:

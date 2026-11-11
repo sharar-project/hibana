@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from sharar.cache.kv_pool import KvPool
+from hibana.cache.kv_pool import KvPool
 
 
 def test_padding_pages_are_distinct_and_never_allocated():

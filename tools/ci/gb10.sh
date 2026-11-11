@@ -134,7 +134,7 @@ stage_gpu() {
   evict_models
   SHARAR_RUN_GPU=1 uv run --frozen pytest -q -p no:cacheprovider tests/unit tests/gpu --basetemp=ci-out/pytest-tmp &
   pid=$!
-  uv run --frozen python -m sharar.launch.guard --pid "$pid" 8>&- &
+  uv run --frozen python -m hibana.launch.guard --pid "$pid" 8>&- &
   wait "$pid" || rc=$?
   return "$rc"
 }

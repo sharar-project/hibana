@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.engine import config
-from sharar.engine.context import ForwardContext
-from sharar.model.flashnext.moe import MoeLayer
+from hibana.engine import config
+from hibana.engine.context import ForwardContext
+from hibana.model.flashnext.moe import MoeLayer
 
 K, E, C = 10, 512, 20  # experts per token, experts, candidates per row (flashnext_fused.ROUTE_CANDIDATES)
 
@@ -129,7 +129,7 @@ def kernels(monkeypatch):
 
     topk = calls.topk = []
     stub = SimpleNamespace(route_budget=route_budget, route_topk=route_topk)
-    monkeypatch.setitem(sys.modules, "sharar.kernels.flashnext_fused", stub)
+    monkeypatch.setitem(sys.modules, "hibana.kernels.flashnext_fused", stub)
     return calls
 
 
@@ -141,7 +141,7 @@ def _built(w3=SimpleNamespace(base=0, experts=E), **changes):
     layer = MoeLayer.__new__(MoeLayer)
     with config.using(config.current().replace(**changes)), pytest.MonkeyPatch.context() as mp:
         if w3 is None:  # the routing state is set before the NVFP4 experts would load: stop there
-            mp.setattr("sharar.model.flashnext.moe.load_nvfp4_experts", lambda *args: (_ for _ in ()).throw(_Loading()))
+            mp.setattr("hibana.model.flashnext.moe.load_nvfp4_experts", lambda *args: (_ for _ in ()).throw(_Loading()))
             with pytest.raises(_Loading):
                 layer.__init__(w, "mlp", torch.device("cpu"), target, linear, "fp8", w3=None)
         else:

@@ -5,8 +5,8 @@ import gc
 import pytest
 import torch
 
-from sharar import target as targets
-from sharar.engine.sampler import SamplingParams
+from hibana import target as targets
+from hibana.engine.sampler import SamplingParams
 
 PROMPTS = [
     "Return only JSON with keys city and country for the capital of France.",
@@ -24,15 +24,15 @@ def chat(tok, text: str) -> list[int]:
 
 @pytest.fixture(scope="module")
 def runtime(tmp_path_factory):
-    from sharar.cache.spec_budget import SpecConfig
-    from sharar.engine.executor import Executor
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.cache.spec_budget import SpecConfig
+    from hibana.engine.executor import Executor
+    from hibana.tokenizer import SnapshotTokenizer
     target = targets.get("flashnext")
     try:
         snap = target.snapshot_dir()
     except FileNotFoundError as exc:
         pytest.skip(str(exc))
-    from sharar.engine import config
+    from hibana.engine import config
     gc.collect()
     torch.cuda.empty_cache()
     # The exact profile: the FP8 trunk without 3-bit copies (tests/conftest.py points the rest of the suite at the 27B's).
@@ -153,7 +153,7 @@ def test_a_prompt_backed_up_once_prefilled_restores_the_kv_it_had_at_the_finish(
     """The SSD tier writes a prompt's whole blocks up to its last chunk end S, and S's tail, as soon as the prompt is
     prefilled (its checkpoint), before the request decodes. After eviction, a restore brings back the target's and the
     MTP draft layer's KV exactly as the finished request left them: decoding writes no prompt position."""
-    from sharar.engine.prompts import random_ids
+    from hibana.engine.prompts import random_ids
     ex, _ = runtime
     ex.flush_cache()
     before = free(ex)

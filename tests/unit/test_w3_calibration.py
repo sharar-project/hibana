@@ -4,12 +4,12 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.distributed import set_tp_info
-from sharar.kernels import w3
-from sharar.model.qwen38_config import MODEL_REVISION
-from sharar.weights.w3_calibration import quantize
-from sharar.weights.sharding import ROW_PARALLEL, ColumnParallel
-from sharar.weights.w3_checkpoint import CalibratedWeights, save_weight
+from hibana.distributed import set_tp_info
+from hibana.kernels import w3
+from hibana.model.qwen38_config import MODEL_REVISION
+from hibana.weights.w3_calibration import quantize
+from hibana.weights.sharding import ROW_PARALLEL, ColumnParallel
+from hibana.weights.w3_checkpoint import CalibratedWeights, save_weight
 
 
 def test_calibrated_codes_round_trip_without_requantization():

@@ -13,8 +13,8 @@ from collections import defaultdict
 import torch
 from torch.profiler import ProfilerActivity, profile
 
-from sharar.engine.run import _load
-from sharar.engine.sampler import SamplingParams
+from hibana.engine.run import _load
+from hibana.engine.sampler import SamplingParams
 
 
 def main():

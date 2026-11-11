@@ -14,8 +14,8 @@ import time
 
 import torch
 
-from sharar.kernels import mamba2 as m
-from sharar.launch.guard import start_thread
+from hibana.kernels import mamba2 as m
+from hibana.launch.guard import start_thread
 
 
 def main():
@@ -36,7 +36,7 @@ def main():
     start_thread()
     torch.manual_seed(1271)
     if args.snapshot:
-        from sharar.weights.safetensors import SnapshotWeights
+        from hibana.weights.safetensors import SnapshotWeights
         w = SnapshotWeights(args.snapshot)
         names = ("conv1d.weight", "conv1d.bias", "A_log", "D", "dt_bias", "norm.weight")
         params = m.prepare_params(*(w.get("language_model.backbone.layers.0.mixer." + n).to("cuda")
@@ -72,8 +72,8 @@ def main():
                     if args.state_format == "fp16_sr":
                         state = state.half()
                     elif args.state_format in ("int8", "int4"):
-                        from sharar.cache.ssm_format import WindowLayout, WindowPool
-                        from sharar.kernels.ssm_window import quantize
+                        from hibana.cache.ssm_format import WindowLayout, WindowPool
+                        from hibana.kernels.ssm_window import quantize
                         bits = 8 if args.state_format == "int8" else 4
                         layout = WindowLayout(m.GROUPS, m.HEADS, m.STATE, m.HEAD_DIM, 16,
                                               4 if bits == 8 else 8, bits)

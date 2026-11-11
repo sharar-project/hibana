@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 
-from sharar.api import messages as messages_api
-from sharar.api.server import create_app
-from sharar.engine.loop import EngineUnavailable
-from sharar.engine.scheduler import QueueFull
+from hibana.api import messages as messages_api
+from hibana.api.server import create_app
+from hibana.engine.loop import EngineUnavailable
+from hibana.engine.scheduler import QueueFull
 
 TOOLS = [{'name': 'get_weather', 'description': 'Weather for a city',
           'input_schema': {'type': 'object', 'properties': {'city': {'type': 'string'}, 'days': {'type': 'integer'}}}}]
@@ -282,7 +282,7 @@ def test_non_object_body_is_rejected():
 
 def test_forced_tool_choice_is_constrained_and_counted():
     from tests.unit.test_grammar import PIECES, STOP, ID, V
-    from sharar.engine.grammar import Grammars
+    from hibana.engine.grammar import Grammars
     grammars = Grammars(PIECES, V, [STOP], ID['</think>'], byte_level=False)
     for choice in ({'type': 'any'}, {'type': 'tool', 'name': 'get_weather'}):
         response, engine, _ = post(body(tools=TOOLS, tool_choice=choice), 'ok', grammars=grammars)
@@ -456,8 +456,8 @@ def test_client_disconnect_cancels_the_request(stream):
 
 # ---- the real template: identical to the equivalent OpenAI chat request ----
 def test_rendering_matches_the_openai_route(snapshot):
-    from sharar.api.chat_template import ChatTemplate
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.api.chat_template import ChatTemplate
+    from hibana.tokenizer import SnapshotTokenizer
 
     tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
     anthropic = {
@@ -513,8 +513,8 @@ def test_rendering_matches_the_openai_route(snapshot):
 
 def test_openai_string_tool_arguments_render_like_objects(snapshot):
     # OpenAI clients (OpenCode, Cline, Aider) send earlier calls' arguments as a JSON string.
-    from sharar.api.chat_template import ChatTemplate
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.api.chat_template import ChatTemplate
+    from hibana.tokenizer import SnapshotTokenizer
 
     tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
 
@@ -543,8 +543,8 @@ def test_openai_string_tool_arguments_render_like_objects(snapshot):
 
 @pytest.mark.parametrize('stream', [False, True])
 def test_openai_developer_message_renders_like_system(snapshot, stream):
-    from sharar.api.chat_template import ChatTemplate
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.api.chat_template import ChatTemplate
+    from hibana.tokenizer import SnapshotTokenizer
 
     tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
 
@@ -571,8 +571,8 @@ def test_openai_developer_message_renders_like_system(snapshot, stream):
 
 @pytest.mark.parametrize('stream', [False, True])
 def test_openai_developer_message_inside_conversation_renders_like_system(snapshot, stream):
-    from sharar.api.chat_template import ChatTemplate
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.api.chat_template import ChatTemplate
+    from hibana.tokenizer import SnapshotTokenizer
 
     tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
 
@@ -600,8 +600,8 @@ def test_openai_developer_message_inside_conversation_renders_like_system(snapsh
 def test_claude_code_request_shape_renders(snapshot):
     # Claude Code 2.1.280: system blocks, a system message inside `messages`
     # after the first user turn, adaptive thinking, context_management and output_config.
-    from sharar.api.chat_template import ChatTemplate
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.api.chat_template import ChatTemplate
+    from hibana.tokenizer import SnapshotTokenizer
 
     tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
     request = {
@@ -630,8 +630,8 @@ def test_claude_code_request_shape_renders(snapshot):
 
 
 def test_openai_leading_system_messages_merge(snapshot):
-    from sharar.api.chat_template import ChatTemplate
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.api.chat_template import ChatTemplate
+    from hibana.tokenizer import SnapshotTokenizer
 
     tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
     request = {'max_tokens': 8, 'messages': [{'role': 'system', 'content': 'first'}, {'role': 'system', 'content': 'second'},
@@ -659,14 +659,14 @@ def test_openai_leading_system_messages_merge(snapshot):
     ({'output_config': {'effort': 'low'}, 'chat_template_kwargs': {'reasoning_effort': 'medium'}}, None, 'medium'),
 ])
 def test_client_effort_selects_template_reasoning_effort(field, effort, expected):
-    from sharar.api.validation import _template_kwargs
+    from hibana.api.validation import _template_kwargs
     kwargs, thinking = _template_kwargs(field)
     assert kwargs.get('reasoning_effort') == expected and thinking
 
 
 def test_effort_reaches_the_rendered_prompt(snapshot):
-    from sharar.api.chat_template import ChatTemplate
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.api.chat_template import ChatTemplate
+    from hibana.tokenizer import SnapshotTokenizer
 
     tok, tmpl = SnapshotTokenizer(snapshot), ChatTemplate(snapshot)
 

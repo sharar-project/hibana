@@ -4,8 +4,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from sharar.kernels import hyper_prefill as hp  # noqa: E402
-from sharar.model.flashnext.hyper import HyperConnection, WideNorm  # noqa: E402
+from hibana.kernels import hyper_prefill as hp  # noqa: E402
+from hibana.model.flashnext.hyper import HyperConnection, WideNorm  # noqa: E402
 
 H, HC, R, EPS = 2560, 4, 320, 1e-6
 
@@ -48,7 +48,7 @@ def test_site_tracks_the_reference_like_the_decode_kernels(t):
     assert isinstance(normed, WideNorm)
     wide_m, _ = b.mix(wide_h, normed)
 
-    from sharar.kernels import flashnext_fused as fk  # the decode kernels' chain on the same rows
+    from hibana.kernels import flashnext_fused as fk  # the decode kernels' chain on the same rows
     n_a, _ = fk.grouped_gemma_rms(hyper, a.norm, EPS, H, amax=True)
     old_h, n_b, parts_b = fk.inject_combine_norm(hyper, block, a.inject(n_a), HC, H, b.norm, EPS)
     old_m = fk.gate_mean(b.up(b.down(n_b, amax_parts=parts_b), act=fk.ACT_SILU), n_b, HC, H)
@@ -97,7 +97,7 @@ def test_last_combine_without_a_next_site():
 
 def test_block_input_fp8_copy_is_the_projections_own_quantization():
     """`fp8_input` of a mixed block input: bitwise `draft_fp8.quant_dynamic` of it, computed once and shared."""
-    from sharar.kernels.draft_fp8 import quant_dynamic
+    from hibana.kernels.draft_fp8 import quant_dynamic
     g = torch.Generator(device="cuda").manual_seed(3)
     a, _ = _site(g)
     hyper = (torch.randn(1500, HC * H, device="cuda", generator=g) * 3).to(torch.bfloat16)

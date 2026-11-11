@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from sharar.kernels.kv_fp4 import nvfp4_round, fp8_round, _GRID
+from hibana.kernels.kv_fp4 import nvfp4_round, fp8_round, _GRID
 
 
 def _reference(x):

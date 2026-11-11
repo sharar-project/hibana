@@ -5,17 +5,17 @@ import gc
 import pytest
 import torch
 
-from sharar.engine.sampler import SamplingParams
+from hibana.engine.sampler import SamplingParams
 
 K = 3
 
 
 def serve_rounds(model, trace_confidence: bool, rounds: int = 6):
-    from sharar import config
-    from sharar.engine import config as engine_config
-    from sharar.engine.executor import Executor
-    from sharar.engine.prompts import PARAGRAPH
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana import config
+    from hibana.engine import config as engine_config
+    from hibana.engine.executor import Executor
+    from hibana.engine.prompts import PARAGRAPH
+    from hibana.tokenizer import SnapshotTokenizer
     gc.collect()
     torch.cuda.empty_cache()
     with engine_config.using(engine_config.current().replace(trace_confidence=trace_confidence)), torch.inference_mode():

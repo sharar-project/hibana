@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.engine.sampler import SamplingParams
+from hibana.engine.sampler import SamplingParams
 from tests.unit.test_runtime_safety import tiny_executor
 
 

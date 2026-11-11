@@ -25,19 +25,19 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-import sharar
-from sharar.cache.kv_pool import KvPool
-from sharar.cache.radix import RadixCache
-from sharar.cache.request_state import StateManager
-from sharar.cache.state_pool import StatePool
-from sharar.engine.contracts import ProposerContext
-from sharar.engine.executor import Executor
-from sharar.engine.request import Request
-from sharar.engine.sampler import Sampler, SamplingParams
-from sharar.engine.scheduler import Scheduler, SchedulerConfig
-from sharar.proposers.draft_head import TargetHead
-from sharar.proposers.mtp import MtpProposer
-from sharar.target import FLASHNEXT
+import hibana
+from hibana.cache.kv_pool import KvPool
+from hibana.cache.radix import RadixCache
+from hibana.cache.request_state import StateManager
+from hibana.cache.state_pool import StatePool
+from hibana.engine.contracts import ProposerContext
+from hibana.engine.executor import Executor
+from hibana.engine.request import Request
+from hibana.engine.sampler import Sampler, SamplingParams
+from hibana.engine.scheduler import Scheduler, SchedulerConfig
+from hibana.proposers.draft_head import TargetHead
+from hibana.proposers.mtp import MtpProposer
+from hibana.target import FLASHNEXT
 
 CPU = torch.device("cpu")
 TOKEN = 7  # what both stubs predict; prompts never contain it
@@ -45,7 +45,7 @@ STATE = dataclasses.replace(FLASHNEXT, num_layers=1, layer_types=("linear_attent
                             linear_num_value_heads=1, linear_key_head_dim=1, linear_value_head_dim=1,
                             linear_conv_kernel=2)
 UNWRITTEN, EXACT, INEXACT, SPECULATIVE = range(4)  # a draft-KV row's state
-BUILD = Path(sharar.__file__).resolve().parent
+BUILD = Path(hibana.__file__).resolve().parent
 
 
 def recurrence(ids, s=0):

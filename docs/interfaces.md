@@ -12,7 +12,7 @@ structural types in `engine/contracts.py` (which imports no GPU backend), not a 
 
 ## Targets
 
-Model facts live in a `Target` value (`sharar/target.py`): the pinned checkpoint, the layer kinds, the attention and
+Model facts live in a `Target` value (`hibana/target.py`): the pinned checkpoint, the layer kinds, the attention and
 recurrent head shapes, the vocabulary, the serving profile and the load budget. The executor reads `model.target`
 once and sizes the pools, the ledger, the attention plans and the verify buffers from it. One process serves one
 target, chosen at launch (`sharar serve TARGET`, `SHARAR_TARGET`); nothing is discovered at run time. Device

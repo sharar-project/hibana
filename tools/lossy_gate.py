@@ -9,7 +9,7 @@
 
 A candidate is a serving profile (`--profile`, default exact) plus `--env KEY=VALUE` overrides, resolved for the
 target exactly as `sharar serve <target> --<profile>` resolves them with those settings in its environment
-(sharar/launch/settings.py: the user's config file, the target's settings, the profile's defaults); the baseline is
+(hibana/launch/settings.py: the user's config file, the target's settings, the profile's defaults); the baseline is
 `--baseline-profile` (default exact) with `--baseline-env`. Both arms run this checkout's engine from its Python
 environment (`uv sync --frozen`; the scorecard records the commit and any uncommitted engine changes). The run is
 unattended and resumable: every step writes its own file and a rerun with the same name skips what exists. Do not
@@ -81,14 +81,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))  # this checkout's sharar (the launcher resolver is standard-library only)
-from sharar.launch import guard, lxcfs, preflight  # noqa: E402
-from sharar.launch import settings as launch  # noqa: E402
+from hibana.launch import guard, lxcfs, preflight  # noqa: E402
+from hibana.launch import settings as launch  # noqa: E402
 WORKLOAD = REPO / "tools" / "gate" / "workloads" / "lossy_v1.json"
 WORKER = REPO / "tools" / "gate" / "lossy_gate.py"
 LOCK: Path | None = None  # $SHARAR_RESULTS/.gpu.lock, set by main()
 EVALS_ENV: dict | None = None  # sharar-eval's environment (evals_env), set by main()
 VENV = Path(os.environ.get("UV_PROJECT_ENVIRONMENT") or REPO / ".venv")  # the project's environment (uv sync)
-PROTOCOL = 3  # bump when a step's meaning changes (it keys the baseline cache); 3: arms resolved by sharar.launch
+PROTOCOL = 3  # bump when a step's meaning changes (it keys the baseline cache); 3: arms resolved by hibana.launch
 CHUNK, FLOOR_CHUNK = 64, 32
 GUARD_GIB = guard.guard_kib() / 2**20  # where the memory guard acts: half the host floor (the pools are planned to leave the floor)
 BLOCK = 64  # layer-1 bootstrap unit: consecutive continuation positions
@@ -122,7 +122,7 @@ def log(msg: str) -> None:
 def engine_identity() -> str:
     """The engine both arms run: this checkout's commit, plus a hash of any uncommitted engine changes."""
     commit = git("rev-parse", "HEAD")
-    paths = ["sharar", "pyproject.toml", "constraints"]
+    paths = ["hibana", "pyproject.toml", "constraints"]
     diff = subprocess.run(["git", "-C", str(REPO), "diff", "HEAD", "--", *paths], capture_output=True).stdout
     diff += subprocess.run(["git", "-C", str(REPO), "ls-files", "--others", "--exclude-standard", "--", *paths], capture_output=True).stdout
     return commit + (f"+dirty-{sha256(diff)[:12]}" if diff else "")
@@ -203,7 +203,7 @@ def arm_plan(s: launch.Settings) -> dict:
 
 def served_command(target: str, profile: str, port: int) -> list[str]:
     """A served arm: `sharar serve` in the foreground, on our port, recording nothing."""
-    return [str(VENV / "bin" / "python"), "-u", "-m", "sharar", "serve", target, f"--{profile}", "--port", str(port),
+    return [str(VENV / "bin" / "python"), "-u", "-m", "hibana", "serve", target, f"--{profile}", "--port", str(port),
             "--no-fetch"]
 
 

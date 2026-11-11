@@ -34,10 +34,10 @@ SHARAR_RUN_GPU=1 uv run pytest tests/gpu/test_qsa.py -x
 `tests/conftest.py` points it at the model caches, the calibrated 3-bit checkpoint and `$SHARAR_RESULTS` as
 `sharar serve` resolves them (the environment wins). Preserve frozen
 workload content and checksums (`tools/gate/workloads/`, `profiling/workloads/`,
-`sharar/benchmark_workloads.py`) when moving readers.
+`hibana/benchmark_workloads.py`) when moving readers.
 
 The modules on the real 27B share one load (the session fixture `qwen38` in `tests/gpu/conftest.py`), run last,
-and build their executors on it with bounded pools: 35,000 KV pages and 12 recurrent slots. Keep the memory guard active for the run (`uv run python -m sharar.launch.guard --pid PID`). The loader
+and build their executors on it with bounded pools: 35,000 KV pages and 12 recurrent slots. Keep the memory guard active for the run (`uv run python -m hibana.launch.guard --pid PID`). The loader
 requires a 24 GiB allowance of `MemAvailable` above the host floor (30 GiB at the default 6), based on the measured 21.3 GiB
 streaming-load peak. Runtime separately checks the
 prospective pool/draft budget before allocation.
@@ -74,18 +74,18 @@ The layers, the verdict rules and the outputs are in the docstring of [`tools/lo
 
 ## Add a setting
 
-Settings are fields of `EngineConfig` (`sharar/engine/config.py`): a `SHARAR_*`
+Settings are fields of `EngineConfig` (`hibana/engine/config.py`): a `SHARAR_*`
 name, its default and a one-line comment. Read `current()` where you build the
 thing the setting shapes (a model, a linear, a proposer, a graph), not at import
 and not per call on the hot path; `tests/unit/test_engine_config.py` fails on any
-other `SHARAR_*` environment read under `sharar/`. The launcher keeps forwarding
+other `SHARAR_*` environment read under `hibana/`. The launcher keeps forwarding
 the same variable names; `/get_server_info` reports the installed value.
 
 ## Add a target
 
-A target is a pinned checkpoint with a `Target` value in `sharar/target.py`
+A target is a pinned checkpoint with a `Target` value in `hibana/target.py`
 (geometry, profile, load budget, snapshot lookup, host validation) and a
-model package under `sharar/model/` whose forward returns `ForwardResult`
+model package under `hibana/model/` whose forward returns `ForwardResult`
 and exposes `.target`. Register the loader in `target.load_model` under a
 new `Target.family`; model-specific facts become optional `Target` fields
 (absent for the 27B), per-slot state beyond the GDN's goes through
@@ -97,7 +97,7 @@ image input, a request input every target with a vision tower shares: the
 model's optional `vision`, typed by `engine/contracts.VisionEncoder`, is all
 `engine/` reads of it, and its embeddings reach prefill as
 `ForwardContext.media_rows` / `media_embeds`), and a family's model cache is named by
-`Target.cache_env`. `sharar/model/flashnext/` is the worked example. The
+`Target.cache_env`. `hibana/model/flashnext/` is the worked example. The
 engine, pools and graphs read `executor.target`; do not add module-level
 constants for a new model, and keep `config.py` describing the 27B for the
 tools that import it. Validate a new target with layer-by-layer parity
@@ -106,7 +106,7 @@ against a reference server, the CPU contracts, the GPU lifecycle suites and a
 
 ## Add a proposer
 
-1. Put the adapter in `sharar/proposers/`. Implement `Proposer` and declare
+1. Put the adapter in `hibana/proposers/`. Implement `Proposer` and declare
    width, target-feature requirements and persistent/scratch bytes. Use
    `tests/ngram_proposer.py` (the tests' proposer) for a feature-free example, `mtp.py`
    for a sequential draft, and `parallel.py` for conditional DFlash2 proposals and draft-cache handles.

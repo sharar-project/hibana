@@ -1,7 +1,7 @@
 """Frozen long prompts for the in-process profilers: 18 synthetic engineering-task families plus the three
 benchmark prompts (code, design, reasoning), 10,000 input tokens each.
 
-`profiling/workloads/family_v1.json` holds the family specifications (protocol `causal-selector-v1`); the benchmark prompts come from `sharar/benchmark_workloads.py`.
+`profiling/workloads/family_v1.json` holds the family specifications (protocol `causal-selector-v1`); the benchmark prompts come from `hibana/benchmark_workloads.py`.
 `tasks(encode)` builds them with any tokenizer's `encode`, so no generated file has to be kept anywhere:
 
     from profiling.inputs import tasks
@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from sharar.benchmark_workloads import WORKLOADS, materialize as materialize_benchmark
+from hibana.benchmark_workloads import WORKLOADS, materialize as materialize_benchmark
 
 PROTOCOL = Path(__file__).resolve().parent / "workloads" / "family_v1.json"
 

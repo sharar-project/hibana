@@ -1,7 +1,7 @@
 """Tensor-parallel communication between two Sparks: the RDMA one-shot all-reduce against NCCL's ring.
 
 Run on both Sparks at once (`sharar dev tp-comm` starts both ranks). For each message size it checks that
-`sharar.distributed.all_reduce` (the RDMA one-shot up to `ONE_SHOT_MAX_BYTES`, NCCL above) gives NCCL's sum bit for
+`hibana.distributed.all_reduce` (the RDMA one-shot up to `ONE_SHOT_MAX_BYTES`, NCCL above) gives NCCL's sum bit for
 bit on both ranks, then times both: inside a CUDA graph after about 100 us of GPU work per collective, as serving
 runs them, and back to back. Rank 0 prints us per collective and the effective rate (message bytes / time).
 
@@ -20,7 +20,7 @@ import statistics
 import torch
 import torch.distributed as dist
 
-from sharar import distributed
+from hibana import distributed
 
 SIZES_KIB = (10, 40, 160, 640, 1024, 2560, 4096, 8192, 20480)  # 1, 4, 16, 64, 256 rows of 5120 BF16; prefill chunks
 COLLECTIVES = 32  # per graph

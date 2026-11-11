@@ -6,7 +6,7 @@ refs to the side that holds their last token, and SSD-only leaves leave the
 tree only through the SSD tier's eviction or a flush."""
 import torch
 
-from sharar.cache.radix import RadixCache, SsdRef
+from hibana.cache.radix import RadixCache, SsdRef
 from tests.unit.test_radix import FakePool, snaps
 
 B = 4  # tokens per block in these tests

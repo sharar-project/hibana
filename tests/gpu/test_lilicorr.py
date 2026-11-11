@@ -6,10 +6,10 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from sharar.model.lilicorr import LiLiCorrDraftModel
-from sharar.proposers.factory import draft_snapshot
-from sharar.target import NEMOTRON_BOLT
-from sharar.weights.modelopt import unswizzle_block_scales
+from hibana.model.lilicorr import LiLiCorrDraftModel
+from hibana.proposers.factory import draft_snapshot
+from hibana.target import NEMOTRON_BOLT
+from hibana.weights.modelopt import unswizzle_block_scales
 
 
 @pytest.fixture(scope='module')

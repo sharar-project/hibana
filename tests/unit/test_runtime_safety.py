@@ -7,27 +7,27 @@ import httpx
 import pytest
 import torch
 
-from sharar import config
-from sharar.engine.loop import EngineLoop, EngineUnavailable
-from sharar.api.validation import _sampling_from
-from sharar.api.server import create_app
-from sharar.engine.depth import FixedDepth
-from sharar.engine.executor import Executor
-from sharar.engine.graphs import capture_sizes, check_context_capacity
-from sharar.engine.sampler import InvalidRequest, Sampler, SamplingParams
-from sharar.engine.scheduler import Scheduler, SchedulerConfig
-from sharar.engine.spec import SpecDecoder
-from sharar.engine.contracts import ProposerContext
-from sharar.proposers.mtp import MtpProposer, MtpState
-from sharar.cache.request_state import StateManager
-from sharar.cache.radix import RadixCache
-from sharar.cache.state_pool import StatePool
+from hibana import config
+from hibana.engine.loop import EngineLoop, EngineUnavailable
+from hibana.api.validation import _sampling_from
+from hibana.api.server import create_app
+from hibana.engine.depth import FixedDepth
+from hibana.engine.executor import Executor
+from hibana.engine.graphs import capture_sizes, check_context_capacity
+from hibana.engine.sampler import InvalidRequest, Sampler, SamplingParams
+from hibana.engine.scheduler import Scheduler, SchedulerConfig
+from hibana.engine.spec import SpecDecoder
+from hibana.engine.contracts import ProposerContext
+from hibana.proposers.mtp import MtpProposer, MtpState
+from hibana.cache.request_state import StateManager
+from hibana.cache.radix import RadixCache
+from hibana.cache.state_pool import StatePool
 from tests.unit.test_scheduler import FakeExecutor, FakePool
 
 
 def tiny_executor(monkeypatch, cache=False):
     ex = Executor.__new__(Executor)
-    from sharar.target import QWEN38
+    from hibana.target import QWEN38
     ex.target = QWEN38
     ex.device = torch.device('cpu')
     ex.max_context, ex.max_batch = 512, 4

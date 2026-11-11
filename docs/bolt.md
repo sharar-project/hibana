@@ -2,7 +2,7 @@
 
 `sharar serve bolt` serves the text backbone of
 `nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB` on one Spark, on port 30006.
-`nemotron-bolt` is an alias. The checkpoint is pinned in `sharar/model/bolt/config.py` and downloaded by
+`nemotron-bolt` is an alias. The checkpoint is pinned in `hibana/model/bolt/config.py` and downloaded by
 the normal launcher. Image input runs Super's image path on Bolt's own vision weights (C-RADIO and the projector,
 without the final LayerNorm; [Super's images](nemotron.md#images), [API](api.md#images)).
 
@@ -108,7 +108,7 @@ numerical parity; packed NVFP4 KV is not enabled.
 ## Prefill kernels
 
 On GB10, BF16 normalized prefills with at least 2,048 packed tokens use a rolling width-4 convolution and
-a fused scan, SiLU gate and grouped RMSNorm ([kernel](../sharar/kernels/mamba2_prefill.py)). Each scan CTA
+a fused scan, SiLU gate and grouped RMSNorm ([kernel](../hibana/kernels/mamba2_prefill.py)). Each scan CTA
 owns the 16 heads sharing B/C and 32 output tokens. It tiles the entering-state reduction, shares C/CB operands,
 and keeps the gated values on-chip, avoiding the global scan-output write/read. The BF16 scan rounding boundary
 and BF16 normalized-value/weight product are preserved.

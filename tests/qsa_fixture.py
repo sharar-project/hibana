@@ -2,13 +2,13 @@
 from types import SimpleNamespace
 import torch
 import torch.nn.functional as F
-from sharar.cache.kv_pool import KvPool
-from sharar.model.flashnext.attention import FlashNextAttention
-from sharar.model.flashnext.indexer import FlashNextIndexer
-from sharar.model.flashnext.linear import TrunkLinear
-from sharar.model.norm import GemmaRMSNorm
-from sharar.model.rope import PartialRotary
-from sharar.target import FLASHNEXT
+from hibana.cache.kv_pool import KvPool
+from hibana.model.flashnext.attention import FlashNextAttention
+from hibana.model.flashnext.indexer import FlashNextIndexer
+from hibana.model.flashnext.linear import TrunkLinear
+from hibana.model.norm import GemmaRMSNorm
+from hibana.model.rope import PartialRotary
+from hibana.target import FLASHNEXT
 
 
 class QsaFixture:

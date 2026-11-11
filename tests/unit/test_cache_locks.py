@@ -11,7 +11,7 @@ import random
 
 import pytest
 
-from sharar.engine.sampler import SamplingParams
+from hibana.engine.sampler import SamplingParams
 from tests.unit.test_resume_under_slot_pressure import depth, draw, harness, locked, run_turn
 
 PARAMS = SamplingParams(max_new_tokens=24, ignore_eos=True)

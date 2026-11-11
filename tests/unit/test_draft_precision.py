@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from sharar.cache.spec_budget import SpecConfig
-from sharar.model.draft_linear import DraftFp8Linear
+from hibana.cache.spec_budget import SpecConfig
+from hibana.model.draft_linear import DraftFp8Linear
 
 
 def test_precision_contract_rejects_unsupported_proposers_and_formats():

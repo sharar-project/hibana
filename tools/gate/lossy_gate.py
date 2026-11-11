@@ -43,8 +43,8 @@ def chat_ids(tok, prompt: str) -> list[int]:
 
 def source_hash() -> str:
     """SHA-256 over the engine package's Python files (the code this process imported)."""
-    import sharar
-    root = Path(sharar.__file__).parent
+    import hibana
+    root = Path(hibana.__file__).parent
     h = hashlib.sha256()
     for path in sorted(root.rglob("*.py")):
         h.update(str(path.relative_to(root)).encode())
@@ -53,11 +53,11 @@ def source_hash() -> str:
 
 
 def load(args):
-    from sharar import target as targets
-    from sharar.cache.spec_budget import SpecConfig
-    from sharar.engine import config
-    from sharar.engine.executor import Executor
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana import target as targets
+    from hibana.cache.spec_budget import SpecConfig
+    from hibana.engine import config
+    from hibana.engine.executor import Executor
+    from hibana.tokenizer import SnapshotTokenizer
 
     cfg = config.EngineConfig.from_env().replace(spec=str(args.spec))
     config.install(cfg)
@@ -80,7 +80,7 @@ def load(args):
 # ---------------------------------------------------------------- layer 2
 
 def spec_pass(ex, prompts: list[dict], accept: tuple[int, float], tokens: int) -> list[dict]:
-    from sharar.engine.sampler import SamplingParams
+    from hibana.engine.sampler import SamplingParams
 
     rows = []
     for p in prompts:
@@ -103,7 +103,7 @@ def spec_pass(ex, prompts: list[dict], accept: tuple[int, float], tokens: int) -
 
 def logprob_chunks(ex, model, ids: list[int], chunk: int):
     """(first row, log-probabilities [rows, V] fp32) of each prefill chunk of a cold prompt; row t predicts ids[t + 1]."""
-    from sharar.engine.sampler import SamplingParams
+    from hibana.engine.sampler import SamplingParams
 
     ex.flush_cache()
     req = ex.admit(list(ids), SamplingParams(max_new_tokens=1, trace=False))
@@ -210,7 +210,7 @@ def main(argv=None) -> int:
 
     spec_file = args.out / "spec.json"
     if ("2" in layers or baseline) and not spec_file.exists():
-        from sharar.engine.sampler import SamplingParams
+        from hibana.engine.sampler import SamplingParams
         ex.generate(prompts[0]["ids"], SamplingParams(max_new_tokens=64, trace=False))  # first-request effects
         passes = []
         for i in range(args.passes):

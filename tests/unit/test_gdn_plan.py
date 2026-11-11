@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.engine.context import ForwardContext
-from sharar.model.gdn_plan import prepare_gdn_prefill
+from hibana.engine.context import ForwardContext
+from hibana.model.gdn_plan import prepare_gdn_prefill
 
 
 def context(**kwargs):

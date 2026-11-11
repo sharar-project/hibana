@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import torch
 
-from sharar.engine.contracts import ProposerContext, ProposerRequirements
+from hibana.engine.contracts import ProposerContext, ProposerRequirements
 
 
 class NGramProposer:

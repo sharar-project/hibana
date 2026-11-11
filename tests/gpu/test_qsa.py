@@ -9,7 +9,7 @@ import torch
 
 
 def test_sparse_attention_matches_torch():
-    from sharar.kernels.qsa import sparse_attention
+    from hibana.kernels.qsa import sparse_attention
     g = torch.Generator(device="cuda").manual_seed(0)
     pages, heads, kv_heads, dim, rows, width = 3000, 24, 2, 256, 40, 2051
     k_pool = torch.randn(pages, kv_heads, dim, generator=g, device="cuda").to(torch.float8_e4m3fn)
@@ -35,8 +35,8 @@ def test_sparse_attention_over_nvfp4_matches_torch(heads, kv_heads, rows):
     """The NVFP4 pool (SHARAR_KV_FORMAT=nvfp4, FlashInfer's writer): the kernel against exact attention over the values
     the codes and scales hold, to the BF16 kernel's own rounding."""
     from flashinfer.page import nvfp4_quantize_append_paged_kv_cache_with_slot_mapping as write
-    from sharar.kernels.kv_fp4 import nvfp4_round
-    from sharar.kernels.qsa import sparse_attention
+    from hibana.kernels.kv_fp4 import nvfp4_round
+    from hibana.kernels.qsa import sparse_attention
     g = torch.Generator(device="cuda").manual_seed(rows)
     pages, dim, width = 3000, 256, 2051
     kb = torch.randn(pages, kv_heads, dim, generator=g, device="cuda").to(torch.bfloat16)
@@ -65,7 +65,7 @@ def test_sparse_attention_over_nvfp4_matches_torch(heads, kv_heads, rows):
 @pytest.mark.parametrize("fmt", ["fp8", "nvfp4"])
 def test_sparse_attention_past_the_grid_limit_is_the_same_in_parts(fmt):
     """More rows x KV heads than a grid's second dimension holds (one 64K prompt prefilled whole): the launches split."""
-    from sharar.kernels.qsa import sparse_attention
+    from hibana.kernels.qsa import sparse_attention
     g = torch.Generator(device="cuda").manual_seed(2)
     pages, rows, width, dim = 4096, 40000, 32, 256
     if fmt == "fp8":
@@ -87,7 +87,7 @@ def test_sparse_attention_past_the_grid_limit_is_the_same_in_parts(fmt):
 
 
 def _indexer(hidden, budget, ratio, device):
-    from sharar.model.flashnext.indexer import FlashNextIndexer
+    from hibana.model.flashnext.indexer import FlashNextIndexer
     g = torch.Generator(device=device).manual_seed(1)
     ix = FlashNextIndexer.__new__(FlashNextIndexer)
     ix.name, ix.heads, ix.dim, ix.ratio, ix.budget = "qsa.0", 4, 128, ratio, budget
@@ -100,9 +100,9 @@ def _indexer(hidden, budget, ratio, device):
 
 @pytest.mark.parametrize("budget", [64, 2048])
 def test_indexer_selection_matches_the_reference(budget):
-    from sharar.cache.kv_pool import KvPool
-    from sharar.model.flashnext.reference import gemma_rms, qsa_token_mask, rope_neox
-    from sharar.target import FLASHNEXT
+    from hibana.cache.kv_pool import KvPool
+    from hibana.model.flashnext.reference import gemma_rms, qsa_token_mask, rope_neox
+    from hibana.target import FLASHNEXT
     dev, hidden, ratio = torch.device("cuda"), 256, 4
     total = 3 * budget + 37  # sparse rows exist; a chunk boundary inside a group
     ix = _indexer(hidden, budget, ratio, dev)
@@ -158,9 +158,9 @@ def test_indexer_selection_matches_the_reference(budget):
 def test_graph_safe_maintenance_matches_the_eager_keys_under_replay():
     """`maintain` (captured once, replayed with fresh per-step rows) writes the same raw and
     compressed keys as the eager path; rows that complete no group only touch page 0."""
-    from sharar.cache.kv_pool import KvPool
-    from sharar.model.flashnext.indexer import FlashNextIndexer
-    from sharar.target import FLASHNEXT
+    from hibana.cache.kv_pool import KvPool
+    from hibana.model.flashnext.indexer import FlashNextIndexer
+    from hibana.target import FLASHNEXT
     dev, hidden, ratio, total = torch.device("cuda"), 256, 4, 300
     ix = _indexer(hidden, 2048, ratio, dev)
     eager_pool, graph_pool = KvPool(total + 64, dev, target=FLASHNEXT), KvPool(total + 64, dev, target=FLASHNEXT)
@@ -221,7 +221,7 @@ def _torch_select(q, aux, first, n, seq_pages, ratio, budget):
 
 @pytest.mark.parametrize("budget,length,rows", [(2048, 3000, 1), (2048, 70000, 1), (2048, 70000, 4), (2048, 9000, 256), (64, 600, 40), (2048, 1500, 3)])
 def test_selection_kernel_matches_the_torch_selection(budget, length, rows):
-    from sharar.kernels.qsa.selection import select_pages
+    from hibana.kernels.qsa.selection import select_pages
     g = torch.Generator(device="cuda").manual_seed(2)
     ratio, dev = 4, torch.device("cuda")
     pages = length + 500
@@ -242,9 +242,9 @@ def test_selection_kernel_matches_the_torch_selection(budget, length, rows):
 def test_selecting_graph_matches_the_eager_selection():
     """`maintain` + `select` captured once for a batch of two decode rows past the budget and
     replayed per step with fresh static inputs selects what the eager path selects."""
-    from sharar.cache.kv_pool import KvPool
-    from sharar.model.flashnext.indexer import FlashNextIndexer
-    from sharar.target import FLASHNEXT
+    from hibana.cache.kv_pool import KvPool
+    from hibana.model.flashnext.indexer import FlashNextIndexer
+    from hibana.target import FLASHNEXT
     dev, hidden, ratio, budget = torch.device("cuda"), 256, 4, 64
     lengths, steps, cap = (400, 700), 40, 1024
     ix = _indexer(hidden, budget, ratio, dev)
@@ -297,12 +297,12 @@ def test_replay_kernels_are_the_torch_maintenance_and_selection(budget, lengths,
     (`maintain` + `select` in torch), verification-shaped (`depth` rows a sequence, the members of a row's group
     written by the same forward), eager and as a captured graph: the same raw and compressed keys on every page
     but the dummy one and the same selection, bitwise; the queries and their bases too."""
-    from sharar.cache.kv_pool import KvPool
-    from sharar.kernels.qsa import decode_prep
-    from sharar.model.flashnext.indexer import FlashNextIndexer
-    from sharar.model.flashnext.reference import gemma_rms, rope_neox
-    from sharar.model.rope import PartialRotary
-    from sharar.target import FLASHNEXT
+    from hibana.cache.kv_pool import KvPool
+    from hibana.kernels.qsa import decode_prep
+    from hibana.model.flashnext.indexer import FlashNextIndexer
+    from hibana.model.flashnext.reference import gemma_rms, rope_neox
+    from hibana.model.rope import PartialRotary
+    from hibana.target import FLASHNEXT
     dev, hidden, ratio, cap, steps = torch.device("cuda"), 256, 4, 4096, 6
     ix = _indexer(hidden, budget, ratio, dev)
     ix.q_norm, ix.k_norm = ix.q_norm.to(torch.bfloat16), ix.k_norm.to(torch.bfloat16)  # as the checkpoint ships them
@@ -372,7 +372,7 @@ def test_replay_kernels_are_the_torch_maintenance_and_selection(budget, lengths,
 def test_chunked_selection_is_the_selection_per_chunk(rows, chunk, ties):
     """`select_pages(..., chunk=c)`: the top-k per c rows, the rest at once; exactly the concatenation of calls on c rows
     each, in order (ties included: rows whose scores are mostly relu zeros)."""
-    from sharar.kernels.qsa.selection import select_pages
+    from hibana.kernels.qsa.selection import select_pages
     g = torch.Generator(device="cuda").manual_seed(3)
     ratio, dev, budget, length = 4, torch.device("cuda"), 2048, 12000
     aux = torch.randn(length + 100, 2, 128, generator=g, device=dev).to(torch.bfloat16)
@@ -414,7 +414,7 @@ def _assemble_reference(values, idx, positions, base, table, ratio, width):
 def test_assembly_kernel_is_the_torch_assembly(budget, length, rows, ties):
     """Pages and counts in exactly the torch assembly's order, from the same top-k: rows near the budget (groups
     scoring -inf), relu-zero ties, a nonzero base offset and every tail length."""
-    from sharar.kernels.qsa.selection import score_groups, select_pages
+    from hibana.kernels.qsa.selection import score_groups, select_pages
     g = torch.Generator(device="cuda").manual_seed(4)
     ratio, dev = 4, torch.device("cuda")
     aux = torch.randn(length + 50, 2, 128, generator=g, device=dev).to(torch.bfloat16)

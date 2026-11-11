@@ -5,7 +5,7 @@ import random
 import pytest
 import torch
 
-from sharar.model.flashnext.indexer import FlashNextIndexer
+from hibana.model.flashnext.indexer import FlashNextIndexer
 
 
 def per_sequence(seqs, ratio, device):

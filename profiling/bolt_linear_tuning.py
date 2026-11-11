@@ -1,4 +1,4 @@
-"""Bolt's b12x projections at the row counts serving runs them, for `sharar/model/bolt/tuning.py`: the served plan's time
+"""Bolt's b12x projections at the row counts serving runs them, for `hibana/model/bolt/tuning.py`: the served plan's time
 and bandwidth for each shape, and with --sweep a search of the A16 geometries (row tile, N tile 64/128, K tile
 64/128/256, split-K 1/2/4/8) that prints a `CONFIGS` entry wherever the best beats b12x's heuristic by 3% or more.
 
@@ -24,16 +24,16 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--sweep", nargs="*", default=[], help="shape names to sweep (see the survey)")
     args = ap.parse_args()
-    from sharar.launch import settings
+    from hibana.launch import settings
     os.environ.update(settings.resolve("bolt", "fast").engine_env(None))
     logging.getLogger("b12x.preparation").setLevel(logging.ERROR)  # every swept geometry is prepared at first use
     import torch
     from b12x.gemm import blockscaled
     from b12x.preparation.types import require_prepared
-    from sharar import target as targets
-    from sharar.model.bolt import tuning
-    from sharar.model.lilicorr import LiLiCorrDraftModel
-    from sharar.proposers.factory import draft_snapshot
+    from hibana import target as targets
+    from hibana.model.bolt import tuning
+    from hibana.model.lilicorr import LiLiCorrDraftModel
+    from hibana.proposers.factory import draft_snapshot
 
     t = targets.NEMOTRON_BOLT
     model = targets.load_model(t, t.snapshot_dir(), log=lambda *a: None)

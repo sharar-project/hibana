@@ -80,7 +80,7 @@ class Server:
     """`sharar serve <target> --<profile>` from one checkout, in its own process group; stopped with SIGTERM (Ctrl-C)."""
 
     def __init__(self, tree: Path, target: str, profile: str, port: int, logfile: Path, env: dict, tp: int = 1):
-        self.cmd = [str(VENV / "bin" / "python"), "-u", "-m", "sharar", "serve", target, f"--{profile}", "--port", str(port),
+        self.cmd = [str(VENV / "bin" / "python"), "-u", "-m", "hibana", "serve", target, f"--{profile}", "--port", str(port),
                     "--no-fetch", "--tp", str(tp)]
         self.tree, self.logfile, self.env = tree, logfile, env
         self.proc = None
@@ -192,7 +192,7 @@ def main() -> int:
     trees = run / "trees"
     trees.mkdir(parents=True, exist_ok=True)
     if args.tp == 2:  # `sharar serve --tp 2` mirrors each arm's checkout to the same path on the peer
-        from sharar.launch import tp
+        from hibana.launch import tp
         tp.ssh(tp.peer(env), f"mkdir -p {trees}", check=True)
     labels = {"base": f"{args.base} {refs['base'][:9]}", "pr": f"{args.pr} {refs['pr'][:9]}"}
     for arm, sha in refs.items():

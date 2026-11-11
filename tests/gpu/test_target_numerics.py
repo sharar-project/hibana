@@ -9,9 +9,9 @@ import torch
 @pytest.mark.parametrize('scale', [0.5, 286.7200012207031, 764.586669921875, 111.41968536376953])
 @torch.inference_mode()
 def test_silu_and_fractional_quantization_match_cuda(rows, k, scale):
-    from sharar.kernels.nvfp4_quant import nvfp4_quantize, silu_mul_nvfp4_quantize
-    from sharar.kernels.ops import fp4_quantize
-    from sharar.weights.modelopt import swizzle_block_scales
+    from hibana.kernels.nvfp4_quant import nvfp4_quantize, silu_mul_nvfp4_quantize
+    from hibana.kernels.ops import fp4_quantize
+    from hibana.weights.modelopt import swizzle_block_scales
 
     torch.manual_seed(412)
     x = torch.randn(rows, 2*k, device='cuda', dtype=torch.bfloat16) * 3
@@ -40,7 +40,7 @@ def test_silu_and_fractional_quantization_match_cuda(rows, k, scale):
 @pytest.mark.parametrize('inplace', [False, True])
 @torch.inference_mode()
 def test_target_norm_retains_fp32_sum_and_residual_ownership(rows, inplace):
-    from sharar.model.norm import GemmaRMSNorm
+    from hibana.model.norm import GemmaRMSNorm
 
     torch.manual_seed(915)
     x = torch.randn(rows, 5120, device='cuda', dtype=torch.bfloat16)
@@ -63,8 +63,8 @@ def test_target_norm_retains_fp32_sum_and_residual_ownership(rows, inplace):
 @pytest.mark.parametrize('offset', [0, 9999, 32760])
 @torch.inference_mode()
 def test_target_rotary_keeps_fp32_cache_and_products(offset):
-    from sharar.model.rope import PartialRotary
-    from sharar.kernels.qk_norm_rope import qk_norm_rope
+    from hibana.model.rope import PartialRotary
+    from hibana.kernels.qk_norm_rope import qk_norm_rope
 
     torch.manual_seed(411)
     t, hq, hk, d, r = 7, 24, 4, 256, 64

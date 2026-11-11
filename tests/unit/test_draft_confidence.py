@@ -2,11 +2,11 @@
 and the trace round records that carry it (SHARAR_TRACE_CONFIDENCE, the input for adaptive depth)."""
 import torch
 
-from sharar.engine.config import EngineConfig
-from sharar.engine.request import Request
-from sharar.engine.sampler import SamplingParams
-from sharar.engine.spec import SpecDecoder
-from sharar.proposers.draft_head import TargetHead, confidence
+from hibana.engine.config import EngineConfig
+from hibana.engine.request import Request
+from hibana.engine.sampler import SamplingParams
+from hibana.engine.spec import SpecDecoder
+from hibana.proposers.draft_head import TargetHead, confidence
 
 
 def test_draft_confidence_is_the_heads_softmax_top1_and_margin():

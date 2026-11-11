@@ -6,11 +6,11 @@ import sys
 import pytest
 import torch
 
-from sharar.engine.contracts import FeatureRequest, ProposerContext, ProposerRequirements
-from sharar.engine.profile import ServingProfile
-from sharar.engine.request import Request
-from sharar.engine.sampler import SamplingParams
-from sharar.engine.scheduler import Scheduler
+from hibana.engine.contracts import FeatureRequest, ProposerContext, ProposerRequirements
+from hibana.engine.profile import ServingProfile
+from hibana.engine.request import Request
+from hibana.engine.sampler import SamplingParams
+from hibana.engine.scheduler import Scheduler
 from tests.ngram_proposer import NGramProposer
 from tests.unit.test_runtime_safety import tiny_executor
 
@@ -50,9 +50,9 @@ def test_depth_per_batch_bucket_decodes_wide_batches_plainly(monkeypatch):
     # the proposer keeps following every row, so speculation resumes once the batch shrinks;
     # a shorter depth reaches a proposer that drafts short blocks (short_drafts).
     from dataclasses import replace
-    from sharar.engine.contracts import Capabilities
-    from sharar.engine.depth import BatchDepth
-    from sharar.engine.scheduler import SchedulerConfig
+    from hibana.engine.contracts import Capabilities
+    from hibana.engine.depth import BatchDepth
+    from hibana.engine.scheduler import SchedulerConfig
     ex = tiny_executor(monkeypatch)
     ex.max_batch = 8
     def logits(norm):
@@ -168,12 +168,12 @@ def test_feature_and_context_requirements_are_checked_before_buffers(monkeypatch
 
 
 def test_profile_limits_and_load_budget(monkeypatch):
-    from sharar.cache import ledger
+    from hibana.cache import ledger
     profile = ServingProfile(max_batch=3, max_context=512)
     assert profile.graph_sizes == (1, 2, 3)
     # Startup validates the proposer's width; the serving profile owns only
     # context, batch and scheduling limits.
-    from sharar.cache.spec_budget import SpecConfig
+    from hibana.cache.spec_budget import SpecConfig
     assert SpecConfig('dflash2', 15).depth == 15
     for name, depth in [('dflash2', 16), ('mtp', 9), ('dspark', 3), ('ngram', 3)]:  # past the depth, or not served
         with pytest.raises(ValueError, match='proposer/depth'):
@@ -202,11 +202,11 @@ class NoGpuBackend(importlib.abc.MetaPathFinder):
         if fullname.split('.')[0] in {'flashinfer', 'triton', 'sglang'}:
             raise AssertionError(f'CPU control path imported {fullname}')
 sys.meta_path.insert(0, NoGpuBackend())
-from sharar.engine.executor import Executor
-from sharar.engine.spec import SpecDecoder
-from sharar.engine.scheduler import Scheduler
+from hibana.engine.executor import Executor
+from hibana.engine.spec import SpecDecoder
+from hibana.engine.scheduler import Scheduler
 from tests.ngram_proposer import NGramProposer
-from sharar.api.server import EngineLoop
+from hibana.api.server import EngineLoop
 '''
     result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

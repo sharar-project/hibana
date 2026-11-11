@@ -6,12 +6,12 @@ earlier spare chunk end goes at the next checkpoint (`StateManager.checkpoint`).
 import pytest
 import torch
 
-from sharar.cache.radix import RadixCache
-from sharar.cache.request_state import StateManager
-from sharar.cache.snapshot import Snapshot
-from sharar.engine.executor import Executor
-from sharar.engine.request import Request
-from sharar.engine.sampler import SamplingParams
+from hibana.cache.radix import RadixCache
+from hibana.cache.request_state import StateManager
+from hibana.cache.snapshot import Snapshot
+from hibana.engine.executor import Executor
+from hibana.engine.request import Request
+from hibana.engine.sampler import SamplingParams
 from tests.unit.test_radix import FakePool
 
 

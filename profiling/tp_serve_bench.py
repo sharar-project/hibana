@@ -9,7 +9,7 @@ go to `/generate` with greedy sampling and the server's acceptance default (the 
   outputs (equal hashes: the same greedy tokens);
 - `batch4`, `batch16`: 4 and 16 concurrent requests of 384 tokens each (`ignore_eos`) over the family prompts'
   questions: aggregate tok/s from the first submission to the last completion;
-- `long`: the three 10K-token benchmark prompts (`sharar/benchmark_workloads.py`: code, design, reasoning), one at
+- `long`: the three 10K-token benchmark prompts (`hibana/benchmark_workloads.py`: code, design, reasoning), one at
   a time, 1,000 tokens each (`ignore_eos`): time to first token and decode tok/s.
 
 Each phase also records the server's speculative rounds over it (tokens per round, ms per round).
@@ -31,7 +31,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from sharar.benchmark_workloads import WORKLOADS, frozen_source, materialize  # noqa: E402
+from hibana.benchmark_workloads import WORKLOADS, frozen_source, materialize  # noqa: E402
 
 CHAT = "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 SINGLE = {

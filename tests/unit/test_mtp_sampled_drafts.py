@@ -5,12 +5,12 @@ import math
 import pytest
 import torch
 
-from sharar.engine.config import EngineConfig
-from sharar.engine.rejection import distribution, small_laws, verify_batch
-from sharar.engine.sampler import SamplingParams
-from sharar.launch import settings as launch
-from sharar.proposers.draft_head import ShortlistHead, TargetHead
-from sharar.proposers.mtp import draft_laws
+from hibana.engine.config import EngineConfig
+from hibana.engine.rejection import distribution, small_laws, verify_batch
+from hibana.engine.sampler import SamplingParams
+from hibana.launch import settings as launch
+from hibana.proposers.draft_head import ShortlistHead, TargetHead
+from hibana.proposers.mtp import draft_laws
 
 
 class _Req:

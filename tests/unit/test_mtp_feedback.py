@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.cache.snapshot import Snapshot
-from sharar.engine.contracts import ProposerContext, VerifiedFeatures
-from sharar.proposers.mtp import MtpProposer, MtpState
+from hibana.cache.snapshot import Snapshot
+from hibana.engine.contracts import ProposerContext, VerifiedFeatures
+from hibana.proposers.mtp import MtpProposer, MtpState
 
 
 @pytest.mark.parametrize('counts', [(1,), (4,), (1, 4, 2, 3)])

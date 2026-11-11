@@ -9,8 +9,8 @@ import torch
 @pytest.mark.parametrize('amplitude', [.001, 1., 100.])
 @pytest.mark.parametrize('activation', [False, True])
 def test_convolution_and_candidate_windows_are_bitwise_identical(batch, steps, amplitude, activation):
-    from sharar.kernels.verify_conv import verify_convolve
-    from sharar.kernels.conv1d import causal_conv1d_update
+    from hibana.kernels.verify_conv import verify_convolve
+    from hibana.kernels.conv1d import causal_conv1d_update
     torch.manual_seed(314)
     dim = 10240
     x = (torch.randn(batch * steps, dim, device='cuda') * amplitude).bfloat16()
@@ -49,7 +49,7 @@ def test_convolution_and_candidate_windows_are_bitwise_identical(batch, steps, a
 @pytest.mark.parametrize('lengths', [(1, 4, 2), (16, 1, 7, 3), (5,)])
 def test_ragged_sequences_match_each_sequence_alone(lengths):
     """Packed sequences of their own lengths give each sequence's uniform result, bitwise."""
-    from sharar.kernels.verify_conv import verify_convolve
+    from hibana.kernels.verify_conv import verify_convolve
     torch.manual_seed(7)
     dim, steps = 10240, 16
     state = torch.randn(8, dim, 3, device='cuda', dtype=torch.bfloat16)

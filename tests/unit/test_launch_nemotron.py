@@ -1,10 +1,10 @@
-"""`sharar serve nemotron`'s settings (sharar/launch/settings.py): the target's port and drafter, its profiles, the
+"""`sharar serve nemotron`'s settings (hibana/launch/settings.py): the target's port and drafter, its profiles, the
 pinned snapshot the preflight checks."""
 import pytest
 
-from sharar.launch import preflight
-from sharar.launch import settings as launch
-from sharar.model.nemotron import config as nemotron
+from hibana.launch import preflight
+from hibana.launch import settings as launch
+from hibana.model.nemotron import config as nemotron
 
 
 @pytest.fixture

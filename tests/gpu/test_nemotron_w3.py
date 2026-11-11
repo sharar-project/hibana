@@ -7,15 +7,15 @@ from types import SimpleNamespace
 
 import torch
 
-from sharar.engine import config
-from sharar.kernels import ops, w3
-from sharar.kernels.fp8_quant import quant_fp8
-from sharar.target import NEMOTRON
-from sharar.weights.modelopt import Fp8Linear
-from sharar.weights.nemotron_w3_calibrate import errors, projection_names, source_prefixes
-from sharar.weights.w3_calibrate import InputCovariances
-from sharar.weights.w3_calibration import quantize
-from sharar.weights.w3_checkpoint import FORMAT_VERSION, CalibratedWeights, save_weight
+from hibana.engine import config
+from hibana.kernels import ops, w3
+from hibana.kernels.fp8_quant import quant_fp8
+from hibana.target import NEMOTRON
+from hibana.weights.modelopt import Fp8Linear
+from hibana.weights.nemotron_w3_calibrate import errors, projection_names, source_prefixes
+from hibana.weights.w3_calibrate import InputCovariances
+from hibana.weights.w3_calibration import quantize
+from hibana.weights.w3_checkpoint import FORMAT_VERSION, CalibratedWeights, save_weight
 
 
 def _fp8_linear(n: int, k: int, seed: int) -> Fp8Linear:
@@ -68,7 +68,7 @@ def test_fitted_copy_loads_and_serves_decode_only(tmp_path):
                                                         "weights": {"layers.0.mixer.out_proj": entry}}))
     other = _fp8_linear(256, 512, 3)
     model = SimpleNamespace(target=NEMOTRON, linears=lambda: iter([("layers.0.mixer.out_proj", lin), ("lm_head", other)]))
-    from sharar.model.nemotron.model import Nemotron
+    from hibana.model.nemotron.model import Nemotron
     identity = Nemotron.attach_calibrated(model, CalibratedWeights(tmp_path, revision=NEMOTRON.model_revision), log=None)
     assert len(identity) == 64 and other.w3 is None
     assert torch.equal(lin.w3.planes, packed.planes) and torch.equal(lin.w3.row_scale, packed.row_scale)

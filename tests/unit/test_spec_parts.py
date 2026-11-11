@@ -5,9 +5,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.engine.contracts import Capabilities, ProposerRequirements, check_capabilities
-from sharar.engine.depth import FixedDepth
-from sharar.proposers.draft_head import ShortlistHead, TargetHead
+from hibana.engine.contracts import Capabilities, ProposerRequirements, check_capabilities
+from hibana.engine.depth import FixedDepth
+from hibana.proposers.draft_head import ShortlistHead, TargetHead
 
 
 def test_declared_capabilities_need_their_methods():
@@ -29,8 +29,8 @@ def test_declared_capabilities_need_their_methods():
 
 
 def test_the_served_proposers_declare_what_they_implement():
-    from sharar.engine.contracts import CheckpointCache, StoredPayload, DeviceFeedback
-    from sharar.proposers.parallel import ParallelProposer
+    from hibana.engine.contracts import CheckpointCache, StoredPayload, DeviceFeedback
+    from hibana.proposers.parallel import ParallelProposer
     from tests.ngram_proposer import NGramProposer
     for protocol in (DeviceFeedback, CheckpointCache, StoredPayload):
         assert all(callable(getattr(ParallelProposer, name, None)) for name in protocol.__dict__
@@ -48,7 +48,7 @@ def test_target_head_is_the_logits_function():
 
 
 def test_shortlist_topk_maps_rows_to_global_ids():
-    from sharar.model.flashnext.linear import TrunkLinear
+    from hibana.model.flashnext.linear import TrunkLinear
     torch.manual_seed(3)
     weight = torch.randn(20, 8).to(torch.bfloat16)
     x = torch.randn(2, 3, 8).to(torch.bfloat16)
@@ -65,7 +65,7 @@ def test_fixed_depth_and_the_verify_depth_setter():
     assert FixedDepth(4).choose([object()]) == 4
     with pytest.raises(ValueError):
         FixedDepth(0)
-    from sharar.engine.spec import SpecDecoder
+    from hibana.engine.spec import SpecDecoder
     spec = SpecDecoder.__new__(SpecDecoder)
     spec.k = 7
     assert spec.verify_depth == 7  # no policy yet: the proposer's k
@@ -74,7 +74,7 @@ def test_fixed_depth_and_the_verify_depth_setter():
 
 
 def test_batch_depth_by_bucket():
-    from sharar.engine.depth import BatchDepth, parse_depths
+    from hibana.engine.depth import BatchDepth, parse_depths
     sizes = (1, 2, 4, 8, 16)
     policy = parse_depths("8:1, 16:0", sizes, 4)
     assert [policy.choose([None] * n) for n in (1, 2, 3, 4, 5, 8, 9, 16)] == [4, 4, 4, 4, 1, 1, 0, 0]
@@ -91,7 +91,7 @@ def test_batch_depth_by_bucket():
 
 
 def test_profile_buckets_up_to_128():
-    from sharar.engine.profile import ServingProfile
+    from hibana.engine.profile import ServingProfile
     assert ServingProfile().graph_sizes == (1, 2, 4)  # the default profile is unchanged
     assert ServingProfile(max_batch=16).graph_sizes == (1, 2, 4, 8, 16)
     assert ServingProfile(max_batch=12).graph_sizes == (1, 2, 4, 8, 12)
@@ -105,7 +105,7 @@ def test_profile_buckets_up_to_128():
 def test_acceptance_depth_follows_each_requests_rate_under_the_cap():
     from types import SimpleNamespace
 
-    from sharar.engine.depth import AcceptanceDepth, BatchDepth
+    from hibana.engine.depth import AcceptanceDepth, BatchDepth
     sizes = (1, 2, 4, 8)
     policy = AcceptanceDepth(FixedDepth(8), step_cost=0.14)
     assert policy.verify_depths == tuple(range(1, 9)) and policy.sizes_for(8, sizes) == sizes and policy.sizes_for(9, sizes) == ()
@@ -135,7 +135,7 @@ def _requests(n, greedy=True):
 
 
 def _packed():
-    from sharar.engine.depth import RowBudget, ragged_budgets
+    from hibana.engine.depth import RowBudget, ragged_budgets
     budgets = ragged_budgets((1, 2, 4, 8), 16)
     policy = RowBudget(15, tuple(budgets), packed_rows=budgets)
     for b, rows in budgets.items():  # the measured shape: rows nearly free to 64, the original weights past it
@@ -145,7 +145,7 @@ def _packed():
 
 
 def test_an_unmeasured_row_budget_verifies_the_cap():
-    from sharar.engine.depth import RowBudget, ragged_budgets
+    from hibana.engine.depth import RowBudget, ragged_budgets
     fresh = RowBudget(15, (1, 2, 4, 8), packed_rows=ragged_budgets((1, 2, 4, 8), 16))
     assert fresh.verify_depths == () and fresh.depths is None
     assert fresh.choose(_requests(8)) == 15 and fresh.allot(_requests(8), torch.full((8, 15), 0.9), 15) == ([15] * 8, 128)
@@ -176,7 +176,7 @@ def test_row_budget_explores_and_learns_the_tested_positions():
 
 
 def test_row_budget_counts_only_the_positions_a_round_tested():
-    from sharar.engine.depth import RowBudget, ragged_budgets
+    from hibana.engine.depth import RowBudget, ragged_budgets
     policy = RowBudget(15, (1,), packed_rows=ragged_budgets((1,), 16), prior_weight=0.0)
     acc, tested = policy.survival[False]
     for _ in range(100):  # shallow rounds, every draft accepted: positions past 3 untested, not rejected
@@ -215,7 +215,7 @@ def test_row_budget_keeps_sampled_estimates_apart():
 def test_row_budget_learns_the_round_time_beyond_its_graphs():
     """Rows follow the drafts' scores, so rows and tokens move together: the round's unmeasured time is one moving mean
     per bucket, and the timed graphs carry the rows."""
-    from sharar.engine.depth import RowBudget
+    from hibana.engine.depth import RowBudget
     policy = RowBudget(15, (4,), packed_rows={4: (16, 32, 48, 64)})
     for rows in (16, 32, 48, 64):
         policy.costs[4, rows] = 60.0
@@ -225,7 +225,7 @@ def test_row_budget_learns_the_round_time_beyond_its_graphs():
 
 
 def test_dflash2_acceptance_reads_only_earlier_drafts():
-    from sharar.proposers.parallel import ParallelProposer
+    from hibana.proposers.parallel import ParallelProposer
     torch.manual_seed(0)
     candidates = torch.stack([torch.randperm(50)[:4] for _ in range(6)]).unsqueeze(0)  # [1, 6 positions, 4 ranks]
     scores = torch.randn(1, 6, 4, 4)
@@ -240,14 +240,14 @@ def test_dflash2_acceptance_reads_only_earlier_drafts():
 
 
 def test_the_27b_carries_its_pinned_drafts_calibration():
-    from sharar import target as targets
+    from hibana import target as targets
     weights = dict(targets.get("qwen38").draft_calibration)["dflash2"]
     assert len(weights) == 4 and weights[0] > 0  # a higher top probability, a likelier acceptance
     assert targets.get("flashnext").draft_calibration == ()  # no adaptive verification there
 
 
 def test_ragged_budgets_cover_plain_decode_to_full_depth_and_128_rows():
-    from sharar.engine.depth import ragged_budgets
+    from hibana.engine.depth import ragged_budgets
     budgets = ragged_budgets((1, 2, 4, 8, 16), 16)
     assert budgets[1][0] == 1 and budgets[1][-1] == 16 and budgets[16][0] == 16 and budgets[16][-1] == 256
     assert 128 in budgets[8] and 128 in budgets[16] and all(r % 4 == 0 for r in budgets[4])
@@ -256,7 +256,7 @@ def test_ragged_budgets_cover_plain_decode_to_full_depth_and_128_rows():
 def test_tensor_parallel_ranks_learn_the_same_round_times_at_the_same_round(monkeypatch):
     """Each rank decides on its own, so every rank must learn the same times at the same round: the slowest rank's,
     every TP_LEARN_EVERY rounds, never the previous round's event as soon as it happens to be done."""
-    from sharar.engine import spec as spec_mod
+    from hibana.engine import spec as spec_mod
 
     class Event:
         def __init__(self, ms):
@@ -288,7 +288,7 @@ def test_tensor_parallel_ranks_learn_the_same_round_times_at_the_same_round(monk
 def test_row_budget_verifies_every_draft_where_rows_are_free():
     """A saving under the noise floor (1 ms, 3% of the round) is no saving: where 1 to 9 drafts verify within 1.5 ms of
     each other, unsure drafts still all verify; a wide bucket's rows cost real time."""
-    from sharar.engine.depth import RowBudget, ragged_budgets
+    from hibana.engine.depth import RowBudget, ragged_budgets
     budgets = ragged_budgets((1, 8), 10)
     policy = RowBudget(9, (1, 8), packed_rows=budgets)
     for b, rows in budgets.items():
@@ -304,7 +304,7 @@ def test_row_budget_verifies_every_draft_where_rows_are_free():
 
 def test_row_budget_keeps_each_buckets_cap():
     """A depth table (SHARAR_SPEC_DEPTHS) caps each bucket: the policy verifies at or below it."""
-    from sharar.engine.depth import RowBudget, ragged_budgets
+    from hibana.engine.depth import RowBudget, ragged_budgets
     budgets = ragged_budgets((1, 2, 4, 8), 16)
     capped = RowBudget(15, (1, 2, 4, 8), packed_rows=budgets, caps={1: 15, 2: 7, 4: 7, 8: 15})
     capped.costs = {(b, r): 20.0 for b, rows in budgets.items() for r in rows}

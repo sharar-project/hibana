@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import torch
 
-from sharar.cache.snapshot import Snapshot
-from sharar.proposers.parallel import DraftState, FeatureCache, ParallelProposer
+from hibana.cache.snapshot import Snapshot
+from hibana.proposers.parallel import DraftState, FeatureCache, ParallelProposer
 
 
 def setup(capacity=96):

@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from sharar.engine.config import EngineConfig, using
-from sharar.kernels.gdn_prefill import backend
+from hibana.engine.config import EngineConfig, using
+from hibana.kernels.gdn_prefill import backend
 
 
 @pytest.mark.parametrize("policy", ["auto", "triton"])

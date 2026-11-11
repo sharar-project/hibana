@@ -10,14 +10,14 @@ import random
 import pytest
 import torch
 
-from sharar.cache import ssd
-from sharar.cache.kv_pool import KvPool
-from sharar.cache.radix import RadixCache
-from sharar.cache.snapshot import Snapshot
-from sharar.cache.ssd import MIB, SsdTier
-from sharar.cache.ssd_store import BLOCK, SsdStore, _seg_pad
-from sharar.cache.state_pool import StatePool
-from sharar.target import DEFAULT_TARGET
+from hibana.cache import ssd
+from hibana.cache.kv_pool import KvPool
+from hibana.cache.radix import RadixCache
+from hibana.cache.snapshot import Snapshot
+from hibana.cache.ssd import MIB, SsdTier
+from hibana.cache.ssd_store import BLOCK, SsdStore, _seg_pad
+from hibana.cache.state_pool import StatePool
+from hibana.target import DEFAULT_TARGET
 
 DEV = torch.device("cuda")
 SMALL_STATE = dataclasses.replace(  # the recurrent state of a tiny model: the copies under test move KV rows only

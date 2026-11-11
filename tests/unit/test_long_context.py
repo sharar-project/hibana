@@ -2,10 +2,10 @@
 guarantees one full-context request without reserving it for every slot."""
 import pytest
 
-from sharar.engine.profile import MAX_CONTEXT, ServingProfile
-from sharar.cache import ledger as ledger_mod
-from sharar.cache.ledger import CACHED_SNAPSHOTS, GIB, SHARED_CONTEXT, Ledger
-from sharar.target import DEFAULT_TARGET
+from hibana.engine.profile import MAX_CONTEXT, ServingProfile
+from hibana.cache import ledger as ledger_mod
+from hibana.cache.ledger import CACHED_SNAPSHOTS, GIB, SHARED_CONTEXT, Ledger
+from hibana.target import DEFAULT_TARGET
 
 FLOOR = ledger_mod.host_floor_bytes()  # the host floor the plans leave (SHARAR_HOST_FLOOR_GIB)
 LEFT = FLOOR + ledger_mod.PLAN_SLACK_BYTES  # what a plan leaves unplanned: the floor and the slack for later reads

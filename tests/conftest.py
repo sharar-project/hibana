@@ -19,10 +19,10 @@ _load_env()
 
 def _gpu_environment() -> None:
     """With SHARAR_RUN_GPU=1 the suite runs against the real checkpoints: the paths and 3-bit copies `sharar serve` would
-    use (sharar/launch/settings.py), unless the environment sets them: `SHARAR_RUN_GPU=1 uv run pytest tests/gpu`."""
+    use (hibana/launch/settings.py), unless the environment sets them: `SHARAR_RUN_GPU=1 uv run pytest tests/gpu`."""
     if os.environ.get("SHARAR_RUN_GPU") != "1":
         return
-    from sharar.launch.settings import resolve
+    from hibana.launch.settings import resolve
 
     s27, fn = resolve("27b", "fast"), resolve("flashnext", "fast")
     os.environ.setdefault("SHARAR_HF_CACHE", str(s27.hf_cache))
@@ -44,7 +44,7 @@ _gpu_environment()
 @pytest.fixture(autouse=True)
 def _engine_config():
     """Each test starts from the environment: a value one test installs never leaks into the next."""
-    from sharar.engine import config
+    from hibana.engine import config
     config.reset()
     yield
     config.reset()
@@ -52,7 +52,7 @@ def _engine_config():
 
 @pytest.fixture(scope="session")
 def snapshot():
-    from sharar import config
+    from hibana import config
 
     try:
         return config.snapshot_dir()

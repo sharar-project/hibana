@@ -1,0 +1,166 @@
+"""Small contracts shared by the target, proposers and execution drivers.
+
+These types import no GPU backend. Feature capture is opt-in; tensor views
+and CUDA graph lifetimes are specified in docs/interfaces.md.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, runtime_checkable
+
+if TYPE_CHECKING:
+    import torch
+    from hibana.engine.request import Request
+    from hibana.engine.sampler import SamplingParams
+    from hibana.engine.rejection import Proposal
+
+
+@dataclass(frozen=True)
+class FeatureRequest:
+    final_norm: bool = False
+    layers: tuple[int, ...] = ()  # post-block residual stream, before next norm
+
+
+class ForwardResult(TypedDict):
+    norm: torch.Tensor  # bf16 [T, H], final Gemma RMSNorm output used by lm_head
+    pre_norm: NotRequired[torch.Tensor]
+    features: NotRequired[dict[int, torch.Tensor]]  # requested bf16 [T, H] streams
+    input_ids: NotRequired[torch.Tensor]
+    positions: NotRequired[torch.Tensor]
+    embed: NotRequired[torch.Tensor]
+    layers: NotRequired[list[tuple[torch.Tensor, torch.Tensor]]]
+
+
+@dataclass(frozen=True)
+class Capabilities:
+    """What a proposer offers beyond the `Proposer` lifecycle. The engine reads these flags
+    instead of probing for methods; `check_capabilities` verifies each promised protocol."""
+    device_feedback: bool = False   # DeviceFeedback: accepted_prepare / feedback_device / accepted_publish (device acceptance)
+    checkpoint_cache: bool = False  # CheckpointCache: bind_checkpoint_cache(pool) and a feature_cache with stats
+    stored_payload: bool = False    # StoredPayload: auxiliary_codec() -> (identity, export, import) for stored prefixes
+    draft_head: bool = False        # DraftHeadChoice: set_draft_head(ids, fmt, rescore) on the head
+    short_drafts: bool = False      # propose(..., depth=d) drafts only the d tokens a shallower round verifies; capture_graphs(log, depths={d: buckets}) at the verify graphs' pairs
+    scored_drafts: bool = False     # ScoredDrafts: with score_drafts set, Proposal.acceptance gives each drafted position's probability of acceptance (a depth per request, engine/depth.RowBudget.allot)
+
+
+@dataclass(frozen=True)
+class ProposerRequirements:
+    name: str
+    features: FeatureRequest = FeatureRequest()
+    persistent_bytes: int = 0
+    scratch_bytes: int = 0
+    greedy_only: bool = True
+    max_depth: int = 4
+    capabilities: Capabilities = Capabilities()
+
+
+@dataclass(frozen=True)
+class ProposerContext:
+    device: torch.device
+    max_batch: int
+    max_context: int
+
+
+@dataclass
+class StepInputs:
+    tokens: torch.Tensor  # [B] pending target input, int64
+    positions: torch.Tensor  # [B] absolute processed-prefix length, int64
+    slots: torch.Tensor  # [B] int32
+
+
+@dataclass
+class VerifiedFeatures:
+    norm: torch.Tensor | None = None  # [B, width, H]; absent if not requested
+    layers: dict[int, torch.Tensor] | None = None
+
+
+class Proposer(Protocol):
+    k: int
+    context: ProposerContext
+    requirements: ProposerRequirements
+
+    def ready(self, req: Request) -> bool: ...
+    def ingest_prefill(self, req: Request, ids: list[int], start: int, result: ForwardResult) -> None: ...
+    def start(self, req: Request, token: int) -> None: ...
+    def propose(self, requests: list[Request], pages: torch.Tensor, inputs: StepInputs, *, graphs: bool) -> torch.Tensor | Proposal: ...
+    def accepted_batch(self, requests: list[Request], emitted: list[list[int]], features: VerifiedFeatures) -> None:
+        """Consume stop-truncated features after every target row is committed."""
+        ...
+    def prepare_release(self, req: Request, snapshot) -> None:
+        """Attach optional draft metadata for the request's own slot at its committed length to `snapshot`
+        (`cache.snapshot.Snapshot.auxiliary`: the reply end release inserts) before the tree owns it."""
+        ...
+    def release(self, req: Request) -> None: ...
+    def capture_graphs(self, log=None) -> None: ...
+
+
+@runtime_checkable
+class DeviceFeedback(Protocol):
+    def accepted_prepare(self, requests: list[Request]): ...
+    def feedback_device(self, features, starts, ring_slots, counts, steps, *, norm=None, tokens=None, pages=None) -> None: ...
+    def accepted_publish(self, requests: list[Request], emitted: list[list[int]]) -> None: ...
+
+
+@runtime_checkable
+class CheckpointCache(Protocol):
+    feature_cache: object
+    def bind_checkpoint_cache(self, pool) -> None: ...
+
+
+@runtime_checkable
+class StoredPayload(Protocol):
+    def auxiliary_codec(self): ...
+
+
+@runtime_checkable
+class ScoredDrafts(Protocol):
+    score_drafts: bool  # set by the depth policy that reads Proposal.acceptance; scoring costs nothing otherwise
+
+
+PROTOCOLS = {"device_feedback": DeviceFeedback, "checkpoint_cache": CheckpointCache, "stored_payload": StoredPayload,
+             "scored_drafts": ScoredDrafts}
+
+
+def check_capabilities(proposer) -> None:
+    """Every capability a proposer declares must come with its protocol's methods."""
+    caps = proposer.requirements.capabilities
+    for name, protocol in PROTOCOLS.items():
+        if getattr(caps, name) and not isinstance(proposer, protocol):
+            raise TypeError(f"{proposer.requirements.name} declares {name} without the {protocol.__name__} methods")
+    if caps.draft_head and not callable(getattr(getattr(proposer, "head", None), "set_draft_head", None)):
+        raise TypeError(f"{proposer.requirements.name} declares draft_head without head.set_draft_head")
+
+
+class VisionEncoder(Protocol):
+    """A target's image input: the model's optional `vision` attribute (absent or None for a text-only model;
+    `model/nemotron/vision.py`). The engine uses only this, as every target with a vision tower will: the API makes an
+    image `image_start`, `tokens(w, h)` placeholders (engine/media.py) and `image_end`; the model reads each placeholder
+    as `image_token`, and prefill replaces those rows' embeddings with `encode(preprocess(rgb))`
+    (`ForwardContext.media_rows`, `media_embeds`)."""
+
+    image_token: int
+    image_start: int
+    image_end: int
+    identity: bytes  # part of every image's digest: change it with `preprocess`, so no cached prefix outlives the change
+    workspace_bytes: int  # device memory one encode allocates beyond its output, at the largest tile
+
+    def tokens(self, width: int, height: int) -> int: ...  # embeddings of a width x height image; ValueError if unreadable
+    def preprocess(self, rgb) -> torch.Tensor: ...  # an RGB [H, W, 3] uint8 array -> the encoder's input, on the CPU
+    def encode(self, pixels: torch.Tensor) -> torch.Tensor: ...  # -> [tokens, hidden] embeddings on the device
+
+
+class ExecutionBackend(Protocol):
+    """Scheduler-facing operations; graph buffers and proposer state stay private."""
+
+    max_batch: int
+
+    def validate_request(self, prompt_ids: list[int], params: SamplingParams, media: tuple = ()) -> None: ...
+    def admission_reserve(self, req: Request, limit: int) -> int: ...
+    def can_admit(self, prompt_ids: list[int], reserve_tokens: int = 0) -> bool: ...
+    def admit(self, prompt_ids: list[int], params: SamplingParams, req: Request) -> Request: ...
+    def prefill_batch(self, chunks: list[tuple[Request, int]]) -> None: ...
+    def decode_step(self, reqs: list[Request]) -> list[int]: ...
+    def retract(self, req: Request) -> None: ...
+    def release(self, req: Request) -> None: ...
+    def cache_stats(self) -> dict | None: ...

@@ -9,10 +9,10 @@ import time
 
 import torch
 
-from sharar import distributed
-from sharar.model.flashnext.linear import TrunkLinear
-from sharar.proposers.draft_head import ShortlistHead, TargetHead, VocabParallelHead
-from sharar.weights.sharding import ColumnParallel
+from hibana import distributed
+from hibana.model.flashnext.linear import TrunkLinear
+from hibana.proposers.draft_head import ShortlistHead, TargetHead, VocabParallelHead
+from hibana.weights.sharding import ColumnParallel
 
 VOCAB, HIDDEN = 248_320, 2560
 

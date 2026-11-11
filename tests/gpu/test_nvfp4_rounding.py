@@ -8,8 +8,8 @@ import torch
 @pytest.mark.parametrize('scale', [0.5, 1.0, 2.0, 16.0])
 @pytest.mark.parametrize('rows', [1, 37, 128])
 def test_nvfp4_ties_and_neighbors(scale, rows):
-    from sharar.kernels.nvfp4_quant import nvfp4_quantize
-    from sharar.kernels.ops import fp4_quantize
+    from hibana.kernels.nvfp4_quant import nvfp4_quantize
+    from hibana.kernels.ops import fp4_quantize
 
     ties = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0],
                         device='cuda', dtype=torch.bfloat16)

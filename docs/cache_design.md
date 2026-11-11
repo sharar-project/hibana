@@ -2,7 +2,7 @@
 
 How the engine keeps a request's prefix and brings it back: the GPU pools (L1), the radix prefix cache that indexes
 them, and the SSD tier below them (on in every profile; `SHARAR_SSD=0` turns it off). [Operations](operations.md) lists the settings; the code is in
-`sharar/cache/`.
+`hibana/cache/`.
 
 ## Architecture
 

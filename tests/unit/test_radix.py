@@ -1,7 +1,7 @@
 import torch
 
-from sharar.cache.radix import RadixCache
-from sharar.cache.snapshot import Snapshot
+from hibana.cache.radix import RadixCache
+from hibana.cache.snapshot import Snapshot
 
 
 def snaps(slots: dict, auxiliary: dict | None = None, spare: bool = False) -> list[Snapshot]:

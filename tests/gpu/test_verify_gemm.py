@@ -7,9 +7,9 @@ import torch
 
 @pytest.fixture(scope='module', params=['qkv', 'gate_up', 'down'])
 def projection(request):
-    from sharar import config
-    from sharar.weights.modelopt import load_fp8_linear, load_nvfp4_linear
-    from sharar.weights.safetensors import SnapshotWeights
+    from hibana import config
+    from hibana.weights.modelopt import load_fp8_linear, load_nvfp4_linear
+    from hibana.weights.safetensors import SnapshotWeights
     w = SnapshotWeights(config.snapshot_dir())
     prefix = 'model.language_model.layers.'
     try:
@@ -27,7 +27,7 @@ def projection(request):
 @pytest.mark.parametrize('rows', [16, 32, 64])
 @torch.inference_mode()
 def test_eager_and_graph_replay_match_original_with_new_inputs(projection, rows, monkeypatch):
-    from sharar.kernels import ops
+    from hibana.kernels import ops
     name, linear = projection
     k = linear.weight.shape[1] if name == 'qkv' else linear.in_features
     x = torch.empty(rows, k, device='cuda', dtype=torch.bfloat16)

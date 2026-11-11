@@ -3,7 +3,7 @@
 microbenchmark (go only if the 3-bit path is faster at M = 5, the MTP k = 4 verify).
 
 Loads `--layers` MoE layers of the checkpoint (NVFP4, the CUTLASS arm) and fits each layer's experts into the 3-bit
-format from them (kernels/w3_moe.calibrate, as sharar/weights/flashnext_w3_experts.py writes the checkpoint).
+format from them (kernels/w3_moe.calibrate, as hibana/weights/flashnext_w3_experts.py writes the checkpoint).
 
 Routing is synthetic, matched to the distinct experts per layer that recorded traffic touched in the small-M study
 (10.0, 16.4, 25.1, 28.3, 40.1 at M = 1, 2, 4, 5, 8; M = 16 extrapolated at 3.9 new experts a row): row 0 takes
@@ -32,7 +32,7 @@ from pathlib import Path
 
 import torch
 
-from sharar.kernels import w3_moe
+from hibana.kernels import w3_moe
 
 NVFP4_BYTES = 2 * 640 * 1280 + 2560 * 320 + 2 * 640 * 160 + 2560 * 40  # w13 + w2 and their E4M3 block scales
 DISTINCT = {1: 10.0, 2: 16.4, 4: 25.1, 5: 28.3, 8: 40.1}  # distinct experts per layer in recorded traffic (the small-M router study)
@@ -103,8 +103,8 @@ def graph_us(steps, iters: int, calls: int) -> float:
 
 def quant_nvfp4(moe):
     """CUTLASS's activation rounding for w3_moe.reference: NVFP4 with the layer's static input scales, dequantized."""
-    from sharar.kernels.nvfp4_quant import nvfp4_quantize
-    from sharar.weights.modelopt import unpack_fp4, unswizzle_block_scales
+    from hibana.kernels.nvfp4_quant import nvfp4_quantize
+    from hibana.weights.modelopt import unpack_fp4, unswizzle_block_scales
 
     def quant(t, stage):
         gs = moe.a13 if stage == "x" else moe.a2
@@ -133,10 +133,10 @@ def main():
     ap.add_argument("--skip-numerics", action="store_true")
     args = ap.parse_args()
 
-    from sharar.model.flashnext.linear import TrunkLinear
-    from sharar.model.flashnext.moe import MoeLayer
-    from sharar.target import FLASHNEXT
-    from sharar.weights.safetensors import SnapshotWeights
+    from hibana.model.flashnext.linear import TrunkLinear
+    from hibana.model.flashnext.moe import MoeLayer
+    from hibana.target import FLASHNEXT
+    from hibana.weights.safetensors import SnapshotWeights
 
     dev = torch.device("cuda")
     snap = FLASHNEXT.snapshot_dir()

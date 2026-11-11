@@ -6,7 +6,7 @@ import torch
 
 @torch.inference_mode()
 def test_ba_project_is_row_invariant_and_close_to_fp32():
-    from sharar.kernels.ba_proj import ba_project
+    from hibana.kernels.ba_proj import ba_project
     torch.manual_seed(0)
     x = torch.randn(3000, 5120, device='cuda', dtype=torch.bfloat16)
     w = torch.randn(96, 5120, device='cuda', dtype=torch.bfloat16) * 0.02  # 2 x 48 value heads
@@ -20,17 +20,17 @@ def test_ba_project_is_row_invariant_and_close_to_fp32():
 
 @torch.inference_mode()
 def test_fp8_window_pad_reproduces_the_wide_algorithm(monkeypatch):
-    from sharar import config
-    from sharar.kernels import ops
-    from sharar.weights.modelopt import load_fp8_linear
-    from sharar.weights.safetensors import SnapshotWeights
+    from hibana import config
+    from hibana.kernels import ops
+    from hibana.weights.modelopt import load_fp8_linear
+    from hibana.weights.safetensors import SnapshotWeights
     w = SnapshotWeights(config.snapshot_dir())
     try:
         out_proj = load_fp8_linear(w, ['model.language_model.layers.0.linear_attn.out_proj'], 'cuda')
     finally:
         w.close()
     x = torch.randn(64, 6144, device='cuda', dtype=torch.bfloat16)
-    from sharar.engine import config as engine_config
+    from hibana.engine import config as engine_config
     engine_config.install(engine_config.current().replace(stable_numerics=False))
     wide = ops.fp8_linear(x, out_proj)
     narrow = ops.fp8_linear(x[:30], out_proj)

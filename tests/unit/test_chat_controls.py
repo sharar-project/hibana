@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 
-from sharar.api.server import create_app
+from hibana.api.server import create_app
 
 
 @pytest.mark.parametrize('stream', [False, True])
@@ -94,7 +94,7 @@ def test_chat_without_max_tokens_may_use_the_rest_of_the_context(body, expected)
 def test_constrained_output_requests_carry_their_grammar(controls, kind):
     from tests.unit.test_grammar import PIECES, STOP, ID, V
     from tests.unit.test_messages_api import post
-    from sharar.engine.grammar import Grammars
+    from hibana.engine.grammar import Grammars
     grammars = Grammars(PIECES, V, [STOP], ID['</think>'], byte_level=False)
     tools = [{'type': 'function', 'function': {'name': 'get_weather', 'parameters': {'type': 'object', 'properties': {'city': {'type': 'string'}}}}}]
     payload = {'messages': [{'role': 'user', 'content': 'hi'}], 'tools': tools, **controls}
@@ -110,7 +110,7 @@ def test_constrained_output_requests_carry_their_grammar(controls, kind):
 def test_forced_tool_choice_and_json_format_cannot_combine_and_bad_schemas_are_refused():
     from tests.unit.test_grammar import PIECES, STOP, ID, V
     from tests.unit.test_messages_api import post
-    from sharar.engine.grammar import Grammars
+    from hibana.engine.grammar import Grammars
     grammars = Grammars(PIECES, V, [STOP], ID['</think>'], byte_level=False)
     tools = [{'type': 'function', 'function': {'name': 'f', 'parameters': {'type': 'object', 'properties': {}}}}]
     response, engine, _ = post({'messages': [{'role': 'user', 'content': 'hi'}], 'tools': tools, 'tool_choice': 'required',
@@ -165,7 +165,7 @@ def test_media_in_a_user_turn_is_rejected_before_render_and_submit(part):
 
 
 def test_an_image_a_tool_returned_becomes_a_text_note():
-    from sharar.api.server import _text_only
+    from hibana.api.server import _text_only
     turns = [{'role': 'user', 'content': 'read board.png'},
              {'role': 'tool', 'tool_call_id': 'c1', 'content': [{'type': 'text', 'text': 'board.png:'},
                                                                  {'type': 'image_url', 'image_url': {'url': 'x'}}]}]
@@ -179,9 +179,9 @@ def test_an_image_a_tool_returned_becomes_a_text_note():
 def test_constraints_are_built_for_the_served_targets_vocabulary(monkeypatch, target, vocab):
     """The grammar's masks cover the served target's logits: a Nemotron mask sized for the 27B's 248,320 tokens failed
     every fill and left each constrained request unconstrained for its first token, then finished it."""
-    from sharar import target as targets
-    from sharar.engine import grammar
-    from sharar.engine.sampler import InvalidRequest
+    from hibana import target as targets
+    from hibana.engine import grammar
+    from hibana.engine.sampler import InvalidRequest
     built = []
 
     def from_tokenizer(tokenizer, vocab_size, stop_ids):

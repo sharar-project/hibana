@@ -74,7 +74,7 @@ not its last tokens. Raw prompts (`/generate`, `/v1/completions`) report none.
 When a harness keeps refusing a tool call (Claude Code without permission answers "This command requires approval"),
 the model sometimes retries it with small variations for minutes instead of reporting it, until the client gives up.
 The server guards against it without keeping state, since the conversation comes back on
-every turn ([sharar/api/refusal_guard.py](../sharar/api/refusal_guard.py)):
+every turn ([hibana/api/refusal_guard.py](../hibana/api/refusal_guard.py)):
 
 - A refusal is a tool result marked as an error (Anthropic `is_error`), or reading like a permission refusal, that
   repeats word for word for the same tool since the user's last message.
@@ -88,7 +88,7 @@ every turn ([sharar/api/refusal_guard.py](../sharar/api/refusal_guard.py)):
 
 A JSON `response_format` or a `tool_choice` that requires a call (chat; `any`/`tool` on Anthropic Messages) is
 enforced token by token with an [xgrammar](https://github.com/mlc-ai/xgrammar) grammar
-([sharar/engine/grammar.py](../sharar/engine/grammar.py)), and speculative decoding stays on: after each
+([hibana/engine/grammar.py](../hibana/engine/grammar.py)), and speculative decoding stays on: after each
 verification the drafted tokens are walked through the grammar on the host while the GPU verifies, the target's
 verified rows are masked by the grammar state after each drafted prefix, and acceptance (exact, relaxed or rejection
 sampling) runs on the masked rows, so a drafted token the grammar forbids is rejected and the correction is always

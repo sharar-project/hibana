@@ -7,9 +7,9 @@ import torch
 
 @pytest.fixture(scope='module', params=['gate_up', 'down'])
 def projection(request):
-    from sharar import config
-    from sharar.weights.modelopt import load_nvfp4_linear
-    from sharar.weights.safetensors import SnapshotWeights
+    from hibana import config
+    from hibana.weights.modelopt import load_nvfp4_linear
+    from hibana.weights.safetensors import SnapshotWeights
     w = SnapshotWeights(config.snapshot_dir())
     prefix = 'model.language_model.layers.32.mlp.'
     try:
@@ -23,7 +23,7 @@ def projection(request):
 @pytest.mark.parametrize('rows', [512, 1024, 1536, 2048, 3000, 4096])
 @torch.inference_mode()
 def test_prefill_tactics_match_the_default_dispatch(projection, rows, monkeypatch):
-    from sharar.kernels import ops, prefill_gemm
+    from hibana.kernels import ops, prefill_gemm
     name, linear = projection
     tuned = prefill_gemm.tactic(rows, linear.out_features, linear.in_features)
     assert (tuned is not None) == (rows >= {'gate_up': 1024, 'down': 1536}[name])
@@ -40,7 +40,7 @@ def test_prefill_tactics_match_the_default_dispatch(projection, rows, monkeypatc
 @pytest.mark.parametrize('rows', [1, 2048])
 @torch.inference_mode()
 def test_consuming_norm_matches_the_copying_norm(rows):
-    from sharar.model.norm import GemmaRMSNorm
+    from hibana.model.norm import GemmaRMSNorm
     torch.manual_seed(7)
     norm = GemmaRMSNorm(torch.randn(5120, device='cuda', dtype=torch.bfloat16) * 0.1, 1e-6)
     x = torch.randn(rows, 5120, device='cuda', dtype=torch.bfloat16)
@@ -66,10 +66,10 @@ def test_consuming_norm_matches_the_copying_norm(rows):
 @pytest.mark.parametrize('rows', [2047, 2048])
 @torch.inference_mode()
 def test_fp8_algorithms_match_scaled_mm(names, rows, monkeypatch):
-    from sharar import config
-    from sharar.kernels import ops, prefill_gemm
-    from sharar.weights.modelopt import load_fp8_linear
-    from sharar.weights.safetensors import SnapshotWeights
+    from hibana import config
+    from hibana.kernels import ops, prefill_gemm
+    from hibana.weights.modelopt import load_fp8_linear
+    from hibana.weights.safetensors import SnapshotWeights
     w = SnapshotWeights(config.snapshot_dir())
     try:
         linear = load_fp8_linear(w, list(names), 'cuda')
@@ -88,7 +88,7 @@ def test_fp8_algorithms_match_scaled_mm(names, rows, monkeypatch):
 @torch.inference_mode()
 def test_fp8_algorithms_with_dynamic_scales(shape):
     """Flash-Next's trunk shapes, with a per-call activation scale as TrunkLinear passes it."""
-    from sharar.kernels import prefill_gemm
+    from hibana.kernels import prefill_gemm
     n, k = shape
     torch.manual_seed(n + k)
     weight = (torch.randn(n, k, device='cuda') * 0.05).to(torch.float8_e4m3fn)

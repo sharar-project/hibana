@@ -7,8 +7,8 @@ import torch
 
 @pytest.mark.parametrize("rows", [1, 7, 2048, 5000])
 def test_rms_norm_gated_quant(rows):
-    from sharar.kernels.fla.layernorm_gated import rms_norm_gated, rms_norm_gated_quant
-    from sharar.kernels.fp8_quant import quant_fp8
+    from hibana.kernels.fla.layernorm_gated import rms_norm_gated, rms_norm_gated_quant
+    from hibana.kernels.fp8_quant import quant_fp8
     torch.manual_seed(rows)
     hv, v = 48, 128
     x = torch.randn(rows, hv * v, device="cuda", dtype=torch.bfloat16) * 3

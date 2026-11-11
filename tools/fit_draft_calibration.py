@@ -25,14 +25,14 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sharar import benchmark_workloads, target as targets  # noqa: E402
-from sharar.cache.spec_budget import SpecConfig  # noqa: E402
-from sharar.engine.config import current, install  # noqa: E402
-from sharar.engine.depth import FixedDepth  # noqa: E402
-from sharar.engine.executor import Executor  # noqa: E402
-from sharar.engine.prompts import ChatTemplate  # noqa: E402
-from sharar.engine.sampler import SamplingParams  # noqa: E402
-from sharar.tokenizer import SnapshotTokenizer  # noqa: E402
+from hibana import benchmark_workloads, target as targets  # noqa: E402
+from hibana.cache.spec_budget import SpecConfig  # noqa: E402
+from hibana.engine.config import current, install  # noqa: E402
+from hibana.engine.depth import FixedDepth  # noqa: E402
+from hibana.engine.executor import Executor  # noqa: E402
+from hibana.engine.prompts import ChatTemplate  # noqa: E402
+from hibana.engine.sampler import SamplingParams  # noqa: E402
+from hibana.tokenizer import SnapshotTokenizer  # noqa: E402
 
 CHATS = [
     "Write a Python class implementing an LRU cache, with unit tests.",

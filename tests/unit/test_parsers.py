@@ -1,7 +1,7 @@
 import pytest
 
-from sharar.api.parsers.reasoning import ReasoningParser
-from sharar.api.parsers.tools import parse_tool_calls
+from hibana.api.parsers.reasoning import ReasoningParser
+from hibana.api.parsers.tools import parse_tool_calls
 
 
 def test_reasoning_split_streaming_with_split_tag():

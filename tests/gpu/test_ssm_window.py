@@ -2,8 +2,8 @@
 import pytest
 import torch
 
-from sharar.cache.ssm_format import WindowLayout, WindowPool
-from sharar.kernels import ssm_window as W
+from hibana.cache.ssm_format import WindowLayout, WindowPool
+from hibana.kernels import ssm_window as W
 
 H, HV, K, V = 4, 12, 128, 128  # the 27B's head shapes, a quarter of its heads
 
@@ -125,8 +125,8 @@ def test_verify_solve_holds_on_repeated_keys():
 @pytest.mark.parametrize("steps", [1, 16])
 @pytest.mark.parametrize("bits", [8, 4])
 def test_fused_norm_epilogue_matches_the_separate_kernels(steps, bits):
-    from sharar.kernels.fp8_quant import quant_fp8
-    from sharar.kernels.verify_norm import verify_gated_norm
+    from hibana.kernels.fp8_quant import quant_fp8
+    from hibana.kernels.verify_norm import verify_gated_norm
     lay, raw, pool = _pool(bits=bits)
     views = pool.layer[0]
     batch = 3
@@ -156,7 +156,7 @@ def test_fused_norm_epilogue_matches_the_separate_kernels(steps, bits):
 @pytest.mark.parametrize("steps", [1, 5, 16])
 def test_fused_sigmoid_norm_epilogue_matches_the_separate_kernel(steps):
     """Flash-Next's epilogue: the sigmoid-gated RMS norm of `rms_norm_gated`, in BF16 (its out projection quantizes)."""
-    from sharar.kernels.fla.layernorm_gated import rms_norm_gated
+    from hibana.kernels.fla.layernorm_gated import rms_norm_gated
     lay, raw, pool = _pool()
     views = pool.layer[0]
     batch = 3
@@ -188,7 +188,7 @@ def test_fused_group_quantization_is_quant_groups_of_the_bf16_epilogue(steps):
     """Flash-Next's 3-bit out projection input: E4M3 per (token, 32-group) and the group scales, as `w3.quant_groups`
     of the epilogue's BF16 output (its arithmetic, silu_mul_quant_groups'). The two compiled epilogues may round a
     rare normalized value one BF16 step apart, which moves that value by at most one E4M3 step."""
-    from sharar.kernels import w3
+    from hibana.kernels import w3
     lay, raw, pool = _pool()
     views = pool.layer[0]
     batch = 3

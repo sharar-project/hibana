@@ -13,7 +13,7 @@ def reference(x):
 @pytest.mark.parametrize('shape', [(8, 5120), (16, 4096), (64, 17408), (1, 128)])
 @pytest.mark.parametrize('amplitude', [0., 1., 1e-10, 1000.])
 def test_dynamic_pack_matches_reference(shape, amplitude):
-    from sharar.kernels.draft_fp8 import quant_dynamic
+    from hibana.kernels.draft_fp8 import quant_dynamic
     torch.manual_seed(43)
     x = (torch.randn(shape, device='cuda') * amplitude).bfloat16()
     packed, scale = quant_dynamic(x)
@@ -23,7 +23,7 @@ def test_dynamic_pack_matches_reference(shape, amplitude):
 
 
 def test_replay_refreshes_scale_and_linear_output():
-    from sharar.model.draft_linear import DraftFp8Linear
+    from hibana.model.draft_linear import DraftFp8Linear
     torch.manual_seed(48)
     weight = torch.randn(1024, 5120, device='cuda', dtype=torch.bfloat16)
     linear = DraftFp8Linear.from_bf16(weight)

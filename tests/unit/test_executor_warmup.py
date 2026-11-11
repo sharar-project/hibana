@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.engine.executor import Executor
+from hibana.engine.executor import Executor
 
 
 class WarmupExecutor:

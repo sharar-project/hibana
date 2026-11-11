@@ -32,7 +32,7 @@ def clean(monkeypatch, tmp_path):
 
 
 def test_arms_resolve_as_sharar_serve_does(clean):
-    """The gate and `sharar serve` share one resolver (sharar/launch/settings.py)."""
+    """The gate and `sharar serve` share one resolver (hibana/launch/settings.py)."""
     exact = gate.resolve("flashnext", "exact", {})
     assert exact.get("SHARAR_ACCEPT_DEFAULT") == "off" and gate.arm_plan(exact)["accept"] == "1:0.0"
     assert gate.resolve("flashnext", "fast", {}).get("SHARAR_DEVICE_ACCEPT") == "1"
@@ -78,7 +78,7 @@ def test_sampled_rule_reaches_the_in_process_arm_as_serve_records_it(clean):
 
 def test_served_arms_are_sharar_serve_in_the_foreground(clean):
     cmd = gate.served_command("flashnext", "fast", 30100)
-    assert cmd[2:] == ["-m", "sharar", "serve", "flashnext", "--fast", "--port", "30100", "--no-fetch"]
+    assert cmd[2:] == ["-m", "hibana", "serve", "flashnext", "--fast", "--port", "30100", "--no-fetch"]
     assert "SHARAR_CONFIG_FILE" in gate.served_env({}) and gate.served_env({"SHARAR_SSD": "1"})["SHARAR_SSD"] == "0"
     assert gate.served_env({"SHARAR_TRACES": "/x"})["SHARAR_TRACES"] == "off"
 
