@@ -89,7 +89,7 @@ class SpecDecoder:
             self.depth_policy = AcceptanceDepth(self.depth_policy, current().spec_step_cost)
             self.verify_depths = self.depth_policy.verify_depths
         if current().spec_policy not in ("fixed", "budget"):
-            raise ValueError("SHARAR_SPEC_POLICY must be fixed or budget")
+            raise ValueError("HIBANA_SPEC_POLICY must be fixed or budget")
         if current().spec_policy == "budget":
             # Adaptive verification (engine/depth.RowBudget): the drafts' scores decide what a round verifies, a depth
             # per request in packed graphs, accepted on the host. The block is drafted whole: one forward costs about
@@ -99,16 +99,16 @@ class SpecDecoder:
             from hibana.engine.depth import ragged_budgets
             target = executor.target
             if not proposer.requirements.capabilities.scored_drafts:
-                raise ValueError("SHARAR_SPEC_POLICY=budget needs a drafter that scores its drafts (DFlash2): use fixed")
+                raise ValueError("HIBANA_SPEC_POLICY=budget needs a drafter that scores its drafts (DFlash2): use fixed")
             if current().spec_step_cost:
-                raise ValueError("SHARAR_SPEC_STEP_COST (adaptive depth) does not combine with SHARAR_SPEC_POLICY=budget")
+                raise ValueError("HIBANA_SPEC_STEP_COST (adaptive depth) does not combine with HIBANA_SPEC_POLICY=budget")
             if getattr(executor, "extras", None) is not None or getattr(target, "recurrence", "gdn") != "gdn":
-                raise ValueError(f"SHARAR_SPEC_POLICY=budget verifies packed rows, which {target.name} does not support: use fixed")
+                raise ValueError(f"HIBANA_SPEC_POLICY=budget verifies packed rows, which {target.name} does not support: use fixed")
             sizes = capture_sizes(executor.max_batch)
             caps = policy.depths if policy is not None else None  # a depth table caps each bucket's depth
             if caps and 0 in caps.values():
-                raise ValueError("SHARAR_SPEC_POLICY=budget verifies at least one draft a request: a depth table of "
-                                 "plain decode (0) needs SHARAR_SPEC_POLICY=fixed")
+                raise ValueError("HIBANA_SPEC_POLICY=budget verifies at least one draft a request: a depth table of "
+                                 "plain decode (0) needs HIBANA_SPEC_POLICY=fixed")
             self.depth_policy = RowBudget(self.k, sizes, packed_rows=ragged_budgets(sizes, self.steps), caps=caps)
             proposer.score_drafts = True
             self.short_drafts = False  # else the proposer's capability (`drafts_short`)
@@ -125,7 +125,7 @@ class SpecDecoder:
         self.replay = None
         quantized = getattr(executor.state_pool, "window", None) is not None
         if quantized and state_strategy != "reconstruct":
-            raise ValueError("a quantized recurrent state (SHARAR_SSM_STATE=int8/int4) commits through the verify ring: use --verify-state reconstruct")
+            raise ValueError("a quantized recurrent state (HIBANA_SSM_STATE=int8/int4) commits through the verify ring: use --verify-state reconstruct")
         if state_strategy == "reconstruct":
             if quantized:  # one record per verified token; the commit appends or folds them
                 from hibana.kernels.ssm_window import WindowState
@@ -148,7 +148,7 @@ class SpecDecoder:
                             for name, t in getattr(executor.state_pool, "aux", {}).items()}
         self.verify_graphs = None
         # Device-resident acceptance for all-greedy graph batches (engine/accept_graphs.py);
-        # SHARAR_DEVICE_ACCEPT=0 keeps the host path for every round.
+        # HIBANA_DEVICE_ACCEPT=0 keeps the host path for every round.
         self.device_accept = accept_graphs.enabled()
         # Set by benchmarks: synchronize around the draft/verify/accept phases
         # to attribute time. Off in serving so the host can queue graphs ahead.
@@ -687,7 +687,7 @@ class SpecDecoder:
                 if used[i]:
                     # block offsets (0 = first drafted token) emitted under the relaxed rule rather than as the argmax
                     record["rx"] = [j for j, f in enumerate(flags[i][:count]) if f]
-                if conf is not None:  # the draft's confidence per drafted position (SHARAR_TRACE_CONFIDENCE)
+                if conf is not None:  # the draft's confidence per drafted position (HIBANA_TRACE_CONFIDENCE)
                     record["p1"] = [round(c[0], 5) for c in conf[i]]
                     record["m"] = [round(c[1], 5) for c in conf[i]]
                 r.trace_rounds.append(record)

@@ -1,7 +1,7 @@
 """`sharar serve --detach`: the same command as a user systemd service.
 
-The service runs this checkout's `sharar` with the caller's SHARAR_* settings and config file; its output goes to
-$SHARAR_RESULTS/logs/<service>.log (the previous run's is .log.1); `systemctl --user stop` sends SIGTERM, so the server
+The service runs this checkout's `sharar` with the caller's HIBANA_* settings and config file; its output goes to
+$HIBANA_RESULTS/logs/<service>.log (the previous run's is .log.1); `systemctl --user stop` sends SIGTERM, so the server
 drains (and with the SSD tier on, stores its cached prefixes). SIGTERM reaches the main process only (KillMode=mixed):
 on two Sparks that is the supervisor, which passes it to rank 0 alone, and rank 1's ssh must stay up until rank 0's
 stop has ended rank 1 (launch/tp.py); whatever is left when the main process exits is killed.
@@ -40,10 +40,10 @@ def start(unit: str, argv: list[str], log: Path, description: str) -> None:
     log.parent.mkdir(parents=True, exist_ok=True)
     if log.is_file():
         log.replace(log.with_name(log.name + ".1"))
-    env = {k: v for k, v in os.environ.items() if k.startswith(("SHARAR_", "HF_", "CUDA_VISIBLE", "NCCL_"))}
+    env = {k: v for k, v in os.environ.items() if k.startswith(("HIBANA_", "HF_", "CUDA_VISIBLE", "NCCL_"))}
     conf = config_file()
     if conf is not None:
-        env["SHARAR_CONFIG_FILE"] = str(conf)
+        env["HIBANA_CONFIG_FILE"] = str(conf)
     env.update(PATH=os.environ.get("PATH", "/usr/bin:/bin"), PYTHONUNBUFFERED="1")
     setenv = [a for k, v in env.items() for a in ("--setenv", f"{k}={v}")]
     cmd = ["systemd-run", "--user", "--quiet", "--collect", "--unit", unit, "--description", description,

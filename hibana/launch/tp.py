@@ -1,7 +1,7 @@
 """`sharar serve <target> --tp 2`: one target tensor-parallel on two DGX Sparks (docs/tensor-parallel.md).
 
 Rank 0 runs here and serves HTTP; rank 1 runs on the peer: the host at the other end of the RoCE link that answers
-ssh (or SHARAR_TP_PEER). Before each serve the checkout is mirrored to the same path on the peer (`rsync --delete`,
+ssh (or HIBANA_TP_PEER). Before each serve the checkout is mirrored to the same path on the peer (`rsync --delete`,
 .git included: it replaces whatever is at that path there), the peer's Python environment is synced (`uv sync
 --frozen`), and the model, draft and 3-bit checkpoint are copied to it (rsync copies only what changed). Both ranks
 run `sharar engine ... --tp 2 --tp-rank R`; rank 0 broadcasts its EngineConfig, so rank 1 serves with rank 0's
@@ -9,7 +9,7 @@ settings and the paths in them must exist on both Sparks.
 
 A rank that ends, however it ends, ends the other within a second (the ranks' TCP link to the primary), and the
 pair restarts, up to 5 times in 10 minutes. SIGTERM or Ctrl-C reaches rank 0 alone: it drains its requests, and the
-stop it broadcasts ends rank 1; with the SSD tier on, both store their caches first. SHARAR_TP_PREFIX is a command
+stop it broadcasts ends rank 1; with the SSD tier on, both store their caches first. HIBANA_TP_PREFIX is a command
 both ranks run under, e.g. "nsys profile -o /path/tp2_%h ..." (%h: each host's name).
 """
 from __future__ import annotations
@@ -41,9 +41,9 @@ def ssh(peer: str, command: str, **kw) -> subprocess.CompletedProcess:
 
 
 def peer(s: Settings) -> str:
-    """SHARAR_TP_PEER, else the first host at the other end of a RoCE link that answers ssh."""
-    if s.get("SHARAR_TP_PEER"):
-        return s.get("SHARAR_TP_PEER")
+    """HIBANA_TP_PEER, else the first host at the other end of a RoCE link that answers ssh."""
+    if s.get("HIBANA_TP_PEER"):
+        return s.get("HIBANA_TP_PEER")
     for net in sorted(Path("/sys/class/infiniband").glob("*/device/net/*")):
         out = subprocess.run(["ip", "-4", "neigh", "show", "dev", net.name], capture_output=True, text=True).stdout
         for line in out.splitlines():
@@ -52,7 +52,7 @@ def peer(s: Settings) -> str:
             ip = line.split()[0]
             if subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", ip, "true"], capture_output=True).returncode == 0:
                 return ip
-    raise RuntimeError("no peer found: set SHARAR_TP_PEER to the other Spark's address on the RoCE link")
+    raise RuntimeError("no peer found: set HIBANA_TP_PEER to the other Spark's address on the RoCE link")
 
 
 def link(peer_host: str) -> tuple[str, str]:
@@ -88,7 +88,7 @@ def setup(s: Settings, peer_host: str, w3: Path | None, log=print, models: bool 
         command = f"cd {shlex.quote(str(venv))} && {{ {IBVERBS}; }}"
         r = ssh(where, command) if where else subprocess.run(["bash", "-c", command])
         if r.returncode:
-            log(f"note: no ibverbs headers on {where or 'this Spark'}; the RDMA all-reduce cannot build (SHARAR_TP_ALLREDUCE=nccl works without)")
+            log(f"note: no ibverbs headers on {where or 'this Spark'}; the RDMA all-reduce cannot build (HIBANA_TP_ALLREDUCE=nccl works without)")
     if not models:
         return
     copies: list[Path] = []
@@ -118,7 +118,7 @@ def rank_env(s: Settings, w3: Path | None, device: str) -> dict[str, str]:
     env = {**s.engine_env(w3), "HF_HUB_OFFLINE": "1", "TOKENIZERS_PARALLELISM": "false",
            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True", "CUDA_HOME": "/usr/local/cuda", "NCCL_SOCKET_IFNAME": device,
            "PATH": f"{venv_bin}:/usr/local/cuda/bin:/usr/bin:/bin", "PYTHONUNBUFFERED": "1"}
-    env.setdefault("SHARAR_TP_ALLREDUCE", "rdma")
+    env.setdefault("HIBANA_TP_ALLREDUCE", "rdma")
     return env
 
 
@@ -131,7 +131,7 @@ class Pair:
         self.rank1: subprocess.Popen | None = None
 
     def command(self, rank: int) -> list[str]:
-        prefix = shlex.split(os.environ.get("SHARAR_TP_PREFIX", ""))
+        prefix = shlex.split(os.environ.get("HIBANA_TP_PREFIX", ""))
         return [*prefix, str(Path(sys.prefix) / "bin" / "python"), "-u", "-m", self.module, *self.args, "--tp-rank", str(rank)]
 
     def start(self) -> None:
@@ -146,8 +146,8 @@ class Pair:
             self.rank1 = subprocess.Popen(["ssh", "-tt", self.peer, remote], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                           stderr=subprocess.STDOUT, text=True, errors="replace")
             # The engine's settings are exactly the resolved ones (`rank_env`), as on one Spark (`run.install_env`): none of
-            # the caller's SHARAR_* settings, e.g. SHARAR_TRACES=off, which the engine would read as a trace directory.
-            base = {k: v for k, v in os.environ.items() if not k.startswith("SHARAR_")}
+            # the caller's HIBANA_* settings, e.g. HIBANA_TRACES=off, which the engine would read as a trace directory.
+            base = {k: v for k, v in os.environ.items() if not k.startswith(("HIBANA_", "SHARAR_"))}
             self.rank0 = subprocess.Popen(self.command(0), env={**base, **self.env}, cwd=CHECKOUT)
         finally:
             signal.signal(signal.SIGINT, previous)

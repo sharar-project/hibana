@@ -5,7 +5,7 @@ Generates the round profiler's prompts plus JSON, chat, multilingual and a needl
 the first four together at batch four, with exact and relaxed (3:2.0) acceptance, each twice in one process (the
 second pass shows whether a build repeats itself), and writes every output's token ids.
 
-    SHARAR_TARGET=flashnext python3 -m profiling.ab_identity --out a.json      # on build A, then on build B
+    HIBANA_TARGET=flashnext python3 -m profiling.ab_identity --out a.json      # on build A, then on build B
     python3 -m profiling.ab_identity --compare a.json b.json
 
 The needle prompt is the first row of a passkey file (`--passkey`, a JSON list of {"ids": [...]}), when given.

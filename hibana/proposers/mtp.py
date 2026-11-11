@@ -61,14 +61,14 @@ def draft_laws(ids, logits, requests, rows=None, j: int = 0):
 
 
 def draft_choice(head, hidden: torch.Tensor, with_confidence: bool) -> tuple[torch.Tensor, torch.Tensor | None]:
-    """`draft_argmax`, and with `with_confidence` the draft head's [rows, 2] confidence in it (SHARAR_TRACE_CONFIDENCE)."""
+    """`draft_argmax`, and with `with_confidence` the draft head's [rows, 2] confidence in it (HIBANA_TRACE_CONFIDENCE)."""
     if not with_confidence:
         return draft_argmax(head, hidden), None
     return head.draft_head.argmax_confidence(head.head_input(hidden))
 
 
 def draft_outputs(head, hidden: torch.Tensor, with_confidence: bool, width: int):
-    """`draft_choice`, and with SHARAR_MTP_SAMPLE (`width` > 0) the draft head's candidates from the same head pass:
+    """`draft_choice`, and with HIBANA_MTP_SAMPLE (`width` > 0) the draft head's candidates from the same head pass:
     the draft is then their first, the head's best (its argmax, ties aside; a shortlist head ranks max(rescore, width)
     candidates by the FP8 rows), unless the confidence trace reads the head's own logits. Returns (token, confidence,
     (ids, logits) [rows, width] or None)."""
@@ -83,7 +83,7 @@ class MtpProposer:
     def __init__(self, head, context: ProposerContext, k: int = 3):
         self.head, self.context, self.k = head, context, k
         # Greedy batches draft the head's argmax: deterministic proposals, verified as point masses (engine/rejection.py).
-        # With SHARAR_MTP_SAMPLE a batch with a sampled request draws each draft from the request's law over the head's
+        # With HIBANA_MTP_SAMPLE a batch with a sampled request draws each draft from the request's law over the head's
         # rescored candidates (`draft_laws`) and hands that law to the verifier, which accepts against it exactly: the
         # acceptance rate rises from p(argmax) to sum(min(p, q)) with the emitted law unchanged.
         self.requirements = ProposerRequirements("mtp", FeatureRequest(final_norm=True), persistent_bytes=head.bytes,
@@ -91,7 +91,7 @@ class MtpProposer:
                                                  capabilities=Capabilities(device_feedback=True, draft_head=getattr(head, "DRAFT_HEADS", False),
                                                                            short_drafts=True, stored_payload=True))
         self.graphs = None
-        # The draft's confidence per step for the trace round records (SHARAR_TRACE_CONFIDENCE); read once
+        # The draft's confidence per step for the trace round records (HIBANA_TRACE_CONFIDENCE); read once
         # here, the draft graphs capture the extra output.
         self.with_confidence = current().trace_confidence
         cfg = current()
@@ -296,7 +296,7 @@ class MtpProposer:
         state.pending_hidden = None if req.finished else features.norm[row, len(emitted) - 1:len(emitted)]
         state.draft_pos = req.committed_len
 
-    # ---- device-resident acceptance (engine/accept_graphs.py, SHARAR_DEVICE_ACCEPT=1) ----
+    # ---- device-resident acceptance (engine/accept_graphs.py, HIBANA_DEVICE_ACCEPT=1) ----
     def _feedback_buffers(self) -> dict:
         """Static rows a captured acceptance pass reads and writes: each request's pending hidden (staged
         by accepted_prepare), its verify rows and the row its accepted block ends on."""

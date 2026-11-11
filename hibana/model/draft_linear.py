@@ -8,7 +8,7 @@ import torch
 class DraftFp8Linear:
     weight: torch.Tensor
     scale: torch.Tensor
-    w3: object = None  # 3-bit decode copy (hibana.kernels.w3.W3Weight) when SHARAR_W3_DECODE=1
+    w3: object = None  # 3-bit decode copy (hibana.kernels.w3.W3Weight) when HIBANA_W3_DECODE=1
 
     @classmethod
     def from_bf16(cls, weight):

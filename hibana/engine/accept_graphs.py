@@ -22,7 +22,7 @@ Padded rows of a bucket carry budget 0 and ring slot 0: they emit nothing,
 reconstruct nothing into the dummy recurrent slot, leave its convolution
 window as it was and write the dummy ring.
 
-Sampled batches of MTP drafts replay two graphs per bucket (point-mass drafts, or with SHARAR_MTP_SAMPLE the drafts'
+Sampled batches of MTP drafts replay two graphs per bucket (point-mass drafts, or with HIBANA_MTP_SAMPLE the drafts'
 law q on their candidates, copied into the decision graph's static q / support first): a decision graph (the vocabulary
 top-k and kernels/sampled_verify.verify_candidates with Philox draws, which write the sampled target row: the drafts
 up to the accepted count, then the correction) and the commit graph above on that row, exact rule only. Between
@@ -40,7 +40,7 @@ from hibana.engine import graph_set
 from hibana.engine.accept import MAX_STOPS, accept_block
 
 def enabled() -> bool:
-    """SHARAR_DEVICE_ACCEPT."""
+    """HIBANA_DEVICE_ACCEPT."""
     from hibana.engine.config import current
     return current().device_accept  # opt-in: exact, +2% at batch one, no serving gain at batch four yet (roadmap item 3)
 META = 3 + MAX_STOPS  # budget, start, ring slot, stop ids
@@ -63,7 +63,7 @@ class AcceptGraphs:
         # and prepares the next round while they run (`round`).
         self._writes: dict[int, torch.cuda.CUDAGraph] = {}
         self.sampled = spec.device.type == "cuda" and spec.proposer.requirements.name == "mtp"  # MTP drafts
-        # SHARAR_MTP_SAMPLE: a sampled batch's drafts come with their law q [b, k, W] on candidates [b, k, W]
+        # HIBANA_MTP_SAMPLE: a sampled batch's drafts come with their law q [b, k, W] on candidates [b, k, W]
         self.q_width = spec.proposer.sample_width if self.sampled and getattr(spec.proposer, "sample", False) else 0
 
     @staticmethod
@@ -113,7 +113,7 @@ class AcceptGraphs:
             "fit": torch.zeros(b, dtype=torch.int32, device=d),
             "host_fit": torch.zeros(b, dtype=torch.int32, pin_memory=pin),
             "fit_event": torch.cuda.Event(),
-            # SHARAR_MTP_SAMPLE: the drafts' law and its candidates (padded rows: q 0, so their drafts reject)
+            # HIBANA_MTP_SAMPLE: the drafts' law and its candidates (padded rows: q 0, so their drafts reject)
             "q": torch.zeros((b, k, self.q_width), dtype=torch.float32, device=d) if self.q_width else None,
             "support": torch.zeros((b, k, self.q_width), dtype=torch.int64, device=d) if self.q_width else None,
         }

@@ -7,7 +7,7 @@ SSD) is compared within tolerance; decode, verify and replay share one recurrenc
 other. Parameters are layer 0's when the checkpoint is present (random otherwise).
 
 Every state test runs in both storage formats: FP32 and FP16 stochastically rounded ("sr", keyed on the token
-positions and layer index; the served `SHARAR_SSM_STATE=fp16_sr`). Within a format the bitwise contracts hold
+positions and layer index; the served `HIBANA_SSM_STATE=fp16_sr`). Within a format the bitwise contracts hold
 unchanged (verify == decode, replay == decode, 128-aligned prefill splits, checkpoints); against the FP32 reference
 the FP16 states carry their rounding error. The stochastic rounding itself is checked for unbiasedness and
 determinism.

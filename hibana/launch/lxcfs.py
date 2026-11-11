@@ -30,7 +30,7 @@ def wrap(command: list[str]) -> list[str]:
 
 def reexec_if_needed() -> None:
     """Restart this process inside the namespace before anything imports torch (once)."""
-    if needed() and not os.environ.get("SHARAR_LXCFS_WRAPPED"):
-        os.environ["SHARAR_LXCFS_WRAPPED"] = "1"
+    if needed() and not os.environ.get("HIBANA_LXCFS_WRAPPED"):
+        os.environ["HIBANA_LXCFS_WRAPPED"] = "1"
         command = wrap([sys.executable, *sys.orig_argv[1:]])
         os.execvp(command[0], command)

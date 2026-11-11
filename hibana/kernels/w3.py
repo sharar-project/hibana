@@ -26,11 +26,11 @@ Activations are E4M3: the engine's static-scale projection inputs as they
 are, BF16 MLP inputs quantized per row and 32-group by `quant_groups` (the
 kernel applies the activation group scale together with the weight group
 scale; a single per-row scale measurably lost task accuracy). Enabled for
-decode-sized calls (at most `MAX_ROWS` rows) when `SHARAR_W3_DECODE=1` and a
+decode-sized calls (at most `MAX_ROWS` rows) when `HIBANA_W3_DECODE=1` and a
 linear carries a packed copy (`attach_model`); prefill keeps the NVFP4 and
 FP8 weights and kernels. Quantization here is nearest-level from the served
 weights; calibrated source weights use `pack_codes` to retain fitted scales
-and load through `SHARAR_W3_CHECKPOINT` before graph capture.
+and load through `HIBANA_W3_CHECKPOINT` before graph capture.
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ import torch
 
 
 def enabled() -> bool:
-    """SHARAR_W3_DECODE: serve calls of at most MAX_ROWS rows from the 3-bit copies."""
+    """HIBANA_W3_DECODE: serve calls of at most MAX_ROWS rows from the 3-bit copies."""
     from hibana.engine.config import current
     return current().w3_decode
 MAX_ROWS = 128
@@ -380,7 +380,7 @@ def attach(linears, codebook=DEFAULT_CODEBOOK) -> tuple[int, int]:
 
 def attach_model(model, log=print, codebook=DEFAULT_CODEBOOK) -> dict:
     """Pack 3-bit decode copies for every projection `model.linears()` lists (calibrated ones from
-    SHARAR_W3_CHECKPOINT when set). The lm_head keeps its NVFP4 weights (a 3-bit copy cost about two
+    HIBANA_W3_CHECKPOINT when set). The lm_head keeps its NVFP4 weights (a 3-bit copy cost about two
     GSM8K points)."""
     total = 0
     count = 0

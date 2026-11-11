@@ -1,4 +1,4 @@
-"""The MTP draft's confidence in trace round records (SHARAR_TRACE_CONFIDENCE): the captured draft graphs
+"""The MTP draft's confidence in trace round records (HIBANA_TRACE_CONFIDENCE): the captured draft graphs
 report each drafted position's top-1 probability and margin, and turning it on does not change the outputs."""
 import gc
 

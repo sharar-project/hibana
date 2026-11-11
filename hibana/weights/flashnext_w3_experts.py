@@ -5,7 +5,7 @@ checkpoint's trunk entries and every layer's experts as `layers.N.experts.w13` /
 The source is the checkpoint's NVFP4 experts, dequantized (there is no BF16 expert source). Each expert matrix is
 fitted into the W3 format: the trunk's Lloyd codebook, one E4M3 scale per 32 weights, an FP32 row multiplier. fc1 is
 stored in the kernel's row order (w3_moe.fc1_order). Serving it with the 3-bit copies on (the `fast` profile,
-SHARAR_W3_CHECKPOINT=DIR) replaces the NVFP4 experts.
+HIBANA_W3_CHECKPOINT=DIR) replaces the NVFP4 experts.
 
 Two methods:
 - `cheap` (the nearest-level route, `w3_moe.quantize`): group scales on a clipping grid minimizing the weight error,
@@ -18,10 +18,10 @@ Two methods:
   h = silu(gate) * up from the NVFP4 fc1 for fc2. An expert that saw fewer than --min-tokens routed rows keeps
   the cheap fit; below --prior-tokens its covariance is shrunk toward the layer's pooled one.
 
-    SHARAR_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts capture --inputs expert-inputs.json --activations DIR
-    SHARAR_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts fit --method gptq --activations DIR \\
-        --source $SHARAR_RESULTS/w3-checkpoints/flashnext-current --output $SHARAR_RESULTS/w3-checkpoints/<date>-flashnext-experts3-gptq \\
-        [--cheap-output $SHARAR_RESULTS/w3-checkpoints/<date>-flashnext-experts3]
+    HIBANA_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts capture --inputs expert-inputs.json --activations DIR
+    HIBANA_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts fit --method gptq --activations DIR \\
+        --source $HIBANA_RESULTS/w3-checkpoints/flashnext-current --output $HIBANA_RESULTS/w3-checkpoints/<date>-flashnext-experts3-gptq \\
+        [--cheap-output $HIBANA_RESULTS/w3-checkpoints/<date>-flashnext-experts3]
 """
 from __future__ import annotations
 

@@ -21,9 +21,9 @@ are deterministic at every size.
 
 Routing for decode and verify forwards follows Flash-Next (`model/flashnext/moe.py`): a CUDA graph's padded rows (dummy
 state slot 0) take row 0's top expert at weight 0, which reads no further expert (3-bit experts: no expert, id 512).
-MoE sharing (off by default) with SHARAR_MOE_KEEP=F: every real token keeps its own top F experts by choice score (its
+MoE sharing (off by default) with HIBANA_MOE_KEEP=F: every real token keeps its own top F experts by choice score (its
 floor, which no cap cuts); its other top-22 experts ride along when they are in the call's set S, the union of the real
-tokens' floors (free riders: no extra bytes); SHARAR_MOE_BUDGET=[P:]CAP grows S past that union, when the cap is larger,
+tokens' floors (free riders: no extra bytes); HIBANA_MOE_BUDGET=[P:]CAP grows S past that union, when the cap is larger,
 by the experts with the most routing weight over the call's real tokens' top 22 (more free riders), and never shrinks
 it; a cap the floors' union exceeds guarantees each token only its top `fallback` and fills to the cap. Each token's
 weights renormalize over its kept experts (`route_budget`). Every path is capture-safe: static shapes, no host syncs.
@@ -121,7 +121,7 @@ def route_topk(fused: torch.Tensor, bias: torch.Tensor, k: int, latent: int, slo
     return ids, w, lat
 
 
-# ---- budgeted expert selection ('MoE sharing', SHARAR_MOE_KEEP / SHARAR_MOE_BUDGET): Flash-Next's route_budget with this
+# ---- budgeted expert selection ('MoE sharing', HIBANA_MOE_KEEP / HIBANA_MOE_BUDGET): Flash-Next's route_budget with this
 # model's ranking. The rank kernel is this model's (sigmoid + bias choice, plain-sigmoid weights); the score, select and
 # pick kernels are Flash-Next's, which take any ranking: a call's set is every real row's top `keep` plus the experts
 # with the most routing weight over its real rows' top k, up to the cap; each row then takes its top k in the set.
@@ -464,7 +464,7 @@ class NemotronMoe:
                             fallback=self.fallback(fused.shape[0], steps))
 
     def fallback(self, rows: int, steps: int) -> int:
-        """The guarantee when the floors' union exceeds SHARAR_MOE_BUDGET's cap: cap / rows within [SHARE_MIN, floor),
+        """The guarantee when the floors' union exceeds HIBANA_MOE_BUDGET's cap: cap / rows within [SHARE_MIN, floor),
         Flash-Next's rule from the call's shape (a graph's bucket, every request counted); 0 without a cap or when the
         rule gives the floor itself."""
         if not self.budget:

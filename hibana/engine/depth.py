@@ -5,8 +5,8 @@ depths whose verify graphs were captured (`SpecDecoder.verify_depths`).
 `FixedDepth` is the served behavior: the proposer's k every round.
 `BatchDepth` chooses by the batch bucket: the throughput profile verifies
 shallower blocks, or none (depth 0: plain decode), when many requests share a
-round. `AcceptanceDepth` (SHARAR_SPEC_STEP_COST) drafts each request as deep as its recent acceptance pays for.
-`RowBudget` (SHARAR_SPEC_POLICY=budget, DFlash2 in `fast` and `throughput`) verifies the drafts whose scores pay for
+round. `AcceptanceDepth` (HIBANA_SPEC_STEP_COST) drafts each request as deep as its recent acceptance pays for.
+`RowBudget` (HIBANA_SPEC_POLICY=budget, DFlash2 in `fast` and `throughput`) verifies the drafts whose scores pay for
 their measured cost.
 """
 
@@ -58,7 +58,7 @@ class BatchDepth:
 
 
 def parse_depths(text: str | None, sizes: tuple[int, ...], k: int) -> BatchDepth | None:
-    """`SHARAR_SPEC_DEPTHS` as "BUCKET:DEPTH,..." (e.g. "8:1,16:0"); buckets not named verify the proposer's k.
+    """`HIBANA_SPEC_DEPTHS` as "BUCKET:DEPTH,..." (e.g. "8:1,16:0"); buckets not named verify the proposer's k.
     None when unset or when every bucket keeps k."""
     if not text:
         return None
@@ -66,9 +66,9 @@ def parse_depths(text: str | None, sizes: tuple[int, ...], k: int) -> BatchDepth
     for item in text.split(","):
         bucket, sep, depth = item.strip().partition(":")
         if not sep or not bucket.strip().isdigit() or not depth.strip().isdigit():
-            raise ValueError(f"SHARAR_SPEC_DEPTHS must be BUCKET:DEPTH pairs, got {text!r}")
+            raise ValueError(f"HIBANA_SPEC_DEPTHS must be BUCKET:DEPTH pairs, got {text!r}")
         if int(bucket) not in depths:
-            raise ValueError(f"SHARAR_SPEC_DEPTHS bucket {bucket} is not a captured batch size {sizes}")
+            raise ValueError(f"HIBANA_SPEC_DEPTHS bucket {bucket} is not a captured batch size {sizes}")
         depths[int(bucket)] = int(depth)
     if all(d == k for d in depths.values()):
         return None
@@ -94,7 +94,7 @@ class AcceptanceDepth:
 
     def __init__(self, base, step_cost: float, alpha: float = 0.1, prior: float = 0.8):
         if step_cost <= 0:
-            raise ValueError("SHARAR_SPEC_STEP_COST must be positive")
+            raise ValueError("HIBANA_SPEC_STEP_COST must be positive")
         self.base, self.step_cost, self.alpha, self.prior = base, step_cost, alpha, prior
 
     @property
@@ -148,7 +148,7 @@ def ragged_budgets(sizes, steps: int) -> dict[int, tuple[int, ...]]:
 
 
 class RowBudget:
-    """Adaptive verification for a drafter that scores its drafts (DFlash2, SHARAR_SPEC_POLICY=budget): a round
+    """Adaptive verification for a drafter that scores its drafts (DFlash2, HIBANA_SPEC_POLICY=budget): a round
     verifies the drafted tokens whose expected acceptance pays for their measured cost.
 
     - Scores: `Proposal.acceptance`, each draft's calibrated probability of acceptance given the drafts before it,
@@ -179,7 +179,7 @@ class RowBudget:
         self.depth = cap
         self.steps = cap + 1
         self.sizes = tuple(sizes)
-        self.caps = {b: max(1, min(cap, (caps or {}).get(b, cap))) for b in self.sizes}  # a ceiling per bucket (SHARAR_SPEC_DEPTHS)
+        self.caps = {b: max(1, min(cap, (caps or {}).get(b, cap))) for b in self.sizes}  # a ceiling per bucket (HIBANA_SPEC_DEPTHS)
         self.budgets = packed_rows  # bucket -> captured row totals
         self.candidates = tuple(range(1, cap + 1))
         self.keep = keep

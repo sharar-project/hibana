@@ -66,7 +66,7 @@ class FlashNextIndexer:
             reason = "requires CUDA on SM121"
         if reason is not None:
             if self._prefill_backend == "optimized":
-                raise ValueError(f"SHARAR_QSA_PREFILL_BACKEND=optimized: {reason}")
+                raise ValueError(f"HIBANA_QSA_PREFILL_BACKEND=optimized: {reason}")
             return
         from hibana.kernels.qsa.prefill import PrefillKernels
         self._prefill = PrefillKernels(cos_sin)
@@ -90,7 +90,7 @@ class FlashNextIndexer:
         if getattr(self, "_prefill_backend", "original") == "optimized" and ctx.mode == "prefill":
             from hibana.kernels.qsa.prefill import PrefillKernels
             if PrefillKernels.in_scope(x, ctx, self):
-                raise ValueError("SHARAR_QSA_PREFILL_BACKEND=optimized: unsupported sparse eager prefill; "
+                raise ValueError("HIBANA_QSA_PREFILL_BACKEND=optimized: unsupported sparse eager prefill; "
                                  "requires CUDA BF16 inputs, contiguous BF16 index weights, "
                                  "matching sequence metadata and context <=32768")
         h, d = self.heads, self.dim

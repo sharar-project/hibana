@@ -32,7 +32,7 @@ def test_sparse_attention_matches_torch():
 @pytest.mark.parametrize("heads,kv_heads", [(24, 2), (12, 1)])
 @pytest.mark.parametrize("rows", [3, 40, 600])
 def test_sparse_attention_over_nvfp4_matches_torch(heads, kv_heads, rows):
-    """The NVFP4 pool (SHARAR_KV_FORMAT=nvfp4, FlashInfer's writer): the kernel against exact attention over the values
+    """The NVFP4 pool (HIBANA_KV_FORMAT=nvfp4, FlashInfer's writer): the kernel against exact attention over the values
     the codes and scales hold, to the BF16 kernel's own rounding."""
     from flashinfer.page import nvfp4_quantize_append_paged_kv_cache_with_slot_mapping as write
     from hibana.kernels.kv_fp4 import nvfp4_round

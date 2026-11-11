@@ -80,7 +80,7 @@ def test_repeat_runs_in_one_process_are_identical(runtime, graphs, batch, device
     """Bit-identical run to run, eager or with CUDA graphs. Batches 4 and 6 with graphs cover padded rounds (requests
     finish at different rounds; six rows replay the batch-8 graphs with two padded rows): padded rows once wrote page 0
     together, in the target's verify graph and in the MTP draft graph, and the race reached the real rows through
-    the per-tensor activation scale. With device acceptance (SHARAR_DEVICE_ACCEPT, on in fast and throughput) the
+    the per-tensor activation scale. With device acceptance (HIBANA_DEVICE_ACCEPT, on in fast and throughput) the
     draft feedback's rows past a request's count did the same, and padded rows wrote their windows to the dummy slot."""
     ex, tok = runtime
     spec = ex.spec

@@ -23,7 +23,7 @@ Numerics per M on two layers: the 3-bit kernel against `w3_moe.reference` (the s
 FP32 matmuls in torch; the kernel's activation rounding), and both against CUTLASS (NVFP4 activations); CUTLASS
 against the same reference with NVFP4 activations checks that both arms hold the same weights.
 
-    SHARAR_TARGET=flashnext python3 -m profiling.flashnext_moe_w3 --out moe_w3.json
+    HIBANA_TARGET=flashnext python3 -m profiling.flashnext_moe_w3 --out moe_w3.json
 """
 import argparse
 import json

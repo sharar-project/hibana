@@ -19,7 +19,7 @@ def _sm12x(device_index: int) -> bool:
 def backend(q, k, v, state) -> str:
     policy = current().gdn_prefill
     if policy not in ("auto", "cute", "triton"):
-        raise ValueError(f"invalid SHARAR_GDN_PREFILL: {policy!r}")
+        raise ValueError(f"invalid HIBANA_GDN_PREFILL: {policy!r}")
     supported = (
         q.is_cuda and q.dtype == k.dtype == v.dtype == torch.bfloat16
         and q.shape[-1] == k.shape[-1] == v.shape[-1] == 128

@@ -296,7 +296,7 @@ class SsdTier:
                  min_hit: int = 2048, step_bytes: int = 64 * MIB, staging_bytes: int = STAGING_BYTES,
                  chunk_bytes: int = CHUNK_BYTES, trace: bool = False, extra_pages=()):
         self.block = store.block  # tokens per stored KV block (part of the store's identity)
-        self.trace = trace  # one line per restore in restores.jsonl beside the store (SHARAR_SSD_TRACE)
+        self.trace = trace  # one line per restore in restores.jsonl beside the store (HIBANA_SSD_TRACE)
         self.store, self.kv_pool, self.state_pool, self.device = store, kv_pool, state_pool, device
         self.budget, self.min_tokens, self.min_hit = int(budget_bytes), int(min_tokens), int(min_hit)
         self.step_bytes, self.staging_bytes, self.chunk_bytes = int(step_bytes), int(staging_bytes), int(chunk_bytes)

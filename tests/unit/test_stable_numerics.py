@@ -10,11 +10,11 @@ def test_padded_rows_steps_over_the_measured_window_only():
 
 def test_flag_reads_the_installed_config(monkeypatch):
     from hibana.engine import config
-    monkeypatch.setenv("SHARAR_STABLE_NUMERICS", "1")
+    monkeypatch.setenv("HIBANA_STABLE_NUMERICS", "1")
     config.reset()
     assert stable.enabled()
     with config.using(config.current().replace(stable_numerics=False)):
         assert not stable.enabled()
-    monkeypatch.delenv("SHARAR_STABLE_NUMERICS")
+    monkeypatch.delenv("HIBANA_STABLE_NUMERICS")
     config.reset()
     assert not stable.enabled()

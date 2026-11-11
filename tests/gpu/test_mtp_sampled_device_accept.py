@@ -1,4 +1,4 @@
-"""Sampled MTP drafts on a served target (SHARAR_MTP_SAMPLE): sampled batches propose the draft head's law on its
+"""Sampled MTP drafts on a served target (HIBANA_MTP_SAMPLE): sampled batches propose the draft head's law on its
 candidates, the device acceptance graph decides on that law as the host path does, and greedy batches keep argmax
 drafts."""
 import dataclasses

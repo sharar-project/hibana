@@ -56,7 +56,7 @@ def cmd_launch(args, s: Settings, dry: bool = False) -> int:
     """Start a coding agent against the serving target with its own config (the user's own settings are not touched)."""
     if args.harness == "codex":
         sys.exit("Codex needs the OpenAI Responses API (/v1/responses), which Sharar does not serve")
-    url = (os.environ.get("SHARAR_URL") or s.url).rstrip("/")
+    url = (os.environ.get("HIBANA_URL") or s.url).rstrip("/")
     try:
         with urllib.request.urlopen(f"{url}/get_server_info", timeout=3) as r:
             info = json.loads(r.read())
@@ -78,7 +78,7 @@ def cmd_launch(args, s: Settings, dry: bool = False) -> int:
     if args.harness == "claude":
         # Claude Code only accepts model ids containing "claude"; its own config directory keeps the user's
         # Anthropic login, settings and history untouched (the first launch asks the onboarding questions).
-        model = os.environ.get("SHARAR_CLAUDE_MODEL", f"claude-sharar-{alias}")
+        model = os.environ.get("HIBANA_CLAUDE_MODEL", f"claude-sharar-{alias}")
         for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE"):
             henv.pop(k, None)
         henv.update(ANTHROPIC_BASE_URL=url, ANTHROPIC_AUTH_TOKEN="sharar", ANTHROPIC_MODEL=model,
@@ -86,7 +86,7 @@ def cmd_launch(args, s: Settings, dry: bool = False) -> int:
                     CLAUDE_CODE_MAX_CONTEXT_TOKENS=str(context), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1",
                     # the model name is not in Claude Code's catalog: without this it assumes a 200K window
                     CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT="1",
-                    CLAUDE_CONFIG_DIR=os.environ.get("SHARAR_CLAUDE_CONFIG", str(Path.home() / ".claude-sharar")))
+                    CLAUDE_CONFIG_DIR=os.environ.get("HIBANA_CLAUDE_CONFIG", str(Path.home() / ".claude-sharar")))
         command = ["claude", *args.args]
     elif args.harness == "opencode":
         # OPENCODE_CONFIG is merged over the user's global config: a `sharar` provider and the default model.
@@ -227,14 +227,14 @@ def verify(url: str, s: Settings) -> int:
         models = get("/v1/models")["data"]
         if [m["id"] for m in models] != [c.MODEL_ID]:
             sys.exit(f"sharar verify: model list is {models}")
-        body = {"model": c.MODEL_ID, "messages": [{"role": "user", "content": "Reply with exactly SHARAR_OK and nothing else."}],
+        body = {"model": c.MODEL_ID, "messages": [{"role": "user", "content": "Reply with exactly HIBANA_OK and nothing else."}],
                 "max_tokens": 16, "temperature": 0, "chat_template_kwargs": {"enable_thinking": False}, "trace": False}
         request = urllib.request.Request(f"{url}/v1/chat/completions", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=120) as r:
             answer = json.loads(r.read())["choices"][0]["message"]["content"].strip()
     except (urllib.error.URLError, OSError, KeyError, ValueError) as exc:
         sys.exit(f"sharar verify: {url}: {exc}")
-    if answer != "SHARAR_OK":
+    if answer != "HIBANA_OK":
         sys.exit(f"sharar verify: the canary answered {answer!r}")
     print(f"Sharar READY at {url} ({c.MODEL_ID}, context {info.get('context_length')}, {info.get('tp_size', 1)} Spark(s))")
     return 0

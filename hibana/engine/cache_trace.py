@@ -122,7 +122,7 @@ def run(ex, ids, output: Path):
     """Compare copies and rounding separately from kernel-shape differences."""
     assert ex.spec is None and ex.cache is not None
     if ex.state_pool.window is not None:
-        raise ValueError("the cache trace compares FP32 states; run it with SHARAR_SSM_STATE=fp32")
+        raise ValueError("the cache trace compares FP32 states; run it with HIBANA_SSM_STATE=fp32")
     params = SamplingParams(max_new_tokens=1)
     traces, results, owned = {}, {}, []
     def request(tokens):

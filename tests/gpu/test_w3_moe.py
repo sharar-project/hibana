@@ -52,7 +52,7 @@ def test_kernel_matches_reference(experts, m):
 @pytest.mark.parametrize("k", [1, 5, 9])
 @pytest.mark.parametrize("m", [1, 5, 64, 200])  # 200 rows x 5: 1,000 pairs, sorted outside the kernel
 def test_fewer_experts_per_row(experts, m, k):
-    """ids and weights [M, k], k below 10 (SHARAR_MOE_KEEP alone): the same kernel against the reference, eager and captured."""
+    """ids and weights [M, k], k below 10 (HIBANA_MOE_KEEP alone): the same kernel against the reference, eager and captured."""
     torch.manual_seed(100 * k + m)
     x = torch.randn(m, w3_moe.HIDDEN, device="cuda", dtype=torch.bfloat16)
     ids = torch.stack([torch.randperm(E, device="cuda")[:k] for _ in range(m)]).to(torch.int32)

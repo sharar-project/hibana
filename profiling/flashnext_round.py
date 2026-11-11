@@ -10,7 +10,7 @@
      verification of s rows reads what an M = s forward reads; this is the cost a
      longer draft block pays.
 
-    SHARAR_TARGET=flashnext python3 -m profiling.flashnext_round --out round.json
+    HIBANA_TARGET=flashnext python3 -m profiling.flashnext_round --out round.json
 
 `--gap-profile` (with `--batch`, `--accept`) and `--kernel-gaps` split a served round into GPU
 work, GPU idle time between replays (host work the GPU waits for) and bubbles inside the replays.
@@ -487,7 +487,7 @@ def phase_kernels(ex, tok, out, tokens: int, batch: int = 1, accept: str | None 
 
 
 def accept_check(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = None):
-    """Host against device-resident acceptance (SHARAR_DEVICE_ACCEPT) on the same prompts: outputs, the
+    """Host against device-resident acceptance (HIBANA_DEVICE_ACCEPT) on the same prompts: outputs, the
     tokens each round emitted per request, and the first round whose boundaries differ. The device pass
     projects the draft KV over the whole bucket, so drafts may drift (MtpProposer.feedback_device)."""
     spec = ex.spec

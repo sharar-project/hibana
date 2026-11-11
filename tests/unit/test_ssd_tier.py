@@ -349,7 +349,7 @@ def test_a_store_kept_in_memory_is_refused(tmp_path, monkeypatch):
     assert memory_backed("/tmpx/a", mounts) is None and memory_backed("/home/u", mounts) is None
     assert memory_backed("/mnt/my ssd/x", mounts) is None
     monkeypatch.setattr(ssd_store, "memory_backed", lambda path: "tmpfs")
-    with pytest.raises(OSError, match="SHARAR_SSD_DIR"):
+    with pytest.raises(OSError, match="HIBANA_SSD_DIR"):
         SsdStore(tmp_path, {})
 
 

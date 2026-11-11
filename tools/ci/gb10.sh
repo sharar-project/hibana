@@ -8,23 +8,23 @@
 # Stages (each needs the one before it to pass, so old code is never tested):
 #   venv      the Python environment for this checkout: `uv sync --frozen --group eval` into UV_PROJECT_ENVIRONMENT (default
 #             ~/sharar-ci/venv, kept between runs; uv.lock decides what it holds)
-#   gpu       tests/unit and tests/gpu from it (`uv run pytest`, SHARAR_RUN_GPU=1, under the memory guard)
+#   gpu       tests/unit and tests/gpu from it (`uv run pytest`, HIBANA_RUN_GPU=1, under the memory guard)
 #   serve     serve each target from it (`sharar serve <target>` in the foreground on port 30011, 32K context) and
 #             check it (`sharar verify`)
 #   evaluate  each target, fast profile (tools/evaluate.py): AIPerf speed (code, design, reasoning) and, so that a
 #             speed gain from wrongly accepted drafts cannot pass, GSM8K (first 300) and HumanEval (164); paired with
 #             that target's baseline. Fails on more than 5% lower TPS or a quality loss of at least 1 point (p < 0.05,
 #             more items worse than better). The first complete run of a target becomes its baseline:
-#             $SHARAR_RESULTS/ci/baseline-<target> (re-point the link to adopt a newer run).
+#             $HIBANA_RESULTS/ci/baseline-<target> (re-point the link to adopt a newer run).
 #
 # The machine is shared, so the checks never hold anyone up. They are skipped when, at the start, the shared GPU
-# lock ($SHARAR_RESULTS/.gpu.lock) is held or awaited, another container with the GPU or a GPU process runs, or
+# lock ($HIBANA_RESULTS/.gpu.lock) is held or awaited, another container with the GPU or a GPU process runs, or
 # under 40 GiB of memory is available. While they run, a watchdog checks the same every 10 s (ignoring the
 # checks' own processes); on any sign of someone else's work it stops the checks' processes and ends the run as
 # "gave way" (exit 0). A skipped or interrupted nightly run is not recorded as tested.
 #
-# Settings come from ~/sharar-ci/gb10.env (SHARAR_CONFIG_FILE): SHARAR_HF_CACHE, SHARAR_RESULTS,
-# optionally SHARAR_FLASHNEXT_CACHE. sharar-eval is the `eval` dependency group of the environment the venv stage syncs.
+# Settings come from ~/sharar-ci/gb10.env (HIBANA_CONFIG_FILE): HIBANA_HF_CACHE, HIBANA_RESULTS,
+# optionally HIBANA_FLASHNEXT_CACHE. sharar-eval is the `eval` dependency group of the environment the venv stage syncs.
 set -Euo pipefail
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 cd "$(dirname "$SELF")/../.."
@@ -37,14 +37,14 @@ MAX_SPEED_DROP=5      # percent
 MIN_QUALITY_DROP=1.0  # points
 MAX_P=0.05
 
-export SHARAR_CONFIG_FILE="${SHARAR_CONFIG_FILE:-$HOME/sharar-ci/gb10.env}"
-[[ -r "$SHARAR_CONFIG_FILE" ]] || { echo "missing config $SHARAR_CONFIG_FILE" >&2; exit 2; }
-set -a; source "$SHARAR_CONFIG_FILE"; set +a
-: "${SHARAR_HF_CACHE:?set SHARAR_HF_CACHE in $SHARAR_CONFIG_FILE}"
-: "${SHARAR_RESULTS:?set SHARAR_RESULTS in $SHARAR_CONFIG_FILE}"
+export HIBANA_CONFIG_FILE="${HIBANA_CONFIG_FILE:-$HOME/sharar-ci/gb10.env}"
+[[ -r "$HIBANA_CONFIG_FILE" ]] || { echo "missing config $HIBANA_CONFIG_FILE" >&2; exit 2; }
+set -a; source "$HIBANA_CONFIG_FILE"; set +a
+: "${HIBANA_HF_CACHE:?set HIBANA_HF_CACHE in $HIBANA_CONFIG_FILE}"
+: "${HIBANA_RESULTS:?set HIBANA_RESULTS in $HIBANA_CONFIG_FILE}"
 export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$HOME/sharar-ci/venv}"
 export PATH="$HOME/.local/bin:$PATH"   # uv
-LOCK="$SHARAR_RESULTS/.gpu.lock"
+LOCK="$HIBANA_RESULTS/.gpu.lock"
 SESSIONS="$OUT/sessions"   # the session ids of this run's processes (lock holders among them are ours)
 
 # ---- whose work is on the machine ----
@@ -118,7 +118,7 @@ for root in filter(None, sys.argv[1:]):
                 os.close(fd)
             except OSError:
                 pass
-' "$SHARAR_HF_CACHE" "${SHARAR_FLASHNEXT_CACHE:-}"
+' "$HIBANA_HF_CACHE" "${HIBANA_FLASHNEXT_CACHE:-}"
 }
 
 # ---- stages (each runs in its own session: `gb10.sh --stage NAME`) ----
@@ -132,7 +132,7 @@ stage_gpu() {
   local pid rc=0
   take_lock || return 1
   evict_models
-  SHARAR_RUN_GPU=1 uv run --frozen pytest -q -p no:cacheprovider tests/unit tests/gpu --basetemp=ci-out/pytest-tmp &
+  HIBANA_RUN_GPU=1 uv run --frozen pytest -q -p no:cacheprovider tests/unit tests/gpu --basetemp=ci-out/pytest-tmp &
   pid=$!
   uv run --frozen python -m hibana.launch.guard --pid "$pid" 8>&- &
   wait "$pid" || rc=$?
@@ -147,7 +147,7 @@ stage_serve() {
   for target in 27b flashnext; do
     evict_models
     log="$OUT/serve-$target.log"
-    SHARAR_SSD=0 SHARAR_DRAFT=pinned SHARAR_TRACES=off uv run --frozen sharar serve "$target" --port "$SERVE_PORT" --context-length 32768 >"$log" 2>&1 8>&- &
+    HIBANA_SSD=0 HIBANA_DRAFT=pinned HIBANA_TRACES=off uv run --frozen sharar serve "$target" --port "$SERVE_PORT" --context-length 32768 >"$log" 2>&1 8>&- &
     pid=$!
     waited=0
     until curl -fs "http://127.0.0.1:$SERVE_PORT/health" >/dev/null 2>&1; do
@@ -176,12 +176,12 @@ stage_evaluate() {
   local target name dir base rc=0 verdict paired
   for target in qwen38 flashnext; do
     name="ci-weekly-$target-$(date -u +%Y%m%dT%H%M)"
-    base="$SHARAR_RESULTS/ci/baseline-$target"
+    base="$HIBANA_RESULTS/ci/baseline-$target"
     paired=(); [[ -e "$base" ]] && paired=(--baseline "$(realpath "$base")")
     evict_models
     python3 tools/evaluate.py --target "$target" --profile fast --tasks gsm8k,humaneval --limit 300 --speed --workload all \
       --name "$name" "${paired[@]}" || { echo "$target: evaluate did not complete"; rc=1; continue; }
-    dir="$(ls -d "$SHARAR_RESULTS"/reviews/*-evaluate-"$name" | tail -1)"
+    dir="$(ls -d "$HIBANA_RESULTS"/reviews/*-evaluate-"$name" | tail -1)"
     echo "$dir" >>"$OUT/evaluate-dirs"
     verdict="$(python3 - "$dir" "$MIN_QUALITY_DROP" "$MAX_P" "$MAX_SPEED_DROP" <<'EOF'
 import json, sys
@@ -234,14 +234,14 @@ done
 wants() { [[ " $stages " == *" $1 "* ]]; }
 
 commit="$(git rev-parse HEAD)"
-TESTED="$SHARAR_RESULTS/ci/nightly-tested-commit"
+TESTED="$HIBANA_RESULTS/ci/nightly-tested-commit"
 if (( skip_tested )) && [[ "$(cat "$TESTED" 2>/dev/null || true)" == "$commit" ]]; then
   echo "main is unchanged since the last nightly run (${commit:0:7}); skipped" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
   exit 0
 fi
 
-export SHARAR_PROFILE=fast   # what the lab serves; fixed here so a new default cannot shift the baselines
-rm -rf "$OUT"; mkdir -p "$OUT" "$SHARAR_RESULTS"
+export HIBANA_PROFILE=fast   # what the lab serves; fixed here so a new default cannot shift the baselines
+rm -rf "$OUT"; mkdir -p "$OUT" "$HIBANA_RESULTS"
 ps -o sid= -p $$ | tr -d ' ' >"$SESSIONS"
 watchdog_pid=""
 finish() { [[ -n "$watchdog_pid" ]] && kill "$watchdog_pid" 2>/dev/null; stop_ours; }
@@ -301,7 +301,7 @@ if wants gpu && [[ "$completed" == *" gpu "* && ( "$completed" == *" serve "* ||
 fi
 
 {
-  echo "## GB10 checks, $(date -u '+%Y-%m-%d %H:%M UTC'), ${commit:0:7}, $(hostname), profile $SHARAR_PROFILE"
+  echo "## GB10 checks, $(date -u '+%Y-%m-%d %H:%M UTC'), ${commit:0:7}, $(hostname), profile $HIBANA_PROFILE"
   [[ -z "$busy" ]] || printf '\nSkipped: the machine is in use (%s).\n' "$busy"
   echo
   echo "| Stage | Result | Time and notes |"

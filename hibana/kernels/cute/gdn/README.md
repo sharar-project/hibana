@@ -9,9 +9,9 @@ Serving calls go through `hibana.kernels.gdn_prefill`, not this low-level API. I
 `l2norm_fwd` helper, packs arbitrary state-pool slots, runs the kernel, then scatters final and requested checkpoint
 states back.
 
-`SHARAR_GDN_PREFILL=auto` selects this implementation for BF16 D128 on SM120/121 with supported head ratios and
+`HIBANA_GDN_PREFILL=auto` selects this implementation for BF16 D128 on SM120/121 with supported head ratios and
 contiguous FP32 state. `triton` forces the FLA Triton kernel; `cute` forces this one and rejects unsupported
-geometry. Auto keeps Triton under `SHARAR_STABLE_NUMERICS=1`. Compilation/launch failures are surfaced, not silently
+geometry. Auto keeps Triton under `HIBANA_STABLE_NUMERICS=1`. Compilation/launch failures are surfaced, not silently
 retried with a different backend. Decode, speculative verification, scheduler budgets and prefill caps do not depend
 on the backend.
 
@@ -32,6 +32,6 @@ nonconsecutive slots, reordered prefix snapshots, continuation, untouched slots,
 These rank-local tests are not a two-machine TP/RDMA integration test.
 
 ```bash
-SHARAR_RUN_GPU=1 uv run python -m pytest -q \
+HIBANA_RUN_GPU=1 uv run python -m pytest -q \
   tests/gpu/test_gdn_cute.py tests/gpu/test_gdn_plan.py
 ```

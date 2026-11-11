@@ -18,19 +18,19 @@ _load_env()
 
 
 def _gpu_environment() -> None:
-    """With SHARAR_RUN_GPU=1 the suite runs against the real checkpoints: the paths and 3-bit copies `sharar serve` would
-    use (hibana/launch/settings.py), unless the environment sets them: `SHARAR_RUN_GPU=1 uv run pytest tests/gpu`."""
-    if os.environ.get("SHARAR_RUN_GPU") != "1":
+    """With HIBANA_RUN_GPU=1 the suite runs against the real checkpoints: the paths and 3-bit copies `sharar serve` would
+    use (hibana/launch/settings.py), unless the environment sets them: `HIBANA_RUN_GPU=1 uv run pytest tests/gpu`."""
+    if os.environ.get("HIBANA_RUN_GPU") != "1":
         return
     from hibana.launch.settings import resolve
 
     s27, fn = resolve("27b", "fast"), resolve("flashnext", "fast")
-    os.environ.setdefault("SHARAR_HF_CACHE", str(s27.hf_cache))
-    os.environ.setdefault("SHARAR_FLASHNEXT_CACHE", str(fn.model_cache))
-    os.environ.setdefault("SHARAR_RESULTS", str(s27.results))
+    os.environ.setdefault("HIBANA_HF_CACHE", str(s27.hf_cache))
+    os.environ.setdefault("HIBANA_FLASHNEXT_CACHE", str(fn.model_cache))
+    os.environ.setdefault("HIBANA_RESULTS", str(s27.results))
     current = s27.w3_root / "qwen38-current"  # the served 27B profile (tests that need the exact path set their own)
-    if "SHARAR_W3_CHECKPOINT" not in os.environ and (current / "manifest.json").is_file():
-        os.environ.update(SHARAR_W3_CHECKPOINT=str(current.resolve()), SHARAR_W3_DECODE="1")
+    if "HIBANA_W3_CHECKPOINT" not in os.environ and (current / "manifest.json").is_file():
+        os.environ.update(HIBANA_W3_CHECKPOINT=str(current.resolve()), HIBANA_W3_DECODE="1")
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     os.environ.setdefault("CUDA_HOME", "/usr/local/cuda")

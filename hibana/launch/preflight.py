@@ -84,7 +84,7 @@ def download(cache: Path, repo: str, revision: str, log=print) -> None:
     free = shutil.disk_usage(hub).free
     if missing + HEADROOM > free:
         raise PreflightError(f"{repo}@{revision[:7]} needs {missing / 1e9:.1f} GB more, and {cache} has {free / 1e9:.1f} GB free "
-                             f"(keeping {HEADROOM / 1e9:.0f} GB spare); free space, or point SHARAR_HF_CACHE/SHARAR_FLASHNEXT_CACHE at a larger disk")
+                             f"(keeping {HEADROOM / 1e9:.0f} GB spare); free space, or point HIBANA_HF_CACHE/HIBANA_FLASHNEXT_CACHE at a larger disk")
     log(f"downloading {repo}@{revision[:7]} into {cache}: {missing / 1e9:.1f} GB")
     snapshot_download(repo, revision=revision, cache_dir=hub)
 
@@ -116,17 +116,17 @@ def ensure_snapshots(s: Settings, log=print, fetch: bool = True) -> list[str]:
 def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
     """The calibrated 3-bit checkpoint to serve, or None (with the reason in s.warnings).
 
-    SHARAR_W3_CHECKPOINT=auto (the default) serves w3-checkpoints/<target>-current and keeps that link on the
+    HIBANA_W3_CHECKPOINT=auto (the default) serves w3-checkpoints/<target>-current and keeps that link on the
     target's pinned published revision (weights/w3_checkpoint.fetch: a new pin downloads, a local calibration stays
     with a note; Bolt publishes none, so its link names a local calibration). Without one Flash-Next serves its FP8 trunk and the 27B nearest-rounded copies; Nemotron refuses
     to start (`w3_required`)."""
-    if s.get("SHARAR_W3_DECODE", "0") != "1":
+    if s.get("HIBANA_W3_DECODE", "0") != "1":
         return None
-    chosen = s.get("SHARAR_W3_CHECKPOINT", "auto")
+    chosen = s.get("HIBANA_W3_CHECKPOINT", "auto")
     if chosen != "auto":
         path = Path(chosen).expanduser().resolve()
         if not (path / "manifest.json").is_file():
-            raise PreflightError(f"SHARAR_W3_CHECKPOINT={chosen} needs a completed manifest.json")
+            raise PreflightError(f"HIBANA_W3_CHECKPOINT={chosen} needs a completed manifest.json")
         return path
     current = s.w3_root / f"{s.target}-current"
     from hibana.target import get as get_target
@@ -143,11 +143,11 @@ def ensure_w3(s: Settings, log=print, fetch: bool = True) -> Path | None:
     if TARGET_SETTINGS[s.target].get("w3_required"):
         raise PreflightError(f"{s.profile} serves {s.target}'s calibrated 3-bit copies and none is available: fetch them "
                              f"(python -m hibana.weights.w3_checkpoint fetch --target {s.target} --root {s.w3_root}), set "
-                             "SHARAR_W3_CHECKPOINT, or serve --exact")
+                             "HIBANA_W3_CHECKPOINT, or serve --exact")
     missing = TARGET_SETTINGS[s.target].get("w3_missing")
     if missing:
         s.warnings.append(f"no calibrated 3-bit checkpoint: {missing.format(profile=s.profile)}; calibrate with "
-                          "docs/w3-calibration.md or set SHARAR_W3_CHECKPOINT")
+                          "docs/w3-calibration.md or set HIBANA_W3_CHECKPOINT")
     return None
 
 
@@ -164,18 +164,18 @@ def summary(s: Settings, host: dict[str, str], w3: Path | None, tp: int = 1) -> 
         draft = f"pinned {repo}@{revision[:7]}"
     else:
         draft = "none"
-    ssd = f"{s.ssd}, {s.get('SHARAR_SSD_GIB', '200')} GiB" if s.ssd else "off"
-    soft = s.get("SHARAR_ACCEPT_SOFT", "0")
+    ssd = f"{s.ssd}, {s.get('HIBANA_SSD_GIB', '200')} GiB" if s.ssd else "off"
+    soft = s.get("HIBANA_ACCEPT_SOFT", "0")
     lines = [f"Sharar {s.target} ({'two Sparks' if tp > 1 else 'one Spark'}) on {s.url}, profile {s.profile}",
              f"  GPU: {host.get('gpu', '?')}; memory: {host.get('memory', '?')}",
              f"  speculation: {s.proposer}, {s.spec} drafts, draft {draft}",
-             f"  acceptance: greedy {s.get('SHARAR_ACCEPT_DEFAULT')}, sampled "
+             f"  acceptance: greedy {s.get('HIBANA_ACCEPT_DEFAULT')}, sampled "
              + (f"s={soft}" if float(soft) > 0 else "exact"),
-             f"  3-bit copies: {on(s.engine_env(w3).get('SHARAR_W3_DECODE'))}{f' ({w3})' if w3 else ''}; "
-             f"device-resident acceptance: {on(s.get('SHARAR_DEVICE_ACCEPT'))}",
-             f"  context {s.max_context} tokens, up to {s.get('SHARAR_MAX_BATCH')} requests"
-             + (f", verify depth by batch {s.get('SHARAR_SPEC_DEPTHS')}" if s.get("SHARAR_SPEC_DEPTHS") else "")
-             + (", adaptive verification (DFlash2's draft scores)" if s.get("SHARAR_SPEC_POLICY") == "budget" else ""),
+             f"  3-bit copies: {on(s.engine_env(w3).get('HIBANA_W3_DECODE'))}{f' ({w3})' if w3 else ''}; "
+             f"device-resident acceptance: {on(s.get('HIBANA_DEVICE_ACCEPT'))}",
+             f"  context {s.max_context} tokens, up to {s.get('HIBANA_MAX_BATCH')} requests"
+             + (f", verify depth by batch {s.get('HIBANA_SPEC_DEPTHS')}" if s.get("HIBANA_SPEC_DEPTHS") else "")
+             + (", adaptive verification (DFlash2's draft scores)" if s.get("HIBANA_SPEC_POLICY") == "budget" else ""),
              f"  traces: {s.traces or 'off'}; SSD tier: {ssd}"]
     lines += [f"  WARNING: {w}" for w in s.warnings]
     return "\n".join(lines)

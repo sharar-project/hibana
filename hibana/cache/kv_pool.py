@@ -25,7 +25,7 @@ class KvPool:
     def __init__(self, num_pages: int, device: torch.device, page_size: int = 1, layer_ids: list[int] | None = None, dtype: torch.dtype = KV_DTYPE,
                  target: Target | None = None, padding_rows: int = 0, rounding: tuple | None = None, nvfp4: bool = False):
         """rounding: (key, value) functions every write passes K and V through (an accuracy screen of a smaller
-        format in a wider pool, `kernels/kv_fp4.SIMULATED`). nvfp4: K and V as NVFP4 (`SHARAR_KV_FORMAT=nvfp4`): two
+        format in a wider pool, `kernels/kv_fp4.SIMULATED`). nvfp4: K and V as NVFP4 (`HIBANA_KV_FORMAT=nvfp4`): two
         E2M1 codes a byte, [pages, page_size, heads, head_dim / 2] uint8, and an E4M3 scale per 16 values, a page
         aux row per layer (`k_sf.<layer>`, `v_sf.<layer>`: the prefix cache and the SSD tier carry them with the
         page); FlashInfer writes them (`nvfp4_quantize_append_paged_kv_cache_with_slot_mapping`, global scale 1, the

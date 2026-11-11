@@ -3,7 +3,7 @@
 SGLang disagrees with itself on ~14% of positions, which buries a trunk-precision
 effect; the BF16 executor matches the reference, so it is the baseline here. `base`
 runs the executor with the BF16 trunk and stores each position's top-k logprobs;
-`score` runs a quantized trunk (SHARAR_TRUNK_KEEP_BF16 keeps chosen modules in
+`score` runs a quantized trunk (HIBANA_TRUNK_KEEP_BF16 keeps chosen modules in
 BF16, see hibana/model/flashnext/linear.py) and reports, per region (dense: rows inside the
 indexer budget; sparse: past it), argmax agreement with BF16, confident agreement
 (BF16 top-1 above 0.8), the truncated KL(BF16 || quantized) over BF16's top-k, and
@@ -33,7 +33,7 @@ LIMIT = 2051  # rows at or past this index select sparsely (budget + ratio - 1)
 
 
 def snapshot() -> Path:
-    """The pinned Flash-Next snapshot through the target (SHARAR_FLASHNEXT_CACHE), as the server finds it."""
+    """The pinned Flash-Next snapshot through the target (HIBANA_FLASHNEXT_CACHE), as the server finds it."""
     from hibana.target import FLASHNEXT
     return FLASHNEXT.snapshot_dir()
 
@@ -119,7 +119,7 @@ def score(args):
         r["top_lp"], r["top_ix"], r["nll"] = r["top_lp"].cuda().float(), r["top_ix"].cuda(), r["nll"].cuda()
     torch.cuda.synchronize()
     model = executor_model(args.precision, args.chunk)
-    knobs = {k: v for k, v in os.environ.items() if k.startswith(("SHARAR_TRUNK", "SHARAR_W3"))}
+    knobs = {k: v for k, v in os.environ.items() if k.startswith(("HIBANA_TRUNK", "HIBANA_W3"))}
     per_prompt, agg = [], {}
     for row in rows:
         b_lp, b_ix = row["top_lp"], row["top_ix"]

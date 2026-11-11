@@ -5,7 +5,7 @@ then routed experts), the PLE before layer 1, the global mixer and a BF16-or-FP8
 `forward()` follows the 27B model's contract (`ForwardContext` prefill / decode; `norm` is the
 mixer output the head reads; a block drafter's `features` are the mean of a layer's output streams). The routed
 experts keep the checkpoint's NVFP4, or come 3-bit from the W3 checkpoint when it carries them (moe.py); every other
-matrix is FP8 at load (`SHARAR_FLASHNEXT_TRUNK=bf16` keeps the checkpoint's BF16 for parity runs).
+matrix is FP8 at load (`HIBANA_FLASHNEXT_TRUNK=bf16` keeps the checkpoint's BF16 for parity runs).
 """
 
 from __future__ import annotations
@@ -95,13 +95,13 @@ class FlashNext:
         self.full_target = target
         self._extras = None
         self.precision = precision or current().flashnext_trunk  # bf16 | fp8
-        # The calibrated 3-bit copies (SHARAR_W3_DECODE with SHARAR_W3_CHECKPOINT). When the checkpoint carries the
-        # routed experts and SHARAR_FLASHNEXT_EXPERTS is not nvfp4, those are the only expert copy: the NVFP4
+        # The calibrated 3-bit copies (HIBANA_W3_DECODE with HIBANA_W3_CHECKPOINT). When the checkpoint carries the
+        # routed experts and HIBANA_FLASHNEXT_EXPERTS is not nvfp4, those are the only expert copy: the NVFP4
         # experts are never read. Under tensor parallelism each rank holds half of them, whole (expert parallel).
         calibrated = None
         if current().w3_decode:
             if not current().w3_checkpoint:
-                raise ValueError("Flash-Next's 3-bit copies are calibrated only: SHARAR_W3_DECODE=1 needs SHARAR_W3_CHECKPOINT")
+                raise ValueError("Flash-Next's 3-bit copies are calibrated only: HIBANA_W3_DECODE=1 needs HIBANA_W3_CHECKPOINT")
             from hibana.weights.w3_checkpoint import CalibratedWeights
             calibrated = CalibratedWeights(current().w3_checkpoint, revision=target.model_revision)
         expert_layers = calibrated.expert_layers() if calibrated and current().flashnext_experts != "nvfp4" else set()
@@ -196,7 +196,7 @@ class FlashNext:
         calls of at most 64 rows then read them (`TrunkLinear.__call__`), prefill keeps the FP8 weights. The routed
         experts' entries (`layers.N.experts.*`) were loaded with the layers, or skipped."""
         if self.precision != "fp8":
-            raise ValueError("calibrated 3-bit trunk copies go over the FP8 trunk (SHARAR_FLASHNEXT_TRUNK=fp8)")
+            raise ValueError("calibrated 3-bit trunk copies go over the FP8 trunk (HIBANA_FLASHNEXT_TRUNK=fp8)")
         if isinstance(calibrated, (str, Path)):
             from hibana.weights.w3_checkpoint import CalibratedWeights
             calibrated = CalibratedWeights(calibrated, revision=self.full_target.model_revision)

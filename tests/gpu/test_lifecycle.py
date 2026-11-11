@@ -1,6 +1,6 @@
 """Opt-in GB10 continuation/ownership checks with the pinned real checkpoint.
 
-Run with SHARAR_RUN_GPU=1 (and `python -m hibana.launch.guard --pid PID` watching the test process).
+Run with HIBANA_RUN_GPU=1 (and `python -m hibana.launch.guard --pid PID` watching the test process).
 Pools are deliberately bounded so the test does not size itself to all RAM.
 """
 
@@ -279,7 +279,7 @@ def test_unaligned_prefill_checkpoint_and_draft_cache_restore(setup, batched):
 
 
 CANARIES = {
-    "canary_exact": lambda text: text.strip() == "SHARAR_OK",
+    "canary_exact": lambda text: text.strip() == "HIBANA_OK",
     "canary_arith": lambda text: text.strip() == "42",
     "canary_json": lambda text: json.loads(text.strip()) == {"device": "GB10", "model": "Qwen3.8-27B"},
     "canary_needle": lambda text: text.strip() == NEEDLE,

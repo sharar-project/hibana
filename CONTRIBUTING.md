@@ -24,14 +24,14 @@ wheel and probe installed runtime assets outside the checkout. CI runs these
 checks; a source-only or editable installation does not validate packaging.
 
 The GPU suite (`tests/gpu`, every target; a module on a real checkpoint skips without it) runs with
-`SHARAR_RUN_GPU=1`; without it the GPU modules are not collected:
+`HIBANA_RUN_GPU=1`; without it the GPU modules are not collected:
 
 ```bash
-SHARAR_RUN_GPU=1 uv run pytest tests/unit tests/gpu      # or: tools/check.sh gpu-suite
-SHARAR_RUN_GPU=1 uv run pytest tests/gpu/test_qsa.py -x
+HIBANA_RUN_GPU=1 uv run pytest tests/unit tests/gpu      # or: tools/check.sh gpu-suite
+HIBANA_RUN_GPU=1 uv run pytest tests/gpu/test_qsa.py -x
 ```
 
-`tests/conftest.py` points it at the model caches, the calibrated 3-bit checkpoint and `$SHARAR_RESULTS` as
+`tests/conftest.py` points it at the model caches, the calibrated 3-bit checkpoint and `$HIBANA_RESULTS` as
 `sharar serve` resolves them (the environment wins). Preserve frozen
 workload content and checksums (`tools/gate/workloads/`, `profiling/workloads/`,
 `hibana/benchmark_workloads.py`) when moving readers.
@@ -65,7 +65,7 @@ a reduced draft vocabulary). It never enters the `exact` profile, and it enters 
 through the lossy-change gate, which pairs the candidate against `exact` on the same engine:
 
 ```bash
-tools/lossy_gate.py --target flashnext --name my-option --profile exact --env SHARAR_X=1
+tools/lossy_gate.py --target flashnext --name my-option --profile exact --env HIBANA_X=1
 tools/lossy_gate.py --target qwen38 --name fast --profile fast
 ```
 
@@ -74,11 +74,11 @@ The layers, the verdict rules and the outputs are in the docstring of [`tools/lo
 
 ## Add a setting
 
-Settings are fields of `EngineConfig` (`hibana/engine/config.py`): a `SHARAR_*`
+Settings are fields of `EngineConfig` (`hibana/engine/config.py`): a `HIBANA_*`
 name, its default and a one-line comment. Read `current()` where you build the
 thing the setting shapes (a model, a linear, a proposer, a graph), not at import
 and not per call on the hot path; `tests/unit/test_engine_config.py` fails on any
-other `SHARAR_*` environment read under `hibana/`. The launcher keeps forwarding
+other `HIBANA_*` environment read under `hibana/`. The launcher keeps forwarding
 the same variable names; `/get_server_info` reports the installed value.
 
 ## Add a target

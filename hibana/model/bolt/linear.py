@@ -43,7 +43,7 @@ def preparing_on_first_use():
 
 def graph_rows(cfg) -> tuple[int, ...]:
     """The row counts Bolt's CUDA graphs run each projection at: a batch bucket times one (decode) or a speculative
-    round's rows (the drafts, or the drafts and the verified token); every round length up to nine when SHARAR_SPEC
+    round's rows (the drafts, or the drafts and the verified token); every round length up to nine when HIBANA_SPEC
     does not fix the depth."""
     from hibana.engine.profile import ServingProfile
     depths = [int(cfg.spec)] if cfg.spec and cfg.spec.isdigit() else []

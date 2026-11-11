@@ -1,4 +1,4 @@
-"""SHARAR_DEBUG_SYNC=1: synchronize and name the phase, so an asynchronous CUDA
+"""HIBANA_DEBUG_SYNC=1: synchronize and name the phase, so an asynchronous CUDA
 fault is reported by the phase that launched it, with the batch it served."""
 
 import torch

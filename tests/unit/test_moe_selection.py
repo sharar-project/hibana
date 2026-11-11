@@ -1,4 +1,4 @@
-"""Budgeted expert selection (SHARAR_MOE_KEEP / SHARAR_MOE_BUDGET): `rule`, the selection written out one row at a time
+"""Budgeted expert selection (HIBANA_MOE_KEEP / HIBANA_MOE_BUDGET): `rule`, the selection written out one row at a time
 (tests/gpu/test_route_budget.py checks the fused kernel `flashnext_fused.route_budget` against it), the settings, the
 guarantee, and which MoE calls take the kernel (decode and verify forwards, with their slots)."""
 import sys
@@ -154,12 +154,12 @@ class _Loading(Exception):
 
 
 def test_settings_resolve_to_keep_and_budget():
-    """SHARAR_MOE_KEEP / _BUDGET; keeping topk or more, or 0, is the served route; a budget needs a keep."""
+    """HIBANA_MOE_KEEP / _BUDGET; keeping topk or more, or 0, is the served route; a budget needs a keep."""
     assert [_built(moe_keep=k)[0] for k in (0, 1, 4, 9, 10, 12)] == [0, 1, 4, 9, 0, 0]
     assert _built(moe_keep=4, moe_budget=64, moe_budget_per_request=12) == (4, 64, 12)
     assert _built(moe_keep=0, moe_budget=64)[:2] == (0, 0)
     assert _built(moe_keep=10, moe_budget=64)[:2] == (0, 0)
-    for changes, message in [({"moe_keep": -1}, "SHARAR_MOE_KEEP=-1"), ({"moe_keep": 4, "moe_budget": -1}, "SHARAR_MOE_BUDGET=-1")]:
+    for changes, message in [({"moe_keep": -1}, "HIBANA_MOE_KEEP=-1"), ({"moe_keep": 4, "moe_budget": -1}, "HIBANA_MOE_BUDGET=-1")]:
         with pytest.raises(ValueError, match=message):
             _built(**changes)
     assert _built(w3=None, moe_keep=4, moe_budget=64)[:2] == (4, 64)  # the NVFP4 experts take the same selection

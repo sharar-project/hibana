@@ -1,7 +1,7 @@
 # Cache design
 
 How the engine keeps a request's prefix and brings it back: the GPU pools (L1), the radix prefix cache that indexes
-them, and the SSD tier below them (on in every profile; `SHARAR_SSD=0` turns it off). [Operations](operations.md) lists the settings; the code is in
+them, and the SSD tier below them (on in every profile; `HIBANA_SSD=0` turns it off). [Operations](operations.md) lists the settings; the code is in
 `hibana/cache/`.
 
 ## Architecture
@@ -122,7 +122,7 @@ flush        nothing is placed or inserted; locked paths stay until their locks 
 This is SGLang's `checkpoint` lock move (one lock per request, moved after each chunk, the insert cut back to the
 last saved state), with Sharar's drafter metadata: the lock stays at the matched node until the first chunk's ingest,
 because MTP's row and DFlash2's window are read then. Between scheduler steps a running request pins at most two
-slots, its own and its locked snapshot, so the startup slot floor (`2 x SHARAR_MAX_BATCH + 1` and the SSD restore's
+slots, its own and its locked snapshot, so the startup slot floor (`2 x HIBANA_MAX_BATCH + 1` and the SSD restore's
 slot, `ledger.py`) is all admission ever waits on; there is no admission reserve.
 
 **Placement** (`Executor._checkpoint_positions`, inside each prefill forward; a position inside the forward sits on
@@ -188,7 +188,7 @@ totals, and the drafters' resume hits and fallbacks (`draft_resumes`).
 - **Spare**: a snapshot no request is known to need yet (a reply end, an earlier chunk end): evicted first.
 - **Evictable totals**: the KV tokens and snapshots no lock protects; admission's pure check counts on them.
 - **Dead KV**: KV that can no longer serve a resume; pruned.
-- **Slot floor**: `2 x SHARAR_MAX_BATCH + 1` state slots and an SSD restore's, the least the memory plan starts with.
+- **Slot floor**: `2 x HIBANA_MAX_BATCH + 1` state slots and an SSD restore's, the least the memory plan starts with.
 
 ## Keys
 
@@ -243,15 +243,15 @@ prefills from the L1 prefix as if the SSD copy never existed.
 
 ## Store and budget
 
-The launcher points the tier at `$SHARAR_RESULTS/ssd/<target>` (one store per target; `SHARAR_SSD_DIR` moves it, e.g.
+The launcher points the tier at `$HIBANA_RESULTS/ssd/<target>` (one store per target; `HIBANA_SSD_DIR` moves it, e.g.
 to another drive). The directory is private (0700: tails hold token ids), one server holds it at a time (a second
 one disables its tier rather than share it), and a store on a tmpfs or ramfs is refused: it would sit in memory,
 which on a Spark is the GPU's. If a store cannot open, the server logs why and runs without the tier. The budget
-(`SHARAR_SSD_GIB`, default 200) never fills the drive: at startup it is capped to what is stored plus the free space
+(`HIBANA_SSD_GIB`, default 200) never fills the drive: at startup it is capped to what is stored plus the free space
 beyond a reserve (a tenth of the drive, at most 64 GiB).
 
 The tier skips prefixes shorter than 4,096 tokens: each tail carries the recurrent snapshot (147 MiB per 27B prefix
-in FP32, 58 MiB with `SHARAR_SSM_STATE=int8`), and a short prefix re-prefills in about a second. A prompt's
+in FP32, 58 MiB with `HIBANA_SSM_STATE=int8`), and a short prefix re-prefills in about a second. A prompt's
 not-spare snapshots (its message boundary, its last chunk end, a branching point) are written through at their
 checkpoint, and a finished request's reply end at its release, where its conversation's next turn resumes; a spare
 chunk end gets no tail. When slot pressure takes a not-spare snapshot whose tail is still queued, the tail goes out
@@ -311,8 +311,8 @@ tokens over the long prefix.
 
 `profiling/ssd_turns.py` runs concurrent multi-turn conversations against a server with a small KV pool, so turns
 restore from the SSD, and reports time to first token, stream gaps and the server's restore counters. With
-`SHARAR_SSD_TRACE=1` the server also writes one line per restore, with its read and scatter times, to
-`<SHARAR_SSD_DIR>/v2/restores.jsonl`. Use a GPU nothing else runs on and an `SHARAR_SSD_DIR` on the NVMe itself (a
+`HIBANA_SSD_TRACE=1` the server also writes one line per restore, with its read and scatter times, to
+`<HIBANA_SSD_DIR>/v2/restores.jsonl`. Use a GPU nothing else runs on and an `HIBANA_SSD_DIR` on the NVMe itself (a
 loop device or a file-backed pool serves reads from the host page cache).
 
 ## Tensor parallel

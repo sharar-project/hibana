@@ -33,7 +33,7 @@ class Proposal:
     tokens: torch.Tensor  # int64 [B, k]
     probabilities: torch.Tensor | None = None  # FP32 [B, k, V] or sparse support
     support: torch.Tensor | None = None  # int64 [B, k, C], unique per row
-    confidence: torch.Tensor | None = None  # FP32 [B, k, 2]: the draft's top-1 probability and top-1 minus top-2 (SHARAR_TRACE_CONFIDENCE only)
+    confidence: torch.Tensor | None = None  # FP32 [B, k, 2]: the draft's top-1 probability and top-1 minus top-2 (HIBANA_TRACE_CONFIDENCE only)
     columns: DraftColumns | None = None  # sequential drafts: host copies of tokens' columns as they complete
     # FP32 [B, k]: position j's probability of acceptance once positions < j were accepted (DFlash2's lattice).
     # It reads only the drafts before position j, never y_j, so a depth chosen from it keeps rejection sampling exact.

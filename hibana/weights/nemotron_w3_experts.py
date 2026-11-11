@@ -5,8 +5,8 @@ blocks and the MTP head's) as `layers.N.experts.w1` / `.w2` and `mtp.experts.w1`
 The source is the checkpoint's NVFP4 experts, dequantized (there is no BF16 expert source), as for Flash-Next
 (`flashnext_w3_experts.py`): each expert's up [2688, 1024] (fc1, the latent width in, the checkpoint's row order) and
 down [1024, 2688] (fc2) into the W3 format (an eight-level E4M3 codebook, an E4M3 scale per 32 weights, an FP32 row
-multiplier), served by `kernels/w3_moe.py`'s ReLU^2 geometry (`model/nemotron/moe.py`, SHARAR_W3_DECODE=1
-SHARAR_W3_CHECKPOINT=DIR). The samples are `nemotron_w3_inputs` with `--knowledge`.
+multiplier), served by `kernels/w3_moe.py`'s ReLU^2 geometry (`model/nemotron/moe.py`, HIBANA_W3_DECODE=1
+HIBANA_W3_CHECKPOINT=DIR). The samples are `nemotron_w3_inputs` with `--knowledge`.
 
 - `capture`: prefills the samples through the serving model (FP8 trunk, NVFP4 experts) and stores, for every MoE
   block, the expert inputs as the block's routing produced them: the BF16 latent rows [rows, 1024], the top-22 ids and

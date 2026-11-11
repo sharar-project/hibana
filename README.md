@@ -34,7 +34,7 @@ Any OpenAI client works against `http://127.0.0.1:30005/v1` and Anthropic client
 ([API](docs/api.md)).
 
 > [!NOTE]
-> The command and its settings keep the old name for now (`sharar`, `SHARAR_*`).
+> The command and its settings keep the old name for now (`sharar`, `HIBANA_*`).
 
 ## Models
 
@@ -53,7 +53,7 @@ uv run sharar serve flashnext --tp 2    # on two Sparks linked by their ConnectX
 
 - **Download:** 186 GB, the model (135 GB) and its 3-bit copy (51 GB)
 - **Input:** text
-- **Draft:** its own MTP head, or the DFlash2 drafter on one Spark (`SHARAR_PROPOSER=dflash2`)
+- **Draft:** its own MTP head, or the DFlash2 drafter on one Spark (`HIBANA_PROPOSER=dflash2`)
 - **Checkpoints:** [RadixArk/Qwen3.8-Flash-Next-NVFP4](https://huggingface.co/RadixArk/Qwen3.8-Flash-Next-NVFP4),
   [3-bit copy](https://huggingface.co/yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3-qad)
 - **More:** [Flash-Next](docs/flashnext.md), [tensor parallel](docs/tensor-parallel.md)
@@ -143,18 +143,18 @@ Not sure which to pick? Side by side:
 | `sharar serve <model> --exact` | The model's own outputs, for benchmarks (the default `fast` profile is faster and slightly lossy; also `--throughput`) |
 | `sharar serve <model> --tp 2` | The Qwen models on two Sparks linked by their ConnectX ports ([tensor parallel](docs/tensor-parallel.md)) |
 | `sharar status` | What is serving, with which settings |
-| `sharar cache` | What is cached on the GPU and on the SSD tier (`$SHARAR_RESULTS/ssd/<target>`, up to `SHARAR_SSD_GIB`) |
+| `sharar cache` | What is cached on the GPU and on the SSD tier (`$HIBANA_RESULTS/ssd/<target>`, up to `HIBANA_SSD_GIB`) |
 | `sharar chat`, `sharar launch claude\|opencode\|aider\|show` | Use the serving model |
 
 `sharar <command> --help` lists the options. Settings (cache and results locations, profiles, ports) are flags, then
-`SHARAR_*` environment variables, then an optional `config/gb10.env` ([example](config/gb10.env.example),
+`HIBANA_*` environment variables, then an optional `config/gb10.env` ([example](config/gb10.env.example),
 [operations](docs/operations.md)).
 
 ## Develop
 
 ```bash
 uv run pytest tests/unit                      # CPU tests
-SHARAR_RUN_GPU=1 uv run pytest tests/gpu      # GPU suite (the GPU to itself)
+HIBANA_RUN_GPU=1 uv run pytest tests/gpu      # GPU suite (the GPU to itself)
 ```
 
 The engine is `hibana/`, in-process profilers are in `profiling/`, and checks and gates in `tools/`. Quality and

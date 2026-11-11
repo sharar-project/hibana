@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Pinned NVIDIA-Nemotron-3.5-Super checkpoint and geometry (NVIDIA's ModelOpt NVFP4 export; the text model, its
-MTP head and, with SHARAR_VISION, the C-RADIO vision tower and its projector are served: vision.py).
+MTP head and, with HIBANA_VISION, the C-RADIO vision tower and its projector are served: vision.py).
 
 The text model is 88 blocks, each one mixer behind a pre-norm and a residual: 40 Mamba-2, 40 latent MoE and 8
 attention. `hibana.target` names every block by its checkpoint index, so pools and features use the checkpoint's
@@ -22,7 +22,7 @@ MODEL_REVISION = "6aae0d6d0285e561bbb72efa10ba1425d41ebddc"
 MODEL_CACHE_KEY = "models--nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
 MODEL_ARCHITECTURE = "NemotronH_Omni_Reasoning_V3"
 # Calibrated 3-bit copies (GPTQ trunk projections and routed experts), Flash-Next's arrangement: fetched on serve into
-# $SHARAR_RESULTS/w3-checkpoints/nemotron-<revision> and linked as nemotron-current (`fast` and `throughput` need them).
+# $HIBANA_RESULTS/w3-checkpoints/nemotron-<revision> and linked as nemotron-current (`fast` and `throughput` need them).
 W3_REPO = "shadowpa0327/NVIDIA-Nemotron-3.5-Super-NVFP4-sharar-w3"
 W3_REVISION = "2ca8b352b0fbff1620117f86c023552e761a7e32"  # GPTQ trunk + GPTQ routed experts (MTP head's included)
 PREFIX = "language_model"

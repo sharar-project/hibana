@@ -319,7 +319,7 @@ def route_topk(logits: torch.Tensor, k: int, slots: torch.Tensor | None = None, 
     return ids, w
 
 
-# ---- budgeted expert selection (SHARAR_MOE_KEEP / SHARAR_MOE_BUDGET): a cap on the distinct experts a decode or verify
+# ---- budgeted expert selection (HIBANA_MOE_KEEP / HIBANA_MOE_BUDGET): a cap on the distinct experts a decode or verify
 # forward reads, chosen for all its rows; each row takes its guaranteed top `keep`, then its other candidates in the set ----
 ROUTE_CANDIDATES = 20  # a row takes its experts from its router ranks 1..20
 

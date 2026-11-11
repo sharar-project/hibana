@@ -23,8 +23,8 @@ from hibana.hardware.gb10 import HOST_FLOOR_KIB
 
 
 def floor_kib(values=os.environ) -> int:
-    """The host floor in KiB from resolved settings (or the environment): SHARAR_HOST_FLOOR_GIB, else the GB10's."""
-    return int(float(values.get("SHARAR_HOST_FLOOR_GIB") or HOST_FLOOR_KIB / 2**20) * 2**20)
+    """The host floor in KiB from resolved settings (or the environment): HIBANA_HOST_FLOOR_GIB, else the GB10's."""
+    return int(float(values.get("HIBANA_HOST_FLOOR_GIB") or HOST_FLOOR_KIB / 2**20) * 2**20)
 
 
 def guard_kib(values=os.environ) -> int:

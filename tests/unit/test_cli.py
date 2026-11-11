@@ -16,16 +16,16 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.fixture
 def home(monkeypatch, tmp_path):
     """No config file, results under tmp_path, nothing serving, no systemd."""
-    for key in [k for k in os.environ if k.startswith("SHARAR_")]:
+    for key in [k for k in os.environ if k.startswith("HIBANA_")]:
         monkeypatch.delenv(key)
-    monkeypatch.setenv("SHARAR_CONFIG_FILE", str(tmp_path / "none.env"))
-    monkeypatch.setenv("SHARAR_RESULTS", str(tmp_path / "results"))
-    monkeypatch.setenv("SHARAR_HF_CACHE", str(tmp_path / "hf"))
+    monkeypatch.setenv("HIBANA_CONFIG_FILE", str(tmp_path / "none.env"))
+    monkeypatch.setenv("HIBANA_RESULTS", str(tmp_path / "results"))
+    monkeypatch.setenv("HIBANA_HF_CACHE", str(tmp_path / "hf"))
     monkeypatch.setattr(ctl, "server_info", lambda port: None)
     monkeypatch.setattr(service, "running", lambda unit: False)
     monkeypatch.setattr(preflight, "check_host", lambda floor_kib=None: {"gpu": "GB10", "memory": "128 GiB"})
     monkeypatch.setattr(preflight, "ensure_snapshots", lambda s, log=print, fetch=True: [])
-    monkeypatch.setattr(preflight, "ensure_w3", lambda s, log=print, fetch=True: tmp_path / "w3" if s.get("SHARAR_W3_DECODE") == "1" else None)
+    monkeypatch.setattr(preflight, "ensure_w3", lambda s, log=print, fetch=True: tmp_path / "w3" if s.get("HIBANA_W3_DECODE") == "1" else None)
     from hibana.launch import lxcfs
     monkeypatch.setattr(lxcfs, "reexec_if_needed", lambda: None)
     saved = dict(os.environ)  # serve installs the engine's settings into this process's environment
@@ -44,19 +44,19 @@ def test_serve_runs_the_engine_in_the_foreground(home, monkeypatch):
     started = []
     monkeypatch.setattr(run.guard, "start_thread", lambda **kw: started.append("guard"))
     monkeypatch.setattr(cli, "run_engine", lambda args, parser: started.append((args, dict(os.environ))) or 0)
-    monkeypatch.setenv("SHARAR_DRAFT", "pinned")  # set by the caller; the engine gets the resolved draft, not this
+    monkeypatch.setenv("HIBANA_DRAFT", "pinned")  # set by the caller; the engine gets the resolved draft, not this
     assert cli.main(["serve", "flashnext", "--exact", "--port", "30500"]) == 0
     assert started[0] == "guard"
     args, env = started[1]
     assert (args.target, args.port, args.proposer, args.spec, args.accept_default) == ("flashnext", 30500, "mtp", 4, "off")
     assert args.traces is None and args.context_length == 262144  # traces are opt-in
-    assert env["SHARAR_PROFILE"] == "exact" and env["SHARAR_W3_DECODE"] == "0" and env["HF_HUB_OFFLINE"] == "1"
-    assert "SHARAR_DRAFT" not in env and "/usr/local/cuda/bin" in env["PATH"]
+    assert env["HIBANA_PROFILE"] == "exact" and env["HIBANA_W3_DECODE"] == "0" and env["HF_HUB_OFFLINE"] == "1"
+    assert "HIBANA_DRAFT" not in env and "/usr/local/cuda/bin" in env["PATH"]
     assert not (home / "results" / "traces").exists()
     assert cli.main(["serve", "flashnext", "--traces", "--port", "30500"]) == 0
     args, _ = started[-1]
     assert args.traces == str(home / "results" / "traces") and (home / "results" / "traces").is_dir()
-    assert env["SHARAR_SSD"] == "1" and env["SHARAR_SSD_DIR"] == str(home / "results" / "ssd" / "flashnext")  # on by default
+    assert env["HIBANA_SSD"] == "1" and env["HIBANA_SSD_DIR"] == str(home / "results" / "ssd" / "flashnext")  # on by default
 
 
 def test_engine_by_hand_serves_what_serve_would(home):
@@ -117,7 +117,7 @@ def test_cache_without_a_server_counts_the_store_on_disk(home, monkeypatch, caps
     (epoch.parent / "e2" / "cd").mkdir(parents=True)
     for name in ("e3/ab/1.kv", "e3/ab/2.kv", "e3/ab/3.tail", "e3/ab/4.kv.tmp", "e2/cd/5.tail"):  # e2: a flushed epoch
         (epoch.parent / name).write_bytes(b"\0" * 4096)
-    monkeypatch.setenv("SHARAR_SSD_DIR", str(tmp_path / "ssd"))
+    monkeypatch.setenv("HIBANA_SSD_DIR", str(tmp_path / "ssd"))
     assert cli.main(["cache"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("nothing is serving; SSD tier on") and f"{tmp_path / 'ssd'}: 1 prefixes, 2 blocks" in out
@@ -135,16 +135,16 @@ def test_two_spark_serve_stays_the_user_for_ssh(home, monkeypatch):
 
 
 def test_serve_needs_a_named_model(home, monkeypatch):
-    """Serving takes the GPU and may download a model: never one nobody named, but SHARAR_TARGET or the config file names one."""
+    """Serving takes the GPU and may download a model: never one nobody named, but HIBANA_TARGET or the config file names one."""
     started = []
     monkeypatch.setattr(run.guard, "start_thread", lambda **kw: None)
-    monkeypatch.setattr(cli, "run_engine", lambda args, parser: started.append(os.environ["SHARAR_TARGET"]) or 0)
+    monkeypatch.setattr(cli, "run_engine", lambda args, parser: started.append(os.environ["HIBANA_TARGET"]) or 0)
     with pytest.raises(SystemExit, match="name a model: 27b, flashnext, nemotron or bolt"):
         cli.main(["serve"])
     assert started == []
-    (home / "none.env").write_text("SHARAR_TARGET=bolt\n")
+    (home / "none.env").write_text("HIBANA_TARGET=bolt\n")
     assert cli.main(["serve"]) == 0 and started == ["bolt"]
-    os.environ["SHARAR_TARGET"] = "flashnext"  # not monkeypatch: it would restore the bolt serve installed, after `home`
+    os.environ["HIBANA_TARGET"] = "flashnext"  # not monkeypatch: it would restore the bolt serve installed, after `home`
     assert cli.main(["serve"]) == 0 and started[-1] == "flashnext"
 
 
@@ -185,7 +185,7 @@ def test_service_start_composes_systemd_run(home, monkeypatch, tmp_path):
     cmd = calls[-1]
     assert cmd[:2] == ["systemd-run", "--user"] and cmd[cmd.index("--unit") + 1] == "sharar-x"
     assert cmd[-5:] == [sys.executable, "-m", "hibana", "serve", "27b"]
-    assert f"StandardOutput=append:{log}" in cmd and f"SHARAR_RESULTS={home / 'results'}" in cmd
+    assert f"StandardOutput=append:{log}" in cmd and f"HIBANA_RESULTS={home / 'results'}" in cmd
     assert (tmp_path / "logs" / "unit.log.1").read_text() == "old run"
 
 
@@ -258,7 +258,7 @@ def test_launch_and_chat_need_a_server(home):
 
 
 def test_rank0_gets_the_resolved_settings_not_the_callers(monkeypatch):
-    """SHARAR_TRACES=off in the caller's environment must not reach rank 0, which would read it as a trace directory."""
+    """HIBANA_TRACES=off in the caller's environment must not reach rank 0, which would read it as a trace directory."""
     from hibana.launch import tp
     started = []
 
@@ -268,9 +268,9 @@ def test_rank0_gets_the_resolved_settings_not_the_callers(monkeypatch):
             self.stdout = iter(())
 
     monkeypatch.setattr(tp.subprocess, "Popen", FakePopen)
-    monkeypatch.setenv("SHARAR_TRACES", "off")
-    monkeypatch.setenv("SHARAR_SPEC", "9")
+    monkeypatch.setenv("HIBANA_TRACES", "off")
+    monkeypatch.setenv("HIBANA_SPEC", "9")
     monkeypatch.setenv("HOME_MARKER", "kept")
-    tp.Pair("peer-host", {"SHARAR_SPEC": "4", "SHARAR_TARGET": "qwen38"}, "hibana", ["engine"]).start()
+    tp.Pair("peer-host", {"HIBANA_SPEC": "4", "HIBANA_TARGET": "qwen38"}, "hibana", ["engine"]).start()
     (_, rank1_env), (_, rank0_env) = started
-    assert "SHARAR_TRACES" not in rank0_env and rank0_env["SHARAR_SPEC"] == "4" and rank0_env["HOME_MARKER"] == "kept"
+    assert "HIBANA_TRACES" not in rank0_env and rank0_env["HIBANA_SPEC"] == "4" and rank0_env["HOME_MARKER"] == "kept"

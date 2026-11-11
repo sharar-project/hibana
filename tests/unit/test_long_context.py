@@ -7,7 +7,7 @@ from hibana.cache import ledger as ledger_mod
 from hibana.cache.ledger import CACHED_SNAPSHOTS, GIB, SHARED_CONTEXT, Ledger
 from hibana.target import DEFAULT_TARGET
 
-FLOOR = ledger_mod.host_floor_bytes()  # the host floor the plans leave (SHARAR_HOST_FLOOR_GIB)
+FLOOR = ledger_mod.host_floor_bytes()  # the host floor the plans leave (HIBANA_HOST_FLOOR_GIB)
 LEFT = FLOOR + ledger_mod.PLAN_SLACK_BYTES  # what a plan leaves unplanned: the floor and the slack for later reads
 
 
@@ -46,7 +46,7 @@ def test_what_is_allocated_after_the_pools_comes_off_the_plan(monkeypatch):
     pages_and_slots = lambda p: p.kv_tokens * DEFAULT_TARGET.kv_bytes_per_token + p.state_slots * DEFAULT_TARGET.state_bytes_per_slot  # noqa: E731
     assert after.after_pools_bytes == 6 * GIB
     assert 5.9 * GIB / ledger_mod.POOL_COST < pages_and_slots(bare) - pages_and_slots(after) <= 6 * GIB / ledger_mod.POOL_COST
-    with pytest.raises(MemoryError, match="SHARAR_HOST_FLOOR_GIB"):
+    with pytest.raises(MemoryError, match="HIBANA_HOST_FLOOR_GIB"):
         Ledger(start_available=90 * GIB).plan(max_running=4, context_len=32768, future_bytes=90 * GIB)
 
 

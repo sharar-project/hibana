@@ -6,8 +6,8 @@ Loads only what the draft reads (the MTP layer, the embedding, the FP8 lm_head a
 5 GB and under a minute), fills the draft KV for a context of `--context` tokens and chains `--steps` draft steps
 per batch size, eagerly and through the draft graphs (`proposers/mtp_graphs.py`) the server replays.
 
-    SHARAR_TARGET=flashnext python3 -m profiling.flashnext_draft_step --save before.pt
-    SHARAR_TARGET=flashnext python3 -m profiling.flashnext_draft_step --check before.pt   # after a change
+    HIBANA_TARGET=flashnext python3 -m profiling.flashnext_draft_step --save before.pt
+    HIBANA_TARGET=flashnext python3 -m profiling.flashnext_draft_step --check before.pt   # after a change
 
 `--check` compares every step's hyper stream and draft token, eager and graphed, with the saved run (bitwise),
 and reports the first mismatch. Inputs are seeded random token ids and hidden rows of the trunk's scale; the

@@ -67,7 +67,7 @@ TRUNK = "language_model.backbone"
 
 
 def find_snapshot(cache_dir: str | os.PathLike | None = None) -> Path:
-    """The pinned snapshot under `cache_dir`, the engine's model cache (SHARAR_HF_CACHE, else HF_HOME) or
+    """The pinned snapshot under `cache_dir`, the engine's model cache (HIBANA_HF_CACHE, else HF_HOME) or
     ~/.cache/huggingface/hub."""
     from hibana.engine.config import current
     roots = [cache_dir, current().hf_cache, Path.home() / ".cache/huggingface/hub"]

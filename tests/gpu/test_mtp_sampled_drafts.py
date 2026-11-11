@@ -1,4 +1,4 @@
-"""Sampled MTP drafts on the device (SHARAR_MTP_SAMPLE): the Philox draft draw (proposers/mtp.draft_laws through
+"""Sampled MTP drafts on the device (HIBANA_MTP_SAMPLE): the Philox draft draw (proposers/mtp.draft_laws through
 kernels/draft_selection.sampled_lattice) and exact verification of those drafts by the fused kernel
 (rejection.verify_batch -> kernels/sampled_verify.verify_candidates, the one the device acceptance graph replays)."""
 import pytest

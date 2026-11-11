@@ -1,4 +1,4 @@
-"""The GPU suite runs only when asked (SHARAR_RUN_GPU=1; tests/conftest.py points it at the real checkpoints) on a CUDA device.
+"""The GPU suite runs only when asked (HIBANA_RUN_GPU=1; tests/conftest.py points it at the real checkpoints) on a CUDA device.
 Otherwise its modules are not even imported: several need Triton or FlashInfer at import time."""
 import os
 
@@ -6,7 +6,7 @@ import pytest
 
 
 def _gpu_suite() -> bool:
-    if os.environ.get("SHARAR_RUN_GPU") != "1":
+    if os.environ.get("HIBANA_RUN_GPU") != "1":
         return False
     import torch
     return torch.cuda.is_available()

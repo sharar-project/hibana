@@ -126,7 +126,7 @@ class FlashNextMtpHead(MtpLayer):
         from hibana.proposers.draft_head import ShortlistHead, VocabParallelHead
         if self.tensor_parallel:
             if ids is not None:
-                raise ValueError("a reduced draft vocabulary (SHARAR_DRAFT_VOCAB) is not served tensor-parallel")
+                raise ValueError("a reduced draft vocabulary (HIBANA_DRAFT_VOCAB) is not served tensor-parallel")
             self.draft_head = VocabParallelHead(self.lm_head, fmt, rescore)
             return
         self.draft_head = ShortlistHead(self.lm_head, ids, fmt, rescore)

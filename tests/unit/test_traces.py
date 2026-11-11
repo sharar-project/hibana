@@ -228,14 +228,14 @@ def test_serve_cli_passes_trace_settings(monkeypatch, tmp_path):
 
     calls = []
     monkeypatch.setattr("hibana.api.server.serve", lambda *args, **kwargs: calls.append(kwargs))
-    monkeypatch.setenv("SHARAR_TRACES", str(tmp_path))
-    monkeypatch.setenv("SHARAR_TRACES_MAX_MIB", "7")
+    monkeypatch.setenv("HIBANA_TRACES", str(tmp_path))
+    monkeypatch.setenv("HIBANA_TRACES_MAX_MIB", "7")
     assert cli.main(["engine", "--spec", "0"]) == 0
     assert calls[-1]["traces"] == str(tmp_path) and calls[-1]["traces_max_mib"] == 7
     assert cli.main(["engine", "--spec", "0", "--traces", "/elsewhere", "--traces-max-mib", "3"]) == 0
     assert calls[-1]["traces"] == "/elsewhere" and calls[-1]["traces_max_mib"] == 3
-    monkeypatch.delenv("SHARAR_TRACES")
-    monkeypatch.delenv("SHARAR_TRACES_MAX_MIB")
+    monkeypatch.delenv("HIBANA_TRACES")
+    monkeypatch.delenv("HIBANA_TRACES_MAX_MIB")
     assert cli.main(["engine", "--spec", "0"]) == 0
     assert calls[-1]["traces"] is None and calls[-1]["traces_max_mib"] == 32768
     with pytest.raises(SystemExit):
@@ -254,7 +254,7 @@ def test_traces_cli_summarizes(monkeypatch, tmp_path, capsys):
     assert cli.main(["traces", "--dir", str(tmp_path)]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["requests"] == 1 and out["spec_rounds"] == 1 and out["tokens_per_round"] == 3.0
-    monkeypatch.delenv("SHARAR_TRACES", raising=False)
-    monkeypatch.setenv("SHARAR_RESULTS", str(tmp_path / "nothing-recorded"))
+    monkeypatch.delenv("HIBANA_TRACES", raising=False)
+    monkeypatch.setenv("HIBANA_RESULTS", str(tmp_path / "nothing-recorded"))
     with pytest.raises(SystemExit, match="no traces"):
         cli.main(["traces"])

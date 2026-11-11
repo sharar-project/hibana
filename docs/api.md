@@ -1,8 +1,8 @@
 # HTTP API
 
 The launcher exposes the API at `http://127.0.0.1:30001`; `sharar chat` is a terminal client for it. The supported target
-context is 262,144 tokens as launched (`SHARAR_MAX_CONTEXT`). At most the profile's batch size runs at once
-(`SHARAR_MAX_BATCH`: 4 in `fast` and `exact`; in `throughput` 16 on the 27B and 128 on Flash-Next, 64 with NVFP4
+context is 262,144 tokens as launched (`HIBANA_MAX_CONTEXT`). At most the profile's batch size runs at once
+(`HIBANA_MAX_BATCH`: 4 in `fast` and `exact`; in `throughput` 16 on the 27B and 128 on Flash-Next, 64 with NVFP4
 experts), and at least two batches (and at least 16 requests) can queue. Admission also checks the output budget and
 speculative scratch capacity.
 
@@ -40,7 +40,7 @@ speculative scratch capacity.
 | `response_format: {"type":"json_object"}` / `{"type":"json_schema","json_schema":{"schema":{...}}}` | Constrained: a JSON object / JSON valid against the schema ([constrained output](#constrained-output)) |
 | `trace` | `false` excludes this request from the opt-in [trace sink](operations.md#request-traces); accepted on every generation route |
 | `accept_top_k`, `accept_margin` | Relaxed speculative acceptance for greedy requests: a drafted token is also accepted when the target ranks it within its top `accept_top_k` and within `accept_margin` logits of the argmax (a log-probability ratio; 1.0 means at least 37% of the top probability). Faster, and no longer the target's exact continuation; the per-request `spec_relaxed_tokens` counts such tokens. **A greedy request that sets neither field gets the server's default**, which the serving profile chooses ([operations](operations.md#serving-profiles); `fast`: top-3 within 2.0, Flash-Next with DFlash2 top-2 within 1.0; `exact`: off). Send `accept_top_k: 1` for the exact continuation on one request. Sampled requests ignore both fields. Accepted on every generation route |
-| `accept_soft` | Relaxed speculative acceptance for sampled requests, s ≥ 0: a drafted token y (MTP or DFlash2) keeps its acceptance draw u and is also accepted when u · q(y) < e^s · p(y), q the draft's law and p the request's. No token then comes out more than e^s times as often as the target's law gives it (KL to the target ≤ s); `0` is exact sampling. Unset: the server's `--accept-soft` (`SHARAR_ACCEPT_SOFT`; `fast` 0.5 on Flash-Next, 0 elsewhere). Greedy requests ignore it |
+| `accept_soft` | Relaxed speculative acceptance for sampled requests, s ≥ 0: a drafted token y (MTP or DFlash2) keeps its acceptance draw u and is also accepted when u · q(y) < e^s · p(y), q the draft's law and p the request's. No token then comes out more than e^s times as often as the target's law gives it (KL to the target ≤ s); `0` is exact sampling. Unset: the server's `--accept-soft` (`HIBANA_ACCEPT_SOFT`; `fast` 0.5 on Flash-Next, 0 elsewhere). Greedy requests ignore it |
 
 `GET /get_server_info` reports `speculative.draft` (the served draft
 directory), `speculative.accept_default`, `spec_stats` (rounds, proposed, accepted, emitted, `relaxed_accepts`) and, when
@@ -109,7 +109,7 @@ engine.
 
 ## Images
 
-Nemotron Super and Bolt serve their checkpoints' vision encoder (`SHARAR_VISION`, on for both; `/get_server_info`
+Nemotron Super and Bolt serve their checkpoints' vision encoder (`HIBANA_VISION`, on for both; `/get_server_info`
 reports `vision`). A chat message's content can then hold images: OpenAI `image_url` parts (or `input_image`) with a
 `data:` URL, and on Messages `image` blocks with a base64 source, in user turns and in `tool_result` content (an agent's
 screenshot is read, not replaced by a note). The server fetches nothing. PNG, JPEG, WebP and GIF (its first frame)
@@ -181,7 +181,7 @@ block ends with its `signature_delta`; a tool call arrives whole as one
 because the prefix match happens at admission.
 
 To use Sharar from Claude Code, run `sharar launch claude` (interactive, or
-with `claude` arguments such as `-p "..."`; it finds the serving target, `SHARAR_URL` picks another server). It
+with `claude` arguments such as `-p "..."`; it finds the serving target, `HIBANA_URL` picks another server). It
 sets the variables below from Claude Code's gateway and model-configuration
 docs and keeps its own config directory (`~/.claude-sharar`). Claude Code only accepts model IDs that contain
 `claude` or `anthropic`; the server serves any name, so pick one that does:

@@ -42,7 +42,7 @@ benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) th
   `KvPool.register_page_aux`.
 - **One speculative round.** `SpecDecoder` drives every proposer: reserve, propose, verify (graph or eager),
   accept (exact, relaxed or sampled rejection), commit, feed back.
-- **Configuration.** Every `SHARAR_*` setting is a field of one `EngineConfig` (`engine/config.py`), built at
+- **Configuration.** Every `HIBANA_*` setting is a field of one `EngineConfig` (`engine/config.py`), built at
   startup and reported by `/get_server_info`. The serving profiles (`hibana/launch/settings.py`) set
   the defaults ([operations](operations.md#serving-profiles)).
 - **Model contract.** A model exposes `forward`, `logits`, `linears()`, `register_pages`, `register_state` and
@@ -64,7 +64,7 @@ benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) th
 | Capability | 27B | Flash-Next | Nemotron ([details](nemotron.md)) | Bolt ([details](bolt.md)) |
 |---|---|---|---|---|
 | Served drafter | DFlash2, k=15 | MTP, k=4 (in `fast` up to 8, chosen per request), 2-bit draft head | its MTP head, k=3 (`fast` 5 for one request, 4 for two to four), 2-bit draft head | LiLiCorr DFlash2, k=7 (`--spec` 1 to 7) |
-| Other drafters | MTP (BF16, unfused) | DFlash2, k=9 (`exact` 7, `throughput` 4), FP8, on one Spark (`SHARAR_PROPOSER=dflash2`) | none | none (no MTP head) |
+| Other drafters | MTP (BF16, unfused) | DFlash2, k=9 (`exact` 7, `throughput` 4), FP8, on one Spark (`HIBANA_PROPOSER=dflash2`) | none | none (no MTP head) |
 | CUDA graphs: decode, verify, draft | yes | yes, dense and sparse-selecting variants | yes | yes |
 | Device-resident acceptance | opt-in | on in `fast` and `throughput` | on in `fast` and `throughput` | opt-in |
 | Exact / relaxed / sampled acceptance | yes | yes | yes | yes (exact in every profile) |

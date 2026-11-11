@@ -828,9 +828,9 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     log(f"loading {served.name}: {served.model_id}@{served.model_revision[:8]}")
     model = targets.load_model(served, snap, log=log)
     from hibana.engine.config import current
-    pool_tokens = current().kv_pool_tokens  # SHARAR_KV_POOL_TOKENS: a fixed pool, else planned
+    pool_tokens = current().kv_pool_tokens  # HIBANA_KV_POOL_TOKENS: a fixed pool, else planned
     if pool_tokens and max_context and pool_tokens < max_context:  # a longer request could never be admitted
-        log(f"  context length {max_context} -> {pool_tokens}: SHARAR_KV_POOL_TOKENS fixes a smaller KV pool")
+        log(f"  context length {max_context} -> {pool_tokens}: HIBANA_KV_POOL_TOKENS fixes a smaller KV pool")
         max_context = pool_tokens
     ex = Executor(model, log=log, spec_config=spec_config, max_context=max_context, max_batch=max_batch, num_pages=pool_tokens)
     ex.capture_graphs(log=log)
@@ -890,7 +890,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
         "kv_cache_dtype": "float8_e4m3fn",
         "mamba_ssm_dtype": "float32" if ex.ssm_format.kind == "fp32" else ex.ssm_format.describe(),
         "traces": {"dir": str(sink.directory), "max_mib": traces_max_mib} if sink is not None else None,
-        "vision": getattr(model, "vision", None) is not None,  # image input (SHARAR_VISION)
+        "vision": getattr(model, "vision", None) is not None,  # image input (HIBANA_VISION)
     }
     engine = EngineLoop(sched)
     engine.start()

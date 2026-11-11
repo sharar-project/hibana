@@ -87,4 +87,4 @@ def test_fitted_copy_loads_and_serves_decode_only(tmp_path):
     with config.using(config.current().replace(w3_decode=False)):
         y = ops.fp8_linear(None, lin, x_q=x_q[:4])
         lin.w3 = None
-        assert torch.equal(y, ops.fp8_linear(None, lin, x_q=x_q[:4]))  # the copy is inert without SHARAR_W3_DECODE
+        assert torch.equal(y, ops.fp8_linear(None, lin, x_q=x_q[:4]))  # the copy is inert without HIBANA_W3_DECODE

@@ -4,12 +4,12 @@ sigmoid(w . [logit p, gap, j / 15, 1]), a drafted position's probability of acce
 were accepted (`ParallelProposer.acceptance_features`), which adaptive verification (engine/depth.RowBudget) ranks
 verify seats by.
 
-The tool drafts in process, one request at a time at the full depth (SHARAR_SPEC), greedy with --accept as the
+The tool drafts in process, one request at a time at the full depth (HIBANA_SPEC), greedy with --accept as the
 acceptance rule, on chat prompts and the benchmark workloads. Every position a round tested (up to the first
 rejection) is one sample: its features and whether it was accepted. Prompts alternate between the fit and the held-out
 set; the AUC is reported on the held-out prompts.
 
-    SHARAR_SPEC=15 python3 tools/fit_draft_calibration.py --out fit.json  # the 27B's pinned DFlash2
+    HIBANA_SPEC=15 python3 tools/fit_draft_calibration.py --out fit.json  # the 27B's pinned DFlash2
 """
 from __future__ import annotations
 
@@ -106,7 +106,7 @@ def main() -> int:
     spec = int(cfg.spec or 15)
     model = targets.load_model(target, snap)
     ex = Executor(model, max_batch=4, max_context=max(map(len, prompts)) + args.tokens + 64, log=print,
-                  spec_config=SpecConfig("dflash2", spec, "reconstruct", os.environ.get("SHARAR_DRAFT_PRECISION", "fp8"), cfg.draft_dir))
+                  spec_config=SpecConfig("dflash2", spec, "reconstruct", os.environ.get("HIBANA_DRAFT_PRECISION", "fp8"), cfg.draft_dir))
     ex.capture_graphs(log=print)
     ex.warmup(log=print)
     recorder = ex.spec.depth_policy = Recorder(spec)

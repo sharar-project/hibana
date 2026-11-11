@@ -5,7 +5,7 @@
 `nvfp4_append_quantize_block`, global scale 1): a value becomes scale * e2m1(value * (1 / scale)), scale = e4m3(amax / 6)
 of its block of 16, the code rounded to nearest with ties to the even code and saturating at 6. A block of zeros stays
 zero. Every result is exactly representable in BF16 (a code's two significant bits times a scale's four), so a BF16
-pool holding rounded values is an FP4 pool's exact numerics (`SHARAR_KV_FORMAT=sim-fp4`, the accuracy screen).
+pool holding rounded values is an FP4 pool's exact numerics (`HIBANA_KV_FORMAT=sim-fp4`, the accuracy screen).
 """
 import torch
 
@@ -42,7 +42,7 @@ def _same(x: torch.Tensor) -> torch.Tensor:
 
 
 SIMULATED = {
-    # SHARAR_KV_FORMAT: (key rounding, value rounding) applied on every write into a BF16 pool
+    # HIBANA_KV_FORMAT: (key rounding, value rounding) applied on every write into a BF16 pool
     "sim-bf16": (_same, _same),  # the unrounded reference the formats are measured against
     "sim-fp4": (nvfp4_round, nvfp4_round),
     "sim-k8v4": (fp8_round, nvfp4_round),

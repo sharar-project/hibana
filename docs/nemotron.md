@@ -22,9 +22,9 @@ Formats are the checkpoint's: the routed NVFP4 experts through Sharar's small-ca
 FlashInfer's b12x MoE beyond (fc1 is `up_proj` alone), FP8 GEMVs for the Mamba and attention projections and the head,
 FP32 router logits. 66.4 GiB of weights are resident after the load (78 s from the page cache); the KV cache is small
 (8 attention layers, 4 KiB a token in FP8) and a request's recurrent state is 160 MiB (FP32; 80 MiB in FP16, 63 MiB
-in 8-bit windows, `SHARAR_SSM_STATE=int8`, ungated).
+in 8-bit windows, `HIBANA_SSM_STATE=int8`, ungated).
 GPTQ-calibrated 3-bit copies of the trunk (Mamba, attention and lm_head projections) and of the routed experts load
-beside the checkpoint with `SHARAR_W3_DECODE=1` and `SHARAR_W3_CHECKPOINT=<dir>` (`kernels/w3_moe.py` for the
+beside the checkpoint with `HIBANA_W3_DECODE=1` and `HIBANA_W3_CHECKPOINT=<dir>` (`kernels/w3_moe.py` for the
 experts). `fast` and `throughput` turn them on and serve
 `w3-checkpoints/nemotron-current` ([where it comes from](w3-calibration.md#nemotron)); without one they refuse to
 start (`exact` serves the checkpoint's NVFP4 experts and FP8 trunk). A checkpoint that carries the routed experts serves
@@ -45,7 +45,7 @@ them as the only expert copy, at every call size (the MTP head's load with the d
 
 ## Images
 
-With `SHARAR_VISION=1` (both Nemotron targets' launcher default) the model loads the checkpoint's BF16 vision weights
+With `HIBANA_VISION=1` (both Nemotron targets' launcher default) the model loads the checkpoint's BF16 vision weights
 (1.6 GiB, taken from the pools): C-RADIO, a ViT-H/16 of 32 blocks at width 1280 behind 3 class and 7 register tokens
 with a position table interpolated to the tile, then the tower's final LayerNorm (Super has one, Bolt does not), pixel
 shuffle of each 2 x 2 patch block into a 5120-wide token, and `mlp1` (RMSNorm, 5120 -> 20480, ReLU², -> 4096). The
@@ -67,13 +67,13 @@ The profiles (`nemotron_defaults` in `hibana/launch/settings.py`):
 | Profile | Settings |
 |---|---|
 | `exact` | MTP depth 3, exact acceptance, FP32 Mamba state, every token's 22 experts |
-| `fast` | both 3-bit copies, relaxed acceptance for greedy requests (top 3 within 2.0 logits; sampled ones s = 0.5), device-resident acceptance, 2-bit draft head, adaptive depth up to 8 at one request (`SHARAR_SPEC_STEP_COST=0.065`, [below](#adaptive-depth)), up to 6 at two requests and 5 at three or four, FP16 Mamba state with stochastic rounding, expert sharing `SHARAR_MOE_KEEP=12` `SHARAR_MOE_BUDGET=48:128` |
+| `fast` | both 3-bit copies, relaxed acceptance for greedy requests (top 3 within 2.0 logits; sampled ones s = 0.5), device-resident acceptance, 2-bit draft head, adaptive depth up to 8 at one request (`HIBANA_SPEC_STEP_COST=0.065`, [below](#adaptive-depth)), up to 6 at two requests and 5 at three or four, FP16 Mamba state with stochastic rounding, expert sharing `HIBANA_MOE_KEEP=12` `HIBANA_MOE_BUDGET=48:128` |
 | `throughput` | `fast` up to 16 requests, depth 5 at five to eight and 3 past eight |
 
 Expert sharing (`moe.py`, `route_budget`): a verify call's rows share the experts they read. Each row is guaranteed
 its top `KEEP` experts; the call then reads at most `P` distinct experts per request and `CAP` in all, filled by
 summed routing weight, and every row also takes its other top-22 experts that the call reads anyway (free riders).
-The KV cache is FP8 only: NVFP4 KV (`SHARAR_KV_FORMAT=nvfp4`) and the `sim-*` screens are not supported yet (the
+The KV cache is FP8 only: NVFP4 KV (`HIBANA_KV_FORMAT=nvfp4`) and the `sim-*` screens are not supported yet (the
 attention's fused K/V writer serves the FP8 pool), and the launcher and the executor refuse them.
 
 Measured (Sharar, spark-9931; h2h median, `tools/h2h_pr.py`, greedy; tok/s) and GSM8K-300 paired against `exact`:
@@ -83,7 +83,7 @@ Measured (Sharar, spark-9931; h2h median, `tools/h2h_pr.py`, greedy; tok/s) and 
 | `exact` | 45.9 | 79.8 | 97.7% |
 | `fast` | 102.5 | 185.2 | 97.7% (+0.0 pp, [-1.6, +1.6]) |
 
-The Mamba-2 state is stored as `SHARAR_SSM_STATE=fp32`, `fp16_sr` (`fast`, `throughput`), or `int8` / `int4`:
+The Mamba-2 state is stored as `HIBANA_SSM_STATE=fp32`, `fp16_sr` (`fast`, `throughput`), or `int8` / `int4`:
 LeapQuant's per-window format of the GDN targets, with Mamba-2's own records (B per group, dt x per head, dt A), 65 MiB
 a slot at 8 bits against 82 in FP16 and 162 in FP32. The 8-bit windows are ungated. On `exact` they score RULER v2 at
 32K 88.5 against FP32's 87.0 (100 items paired, +1.5 pp [-2.0, +5.2]) and GSM8K-50 48 against 49, at a KL against

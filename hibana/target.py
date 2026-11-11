@@ -54,8 +54,8 @@ class Target:
     kv_bytes_per_element: int = 1  # FP8 KV cache
     # Model family: selects the loader in `load_model` and the modules a family adds.
     family: str = "qwen38"
-    # Environment variable naming this target's model cache (falls back to SHARAR_HF_CACHE).
-    cache_env: str = "SHARAR_HF_CACHE"
+    # Environment variable naming this target's model cache (falls back to HIBANA_HF_CACHE).
+    cache_env: str = "HIBANA_HF_CACHE"
     # Gated DeltaNet output gate: "swish" (silu(z), the 27B) or "sigmoid" (Flash-Next).
     output_gate: str = "swish"
     # Most prompt tokens one request prefills per step (`ServingProfile.chunk_size`).
@@ -145,7 +145,7 @@ class Target:
 
     @property
     def nvfp4_kv_bytes_per_token(self) -> int:
-        """`kv_bytes_per_token` with K and V as NVFP4 (`SHARAR_KV_FORMAT=nvfp4`): half a byte a value and an E4M3 scale
+        """`kv_bytes_per_token` with K and V as NVFP4 (`HIBANA_KV_FORMAT=nvfp4`): half a byte a value and an E4M3 scale
         per 16, 9/16 of FP8's; the index keys stay BF16."""
         return 2 * self.num_kv_heads * self.head_dim * 9 // 16 * len(self.attention_layer_ids) + self.index_bytes_per_token
 
@@ -181,12 +181,12 @@ class Target:
         raise ValueError(f"{self.name} has no pinned {proposer} draft")
 
     def cache_root(self, cache_dir: str | os.PathLike | None = None) -> Path:
-        """This target's model cache: `cache_dir`, its own cache setting, or SHARAR_HF_CACHE (HF_HOME)."""
+        """This target's model cache: `cache_dir`, its own cache setting, or HIBANA_HF_CACHE (HF_HOME)."""
         from hibana.engine.config import current
         cfg = current()
         root = cache_dir or cfg.model_cache(self.cache_env) or cfg.hf_cache
         if not root:
-            raise FileNotFoundError("set SHARAR_HF_CACHE (or HF_HOME) to the model cache")
+            raise FileNotFoundError("set HIBANA_HF_CACHE (or HF_HOME) to the model cache")
         return Path(root)
 
     def snapshot_dir(self, cache_dir: str | os.PathLike | None = None) -> Path:
@@ -307,7 +307,7 @@ def _qwen38() -> Target:
 def _flashnext() -> Target:
     from hibana.model.flashnext import config as c
     return Target(
-        name="flashnext", family="flashnext", cache_env="SHARAR_FLASHNEXT_CACHE",
+        name="flashnext", family="flashnext", cache_env="HIBANA_FLASHNEXT_CACHE",
         model_id=c.MODEL_ID, model_revision=c.MODEL_REVISION, model_cache_key=c.MODEL_CACHE_KEY,
         architecture=c.MODEL_ARCHITECTURE, hidden_size=c.HIDDEN_SIZE, intermediate_size=None,
         num_layers=c.NUM_LAYERS, layer_types=c.LAYER_TYPES,

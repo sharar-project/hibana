@@ -9,10 +9,10 @@ both targets share the tokenizer), and every TrunkLinear call adds x^T x to its
 projection's covariance. Every projection `FlashNext.linears()` lists whose shape
 the 3-bit kernel tiles (N and K multiples of 128) is fitted; the rank-320
 hyper-connection mixers stay FP8. The output loads with
-SHARAR_W3_DECODE=1 SHARAR_W3_CHECKPOINT=DIR over the FP8 trunk (the launcher serves
-$SHARAR_RESULTS/w3-checkpoints/flashnext-current in the fast profile).
+HIBANA_W3_DECODE=1 HIBANA_W3_CHECKPOINT=DIR over the FP8 trunk (the launcher serves
+$HIBANA_RESULTS/w3-checkpoints/flashnext-current in the fast profile).
 
-    SHARAR_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_calibrate --inputs calibration-inputs.json --output DIR
+    HIBANA_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_calibrate --inputs calibration-inputs.json --output DIR
 """
 import argparse
 import json

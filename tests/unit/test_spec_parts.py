@@ -303,7 +303,7 @@ def test_row_budget_verifies_every_draft_where_rows_are_free():
 
 
 def test_row_budget_keeps_each_buckets_cap():
-    """A depth table (SHARAR_SPEC_DEPTHS) caps each bucket: the policy verifies at or below it."""
+    """A depth table (HIBANA_SPEC_DEPTHS) caps each bucket: the policy verifies at or below it."""
     from hibana.engine.depth import RowBudget, ragged_budgets
     budgets = ragged_budgets((1, 2, 4, 8), 16)
     capped = RowBudget(15, (1, 2, 4, 8), packed_rows=budgets, caps={1: 15, 2: 7, 4: 7, 8: 15})

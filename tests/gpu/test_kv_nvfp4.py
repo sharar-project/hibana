@@ -1,4 +1,4 @@
-"""The NVFP4 KV pool (SHARAR_KV_FORMAT=nvfp4): FlashInfer's writer is the screen's rounding, and fa2 attention over
+"""The NVFP4 KV pool (HIBANA_KV_FORMAT=nvfp4): FlashInfer's writer is the screen's rounding, and fa2 attention over
 the pool's codes and scales is attention over the rounded values."""
 import pytest
 import torch

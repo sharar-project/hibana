@@ -48,7 +48,7 @@ class BoltMoe:
             raise ValueError(f"{prefix}: encoded expert shapes differ from the pinned Puzzle block")
         if self.router.shape != (self.experts, BOLT.hidden) or self.bias.shape != (self.experts,):
             raise ValueError(f"{prefix}: router shape differs from the pinned Puzzle block")
-        # expert sharing (SHARAR_MOE_KEEP / SHARAR_MOE_BUDGET), as Super's: each real token keeps its top `keep`, and a
+        # expert sharing (HIBANA_MOE_KEEP / HIBANA_MOE_BUDGET), as Super's: each real token keeps its top `keep`, and a
         # decode or verify call reads at most min(budget, per_request x requests) distinct experts (`route_budget`)
         cfg = current()
         self.keep = cfg.moe_keep if cfg.moe_keep < self.topk else 0
@@ -155,7 +155,7 @@ class Bolt(Nemotron):
         if cfg.w3_decode:
             # calibrated only (`weights/bolt_w3_calibrate.py`), as for Super: there is no nearest-rounded fallback
             if not cfg.w3_checkpoint:
-                raise ValueError("Bolt's 3-bit copies are calibrated only: SHARAR_W3_DECODE=1 needs SHARAR_W3_CHECKPOINT")
+                raise ValueError("Bolt's 3-bit copies are calibrated only: HIBANA_W3_DECODE=1 needs HIBANA_W3_CHECKPOINT")
             from hibana.weights.w3_checkpoint import CalibratedWeights
             calibrated = CalibratedWeights(cfg.w3_checkpoint, revision=target.model_revision)
         if cfg.kv_format not in ("fp8", "sim-bf16"):
@@ -185,7 +185,7 @@ class Bolt(Nemotron):
                 self.w3_identity = self.attach_calibrated(calibrated, log)
             self.draft_lm_head = None
             if cfg.draft_head != "fp8":
-                # the drafter's own head (SHARAR_DRAFT_HEAD): a nearest-rounded copy of the Q8_0 rows, packed before
+                # the drafter's own head (HIBANA_DRAFT_HEAD): a nearest-rounded copy of the Q8_0 rows, packed before
                 # `prepare` releases them; verification keeps the exact head, so it moves acceptance, not output
                 from hibana.proposers.draft_head import pack_rows
                 from hibana.weights.ggml import dequantize
@@ -242,7 +242,7 @@ class Bolt(Nemotron):
 
     @torch.inference_mode()
     def head_logits(self, hidden):
-        """The drafter's vocabulary projection: its 3-bit/2-bit head copy when SHARAR_DRAFT_HEAD asks for one, else
+        """The drafter's vocabulary projection: its 3-bit/2-bit head copy when HIBANA_DRAFT_HEAD asks for one, else
         the head itself. The target's verification always reads `logits`."""
         if self.draft_lm_head is None:
             return self.logits(hidden)

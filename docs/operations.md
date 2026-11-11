@@ -2,10 +2,10 @@
 
 `sharar serve bolt` serves the packed Nemotron 3.5 Bolt text model on port 30006 on b12x's GEMMs and fused MoE.
 `exact` serves the checkpoint encodings, all nine routed experts and FP32 Mamba state; `fast` and `throughput` add
-the calibrated 3-bit copies (a local calibration: `w3-checkpoints/bolt-current` or `SHARAR_W3_CHECKPOINT`), the int8
+the calibrated 3-bit copies (a local calibration: `w3-checkpoints/bolt-current` or `HIBANA_W3_CHECKPOINT`), the int8
 Mamba state and expert sharing. Every profile serves FP8 KV and SSD caching, and the pinned companion LiLiCorr
 checkpoint drafts seven tokens through the parallel DFlash proposer with exact target verification; `--spec 0`
-selects ordinary decode. `SHARAR_BOLT_EXPERTS=fp8` selects the grouped native IQ2 routed-expert kernel with FP8
+selects ordinary decode. `HIBANA_BOLT_EXPERTS=fp8` selects the grouped native IQ2 routed-expert kernel with FP8
 activations. See [Bolt](bolt.md) for formats, measurements, limits and validation.
 
 ## Prerequisites
@@ -42,68 +42,68 @@ missing snapshots, keeps the 3-bit checkpoint on its pinned revision, prints wha
 in its own process with the memory guard as a thread: when `MemAvailable` stays under half the host floor for six seconds it
 stops the server (SIGTERM, then SIGKILL after 15 s), before unified memory pages the weights. The scheduler already holds
 new admissions under that threshold. `--detach` runs the same command as the user systemd service `sharar-qwen38` or
-`sharar-flashnext`, logging to `$SHARAR_RESULTS/logs/<service>.log` (the previous run's is `.log.1`); `sharar stop`
+`sharar-flashnext`, logging to `$HIBANA_RESULTS/logs/<service>.log` (the previous run's is `.log.1`); `sharar stop`
 sends it SIGTERM, so it drains and, with the SSD tier on, stores its cached prefixes. Automatic KV capacity depends
 on available memory.
 
 ## Settings
 
-Every setting is a `SHARAR_*` name. Order, first wins ([hibana/launch/settings.py](../hibana/launch/settings.py)):
-the command line (`sharar serve --help`), the environment, the config file (`SHARAR_CONFIG_FILE`, else
+Every setting is a `HIBANA_*` name. Order, first wins ([hibana/launch/settings.py](../hibana/launch/settings.py)):
+the command line (`sharar serve --help`), the environment, the config file (`HIBANA_CONFIG_FILE`, else
 `config/gb10.env` in the checkout, else `~/.config/sharar/sharar.env`; [example](../config/gb10.env.example)), the
 target's settings (port, service, drafter), the profile's defaults, then the built-in defaults: models in
-`SHARAR_HF_CACHE` (default `$HF_HOME`, else `~/.cache/huggingface`; Flash-Next in `SHARAR_FLASHNEXT_CACHE`, default the
-same) and results, traces, 3-bit checkpoints and logs in `SHARAR_RESULTS` (default
+`HIBANA_HF_CACHE` (default `$HF_HOME`, else `~/.cache/huggingface`; Flash-Next in `HIBANA_FLASHNEXT_CACHE`, default the
+same) and results, traces, 3-bit checkpoints and logs in `HIBANA_RESULTS` (default
 `~/.local/share/sharar`). The server reads the resolved settings once into `EngineConfig`
 ([engine/config.py](../hibana/engine/config.py)); `/get_server_info` reports them under `config`.
 
 | Setting | Launcher default | Override |
 |---|---|---|
-| Target | the one named on `serve` (`27b`, `flashnext`, `nemotron` or `bolt`) | `SHARAR_TARGET`; Flash-Next reads its model from `SHARAR_FLASHNEXT_CACHE` and takes `SHARAR_FLASHNEXT_TRUNK=fp8\|bf16` |
-| Serving profile | `fast` | `sharar serve --exact\|--fast\|--throughput` or `SHARAR_PROFILE` ([below](#serving-profiles)) |
-| Proposer / draft proposals | 27B: DFlash2, 15 (16 verify rows); Flash-Next: MTP, 4 (`fast`: up to 8, adaptive, below), or with `SHARAR_PROPOSER=dflash2` (one Spark) DFlash2, 9 (`exact`: 7, `throughput`: 4) | `SHARAR_PROPOSER`, `SHARAR_SPEC` (0 = plain decode; with adaptive depth, the cap) |
-| Draft precision | 27B: FP8; Flash-Next: BF16 (MTP), FP8 (DFlash2) | `SHARAR_DRAFT_PRECISION=bf16` for the 27B publisher's precision |
-| Draft checkpoint | the publisher's pinned draft | `sharar serve --draft DIR` or `SHARAR_DRAFT=/dir`: a DFlash2 checkpoint of the same architecture, trained on the served target's features |
-| Accepted state | reconstruction | `SHARAR_VERIFY_STATE` |
-| Context per request (prompt plus output) | 262,144 | `SHARAR_MAX_CONTEXT` / `sharar serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K; 4.5 GiB as NVFP4) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
-| Adaptive verification (DFlash2) | the 27B's `throughput`: on; `exact`, `fast`: off; Flash-Next: none | `SHARAR_SPEC_POLICY=budget\|fixed`: the drafts' calibrated scores and the measured verify costs decide what each round verifies, up to `SHARAR_SPEC` ([below](#adaptive-verification-dflash2)); a `SHARAR_SPEC_DEPTHS` table caps each bucket (no 0 under it); not with `SHARAR_SPEC_STEP_COST` |
-| Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:7,4:6` on one Spark, `2:4,4:4` on two, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark), else `16:3`; Flash-Next DFlash2 `fast`: `2:7,4:7`, `throughput`: MTP's | `SHARAR_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `SHARAR_SPEC` and `SHARAR_MAX_BATCH`, a limit between buckets verifying what the bucket it pads to does). The 3-bit copies serve calls of at most 128 rows on the 27B and 64 on Flash-Next, so wider verifications run the original weights |
-| Adaptive draft depth (MTP and DFlash2) | Flash-Next `fast` with MTP: on, 0.14 (0.2 on two Sparks); DFlash2: off | `SHARAR_SPEC_STEP_COST` (0 = the fixed depth): each request drafts as deep as its own recent acceptance pays for, up to the batch bucket's depth ([MTP](flashnext.md#the-mtp-draft), [DFlash2](flashnext.md#the-dflash2-draft)) |
-| Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext`, Nemotron 30005 / `sharar-nemotron`, Bolt 30006 / `sharar-bolt` | `sharar serve --port`, `SHARAR_PORT` / `SHARAR_SERVICE` |
-| Request traces | off | `sharar serve --traces` (in `$SHARAR_RESULTS/traces`) or `SHARAR_TRACES=/dir` (cap `SHARAR_TRACES_MAX_MIB`, 32768) |
-| Calibrated 3-bit checkpoint | `$SHARAR_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `SHARAR_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
-| Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `SHARAR_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
-| Flash-Next PLE table on two Sparks | each rank's half of the heads in device memory (23.8 GiB per rank; [tensor parallel](tensor-parallel.md)) | `SHARAR_PLE_RESIDENT=0` reads it from the memory maps on the host, as one Spark does (which prefetches a prompt's later chunks into the page cache) |
-| Image input | Nemotron and Bolt: on (their vision encoder, 1.6 GiB); the 27B and Flash-Next: none | `SHARAR_VISION=0` leaves the encoder's memory to the pools; images are then a 400 ([API](api.md#images)) |
-| Shape-stable prefill numerics | off | `SHARAR_STABLE_NUMERICS=1` (M-invariant kernels for the three row-count-dependent ops; see [limits](#numerical-limits)) |
+| Target | the one named on `serve` (`27b`, `flashnext`, `nemotron` or `bolt`) | `HIBANA_TARGET`; Flash-Next reads its model from `HIBANA_FLASHNEXT_CACHE` and takes `HIBANA_FLASHNEXT_TRUNK=fp8\|bf16` |
+| Serving profile | `fast` | `sharar serve --exact\|--fast\|--throughput` or `HIBANA_PROFILE` ([below](#serving-profiles)) |
+| Proposer / draft proposals | 27B: DFlash2, 15 (16 verify rows); Flash-Next: MTP, 4 (`fast`: up to 8, adaptive, below), or with `HIBANA_PROPOSER=dflash2` (one Spark) DFlash2, 9 (`exact`: 7, `throughput`: 4) | `HIBANA_PROPOSER`, `HIBANA_SPEC` (0 = plain decode; with adaptive depth, the cap) |
+| Draft precision | 27B: FP8; Flash-Next: BF16 (MTP), FP8 (DFlash2) | `HIBANA_DRAFT_PRECISION=bf16` for the 27B publisher's precision |
+| Draft checkpoint | the publisher's pinned draft | `sharar serve --draft DIR` or `HIBANA_DRAFT=/dir`: a DFlash2 checkpoint of the same architecture, trained on the served target's features |
+| Accepted state | reconstruction | `HIBANA_VERIFY_STATE` |
+| Context per request (prompt plus output) | 262,144 | `HIBANA_MAX_CONTEXT` / `sharar serve --context-length`. The pool guarantees one request at that length (8 GiB of FP8 KV at 262K; 4.5 GiB as NVFP4) or four at 32K, whichever is more; concurrent requests share the rest and a request that does not fit waits |
+| Adaptive verification (DFlash2) | the 27B's `throughput`: on; `exact`, `fast`: off; Flash-Next: none | `HIBANA_SPEC_POLICY=budget\|fixed`: the drafts' calibrated scores and the measured verify costs decide what each round verifies, up to `HIBANA_SPEC` ([below](#adaptive-verification-dflash2)); a `HIBANA_SPEC_DEPTHS` table caps each bucket (no 0 under it); not with `HIBANA_SPEC_STEP_COST` |
+| Verify depth per batch size | the proposer's depth at every batch; Flash-Next `fast`: `2:7,4:6` on one Spark, `2:4,4:4` on two, `throughput`: `16:3,32:3,64:3,128:3` (3-bit experts on one Spark), else `16:3`; Flash-Next DFlash2 `fast`: `2:7,4:7`, `throughput`: MTP's | `HIBANA_SPEC_DEPTHS=BUCKET:DEPTH,...` (0 = plain decode; a profile's buckets stay within `HIBANA_SPEC` and `HIBANA_MAX_BATCH`, a limit between buckets verifying what the bucket it pads to does). The 3-bit copies serve calls of at most 128 rows on the 27B and 64 on Flash-Next, so wider verifications run the original weights |
+| Adaptive draft depth (MTP and DFlash2) | Flash-Next `fast` with MTP: on, 0.14 (0.2 on two Sparks); DFlash2: off | `HIBANA_SPEC_STEP_COST` (0 = the fixed depth): each request drafts as deep as its own recent acceptance pays for, up to the batch bucket's depth ([MTP](flashnext.md#the-mtp-draft), [DFlash2](flashnext.md#the-dflash2-draft)) |
+| Port / service (with `--detach`) | 27B 30001 / `sharar-qwen38`, Flash-Next 30004 / `sharar-flashnext`, Nemotron 30005 / `sharar-nemotron`, Bolt 30006 / `sharar-bolt` | `sharar serve --port`, `HIBANA_PORT` / `HIBANA_SERVICE` |
+| Request traces | off | `sharar serve --traces` (in `$HIBANA_RESULTS/traces`) or `HIBANA_TRACES=/dir` (cap `HIBANA_TRACES_MAX_MIB`, 32768) |
+| Calibrated 3-bit checkpoint | `$HIBANA_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `HIBANA_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
+| Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `HIBANA_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
+| Flash-Next PLE table on two Sparks | each rank's half of the heads in device memory (23.8 GiB per rank; [tensor parallel](tensor-parallel.md)) | `HIBANA_PLE_RESIDENT=0` reads it from the memory maps on the host, as one Spark does (which prefetches a prompt's later chunks into the page cache) |
+| Image input | Nemotron and Bolt: on (their vision encoder, 1.6 GiB); the 27B and Flash-Next: none | `HIBANA_VISION=0` leaves the encoder's memory to the pools; images are then a 400 ([API](api.md#images)) |
+| Shape-stable prefill numerics | off | `HIBANA_STABLE_NUMERICS=1` (M-invariant kernels for the three row-count-dependent ops; see [limits](#numerical-limits)) |
 
-For MTP on the 27B, use `SHARAR_PROPOSER=mtp SHARAR_SPEC=3 SHARAR_DRAFT_PRECISION=bf16`. `SHARAR_PROPOSER` is `mtp`
+For MTP on the 27B, use `HIBANA_PROPOSER=mtp HIBANA_SPEC=3 HIBANA_DRAFT_PRECISION=bf16`. `HIBANA_PROPOSER` is `mtp`
 or `dflash2`.
 
 Further settings, for tuning, diagnostics and the tools (defaults from `engine/config.py`, `launch/` and `tools/`):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SHARAR_HOST` | `127.0.0.1` | The address the server listens on (`sharar serve --host`) |
-| `SHARAR_SSD_BLOCK_TOKENS` | 256 | Tokens per SSD-tier KV block; must divide the 2,048-token prefill chunk |
-| `SHARAR_SSD_WRITERS` | 4 | The SSD store's writer threads (at least 1) |
-| `SHARAR_SSD_STAGING_MIB` | 512 | Backup copies in flight to the SSD writers |
-| `SHARAR_SSD_CHUNK_MIB` | 256 | Each half of the SSD restore's staging buffer |
-| `SHARAR_SSM_WINDOW` | 16 | With an `int8` or `int4` recurrent state: committed tokens per requantization (8, 16 or 32) |
-| `SHARAR_SSM_COMPENSATORS` | 4 (8 for `int4`) | With an `int8` or `int4` recurrent state: FP16 rank-one outlier terms kept beside it (0 to 16) |
-| `SHARAR_GDN_PREFILL` | `auto` | GDN prefill kernels: `auto` (CuTe on SM12x where supported), `cute` or `triton` |
-| `SHARAR_TRUNK_KEEP_BF16` | unset | A diagnostic: a regex of Flash-Next trunk projections kept in BF16 |
-| `SHARAR_DEBUG_SYNC` | off | `1` synchronizes after each phase, so an asynchronous CUDA fault names the phase and batch that launched it |
-| `SHARAR_CUDA_ARCH` | `12.1a` | The architecture the CUDA kernels built on first use target |
-| `SHARAR_CLAUDE_MODEL` | `claude-sharar-<model>`, e.g. `claude-sharar-nemotron-3.5-super` | The model id `sharar launch claude` gives Claude Code (it accepts only ids containing "claude") |
-| `SHARAR_CLAUDE_CONFIG` | `~/.claude-sharar` | Claude Code's configuration directory under `sharar launch claude`, apart from the user's own |
-| `SHARAR_EVALS` | unset (the `eval` group) | A sharar-eval checkout for `tools/evaluate.py`, `tools/h2h_pr.py` and `tools/lossy_gate.py` (`--evals`) |
-| `SHARAR_EVALS_PYTHON` | unset | That checkout's Python (`--python`; default its `.venv`) |
+| `HIBANA_HOST` | `127.0.0.1` | The address the server listens on (`sharar serve --host`) |
+| `HIBANA_SSD_BLOCK_TOKENS` | 256 | Tokens per SSD-tier KV block; must divide the 2,048-token prefill chunk |
+| `HIBANA_SSD_WRITERS` | 4 | The SSD store's writer threads (at least 1) |
+| `HIBANA_SSD_STAGING_MIB` | 512 | Backup copies in flight to the SSD writers |
+| `HIBANA_SSD_CHUNK_MIB` | 256 | Each half of the SSD restore's staging buffer |
+| `HIBANA_SSM_WINDOW` | 16 | With an `int8` or `int4` recurrent state: committed tokens per requantization (8, 16 or 32) |
+| `HIBANA_SSM_COMPENSATORS` | 4 (8 for `int4`) | With an `int8` or `int4` recurrent state: FP16 rank-one outlier terms kept beside it (0 to 16) |
+| `HIBANA_GDN_PREFILL` | `auto` | GDN prefill kernels: `auto` (CuTe on SM12x where supported), `cute` or `triton` |
+| `HIBANA_TRUNK_KEEP_BF16` | unset | A diagnostic: a regex of Flash-Next trunk projections kept in BF16 |
+| `HIBANA_DEBUG_SYNC` | off | `1` synchronizes after each phase, so an asynchronous CUDA fault names the phase and batch that launched it |
+| `HIBANA_CUDA_ARCH` | `12.1a` | The architecture the CUDA kernels built on first use target |
+| `HIBANA_CLAUDE_MODEL` | `claude-sharar-<model>`, e.g. `claude-sharar-nemotron-3.5-super` | The model id `sharar launch claude` gives Claude Code (it accepts only ids containing "claude") |
+| `HIBANA_CLAUDE_CONFIG` | `~/.claude-sharar` | Claude Code's configuration directory under `sharar launch claude`, apart from the user's own |
+| `HIBANA_EVALS` | unset (the `eval` group) | A sharar-eval checkout for `tools/evaluate.py`, `tools/h2h_pr.py` and `tools/lossy_gate.py` (`--evals`) |
+| `HIBANA_EVALS_PYTHON` | unset | That checkout's Python (`--python`; default its `.venv`) |
 
 ### Adaptive verification (DFlash2)
 
 DFlash2 drafts its whole block in one forward, then verifies only the drafts worth their time
-(`engine/depth.RowBudget`, `SHARAR_SPEC_POLICY=budget`):
+(`engine/depth.RowBudget`, `HIBANA_SPEC_POLICY=budget`):
 
 - **Scores.** Each draft's probability of acceptance, given the drafts before it were accepted:
   `sigmoid(w . (logit p, gap, j / 15, 1))`, with p the top probability of the lattice row the earlier drafts select,
@@ -121,7 +121,7 @@ DFlash2 drafts its whole block in one forward, then verifies only the drafts wor
   totals per batch bucket): seats go to each request in order of S, so a confident request verifies deep and an unsure
   one shallow. Steady state, the 27B's throughput settings at 10K context: x1.04 at 8 requests and x1.12 at 16 against
   one depth for the batch with the same scores, equal at 1-4. Packed rounds accept on the host:
-  `SHARAR_DEVICE_ACCEPT` applies to fixed-depth rounds only. The rows a round verifies follow timed costs, so two
+  `HIBANA_DEVICE_ACCEPT` applies to fixed-depth rounds only. The rows a round verifies follow timed costs, so two
   servers of the same build can verify differently and part at a near tie (one greedy h2h reply in 18 did); `exact`
   keeps the fixed depth so its runs repeat.
 - **Sampled batches** verify one depth for every request, chosen before drafting from the drafts' survival per
@@ -130,19 +130,19 @@ DFlash2 drafts its whole block in one forward, then verifies only the drafts wor
 - **Where it is on.** The 27B's `throughput`, against its fixed 15 (one Spark, greedy / T 0.7): 8 requests x1.14 /
   x1.09, 16 x1.29 / x1.21; two Sparks +9 / +18% greedy (measured before the one-pass relaxed rule); the quick suite
   equal (pooled -0.4 pp, p 0.74). Not `fast`: at 1 and 4 requests it measured x0.96 to x1.05, and it costs a host wait
-  every round and eleven packed graphs a batch bucket (`SHARAR_SPEC_POLICY=budget` turns it on). Not Flash-Next
-  (`SHARAR_SPEC_POLICY=budget` is refused there): under its expert budget a verify forward reads the same experts
+  every round and eleven packed graphs a batch bucket (`HIBANA_SPEC_POLICY=budget` turns it on). Not Flash-Next
+  (`HIBANA_SPEC_POLICY=budget` is refused there): under its expert budget a verify forward reads the same experts
   whatever its rows, so verifying fewer saves nothing, and its depth caps (the experts each verified token keeps) leave
   only moving rows between requests, measured at +1 to +5% greedy and slower under sampling.
 
 `/get_server_info` reports what it learned under `spec_stats.budget`: acceptance per position (greedy and sampled),
 the shift, tokens per ms and overhead per bucket, and the row totals (scored rounds) and depths (sampled or
-constrained rounds) it verified. MTP keeps its own depth tables and adaptive depth (`SHARAR_SPEC_DEPTHS`, `SHARAR_SPEC_STEP_COST`
+constrained rounds) it verified. MTP keeps its own depth tables and adaptive depth (`HIBANA_SPEC_DEPTHS`, `HIBANA_SPEC_STEP_COST`
 above).
 
 ### NVFP4 KV
 
-`SHARAR_KV_FORMAT=nvfp4` (`fast` and `throughput` on one Spark, the 27B and Flash-Next; not supported on Nemotron yet) stores K and V as NVFP4: two E2M1 codes
+`HIBANA_KV_FORMAT=nvfp4` (`fast` and `throughput` on one Spark, the 27B and Flash-Next; not supported on Nemotron yet) stores K and V as NVFP4: two E2M1 codes
 a byte and an E4M3 scale per 16 values, 4.5 bits a value where FP8 takes 8. The same memory holds 16/9 the 27B's tokens
 and about 1.4x Flash-Next's (its BF16 index keys keep their size): longer contexts or more requests at once, more
 cached prefixes, and fewer bytes read back from the SSD tier.
@@ -161,7 +161,7 @@ A 27B prefill against a cached prefix of at least 1,024 tokens runs the same til
 (token, head) rows a block, and merges the chunk's own causal attention (FlashInfer's ragged prefill) into its output:
 1.8-2.2x less time than `fa2` and `merge_state` over 8-128K prefixes (a 2,048-token chunk over 128K: 74 against 161 ms
 a layer), so the 27B `fast` prefills a 32K prompt in 11.0 s and a 128K one in 74 s.
-`SHARAR_VERIFY_ATTENTION=fa2` turns both off.
+`HIBANA_VERIFY_ATTENTION=fa2` turns both off.
 
 - **Speed.** Steady-state rounds of the 27B `fast` against `fa2` over NVFP4: 64K 75 against 81.5 ms with one request,
   109 against 139 ms with four (medians, GB10).
@@ -188,16 +188,16 @@ the config file wins. `/get_server_info` reports the profile under `config`.
 
 | Knob | exact | fast (default) | throughput |
 |---|---|---|---|
-| Relaxed acceptance, greedy requests (`SHARAR_ACCEPT_DEFAULT`) | off | top-3 within 2.0 logits; Flash-Next DFlash2 top-2 within 1.0; Bolt off | as fast |
-| Relaxed acceptance, sampled requests (`SHARAR_ACCEPT_SOFT`, `accept_soft` in the [API](api.md)) | 0 (exact) | Flash-Next and Nemotron s = 0.5; the 27B and Bolt 0 (exact) | as fast |
-| Sampled MTP drafts (`SHARAR_MTP_SAMPLE`, [below](#sampled-mtp-drafts)) | off | on where MTP drafts | as fast |
-| Calibrated 3-bit decode copies (`SHARAR_W3_DECODE`; on Flash-Next and Nemotron also the routed experts; Bolt's trunk and vocabulary head) | off | on | on |
-| Device-resident acceptance (`SHARAR_DEVICE_ACCEPT`) | off | Flash-Next and Nemotron | as fast |
-| NVFP4 KV cache (`SHARAR_KV_FORMAT`, [below](#nvfp4-kv)) | FP8 | one Spark: NVFP4 (the 27B and Flash-Next; Nemotron serves FP8 only); two Sparks FP8 | as fast |
-| Budgeted expert selection (`SHARAR_MOE_KEEP`, `SHARAR_MOE_BUDGET`) | off | Flash-Next: keep 4, budget 12:64; Nemotron: keep 12, budget 48:128; Bolt: keep 6, budget 20:64 | as fast |
-| Optimized QSA prefill kernels (`SHARAR_QSA_PREFILL_BACKEND`) | off (original) | Flash-Next: auto (where eligible: SM121, one or two Sparks, through 32K) | as fast |
-| Requests decoded together (`SHARAR_MAX_BATCH`) | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
-| Reduced recurrent state (`SHARAR_SSM_STATE`) | off (FP32) | Nemotron: FP16 with stochastic rounding; Bolt: int8; else FP32 | 8-bit GDN state; Nemotron FP16 with stochastic rounding; Bolt int8 |
+| Relaxed acceptance, greedy requests (`HIBANA_ACCEPT_DEFAULT`) | off | top-3 within 2.0 logits; Flash-Next DFlash2 top-2 within 1.0; Bolt off | as fast |
+| Relaxed acceptance, sampled requests (`HIBANA_ACCEPT_SOFT`, `accept_soft` in the [API](api.md)) | 0 (exact) | Flash-Next and Nemotron s = 0.5; the 27B and Bolt 0 (exact) | as fast |
+| Sampled MTP drafts (`HIBANA_MTP_SAMPLE`, [below](#sampled-mtp-drafts)) | off | on where MTP drafts | as fast |
+| Calibrated 3-bit decode copies (`HIBANA_W3_DECODE`; on Flash-Next and Nemotron also the routed experts; Bolt's trunk and vocabulary head) | off | on | on |
+| Device-resident acceptance (`HIBANA_DEVICE_ACCEPT`) | off | Flash-Next and Nemotron | as fast |
+| NVFP4 KV cache (`HIBANA_KV_FORMAT`, [below](#nvfp4-kv)) | FP8 | one Spark: NVFP4 (the 27B and Flash-Next; Nemotron serves FP8 only); two Sparks FP8 | as fast |
+| Budgeted expert selection (`HIBANA_MOE_KEEP`, `HIBANA_MOE_BUDGET`) | off | Flash-Next: keep 4, budget 12:64; Nemotron: keep 12, budget 48:128; Bolt: keep 6, budget 20:64 | as fast |
+| Optimized QSA prefill kernels (`HIBANA_QSA_PREFILL_BACKEND`) | off (original) | Flash-Next: auto (where eligible: SM121, one or two Sparks, through 32K) | as fast |
+| Requests decoded together (`HIBANA_MAX_BATCH`) | 4 | 4 | 27B 16; Flash-Next 128 (64 with NVFP4 experts) |
+| Reduced recurrent state (`HIBANA_SSM_STATE`) | off (FP32) | Nemotron: FP16 with stochastic rounding; Bolt: int8; else FP32 | 8-bit GDN state; Nemotron FP16 with stochastic rounding; Bolt int8 |
 
 Relaxed acceptance for greedy requests accepts a drafted token the target ranks within its top-k and within a logit
 margin of its argmax, so outputs are no longer the target's exact greedy continuation; a request can pin exact
@@ -217,32 +217,32 @@ weights and CUDA graphs are lossless and on in every profile. Benchmarks and gat
 
 Four of the knobs take more than the table shows:
 
-- **`SHARAR_MAX_BATCH`** (`sharar serve --max-batch`, 1-128; graph buckets 1, 2, 4, ... 128). Above four, the pool
+- **`HIBANA_MAX_BATCH`** (`sharar serve --max-batch`, 1-128; graph buckets 1, 2, 4, ... 128). Above four, the pool
   guarantees the batch-four total (4 x 32K tokens) split between the running requests, or one request at the full
   context.
-- **`SHARAR_MOE_KEEP=k`, `SHARAR_MOE_BUDGET=[P:]B`** (Flash-Next): a decode or verify forward reads at most B distinct
+- **`HIBANA_MOE_KEEP=k`, `HIBANA_MOE_BUDGET=[P:]B`** (Flash-Next): a decode or verify forward reads at most B distinct
   experts, or min(B, max(16, P x its requests)): every token's guaranteed top experts, then those with the most router
   probability summed over the forward's tokens. Each token takes up to 10 of them, its guaranteed ones first. The
   guarantee shrinks as the forward grows, 2 x cap / tokens within [2, k], so the cap keeps binding: at 4 and 12:64, up
   to 4 tokens a request keep 4 (one request alone, up to 8), a depth-8 draft of one request or eight requests of 5
   tokens 3, 64 tokens and more 2. The floor of 16 is for a request alone: at 12 its GSM8K fell 4.7 points. Flash-Next's
   DFlash2 depths keep 3 in `fast` ([how](flashnext.md#the-dflash2-draft)).
-  `SHARAR_MOE_KEEP` alone gives each token its top k;
-  `SHARAR_MOE_KEEP=0` routes in full. A token's experts depend on the rest of its forward, so a greedy reply can change
+  `HIBANA_MOE_KEEP` alone gives each token its top k;
+  `HIBANA_MOE_KEEP=0` routes in full. A token's experts depend on the rest of its forward, so a greedy reply can change
   with what else the server runs. Nemotron's selection (22 of 512 experts a token) keeps k as each row's floor, lets a
   row's other top-22 experts ride along when the forward reads them anyway, and fills the cap by summed routing weight
   ([how](nemotron.md#serving)).
-- **`SHARAR_SSM_STATE=fp32|int8|int4|fp16_sr`**: the integer formats quantize each recurrent layer's state per window as
+- **`HIBANA_SSM_STATE=fp32|int8|int4|fp16_sr`**: the integer formats quantize each recurrent layer's state per window as
   in LeapQuant ([arXiv 2609.38166](https://arxiv.org/abs/2609.38166); `hibana/cache/ssm_format.py`), a fraction of
-  FP32's memory per slot, and need `SHARAR_VERIFY_STATE=reconstruct` (with `snapshots` the state stays FP32). The
+  FP32's memory per slot, and need `HIBANA_VERIFY_STATE=reconstruct` (with `snapshots` the state stays FP32). The
   saving pays with many requests (on one Spark the 27B decodes 30% faster at 16) but not at one, where it also
   delays a long prompt's first token, so `fast` keeps FP32. Nemotron's Mamba-2 state also takes `fp16_sr` (stochastic
   rounding keyed on token position and layer): half of FP32's state traffic, and in `fast` with expert sharing; its
   `int8` and `int4` (65 and 53 MiB a slot against FP16's 82) are ungated.
-- **`SHARAR_QSA_PREFILL_BACKEND=original|auto|optimized`** (Flash-Next): `auto` runs the optimized SM121 sparse
+- **`HIBANA_QSA_PREFILL_BACKEND=original|auto|optimized`** (Flash-Next): `auto` runs the optimized SM121 sparse
   eager prefill through 32K where eligible and the original elsewhere; `optimized` requires it. Its score
   arithmetic and tie order differ, so `exact` keeps `original`; it makes 8K and 32K prefill 3-4% faster with
-  RULER v2 at 32K unchanged. `SHARAR_STABLE_NUMERICS=1` makes `auto` use the original. The original's eager
+  RULER v2 at 32K unchanged. `HIBANA_STABLE_NUMERICS=1` makes `auto` use the original. The original's eager
   prefill selection runs SM121 kernels with the same pages (`exact`, and `fast` past 32K: 128K prefill -11%,
   [flashnext.md](flashnext.md#sparse-attention-past-2048-tokens)).
 
@@ -252,12 +252,12 @@ A new lossy option enters `fast` (and so `throughput`) only through the lossy-ch
 
 ### Sampled MTP drafts
 
-With `SHARAR_MTP_SAMPLE=1` a batch with a sampled request does not draft the MTP head's argmax: each step draws its
+With `HIBANA_MTP_SAMPLE=1` a batch with a sampled request does not draft the MTP head's argmax: each step draws its
 draft from the request's own law (its temperature, top-k and top-p) over the draft head's 16 best tokens, on
 Flash-Next and Nemotron the 2-bit head's shortlist rescored by the target's FP8 rows. The draw is a Philox uniform at the request's draft offset
 (engine/sampling_rng.py), so a seeded request stays reproducible; the drafted token feeds the next MTP step. The
 verifier gets that law q and its candidates and accepts each draft with probability min(1, p/q), sampling the
-residual max(p - q, 0) at the first rejection (engine/rejection.py; on the device with `SHARAR_DEVICE_ACCEPT`): what is
+residual max(p - q, 0) at the first rejection (engine/rejection.py; on the device with `HIBANA_DEVICE_ACCEPT`): what is
 emitted is the target's law p whatever q is, and a token outside the candidates still comes out through the residual.
 An argmax draft is accepted with probability p(argmax); a sampled one with sum over tokens of min(p, q). The sampled
 rule s tests the draft against the same q (u · q(y) < e^s · p(y)), so its bound holds as with any drafter.
@@ -266,11 +266,11 @@ Measured on the SGLang port (Flash-Next QAD 3-bit, MTP depth 4, H100, 40 GPQA-Di
 top-k 20), tokens a round: argmax drafts 2.55 exact; sampled drafts 3.13 exact (3.15 on the head's top 16, 3.07-3.13 at
 draft temperatures 0.8-1.3, so drafts use the request's own); +16-19% tok/s at 4 and 16 requests over argmax exact.
 On one Spark (Flash-Next `fast`, sampled with thinking on, 4 requests) sampled drafts decode 183 tok/s exact and 216 at
-the profile's s = 0.5. Greedy requests are unchanged (argmax drafts and `SHARAR_ACCEPT_DEFAULT`).
+the profile's s = 0.5. Greedy requests are unchanged (argmax drafts and `HIBANA_ACCEPT_DEFAULT`).
 
 ## Request traces
 
-Traces are off unless asked for (`sharar serve --traces`, or `SHARAR_TRACES` naming a directory). Each finished
+Traces are off unless asked for (`sharar serve --traces`, or `HIBANA_TRACES` naming a directory). Each finished
 request is then appended as one JSON line: prompt and output token IDs, sampling parameters, the cached prefix length
 and, for speculative requests, every verification round with the accepted count, the draft's proposals, the target's
 argmax rows (sampled rows keep only the correction token) and the offsets accepted under the relaxed rule (`rx`).
@@ -281,7 +281,7 @@ separate thread and never blocks the engine; a full queue or disk counts as `dro
 holds the user's own traffic. `sharar traces --dir DIR` summarizes a directory. The traces are the user's prompts and
 stay on this machine unless the user copies them elsewhere.
 
-**Draft confidence (MTP).** With `SHARAR_TRACE_CONFIDENCE=1` beside `SHARAR_TRACES`, each round record also carries
+**Draft confidence (MTP).** With `HIBANA_TRACE_CONFIDENCE=1` beside `HIBANA_TRACES`, each round record also carries
 the MTP draft's top-1 probability `p1` and top-1/top-2 margin `m` per drafted position, the calibration data for
 adaptive draft depth. It is read when the proposer is built; off, nothing changes.
 
@@ -296,9 +296,9 @@ KV (Flash-Next's, half as wide, half that). The pools take what is available at 
 allocations counted after them ([memory_plan.md](memory_plan.md)). No host-memory tier sits below them: on unified
 memory it would hold the same prefixes in the same DRAM.
 
-**SSD tier.** On in every profile (`SHARAR_SSD=0` turns it off), it is the only tier below the GPU pools: an
-evicted prefix of 4,096 tokens or more goes to `$SHARAR_RESULTS/ssd/<target>` (`SHARAR_SSD_DIR` moves it, e.g. to
-another drive; capacity `SHARAR_SSD_GIB`, default 200, never filling the drive) instead of being dropped,
+**SSD tier.** On in every profile (`HIBANA_SSD=0` turns it off), it is the only tier below the GPU pools: an
+evicted prefix of 4,096 tokens or more goes to `$HIBANA_RESULTS/ssd/<target>` (`HIBANA_SSD_DIR` moves it, e.g. to
+another drive; capacity `HIBANA_SSD_GIB`, default 200, never filling the drive) instead of being dropped,
 and its next request reads it back instead of prefilling again. At shutdown the server writes every cached prefix
 there, so stored prefixes survive restarts and reboots. `cache.ssd` in `/get_server_info` reports usage and
 restores; `sharar cache` prints the GPU cache and the SSD tier, or with nothing serving, what the store holds.
@@ -310,18 +310,18 @@ admissions (`floor_holds` in `/get_server_info`) so running requests can
 finish and release memory before the memory guard has to act.
 
 **Host floor.** The MemAvailable Sharar leaves for the OS and other programs (a client, an agent, the page cache):
-6 GiB, `SHARAR_HOST_FLOOR_GIB` to change it. The pools get everything else, once Sharar's own allocations after them
+6 GiB, `HIBANA_HOST_FLOOR_GIB` to change it. The pools get everything else, once Sharar's own allocations after them
 are counted: the drafter, the SSD tier's staging, FlashInfer's workspaces, the CUDA graphs, the GPU memory the first
 prefill takes outside PyTorch, and the activation blocks PyTorch keeps cached (the server log's "counted after the
 pools" line; `/get_server_info`'s `after_plan_gib`). Admission holds, and the memory guard stops the server, only under
-half the floor, when other programs have used more than it left them (`SHARAR_HOST_FLOOR_GIB` moves both; main's
-`SHARAR_MIN_AVAILABLE_KIB` is retired). Preflight wants the 24 GiB load peak above the floor. `/get_server_info` also reports `memory_gib`:
+half the floor, when other programs have used more than it left them (`HIBANA_HOST_FLOOR_GIB` moves both; main's
+`HIBANA_MIN_AVAILABLE_KIB` is retired). Preflight wants the 24 GiB load peak above the floor. `/get_server_info` also reports `memory_gib`:
 PyTorch's allocated and reserved bytes, now and at their peak, and the process's resident memory. Terms and measurements: [memory_plan.md](memory_plan.md).
 
 ## Development
 
 `uv run sharar ...` runs this checkout's code (the editable install); the checks are in
-[CONTRIBUTING](../CONTRIBUTING.md#run-checks). Reserve an exclusive GPU window (`flock $SHARAR_RESULTS/.gpu.lock ...`)
+[CONTRIBUTING](../CONTRIBUTING.md#run-checks). Reserve an exclusive GPU window (`flock $HIBANA_RESULTS/.gpu.lock ...`)
 before loading a model; `uv run sharar dev --help` lists the in-process diagnostics.
 
 ## Numerical limits
@@ -332,7 +332,7 @@ verification width or the drafter, because those move the round boundaries a tok
 configuration is deterministic run to run. The cause is three kernels whose arithmetic depends on the row count
 (cuBLAS's BF16 GEMM for the GDN b/a gates, cuBLASLt's FP8 GEMM for the 5120x6144 output projections at 27 to 32
 rows, the gated norm's rows-per-block choice), with FlashInfer's prefill schedule a rare fourth.
-`SHARAR_STABLE_NUMERICS=1` swaps in M-invariant replacements for the first three (a prefix is then bit-exact
+`HIBANA_STABLE_NUMERICS=1` swaps in M-invariant replacements for the first three (a prefix is then bit-exact
 across prefill lengths, for under 1% prefill cost); chunked and cached-prefix prefills still take different
 attention paths. This is why changes are judged on paired quality and speed, not on identical outputs
 ([evaluation](evaluation.md)).

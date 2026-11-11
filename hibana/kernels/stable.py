@@ -6,7 +6,7 @@ target-numerics study, tag archive/pre-cleanup-2026-09-26): cuBLAS's BF16 GEMM f
 projection (six algorithm classes below 4096 rows, rounding flips in most
 layers), cuBLASLt's FP8 GEMM for the 5120x6144 output projections (one
 different algorithm for M in 27..32) and the gated RMS norm's rows-per-block
-heuristic. With ``SHARAR_STABLE_NUMERICS=1`` each is replaced by an
+heuristic. With ``HIBANA_STABLE_NUMERICS=1`` each is replaced by an
 M-invariant choice: a fixed-tile Triton kernel for b/a, zero-row padding over
 the FP8 window, a constant rows-per-block. FlashInfer's ragged attention keeps
 its length-dependent schedule (classes at 177, 209, 465, 497, 593 and 721
@@ -15,7 +15,7 @@ tokens); its effect on earlier rows is rare and documented.
 from __future__ import annotations
 
 def enabled() -> bool:
-    """SHARAR_STABLE_NUMERICS (EngineConfig.stable_numerics)."""
+    """HIBANA_STABLE_NUMERICS (EngineConfig.stable_numerics)."""
     from hibana.engine.config import current
     return current().stable_numerics
 

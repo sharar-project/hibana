@@ -15,8 +15,8 @@ from typing import Callable
 
 import torch
 
-FORMATS = ("fp8", "w3", "w2")  # SHARAR_DRAFT_HEAD
-RESCORE = {"w3": 8, "w2": 16}  # SHARAR_DRAFT_HEAD_RESCORE's default per format: the 2-bit top 8 miss the FP8 argmax 0.6% of steps, the top 16 0.2%
+FORMATS = ("fp8", "w3", "w2")  # HIBANA_DRAFT_HEAD
+RESCORE = {"w3": 8, "w2": 16}  # HIBANA_DRAFT_HEAD_RESCORE's default per format: the 2-bit top 8 miss the FP8 argmax 0.6% of steps, the top 16 0.2%
 
 
 def confidence(logits: torch.Tensor) -> torch.Tensor:
@@ -44,7 +44,7 @@ class TargetHead:
         return self.logits_fn(x).argmax(-1)
 
     def argmax_confidence(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """The argmax and the head's `confidence` in it (SHARAR_TRACE_CONFIDENCE)."""
+        """The argmax and the head's `confidence` in it (HIBANA_TRACE_CONFIDENCE)."""
         logits = self.logits_fn(x)
         return logits.argmax(-1), confidence(logits)
 

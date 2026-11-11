@@ -4,7 +4,7 @@ MODEL_ID = "RadixArk/Qwen3.8-27B-NVFP4"
 MODEL_REVISION = "319f741cce68d7914884900c138a1fbb70a42f30"
 MODEL_CACHE_KEY = "models--RadixArk--Qwen3.8-27B-NVFP4"
 MODEL_ARCHITECTURE = "Qwen3_5ForConditionalGeneration"  # Qwen3.8 reuses the 3.5 code path
-# Calibrated 3-bit decode copies: fetched on first serve when $SHARAR_RESULTS/w3-checkpoints/qwen38-current is
+# Calibrated 3-bit decode copies: fetched on first serve when $HIBANA_RESULTS/w3-checkpoints/qwen38-current is
 # missing (GPTQ from the FP8 release; Apache-2.0).
 W3_REPO = "yemara/Qwen3.8-27B-NVFP4-sharar-w3"
 W3_REVISION = "72997f2aadf229bdc39603d802df61b367078a91"

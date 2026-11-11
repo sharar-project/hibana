@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """NVIDIA-Nemotron-3.5-Super's text model assembled for the engine: 88 pre-norm residual blocks (40 Mamba-2, 40
-latent MoE, 8 attention), the final norm and the FP8 lm_head; with SHARAR_VISION=1 also the vision tower and its
+latent MoE, 8 attention), the final norm and the FP8 lm_head; with HIBANA_VISION=1 also the vision tower and its
 projector (`vision.py`), whose embeddings replace an image's placeholder rows in prefill.
 
 `forward()` follows the 27B's contract (`ForwardContext` prefill / decode / verify; `norm` is the final norm the head
 reads, `pre_norm` the residual stream before it, which the MTP head consumes). Block indices are the checkpoint's, so
 `Target.gdn_layer_ids` (the Mamba blocks) and `attention_layer_ids` address the pools directly. Weights stay in the
 checkpoint's formats: FP8 Mamba and attention projections and head, NVFP4 experts, BF16 router, latent projections
-and embeddings. With SHARAR_W3_DECODE=1 and SHARAR_W3_CHECKPOINT the FP8 projections also carry calibrated 3-bit
+and embeddings. With HIBANA_W3_DECODE=1 and HIBANA_W3_CHECKPOINT the FP8 projections also carry calibrated 3-bit
 copies (`attach_calibrated`, `weights/nemotron_w3_calibrate.py`) that calls of at most 64 rows read.
 A W3 checkpoint that carries the routed experts of every MoE block (`layers.N.experts.w1` / `.w2`,
 `weights/nemotron_w3_experts.py`) serves those 3-bit experts as the only expert copy, the MTP head's too when it
@@ -126,7 +126,7 @@ class Nemotron:
         calibrated = None
         if current().w3_decode:
             if not current().w3_checkpoint:
-                raise ValueError("Nemotron's 3-bit copies are calibrated only: SHARAR_W3_DECODE=1 needs SHARAR_W3_CHECKPOINT")
+                raise ValueError("Nemotron's 3-bit copies are calibrated only: HIBANA_W3_DECODE=1 needs HIBANA_W3_CHECKPOINT")
             from hibana.weights.w3_checkpoint import CalibratedWeights
             calibrated = CalibratedWeights(current().w3_checkpoint, revision=target.model_revision)  # checked before the load
         self.device = torch.device(device)
@@ -190,7 +190,7 @@ class Nemotron:
                 f"({self.stream_bytes / 1e9:.2f} GB per decode token)")
 
     def load_vision(self, w, log=print):
-        """The vision tower and projector (`vision.py`), served with SHARAR_VISION=1."""
+        """The vision tower and projector (`vision.py`), served with HIBANA_VISION=1."""
         from hibana.model.nemotron.vision import RadioVision
         vision = RadioVision(w, self.device)
         if log:

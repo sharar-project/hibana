@@ -33,7 +33,7 @@ def capture_sizes(max_batch: int) -> tuple[int, ...]:
 
 def graph_variants(executor) -> tuple[str, ...]:
     """The graph variants to capture: the model's side inputs' (Flash-Next past its indexer budget adds
-    "selecting"; SHARAR_QSA_SPARSE_GRAPHS=0 leaves those rows eager), else only "dense"."""
+    "selecting"; HIBANA_QSA_SPARSE_GRAPHS=0 leaves those rows eager), else only "dense"."""
     return executor.extras.variants if executor.extras is not None else ("dense",)
 
 

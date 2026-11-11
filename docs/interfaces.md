@@ -15,7 +15,7 @@ structural types in `engine/contracts.py` (which imports no GPU backend), not a 
 Model facts live in a `Target` value (`hibana/target.py`): the pinned checkpoint, the layer kinds, the attention and
 recurrent head shapes, the vocabulary, the serving profile and the load budget. The executor reads `model.target`
 once and sizes the pools, the ledger, the attention plans and the verify buffers from it. One process serves one
-target, chosen at launch (`sharar serve TARGET`, `SHARAR_TARGET`); nothing is discovered at run time. Device
+target, chosen at launch (`sharar serve TARGET`, `HIBANA_TARGET`); nothing is discovered at run time. Device
 constraints are in `hardware/gb10.py` and serving limits in `engine/profile.py`. Kernels take their shapes from the
 tensors and the target, but are validated only for the pinned targets.
 
@@ -160,7 +160,7 @@ selector effects: dense q is `[B,k,V]`, sparse q and its unique support `[B,k,C]
 proposals. The verifier accepts with `min(1,p[y]/q[y])`, samples a rejection from normalized `max(p-q,0)`, draws a
 target bonus after full acceptance and consumes no target draws past the first rejection; with `accept_soft` s > 0
 it also accepts y when u·q[y] < e^s·p[y] on the same draw u, the residual unchanged. Each sampled request owns
-its generator, seeded or not. MTP proposals are point masses, or with `SHARAR_MTP_SAMPLE` (on in `fast` and `throughput`)
+its generator, seeded or not. MTP proposals are point masses, or with `HIBANA_MTP_SAMPLE` (on in `fast` and `throughput`)
 a sampled batch's drafts drawn from each request's law over the draft head's candidates, with that law as sparse q
 ([operations](operations.md#sampled-mtp-drafts)); a `greedy_only` proposer uses ordinary decode for
 positive temperature. For an all-greedy DFlash2 batch, `kernels/draft_selection.py` walks the conditional selector
@@ -186,7 +186,7 @@ import with `slot=` naming the new slot, and restoration projects only draft K/V
 
 Pass `SpecConfig` to `Executor` at startup to reserve draft weight/KV/feature costs and verify buffers before the
 optional target cache is sized (`cache/spec_budget.py`). Adapter bytes include reserved feature-cache capacity, not
-current CUDA allocations; graph, first-use and activation bytes are measured estimates (`cache/ledger.after_plan_bytes`). The pools leave the 6 GiB host floor (`SHARAR_HOST_FLOOR_GIB`) for the OS and other programs.
+current CUDA allocations; graph, first-use and activation bytes are measured estimates (`cache/ledger.after_plan_bytes`). The pools leave the 6 GiB host floor (`HIBANA_HOST_FLOOR_GIB`) for the OS and other programs.
 
 ## Engine and HTTP ownership
 
@@ -196,7 +196,7 @@ completed ticket is removed before its terminal notification crosses to the HTTP
 
 ## Device-resident acceptance
 
-With `SHARAR_DEVICE_ACCEPT=1` (on for Flash-Next in `fast` and `throughput`), `reconstruct` state and a proposer
+With `HIBANA_DEVICE_ACCEPT=1` (on for Flash-Next in `fast` and `throughput`), `reconstruct` state and a proposer
 that declares `device_feedback`, `engine/accept_graphs.py` replaces the host's `SpecDecoder._accept` with one
 captured graph per batch bucket of each verify depth: it decides acceptance with the host's rule
 (`engine/accept.py`) from the verify graph's static outputs, reconstructs the state and commits the convolution
@@ -222,8 +222,8 @@ target's outputs are the same and the committed recurrent state is bitwise the h
 
 ## Recurrent retention
 
-`reconstruct` is the default (`--verify-state`, `SHARAR_VERIFY_STATE`), and a quantized recurrent state
-(`SHARAR_SSM_STATE=int8/int4`, GDN or Mamba-2) requires it. It retains compact recurrence inputs, replays exactly the
+`reconstruct` is the default (`--verify-state`, `HIBANA_VERIFY_STATE`), and a quantized recurrent state
+(`HIBANA_SSM_STATE=int8/int4`, GDN or Mamba-2) requires it. It retains compact recurrence inputs, replays exactly the
 stop/budget-truncated accepted prefix from untouched committed state, and writes directly into the private committed
 slots authorized by `StateManager.commit_reconstructed`, which validates counts, verified width, unique non-dummy
 slots and convolution bounds before any mutation. Each kernel program reads its whole K-by-V tile before overwriting
@@ -232,7 +232,7 @@ arithmetic, so the committed state is the verify's own bit for bit (Flash-Next a
 pair). A failure after mutation marks every affected request uncacheable, and a post-write `MemoryError` is not
 retried, so no retry reuses partially advanced state. `snapshots` retains every verify state (in the pool's dtype)
 and is the test reference for reconstruction (`tests/gpu/test_lifecycle.py`). An FP16 Mamba-2 state
-(`SHARAR_SSM_STATE=fp16_sr`, Nemotron) works with both: verify rounds its running state after every step
+(`HIBANA_SSM_STATE=fp16_sr`, Nemotron) works with both: verify rounds its running state after every step
 exactly as decode stores it, with the same stochastic-rounding bits (keyed on the token position and layer, never on
 the slot or batch), so snapshots, replays and decode stay bitwise equal within the format.
 

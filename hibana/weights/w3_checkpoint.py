@@ -2,10 +2,10 @@
 
 The NVFP4/FP8 prefill weights remain in the original checkpoint. These files
 only replace the optional W3 copies, before CUDA graph capture. The launcher
-serves `$SHARAR_RESULTS/w3-checkpoints/<target>-current` and runs `fetch` on every serve for a target with a
+serves `$HIBANA_RESULTS/w3-checkpoints/<target>-current` and runs `fetch` on every serve for a target with a
 published checkpoint, which keeps that link on the pinned revision (a local calibration stays; see `fetch`):
 
-    python -m hibana.weights.w3_checkpoint fetch --target flashnext --root $SHARAR_RESULTS/w3-checkpoints
+    python -m hibana.weights.w3_checkpoint fetch --target flashnext --root $HIBANA_RESULTS/w3-checkpoints
 """
 from __future__ import annotations
 

@@ -88,7 +88,7 @@ class Qwen38:
         from hibana.kernels import w3
         from hibana.engine.config import current
         if current().w3_checkpoint and not w3.enabled():
-            raise ValueError("SHARAR_W3_CHECKPOINT requires SHARAR_W3_DECODE=1")
+            raise ValueError("HIBANA_W3_CHECKPOINT requires HIBANA_W3_DECODE=1")
         tp = get_tp_info()
         check_load_headroom(target.weight_load_peak_bytes)
         self.device = torch.device(device)

@@ -11,11 +11,11 @@ accepted tokens per request per round, and decode tokens per second (tokens emit
 time).
 
     python3 -m profiling.decode_curve --out fp32.json
-    SHARAR_SSM_STATE=int8 python3 -m profiling.decode_curve --out int8.json
+    HIBANA_SSM_STATE=int8 python3 -m profiling.decode_curve --out int8.json
 
 The defaults are the `throughput` serving profile's: DFlash2 with 15 drafts in FP8, accepted-state reconstruction,
-relaxed greedy acceptance 3:2.0, up to 16 requests. The 3-bit decode copies follow SHARAR_W3_DECODE and
-SHARAR_W3_CHECKPOINT; the output records what was in effect. To compare a change, run control and candidate in
+relaxed greedy acceptance 3:2.0, up to 16 requests. The 3-bit decode copies follow HIBANA_W3_DECODE and
+HIBANA_W3_CHECKPOINT; the output records what was in effect. To compare a change, run control and candidate in
 separate processes, alternating (A B B A), on an otherwise idle GPU, and compare per point.
 """
 import argparse

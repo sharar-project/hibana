@@ -49,7 +49,7 @@ def create(proposer, k, model, context, num_pages, *, draft_precision='bf16', dr
         vocab = cfg.draft_vocab  # reduced draft vocabulary rows (0: the full lm_head)
         fmt = cfg.draft_head  # the draft head's own precision: fp8 (the target's head), w3 or w2
         if (vocab or fmt != "fp8") and not getattr(head, "DRAFT_HEADS", False):
-            raise ValueError("SHARAR_DRAFT_VOCAB / SHARAR_DRAFT_HEAD need the Flash-Next MTP head")
+            raise ValueError("HIBANA_DRAFT_VOCAB / HIBANA_DRAFT_HEAD need the Flash-Next MTP head")
         if vocab or fmt != "fp8":
             from hibana.proposers.draft_vocab import draft_vocab
             ids = draft_vocab(model.target.snapshot_dir(), vocab, head.lm_head.out_features) if vocab else None

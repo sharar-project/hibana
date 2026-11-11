@@ -52,7 +52,7 @@ class Executor:
         self.target: Target = model.target
         from hibana.engine.config import current
         if self.target.kv_formats is not None and current().kv_format not in self.target.kv_formats:
-            raise ValueError(f"{self.target.name} supports SHARAR_KV_FORMAT=" + ", ".join(self.target.kv_formats)
+            raise ValueError(f"{self.target.name} supports HIBANA_KV_FORMAT=" + ", ".join(self.target.kv_formats)
                              + f" only ({current().kv_format} is not supported for it yet)")
         max_context = self.target.context_length if max_context is None else max_context
         self.profile = ServingProfile(max_context=max_context, max_batch=max_batch, chunk_size=self.target.prefill_chunk,
@@ -68,7 +68,7 @@ class Executor:
         self.ledger = Ledger(target=self.target)
         self.ledger.record_cuda_allocated("weights")
         from hibana.cache.ssm_format import SsmFormat
-        self.ssm_format = SsmFormat.from_config(current())  # recurrent state storage (SHARAR_SSM_STATE)
+        self.ssm_format = SsmFormat.from_config(current())  # recurrent state storage (HIBANA_SSM_STATE)
         state_bytes = self.ssm_format.state_bytes_per_slot(self.target)
         cfg = current()
 
@@ -124,19 +124,19 @@ class Executor:
             # An accuracy screen: a BF16 pool whose writes round through the screened format, in the FP8 pool's memory
             from hibana.kernels.kv_fp4 import SIMULATED
             if cfg.kv_format not in SIMULATED:
-                raise ValueError(f"SHARAR_KV_FORMAT must be fp8 or one of {', '.join(SIMULATED)}")
+                raise ValueError(f"HIBANA_KV_FORMAT must be fp8 or one of {', '.join(SIMULATED)}")
             if cfg.ssd:
-                raise ValueError("a simulated KV format screens a target without the SSD tier (SHARAR_SSD=0)")
+                raise ValueError("a simulated KV format screens a target without the SSD tier (HIBANA_SSD=0)")
             kv_dtype, rounding, num_pages = torch.bfloat16, SIMULATED[cfg.kv_format], num_pages // 2
             kv_token_bytes *= kv_dtype.itemsize
         from hibana.cache.ledger import check_load_headroom
-        # the pools and everything allocated after them must leave the floor: an explicit SHARAR_KV_POOL_TOKENS is held
+        # the pools and everything allocated after them must leave the floor: an explicit HIBANA_KV_POOL_TOKENS is held
         # to the same rule as a planned pool
         try:
             check_load_headroom(num_pages * (kv_token_bytes + extra_page) + num_slots * state_bytes + future)
         except MemoryError as exc:
             if plan is not None and not planned_pages and num_pages != plan.kv_tokens:
-                raise MemoryError(f"{exc}: SHARAR_KV_POOL_TOKENS={num_pages} leaves less than the plan's headroom; "
+                raise MemoryError(f"{exc}: HIBANA_KV_POOL_TOKENS={num_pages} leaves less than the plan's headroom; "
                                   f"the plan alone gives {plan.kv_tokens} KV tokens") from None
             raise
         # One write-only page per padded graph row: the widest bucket's padding times the widest verify block any
@@ -354,8 +354,8 @@ class Executor:
         return identity
 
     def enable_ssd_tier(self, log=None) -> None:
-        """With SHARAR_SSD=1, put the SSD tier (`cache/ssd.py`) under the prefix
-        cache, up to SHARAR_SSD_GIB in SHARAR_SSD_DIR, and list the prefixes it
+        """With HIBANA_SSD=1, put the SSD tier (`cache/ssd.py`) under the prefix
+        cache, up to HIBANA_SSD_GIB in HIBANA_SSD_DIR, and list the prefixes it
         already holds. Call after the proposer exists so its auxiliary state
         travels with stored prefixes. The tier runs on every tensor-parallel
         rank or on none; without it, the cache drops evicted prefixes and their

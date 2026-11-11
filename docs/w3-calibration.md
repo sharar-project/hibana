@@ -27,10 +27,10 @@ on answers or logits.
 From the Python environment, with the GPU otherwise idle and the memory guard watching:
 
 ```bash
-SHARAR_W3_DECODE=0 uv run python -m hibana.weights.w3_calibrate \
+HIBANA_W3_DECODE=0 uv run python -m hibana.weights.w3_calibrate \
   --inputs calibration-inputs.json \
-  --source $SHARAR_HF_CACHE/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a \
-  --output $SHARAR_RESULTS/w3-checkpoints/<date>-qwen38-gptq
+  --source $HIBANA_HF_CACHE/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a \
+  --output $HIBANA_RESULTS/w3-checkpoints/<date>-qwen38-gptq
 ```
 
 `--layers 1` runs an incomplete development screen. `--resume` verifies input identities and completed layer
@@ -42,7 +42,7 @@ diagnostics, not held-out quality evidence.
 ## Where the served copies come from
 
 The profiles that use 3-bit copies (`fast`, `throughput`)
-serve `$SHARAR_RESULTS/w3-checkpoints/<target>-current` (`qwen38-current`,
+serve `$HIBANA_RESULTS/w3-checkpoints/<target>-current` (`qwen38-current`,
 `flashnext-current`, `nemotron-current`). Every `sharar serve` (one Spark or two) keeps that link on the target's published
 checkpoint, pinned by revision in the target's config (`W3_REPO`, `W3_REVISION`)
 (`python -m hibana.weights.w3_checkpoint fetch`; `HF_TOKEN` is passed through for a private repository):
@@ -58,7 +58,7 @@ quantization-aware distillation, [below](#qad-trunk-flash-next), and the GPTQ ro
 inputs), and Nemotron's (`shadowpa0327/NVIDIA-Nemotron-3.5-Super-NVFP4-sharar-w3`: the GPTQ trunk projections and
 routed experts), which its `fast` and `throughput` require: without one they refuse to start. To serve a new
 calibration, point the link at its directory or set
-`SHARAR_W3_CHECKPOINT=/path/to/calibrated-w3`.
+`HIBANA_W3_CHECKPOINT=/path/to/calibrated-w3`.
 
 The loader checks the target revision, projection coverage, dimensions, dtypes
 and hashes before graph capture. `/get_server_info` exposes `w3_target_identity`,
@@ -105,10 +105,10 @@ answer). Samples of 4,096 tokens need the capture's default `--pages 16384`; `ca
 after its last whole sample.
 
 ```bash
-SHARAR_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts capture --inputs expert-inputs.json --activations ACT
-SHARAR_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts fit --method gptq --activations ACT \
-  --source $SHARAR_RESULTS/w3-checkpoints/flashnext-current --output $SHARAR_RESULTS/w3-checkpoints/<date>-flashnext-experts3-gptq \
-  --cheap-output $SHARAR_RESULTS/w3-checkpoints/<date>-flashnext-experts3
+HIBANA_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts capture --inputs expert-inputs.json --activations ACT
+HIBANA_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts fit --method gptq --activations ACT \
+  --source $HIBANA_RESULTS/w3-checkpoints/flashnext-current --output $HIBANA_RESULTS/w3-checkpoints/<date>-flashnext-experts3-gptq \
+  --cheap-output $HIBANA_RESULTS/w3-checkpoints/<date>-flashnext-experts3
 ```
 
 The pinned checkpoint's GPTQ fit (`694e279`; relative weight error against the NVFP4 experts 0.164 fc1 / 0.163 fc2,
@@ -155,8 +155,8 @@ python3 -m hibana.weights.w3_calibration_inputs --tokenizer SNAP/tokenizer.json 
 # `flashnext_expert_inputs generate --thinking`): 144 samples, sha256 edc0bd1d...
 python3 -m hibana.weights.nemotron_w3_inputs --tokenizer SNAP/tokenizer.json --code code.json \
   --traces answers-sharegpt.json --output nemotron-calibration-inputs.json
-SHARAR_TARGET=nemotron python3 -m hibana.weights.nemotron_w3_calibrate capture --inputs nemotron-calibration-inputs.json --activations ACT
-SHARAR_TARGET=nemotron python3 -m hibana.weights.nemotron_w3_calibrate fit --activations ACT --output TRUNK
+HIBANA_TARGET=nemotron python3 -m hibana.weights.nemotron_w3_calibrate capture --inputs nemotron-calibration-inputs.json --activations ACT
+HIBANA_TARGET=nemotron python3 -m hibana.weights.nemotron_w3_calibrate fit --activations ACT --output TRUNK
 # experts: the coding proxy, 180 ShareGPT reasoning traces (110 English, 70 other) and 250 MMLU / MMLU-Pro validation
 # answers packed into 104 samples: 348 samples, sha256 bba92b75...
 python3 -m hibana.weights.nemotron_w3_inputs --tokenizer SNAP/tokenizer.json --code code.json \
@@ -164,8 +164,8 @@ python3 -m hibana.weights.nemotron_w3_inputs --tokenizer SNAP/tokenizer.json --c
   --seed 20261024 --output nemotron-expert-inputs.json
 python3 -m hibana.weights.nemotron_w3_experts capture --inputs nemotron-expert-inputs.json --activations EXPERT_ACT
 python3 -m hibana.weights.nemotron_w3_experts fit --activations EXPERT_ACT --source TRUNK \
-  --output $SHARAR_RESULTS/w3-checkpoints/nemotron-<name>
-ln -sfn nemotron-<name> $SHARAR_RESULTS/w3-checkpoints/nemotron-current
+  --output $HIBANA_RESULTS/w3-checkpoints/nemotron-<name>
+ln -sfn nemotron-<name> $HIBANA_RESULTS/w3-checkpoints/nemotron-current
 ```
 
 - **Trunk** (`capture`: each sample prefills alone and every projection call adds x^T x, every eighth sample held out
@@ -173,7 +173,7 @@ ln -sfn nemotron-<name> $SHARAR_RESULTS/w3-checkpoints/nemotron-current
   groups) from the served FP8 matrix (the checkpoint has no wider release), with every upstream block at its served
   precision. The manifest reports each matrix's relative weight and output error, under the calibration covariance
   and on the held-out probes, for GPTQ and for nearest rounding; GPTQ's output error is two to four times smaller, so
-  there is no nearest-rounded fallback (`Nemotron` refuses `SHARAR_W3_DECODE=1` without a checkpoint).
+  there is no nearest-rounded fallback (`Nemotron` refuses `HIBANA_W3_DECODE=1` without a checkpoint).
 - **Experts** (`capture`: every MoE block's routed latent rows with their top-22 ids and weights, the MTP head's from
   its teacher-forced depth-1 input; `fit`: about 135 s a block on the GB10, resumable per block, `--deadline` for
   locked windows; a resume refuses other settings or another capture): per expert H1 = sum g² x xᵀ over its routed

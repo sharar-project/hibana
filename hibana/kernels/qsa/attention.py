@@ -10,7 +10,7 @@ Every row is a query token with up to W selected pages of the KV pool
 budget select 512 groups of four tokens plus their pending tail; rows inside
 it list every page they may see, so the same kernel serves both. K/V are read
 through the page ids: an FP8 pool cast to the query's dtype as stored (no
-scales); an NVFP4 pool (`SHARAR_KV_FORMAT=nvfp4`) converted to FP16 by the
+scales); an NVFP4 pool (`HIBANA_KV_FORMAT=nvfp4`) converted to FP16 by the
 hardware (two E2M1 codes an instruction) and multiplied by its E4M3 scale per
 16 values, exact in FP16, both products on FP16 operands. NVFP4 keeps a code
 pair a byte, so its rows split into even and odd columns (low and high

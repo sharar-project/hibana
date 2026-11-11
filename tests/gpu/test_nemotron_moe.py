@@ -281,7 +281,7 @@ def test_bytes(moe):
 
 @pytest.mark.parametrize("m,floor,cap", [(12, 16, 0), (24, 16, 0), (24, 12, 0), (24, 16, 400), (12, 8, 90)])
 def test_floor_and_free_riders(weights, moe, m, floor, cap):
-    """MoE sharing with SHARAR_MOE_KEEP=F (verify rows, 6 a request, the last request padded): every real row keeps its
+    """MoE sharing with HIBANA_MOE_KEEP=F (verify rows, 6 a request, the last request padded): every real row keeps its
     top F; the call's set is the union of those floors, grown by the cap (when larger) with the highest-scoring experts;
     each real row also takes its other top-22 experts that are in the set, in rank order; weights are its sigmoid
     scores renormalized over its kept experts; padded rows take nothing."""

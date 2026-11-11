@@ -5,7 +5,7 @@ MODEL_ID = "RadixArk/Qwen3.8-Flash-Next-NVFP4"
 MODEL_REVISION = "7b719225242aacd3dbd3f9407468c2ee9a9d2594"
 MODEL_CACHE_KEY = "models--RadixArk--Qwen3.8-Flash-Next-NVFP4"
 MODEL_ARCHITECTURE = "Qwen4ExpForConditionalGeneration"
-# Calibrated 3-bit trunk copies: fetched on first serve when $SHARAR_RESULTS/w3-checkpoints/flashnext-current
+# Calibrated 3-bit trunk copies: fetched on first serve when $HIBANA_RESULTS/w3-checkpoints/flashnext-current
 # is missing (public); when the fetch fails the launcher serves the FP8 trunk with a warning.
 W3_REPO = "yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3-qad"
 # QAD (ModelOpt) trunk copies + the GPTQ 3-bit routed experts of yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3@694e279 (GPTQ trunk);
@@ -48,7 +48,7 @@ INDEXER_N_HEADS = 4
 INDEXER_HEAD_DIM = 128
 MTP_LAYERS = 1
 # The pinned block drafter (repository, revision): a DFlash2 trained on this model's features (proposers/parallel.py;
-# the launcher downloads it when SHARAR_PROPOSER=dflash2).
+# the launcher downloads it when HIBANA_PROPOSER=dflash2).
 DRAFT_PINS = {
     "dflash2": ("incoai/Qwen3.8-Flash-Next-DFlash2", "a22a1744e85c17364dcc54a6a420af7135d4c7f6"),
 }

@@ -15,7 +15,7 @@ and o are quantized to FP8 at load (`TrunkLinear`'s per-tensor weight scale and 
 Flash-Next's MTP layer), which halves the 138 MB of BF16 they read per step and left tokens/round at depth 3 within
 0.01 of BF16's 3.42; the MoE block is the trunk's `NemotronMoe` on the head's weights: the checkpoint's NVFP4 experts
 (or the W3 checkpoint's 3-bit ones when the target serves them, `Nemotron.w3_experts`), its BF16 router and latent
-projections. The draft head is the server's choice (SHARAR_DRAFT_HEAD): the target's FP8 lm_head or a 2/3-bit copy
+projections. The draft head is the server's choice (HIBANA_DRAFT_HEAD): the target's FP8 lm_head or a 2/3-bit copy
 whose top candidates its FP8 rows rescore (`set_draft_head`).
 """
 

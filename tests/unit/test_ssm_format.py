@@ -61,11 +61,11 @@ def test_views_alias_one_row_per_layer_and_slot():
 
 
 def test_settings_and_validation():
-    c = EngineConfig.from_env({"SHARAR_SSM_STATE": "int8", "SHARAR_SSM_WINDOW": "32", "SHARAR_SSM_COMPENSATORS": "8"})
+    c = EngineConfig.from_env({"HIBANA_SSM_STATE": "int8", "HIBANA_SSM_WINDOW": "32", "HIBANA_SSM_COMPENSATORS": "8"})
     fmt = SsmFormat.from_config(c)
     assert fmt == SsmFormat("int8", 32, 8) and fmt.describe() == "int8:w32:r8"
     assert SsmFormat.from_config(EngineConfig.from_env({})) == FP32
-    assert SsmFormat.from_config(EngineConfig.from_env({"SHARAR_SSM_STATE": "int4"})) == SsmFormat("int4", 16, 8)
+    assert SsmFormat.from_config(EngineConfig.from_env({"HIBANA_SSM_STATE": "int4"})) == SsmFormat("int4", 16, 8)
     for bad in (dict(kind="int2"), dict(kind="int8", window=12), dict(kind="int8", rank=17)):
         with pytest.raises(ValueError):
             SsmFormat(**bad)
@@ -111,7 +111,7 @@ def test_fp16_is_nemotrons_and_halves_its_state():
     assert sr.state_bytes_per_slot(t) / 2 ** 20 == pytest.approx(82.3, abs=0.1)  # 162.3 MiB in FP32
     pool = StatePool(3, torch.device("cpu"), target=t, ssm_format=sr)
     assert pool.ssm_all.dtype == torch.float16 and pool.window is None and pool.bytes_per_slot == sr.state_bytes_per_slot(t)
-    assert SsmFormat.from_config(EngineConfig.from_env({"SHARAR_SSM_STATE": "fp16_sr"})) == sr
+    assert SsmFormat.from_config(EngineConfig.from_env({"HIBANA_SSM_STATE": "fp16_sr"})) == sr
     for old in ("fp16", "fp16-rn"):  # no other spelling
         with pytest.raises(ValueError, match="fp16_sr"):
             SsmFormat(old)

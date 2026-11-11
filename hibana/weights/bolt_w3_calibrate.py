@@ -15,10 +15,10 @@ as serving produces it: the BF16 activation each projection reads, with every up
   and a report of the relative weight error and relative output error (under the covariance and on the probes), for
   GPTQ and for nearest rounding. `--resume` continues; only a complete fit writes `manifest.json`.
 
-    SHARAR_TARGET=bolt python3 -m hibana.weights.bolt_w3_calibrate capture --inputs INPUTS.json --activations ACT
-    SHARAR_TARGET=bolt python3 -m hibana.weights.bolt_w3_calibrate fit --activations ACT --output DIR
+    HIBANA_TARGET=bolt python3 -m hibana.weights.bolt_w3_calibrate capture --inputs INPUTS.json --activations ACT
+    HIBANA_TARGET=bolt python3 -m hibana.weights.bolt_w3_calibrate fit --activations ACT --output DIR
 
-Serve with SHARAR_W3_DECODE=1 SHARAR_W3_CHECKPOINT=DIR: calls of at most 64 rows read the copies, prefill keeps b12x.
+Serve with HIBANA_W3_DECODE=1 HIBANA_W3_CHECKPOINT=DIR: calls of at most 64 rows read the copies, prefill keeps b12x.
 """
 from __future__ import annotations
 

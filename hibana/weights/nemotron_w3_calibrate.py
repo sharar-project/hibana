@@ -21,10 +21,10 @@ Two steps, so the full-model part stays short and the fit can resume without the
   copy's error, and on the held-out probes, each for GPTQ and for nearest rounding of the same matrix. `--resume`
   continues after the last matrix whose file checks out; only a complete fit writes `manifest.json`.
 
-    SHARAR_TARGET=nemotron python3 -m hibana.weights.nemotron_w3_calibrate capture --inputs INPUTS.json --activations ACT
-    SHARAR_TARGET=nemotron python3 -m hibana.weights.nemotron_w3_calibrate fit --activations ACT --output DIR
+    HIBANA_TARGET=nemotron python3 -m hibana.weights.nemotron_w3_calibrate capture --inputs INPUTS.json --activations ACT
+    HIBANA_TARGET=nemotron python3 -m hibana.weights.nemotron_w3_calibrate fit --activations ACT --output DIR
 
-Serve with SHARAR_W3_DECODE=1 SHARAR_W3_CHECKPOINT=DIR: calls of at most 64 rows read the copies, prefill keeps FP8.
+Serve with HIBANA_W3_DECODE=1 HIBANA_W3_CHECKPOINT=DIR: calls of at most 64 rows read the copies, prefill keeps FP8.
 """
 from __future__ import annotations
 

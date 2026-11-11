@@ -11,7 +11,7 @@ writer thread. Files rotate, and the oldest file is pruned above the byte cap.
 Traces are the user's prompts; the directory is only written when the server
 was started with one, and any request can opt out with ``trace: false``.
 
-With ``SHARAR_TRACE_CONFIDENCE=1`` (sequential MTP drafts), each round record
+With ``HIBANA_TRACE_CONFIDENCE=1`` (sequential MTP drafts), each round record
 also carries the draft's top-1 probability ``p1`` and top-1 minus top-2
 margin ``m`` per drafted position (the input for adaptive depth).
 """

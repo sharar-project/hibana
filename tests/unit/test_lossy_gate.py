@@ -23,64 +23,64 @@ gate = _gate()
 @pytest.fixture
 def clean(monkeypatch, tmp_path):
     """The gate resolves arms from the config file alone: point it at an empty one and a results directory."""
-    for key in [k for k in gate.os.environ if k.startswith("SHARAR_")]:
+    for key in [k for k in gate.os.environ if k.startswith("HIBANA_")]:
         monkeypatch.delenv(key)
     conf = tmp_path / "gb10.env"
-    conf.write_text(f"SHARAR_RESULTS={tmp_path}\nSHARAR_FLASHNEXT_CACHE=/fn\n")
-    monkeypatch.setenv("SHARAR_CONFIG_FILE", str(conf))
+    conf.write_text(f"HIBANA_RESULTS={tmp_path}\nHIBANA_FLASHNEXT_CACHE=/fn\n")
+    monkeypatch.setenv("HIBANA_CONFIG_FILE", str(conf))
     return tmp_path
 
 
 def test_arms_resolve_as_sharar_serve_does(clean):
     """The gate and `sharar serve` share one resolver (hibana/launch/settings.py)."""
     exact = gate.resolve("flashnext", "exact", {})
-    assert exact.get("SHARAR_ACCEPT_DEFAULT") == "off" and gate.arm_plan(exact)["accept"] == "1:0.0"
-    assert gate.resolve("flashnext", "fast", {}).get("SHARAR_DEVICE_ACCEPT") == "1"
-    assert gate.resolve("qwen38", "fast", {}).get("SHARAR_DEVICE_ACCEPT") == "0"
+    assert exact.get("HIBANA_ACCEPT_DEFAULT") == "off" and gate.arm_plan(exact)["accept"] == "1:0.0"
+    assert gate.resolve("flashnext", "fast", {}).get("HIBANA_DEVICE_ACCEPT") == "1"
+    assert gate.resolve("qwen38", "fast", {}).get("HIBANA_DEVICE_ACCEPT") == "0"
     with pytest.raises(ValueError, match="unknown serving profile"):
         gate.resolve("qwen38", "turbo", {})
 
 
 def test_batch_settings_stay_out_of_the_in_process_arm(clean):
     plan = gate.arm_plan(gate.resolve("flashnext", "throughput", {}))
-    assert plan["env"]["SHARAR_DEVICE_ACCEPT"] == "1"
-    assert "SHARAR_MAX_BATCH" not in plan["env"] and "SHARAR_SPEC_DEPTHS" not in plan["env"] and "SHARAR_SSD_DIR" not in plan["env"]
+    assert plan["env"]["HIBANA_DEVICE_ACCEPT"] == "1"
+    assert "HIBANA_MAX_BATCH" not in plan["env"] and "HIBANA_SPEC_DEPTHS" not in plan["env"] and "HIBANA_SSD_DIR" not in plan["env"]
 
 
 def test_the_3bit_checkpoint_is_what_current_holds(clean):
     fast = gate.arm_plan(gate.resolve("flashnext", "fast", {}))
     # without flashnext-current: Flash-Next's copies are calibrated only, so the trunk stays FP8 (the gate does not fetch)
-    assert fast["env"]["SHARAR_W3_DECODE"] == "0" and "SHARAR_W3_CHECKPOINT" not in fast["env"]
+    assert fast["env"]["HIBANA_W3_DECODE"] == "0" and "HIBANA_W3_CHECKPOINT" not in fast["env"]
     ck = clean / "w3-checkpoints" / "flashnext-current"
     ck.mkdir(parents=True)
     (ck / "manifest.json").write_text("{}")
     fast = gate.arm_plan(gate.resolve("flashnext", "fast", {}))
-    assert fast["env"]["SHARAR_W3_DECODE"] == "1" and fast["env"]["SHARAR_W3_CHECKPOINT"] == str(ck.resolve())
-    assert "SHARAR_W3_CHECKPOINT" not in gate.arm_plan(gate.resolve("flashnext", "fast", {"SHARAR_W3_DECODE": "0"}))["env"]
+    assert fast["env"]["HIBANA_W3_DECODE"] == "1" and fast["env"]["HIBANA_W3_CHECKPOINT"] == str(ck.resolve())
+    assert "HIBANA_W3_CHECKPOINT" not in gate.arm_plan(gate.resolve("flashnext", "fast", {"HIBANA_W3_DECODE": "0"}))["env"]
     exact = gate.arm_plan(gate.resolve("flashnext", "exact", {}))
-    assert exact["env"]["SHARAR_W3_DECODE"] == "0" and "SHARAR_W3_CHECKPOINT" not in exact["env"] and exact["accept"] == "1:0.0"
+    assert exact["env"]["HIBANA_W3_DECODE"] == "0" and "HIBANA_W3_CHECKPOINT" not in exact["env"] and exact["accept"] == "1:0.0"
 
 
 def test_overrides_reach_the_in_process_arm(clean):
-    plan = gate.arm_plan(gate.resolve("qwen38", "exact", {"SHARAR_TRUNK_KEEP_BF16": "mlp", "SHARAR_DRAFT": "pinned"}))
-    assert plan["env"]["SHARAR_TRUNK_KEEP_BF16"] == "mlp"
+    plan = gate.arm_plan(gate.resolve("qwen38", "exact", {"HIBANA_TRUNK_KEEP_BF16": "mlp", "HIBANA_DRAFT": "pinned"}))
+    assert plan["env"]["HIBANA_TRUNK_KEEP_BF16"] == "mlp"
     assert plan["proposer"] == "dflash2" and plan["spec"] == 15 and plan["draft_precision"] == "fp8" and plan["draft"] is None
 
 
 def test_sampled_rule_reaches_the_in_process_arm_as_serve_records_it(clean):
     fast = gate.arm_plan(gate.resolve("flashnext", "fast", {}))
-    assert fast["env"]["SHARAR_ACCEPT_SOFT"] == "0.5"
-    off = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_DRAFT": "pinned"}))
-    assert off["env"]["SHARAR_ACCEPT_SOFT"] == "0"
-    nospec = gate.arm_plan(gate.resolve("qwen38", "fast", {"SHARAR_SPEC": "0"}))
-    assert nospec["env"]["SHARAR_ACCEPT_SOFT"] == "0" and nospec["accept"] == "1:0.0"
+    assert fast["env"]["HIBANA_ACCEPT_SOFT"] == "0.5"
+    off = gate.arm_plan(gate.resolve("qwen38", "fast", {"HIBANA_DRAFT": "pinned"}))
+    assert off["env"]["HIBANA_ACCEPT_SOFT"] == "0"
+    nospec = gate.arm_plan(gate.resolve("qwen38", "fast", {"HIBANA_SPEC": "0"}))
+    assert nospec["env"]["HIBANA_ACCEPT_SOFT"] == "0" and nospec["accept"] == "1:0.0"
 
 
 def test_served_arms_are_sharar_serve_in_the_foreground(clean):
     cmd = gate.served_command("flashnext", "fast", 30100)
     assert cmd[2:] == ["-m", "hibana", "serve", "flashnext", "--fast", "--port", "30100", "--no-fetch"]
-    assert "SHARAR_CONFIG_FILE" in gate.served_env({}) and gate.served_env({"SHARAR_SSD": "1"})["SHARAR_SSD"] == "0"
-    assert gate.served_env({"SHARAR_TRACES": "/x"})["SHARAR_TRACES"] == "off"
+    assert "HIBANA_CONFIG_FILE" in gate.served_env({}) and gate.served_env({"HIBANA_SSD": "1"})["HIBANA_SSD"] == "0"
+    assert gate.served_env({"HIBANA_TRACES": "/x"})["HIBANA_TRACES"] == "off"
 
 
 def test_accept_rule_matches_serve():

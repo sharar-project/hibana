@@ -41,7 +41,7 @@ def test_executor_refuses_unsupported_kv_before_allocating(kv):
     from hibana.engine import config
     from hibana.engine.executor import Executor
     with config.using(config.current().replace(kv_format=kv)):
-        with pytest.raises(ValueError, match="supports SHARAR_KV_FORMAT=fp8"):
+        with pytest.raises(ValueError, match="supports HIBANA_KV_FORMAT=fp8"):
             Executor(SimpleNamespace(target=NEMOTRON))
 
 

@@ -108,13 +108,13 @@ class SsmFormat:
 
     def __post_init__(self):
         if not any(self.kind in kinds for kinds in SSM_STATES.values()):
-            raise ValueError(f"SHARAR_SSM_STATE must be fp32, int8, int4 or fp16_sr, not {self.kind!r}")
+            raise ValueError(f"HIBANA_SSM_STATE must be fp32, int8, int4 or fp16_sr, not {self.kind!r}")
         if self.rank is None:
             object.__setattr__(self, "rank", 8 if self.kind == "int4" else 4)
         if self.window not in (8, 16, 32):
-            raise ValueError("SHARAR_SSM_WINDOW must be 8, 16 or 32")
+            raise ValueError("HIBANA_SSM_WINDOW must be 8, 16 or 32")
         if not 0 <= self.rank <= 16:
-            raise ValueError("SHARAR_SSM_COMPENSATORS must be in 0..16")
+            raise ValueError("HIBANA_SSM_COMPENSATORS must be in 0..16")
 
     @classmethod
     def from_config(cls, cfg) -> SsmFormat:
@@ -137,7 +137,7 @@ class SsmFormat:
         """Reject a format the target's recurrence does not store (`Target.recurrence`, `settings.SSM_STATES`)."""
         kinds = SSM_STATES[target.recurrence]
         if self.kind not in kinds:
-            raise ValueError(f"SHARAR_SSM_STATE={self.kind}: {target.name}'s {target.recurrence} state is stored as "
+            raise ValueError(f"HIBANA_SSM_STATE={self.kind}: {target.name}'s {target.recurrence} state is stored as "
                              + ", ".join(kinds[:-1]) + f" or {kinds[-1]}")
 
     def layout(self, target) -> WindowLayout | None:

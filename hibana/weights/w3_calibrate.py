@@ -103,7 +103,7 @@ def run(args):
     from hibana.engine.context import scratch_prefill_context
     from hibana.model.qwen38 import Qwen38
     if w3.enabled():
-        raise ValueError("calibration must start with SHARAR_W3_DECODE=0")
+        raise ValueError("calibration must start with HIBANA_W3_DECODE=0")
     args.output.mkdir(parents=True, exist_ok=True)
     if (args.output / 'manifest.json').exists():
         raise ValueError("refusing to overwrite a finished calibration")

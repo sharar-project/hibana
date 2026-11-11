@@ -9,7 +9,7 @@
     sharar launch claude             # Claude Code (or opencode, aider) set up for the serving target
     sharar status | stop | logs
 
-Settings: command-line flags, then SHARAR_* environment variables, then the config file (SHARAR_CONFIG_FILE, else
+Settings: command-line flags, then HIBANA_* environment variables, then the config file (HIBANA_CONFIG_FILE, else
 config/gb10.env in the checkout, else ~/.config/sharar/sharar.env), then the target's and the profile's defaults
 (hibana/launch/settings.py; docs/operations.md).
 """
@@ -19,10 +19,11 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
-from hibana.launch.settings import PROFILE_NAMES, TARGET_CHOICES
+from hibana.launch.settings import LEGACY_PREFIX, PROFILE_NAMES, TARGET_CHOICES, legacy_names
 
 PROFILE_HELP = {"exact": "the target's own distribution: exact acceptance, no lossy weight copies (benchmarks)",
                 "fast": "the default: every measured speed option, lossy ones included (docs/operations.md#serving-profiles)",
@@ -31,23 +32,23 @@ PROFILE_HELP = {"exact": "the target's own distribution: exact acceptance, no lo
 
 def add_engine_args(p: argparse.ArgumentParser) -> None:
     """`sharar engine`: the server itself, with every setting explicit (what `sharar serve` and the ranks run)."""
-    p.add_argument("--target", default=None, help="pinned serving target (default: SHARAR_TARGET, else qwen38)")
+    p.add_argument("--target", default=None, help="pinned serving target (default: HIBANA_TARGET, else qwen38)")
     p.add_argument("--host", default=None, help="default: 127.0.0.1")
     p.add_argument("--port", type=int, default=None, help="default: the target's, as `sharar serve` (27B 30001, Flash-Next 30004, Nemotron 30005, Bolt 30006)")
     p.add_argument("--proposer", choices=("mtp", "dflash2"), default=None, help="default: the target's (27B and Bolt dflash2; Flash-Next and Super mtp)")
     p.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default=None, help="default: reconstruct")
     p.add_argument("--draft-precision", choices=("bf16", "fp8"), default=None, help="parallel draft matrix precision (default: the target's)")
-    p.add_argument("--spec", type=int, default=None, help="draft tokens per round (0 = off; default: SHARAR_SPEC, else the proposer's validated depth)")
-    p.add_argument("--draft", default=None, help="DFlash2/LiLiCorr checkpoint directory to serve instead of the pinned draft (default: SHARAR_DRAFT)")
-    p.add_argument("--traces", default=None, help="directory for opt-in request traces (default: SHARAR_TRACES; unset disables recording)")
-    p.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: SHARAR_TRACES_MAX_MIB or 32768)")
-    p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request, up to 262144 (default: SHARAR_MAX_CONTEXT, else 262144)")
-    p.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: SHARAR_MAX_BATCH, else the profile's)")
-    p.add_argument("--spec-depths", default=None, help="verify depth per batch bucket as BUCKET:DEPTH pairs, e.g. 8:1,16:0 (0: plain decode; default: SHARAR_SPEC_DEPTHS, else --spec everywhere)")
+    p.add_argument("--spec", type=int, default=None, help="draft tokens per round (0 = off; default: HIBANA_SPEC, else the proposer's validated depth)")
+    p.add_argument("--draft", default=None, help="DFlash2/LiLiCorr checkpoint directory to serve instead of the pinned draft (default: HIBANA_DRAFT)")
+    p.add_argument("--traces", default=None, help="directory for opt-in request traces (default: HIBANA_TRACES; unset disables recording)")
+    p.add_argument("--traces-max-mib", type=int, default=None, help="prune the oldest trace files above this size (default: HIBANA_TRACES_MAX_MIB or 32768)")
+    p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request, up to 262144 (default: HIBANA_MAX_CONTEXT, else 262144)")
+    p.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: HIBANA_MAX_BATCH, else the profile's)")
+    p.add_argument("--spec-depths", default=None, help="verify depth per batch bucket as BUCKET:DEPTH pairs, e.g. 8:1,16:0 (0: plain decode; default: HIBANA_SPEC_DEPTHS, else --spec everywhere)")
     p.add_argument("--accept-default", default=None, help="relaxed acceptance for greedy requests without accept_top_k/accept_margin, as K:M "
-                   "(default: SHARAR_ACCEPT_DEFAULT, else the profile's); 'off' keeps every request exact")
+                   "(default: HIBANA_ACCEPT_DEFAULT, else the profile's); 'off' keeps every request exact")
     p.add_argument("--accept-soft", type=float, default=None, help="relaxed acceptance for sampled requests without accept_soft, as s: no token comes out more than "
-                   "e^s times as often as the target gives it (default: SHARAR_ACCEPT_SOFT, else 0, exact)")
+                   "e^s times as often as the target gives it (default: HIBANA_ACCEPT_SOFT, else 0, exact)")
     p.add_argument("--tp", type=int, default=1, help="tensor-parallel ranks, one GPU (Spark) each; rank 0 serves HTTP")
     p.add_argument("--tp-rank", type=int, default=0, help="this process's tensor-parallel rank")
     p.add_argument("--tp-address", default=None, help="HOST:PORT on rank 0's host where the ranks meet (required with --tp > 1)")
@@ -56,22 +57,20 @@ def add_engine_args(p: argparse.ArgumentParser) -> None:
 def resolved_engine_env(args) -> dict[str, str]:
     """The engine's environment with what `sharar serve` would resolve beneath it, and the flags it would pass filled in.
 
-    `sharar serve` hands the engine every setting (its flags and SHARAR_* environment), so for it nothing changes; run
-    by hand, `sharar engine` serves the same target settings and profile (SHARAR_PROFILE, else fast) as `sharar serve`."""
-    import os
-
+    `sharar serve` hands the engine every setting (its flags and HIBANA_* environment), so for it nothing changes; run
+    by hand, `sharar engine` serves the same target settings and profile (HIBANA_PROFILE, else fast) as `sharar serve`."""
     from hibana.launch import preflight
     from hibana.launch.run import serve_overrides
     from hibana.launch.settings import resolve
 
     overrides = serve_overrides(args)
     if args.verify_state is not None:
-        overrides["SHARAR_VERIFY_STATE"] = args.verify_state
+        overrides["HIBANA_VERIFY_STATE"] = args.verify_state
     s = resolve(args.target, overrides=overrides, env=dict(os.environ), tp=args.tp)
     env = {**s.engine_env(preflight.ensure_w3(s, fetch=False)), **os.environ}
     for name, value in (("host", s.host), ("port", s.port), ("proposer", s.proposer),
-                        ("verify_state", s.get("SHARAR_VERIFY_STATE", "reconstruct")),
-                        ("draft_precision", s.get("SHARAR_DRAFT_PRECISION", "bf16"))):
+                        ("verify_state", s.get("HIBANA_VERIFY_STATE", "reconstruct")),
+                        ("draft_precision", s.get("HIBANA_DRAFT_PRECISION", "bf16"))):
         if getattr(args, name) is None:
             setattr(args, name, value)
     return env
@@ -96,7 +95,7 @@ def run_engine(args, parser) -> int:
         if args.tp_address is None or not 0 <= args.tp_rank < args.tp:
             parser.error("--tp > 1 needs --tp-address and a --tp-rank below --tp")
         if cfg.tp_allreduce not in ("rdma", "nccl"):
-            parser.error("SHARAR_TP_ALLREDUCE must be rdma or nccl")
+            parser.error("HIBANA_TP_ALLREDUCE must be rdma or nccl")
         init_distributed(args.tp_rank, args.tp, args.tp_address, cfg.tp_allreduce)
         cfg = broadcast_pyobj(cfg)  # every rank serves with the primary's environment, not its own
     if args.spec is None:
@@ -171,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     p = sub.add_parser("serve", help="serve a model (in the foreground; --detach for a background service)")
-    add_target(p, "27b, flashnext, nemotron (Super) or bolt (Nemotron Bolt); default: SHARAR_TARGET")
+    add_target(p, "27b, flashnext, nemotron (Super) or bolt (Nemotron Bolt); default: HIBANA_TARGET")
     g = p.add_mutually_exclusive_group()
     for name in PROFILE_NAMES:
         g.add_argument(f"--{name}", dest="profile", action="store_const", const=name, help=PROFILE_HELP[name])
@@ -181,7 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default=None, help="default: 127.0.0.1")
     p.add_argument("--context-length", type=int, default=None, help="largest prompt plus output per request (default 262144)")
     p.add_argument("--max-batch", type=int, default=None, help="most requests decoded together, 1-128 (default: the profile's)")
-    p.add_argument("--traces", action="store_true", help="record each request's token IDs and speculative rounds (SHARAR_TRACES, else $SHARAR_RESULTS/traces)")
+    p.add_argument("--traces", action="store_true", help="record each request's token IDs and speculative rounds (HIBANA_TRACES, else $HIBANA_RESULTS/traces)")
     p.add_argument("--draft", default=None, help="serve this DFlash2/LiLiCorr checkpoint directory instead of the publisher's draft")
     p.add_argument("--proposer", choices=("mtp", "dflash2"), default=None, help=argparse.SUPPRESS)
     p.add_argument("--spec", type=int, default=None, help=argparse.SUPPRESS)
@@ -216,7 +215,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("args", nargs=argparse.REMAINDER, help="passed to the agent unchanged")
 
     p = sub.add_parser("traces", help="summarize the recorded traces")
-    p.add_argument("--dir", default=None, help="default: SHARAR_TRACES, else $SHARAR_RESULTS/traces")
+    p.add_argument("--dir", default=None, help="default: HIBANA_TRACES, else $HIBANA_RESULTS/traces")
     p = sub.add_parser("verify", help="check a running server: health, pinned model, a short answer")
     add_target(p, "default: whichever target is serving")
     p.add_argument("--url", default=None)
@@ -257,6 +256,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if any(k.startswith(LEGACY_PREFIX) for k in os.environ):
+        # the settings' former names: read as HIBANA_*, here and in every process this one starts
+        os.environ.update(legacy_names(os.environ))
     parser = build_parser()
     args = parser.parse_args(argv)
     from hibana.launch import ctl, lxcfs, run

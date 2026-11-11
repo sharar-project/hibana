@@ -83,11 +83,11 @@ class MoeLayer:
                                               ColumnParallel((shared_inter, shared_inter)))
         self.shared_down = linear_cls.load(w, [f"{prefix}.shared_expert.down_proj.weight"], device, precision, ROW_PARALLEL)
         cfg = current()
-        # Expert selection in decode and verify forwards (SHARAR_MOE_KEEP / SHARAR_MOE_BUDGET, route_budget): the call
+        # Expert selection in decode and verify forwards (HIBANA_MOE_KEEP / HIBANA_MOE_BUDGET, route_budget): the call
         # reads at most a budget of distinct experts, chosen for all its tokens; each token keeps its own top experts
         # (`guarantee`, at most `keep`), then takes others from the set, up to topk. Slots left over name no expert,
         # which the w3 kernel skips, or for the NVFP4 experts (an expert in every slot) the token's own top 1 at
-        # weight 0, the same bits. SHARAR_MOE_KEEP alone: each token's top `keep`. Keeping topk or more is the served route.
+        # weight 0, the same bits. HIBANA_MOE_KEEP alone: each token's top `keep`. Keeping topk or more is the served route.
         self.keep = cfg.moe_keep if cfg.moe_keep < self.topk else 0
         self.budget = cfg.moe_budget if self.keep else 0
         self.per_request = cfg.moe_budget_per_request
@@ -149,8 +149,8 @@ class MoeLayer:
     MIN_CAP = 16
 
     def guarantee(self, rows: int, steps: int) -> int:
-        """Each token's guaranteed top experts under SHARAR_MOE_BUDGET: 2 cap / rows (about half of the guaranteed slots
-        are distinct experts, so they fill about the cap and it binds), within [MIN_GUARANTEE, SHARAR_MOE_KEEP]; from the
+        """Each token's guaranteed top experts under HIBANA_MOE_BUDGET: 2 cap / rows (about half of the guaranteed slots
+        are distinct experts, so they fill about the cap and it binds), within [MIN_GUARANTEE, HIBANA_MOE_KEEP]; from the
         call's shape (a graph's bucket). At 4 and 12:64: decode and verify forwards of up to 4 tokens a request keep 4
         (one request, whose cap is MIN_CAP: up to 8 tokens, a depth-8 draft 3), wider drafts and bigger batches fewer,
         64 tokens and more 2."""

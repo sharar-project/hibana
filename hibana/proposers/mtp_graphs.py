@@ -63,7 +63,7 @@ class DraftGraphs:
                                          torch.ones(b, dtype=torch.int32), causal=True, guard=False)  # graph-bound buffers
 
     def _forward(self, st: dict):
-        """(hidden, argmax, confidence, candidates): with SHARAR_MTP_SAMPLE one head pass gives the candidates and the
+        """(hidden, argmax, confidence, candidates): with HIBANA_MTP_SAMPLE one head pass gives the candidates and the
         argmax their first, so greedy batches replay the same graph at the same cost."""
         mtp = self.mtp
         saved = mtp._attn
@@ -114,6 +114,6 @@ class DraftGraphs:
         return st["out_hidden"][:b], st["out_argmax"][:b], conf[:b] if conf is not None else None
 
     def candidates(self, b: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """The last replay's candidates (ids, logits) [b, r], borrowed until the next replay (SHARAR_MTP_SAMPLE)."""
+        """The last replay's candidates (ids, logits) [b, r], borrowed until the next replay (HIBANA_MTP_SAMPLE)."""
         st = self._st[self._last]
         return st["out_ids"][:b], st["out_values"][:b]

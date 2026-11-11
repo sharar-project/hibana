@@ -84,7 +84,7 @@ def test_unsupported_configuration_fallback_or_error(monkeypatch, reason, backen
     target = SimpleNamespace(num_attention_heads=24, num_kv_heads=2, head_dim=256)
     with using(EngineConfig(qsa_prefill_backend=backend, stable_numerics=reason == 'stable')):
         if backend == 'optimized':
-            with pytest.raises(ValueError, match='SHARAR_QSA_PREFILL_BACKEND=optimized'):
+            with pytest.raises(ValueError, match='HIBANA_QSA_PREFILL_BACKEND=optimized'):
                 ix.configure_prefill(target, None)
         else:
             ix.configure_prefill(target, None)

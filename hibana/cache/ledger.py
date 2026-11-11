@@ -32,14 +32,14 @@ SHARED_REQUESTS = 4
 
 
 def host_floor_bytes() -> int:
-    """The host floor (SHARAR_HOST_FLOOR_GIB, default 6 GiB): the MemAvailable the pools leave for the OS and other
+    """The host floor (HIBANA_HOST_FLOOR_GIB, default 6 GiB): the MemAvailable the pools leave for the OS and other
     programs once everything Sharar allocates is counted."""
     from hibana.engine.config import current
     return int(current().host_floor_gib * GIB)
 
 
 # What Sharar allocates after the pools are planned, counted so that the plan leaves the floor free. Measured on
-# Flash-Next, one Spark, SHARAR_MAX_BATCH=64: the first prefill takes 2.12 GiB of GPU memory outside PyTorch (the
+# Flash-Next, one Spark, HIBANA_MAX_BATCH=64: the first prefill takes 2.12 GiB of GPU memory outside PyTorch (the
 # driver's per-process count; never freed), and PyTorch keeps 0.87 GiB of activation blocks cached beyond what is
 # allocated. Neither grew with requests, context or prefill.
 FIRST_USE_BYTES = int(2.25 * GIB)
@@ -166,7 +166,7 @@ class Ledger:
             raise MemoryError(
                 f"only {available / GIB:.1f} GiB available; need {(must_kv + must_state + future_bytes + self.floor_bytes) / GIB:.1f} GiB "
                 f"(pools for {max_running} requests, {future_bytes / GIB:.1f} GiB allocated after them, the "
-                f"{self.floor_bytes / GIB:.0f} GiB floor): lower SHARAR_MAX_BATCH or SHARAR_HOST_FLOOR_GIB"
+                f"{self.floor_bytes / GIB:.0f} GiB floor): lower HIBANA_MAX_BATCH or HIBANA_HOST_FLOOR_GIB"
             )
         spare = budget - must_kv - must_state
         snapshots = CACHED_SNAPSHOTS * state_bytes_per_slot  # what the tree keeps for one cached conversation

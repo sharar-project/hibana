@@ -204,7 +204,7 @@ def _lock(base: Path, directory) -> None:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         os.close(fd)
-        raise OSError(f"{directory} is in use by another server (SHARAR_SSD_DIR gives this one its own)") from None
+        raise OSError(f"{directory} is in use by another server (HIBANA_SSD_DIR gives this one its own)") from None
     _LOCKED[key] = fd
 
 
@@ -228,7 +228,7 @@ class SsdStore:
         self.block = block  # tokens per KV block object
         if (fs := memory_backed(directory)) is not None:
             raise OSError(f"{directory} is on {fs}: the SSD tier would sit in memory (on unified memory, the GPU's); "
-                          "set SHARAR_SSD_DIR to a directory on the NVMe")
+                          "set HIBANA_SSD_DIR to a directory on the NVMe")
         self.base = Path(directory) / "v2"
         self.base.mkdir(parents=True, exist_ok=True, mode=0o700)  # tails hold token ids: the user's own
         if self.base.is_symlink() or self.base.stat().st_uid != os.getuid():

@@ -49,7 +49,7 @@ cache write, output gating and output projection remain outside these fusions.
 
 ## Eager-prefill backend selection
 
-`SHARAR_QSA_PREFILL_BACKEND` selects one of:
+`HIBANA_QSA_PREFILL_BACKEND` selects one of:
 
 - `original` (the engine default, and `exact`'s): `FlashNextIndexer.select` over `selection.py`, 256 rows per chunk
   (in eager prefill on SM121 through `score_exact.py`, with the same result).
