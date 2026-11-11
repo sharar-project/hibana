@@ -1,10 +1,10 @@
-"""`sharar serve <target> --tp 2`: one target tensor-parallel on two DGX Sparks (docs/tensor-parallel.md).
+"""`hibana serve <target> --tp 2`: one target tensor-parallel on two DGX Sparks (docs/tensor-parallel.md).
 
 Rank 0 runs here and serves HTTP; rank 1 runs on the peer: the host at the other end of the RoCE link that answers
 ssh (or HIBANA_TP_PEER). Before each serve the checkout is mirrored to the same path on the peer (`rsync --delete`,
 .git included: it replaces whatever is at that path there), the peer's Python environment is synced (`uv sync
 --frozen`), and the model, draft and 3-bit checkpoint are copied to it (rsync copies only what changed). Both ranks
-run `sharar engine ... --tp 2 --tp-rank R`; rank 0 broadcasts its EngineConfig, so rank 1 serves with rank 0's
+run `hibana engine ... --tp 2 --tp-rank R`; rank 0 broadcasts its EngineConfig, so rank 1 serves with rank 0's
 settings and the paths in them must exist on both Sparks.
 
 A rank that ends, however it ends, ends the other within a second (the ranks' TCP link to the primary), and the

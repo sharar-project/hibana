@@ -1,9 +1,9 @@
 """In-process layers of the lossy-change gate (`tools/lossy_gate.py`) for one arm, one model load.
 
 tools/lossy_gate.py runs this from the Python environment with the arm's settings in the environment (the
-serving profile resolved as `sharar serve` resolves it), on the same checkout's engine as the served arm, so the
+serving profile resolved as `hibana serve` resolves it), on the same checkout's engine as the served arm, so the
 arm measures that code in the served configuration: the
-executor is built as `sharar serve` builds it (proposer, depth, verify state, draft precision,
+executor is built as `hibana serve` builds it (proposer, depth, verify state, draft precision,
 draft), and greedy requests carry the profile's acceptance rule.
 
     python3 -m gate.lossy_gate --prompts tools/gate/workloads/lossy_v1.json --out OUT \\

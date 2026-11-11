@@ -1,4 +1,4 @@
-"""`sharar serve`'s settings (hibana/launch/settings.py): sources, profiles, validation, what the engine receives."""
+"""`hibana serve`'s settings (hibana/launch/settings.py): sources, profiles, validation, what the engine receives."""
 import pytest
 
 from hibana.launch import settings as launch
@@ -20,9 +20,9 @@ def resolve(env, target=None, profile=None, overrides=None, **kw):
 def test_without_a_config_file_paths_default_to_the_user_caches(env, tmp_path, monkeypatch):
     monkeypatch.setattr(launch.Path, "home", lambda: tmp_path)
     s = resolve(env, "flashnext")
-    assert (s.target, s.port, s.proposer, s.service) == ("flashnext", 30004, "mtp", "sharar-flashnext")
+    assert (s.target, s.port, s.proposer, s.service) == ("flashnext", 30004, "mtp", "hibana-flashnext")
     assert s.hf_cache == s.model_cache == tmp_path / ".cache" / "huggingface"
-    assert s.results == tmp_path / ".local" / "share" / "sharar"
+    assert s.results == tmp_path / ".local" / "share" / "hibana"
     assert resolve(env, "27b").target == "qwen38" and resolve(env).target == "qwen38"
     assert s.max_context == 262144 and s.traces is None and s.ssd == s.results / "ssd" / "flashnext"  # the SSD tier is on
     assert resolve({**env, "HIBANA_SSD": "0"}, "flashnext").ssd is None
@@ -37,6 +37,18 @@ def test_command_line_then_environment_then_file_then_target(env, tmp_path):
     s = resolve({**env, "HIBANA_SPEC": "2"}, "flashnext")
     assert s.port == 30100 and s.spec == 2 and s.model_cache == tmp_path / "models"  # ~ expanded with HOME
     assert resolve({**env, "HIBANA_SPEC": "2"}, "flashnext", overrides={"HIBANA_SPEC": "1"}).spec == 1
+
+
+def test_results_and_config_made_under_the_former_name_are_used_until_new_ones_exist(env, tmp_path, monkeypatch):
+    monkeypatch.setattr(launch, "CHECKOUT", tmp_path / "checkout")  # no config/gb10.env
+    del env["HIBANA_CONFIG_FILE"]
+    (tmp_path / ".config" / "sharar").mkdir(parents=True)
+    (tmp_path / ".config" / "sharar" / "sharar.env").write_text("HIBANA_PORT=30100\n")
+    (tmp_path / ".local" / "share" / "sharar").mkdir(parents=True)
+    s = resolve(env, "flashnext")
+    assert s.port == 30100 and s.results == tmp_path / ".local" / "share" / "sharar"
+    (tmp_path / ".local" / "share" / "hibana").mkdir()
+    assert resolve(env, "flashnext").results == tmp_path / ".local" / "share" / "hibana"
 
 
 def test_former_sharar_names_are_read_unless_the_hibana_name_is_set(env, tmp_path):

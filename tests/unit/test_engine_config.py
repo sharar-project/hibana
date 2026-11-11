@@ -99,7 +99,7 @@ def test_empty_qsa_prefill_environment_uses_default():
     assert EngineConfig.from_env({"HIBANA_QSA_PREFILL_BACKEND": ""}).qsa_prefill_backend == "original"
 
 
-def test_no_module_reads_sharar_variables_at_import():
+def test_no_module_reads_hibana_variables_at_import():
     import pathlib
     import re
     root = pathlib.Path(__file__).resolve().parents[2] / "hibana"
@@ -126,7 +126,7 @@ def test_ssd_settings_parse_and_a_bad_block_size_fails_at_startup():
 
 
 def test_the_ssd_tier_stores_in_the_users_data_directory_unless_moved():
-    default = str(Path.home() / ".local" / "share" / "sharar" / "ssd")  # the launcher passes $HIBANA_RESULTS/ssd/<target>
+    default = str(Path.home() / ".local" / "share" / "hibana" / "ssd")  # the launcher passes $HIBANA_RESULTS/ssd/<target>
     assert EngineConfig.from_env({}).ssd_dir == EngineConfig().ssd_dir == default
     cfg = EngineConfig.from_env({"HIBANA_SSD_DIR": "/nvme/ssd", "HIBANA_SSD_GIB": "50"})
     assert cfg.ssd_dir == "/nvme/ssd" and cfg.ssd_gib == 50.0

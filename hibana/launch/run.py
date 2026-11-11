@@ -1,6 +1,6 @@
-"""What `sharar serve`, `stop`, `status` and `logs` do: settings, preflight, then the engine.
+"""What `hibana serve`, `stop`, `status` and `logs` do: settings, preflight, then the engine.
 
-`sharar serve` runs the server in this process, in the foreground (Ctrl-C drains and stops it), with the memory
+`hibana serve` runs the server in this process, in the foreground (Ctrl-C drains and stops it), with the memory
 guard as a thread; `--detach` runs the same command as a user systemd service; `--tp 2` supervises one rank here and
 one on the peer (launch/tp.py). Nothing here imports torch before the engine starts.
 """
@@ -54,24 +54,24 @@ def settings_for(args, **kw) -> Settings:
 def serve(args) -> int:
     if not args.target and not (os.environ.get("HIBANA_TARGET") or read_config_file(config_file()).get("HIBANA_TARGET")):
         # serving takes the GPU and may start a download of 26-135 GB: only on a model someone named
-        sys.exit("sharar serve: name a model: 27b, flashnext, nemotron or bolt (or set HIBANA_TARGET)")
+        sys.exit("hibana serve: name a model: 27b, flashnext, nemotron or bolt (or set HIBANA_TARGET)")
     try:
         s = settings_for(args, traces=args.traces, tp=args.tp)
     except ValueError as exc:
-        sys.exit(f"sharar serve: {exc}")
+        sys.exit(f"hibana serve: {exc}")
     if args.detach:
         argv = [a for a in sys.argv[1:] if a not in ("--detach", "-d")]
         try:
             preflight.check_host(guard.floor_kib(s.values))
             preflight.ensure_snapshots(s)  # downloads show here, not in the service's log
             preflight.ensure_w3(s)
-            service.start(s.service, [*argv, "--no-fetch"], s.log_file(), f"Sharar {s.target}")
+            service.start(s.service, [*argv, "--no-fetch"], s.log_file(), f"Hibana {s.target}")
         except (preflight.PreflightError, RuntimeError) as exc:
-            sys.exit(f"sharar serve: {exc}")
+            sys.exit(f"hibana serve: {exc}")
         print(f"started {s.service}; log {s.log_file()}")
         return service.follow_startup(s.service, s.log_file(), s.url)
     if ctl.server_info(str(s.port)) is not None:
-        sys.exit(f"sharar serve: something already serves {s.url} (sharar stop, or stop the server in its terminal)")
+        sys.exit(f"hibana serve: something already serves {s.url} (hibana stop, or stop the server in its terminal)")
     try:
         host = preflight.check_host(guard.floor_kib(s.values))
         missing = preflight.ensure_snapshots(s, fetch=not args.no_fetch)
@@ -79,7 +79,7 @@ def serve(args) -> int:
             raise preflight.PreflightError(f"missing from the model cache: {', '.join(missing)}")
         w3 = preflight.ensure_w3(s, fetch=not args.no_fetch)
     except preflight.PreflightError as exc:
-        sys.exit(f"sharar serve: {exc}")
+        sys.exit(f"hibana serve: {exc}")
     print(preflight.summary(s, host, w3, args.tp), flush=True)
     for d in (s.traces, s.ssd):
         if d is not None:
@@ -130,7 +130,7 @@ def status(args) -> int:
         how = "a detached service" if service.running(s.service) else "the foreground"
         if info is None:
             if service.running(s.service):
-                print(f"{s.target}: starting ({s.service}; sharar logs -f)")
+                print(f"{s.target}: starting ({s.service}; hibana logs -f)")
                 any_up = True
             continue
         any_up = True
@@ -148,7 +148,7 @@ def status(args) -> int:
 
 
 def cache(args) -> int:
-    """`sharar cache`: the serving engine's GPU prefix cache and SSD tier; with nothing serving, the SSD store on disk."""
+    """`hibana cache`: the serving engine's GPU prefix cache and SSD tier; with nothing serving, the SSD store on disk."""
     s = serving(args.target)
     info = ctl.server_info(str(s.port)) if s is not None else None
     if info is None:

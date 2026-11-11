@@ -1,6 +1,6 @@
-"""`sharar serve --detach`: the same command as a user systemd service.
+"""`hibana serve --detach`: the same command as a user systemd service.
 
-The service runs this checkout's `sharar` with the caller's HIBANA_* settings and config file; its output goes to
+The service runs this checkout's `hibana` with the caller's HIBANA_* settings and config file; its output goes to
 $HIBANA_RESULTS/logs/<service>.log (the previous run's is .log.1); `systemctl --user stop` sends SIGTERM, so the server
 drains (and with the SSD tier on, stores its cached prefixes). SIGTERM reaches the main process only (KillMode=mixed):
 on two Sparks that is the supervisor, which passes it to rank 0 alone, and rank 1's ssh must stay up until rank 0's
@@ -35,7 +35,7 @@ def start(unit: str, argv: list[str], log: Path, description: str) -> None:
     if not systemd_available():
         raise RuntimeError(f"--detach needs a user systemd session: log in with a full session, or sudo loginctl enable-linger {os.environ.get('USER', '$USER')}")
     if running(unit):
-        raise RuntimeError(f"{unit} is already running (sharar stop first)")
+        raise RuntimeError(f"{unit} is already running (hibana stop first)")
     subprocess.run(["systemctl", "--user", "reset-failed", unit], capture_output=True)
     log.parent.mkdir(parents=True, exist_ok=True)
     if log.is_file():
@@ -68,10 +68,10 @@ def follow_startup(unit: str, log: Path, url: str) -> int:
     while True:
         lines = log.read_text(errors="replace").splitlines() if log.is_file() else []
         for line in lines[shown:]:
-            if line.startswith(MILESTONES) or line.startswith("Sharar ") or "WARNING" in line or line.startswith("note:"):
+            if line.startswith(MILESTONES) or line.startswith("Hibana ") or "WARNING" in line or line.startswith("note:"):
                 print(line)
             if line.startswith("serving on"):
-                print(f"ready: {url} (sharar chat, sharar launch claude, sharar stop; logs: sharar logs -f)")
+                print(f"ready: {url} (hibana chat, hibana launch claude, hibana stop; logs: hibana logs -f)")
                 return 0
         shown = len(lines)
         if not running(unit) or any(line.startswith(("Traceback", "[rank 1] Traceback")) for line in lines):

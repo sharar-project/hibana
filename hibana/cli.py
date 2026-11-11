@@ -1,16 +1,16 @@
-"""The `sharar` command: serve a model, talk to it, measure it.
+"""The `hibana` command: serve a model, talk to it, measure it.
 
-    sharar serve 27b                 # Qwen3.8-27B on 127.0.0.1:30001, in the foreground (Ctrl-C stops it)
-    sharar serve flashnext --detach  # Qwen3.8-Flash-Next on :30004 as a background service (sharar stop, sharar logs -f)
-    sharar serve nemotron            # Nemotron-3.5-Super (120B-A12B, NVFP4) on :30005, one Spark
-    sharar serve bolt                # Nemotron-3.5-Bolt (74B-A9B, packed) on :30006, one Spark
-    sharar serve 27b --tp 2          # tensor-parallel on two DGX Sparks
-    sharar chat                      # chat with whichever target is serving
-    sharar launch claude             # Claude Code (or opencode, aider) set up for the serving target
-    sharar status | stop | logs
+    hibana serve 27b                 # Qwen3.8-27B on 127.0.0.1:30001, in the foreground (Ctrl-C stops it)
+    hibana serve flashnext --detach  # Qwen3.8-Flash-Next on :30004 as a background service (hibana stop, hibana logs -f)
+    hibana serve nemotron            # Nemotron-3.5-Super (120B-A12B, NVFP4) on :30005, one Spark
+    hibana serve bolt                # Nemotron-3.5-Bolt (74B-A9B, packed) on :30006, one Spark
+    hibana serve 27b --tp 2          # tensor-parallel on two DGX Sparks
+    hibana chat                      # chat with whichever target is serving
+    hibana launch claude             # Claude Code (or opencode, aider) set up for the serving target
+    hibana status | stop | logs
 
 Settings: command-line flags, then HIBANA_* environment variables, then the config file (HIBANA_CONFIG_FILE, else
-config/gb10.env in the checkout, else ~/.config/sharar/sharar.env), then the target's and the profile's defaults
+config/gb10.env in the checkout, else ~/.config/hibana/hibana.env), then the target's and the profile's defaults
 (hibana/launch/settings.py; docs/operations.md).
 """
 
@@ -31,10 +31,10 @@ PROFILE_HELP = {"exact": "the target's own distribution: exact acceptance, no lo
 
 
 def add_engine_args(p: argparse.ArgumentParser) -> None:
-    """`sharar engine`: the server itself, with every setting explicit (what `sharar serve` and the ranks run)."""
+    """`hibana engine`: the server itself, with every setting explicit (what `hibana serve` and the ranks run)."""
     p.add_argument("--target", default=None, help="pinned serving target (default: HIBANA_TARGET, else qwen38)")
     p.add_argument("--host", default=None, help="default: 127.0.0.1")
-    p.add_argument("--port", type=int, default=None, help="default: the target's, as `sharar serve` (27B 30001, Flash-Next 30004, Nemotron 30005, Bolt 30006)")
+    p.add_argument("--port", type=int, default=None, help="default: the target's, as `hibana serve` (27B 30001, Flash-Next 30004, Nemotron 30005, Bolt 30006)")
     p.add_argument("--proposer", choices=("mtp", "dflash2"), default=None, help="default: the target's (27B and Bolt dflash2; Flash-Next and Super mtp)")
     p.add_argument("--verify-state", choices=("snapshots", "reconstruct"), default=None, help="default: reconstruct")
     p.add_argument("--draft-precision", choices=("bf16", "fp8"), default=None, help="parallel draft matrix precision (default: the target's)")
@@ -55,10 +55,10 @@ def add_engine_args(p: argparse.ArgumentParser) -> None:
 
 
 def resolved_engine_env(args) -> dict[str, str]:
-    """The engine's environment with what `sharar serve` would resolve beneath it, and the flags it would pass filled in.
+    """The engine's environment with what `hibana serve` would resolve beneath it, and the flags it would pass filled in.
 
-    `sharar serve` hands the engine every setting (its flags and HIBANA_* environment), so for it nothing changes; run
-    by hand, `sharar engine` serves the same target settings and profile (HIBANA_PROFILE, else fast) as `sharar serve`."""
+    `hibana serve` hands the engine every setting (its flags and HIBANA_* environment), so for it nothing changes; run
+    by hand, `hibana engine` serves the same target settings and profile (HIBANA_PROFILE, else fast) as `hibana serve`."""
     from hibana.launch import preflight
     from hibana.launch.run import serve_overrides
     from hibana.launch.settings import resolve
@@ -77,7 +77,7 @@ def resolved_engine_env(args) -> dict[str, str]:
 
 
 def run_engine(args, parser) -> int:
-    """Serve with explicit settings; whatever is not given resolves as `sharar serve` would (the environment holds the rest)."""
+    """Serve with explicit settings; whatever is not given resolves as `hibana serve` would (the environment holds the rest)."""
     from hibana import target as targets
     from hibana.distributed import broadcast_pyobj, close_distributed, init_distributed
     from hibana.engine import config as engine_config
@@ -156,7 +156,7 @@ def run_engine(args, parser) -> int:
 
 
 def engine_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="sharar engine", description=add_engine_args.__doc__)
+    p = argparse.ArgumentParser(prog="hibana engine", description=add_engine_args.__doc__)
     add_engine_args(p)
     return p
 
@@ -166,7 +166,7 @@ def add_target(p: argparse.ArgumentParser, help: str = "27b, flashnext, nemotron
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="sharar", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(prog="hibana", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     p = sub.add_parser("serve", help="serve a model (in the foreground; --detach for a background service)")
@@ -174,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     g = p.add_mutually_exclusive_group()
     for name in PROFILE_NAMES:
         g.add_argument(f"--{name}", dest="profile", action="store_const", const=name, help=PROFILE_HELP[name])
-    p.add_argument("-d", "--detach", action="store_true", help="run as a user systemd service (sharar stop | status | logs)")
+    p.add_argument("-d", "--detach", action="store_true", help="run as a user systemd service (hibana stop | status | logs)")
     p.add_argument("--tp", type=int, choices=(1, 2), default=1, help="2: tensor-parallel on two DGX Sparks (docs/tensor-parallel.md)")
     p.add_argument("--port", type=int, default=None, help="default: 30001 for the 27B, 30004 for Flash-Next, 30005 for Nemotron Super, 30006 for Bolt")
     p.add_argument("--host", default=None, help="default: 127.0.0.1")
@@ -228,7 +228,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = dsub.add_parser("prompts", help="write the fixed prompt set as token IDs (for generate and profile)")
     p.add_argument("--out", required=True)
     p = dsub.add_parser("generate", help="greedy/sampled generation for one fixed prompt (eager decode)")
-    p.add_argument("--prompts", required=True, help="prompts.json from `sharar dev prompts`")
+    p.add_argument("--prompts", required=True, help="prompts.json from `hibana dev prompts`")
     p.add_argument("--name", required=True)
     p.add_argument("--max-new-tokens", type=int, default=32)
     p.add_argument("--temperature", type=float, default=0.0)
@@ -264,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
     from hibana.launch import ctl, lxcfs, run
 
     if args.command in ("engine", "dev") or (args.command == "serve" and args.tp == 1):
-        # Before anything imports torch. On two Sparks only the ranks (`sharar engine`) restart in the namespace: in it
+        # Before anything imports torch. On two Sparks only the ranks (`hibana engine`) restart in the namespace: in it
         # the process is root, and the launcher's ssh would read root's keys instead of the user's.
         lxcfs.reexec_if_needed()
     if args.command == "serve":
@@ -305,9 +305,9 @@ def dev(args, parser) -> int:
         try:
             report = config.check(require_gpu=not args.no_gpu)
         except Exception as exc:  # noqa: BLE001 - report every failure plainly
-            print(f"sharar check FAILED: {exc}", file=sys.stderr)
+            print(f"hibana check FAILED: {exc}", file=sys.stderr)
             return 1
-        print("sharar check OK")
+        print("hibana check OK")
         for k, v in report.items():
             print(f"  {k}: {v}")
         return 0

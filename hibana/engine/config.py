@@ -48,7 +48,7 @@ def _budget(env: Mapping[str, str]) -> tuple[int, int]:
     return int(per), int(cap)
 
 
-SSD_DIR = str(Path.home() / ".local" / "share" / "sharar" / "ssd")  # the engine's default; the launcher passes $HIBANA_RESULTS/ssd/<target>
+SSD_DIR = str(Path.home() / ".local" / "share" / "hibana" / "ssd")  # the engine's default; the launcher passes $HIBANA_RESULTS/ssd/<target>
 
 
 def _ssd_block(tokens: int) -> int:

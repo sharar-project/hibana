@@ -44,7 +44,7 @@ def test_profiles_and_pinned_lilicorr(tmp_path, profile, name):
     exactly. Bolt publishes no copies, so serving without them is no warning."""
     env = {"HOME": str(tmp_path), "HIBANA_CONFIG_FILE": str(tmp_path / "none")}
     s = settings.resolve(name, profile, env=env)
-    assert (s.target, s.port, s.service, s.spec) == ("bolt", 30006, "sharar-bolt", 7)
+    assert (s.target, s.port, s.service, s.spec) == ("bolt", 30006, "hibana-bolt", 7)
     assert s.get("HIBANA_DEVICE_ACCEPT") == s.get("HIBANA_ACCEPT_SOFT") == "0"
     lossy = profile != "exact"
     knobs = ("HIBANA_W3_DECODE", "HIBANA_SSM_STATE", "HIBANA_ACCEPT_DEFAULT", "HIBANA_MOE_KEEP", "HIBANA_MOE_BUDGET")

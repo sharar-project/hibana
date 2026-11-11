@@ -6,7 +6,7 @@ half of it (`guard_kib`), when those have used more than the plan left them. The
 acts after three low samples in a row: it asks the workload to stop (SIGTERM: the server drains) and kills it 15
 seconds later if it is still there. The scheduler also holds new admissions there, so this is the backstop.
 
-    `sharar serve` runs it as a thread beside itself (`start_thread`).
+    `hibana serve` runs it as a thread beside itself (`start_thread`).
     python -m hibana.launch.guard --pid PID   watches another process and its process group (the CI's GPU suite).
 """
 from __future__ import annotations
@@ -63,7 +63,7 @@ def _stop_self() -> None:
 
 def start_thread(log=print, stop=_stop_self, floor: int | None = None) -> threading.Thread:
     """Guard this process from a daemon thread, under `floor` KiB (default `guard_kib()`)."""
-    thread = threading.Thread(target=watch, args=(stop,), kwargs={"log": log, "floor": floor}, name="sharar-memory-guard",
+    thread = threading.Thread(target=watch, args=(stop,), kwargs={"log": log, "floor": floor}, name="hibana-memory-guard",
                               daemon=True)
     thread.start()
     return thread

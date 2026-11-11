@@ -1,4 +1,4 @@
-"""The `sharar` command (hibana/cli.py, hibana/launch/): what each subcommand starts, without a GPU, systemd or a server."""
+"""The `hibana` command (hibana/cli.py, hibana/launch/): what each subcommand starts, without a GPU, systemd or a server."""
 import json
 import os
 import subprocess
@@ -92,13 +92,13 @@ def test_engine_resolution_keeps_what_serve_prepared(home, monkeypatch, target, 
 
 def test_cache_reports_the_gpu_cache_and_the_ssd_tier(home, monkeypatch, capsys):
     ssd = {"prefixes": 4, "used_gib": 1.5, "budget_gib": 200.0, "restores": 2, "restored_tokens": 9000}
-    info = {"kv_pages": 1000, "config": {"ssd": True, "ssd_dir": "/tmp/sharar-ssd"},
+    info = {"kv_pages": 1000, "config": {"ssd": True, "ssd_dir": "/tmp/hibana-ssd"},
             "scheduler": {"cache": {"cached_tokens": 600, "hits": 3, "misses": 1, "evictions": 2, "ssd": ssd}}}
     monkeypatch.setattr(ctl, "server_info", lambda port: info if port == "30001" else None)
     assert cli.main(["cache"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("qwen38: serving") and "600 of 1,000 KV tokens cached" in out
-    assert "4 prefixes, 1.5 of 200 GiB in /tmp/sharar-ssd; 2 restores (9,000 tokens)" in out
+    assert "4 prefixes, 1.5 of 200 GiB in /tmp/hibana-ssd; 2 restores (9,000 tokens)" in out
     info["scheduler"]["cache"].update(locks={"total": 3, "request": 2, "restore": 1}, snapshots={"spare": 4, "not_spare": 7},
                                       evicted={"slots": {"spare": 5, "not_spare": 1}, "kv": {"not_spare": 2}},
                                       pruned=5, full_reprefills=1, branching_resumes=2,
@@ -149,10 +149,10 @@ def test_serve_needs_a_named_model(home, monkeypatch):
 
 
 def test_nothing_serving_names_every_target(home, capsys):
-    with pytest.raises(SystemExit, match="sharar serve 27b, flashnext, nemotron or bolt first"):
+    with pytest.raises(SystemExit, match="hibana serve 27b, flashnext, nemotron or bolt first"):
         cli.main(["chat"])
     assert run.status(cli.build_parser().parse_args(["status"])) == 0
-    assert "sharar serve 27b, flashnext, nemotron or bolt" in capsys.readouterr().out
+    assert "hibana serve 27b, flashnext, nemotron or bolt" in capsys.readouterr().out
 
 
 def test_serve_refuses_a_busy_port_and_bad_settings(home, monkeypatch):
@@ -167,11 +167,11 @@ def test_detach_starts_the_same_command_as_a_service(home, monkeypatch):
     started = []
     monkeypatch.setattr(service, "start", lambda unit, argv, log, description: started.append((unit, argv, log)))
     monkeypatch.setattr(service, "follow_startup", lambda unit, log, url: 0)
-    monkeypatch.setattr(sys, "argv", ["sharar", "serve", "27b", "--detach", "--throughput"])
+    monkeypatch.setattr(sys, "argv", ["hibana", "serve", "27b", "--detach", "--throughput"])
     assert cli.main(["serve", "27b", "--detach", "--throughput"]) == 0
     unit, argv, log = started[0]
-    assert unit == "sharar-qwen38" and argv == ["serve", "27b", "--throughput", "--no-fetch"]
-    assert log == home / "results" / "logs" / "sharar-qwen38.log"
+    assert unit == "hibana-qwen38" and argv == ["serve", "27b", "--throughput", "--no-fetch"]
+    assert log == home / "results" / "logs" / "hibana-qwen38.log"
 
 
 def test_service_start_composes_systemd_run(home, monkeypatch, tmp_path):
@@ -181,9 +181,9 @@ def test_service_start_composes_systemd_run(home, monkeypatch, tmp_path):
     log = tmp_path / "logs" / "unit.log"
     log.parent.mkdir()
     log.write_text("old run")
-    service.start("sharar-x", ["serve", "27b"], log, "Sharar test")
+    service.start("hibana-x", ["serve", "27b"], log, "Hibana test")
     cmd = calls[-1]
-    assert cmd[:2] == ["systemd-run", "--user"] and cmd[cmd.index("--unit") + 1] == "sharar-x"
+    assert cmd[:2] == ["systemd-run", "--user"] and cmd[cmd.index("--unit") + 1] == "hibana-x"
     assert cmd[-5:] == [sys.executable, "-m", "hibana", "serve", "27b"]
     assert f"StandardOutput=append:{log}" in cmd and f"HIBANA_RESULTS={home / 'results'}" in cmd
     assert (tmp_path / "logs" / "unit.log.1").read_text() == "old run"
@@ -191,9 +191,9 @@ def test_service_start_composes_systemd_run(home, monkeypatch, tmp_path):
 
 def test_stop_status_and_logs_follow_what_is_serving(home, monkeypatch, capsys):
     stopped = []
-    monkeypatch.setattr(service, "stop", lambda unit: stopped.append(unit) or unit == "sharar-flashnext")
-    assert cli.main(["stop"]) == 0 and stopped == ["sharar-qwen38", "sharar-flashnext", "sharar-nemotron", "sharar-bolt"]
-    assert "stopped sharar-flashnext" in capsys.readouterr().out
+    monkeypatch.setattr(service, "stop", lambda unit: stopped.append(unit) or unit == "hibana-flashnext")
+    assert cli.main(["stop"]) == 0 and stopped == ["hibana-qwen38", "hibana-flashnext", "hibana-nemotron", "hibana-bolt"]
+    assert "stopped hibana-flashnext" in capsys.readouterr().out
     monkeypatch.setattr(ctl, "server_info", lambda port: {"config": {"profile": "fast"}, "tp_size": 1, "context_length": 262144,
                                                            "max_running_requests": 4} if port == "30004" else None)
     assert run.serving(None).target == "flashnext" and run.serving("27b").target == "qwen38"
@@ -202,7 +202,7 @@ def test_stop_status_and_logs_follow_what_is_serving(home, monkeypatch, capsys):
     assert "flashnext: serving on http://127.0.0.1:30004 from the foreground, profile fast" in out and "qwen38:" not in out
     with pytest.raises(SystemExit, match="no log"):
         cli.main(["logs"])
-    log = home / "results" / "logs" / "sharar-flashnext.log"
+    log = home / "results" / "logs" / "hibana-flashnext.log"
     log.parent.mkdir(parents=True)
     log.write_text("x\n")
     tails = []
@@ -236,14 +236,14 @@ def test_launch_sets_up_each_agent_for_the_serving_target(home, monkeypatch, tmp
     command, env = launched[-1]
     assert command == ["claude", "-p", "fix it"] and env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:30001"
     assert "ANTHROPIC_API_KEY" not in env and env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "131072"
-    assert env["ANTHROPIC_MODEL"] == "claude-sharar-qwen3.8-27b"  # contains "claude" and names the serving model
+    assert env["ANTHROPIC_MODEL"] == "claude-hibana-qwen3.8-27b"  # contains "claude" and names the serving model
     cli.main(["launch", "--target", "nemotron", "claude"])
-    assert launched[-1][1]["ANTHROPIC_MODEL"] == "claude-sharar-nemotron-3.5-super"
+    assert launched[-1][1]["ANTHROPIC_MODEL"] == "claude-hibana-nemotron-3.5-super"
     cli.main(["launch", "--target", "flashnext", "opencode"])
     command, env = launched[-1]
     config = json.loads(Path(env["OPENCODE_CONFIG"]).read_text())
-    assert command == ["opencode"] and config["model"] == "sharar/qwen3.8-flash-next"
-    provider = config["provider"]["sharar"]
+    assert command == ["opencode"] and config["model"] == "hibana/qwen3.8-flash-next"
+    provider = config["provider"]["hibana"]
     assert provider["options"]["baseURL"] == "http://127.0.0.1:30004/v1" and provider["models"]["qwen3.8-flash-next"]["limit"]["context"] == 131072
     cli.main(["launch", "aider", "--yes"])
     command, env = launched[-1]

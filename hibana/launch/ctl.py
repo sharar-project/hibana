@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from hibana.launch.settings import SERVE_HINT, Settings, model_config
+from hibana.launch.settings import SERVE_HINT, Settings, former, model_config
 
 
 def server_info(port: str) -> dict | None:
@@ -55,7 +55,7 @@ def write_config(path: Path, data: dict, dry: bool) -> None:
 def cmd_launch(args, s: Settings, dry: bool = False) -> int:
     """Start a coding agent against the serving target with its own config (the user's own settings are not touched)."""
     if args.harness == "codex":
-        sys.exit("Codex needs the OpenAI Responses API (/v1/responses), which Sharar does not serve")
+        sys.exit("Codex needs the OpenAI Responses API (/v1/responses), which Hibana does not serve")
     url = (os.environ.get("HIBANA_URL") or s.url).rstrip("/")
     try:
         with urllib.request.urlopen(f"{url}/get_server_info", timeout=3) as r:
@@ -66,35 +66,37 @@ def cmd_launch(args, s: Settings, dry: bool = False) -> int:
         info = {}
     context = int(info.get("context_length", 262144))
     alias, display = ALIASES[s.target]
-    conf = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "sharar"
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    conf = former(config / "hibana", config / "sharar")
     henv = dict(os.environ)
     if args.harness == "show":
-        print(f"Sharar is serving {display} at {url} (context {context} tokens)")
+        print(f"Hibana is serving {display} at {url} (context {context} tokens)")
         print(f"  OpenAI-compatible tools:  base URL {url}/v1, model {alias}, any API key")
-        print(f"  Anthropic Messages tools: base URL {url}, any model name and API key (Claude Code: sharar launch claude)")
+        print(f"  Anthropic Messages tools: base URL {url}, any model name and API key (Claude Code: hibana launch claude)")
         print("  Cline, Continue, Zed, Pi and others: an OpenAI-compatible provider with those values, context window "
               f"{context}, max output {OUTPUT_TOKENS}")
         return 0
     if args.harness == "claude":
         # Claude Code only accepts model ids containing "claude"; its own config directory keeps the user's
         # Anthropic login, settings and history untouched (the first launch asks the onboarding questions).
-        model = os.environ.get("HIBANA_CLAUDE_MODEL", f"claude-sharar-{alias}")
+        model = os.environ.get("HIBANA_CLAUDE_MODEL", f"claude-hibana-{alias}")
         for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE"):
             henv.pop(k, None)
-        henv.update(ANTHROPIC_BASE_URL=url, ANTHROPIC_AUTH_TOKEN="sharar", ANTHROPIC_MODEL=model,
+        henv.update(ANTHROPIC_BASE_URL=url, ANTHROPIC_AUTH_TOKEN="hibana", ANTHROPIC_MODEL=model,
                     ANTHROPIC_DEFAULT_SONNET_MODEL=model, ANTHROPIC_DEFAULT_OPUS_MODEL=model, ANTHROPIC_DEFAULT_HAIKU_MODEL=model,
                     CLAUDE_CODE_MAX_CONTEXT_TOKENS=str(context), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1",
                     # the model name is not in Claude Code's catalog: without this it assumes a 200K window
                     CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT="1",
-                    CLAUDE_CONFIG_DIR=os.environ.get("HIBANA_CLAUDE_CONFIG", str(Path.home() / ".claude-sharar")))
+                    CLAUDE_CONFIG_DIR=os.environ.get("HIBANA_CLAUDE_CONFIG",
+                                                      str(former(Path.home() / ".claude-hibana", Path.home() / ".claude-sharar"))))
         command = ["claude", *args.args]
     elif args.harness == "opencode":
-        # OPENCODE_CONFIG is merged over the user's global config: a `sharar` provider and the default model.
+        # OPENCODE_CONFIG is merged over the user's global config: a `hibana` provider and the default model.
         path = conf / "opencode.json"
-        write_config(path, {"$schema": "https://opencode.ai/config.json", "model": f"sharar/{alias}",
-                            "provider": {"sharar": {"npm": "@ai-sdk/openai-compatible", "name": "Sharar",
-                                                    "options": {"baseURL": f"{url}/v1", "apiKey": "sharar"},
-                                                    "models": {alias: {"name": f"{display} (Sharar)",
+        write_config(path, {"$schema": "https://opencode.ai/config.json", "model": f"hibana/{alias}",
+                            "provider": {"hibana": {"npm": "@ai-sdk/openai-compatible", "name": "Hibana",
+                                                    "options": {"baseURL": f"{url}/v1", "apiKey": "hibana"},
+                                                    "models": {alias: {"name": f"{display} (Hibana)",
                                                                        "limit": {"context": context, "output": OUTPUT_TOKENS}}}}}}, dry)
         henv["OPENCODE_CONFIG"] = str(path)
         command = ["opencode", *args.args]
@@ -103,7 +105,7 @@ def cmd_launch(args, s: Settings, dry: bool = False) -> int:
         write_config(path, {f"openai/{alias}": {"max_tokens": OUTPUT_TOKENS, "max_input_tokens": context,
                                                  "max_output_tokens": OUTPUT_TOKENS, "input_cost_per_token": 0,
                                                  "output_cost_per_token": 0, "litellm_provider": "openai", "mode": "chat"}}, dry)
-        henv.update(OPENAI_API_BASE=f"{url}/v1", OPENAI_API_KEY="sharar")
+        henv.update(OPENAI_API_BASE=f"{url}/v1", OPENAI_API_KEY="hibana")
         command = ["aider", "--model", f"openai/{alias}", "--model-metadata-file", str(path), *args.args]
     if dry:
         print("+ " + " ".join(command))
@@ -118,13 +120,13 @@ def cmd_chat(args, s: Settings) -> int:
     import time
     url = f"{s.url}/v1/chat/completions"
     if server_info(str(s.port)) is None:
-        sys.exit("serving is not up (sharar serve)")
+        sys.exit("serving is not up (hibana serve)")
     messages = []
     if args.system:
         messages.append({"role": "system", "content": args.system})
     think = args.think
     max_tokens = args.max_tokens
-    print(f"chatting with Sharar on {url} (thinking {'on' if think else 'off'}, budget {max_tokens} tokens; /reset, /think, /max N, /quit)", flush=True)
+    print(f"chatting with Hibana on {url} (thinking {'on' if think else 'off'}, budget {max_tokens} tokens; /reset, /think, /max N, /quit)", flush=True)
     while True:
         try:
             line = input("\nyou> ")
@@ -152,7 +154,7 @@ def cmd_chat(args, s: Settings) -> int:
                 print("usage: /max N")
             continue
         messages.append({"role": "user", "content": text})
-        body = {"model": "sharar", "messages": messages, "stream": True, "max_tokens": max_tokens,
+        body = {"model": "hibana", "messages": messages, "stream": True, "max_tokens": max_tokens,
                 "temperature": args.temperature, "chat_template_kwargs": {"enable_thinking": think},
                 "stream_options": {"include_usage": True}}
         if args.no_trace:
@@ -163,7 +165,7 @@ def cmd_chat(args, s: Settings) -> int:
         reply, reasoning, usage, finish = [], [], None, None
         try:
             with urllib.request.urlopen(request, timeout=args.timeout) as response:
-                print("sharar> ", end="", flush=True)
+                print("hibana> ", end="", flush=True)
                 for raw in response:
                     raw = raw.decode().strip()
                     if not raw.startswith("data:"):
@@ -219,22 +221,22 @@ def verify(url: str, s: Settings) -> int:
     try:
         get("/health")
         info = get("/get_server_info")
-        expected = {"engine": "sharar", "model_path": c.MODEL_ID, "revision": c.MODEL_REVISION,
+        expected = {"engine": "hibana", "model_path": c.MODEL_ID, "revision": c.MODEL_REVISION,
                     "kv_cache_dtype": "float8_e4m3fn"}
         wrong = {k: (info.get(k), v) for k, v in expected.items() if info.get(k) != v}
         if wrong:
-            sys.exit(f"sharar verify: {url} serves something else: {wrong}")
+            sys.exit(f"hibana verify: {url} serves something else: {wrong}")
         models = get("/v1/models")["data"]
         if [m["id"] for m in models] != [c.MODEL_ID]:
-            sys.exit(f"sharar verify: model list is {models}")
+            sys.exit(f"hibana verify: model list is {models}")
         body = {"model": c.MODEL_ID, "messages": [{"role": "user", "content": "Reply with exactly HIBANA_OK and nothing else."}],
                 "max_tokens": 16, "temperature": 0, "chat_template_kwargs": {"enable_thinking": False}, "trace": False}
         request = urllib.request.Request(f"{url}/v1/chat/completions", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=120) as r:
             answer = json.loads(r.read())["choices"][0]["message"]["content"].strip()
     except (urllib.error.URLError, OSError, KeyError, ValueError) as exc:
-        sys.exit(f"sharar verify: {url}: {exc}")
+        sys.exit(f"hibana verify: {url}: {exc}")
     if answer != "HIBANA_OK":
-        sys.exit(f"sharar verify: the canary answered {answer!r}")
-    print(f"Sharar READY at {url} ({c.MODEL_ID}, context {info.get('context_length')}, {info.get('tp_size', 1)} Spark(s))")
+        sys.exit(f"hibana verify: the canary answered {answer!r}")
+    print(f"Hibana READY at {url} ({c.MODEL_ID}, context {info.get('context_length')}, {info.get('tp_size', 1)} Spark(s))")
     return 0

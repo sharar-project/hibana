@@ -61,7 +61,7 @@ def anthropic_turn(n):
     for i in range(n):
         messages.append({"role": "assistant", "content": [{"type": "tool_use", "id": f"t{i}", "name": "Bash", "input": {"command": "python3 test_calc.py"}}]})
         messages.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": REFUSAL, "is_error": True}]})
-    return {"model": "claude-sharar", "max_tokens": 256, "messages": messages,
+    return {"model": "claude-hibana", "max_tokens": 256, "messages": messages,
             "tools": [{"name": "Bash", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}}}]}
 
 

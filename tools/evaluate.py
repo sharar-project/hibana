@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Evaluate one Sharar build with sharar-eval: serve it, run quality suites and/or the speed benchmark, record both versions.
+"""Evaluate one Hibana build with sharar-eval: serve it, run quality suites and/or the speed benchmark, record both versions.
 
     tools/evaluate.py --target flashnext --profile fast --suite quick
     tools/evaluate.py --target flashnext --profile fast --suite hard --speed
     tools/evaluate.py --target qwen38 --profile exact --tasks gpqa,mmlupro --limit 50 --name gpqa50
     tools/evaluate.py --target flashnext --profile fast --suite quick --baseline $HIBANA_RESULTS/reviews/<date>-evaluate-<name>
 
-- **What is served.** `sharar serve <target> --<profile>` with the `--env HIBANA_KEY=VALUE` overrides in its
+- **What is served.** `hibana serve <target> --<profile>` with the `--env HIBANA_KEY=VALUE` overrides in its
   environment (and the user's config file), from this checkout's engine and Python environment (`uv sync --frozen`).
   The run records the commit; uncommitted engine changes are refused unless --allow-dirty (and then recorded as a
   hash). To evaluate another revision, run this tool from a worktree of it.
@@ -54,7 +54,7 @@ log = gate.log
 
 
 class Served(gate.Served):
-    """A served build: `sharar serve` as a user would run it (3-bit checkpoint fetched), recorded rather than checked
+    """A served build: `hibana serve` as a user would run it (3-bit checkpoint fetched), recorded rather than checked
     against an in-process arm."""
 
     def __init__(self, *args, **kwargs):
@@ -151,7 +151,7 @@ def main(argv=None) -> int:
                   *(["--temperature", str(args.temperature)] if args.temperature else []), *(["--seed", str(args.seed)] if args.seed else []),
                   *(["--concurrency", str(args.concurrency)] if args.concurrency != 4 else [])]
     manifest = {**spec, "name": name, "config_file": str(conf_path) if conf_path else None, "port": args.port,
-                "launcher_source": gate.git("rev-parse", "HEAD"), "dirty": bool(gate.git("status", "--porcelain", "--", "sharar", "tools")),
+                "launcher_source": gate.git("rev-parse", "HEAD"), "dirty": bool(gate.git("status", "--porcelain", "--", "hibana", "tools")),
                 "evals": ev["label"], "evals_commit": ev["commit"],
                 "suite": suite_args, "speed": args.workload if args.speed else None,
                 "baseline": str(args.baseline) if args.baseline else None}

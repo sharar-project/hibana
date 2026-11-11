@@ -31,8 +31,8 @@ def clean(monkeypatch, tmp_path):
     return tmp_path
 
 
-def test_arms_resolve_as_sharar_serve_does(clean):
-    """The gate and `sharar serve` share one resolver (hibana/launch/settings.py)."""
+def test_arms_resolve_as_hibana_serve_does(clean):
+    """The gate and `hibana serve` share one resolver (hibana/launch/settings.py)."""
     exact = gate.resolve("flashnext", "exact", {})
     assert exact.get("HIBANA_ACCEPT_DEFAULT") == "off" and gate.arm_plan(exact)["accept"] == "1:0.0"
     assert gate.resolve("flashnext", "fast", {}).get("HIBANA_DEVICE_ACCEPT") == "1"
@@ -76,7 +76,7 @@ def test_sampled_rule_reaches_the_in_process_arm_as_serve_records_it(clean):
     assert nospec["env"]["HIBANA_ACCEPT_SOFT"] == "0" and nospec["accept"] == "1:0.0"
 
 
-def test_served_arms_are_sharar_serve_in_the_foreground(clean):
+def test_served_arms_are_hibana_serve_in_the_foreground(clean):
     cmd = gate.served_command("flashnext", "fast", 30100)
     assert cmd[2:] == ["-m", "hibana", "serve", "flashnext", "--fast", "--port", "30100", "--no-fetch"]
     assert "HIBANA_CONFIG_FILE" in gate.served_env({}) and gate.served_env({"HIBANA_SSD": "1"})["HIBANA_SSD"] == "0"

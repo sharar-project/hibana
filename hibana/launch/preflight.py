@@ -166,7 +166,7 @@ def summary(s: Settings, host: dict[str, str], w3: Path | None, tp: int = 1) -> 
         draft = "none"
     ssd = f"{s.ssd}, {s.get('HIBANA_SSD_GIB', '200')} GiB" if s.ssd else "off"
     soft = s.get("HIBANA_ACCEPT_SOFT", "0")
-    lines = [f"Sharar {s.target} ({'two Sparks' if tp > 1 else 'one Spark'}) on {s.url}, profile {s.profile}",
+    lines = [f"Hibana {s.target} ({'two Sparks' if tp > 1 else 'one Spark'}) on {s.url}, profile {s.profile}",
              f"  GPU: {host.get('gpu', '?')}; memory: {host.get('memory', '?')}",
              f"  speculation: {s.proposer}, {s.spec} drafts, draft {draft}",
              f"  acceptance: greedy {s.get('HIBANA_ACCEPT_DEFAULT')}, sampled "

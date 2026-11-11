@@ -6,7 +6,7 @@
     tools/h2h_pr.py --target 27b --pr origin/perf/x --base origin/main --repeats 2 --modes greedy,t07,t10
 
 Each arm is a git worktree of its ref under the run directory, served by this checkout's Python environment
-(`uv sync`; the two refs must share `uv.lock`) with `sharar serve <target> --fast|--throughput` on --port, the
+(`uv sync`; the two refs must share `uv.lock`) with `hibana serve <target> --fast|--throughput` on --port, the
 user's config file, no traces, and the SSD tier on as served but in a fresh directory per server (removed after), so
 no arm or repeat restores another's prefixes. Per arm and profile, under the shared GPU lock:
 
@@ -60,7 +60,7 @@ def git(*args, cwd=REPO) -> str:
 
 @contextlib.contextmanager
 def gpu_lock(lock: Path, what: str):
-    """The shared GPU lock every Sharar tool takes, held while at least 40 GiB are free (another server has left)."""
+    """The shared GPU lock every Hibana tool takes, held while at least 40 GiB are free (another server has left)."""
     with open(lock, "a") as f:
         log(f"waiting for the GPU lock ({what})")
         fcntl.flock(f, fcntl.LOCK_EX)
@@ -77,7 +77,7 @@ URL = ""
 
 
 class Server:
-    """`sharar serve <target> --<profile>` from one checkout, in its own process group; stopped with SIGTERM (Ctrl-C)."""
+    """`hibana serve <target> --<profile>` from one checkout, in its own process group; stopped with SIGTERM (Ctrl-C)."""
 
     def __init__(self, tree: Path, target: str, profile: str, port: int, logfile: Path, env: dict, tp: int = 1):
         self.cmd = [str(VENV / "bin" / "python"), "-u", "-m", "hibana", "serve", target, f"--{profile}", "--port", str(port),
@@ -191,7 +191,7 @@ def main() -> int:
     run = results / "reviews" / f"{dt.date.today():%Y-%m-%d}-h2h-{args.name or refs['pr'][:12]}"
     trees = run / "trees"
     trees.mkdir(parents=True, exist_ok=True)
-    if args.tp == 2:  # `sharar serve --tp 2` mirrors each arm's checkout to the same path on the peer
+    if args.tp == 2:  # `hibana serve --tp 2` mirrors each arm's checkout to the same path on the peer
         from hibana.launch import tp
         tp.ssh(tp.peer(env), f"mkdir -p {trees}", check=True)
     labels = {"base": f"{args.base} {refs['base'][:9]}", "pr": f"{args.pr} {refs['pr'][:9]}"}

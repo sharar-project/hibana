@@ -22,13 +22,13 @@ def run(args, *, cwd, env=None):
 
 def main():
     root = Path(__file__).resolve().parents[1]
-    with tempfile.TemporaryDirectory(prefix='sharar-distribution-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='hibana-distribution-') as tmp:
         work = Path(tmp)
         source = work / 'source'
         source.mkdir()
         for name in ('pyproject.toml', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'):
             shutil.copy2(root / name, source / name)
-        shutil.copytree(root / 'sharar', source / 'sharar',
+        shutil.copytree(root / 'hibana', source / 'hibana',
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.so'))
         artifacts = work / 'artifacts'
         artifacts.mkdir()

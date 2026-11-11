@@ -8,7 +8,7 @@
     tools/lossy_gate.py --target flashnext --name kv-fp4 --profile fast --env HIBANA_X=1 --battery long
 
 A candidate is a serving profile (`--profile`, default exact) plus `--env KEY=VALUE` overrides, resolved for the
-target exactly as `sharar serve <target> --<profile>` resolves them with those settings in its environment
+target exactly as `hibana serve <target> --<profile>` resolves them with those settings in its environment
 (hibana/launch/settings.py: the user's config file, the target's settings, the profile's defaults); the baseline is
 `--baseline-profile` (default exact) with `--baseline-env`. Both arms run this checkout's engine from its Python
 environment (`uv sync --frozen`; the scorecard records the commit and any uncommitted engine changes). The run is
@@ -25,7 +25,7 @@ Layers, cheapest first:
   2  Speculation health (same process): tokens per verify round, round cost and decode tok/s of
      each prompt, greedy with the profile's acceptance rule, paired per prompt; the floor is a
      second baseline pass. The speed delta of the verdict is the decode tok/s ratio here.
-  3  Task battery (served over HTTP: `sharar serve` in the foreground on --port, and
+  3  Task battery (served over HTTP: `hibana serve` in the foreground on --port, and
      sharar-eval's `evals.suite` runs with the server's own acceptance default): paired per item,
      McNemar. Screen: the `quick` suite (GSM8K first 300, HumanEval 164, MGSM 24 per language, plus
      long-context needles at 16K and 64K as a smoke test). Full, when the screen is close: the `full`
@@ -80,7 +80,7 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO))  # this checkout's sharar (the launcher resolver is standard-library only)
+sys.path.insert(0, str(REPO))  # this checkout's hibana (the launcher resolver is standard-library only)
 from hibana.launch import guard, lxcfs, preflight  # noqa: E402
 from hibana.launch import settings as launch  # noqa: E402
 WORKLOAD = REPO / "tools" / "gate" / "workloads" / "lossy_v1.json"
@@ -169,12 +169,12 @@ def gate_env() -> dict:
 
 
 def resolve(target: str, profile: str, overrides: dict) -> launch.Settings:
-    """One arm's settings, as `sharar serve <target> --<profile>` resolves them with the overrides in its environment."""
+    """One arm's settings, as `hibana serve <target> --<profile>` resolves them with the overrides in its environment."""
     return launch.resolve(target, profile, overrides, env=gate_env(), traces=False)
 
 
 def accept_rule(text: str) -> str:
-    """A K:M (or off) as `sharar engine` installs it."""
+    """A K:M (or off) as `hibana engine` installs it."""
     if text == "off":
         return "1:0.0"
     k, m = text.split(":")
@@ -187,14 +187,14 @@ SERVER_ONLY = ("HIBANA_MAX_BATCH", "HIBANA_SPEC_DEPTHS", "HIBANA_TRACES", "HIBAN
 
 
 def arm_plan(s: launch.Settings) -> dict:
-    """What the arm runs: its engine environment and the executor built as `sharar engine` builds it (the gate does not
+    """What the arm runs: its engine environment and the executor built as `hibana engine` builds it (the gate does not
     fetch 3-bit checkpoints: an arm serves what <target>-current holds)."""
     w3 = preflight.ensure_w3(s, fetch=False)
     cenv = {k: v for k, v in s.engine_env(w3).items() if k not in SERVER_ONLY}
     spec = s.spec
     accept = accept_rule(s.get("HIBANA_ACCEPT_DEFAULT", "off")) if spec else "1:0.0"
     cenv["HIBANA_SPEC"], cenv["HIBANA_ACCEPT_DEFAULT"] = str(spec), accept
-    # sampled requests' s, as `sharar engine` records it (0 without speculation)
+    # sampled requests' s, as `hibana engine` records it (0 without speculation)
     cenv["HIBANA_ACCEPT_SOFT"] = s.get("HIBANA_ACCEPT_SOFT", "0") if spec else "0"
     return {"target": s.target, "env": cenv, "proposer": s.proposer, "spec": spec,
             "verify_state": s.get("HIBANA_VERIFY_STATE", "reconstruct"), "draft_precision": s.get("HIBANA_DRAFT_PRECISION", "bf16"),
@@ -202,7 +202,7 @@ def arm_plan(s: launch.Settings) -> dict:
 
 
 def served_command(target: str, profile: str, port: int) -> list[str]:
-    """A served arm: `sharar serve` in the foreground, on our port, recording nothing."""
+    """A served arm: `hibana serve` in the foreground, on our port, recording nothing."""
     return [str(VENV / "bin" / "python"), "-u", "-m", "hibana", "serve", target, f"--{profile}", "--port", str(port),
             "--no-fetch"]
 
@@ -229,14 +229,14 @@ def available_gib() -> float:
 
 
 def other_gpu_work() -> list[str]:
-    """Model servers and GPU processes that are not this tool's: Sharar services, model containers, GPU processes."""
+    """Model servers and GPU processes that are not this tool's: Hibana services, model containers, GPU processes."""
     busy = []
-    units = subprocess.run(["systemctl", "--user", "list-units", "--state=active", "--plain", "--no-legend", "sharar-*.service"],
+    units = subprocess.run(["systemctl", "--user", "list-units", "--state=active", "--plain", "--no-legend", "hibana-*.service", "sharar-*.service"],
                            capture_output=True, text=True).stdout.split()
     busy += [u for u in units if u.endswith(".service")]
     out = subprocess.run(["docker", "ps", "--format", "{{.Names}}\t{{.Image}}"], capture_output=True, text=True).stdout if shutil.which("docker") else ""
     rows = [line.split("\t") for line in out.splitlines() if "\t" in line]
-    busy += [f"{n} ({i})" for n, i in rows if i.startswith("sharar") or n.startswith("sharar") or "sglang" in i or "vllm" in i]
+    busy += [f"{n} ({i})" for n, i in rows if i.startswith(("hibana", "sharar")) or n.startswith(("hibana", "sharar")) or "sglang" in i or "vllm" in i]
     out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,process_name", "--format=csv,noheader"], capture_output=True, text=True).stdout
     busy += [f"GPU process {line.strip()}" for line in out.splitlines() if line.strip()]
     return busy
@@ -335,7 +335,7 @@ def get_json(url: str) -> dict:
 
 
 class Served:
-    """One served arm: `sharar serve <target> --<profile>` in the foreground with the arm's overrides, its configuration
+    """One served arm: `hibana serve <target> --<profile>` in the foreground with the arm's overrides, its configuration
     checked against the in-process arm, eval shards run against it, then stopped (SIGTERM, as Ctrl-C)."""
 
     def __init__(self, label, arm_dir: Path, target: str, profile: str, overrides: dict, port: int, python: str, evals: Path,
@@ -680,7 +680,7 @@ def main(argv=None) -> int:
     plans = {k: arm_plan(v) for k, v in arms.items()}
     results, hf_cache = arms["baseline"].results, str(arms["baseline"].hf_cache)
     global LOCK, EVALS_ENV
-    LOCK = results / ".gpu.lock"  # the shared GPU lock every Sharar tool takes
+    LOCK = results / ".gpu.lock"  # the shared GPU lock every Hibana tool takes
     EVALS_ENV = evals_env(results, hf_cache)
     engine = engine_identity()
     ev = sharar_eval(args.evals, args.python)

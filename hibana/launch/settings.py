@@ -1,9 +1,9 @@
-"""What `sharar serve` serves: one target's settings, resolved from every source in one place.
+"""What `hibana serve` serves: one target's settings, resolved from every source in one place.
 
 Order, first wins: command-line choices (`resolve`'s `target`, `profile` and `overrides`), the process environment
 (`HIBANA_*`), the user's config file (`HIBANA_CONFIG_FILE`, else `config/gb10.env` in the checkout, else
-`~/.config/sharar/sharar.env`; `KEY=VALUE` lines), the target's settings (`TARGET_SETTINGS`), the serving profile's
-defaults (`profile_defaults`), then the built-in defaults. `resolve` returns the engine's environment and its `sharar engine` arguments; nothing here
+`~/.config/hibana/hibana.env`, else the former `~/.config/sharar/sharar.env`; `KEY=VALUE` lines), the target's settings (`TARGET_SETTINGS`), the serving profile's
+defaults (`profile_defaults`), then the built-in defaults. `resolve` returns the engine's environment and its `hibana engine` arguments; nothing here
 imports torch, so the launcher stays fast and testable on a CPU.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-CHECKOUT = Path(__file__).resolve().parents[2]  # the repository root when sharar is installed editable
+CHECKOUT = Path(__file__).resolve().parents[2]  # the repository root when hibana is installed editable
 
 # Canonical target names and the names users type.
 ALIASES = {"27b": "qwen38", "27B": "qwen38", "qwen38": "qwen38", "qwen3.8-27b": "qwen38",
@@ -24,7 +24,7 @@ ALIASES = {"27b": "qwen38", "27B": "qwen38", "qwen38": "qwen38", "qwen3.8-27b": 
            "bolt": "bolt", "nemotron-bolt": "bolt"}
 TARGET_CHOICES = ("27b", "flashnext", "nemotron", "bolt", "qwen38", "flash-next", "nemotron-super", "nemotron-bolt")
 SERVED = ("27b", "flashnext", "nemotron", "bolt")  # one name per target, in the order `status`, `stop` and the clients look
-SERVE_HINT = "sharar serve " + ", ".join(SERVED[:-1]) + " or " + SERVED[-1]  # what to run when nothing is serving
+SERVE_HINT = "hibana serve " + ", ".join(SERVED[:-1]) + " or " + SERVED[-1]  # what to run when nothing is serving
 
 # What each target serves when nothing else says so (port, service, drafter: the HIBANA_* keys), and what the launcher
 # knows of it: `recurrence` (`Target.recurrence`, the formats of SSM_STATES; default gdn), `w3_missing` (the warning
@@ -33,20 +33,20 @@ SERVE_HINT = "sharar serve " + ", ".join(SERVED[:-1]) + " or " + SERVED[-1]  # w
 # `w3_required` (no fallback: the 3-bit profiles refuse to start without one) and `fp8_kv_only` (its attention writes
 # the FP8 pool only).
 TARGET_SETTINGS = {
-    "qwen38": {"HIBANA_SERVICE": "sharar-qwen38", "HIBANA_PORT": "30001", "HIBANA_PROPOSER": "dflash2", "HIBANA_SPEC": "15",
+    "qwen38": {"HIBANA_SERVICE": "hibana-qwen38", "HIBANA_PORT": "30001", "HIBANA_PROPOSER": "dflash2", "HIBANA_SPEC": "15",
                "HIBANA_VERIFY_STATE": "reconstruct", "HIBANA_DRAFT_PRECISION": "fp8",
                "w3_missing": "nearest-rounded copies (about 2 GSM8K points and 8% tokens per round below calibrated)"},
-    "flashnext": {"HIBANA_SERVICE": "sharar-flashnext", "HIBANA_PORT": "30004", "HIBANA_PROPOSER": "mtp",
+    "flashnext": {"HIBANA_SERVICE": "hibana-flashnext", "HIBANA_PORT": "30004", "HIBANA_PROPOSER": "mtp",
                   "HIBANA_VERIFY_STATE": "reconstruct", "HIBANA_DRAFT_PRECISION": "fp8", "HIBANA_DRAFT": "pinned",
                   "HIBANA_DRAFT_HEAD": "w2", "HIBANA_FLASHNEXT_TRUNK": "fp8", "w3_calibrated_only": True,
                   "w3_missing": "serving the FP8 trunk, about 24% slower single-stream than {profile} with it"},
     # its own MTP head (the depth is the profile's), one Spark only; the draft steps read a 2-bit copy of the FP8
     # lm_head, its top 16 rescored by the FP8 rows (lossless: acceptance checks every draft against the target)
     # Both Nemotron checkpoints serve their vision encoder (image input; HIBANA_VISION=0 leaves its 1.7 GiB to the pools)
-    "nemotron": {"HIBANA_SERVICE": "sharar-nemotron", "HIBANA_PORT": "30005", "HIBANA_PROPOSER": "mtp",
+    "nemotron": {"HIBANA_SERVICE": "hibana-nemotron", "HIBANA_PORT": "30005", "HIBANA_PROPOSER": "mtp",
                  "HIBANA_VERIFY_STATE": "reconstruct", "HIBANA_DRAFT_HEAD": "w2", "HIBANA_VISION": "1", "recurrence": "mamba2",
                  "w3_calibrated_only": True, "w3_required": True, "fp8_kv_only": True},
-    "bolt": {"HIBANA_SERVICE": "sharar-bolt", "HIBANA_PORT": "30006", "HIBANA_PROPOSER": "dflash2",
+    "bolt": {"HIBANA_SERVICE": "hibana-bolt", "HIBANA_PORT": "30006", "HIBANA_PROPOSER": "dflash2",
              "HIBANA_DRAFT": "pinned", "HIBANA_DRAFT_PRECISION": "bf16", "HIBANA_VERIFY_STATE": "reconstruct",
              "HIBANA_VISION": "1", "recurrence": "mamba2", "w3_calibrated_only": True},
 }
@@ -253,12 +253,18 @@ def legacy_names(values) -> dict[str, str]:
     return out
 
 
+def former(new: Path, old: Path) -> Path:
+    """`new`, or `old`, the same file or directory under the former name, while only that one exists."""
+    return old if old.exists() and not new.exists() else new
+
+
 def config_file(env: dict | None = None) -> Path | None:
     """The user's settings file, if there is one."""
     env = os.environ if env is None else env
     if env.get("HIBANA_CONFIG_FILE"):
         return Path(expand(env["HIBANA_CONFIG_FILE"], env))
-    for candidate in (CHECKOUT / "config" / "gb10.env", Path(env.get("HOME") or Path.home()) / ".config" / "sharar" / "sharar.env"):
+    conf = Path(env.get("HOME") or Path.home()) / ".config"
+    for candidate in (CHECKOUT / "config" / "gb10.env", conf / "hibana" / "hibana.env", conf / "sharar" / "sharar.env"):
         if candidate.is_file():
             return candidate
     return None
@@ -354,7 +360,7 @@ class Settings:
         return env
 
     def engine_args(self, tp: int = 1) -> list[str]:
-        """`sharar engine` arguments for these settings."""
+        """`hibana engine` arguments for these settings."""
         args = ["--target", self.target, "--host", self.host, "--port", str(self.port), "--proposer", self.proposer,
                 "--verify-state", self.get("HIBANA_VERIFY_STATE", "reconstruct"), "--spec", str(self.spec),
                 "--context-length", str(self.max_context), "--max-batch", self.get("HIBANA_MAX_BATCH", "4"),
@@ -424,7 +430,8 @@ def resolve(target: str | None = None, profile: str | None = None, overrides: di
     home = Path(env.get("HOME") or Path.home())
     path = lambda v: Path(expand(str(v), env))  # noqa: E731
     hf_cache = path(values.get("HIBANA_HF_CACHE") or env.get("HF_HOME") or home / ".cache" / "huggingface")
-    results = path(values.get("HIBANA_RESULTS") or Path(env.get("XDG_DATA_HOME") or home / ".local" / "share") / "sharar")
+    data = Path(env.get("XDG_DATA_HOME") or home / ".local" / "share")
+    results = path(values.get("HIBANA_RESULTS") or former(data / "hibana", data / "sharar"))
     model_cache = path(values.get("HIBANA_FLASHNEXT_CACHE") or hf_cache) if name == "flashnext" else hf_cache
 
     # validation (the engine checks the rest)

@@ -1,4 +1,4 @@
-"""`sharar serve nemotron`'s settings (hibana/launch/settings.py): the target's port and drafter, its profiles, the
+"""`hibana serve nemotron`'s settings (hibana/launch/settings.py): the target's port and drafter, its profiles, the
 pinned snapshot the preflight checks."""
 import pytest
 
@@ -20,7 +20,7 @@ def resolve(env, profile=None, **kw):
 def test_names_port_service_and_drafter(env, name):
     s = launch.resolve(name, env=env)
     assert (s.target, s.port, s.service, s.proposer, s.get("HIBANA_VERIFY_STATE")) == (
-        "nemotron", 30005, "sharar-nemotron", "mtp", "reconstruct")
+        "nemotron", 30005, "hibana-nemotron", "mtp", "reconstruct")
     assert s.model_cache == s.hf_cache and s.ssd == s.results / "ssd" / "nemotron"
     assert s.get("HIBANA_DRAFT_PRECISION") == "bf16" and not s.parallel_draft
 

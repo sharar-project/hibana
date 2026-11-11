@@ -73,7 +73,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         engine.drain(5)
         await asyncio.to_thread(engine.thread.join, 6)
 
-    app = FastAPI(title="sharar", lifespan=lifespan)
+    app = FastAPI(title="hibana", lifespan=lifespan)
     started = time.time()
     # Messages API requests this server declines or reduces, to see what harnesses send.
     messages_stats = {"server_tools_ignored": 0}
@@ -226,7 +226,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
     @app.get("/v1/models")
     async def models():
-        return {"object": "list", "data": [{"id": MODEL_ID, "object": "model", "owned_by": "sharar", "root": MODEL_ID}]}
+        return {"object": "list", "data": [{"id": MODEL_ID, "object": "model", "owned_by": "hibana", "root": MODEL_ID}]}
 
     @app.get("/get_server_info")
     @app.get("/describe")
@@ -858,7 +858,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
     if current().w3_warning:
         log(f"WARNING: {current().w3_warning}")
     describe = {
-        "engine": "sharar",
+        "engine": "hibana",
         "target": served.name,
         "model_path": served.model_id,
         "revision": served.model_revision,
