@@ -7,6 +7,11 @@
 
 <p align="center"><b>Tailored to the model. Tuned to the machine. Built for agents.</b></p>
 
+<p align="center">
+  <a href="https://arxiv.org/abs/2611.10469">Paper</a> ·
+  <a href="https://sharar-project.github.io/blog/sharar-paper/">Blog post</a>
+</p>
+
 Hibana (formerly Sharar) runs open models on your own NVIDIA GB10 (DGX Spark) and serves them through OpenAI- and
 Anthropic-compatible APIs, so Claude Code, opencode, aider or any OpenAI client can use them. It brings speculative
 decoding, prefix caching (with an optional SSD tier for agent sessions) and a 262K context.
