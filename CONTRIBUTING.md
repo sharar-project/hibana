@@ -4,7 +4,8 @@ Hibana specializes in local inference on one GB10. Keep the current Qwen
 target checkpoint, its vocabulary head and the numerical serving profile fixed
 unless a change explicitly validates a new one. Favor a small implementation with
 explicit tensor ownership over a registry or framework. Read [the architecture](docs/architecture.md) and
-[the interfaces](docs/interfaces.md) first; open work is in the GitHub issues.
+[the interfaces](docs/interfaces.md) first; open work is in the GitHub issues. AI-assisted changes also follow
+[AGENTS.md](AGENTS.md).
 
 Tracked files (code, comments, tests, docs, configs) carry no issue or pull-request numbers and no dates; pinned
 revisions and hashes and archive tag names are the exceptions. Say what the code does and why, with the measurement
