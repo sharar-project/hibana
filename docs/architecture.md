@@ -80,7 +80,7 @@ benchmark_workloads.py  the fixed benchmark prompts (code, design, reasoning) th
 | Code | Where | Why |
 |---|---|---|
 | Engine, models, kernels, weights, cache, proposers | `hibana/` | Proposers share the verify graphs, state ownership, kernels and draft heads with the target. |
-| HTTP evals and speed benchmarks | [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval) | They import nothing from `hibana` and run against any server. |
+| HTTP evals and speed benchmarks | [sharar-eval](https://github.com/sharar-project/sharar-eval) | They import nothing from `hibana` and run against any server. |
 | In-process profilers and the lossy gate's in-process layers | `profiling/`, `tools/gate/` | They reach into engine internals and version with them. |
 | Target-model and drafter training (distillation, LoRA, drafter adaptation) | a separate repository when it starts | Its own dependencies; uses Hibana as the rollout server and `--draft DIR` to serve a drafter. Drafter training on recorded traffic left this repository at the tag `archive/draft-training`. |
 

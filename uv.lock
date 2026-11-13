@@ -496,7 +496,7 @@ provides-extras = ["test"]
 [package.metadata.requires-dev]
 eval = [
     { name = "pyarrow" },
-    { name = "sharar-eval", git = "https://github.com/abdelfattah-lab/sharar-eval?rev=58ea950577947004861da46b11f62e7c052dc565" },
+    { name = "sharar-eval", git = "https://github.com/sharar-project/sharar-eval?rev=58ea950577947004861da46b11f62e7c052dc565" },
 ]
 gb10 = [
     { name = "b12x", specifier = "==1.5.0" },
@@ -1165,7 +1165,7 @@ wheels = [
 [[package]]
 name = "sharar-eval"
 version = "0.1.0"
-source = { git = "https://github.com/abdelfattah-lab/sharar-eval?rev=58ea950577947004861da46b11f62e7c052dc565#58ea950577947004861da46b11f62e7c052dc565" }
+source = { git = "https://github.com/sharar-project/sharar-eval?rev=58ea950577947004861da46b11f62e7c052dc565#58ea950577947004861da46b11f62e7c052dc565" }
 dependencies = [
     { name = "absl-py" },
     { name = "editdistance" },
