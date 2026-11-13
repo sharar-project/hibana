@@ -172,9 +172,9 @@ url = "https://flashinfer.ai/whl/cu130"
 explicit = true
 
 [project.urls]
-Homepage = "https://github.com/abdelfattah-lab/sharar"
-Repository = "https://github.com/abdelfattah-lab/sharar"
-Issues = "https://github.com/abdelfattah-lab/sharar/issues"
+Homepage = "https://github.com/sharar-project/hibana"
+Repository = "https://github.com/sharar-project/hibana"
+Issues = "https://github.com/sharar-project/hibana/issues"
 
 [project.scripts]
 hibana = "hibana.cli:main"
