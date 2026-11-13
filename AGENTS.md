@@ -23,7 +23,7 @@ hibana/     the engine, installed as the `hibana` package and command; packages 
 tests/      unit/ (CPU) and gpu/ (HIBANA_RUN_GPU=1)
 tools/      checks, the lossy gate, h2h_pr.py and evaluate.py
 profiling/  in-process profilers and their frozen workloads
-docs/       operations, API, architecture and one page per model
+docs/       operations, API, architecture and one page per model; the index is docs/README.md
 ```
 
 ## Environment
