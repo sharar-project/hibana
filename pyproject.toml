@@ -54,7 +54,7 @@ gb10 = [
 ]
 # Quality and speed benchmarks (`uv sync --group eval`); pyarrow also reads the calibration prompts' parquet files.
 eval = [
-  "sharar-eval @ git+https://github.com/sharar-project/sharar-eval@58ea950577947004861da46b11f62e7c052dc565",
+  "sharar-eval @ git+https://github.com/sharar-project/sharar-eval@d6e559d968b9001f24ea0b08c7683385f502142c",
   "pyarrow",
 ]
 
