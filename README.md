@@ -165,6 +165,20 @@ For more details:
 - [Evaluation](docs/evaluation.md): measuring quality and speed
 - [All documentation](docs/README.md) and [contributing](CONTRIBUTING.md)
 
+## Citation
+
+If you use Hibana for your research, please cite our [paper](https://arxiv.org/abs/2611.10469):
+
+```bibtex
+@article{emara2026hibana,
+  title={Hibana: Fast Agentic Inference on Unified-Memory Devices},
+  author={Emara, Yahya and Chang, Chi-Chih and Fei, Anthony and AbouElhamayed, Ahmed F. and Chen, Chong-Yan and
+          Chiang, Hung-Yueh and Wu, Kai-Chiang and Abdelfattah, Mohamed S.},
+  journal={arXiv preprint arXiv:2611.10469},
+  year={2026}
+}
+```
+
 ## Acknowledgment
 
 Hibana learned the design and reused code from the following projects:
