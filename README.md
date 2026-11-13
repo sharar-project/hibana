@@ -17,7 +17,7 @@ You need one DGX Spark (or another NVIDIA GB10 machine) with DGX OS and about 13
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh     # install uv, if you don't have it
-git clone https://github.com/abdelfattah-lab/sharar && cd sharar
+git clone https://github.com/sharar-project/hibana && cd hibana
 uv sync                                             # set up Python (about a minute)
 uv run hibana serve nemotron                        # serve Nemotron 3.5 Super on http://127.0.0.1:30005
 ```
