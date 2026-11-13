@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from sharar.cache.spec_budget import verify_bytes
-from sharar.engine.contracts import ProposerContext
-from sharar.target import NEMOTRON
+from hibana.cache.spec_budget import verify_bytes
+from hibana.engine.contracts import ProposerContext
+from hibana.target import NEMOTRON
 from tests.ngram_proposer import NGramProposer
 from tests.unit.test_runtime_safety import tiny_executor
 
@@ -22,7 +22,7 @@ def test_reconstruction_uses_the_recurrences_constructor(monkeypatch):
             self.layer_inputs = {}
             calls.append((pool, batch, steps, key_heads))
 
-    monkeypatch.setitem(sys.modules, "sharar.kernels.mamba2", SimpleNamespace(AcceptedState=AcceptedState))
+    monkeypatch.setitem(sys.modules, "hibana.kernels.mamba2", SimpleNamespace(AcceptedState=AcceptedState))
     proposer = NGramProposer(ProposerContext(ex.device, ex.max_batch, ex.max_context), k=3)
     ex.set_proposer(proposer, state_strategy="reconstruct")
     assert calls == [(ex.state_pool, ex.max_batch, 4, 8)]
@@ -38,15 +38,15 @@ def test_verify_budget_includes_both_mamba_groups_and_shared_positions():
 
 @pytest.mark.parametrize("kv", ["nvfp4", "sim-fp4", "sim-k8v4", "sim-bf16"])
 def test_executor_refuses_unsupported_kv_before_allocating(kv):
-    from sharar.engine import config
-    from sharar.engine.executor import Executor
+    from hibana.engine import config
+    from hibana.engine.executor import Executor
     with config.using(config.current().replace(kv_format=kv)):
-        with pytest.raises(ValueError, match="supports SHARAR_KV_FORMAT=fp8"):
+        with pytest.raises(ValueError, match="supports HIBANA_KV_FORMAT=fp8"):
             Executor(SimpleNamespace(target=NEMOTRON))
 
 
 def test_stop_ids_resolve_from_the_executor_target(monkeypatch):
-    from sharar.engine.sampler import SamplingParams
+    from hibana.engine.sampler import SamplingParams
     ex = tiny_executor(monkeypatch)
     ex.target = NEMOTRON
     params = SamplingParams()
@@ -58,7 +58,7 @@ def test_stop_ids_resolve_from_the_executor_target(monkeypatch):
 
 @pytest.mark.parametrize("changed", ["capture", "source", "damping", "codebooks", "chunk", "min_tokens", "prior_tokens", "revision", "method"])
 def test_expert_resume_rejects_other_inputs_before_changing_files(tmp_path, changed):
-    from sharar.weights.nemotron_w3_experts import check_progress, fit_identity
+    from hibana.weights.nemotron_w3_experts import check_progress, fit_identity
     capture = tmp_path / "capture.json"
     capture.write_text(json.dumps({"inputs_sha256": "inputs", "rows": {"mtp": 12}}))
     args = SimpleNamespace(activations=tmp_path, codebooks="lloyd,zero8", chunk=16, damping=.01,

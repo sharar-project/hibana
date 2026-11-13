@@ -11,19 +11,19 @@ import pytest
 import torch
 import httpx
 
-from sharar.engine.loop import EngineLoop, EngineUnavailable
-from sharar.api.validation import _sampling_from
-from sharar.engine.sampler import SamplingParams
-from sharar.engine.scheduler import Scheduler
-from sharar.engine.contracts import ProposerContext
-from sharar.proposers.mtp import MtpProposer
+from hibana.engine.loop import EngineLoop, EngineUnavailable
+from hibana.api.validation import _sampling_from
+from hibana.engine.sampler import SamplingParams
+from hibana.engine.scheduler import Scheduler
+from hibana.engine.contracts import ProposerContext
+from hibana.proposers.mtp import MtpProposer
 from tests.unit.test_runtime_safety import tiny_executor
 
 
 def _shutdown_server(pipe):
     import uvicorn
     from contextlib import asynccontextmanager
-    from sharar.api.server import create_app
+    from hibana.api.server import create_app
     with pytest.MonkeyPatch.context() as patches:
         ex = tiny_executor(patches)
         original = ex.decode_step
@@ -177,7 +177,7 @@ def test_mtp_bonus_and_cached_prefix_never_read_unwritten_draft_kv(monkeypatch):
         out[:, 7] = 10
         return out
     ex.model.logits = logits
-    from sharar.proposers.draft_head import TargetHead
+    from hibana.proposers.draft_head import TargetHead
     head = SimpleNamespace(bytes=0, write_kv=write, forward=forward, logits=logits, draft_head=TargetHead(logits), head_input=lambda d: d)
     proposer = MtpProposer(head, ProposerContext(ex.device, 4, 512))
     ex.set_proposer(proposer)

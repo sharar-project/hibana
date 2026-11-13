@@ -6,9 +6,9 @@ import struct
 import pytest
 import torch
 
-from sharar.weights.ggml import GgmlLinear, dequantize
-from sharar.weights.iq2_grid import GRID
-from sharar.weights.linear import Linear
+from hibana.weights.ggml import GgmlLinear, dequantize
+from hibana.weights.iq2_grid import GRID
+from hibana.weights.linear import Linear
 
 
 def test_q8_signed_values_half_scales_and_multiple_rows():

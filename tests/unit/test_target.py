@@ -1,10 +1,10 @@
 """The target descriptor reproduces the 27B's pinned constants and derived geometry."""
 import pytest
 
-from sharar import config
-from sharar.target import DEFAULT_TARGET, FLASHNEXT, NEMOTRON, NEMOTRON_BOLT, QWEN38, TARGETS, get
-from sharar.cache import ledger, state_pool
-from sharar.cache.spec_budget import verify_bytes
+from hibana import config
+from hibana.target import DEFAULT_TARGET, FLASHNEXT, NEMOTRON, NEMOTRON_BOLT, QWEN38, TARGETS, get
+from hibana.cache import ledger, state_pool
+from hibana.cache.spec_budget import verify_bytes
 
 
 def test_default_target_matches_the_pinned_constants():

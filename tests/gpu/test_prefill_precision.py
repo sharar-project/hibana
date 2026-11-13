@@ -9,10 +9,10 @@ import torch
 @torch.inference_mode()
 def test_mixed_prefix_attention_matches_dense_reference(prefixes):
     import flashinfer
-    from sharar.engine.context import ForwardContext
-    from sharar.kernels.ops import RaggedAttention
-    from sharar.cache.kv_pool import KvPool
-    from sharar.model.attention import Attention
+    from hibana.engine.context import ForwardContext
+    from hibana.kernels.ops import RaggedAttention
+    from hibana.cache.kv_pool import KvPool
+    from hibana.model.attention import Attention
 
     torch.manual_seed(317)
     device=torch.device('cuda')

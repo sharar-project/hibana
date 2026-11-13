@@ -12,17 +12,17 @@ import threading
 import pytest
 import torch
 
-from sharar.cache.kv_pool import KvPool
-from sharar.cache.radix import RadixCache, owner_kind
-from sharar.cache.request_state import StateManager
-from sharar.cache.snapshot import Snapshot
-from sharar.cache.ssd import SsdTier
-from sharar.cache import ssd, ssd_store
-from sharar.cache.ssd_store import BLOCK, SsdStore, memory_backed
-from sharar.cache.state_pool import StatePool
-from sharar.engine.request import Request
-from sharar.engine.sampler import SamplingParams
-from sharar.target import DEFAULT_TARGET
+from hibana.cache.kv_pool import KvPool
+from hibana.cache.radix import RadixCache, owner_kind
+from hibana.cache.request_state import StateManager
+from hibana.cache.snapshot import Snapshot
+from hibana.cache.ssd import SsdTier
+from hibana.cache import ssd, ssd_store
+from hibana.cache.ssd_store import BLOCK, SsdStore, memory_backed
+from hibana.cache.state_pool import StatePool
+from hibana.engine.request import Request
+from hibana.engine.sampler import SamplingParams
+from hibana.target import DEFAULT_TARGET
 from tests.unit.test_radix import snaps
 
 CPU = torch.device("cpu")
@@ -345,11 +345,11 @@ def test_the_plan_reserve_does_not_grow_with_the_context():
 
 def test_a_store_kept_in_memory_is_refused(tmp_path, monkeypatch):
     mounts = "tmpfs /tmp tmpfs rw 0 0\n/dev/nvme0n1p2 / ext4 rw 0 0\n/dev/nvme1n1 /mnt/my\\040ssd xfs rw 0 0\n"
-    assert memory_backed("/tmp/sharar-ssd", mounts) == "tmpfs" and memory_backed("/tmp", mounts) == "tmpfs"
+    assert memory_backed("/tmp/hibana-ssd", mounts) == "tmpfs" and memory_backed("/tmp", mounts) == "tmpfs"
     assert memory_backed("/tmpx/a", mounts) is None and memory_backed("/home/u", mounts) is None
     assert memory_backed("/mnt/my ssd/x", mounts) is None
     monkeypatch.setattr(ssd_store, "memory_backed", lambda path: "tmpfs")
-    with pytest.raises(OSError, match="SHARAR_SSD_DIR"):
+    with pytest.raises(OSError, match="HIBANA_SSD_DIR"):
         SsdStore(tmp_path, {})
 
 
@@ -1091,7 +1091,7 @@ def prefilled(state, kv, sp, ids, seed):
     snapshots it places (`Executor._checkpoint_positions`: the prompt's last chunk end S), and once the chunk is in
     the prompt up to S goes into the tree and the request's lock moves there (`StateManager.checkpoint`); then sample
     its first token."""
-    from sharar.engine.executor import Executor
+    from hibana.engine.executor import Executor
     ex = Executor.__new__(Executor)
     ex.state = state
     req = Request(prompt_ids=list(ids), params=SamplingParams(max_new_tokens=4, stop_token_ids=()))

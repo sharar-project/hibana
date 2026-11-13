@@ -6,7 +6,7 @@ import torch
 @pytest.mark.parametrize("fused", [False, True])
 @torch.inference_mode()
 def test_large_strided_rows_match_small_reference(fused):
-    from sharar.kernels.nvfp4_quant import nvfp4_quantize, silu_mul_nvfp4_quantize
+    from hibana.kernels.nvfp4_quant import nvfp4_quantize, silu_mul_nvfp4_quantize
 
     m, k = 65536, 17408
     # A preceding owned guard makes int32-wrapping offsets safe to reproduce.

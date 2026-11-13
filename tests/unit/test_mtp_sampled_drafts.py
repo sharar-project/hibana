@@ -1,16 +1,16 @@
-"""Sampled MTP drafts (SHARAR_MTP_SAMPLE): the draft head's candidates, the drafts' law, exact verification against it,
+"""Sampled MTP drafts (HIBANA_MTP_SAMPLE): the draft head's candidates, the drafts' law, exact verification against it,
 the settings and the profiles that turn it on."""
 import math
 
 import pytest
 import torch
 
-from sharar.engine.config import EngineConfig
-from sharar.engine.rejection import distribution, small_laws, verify_batch
-from sharar.engine.sampler import SamplingParams
-from sharar.launch import settings as launch
-from sharar.proposers.draft_head import ShortlistHead, TargetHead
-from sharar.proposers.mtp import draft_laws
+from hibana.engine.config import EngineConfig
+from hibana.engine.rejection import distribution, small_laws, verify_batch
+from hibana.engine.sampler import SamplingParams
+from hibana.launch import settings as launch
+from hibana.proposers.draft_head import ShortlistHead, TargetHead
+from hibana.proposers.mtp import draft_laws
 
 
 class _Req:
@@ -22,24 +22,24 @@ class _Req:
 
 def test_settings_parse_and_validate():
     assert not EngineConfig.from_env({}).mtp_sample
-    assert EngineConfig.from_env({"SHARAR_MTP_SAMPLE": "1"}).mtp_sample
+    assert EngineConfig.from_env({"HIBANA_MTP_SAMPLE": "1"}).mtp_sample
 
 
 @pytest.mark.parametrize("profile", ["fast", "throughput"])
 def test_mtp_profiles_sample_their_drafts(profile):
     for p in (launch.profile_defaults(profile, "flashnext"), launch.profile_defaults(profile, "flashnext", proposer="mtp"),
               launch.profile_defaults(profile, "qwen38", proposer="mtp"), launch.profile_defaults(profile, "nemotron")):
-        assert p["SHARAR_MTP_SAMPLE"] == "1", p
-        assert p["SHARAR_ACCEPT_DEFAULT"] == "3:2.0"  # greedy requests keep the relaxed rule
+        assert p["HIBANA_MTP_SAMPLE"] == "1", p
+        assert p["HIBANA_ACCEPT_DEFAULT"] == "3:2.0"  # greedy requests keep the relaxed rule
     # DFlash2 drafts are sampled already
     for p in (launch.profile_defaults(profile, "flashnext", proposer="dflash2"), launch.profile_defaults(profile, "qwen38")):
-        assert "SHARAR_MTP_SAMPLE" not in p
+        assert "HIBANA_MTP_SAMPLE" not in p
 
 
 def test_exact_profiles_keep_argmax_drafts():
     for target in ("flashnext", "qwen38", "nemotron"):
         p = launch.profile_defaults("exact", target)
-        assert "SHARAR_MTP_SAMPLE" not in p and p["SHARAR_ACCEPT_SOFT"] == "0"
+        assert "HIBANA_MTP_SAMPLE" not in p and p["HIBANA_ACCEPT_SOFT"] == "0"
 
 
 def test_target_head_candidates_are_its_best_logits():

@@ -5,10 +5,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.engine.config import current, using
-from sharar.engine.context import ForwardContext
-from sharar.model.gdn_plan import prepare_gdn_prefill
-from sharar.kernels.gdn_prefill import prefill, backend
+from hibana.engine.config import current, using
+from hibana.engine.context import ForwardContext
+from hibana.model.gdn_plan import prepare_gdn_prefill
+from hibana.kernels.gdn_prefill import prefill, backend
 
 
 def plan_for(lengths, slots, checkpoints=()):
@@ -85,7 +85,7 @@ def test_checkpoint_continuation_matches_full_sequence():
 
 @torch.inference_mode()
 def test_cute_against_fp32_recurrence():
-    from sharar.kernels.fla.l2norm import l2norm_fwd
+    from hibana.kernels.fla.l2norm import l2norm_fwd
     torch.manual_seed(77)
     lengths, hk, hv = [1, 31, 32, 33, 65], 2, 6
     args = inputs(sum(lengths), hk, hv)

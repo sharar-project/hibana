@@ -4,7 +4,7 @@ eager and graph-captured: one row to prefill-sized calls, experts shared by up t
 import pytest
 import torch
 
-from sharar.kernels import w3_moe
+from hibana.kernels import w3_moe
 
 E = 16  # the kernel reads only the experts the ids name
 
@@ -52,7 +52,7 @@ def test_kernel_matches_reference(experts, m):
 @pytest.mark.parametrize("k", [1, 5, 9])
 @pytest.mark.parametrize("m", [1, 5, 64, 200])  # 200 rows x 5: 1,000 pairs, sorted outside the kernel
 def test_fewer_experts_per_row(experts, m, k):
-    """ids and weights [M, k], k below 10 (SHARAR_MOE_KEEP alone): the same kernel against the reference, eager and captured."""
+    """ids and weights [M, k], k below 10 (HIBANA_MOE_KEEP alone): the same kernel against the reference, eager and captured."""
     torch.manual_seed(100 * k + m)
     x = torch.randn(m, w3_moe.HIDDEN, device="cuda", dtype=torch.bfloat16)
     ids = torch.stack([torch.randperm(E, device="cuda")[:k] for _ in range(m)]).to(torch.int32)
@@ -137,7 +137,7 @@ def test_pairs_then_fused_combine_gives_the_same_bits(experts, m, expert_paralle
     followed by `moe_combine`, with unfilled slots (id 512) and, expert parallel, another rank's pairs left out."""
     from dataclasses import replace
 
-    from sharar.kernels import flashnext_fused as fk
+    from hibana.kernels import flashnext_fused as fk
     torch.manual_seed(300 + m + k)
     x = torch.randn(m, w3_moe.HIDDEN, device="cuda", dtype=torch.bfloat16)
     ids = torch.stack([torch.randperm(E, device="cuda")[:k] for _ in range(m)]).to(torch.int32)
@@ -163,7 +163,7 @@ def test_bf16_pairs_are_the_fp32_pairs_rounded(experts, m, expert_parallel):
     them like the FP32 pairs."""
     from dataclasses import replace
 
-    from sharar.kernels import flashnext_fused as fk
+    from hibana.kernels import flashnext_fused as fk
     torch.manual_seed(400 + m)
     k = w3_moe.TOPK
     x = torch.randn(m, w3_moe.HIDDEN, device="cuda", dtype=torch.bfloat16)

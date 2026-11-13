@@ -1,45 +1,45 @@
 # Tensor parallel: the 27B and Flash-Next on two Sparks
 
 ```bash
-uv run sharar serve 27b --tp 2         # rank 0 here (http://127.0.0.1:30001), rank 1 on the peer; --exact, --throughput
-uv run sharar serve flashnext --tp 2   # Flash-Next the same way (http://127.0.0.1:30004; MTP draft, its calibrated 3-bit trunk)
-uv run sharar status                   # chat, launch and verify work as on one Spark; --detach and stop too
-uv run sharar dev tp-comm              # the RDMA one-shot all-reduce against NCCL between the two Sparks
-uv run sharar dev tp-draft-head        # the vocabulary-parallel draft head against the whole-vocabulary one
+uv run hibana serve 27b --tp 2         # rank 0 here (http://127.0.0.1:30001), rank 1 on the peer; --exact, --throughput
+uv run hibana serve flashnext --tp 2   # Flash-Next the same way (http://127.0.0.1:30004; MTP draft, its calibrated 3-bit trunk)
+uv run hibana status                   # chat, launch and verify work as on one Spark; --detach and stop too
+uv run hibana dev tp-comm              # the RDMA one-shot all-reduce against NCCL between the two Sparks
+uv run hibana dev tp-draft-head        # the vocabulary-parallel draft head against the whole-vocabulary one
 ```
 
-`--tp 2` is the single-Spark command with the peer added (`sharar/launch/tp.py`): the same settings, preflight,
+`--tp 2` is the single-Spark command with the peer added (`hibana/launch/tp.py`): the same settings, preflight,
 downloads and 3-bit checkpoint, then rank 0 here and rank 1 on the peer, the host at the other end of the RoCE link
-that answers ssh (or `SHARAR_TP_PEER`). Before each serve it mirrors the checkout to the same path on the peer
+that answers ssh (or `HIBANA_TP_PEER`). Before each serve it mirrors the checkout to the same path on the peer
 (`rsync --delete`, `.git` included: it replaces whatever is at that path there), syncs the peer's Python environment
 (`uv sync --frozen`; uv is copied there if missing), and copies the model, draft and 3-bit checkpoint (rsync copies
-only what changed). Both ranks run `sharar engine ... --tp 2 --tp-rank R`; when they meet, rank 0 broadcasts the
+only what changed). Both ranks run `hibana engine ... --tp 2 --tp-rank R`; when they meet, rank 0 broadcasts the
 `EngineConfig` it resolved, so rank 1 serves with rank 0's settings and the paths in them must exist on both Sparks.
 SIGTERM or Ctrl-C reaches rank 0 alone: it drains its requests, and the stop it broadcasts ends rank 1; with the SSD
 tier on, both store their cached prefixes first (below). In LXD/Incus containers whose CPU set has holes, each rank restarts
-itself in a namespace whose CPU lists agree with `/proc/cpuinfo` (`sharar/launch/lxcfs.py`), which keeps
+itself in a namespace whose CPU lists agree with `/proc/cpuinfo` (`hibana/launch/lxcfs.py`), which keeps
 `import torch` from corrupting its heap.
 
-Both Sparks need the same user and paths (the checkout, the model cache, `$SHARAR_RESULTS`). The RDMA all-reduce is a
+Both Sparks need the same user and paths (the checkout, the model cache, `$HIBANA_RESULTS`). The RDMA all-reduce is a
 torch extension each rank builds on first use, against the system's ibverbs headers or a copy the launcher unpacks
-into the environment (`SHARAR_TP_ALLREDUCE=nccl` needs neither). A rank killed while it builds a torch extension leaves
+into the environment (`HIBANA_TP_ALLREDUCE=nccl` needs neither). A rank killed while it builds a torch extension leaves
 `~/.cache/torch_extensions/<python>_<cuda>/<extension>/lock` behind; the next start of that rank waits on it forever
 while the other rank's collectives time out, so remove a stale `lock` (no build running).
 
 **A failed rank.** Every rank above 0 holds a TCP connection to the primary (keepalive about 5 s for a host that
 vanishes). When a rank ends, however it ends, the others end within a second instead of waiting in their next
-collective for NCCL's 10-minute timeout, and `sharar serve` restarts the pair (up to 5 times in 10 minutes; then it
+collective for NCCL's 10-minute timeout, and `hibana serve` restarts the pair (up to 5 times in 10 minutes; then it
 stops and says so). Measured on the 27B: rank 1 or rank 0 SIGKILLed, serving again 26 s later.
 
 **Cached prefixes.** The SSD tier ([operations](operations.md)) runs on both ranks: each stores its
-own heads of every stored prefix under `$SHARAR_RESULTS/ssd/<target>` on its own Spark (`SHARAR_SSD_GIB` is per Spark). Both ranks
+own heads of every stored prefix under `$HIBANA_RESULTS/ssd/<target>` on its own Spark (`HIBANA_SSD_GIB` is per Spark). Both ranks
 decide alike, as their schedulers do: a write counts once it completed on both ranks (failed if it failed on
 either), a restore goes ahead only if both read every object intact, and a restart lists only the prefixes both
 stored. The tier runs on both ranks or on neither (a store that cannot open turns it off on both).
 
 ## Design
 
-SGLang's layout, with mini-sglang's names (`sharar/distributed.py`, `sharar/weights/sharding.py`):
+SGLang's layout, with mini-sglang's names (`hibana/distributed.py`, `hibana/weights/sharding.py`):
 
 | Projection | Role | Per rank |
 |---|---|---|
@@ -70,8 +70,8 @@ verification scales less than its bytes: the hyper-connection mixers, router and
 ## Profiling
 
 ```bash
-SHARAR_TP_PREFIX="nsys profile --trace=cuda,nvtx --sample=none --cpuctxsw=none --cuda-graph-trace=node \
-  --delay=420 --duration=20 -o /path/tp2_%h" uv run sharar serve 27b --tp 2   # then keep requests flowing
+HIBANA_TP_PREFIX="nsys profile --trace=cuda,nvtx --sample=none --cpuctxsw=none --cuda-graph-trace=node \
+  --delay=420 --duration=20 -o /path/tp2_%h" uv run hibana serve 27b --tp 2   # then keep requests flowing
 ```
 
 Both ranks run under the prefix; `%h` names each host's report, and nsys ends the session after the window.
@@ -89,7 +89,7 @@ RDMA writes (half per device, each followed by a flag), and the peer's kernel wa
 one GPU thread polls the flags (with every block polling, the NIC's flag writes contended with them). Inside a
 CUDA graph a 160 KiB all-reduce takes 19 us against NCCL's 51. The one-shot takes messages up to 4 MiB
 (verification of up to 25 requests, prefill chunks of up to 409 tokens); larger prefill chunks stay on NCCL's
-ring, where bandwidth sets the time. The transport costs one busy CPU core per rank. `sharar dev tp-comm` measures
+ring, where bandwidth sets the time. The transport costs one busy CPU core per rank. `hibana dev tp-comm` measures
 both against each other.
 
 ## Flash-Next
@@ -114,17 +114,17 @@ The PLE table (47.7 GiB: 16 heads of 20M rows of 160 bytes) is split by head ins
 (`model/flashnext/ple.py:ResidentRows`): rank r keeps heads 8r to 8r + 7 in device memory (23.8 GiB, read from the
 checkpoint at load), gathers a forward's rows on the device and all-gathers them (1,280 bytes per token from each
 rank), so the outputs are those of one Spark's memory-mapped gather and nothing waits on the NVMe.
-`SHARAR_PLE_RESIDENT=0` keeps the host gather on two Sparks.
+`HIBANA_PLE_RESIDENT=0` keeps the host gather on two Sparks.
 
 The MTP draft layer is replicated and drafts through the target's vocabulary-parallel lm_head
 (`proposers/draft_head.py:VocabParallelHead`): each rank scores its half of the vocabulary with its 3-bit copy,
 the ranks exchange their best eight, and the rank holding each candidate's FP8 row rescores it, so the pick is the
-whole-vocabulary shortlist head's (`sharar dev tp-draft-head` checks that the picks are identical).
+whole-vocabulary shortlist head's (`hibana dev tp-draft-head` checks that the picks are identical).
 
 ## Limits
 
 - The 27B with DFlash2, not MTP; Flash-Next with MTP (its DFlash2 serves on one Spark). A reduced
-  draft vocabulary (`SHARAR_DRAFT_VOCAB`) is not served tensor-parallel.
+  draft vocabulary (`HIBANA_DRAFT_VOCAB`) is not served tensor-parallel.
 - A `--draft DIR` checkpoint is copied to the peer at the same path before the pair starts.
 - Pool sizes, admission's memory floor and every scheduler step are collectives across the ranks: call the executor
   and scheduler only from the engine loop, which keeps them in lockstep.

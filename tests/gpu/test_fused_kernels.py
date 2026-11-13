@@ -10,7 +10,7 @@ def _close_fp8(a, b):
 
 
 def test_quant_fp8_and_gate():
-    from sharar.kernels.fp8_quant import gated_quant_fp8, quant_fp8
+    from hibana.kernels.fp8_quant import gated_quant_fp8, quant_fp8
 
     torch.manual_seed(0)
     x = torch.randn(5, 24 * 256, device="cuda", dtype=torch.bfloat16)
@@ -26,9 +26,9 @@ def test_quant_fp8_and_gate():
 
 
 def test_qk_norm_rope_matches_torch():
-    from sharar.kernels.qk_norm_rope import qk_norm_rope
-    from sharar.model.norm import GemmaRMSNorm
-    from sharar.model.rope import PartialRotary
+    from hibana.kernels.qk_norm_rope import qk_norm_rope
+    from hibana.model.norm import GemmaRMSNorm
+    from hibana.model.rope import PartialRotary
 
     torch.manual_seed(0)
     t, hq, hk, d, r = 7, 24, 4, 256, 64
@@ -48,9 +48,9 @@ def test_qk_norm_rope_matches_torch():
 
 
 def test_nvfp4_quantize_matches_flashinfer():
-    from sharar.kernels import ops
-    from sharar.kernels.nvfp4_quant import nvfp4_quantize
-    from sharar.weights.modelopt import swizzle_block_scales
+    from hibana.kernels import ops
+    from hibana.kernels.nvfp4_quant import nvfp4_quantize
+    from hibana.weights.modelopt import swizzle_block_scales
 
     torch.manual_seed(0)
     for m, k in ((2048, 5120), (37, 17408), (1, 5120)):
@@ -66,7 +66,7 @@ def test_nvfp4_quantize_matches_flashinfer():
 
 
 def test_silu_mul_nvfp4_quantize_matches_two_step():
-    from sharar.kernels.nvfp4_quant import nvfp4_quantize, silu_mul_nvfp4_quantize
+    from hibana.kernels.nvfp4_quant import nvfp4_quantize, silu_mul_nvfp4_quantize
 
     torch.manual_seed(0)
     x = torch.randn(64, 2 * 17408, device="cuda", dtype=torch.bfloat16)

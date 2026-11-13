@@ -4,9 +4,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.model.parallel_draft import convolve, ParallelDraftModel
-from sharar.proposers.parallel import FeatureCache
-from sharar.cache.spec_budget import verify_bytes
+from hibana.model.parallel_draft import convolve, ParallelDraftModel
+from hibana.proposers.parallel import FeatureCache
+from hibana.cache.spec_budget import verify_bytes
 
 
 def test_convolution_resets_at_each_block_and_uses_both_dynamic_taps():
@@ -51,7 +51,7 @@ def test_selector_lattice_conditions_on_anchor_then_previous_candidate():
     weights = {'candidate_selector.hidden_projection.weight': torch.randn(4, 5120),
                'candidate_selector.predecessor_codebook': torch.randn(32, 4),
                'candidate_selector.successor_codebook': torch.randn(32, 4)}
-    from sharar.proposers.draft_head import TargetHead
+    from hibana.proposers.draft_head import TargetHead
     model = SimpleNamespace(target=SimpleNamespace(logits=lambda x: logits), draft_head=TargetHead(lambda x: logits), weights=weights,
                             cfg={'dflash_config': {'selector_top_k': 4}}, hidden=hidden.shape[-1])
     anchor = torch.tensor([2, 9])
@@ -69,7 +69,7 @@ def test_selector_lattice_conditions_on_anchor_then_previous_candidate():
 
 
 def test_prospective_draft_budget_reduces_optional_cache_before_allocation(monkeypatch):
-    from sharar.cache import ledger
+    from hibana.cache import ledger
     monkeypatch.setattr(ledger, 'mem_available_bytes', lambda: 64 * 2**30)
     book = ledger.Ledger()
     control = book.plan(state_slot_target=1000)
@@ -134,8 +134,8 @@ class _Planner:
 
 
 def _proposer(k, max_batch=4):
-    from sharar.engine.contracts import ProposerContext
-    from sharar.proposers.parallel import ParallelProposer
+    from hibana.engine.contracts import ProposerContext
+    from hibana.proposers.parallel import ParallelProposer
     p, log = ParallelProposer.__new__(ParallelProposer), []
     p.model, p.k, p.name, p.window = _DraftModel(log), k, 'dflash2', _DraftModel.window
     p.pitch = p.window + k + 1
@@ -147,9 +147,9 @@ def _proposer(k, max_batch=4):
 def test_a_round_drafts_the_anchor_and_its_depths_masked_rows():
     # short drafts: a round at depth d drafts one block of d + 1 rows into the first d + 1 noise slots of each request's
     # slot (never past its pitch); depth k is the whole block, as without a depth
-    from sharar.engine.contracts import StepInputs
-    from sharar.engine.sampler import SamplingParams
-    from sharar.proposers.parallel import DraftState
+    from hibana.engine.contracts import StepInputs
+    from hibana.engine.sampler import SamplingParams
+    from hibana.proposers.parallel import DraftState
     k, ends = 9, [3, 11, 20]
 
     def requests(n):
@@ -182,9 +182,9 @@ def test_draft_graphs_are_captured_per_bucket_and_depth(monkeypatch):
     # the verify graphs' (depth, buckets) pairs: each pair replays its own wrapper, planned and padded at its block
     import sys
     import types
-    from sharar.engine import graph_set
-    from sharar.kernels import draft_selection
-    from sharar.proposers.parallel_graphs import ParallelGraphs
+    from hibana.engine import graph_set
+    from hibana.kernels import draft_selection
+    from hibana.proposers.parallel_graphs import ParallelGraphs
 
     class Wrapper:
         def __init__(self, workspace, layout, **buffers):

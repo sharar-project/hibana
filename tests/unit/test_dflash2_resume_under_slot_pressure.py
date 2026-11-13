@@ -14,9 +14,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.engine.contracts import Capabilities, FeatureRequest, ProposerContext, ProposerRequirements
-from sharar.engine.sampler import SamplingParams
-from sharar.proposers.parallel import CheckpointFeatureCache, FeatureCache, ParallelProposer
+from hibana.engine.contracts import Capabilities, FeatureRequest, ProposerContext, ProposerRequirements
+from hibana.engine.sampler import SamplingParams
+from hibana.proposers.parallel import CheckpointFeatureCache, FeatureCache, ParallelProposer
 from tests.unit.test_runtime_safety import tiny_executor
 
 VOCAB = 128  # tiny_executor's logits

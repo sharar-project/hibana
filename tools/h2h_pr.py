@@ -6,7 +6,7 @@
     tools/h2h_pr.py --target 27b --pr origin/perf/x --base origin/main --repeats 2 --modes greedy,t07,t10
 
 Each arm is a git worktree of its ref under the run directory, served by this checkout's Python environment
-(`uv sync`; the two refs must share `uv.lock`) with `sharar serve <target> --fast|--throughput` on --port, the
+(`uv sync`; the two refs must share `uv.lock`) with `hibana serve <target> --fast|--throughput` on --port, the
 user's config file, no traces, and the SSD tier on as served but in a fresh directory per server (removed after), so
 no arm or repeat restores another's prefixes. Per arm and profile, under the shared GPU lock:
 
@@ -20,11 +20,11 @@ others), in turn by category; numbered per request under `--streams`, so none sh
 1,024 output tokens with natural stops; --modes picks the sampling (greedy, t07 = T 0.7, t10 = T 1.0, both top-p
 0.95, top-k 20), each with the profile's acceptance default.
 Order: base then PR, `--repeats` times; the table averages the repeats. Results, logs and the table (report.md) go
-to $SHARAR_RESULTS/reviews/<date>-h2h-<name>/; a rerun with the same --name skips what exists. The arms' worktrees
+to $HIBANA_RESULTS/reviews/<date>-h2h-<name>/; a rerun with the same --name skips what exists. The arms' worktrees
 are removed once the report is written.
 
 sharar-eval runs from this environment's `eval` dependency group (pinned in uv.lock), or from a checkout given with
---evals / SHARAR_EVALS for unreleased sharar-eval changes, as `tools/evaluate.py` does.
+--evals / HIBANA_EVALS for unreleased sharar-eval changes, as `tools/evaluate.py` does.
 """
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def git(*args, cwd=REPO) -> str:
 
 @contextlib.contextmanager
 def gpu_lock(lock: Path, what: str):
-    """The shared GPU lock every Sharar tool takes, held while at least 40 GiB are free (another server has left)."""
+    """The shared GPU lock every Hibana tool takes, held while at least 40 GiB are free (another server has left)."""
     with open(lock, "a") as f:
         log(f"waiting for the GPU lock ({what})")
         fcntl.flock(f, fcntl.LOCK_EX)
@@ -77,10 +77,10 @@ URL = ""
 
 
 class Server:
-    """`sharar serve <target> --<profile>` from one checkout, in its own process group; stopped with SIGTERM (Ctrl-C)."""
+    """`hibana serve <target> --<profile>` from one checkout, in its own process group; stopped with SIGTERM (Ctrl-C)."""
 
     def __init__(self, tree: Path, target: str, profile: str, port: int, logfile: Path, env: dict, tp: int = 1):
-        self.cmd = [str(VENV / "bin" / "python"), "-u", "-m", "sharar", "serve", target, f"--{profile}", "--port", str(port),
+        self.cmd = [str(VENV / "bin" / "python"), "-u", "-m", "hibana", "serve", target, f"--{profile}", "--port", str(port),
                     "--no-fetch", "--tp", str(tp)]
         self.tree, self.logfile, self.env = tree, logfile, env
         self.proc = None
@@ -170,9 +170,9 @@ def main() -> int:
     ap.add_argument("--duration-s", type=float, default=60.0)
     ap.add_argument("--port", type=int, default=30100)
     ap.add_argument("--tp", type=int, choices=(1, 2), default=1, help="2: serve both arms on two Sparks")
-    ap.add_argument("--evals", type=Path, default=Path(os.environ["SHARAR_EVALS"]) if os.environ.get("SHARAR_EVALS") else None,
-                    help="a sharar-eval checkout to run instead of the eval group (default: SHARAR_EVALS, else the group)")
-    ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
+    ap.add_argument("--evals", type=Path, default=Path(os.environ["HIBANA_EVALS"]) if os.environ.get("HIBANA_EVALS") else None,
+                    help="a sharar-eval checkout to run instead of the eval group (default: HIBANA_EVALS, else the group)")
+    ap.add_argument("--python", default=os.environ.get("HIBANA_EVALS_PYTHON"),
                     help="sharar-eval's Python (default: this environment's, or the checkout's .venv)")
     args = ap.parse_args()
     launch = gate.launch
@@ -186,13 +186,13 @@ def main() -> int:
     if git("show", f"{refs['base']}:uv.lock") != git("show", f"{refs['pr']}:uv.lock"):
         raise SystemExit("the two refs pin different dependencies (uv.lock); both arms run this checkout's environment")
     conf = launch.config_file()
-    env = {**os.environ, "SHARAR_TRACES": "off", **({"SHARAR_CONFIG_FILE": str(conf)} if conf else {})}
+    env = {**os.environ, "HIBANA_TRACES": "off", **({"HIBANA_CONFIG_FILE": str(conf)} if conf else {})}
     results = launch.resolve(target, "fast", {}, env=env, traces=False).results
     run = results / "reviews" / f"{dt.date.today():%Y-%m-%d}-h2h-{args.name or refs['pr'][:12]}"
     trees = run / "trees"
     trees.mkdir(parents=True, exist_ok=True)
-    if args.tp == 2:  # `sharar serve --tp 2` mirrors each arm's checkout to the same path on the peer
-        from sharar.launch import tp
+    if args.tp == 2:  # `hibana serve --tp 2` mirrors each arm's checkout to the same path on the peer
+        from hibana.launch import tp
         tp.ssh(tp.peer(env), f"mkdir -p {trees}", check=True)
     labels = {"base": f"{args.base} {refs['base'][:9]}", "pr": f"{args.pr} {refs['pr'][:9]}"}
     for arm, sha in refs.items():
@@ -206,7 +206,7 @@ def main() -> int:
     (run / "manifest.json").write_text(json.dumps({"target": target, "refs": refs, "labels": labels, "plan": plan, "modes": args.modes,
                                                   "repeats": args.repeats, "warmup_s": args.warmup_s, "duration_s": args.duration_s,
                                                   "categories": args.categories, "evals": ev["label"], "evals_commit": ev["commit"]}, indent=1) + "\n")
-    evals_env = {**os.environ, "SHARAR_RESULTS": str(results)}
+    evals_env = {**os.environ, "HIBANA_RESULTS": str(results)}
     lock = results / ".gpu.lock"
     for rep in range(args.repeats):
         for arm in ("base", "pr"):
@@ -219,7 +219,7 @@ def main() -> int:
                 ssd = run / f"{arm}-{profile}-r{rep}.ssd"
                 shutil.rmtree(ssd, ignore_errors=True)
                 with gpu_lock(lock, f"{arm} {profile} r{rep}"), Server(trees / arm, target, profile, args.port, run / f"{arm}-{profile}-r{rep}.server.log",
-                                                                       {**env, "SHARAR_SSD_DIR": str(ssd)}, args.tp) as s:
+                                                                       {**env, "HIBANA_SSD_DIR": str(ssd)}, args.tp) as s:
                     (run / f"{arm}-{profile}-r{rep}.server.json").write_text(json.dumps(s.info, indent=1) + "\n")
                     log(f"{arm} ({labels[arm]}) {profile} r{rep}: serving")
                     hlog = run / f"{arm}-{profile}-r{rep}.h2h.log"

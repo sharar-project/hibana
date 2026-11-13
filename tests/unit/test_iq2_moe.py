@@ -2,7 +2,7 @@
 import os
 import pytest
 import torch
-from sharar.kernels import iq2_moe
+from hibana.kernels import iq2_moe
 
 
 def blocks(quant, e=3, h=256, intermediate=512):

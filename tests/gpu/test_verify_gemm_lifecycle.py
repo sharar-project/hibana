@@ -8,11 +8,11 @@ import torch
 @pytest.fixture(scope='module')
 def runtime(qwen38):
     import gc
-    from sharar import config
-    from sharar.engine.executor import Executor
-    from sharar.engine.spec_graphs import VerifyGraphs
-    from sharar.kernels import ops
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana import config
+    from hibana.engine.executor import Executor
+    from hibana.engine.spec_graphs import VerifyGraphs
+    from hibana.kernels import ops
+    from hibana.tokenizer import SnapshotTokenizer
     gc.collect()  # the previous module's executor
     torch.cuda.empty_cache()
     with torch.inference_mode():
@@ -38,8 +38,8 @@ def runtime(qwen38):
 @pytest.mark.parametrize('batch,stop', [(1, 'length'), (1, 'eos'), (3, 'length'), (4, 'length')])
 @torch.inference_mode()
 def test_outputs_and_committed_state_are_exact(runtime, monkeypatch, batch, stop):
-    from sharar.engine.sampler import SamplingParams
-    from sharar.kernels import ops
+    from hibana.engine.sampler import SamplingParams
+    from hibana.kernels import ops
     ex, graphs, ids = runtime
     reference = []
     for enabled in (False, True):

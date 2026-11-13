@@ -3,7 +3,7 @@ import random
 
 import torch
 
-from sharar.engine.accept import MAX_STOPS, accept_block, host_emitted
+from hibana.engine.accept import MAX_STOPS, accept_block, host_emitted
 
 
 def host_reference(y, z, logits, relax, budget, stops):

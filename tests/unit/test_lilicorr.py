@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from sharar.model.lilicorr_config import validate_config
-from sharar.target import NEMOTRON_BOLT, QWEN38
+from hibana.model.lilicorr_config import validate_config
+from hibana.target import NEMOTRON_BOLT, QWEN38
 
 CONFIG = Path(__file__).resolve().parents[1] / 'data/bolt_lilicorr_config.json'
 
@@ -38,7 +38,7 @@ def test_reject_a_norm_epsilon_the_backbone_does_not_use():
 
 
 def test_parallel_draft_directory_accepts_lilicorr(tmp_path):
-    from sharar.proposers.factory import draft_snapshot
+    from hibana.proposers.factory import draft_snapshot
     (tmp_path / 'config.json').write_text(CONFIG.read_text())
     (tmp_path / 'model.safetensors').touch()
     assert draft_snapshot('dflash2', str(tmp_path), NEMOTRON_BOLT) == tmp_path

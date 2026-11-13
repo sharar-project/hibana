@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 
-from sharar.api.server import create_app
+from hibana.api.server import create_app
 from tests.unit.test_messages_api import decode, encode, render
 
 

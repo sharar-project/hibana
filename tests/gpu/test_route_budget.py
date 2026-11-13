@@ -6,7 +6,7 @@ NVFP4 experts' repeated slots on real weights, and inside a replayed CUDA graph.
 import pytest
 import torch
 
-from sharar.kernels import flashnext_fused as fk  # noqa: E402
+from hibana.kernels import flashnext_fused as fk  # noqa: E402
 from tests.unit.test_moe_selection import C, E, K, rule, selected  # noqa: E402
 
 
@@ -129,10 +129,10 @@ def test_graph_replay(rows, steps):
 def test_nvfp4_experts_take_the_selection_through_repeated_slots():
     """FlashInfer's NVFP4 MoE needs an expert in every slot: a slot repeating the row's top 1 at weight 0 gives the
     bits of leaving the slot out, so the NVFP4 experts serve the selection unchanged and read only the set."""
-    from sharar import target as targets
-    from sharar.model.flashnext.linear import TrunkLinear
-    from sharar.model.flashnext.moe import MoeLayer
-    from sharar.weights.safetensors import SnapshotWeights
+    from hibana import target as targets
+    from hibana.model.flashnext.linear import TrunkLinear
+    from hibana.model.flashnext.moe import MoeLayer
+    from hibana.weights.safetensors import SnapshotWeights
     target = targets.get("flashnext")
     try:
         snap = target.snapshot_dir()

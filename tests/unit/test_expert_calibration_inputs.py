@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from sharar.weights import flashnext_expert_inputs as inputs
-from sharar.weights.flashnext_w3_experts import resume_point
+from hibana.weights import flashnext_expert_inputs as inputs
+from hibana.weights.flashnext_w3_experts import resume_point
 
 
 def test_resume_point_counts_whole_samples():

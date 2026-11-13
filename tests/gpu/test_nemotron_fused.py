@@ -21,8 +21,8 @@ def _inputs(rows, seed):
 @torch.inference_mode()
 def test_residual_norm(rows):
     from flashinfer.norm import fused_add_rmsnorm
-    from sharar.kernels.cute.nemotron_norm import residual_norm
-    from sharar.kernels.fp8_quant import quant_fp8
+    from hibana.kernels.cute.nemotron_norm import residual_norm
+    from hibana.kernels.fp8_quant import quant_fp8
     x, residual, weight = _inputs(rows, rows)
     want, want_res = x.clone(), residual.clone()
     fused_add_rmsnorm(want, want_res, weight, 1e-5)
@@ -49,8 +49,8 @@ def test_residual_norm(rows):
 def test_rmsnorm_module(inplace, consume, monkeypatch):
     """`RMSNorm.fused_add(_quant)` on the fused kernel against the FlashInfer chain (the path of the shapes the fused
     kernel does not take)."""
-    from sharar.kernels.cute import nemotron_norm
-    from sharar.model.nemotron import norm
+    from hibana.kernels.cute import nemotron_norm
+    from hibana.model.nemotron import norm
     x, residual, weight = _inputs(5, 7)
     n = norm.RMSNorm(weight, 1e-5)
     s = torch.tensor([0.05], device="cuda")
@@ -69,9 +69,9 @@ def test_rmsnorm_module(inplace, consume, monkeypatch):
 @pytest.mark.parametrize("rows", [1, 4, 16, 20])
 @torch.inference_mode()
 def test_write_kv(rows):
-    from sharar.cache.kv_pool import KvPool
-    from sharar.kernels.nemotron_fused import write_kv
-    from sharar.target import NEMOTRON
+    from hibana.cache.kv_pool import KvPool
+    from hibana.kernels.nemotron_fused import write_kv
+    from hibana.target import NEMOTRON
     q_size, kv = NEMOTRON.num_attention_heads * NEMOTRON.head_dim, NEMOTRON.num_kv_heads * NEMOTRON.head_dim
     g = torch.Generator("cuda").manual_seed(rows)
     qkv = torch.randn(rows, q_size + 2 * kv, device="cuda", dtype=torch.bfloat16, generator=g) * 40
@@ -95,8 +95,8 @@ def test_strided_q_attention(batch, steps):
     """FlashInfer's decode (one row) and paged prefill (verify rows) read q by its strides: a view of the q|k|v rows
     gives the contiguous copy's bits."""
     import flashinfer
-    from sharar.kernels.attention_plan import AttentionGeometry, AttentionPlanner
-    from sharar.target import NEMOTRON
+    from hibana.kernels.attention_plan import AttentionGeometry, AttentionPlanner
+    from hibana.target import NEMOTRON
     heads, kvh, d = NEMOTRON.num_attention_heads, NEMOTRON.num_kv_heads, NEMOTRON.head_dim
     g = torch.Generator("cuda").manual_seed(batch * 10 + steps)
     pages_n = 2048

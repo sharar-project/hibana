@@ -5,8 +5,8 @@ import gc
 import pytest
 import torch
 
-from sharar import target as targets
-from sharar.engine.sampler import SamplingParams
+from hibana import target as targets
+from hibana.engine.sampler import SamplingParams
 
 PROMPTS = ["Write a Python function that returns the n-th Fibonacci number iteratively, then explain it.",
            "A train leaves at 3:40 pm and travels 210 km at 84 km/h. When does it arrive? Think step by step.",
@@ -18,14 +18,14 @@ def chat(tok, text: str) -> list[int]:
 
 
 def numerics():
-    from sharar.engine import config
+    from hibana.engine import config
     return config.using(config.current().replace(target="flashnext", w3_decode=False, w3_checkpoint=None, ssd=False))
 
 
 @pytest.fixture(scope="module")
 def flashnext():
-    from sharar.proposers.factory import draft_snapshot
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.proposers.factory import draft_snapshot
+    from hibana.tokenizer import SnapshotTokenizer
     target = targets.get("flashnext")
     with numerics():
         try:
@@ -46,8 +46,8 @@ def flashnext():
 
 @pytest.fixture(scope="module")
 def runtime(flashnext):
-    from sharar.cache.spec_budget import SpecConfig
-    from sharar.engine.executor import Executor
+    from hibana.cache.spec_budget import SpecConfig
+    from hibana.engine.executor import Executor
     model, tok = flashnext
     with numerics():
         # the served shape: 9 drafts, one request verifying 9 and several 7, and throughput's 3; each round drafts only
@@ -67,9 +67,9 @@ def runtime(flashnext):
 @torch.inference_mode()
 @pytest.mark.parametrize("length", [40, 1500])  # the narrow and the wide (hyper_prefill) paths
 def test_taps_are_the_mean_of_each_layers_output_streams(flashnext, length):
-    from sharar.benchmark_workloads import frozen_source
-    from sharar.engine.context import scratch_prefill_context
-    from sharar.engine.contracts import FeatureRequest
+    from hibana.benchmark_workloads import frozen_source
+    from hibana.engine.context import scratch_prefill_context
+    from hibana.engine.contracts import FeatureRequest
     model, tok = flashnext
     ids = torch.tensor(tok.encode(frozen_source())[:length], device=model.device)
     ctx = scratch_prefill_context(length, model.device)
@@ -158,7 +158,7 @@ def test_mixed_batch_repeats_and_reuses_the_prefix_cache(runtime):
     # document of ~600 tokens makes the later runs prefix-cache hits, which restore the draft's retained features. A
     # cached prefix's KV is equivalent to a cold prefill's, not bitwise (docs/cache_design.md), so the cached runs are
     # compared with each other
-    from sharar.benchmark_workloads import frozen_source
+    from hibana.benchmark_workloads import frozen_source
     ex, tok = runtime
     document = tok.decode(tok.encode(frozen_source())[:600])
     prompts = [chat(tok, f"{document}\n\n{p}") for p in PROMPTS]

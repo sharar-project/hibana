@@ -1,12 +1,12 @@
-"""The NVFP4 KV pool (SHARAR_KV_FORMAT=nvfp4): FlashInfer's writer is the screen's rounding, and fa2 attention over
+"""The NVFP4 KV pool (HIBANA_KV_FORMAT=nvfp4): FlashInfer's writer is the screen's rounding, and fa2 attention over
 the pool's codes and scales is attention over the rounded values."""
 import pytest
 import torch
 
 
 def _pools(pages, heads=4, dim=256):
-    from sharar.cache.kv_pool import KvPool
-    from sharar.target import DEFAULT_TARGET
+    from hibana.cache.kv_pool import KvPool
+    from hibana.target import DEFAULT_TARGET
     layers = [3]
     fp4 = KvPool(pages, torch.device("cuda"), layer_ids=layers, target=DEFAULT_TARGET, padding_rows=4, nvfp4=True)
     ref = KvPool(pages, torch.device("cuda"), layer_ids=layers, target=DEFAULT_TARGET, padding_rows=4, dtype=torch.bfloat16)
@@ -20,7 +20,7 @@ def _dequant(codes, scales):
 
 
 def test_writes_are_the_screens_rounding():
-    from sharar.kernels.kv_fp4 import nvfp4_round
+    from hibana.kernels.kv_fp4 import nvfp4_round
     torch.manual_seed(1)
     fp4, _ = _pools(64)
     k = torch.randn(40, 4, 256, device="cuda", dtype=torch.bfloat16) * 3
@@ -36,7 +36,7 @@ def test_writes_are_the_screens_rounding():
 @pytest.mark.parametrize("graph", [False, True])
 def test_attention_over_the_pool_is_attention_over_the_rounded_values(graph):
     import flashinfer
-    from sharar.kernels.kv_fp4 import nvfp4_round
+    from hibana.kernels.kv_fp4 import nvfp4_round
     torch.manual_seed(2)
     ctx, rows = [900, 300], [16, 5]
     total = sum(c + r for c, r in zip(ctx, rows))

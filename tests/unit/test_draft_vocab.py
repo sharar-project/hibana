@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import torch
 
-from sharar.proposers.draft_vocab import draft_vocab
-from sharar.proposers.mtp import draft_argmax
+from hibana.proposers.draft_vocab import draft_vocab
+from hibana.proposers.mtp import draft_argmax
 
 
 def test_specials_first_then_construction_order(tmp_path):
@@ -15,8 +15,8 @@ def test_specials_first_then_construction_order(tmp_path):
 
 
 def test_reduced_head_maps_rows_to_global_ids():
-    from sharar.model.flashnext.linear import TrunkLinear
-    from sharar.proposers.draft_head import ShortlistHead
+    from hibana.model.flashnext.linear import TrunkLinear
+    from hibana.proposers.draft_head import ShortlistHead
     torch.manual_seed(0)
     weight = torch.randn(10, 4).to(torch.bfloat16)
     x = torch.randn(3, 4).to(torch.bfloat16)
@@ -25,7 +25,7 @@ def test_reduced_head_maps_rows_to_global_ids():
 
 
 def test_draft_argmax_reads_the_heads_draft_head():
-    from sharar.proposers.draft_head import TargetHead
+    from hibana.proposers.draft_head import TargetHead
     full = SimpleNamespace(draft_head=TargetHead(lambda h: torch.tensor([[0., 3., 1.]])), head_input=lambda d: d)
     assert draft_argmax(full, None).tolist() == [1]
     reduced = SimpleNamespace(draft_head=SimpleNamespace(argmax=lambda x: torch.tensor([42])), head_input=lambda d: d)
@@ -33,7 +33,7 @@ def test_draft_argmax_reads_the_heads_draft_head():
 
 
 def test_pad_rows_repeats_the_last_id_to_the_tile():
-    from sharar.proposers.draft_head import _pad_rows
+    from hibana.proposers.draft_head import _pad_rows
     ids = torch.arange(130)
     padded = _pad_rows(ids, 128)
     assert padded.numel() == 256 and torch.equal(padded[:130], ids) and (padded[130:] == 129).all()
@@ -41,8 +41,8 @@ def test_pad_rows_repeats_the_last_id_to_the_tile():
 
 
 def test_full_fp8_draft_head_is_the_targets_own():
-    from sharar.model.flashnext.linear import TrunkLinear
-    from sharar.proposers.draft_head import ShortlistHead
+    from hibana.model.flashnext.linear import TrunkLinear
+    from hibana.proposers.draft_head import ShortlistHead
     lm_head = TrunkLinear(torch.randn(10, 4).to(torch.bfloat16))
     head = ShortlistHead(lm_head)
     assert head.head is lm_head and head.bytes == 0

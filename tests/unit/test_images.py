@@ -15,11 +15,11 @@ import numpy as np
 import pytest
 import torch
 
-from sharar.api import media as api_media
-from sharar.api import messages as messages_api
-from sharar.engine import media
-from sharar.engine.sampler import InvalidRequest, SamplingParams
-from sharar.model.nemotron import vision as v
+from hibana.api import media as api_media
+from hibana.api import messages as messages_api
+from hibana.engine import media
+from hibana.engine.sampler import InvalidRequest, SamplingParams
+from hibana.model.nemotron import vision as v
 
 
 def encoded(w: int, h: int, mode: str = "RGB", fmt: str = "PNG", **save) -> bytes:
@@ -324,7 +324,7 @@ def server(vision):
     queue.put_nowait(([2], True, "stop"))
     ticket = SimpleNamespace(queue=queue, req=SimpleNamespace(prefix_len=0))
     engine = SimpleNamespace(submit=AsyncMock(return_value=ticket), cancel=Mock(), stats=lambda: {})
-    from sharar.api.server import create_app
+    from hibana.api.server import create_app
     return engine, create_app(engine, CharTokenizer(), SimpleNamespace(render=render), {"context_length": 100_000}, vision=vision)
 
 
@@ -434,7 +434,7 @@ def test_count_tokens_reads_image_headers_only(monkeypatch):
 # ---- the executor and the scheduler
 
 def executor(vision, vocab=1000):
-    from sharar.engine.executor import Executor
+    from hibana.engine.executor import Executor
     ex = Executor.__new__(Executor)
     ex.vision = vision
     ex.images = media.Encoder(vision, torch.device("cpu")) if vision is not None else None
@@ -458,7 +458,7 @@ def test_validation_accepts_an_images_span_and_nothing_else():
 
 
 def test_prefill_rows_and_model_ids():
-    from sharar.engine.context import ForwardContext
+    from hibana.engine.context import ForwardContext
     vision = FakeVision()
     ex = executor(vision)
     ids = media.placeholder_ids(b"img", 4)
@@ -476,7 +476,7 @@ def test_prefill_rows_and_model_ids():
 
 
 def test_the_scheduler_ends_a_chunk_before_an_image_still_encoding_while_others_decode():
-    from sharar.engine.scheduler import Scheduler, SchedulerConfig
+    from hibana.engine.scheduler import Scheduler, SchedulerConfig
     from tests.unit.test_scheduler import FakeExecutor
 
     class ImageExecutor(FakeExecutor):

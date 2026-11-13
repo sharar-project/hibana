@@ -2,12 +2,12 @@
 from types import SimpleNamespace
 import torch
 
-from sharar.proposers.parallel_feedback import FeedbackGraphs
+from hibana.proposers.parallel_feedback import FeedbackGraphs
 
 
 @torch.inference_mode()
 def test_feedback_graphs_match_eager_and_keep_inputs_alive():
-    from sharar.model.parallel_draft import rotate_and_cache
+    from hibana.model.parallel_draft import rotate_and_cache
     torch.manual_seed(714)
     layers, window, pitch = (1, 3), 32, 48
     angles = torch.randn(12000, 64, device='cuda')

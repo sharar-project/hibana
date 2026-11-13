@@ -4,9 +4,9 @@ import json
 
 import torch
 
-from sharar.kernels import w3, w3_moe
-from sharar.model.flashnext.moe import swizzle_block_scales_batched
-from sharar.weights.w3_checkpoint import FORMAT_VERSION, CalibratedWeights, save_weight
+from hibana.kernels import w3, w3_moe
+from hibana.model.flashnext.moe import swizzle_block_scales_batched
+from hibana.weights.w3_checkpoint import FORMAT_VERSION, CalibratedWeights, save_weight
 
 E, I, H = 2, 128, 256  # small shapes the packing accepts (rows and k multiples of 128, I of 64)
 

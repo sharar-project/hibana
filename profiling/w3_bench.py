@@ -16,7 +16,7 @@ from pathlib import Path
 
 import torch
 
-from sharar.kernels import w3
+from hibana.kernels import w3
 
 SHAPES = {  # (N, K): (name, profile median us at M=16, at M=64)
     (34816, 5120): ("mlp gate_up (NVFP4 base)", 442, 472),

@@ -19,22 +19,23 @@ You need one DGX Spark (or another NVIDIA GB10 machine) with DGX OS and about 13
 curl -LsSf https://astral.sh/uv/install.sh | sh     # install uv, if you don't have it
 git clone https://github.com/abdelfattah-lab/sharar && cd sharar
 uv sync                                             # set up Python (about a minute)
-uv run sharar serve nemotron                        # serve Nemotron 3.5 Super on http://127.0.0.1:30005
+uv run hibana serve nemotron                        # serve Nemotron 3.5 Super on http://127.0.0.1:30005
 ```
 
 The first launch downloads the model and builds the GPU kernels; later launches start in under a minute. Ctrl-C
 stops the server. In a second terminal:
 
 ```bash
-uv run sharar chat              # chat in the terminal
-uv run sharar launch claude     # Claude Code on the local model (also opencode, aider)
+uv run hibana chat              # chat in the terminal
+uv run hibana launch claude     # Claude Code on the local model (also opencode, aider)
 ```
 
 Any OpenAI client works against `http://127.0.0.1:30005/v1` and Anthropic clients against `http://127.0.0.1:30005`
 ([API](docs/api.md)).
 
 > [!NOTE]
-> The command and its settings keep the old name for now (`sharar`, `SHARAR_*`).
+> Hibana was called Sharar. The `sharar` command, `SHARAR_*` settings and the former directories keep working
+> ([upgrading](docs/operations.md#upgrading-from-sharar)).
 
 ## Models
 
@@ -47,13 +48,13 @@ and for the Qwen models and Super a calibrated 3-bit copy that the default `fast
 Qwen's 125B mixture-of-experts model, on one Spark or two.
 
 ```bash
-uv run sharar serve flashnext           # http://127.0.0.1:30004
-uv run sharar serve flashnext --tp 2    # on two Sparks linked by their ConnectX ports
+uv run hibana serve flashnext           # http://127.0.0.1:30004
+uv run hibana serve flashnext --tp 2    # on two Sparks linked by their ConnectX ports
 ```
 
 - **Download:** 186 GB, the model (135 GB) and its 3-bit copy (51 GB)
 - **Input:** text
-- **Draft:** its own MTP head, or the DFlash2 drafter on one Spark (`SHARAR_PROPOSER=dflash2`)
+- **Draft:** its own MTP head, or the DFlash2 drafter on one Spark (`HIBANA_PROPOSER=dflash2`)
 - **Checkpoints:** [RadixArk/Qwen3.8-Flash-Next-NVFP4](https://huggingface.co/RadixArk/Qwen3.8-Flash-Next-NVFP4),
   [3-bit copy](https://huggingface.co/yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3-qad)
 - **More:** [Flash-Next](docs/flashnext.md), [tensor parallel](docs/tensor-parallel.md)
@@ -66,8 +67,8 @@ uv run sharar serve flashnext --tp 2    # on two Sparks linked by their ConnectX
 Qwen's 27B dense model, on one Spark or two.
 
 ```bash
-uv run sharar serve 27b                 # http://127.0.0.1:30001
-uv run sharar serve 27b --tp 2          # on two Sparks linked by their ConnectX ports
+uv run hibana serve 27b                 # http://127.0.0.1:30001
+uv run hibana serve 27b --tp 2          # on two Sparks linked by their ConnectX ports
 ```
 
 - **Download:** 36 GB, the model (26 GB) and its 3-bit copy (10 GB)
@@ -85,7 +86,7 @@ uv run sharar serve 27b --tp 2          # on two Sparks linked by their ConnectX
 NVIDIA's 120B mixture-of-experts model (12B active), a Mamba-2 hybrid that also reads images, on one Spark.
 
 ```bash
-uv run sharar serve nemotron            # http://127.0.0.1:30005
+uv run hibana serve nemotron            # http://127.0.0.1:30005
 ```
 
 - **Download:** 124 GB, the model (75 GB) and its 3-bit copy (49 GB)
@@ -103,7 +104,7 @@ uv run sharar serve nemotron            # http://127.0.0.1:30005
 NVIDIA's 74B mixture-of-experts model (9B active), packed to 24 GB, that also reads images, on one Spark.
 
 ```bash
-uv run sharar serve bolt                # http://127.0.0.1:30006
+uv run hibana serve bolt                # http://127.0.0.1:30006
 ```
 
 - **Download:** 25 GB
@@ -119,10 +120,10 @@ Not sure which to pick? Side by side:
 
 | Model | Size | Download | Sparks | Images | Command |
 |---|---|---|---|---|---|
-| Qwen3.8-Flash-Next | 125B MoE | 186 GB | 1 or 2 | | `sharar serve flashnext` |
-| Qwen3.8-27B | 27B dense | 36 GB | 1 or 2 | | `sharar serve 27b` |
-| Nemotron 3.5 Super | 120B MoE, 12B active | 124 GB | 1 | yes | `sharar serve nemotron` |
-| Nemotron 3.5 Bolt | 74B MoE, 9B active | 25 GB | 1 | yes | `sharar serve bolt` |
+| Qwen3.8-Flash-Next | 125B MoE | 186 GB | 1 or 2 | | `hibana serve flashnext` |
+| Qwen3.8-27B | 27B dense | 36 GB | 1 or 2 | | `hibana serve 27b` |
+| Nemotron 3.5 Super | 120B MoE, 12B active | 124 GB | 1 | yes | `hibana serve nemotron` |
+| Nemotron 3.5 Bolt | 74B MoE, 9B active | 25 GB | 1 | yes | `hibana serve bolt` |
 
 ## Requirements
 
@@ -138,26 +139,26 @@ Not sure which to pick? Side by side:
 
 | | |
 |---|---|
-| `sharar serve <model>` | Serve a model in the foreground (`27b`, `flashnext`, `nemotron`, `bolt`) |
-| `sharar serve <model> --detach` | The same as a background service; `sharar stop`, `sharar logs -f` |
-| `sharar serve <model> --exact` | The model's own outputs, for benchmarks (the default `fast` profile is faster and slightly lossy; also `--throughput`) |
-| `sharar serve <model> --tp 2` | The Qwen models on two Sparks linked by their ConnectX ports ([tensor parallel](docs/tensor-parallel.md)) |
-| `sharar status` | What is serving, with which settings |
-| `sharar cache` | What is cached on the GPU and on the SSD tier (`$SHARAR_RESULTS/ssd/<target>`, up to `SHARAR_SSD_GIB`) |
-| `sharar chat`, `sharar launch claude\|opencode\|aider\|show` | Use the serving model |
+| `hibana serve <model>` | Serve a model in the foreground (`27b`, `flashnext`, `nemotron`, `bolt`) |
+| `hibana serve <model> --detach` | The same as a background service; `hibana stop`, `hibana logs -f` |
+| `hibana serve <model> --exact` | The model's own outputs, for benchmarks (the default `fast` profile is faster and slightly lossy; also `--throughput`) |
+| `hibana serve <model> --tp 2` | The Qwen models on two Sparks linked by their ConnectX ports ([tensor parallel](docs/tensor-parallel.md)) |
+| `hibana status` | What is serving, with which settings |
+| `hibana cache` | What is cached on the GPU and on the SSD tier (`$HIBANA_RESULTS/ssd/<target>`, up to `HIBANA_SSD_GIB`) |
+| `hibana chat`, `hibana launch claude\|opencode\|aider\|show` | Use the serving model |
 
-`sharar <command> --help` lists the options. Settings (cache and results locations, profiles, ports) are flags, then
-`SHARAR_*` environment variables, then an optional `config/gb10.env` ([example](config/gb10.env.example),
+`hibana <command> --help` lists the options. Settings (cache and results locations, profiles, ports) are flags, then
+`HIBANA_*` environment variables, then an optional `config/gb10.env` ([example](config/gb10.env.example),
 [operations](docs/operations.md)).
 
 ## Develop
 
 ```bash
 uv run pytest tests/unit                      # CPU tests
-SHARAR_RUN_GPU=1 uv run pytest tests/gpu      # GPU suite (the GPU to itself)
+HIBANA_RUN_GPU=1 uv run pytest tests/gpu      # GPU suite (the GPU to itself)
 ```
 
-The engine is `sharar/`, in-process profilers are in `profiling/`, and checks and gates in `tools/`. Quality and
+The engine is `hibana/`, in-process profilers are in `profiling/`, and checks and gates in `tools/`. Quality and
 speed benchmarks live in [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval). Read
 [CONTRIBUTING.md](CONTRIBUTING.md) before changing the engine. Work in progress is tracked in
 [issues](https://github.com/abdelfattah-lab/sharar/issues). Apache 2.0 ([license](LICENSE),

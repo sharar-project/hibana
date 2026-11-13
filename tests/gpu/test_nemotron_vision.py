@@ -1,4 +1,4 @@
-"""The Nemotron image path (`sharar/model/nemotron/vision.py`) against Transformers' `RadioModel` carrying the same
+"""The Nemotron image path (`hibana/model/nemotron/vision.py`) against Transformers' `RadioModel` carrying the same
 checkpoint weights, followed by the checkpoint's own projector steps written as its remote code writes them
 (`modeling_nemotron_h_omni.py`: final LayerNorm when present, `pixel_shuffle` v2 at ratio 0.5, `mlp1` as
 RMSNorm -> Linear -> ReLU^2 -> Linear), on Super (which has the final LayerNorm) and Bolt (which has none). Tiles are
@@ -18,7 +18,7 @@ import torch.nn.functional as F
 transformers = pytest.importorskip("transformers")
 from transformers.models.radio import RadioConfig, RadioModel  # noqa: E402
 
-from sharar.model.nemotron import vision as v  # noqa: E402
+from hibana.model.nemotron import vision as v  # noqa: E402
 
 TILE_COS = 0.9995  # the tower's output, BF16 both sides
 EMBED_COS = 0.999  # the projected embeddings
@@ -29,7 +29,7 @@ def cos(a, b) -> float:
 
 
 def _snapshot(name):
-    from sharar.target import TARGETS
+    from hibana.target import TARGETS
     try:
         return TARGETS[name].snapshot_dir()
     except FileNotFoundError as exc:
@@ -38,9 +38,9 @@ def _snapshot(name):
 
 @pytest.fixture(scope="module", params=["nemotron", "bolt"])
 def pair(request):
-    """(Sharar's RadioVision, Transformers' RadioModel with the same weights, the projector tensors) for one checkpoint."""
+    """(Hibana's RadioVision, Transformers' RadioModel with the same weights, the projector tensors) for one checkpoint."""
     import json
-    from sharar.weights.safetensors import SnapshotWeights
+    from hibana.weights.safetensors import SnapshotWeights
     snap = _snapshot(request.param)
     w = SnapshotWeights(snap)
     ours = v.RadioVision(w, torch.device("cuda"))
@@ -114,7 +114,7 @@ def test_encoder_matches_the_reference(pair, size):
 
 
 def test_tower_matches_the_reference(pair):
-    """The tower alone, before the projector: Sharar's blocks against Transformers' layers."""
+    """The tower alone, before the projector: Hibana's blocks against Transformers' layers."""
     name, ours, ref, head = pair
     pixels = v.preprocess(image(700, 900, seed=3))
     with torch.inference_mode():

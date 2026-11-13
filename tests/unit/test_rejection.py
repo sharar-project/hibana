@@ -1,9 +1,9 @@
 import torch
 
-from sharar.engine.rejection import corrected_distribution, distribution, verify_row
-from sharar.engine.sampler import Sampler, SamplingParams
-from sharar.engine.contracts import ProposerContext, ProposerRequirements
-from sharar.engine.rejection import Proposal
+from hibana.engine.rejection import corrected_distribution, distribution, verify_row
+from hibana.engine.sampler import Sampler, SamplingParams
+from hibana.engine.contracts import ProposerContext, ProposerRequirements
+from hibana.engine.rejection import Proposal
 from tests.ngram_proposer import NGramProposer
 from tests.unit.test_runtime_safety import tiny_executor
 
@@ -91,7 +91,7 @@ def test_deterministic_proposals_serve_sampled_requests(monkeypatch):
 
 def test_mtp_proposer_serves_sampled_requests():
     from types import SimpleNamespace
-    from sharar.proposers.mtp import MtpProposer
+    from hibana.proposers.mtp import MtpProposer
     proposer = MtpProposer(SimpleNamespace(bytes=0), ProposerContext(torch.device('cpu'), 4, 512))
     assert proposer.requirements.greedy_only is False
 
@@ -101,7 +101,7 @@ def test_vectorized_verify_matches_sequential_reference_in_distribution():
     must agree in distribution: acceptance counts and correction tokens."""
     from collections import Counter
 
-    from sharar.engine.rejection import verify_rows
+    from hibana.engine.rejection import verify_rows
 
     torch.manual_seed(0)
     k, v = 3, 6
@@ -122,7 +122,7 @@ def test_vectorized_verify_matches_sequential_reference_in_distribution():
 
 
 def test_vectorized_verify_deterministic_draft_and_sparse_support():
-    from sharar.engine.rejection import verify_rows
+    from hibana.engine.rejection import verify_rows
 
     p = torch.tensor([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.3, 0.3, 0.4]])
     tokens = torch.tensor([0, 1])
@@ -135,7 +135,7 @@ def test_vectorized_verify_deterministic_draft_and_sparse_support():
 
 
 def test_candidate_nucleus_equals_the_full_sort():
-    from sharar.engine.rejection import _nucleus
+    from hibana.engine.rejection import _nucleus
     g = torch.Generator().manual_seed(5)
     for scale in (0.05, 1.0, 8.0):  # flat rows exercise the full-sort fallback
         logits = torch.randn(8, 3000, generator=g) * scale
@@ -152,7 +152,7 @@ def test_candidate_nucleus_equals_the_full_sort():
 
 
 def test_relaxed_rows_accept_what_rejection_would_not():
-    from sharar.engine.rejection import verify_rows
+    from hibana.engine.rejection import verify_rows
     k, V = 4, 6
     p = torch.full((k + 1, V), 0.02)
     p[:, 0] = 0.9  # the target strongly prefers token 0 everywhere

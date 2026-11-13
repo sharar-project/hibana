@@ -3,7 +3,7 @@ requires = ["setuptools==78.1.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sharar"
+name = "hibana"
 version = "0.1.0"
 description = "Local inference engine for Qwen3.8-27B, Qwen3.8-Flash-Next, Nemotron 3.5 Super and Nemotron 3.5 Bolt on one or two NVIDIA GB10 (DGX Spark)"
 readme = "README.md"
@@ -31,9 +31,9 @@ dependencies = [
   "jinja2>=3.1",
   "fastapi>=0.141,<0.142",
   "uvicorn>=0.52,<0.53",
-  "xgrammar==0.2.8",  # constrained output (sharar/engine/grammar.py)
+  "xgrammar==0.2.8",  # constrained output (hibana/engine/grammar.py)
   "huggingface_hub>=1.30",  # model and 3-bit checkpoint downloads
-  "pillow>=11",  # decoding image input (sharar/api/media.py)
+  "pillow>=11",  # decoding image input (hibana/api/media.py)
 ]
 
 [project.optional-dependencies]
@@ -177,16 +177,17 @@ Repository = "https://github.com/abdelfattah-lab/sharar"
 Issues = "https://github.com/abdelfattah-lab/sharar/issues"
 
 [project.scripts]
-sharar = "sharar.cli:main"
+hibana = "hibana.cli:main"
+sharar = "hibana.cli:main"  # the former name, for existing scripts
 
 [tool.setuptools]
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 
 [tool.setuptools.packages.find]
-include = ["sharar*"]
+include = ["hibana*"]
 
 [tool.setuptools.package-data]
-sharar = ["benchmark_data/*.txt"]
-"sharar.kernels" = ["csrc/*.cu", "csrc/*.cuh", "csrc/*.cpp"]
-"sharar.kernels.qsa" = ["csrc/*.cu", "csrc/LICENSE.*", "LICENSE.vllm", "README.md"]
-"sharar.kernels.cute.gdn" = ["LICENSE", "README.md"]
+hibana = ["benchmark_data/*.txt"]
+"hibana.kernels" = ["csrc/*.cu", "csrc/*.cuh", "csrc/*.cpp"]
+"hibana.kernels.qsa" = ["csrc/*.cu", "csrc/LICENSE.*", "LICENSE.vllm", "README.md"]
+"hibana.kernels.cute.gdn" = ["LICENSE", "README.md"]

@@ -5,7 +5,7 @@ import struct
 import pytest
 import torch
 
-from sharar.kernels import w3
+from hibana.kernels import w3
 
 
 def test_kernel_cache_tracks_source_content_across_image_rollbacks(tmp_path, monkeypatch):

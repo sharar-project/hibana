@@ -7,10 +7,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.cache.snapshot import Snapshot
-from sharar.engine.sampler import SamplingParams
+from hibana.cache.snapshot import Snapshot
+from hibana.engine.sampler import SamplingParams
 from tests.unit.test_radix import snaps
-from sharar.proposers.parallel import CheckpointFeatureCache, DraftState, ParallelProposer
+from hibana.proposers.parallel import CheckpointFeatureCache, DraftState, ParallelProposer
 from tests.unit.test_runtime_safety import tiny_executor
 
 
@@ -145,8 +145,8 @@ def test_interior_snapshot_eviction_drops_its_features_only(monkeypatch):
 
 def test_prospective_budget_accounts_for_each_recurrent_feature_window(monkeypatch, tmp_path):
     import json
-    from sharar.cache import spec_budget
-    from sharar.target import DEFAULT_TARGET, Target
+    from hibana.cache import spec_budget
+    from hibana.target import DEFAULT_TARGET, Target
     name, revision = DEFAULT_TARGET.draft_pin('dflash2')
     draft = tmp_path / ('models--' + name.replace('/', '--')) / 'snapshots' / revision
     draft.mkdir(parents=True)
@@ -163,7 +163,7 @@ def test_prospective_budget_accounts_for_each_recurrent_feature_window(monkeypat
 def test_a_last_chunk_end_window_survives_decode_and_release(monkeypatch):
     """Updated from main (the prompt-end copy is gone): the window bound to the prompt's last chunk end (64, placed by
     its forward and saved at ingest) stays with that snapshot through decoding and the reply end's own window."""
-    from sharar.engine.contracts import FeatureRequest
+    from hibana.engine.contracts import FeatureRequest
     ex, p, features = setup(monkeypatch)
     prompt = list(range(1, 71))
     req = ex.admit(prompt, SamplingParams(max_new_tokens=2))

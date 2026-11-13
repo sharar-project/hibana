@@ -6,8 +6,8 @@ Loads only what the draft reads (the MTP layer, the embedding, the FP8 lm_head a
 5 GB and under a minute), fills the draft KV for a context of `--context` tokens and chains `--steps` draft steps
 per batch size, eagerly and through the draft graphs (`proposers/mtp_graphs.py`) the server replays.
 
-    SHARAR_TARGET=flashnext python3 -m profiling.flashnext_draft_step --save before.pt
-    SHARAR_TARGET=flashnext python3 -m profiling.flashnext_draft_step --check before.pt   # after a change
+    HIBANA_TARGET=flashnext python3 -m profiling.flashnext_draft_step --save before.pt
+    HIBANA_TARGET=flashnext python3 -m profiling.flashnext_draft_step --check before.pt   # after a change
 
 `--check` compares every step's hyper stream and draft token, eager and graphed, with the saved run (bitwise),
 and reports the first mismatch. Inputs are seeded random token ids and hidden rows of the trunk's scale; the
@@ -24,18 +24,18 @@ from types import SimpleNamespace
 import torch
 from torch.profiler import ProfilerActivity, profile
 
-from sharar.model.flashnext.hyper import HyperConnection
-from sharar.model.flashnext.linear import TrunkLinear
-from sharar.model.flashnext.model import PREFIX
-from sharar.model.rope import PartialRotary
-from sharar.target import FLASHNEXT
-from sharar.weights.safetensors import SnapshotWeights
+from hibana.model.flashnext.hyper import HyperConnection
+from hibana.model.flashnext.linear import TrunkLinear
+from hibana.model.flashnext.model import PREFIX
+from hibana.model.rope import PartialRotary
+from hibana.target import FLASHNEXT
+from hibana.weights.safetensors import SnapshotWeights
 
 
 def load(device, max_batch: int, k: int, max_context: int):
-    from sharar.engine.config import current
-    from sharar.model.flashnext.mtp import FlashNextMtpHead
-    from sharar.proposers.mtp import MtpProposer
+    from hibana.engine.config import current
+    from hibana.model.flashnext.mtp import FlashNextMtpHead
+    from hibana.proposers.mtp import MtpProposer
     t = FLASHNEXT
     snap = t.snapshot_dir()
     w = SnapshotWeights(snap)

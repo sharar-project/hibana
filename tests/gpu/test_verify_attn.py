@@ -25,8 +25,8 @@ def _exact(q, k, v, kv, rows):
 def test_matches_exact(rows, ctx, sharp):
     import flashinfer
     from flashinfer.page import nvfp4_quantize_append_paged_kv_cache_with_slot_mapping as write_fp4
-    from sharar.kernels.kv_fp4 import nvfp4_round
-    from sharar.kernels.verify_attn_cuda import verify_attention
+    from hibana.kernels.kv_fp4 import nvfp4_round
+    from hibana.kernels.verify_attn_cuda import verify_attention
     torch.manual_seed(len(ctx) * 100 + rows)
     dev = "cuda"
     b = len(ctx)
@@ -64,8 +64,8 @@ def test_prefix_matches_exact(new, prefix, sharp):
     import flashinfer
     from flashinfer.cascade import merge_state
     from flashinfer.page import nvfp4_quantize_append_paged_kv_cache_with_slot_mapping as write_fp4
-    from sharar.kernels.kv_fp4 import nvfp4_round
-    from sharar.kernels.verify_attn_cuda import prefix_attention, prefix_plan
+    from hibana.kernels.kv_fp4 import nvfp4_round
+    from hibana.kernels.verify_attn_cuda import prefix_attention, prefix_plan
     torch.manual_seed(sum(new) + sum(prefix))
     dev = "cuda"
     pages = sum(prefix) + 8

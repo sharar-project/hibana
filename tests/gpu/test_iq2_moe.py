@@ -2,7 +2,7 @@
 from dataclasses import replace
 import pytest
 import torch
-from sharar.kernels import iq2_moe, w3
+from hibana.kernels import iq2_moe, w3
 
 
 def packed(quant, e=5, h=256, intermediate=512, base=0):

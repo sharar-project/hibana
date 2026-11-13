@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Plain-torch reference for the Nemotron-H text model, which `tests/gpu/test_bolt_model.py` checks Bolt's engine
 against (residual outputs and logits). Written for NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4, whose layout the
-notes below describe; Bolt's GGML-encoded experts and projections are dequantized through `sharar/weights/ggml.py`.
+notes below describe; Bolt's GGML-encoded experts and projections are dequantized through `hibana/weights/ggml.py`.
 The vision tower, its projector and `mlp1` are never read.
 
 The model follows Transformers' built-in `nemotron_h` (the snapshot's `modeling_nemotron_h_omni.py` only wraps
@@ -58,7 +58,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from sharar.weights.safetensors import SnapshotWeights
+from hibana.weights.safetensors import SnapshotWeights
 
 MODEL_ID = "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
 MODEL_REVISION = "6aae0d6d0285e561bbb72efa10ba1425d41ebddc"
@@ -67,9 +67,9 @@ TRUNK = "language_model.backbone"
 
 
 def find_snapshot(cache_dir: str | os.PathLike | None = None) -> Path:
-    """The pinned snapshot under `cache_dir`, the engine's model cache (SHARAR_HF_CACHE, else HF_HOME) or
+    """The pinned snapshot under `cache_dir`, the engine's model cache (HIBANA_HF_CACHE, else HF_HOME) or
     ~/.cache/huggingface/hub."""
-    from sharar.engine.config import current
+    from hibana.engine.config import current
     roots = [cache_dir, current().hf_cache, Path.home() / ".cache/huggingface/hub"]
     for root in filter(None, roots):
         for base in (Path(root), Path(root) / "hub"):
@@ -217,7 +217,7 @@ class Linear:
         if self.kind == "fp8":
             return dequant_fp8(self.w, self.scale).to(dtype)
         if self.kind in ("IQ2_XXS", "Q8_0"):
-            from sharar.weights.ggml import dequantize
+            from hibana.weights.ggml import dequantize
             return dequantize(self.w, self.kind).to(dtype)
         return dequant_nvfp4(self.w, self.scale, self.scale_2, self.low_nibble_first).to(dtype)
 
@@ -657,7 +657,7 @@ class NemotronReference:
 
     def embed_ids(self, ids: torch.Tensor) -> torch.Tensor:
         if self.embed.ndim == 3:
-            from sharar.weights.ggml import dequantize
+            from hibana.weights.ggml import dequantize
             return dequantize(self.embed[ids.to(self.device)], "Q8_0").to(self.dtype)
         return self.embed[ids.to(self.device)].to(self.dtype)
 

@@ -1,4 +1,4 @@
-"""Nemotron's MTP draft (`sharar/model/nemotron/mtp.py`) and its draft heads over the checkpoint's FP8 lm_head.
+"""Nemotron's MTP draft (`hibana/model/nemotron/mtp.py`) and its draft heads over the checkpoint's FP8 lm_head.
 
 - Draft heads over an `Fp8Linear` (Nemotron's head, a static input scale beside the weight scale): the 2/3-bit copy
   and the rescored shortlist are bitwise what they are over a `TrunkLinear` (Flash-Next's) holding the same FP8 matrix
@@ -16,8 +16,8 @@ import torch
 
 def _heads(n: int, k: int, seed: int = 0):
     """The same FP8 matrix as a `TrunkLinear` and as an `Fp8Linear` (weight scale [] instead of [1, 1])."""
-    from sharar.model.flashnext.linear import TrunkLinear
-    from sharar.weights.modelopt import Fp8Linear
+    from hibana.model.flashnext.linear import TrunkLinear
+    from hibana.weights.modelopt import Fp8Linear
     torch.manual_seed(seed)
     w = torch.randn(n, k, device="cuda")
     w = (w / w.norm(dim=-1, keepdim=True) * 8).to(torch.bfloat16)
@@ -28,7 +28,7 @@ def _heads(n: int, k: int, seed: int = 0):
 
 @pytest.mark.parametrize("fmt", ["w3", "w2"])
 def test_low_bit_copy_of_an_fp8linear_is_the_trunklinears(fmt):
-    from sharar.proposers.draft_head import pack_head
+    from hibana.proposers.draft_head import pack_head
     trunk, fp8, _ = _heads(2048, 4096)
     a, b = pack_head(trunk, fmt, rows_per_chunk=512), pack_head(fp8, fmt, rows_per_chunk=512)
     assert torch.equal(a.planes, b.planes) and torch.equal(a.scales, b.scales) and torch.equal(a.row_scale, b.row_scale)
@@ -36,7 +36,7 @@ def test_low_bit_copy_of_an_fp8linear_is_the_trunklinears(fmt):
 
 @pytest.mark.parametrize("fmt,rescore", [("w2", 16), ("w3", 8), ("w2", 0)])
 def test_shortlist_over_an_fp8linear_picks_as_over_a_trunklinear(fmt, rescore):
-    from sharar.proposers.draft_head import ShortlistHead
+    from hibana.proposers.draft_head import ShortlistHead
     trunk, fp8, _ = _heads(4096, 4096, seed=1)
     x = torch.randn(4, 4096, device="cuda").to(torch.bfloat16)
     over_trunk, over_fp8 = ShortlistHead(trunk, fmt=fmt, rescore=rescore), ShortlistHead(fp8, fmt=fmt, rescore=rescore)
@@ -48,7 +48,7 @@ def test_shortlist_over_an_fp8linear_picks_as_over_a_trunklinear(fmt, rescore):
 # ---- on the pinned checkpoint -------------------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def snapshot():
-    from sharar.target import NEMOTRON
+    from hibana.target import NEMOTRON
     try:
         return NEMOTRON.snapshot_dir()
     except FileNotFoundError as exc:
@@ -58,10 +58,10 @@ def snapshot():
 @pytest.fixture(scope="module")
 def parts(snapshot):
     """The embedding and FP8 lm_head the draft shares with the target, without the trunk."""
-    from sharar.model.nemotron.config import PREFIX
-    from sharar.target import NEMOTRON
-    from sharar.weights.modelopt import load_fp8_linear
-    from sharar.weights.safetensors import SnapshotWeights
+    from hibana.model.nemotron.config import PREFIX
+    from hibana.target import NEMOTRON
+    from hibana.weights.modelopt import load_fp8_linear
+    from hibana.weights.safetensors import SnapshotWeights
     w = SnapshotWeights(snapshot)
     model = SimpleNamespace(target=NEMOTRON, embed=w.get(f"{PREFIX}.backbone.embeddings.weight").cuda(),
                             lm_head=load_fp8_linear(w, [f"{PREFIX}.lm_head"], torch.device("cuda")))
@@ -72,9 +72,9 @@ def parts(snapshot):
 def _head(snapshot, model, bf16: bool = False):
     """The served head, or (`bf16`) the same head with the checkpoint's BF16 eh_proj and attention q|k|v and o as
     plain BF16 matmuls in place of its FP8 ones."""
-    from sharar.model.flashnext.linear import TrunkLinear
-    from sharar.model.nemotron.mtp import PREFIX, NemotronMtpHead
-    from sharar.weights.safetensors import SnapshotWeights
+    from hibana.model.flashnext.linear import TrunkLinear
+    from hibana.model.nemotron.mtp import PREFIX, NemotronMtpHead
+    from hibana.weights.safetensors import SnapshotWeights
     w = SnapshotWeights(snapshot)
     dev = torch.device("cuda")
     try:
@@ -139,8 +139,8 @@ def chain(proposer, b: int, context: int, pages, tokens, hidden, steps: int, gra
 @pytest.mark.parametrize("fmt", ["w2"])
 def test_draft_graph_replays_the_eager_step(snapshot, parts, fmt):
     """Three chained steps at batch 1 and 4, served settings: bitwise."""
-    from sharar.proposers.mtp import MtpProposer
-    from sharar.proposers.draft_head import RESCORE
+    from hibana.proposers.mtp import MtpProposer
+    from hibana.proposers.draft_head import RESCORE
     head = _head(snapshot, parts)
     head.set_draft_head(None, fmt, RESCORE[fmt])
     proposer = MtpProposer(head, SimpleNamespace(device=torch.device("cuda"), max_batch=4, max_context=664), 3)

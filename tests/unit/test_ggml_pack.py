@@ -5,10 +5,10 @@ import struct
 import pytest
 import torch
 
-from sharar.kernels.ggml import _execution_lut, pack_weight
-from sharar.weights.ggml import FORMATS, dequantize
-from sharar.weights.iq2_grid import GRID
-from sharar.weights.iq2_xs_grid import GRID_XS
+from hibana.kernels.ggml import _execution_lut, pack_weight
+from hibana.weights.ggml import FORMATS, dequantize
+from hibana.weights.iq2_grid import GRID
+from hibana.weights.iq2_xs_grid import GRID_XS
 
 
 def blocks(quant, n=136, k=768):

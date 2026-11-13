@@ -7,8 +7,8 @@ def _cache_invariants(monkeypatch):
     one lock per running request, the lock counts, the evictable totals, slot and page ownership, no private snapshot
     between steps, no dead KV), whenever the executor under the
     scheduler has a real StateManager over a radix cache."""
-    from sharar.cache.request_state import StateManager
-    from sharar.engine.scheduler import Scheduler
+    from hibana.cache.request_state import StateManager
+    from hibana.engine.scheduler import Scheduler
 
     step = Scheduler.step
 

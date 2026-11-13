@@ -5,9 +5,9 @@ path and its 3-bit copy match too."""
 import pytest
 import torch
 
-from sharar.kernels import mlp_fusion, ops, w3
-from sharar.kernels.nvfp4_quant import nvfp4_quantize, silu_mul_nvfp4_quantize
-from sharar.weights.modelopt import Nvfp4Linear, interleave_pairs, pair_order, swizzle_block_scales
+from hibana.kernels import mlp_fusion, ops, w3
+from hibana.kernels.nvfp4_quant import nvfp4_quantize, silu_mul_nvfp4_quantize
+from hibana.weights.modelopt import Nvfp4Linear, interleave_pairs, pair_order, swizzle_block_scales
 
 H = 5120
 pytestmark = pytest.mark.skipif(torch.cuda.get_device_capability() != (12, 1), reason="the fused kernel needs SM121")

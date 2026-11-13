@@ -9,10 +9,10 @@ import math
 import pytest
 import torch
 
-from sharar.api import validation
-from sharar.api.validation import _sampling_from
-from sharar.engine.rejection import verify_batch, verify_rows
-from sharar.engine.sampler import InvalidRequest, SamplingParams
+from hibana.api import validation
+from hibana.api.validation import _sampling_from
+from hibana.engine.rejection import verify_batch, verify_rows
+from hibana.engine.sampler import InvalidRequest, SamplingParams
 
 P = torch.tensor([0.60, 0.30, 0.07, 0.03])  # the target's law
 Q = torch.tensor([0.90, 0.06, 0.02, 0.02])  # a drafter sharper than its target

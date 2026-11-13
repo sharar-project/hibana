@@ -24,8 +24,8 @@ def _inputs(contexts, rows, seed=0, key_scale=1.0):
 @pytest.mark.parametrize("contexts,rows", [([32768 + 4099], [300]), ([65536, 40001], [200, 129]),
                                            ([131072], [256]), ([3000, 9001, 5], [64, 70, 5])])
 def test_scores_have_the_same_bits(contexts, rows):
-    from sharar.kernels.qsa.score_exact import _tiles, load_exact_scorer
-    from sharar.kernels.qsa.selection import score_groups
+    from hibana.kernels.qsa.score_exact import _tiles, load_exact_scorer
+    from hibana.kernels.qsa.selection import score_groups
     for key_scale in (1.0, 30.0):
         q, aux, table, base, positions = _inputs(contexts, rows, key_scale=key_scale)
         gcap = max(contexts) // 4
@@ -40,8 +40,8 @@ def test_scores_have_the_same_bits(contexts, rows):
 @pytest.mark.parametrize("contexts,rows", [([32768 + 4099], [300]), ([65536, 40001], [200, 129]),
                                            ([131072], [256]), ([3000, 9001, 5], [64, 70, 5])])
 def test_selection_is_the_same(contexts, rows):
-    from sharar.kernels.qsa.score_exact import select_exact
-    from sharar.kernels.qsa.selection import select_pages
+    from hibana.kernels.qsa.score_exact import select_exact
+    from hibana.kernels.qsa.selection import select_pages
     q, aux, table, base, positions = _inputs(contexts, rows, seed=1)
     gcap = max(contexts) // 4
     want = select_pages(q, aux, table, base, positions, 4, 2048, gcap, SCALE, chunk=256)
@@ -71,8 +71,8 @@ def _scores(kind, rows, cols, g):
 def test_topk_matches_torch(kind, cols, monkeypatch):
     """The page assembly from the long-row top-512 against Torch's top-k and `_assemble_kernel`, on given scores (some
     rows partly invisible: -inf)."""
-    from sharar.kernels.qsa import selection
-    from sharar.kernels.qsa.score_exact import load_exact_scorer
+    from hibana.kernels.qsa import selection
+    from hibana.kernels.qsa.score_exact import load_exact_scorer
     g = torch.Generator(device="cuda").manual_seed(cols)
     rows = 64
     scores = _scores(kind, rows, cols, g)
@@ -96,7 +96,7 @@ def test_topk_matches_torch(kind, cols, monkeypatch):
 @torch.inference_mode()
 def test_indexer_attention_is_the_same(prefix, length, monkeypatch):
     """`FlashNextIndexer.run` (the `original` backend) with and without the exact kernels: the same attention output."""
-    from sharar.kernels.qsa import score_exact
+    from hibana.kernels.qsa import score_exact
     from tests.qsa_fixture import QsaFixture
     f = QsaFixture(1, length, prefix, hidden=256)
     aux = f.aux.clone()

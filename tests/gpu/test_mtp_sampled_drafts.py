@@ -1,13 +1,13 @@
-"""Sampled MTP drafts on the device (SHARAR_MTP_SAMPLE): the Philox draft draw (proposers/mtp.draft_laws through
+"""Sampled MTP drafts on the device (HIBANA_MTP_SAMPLE): the Philox draft draw (proposers/mtp.draft_laws through
 kernels/draft_selection.sampled_lattice) and exact verification of those drafts by the fused kernel
 (rejection.verify_batch -> kernels/sampled_verify.verify_candidates, the one the device acceptance graph replays)."""
 import pytest
 import torch
 
-from sharar.engine.rejection import distribution, small_laws, verify_batch
-from sharar.engine.sampler import SamplingParams
-from sharar.engine import sampling_rng
-from sharar.proposers.mtp import draft_laws, draft_rows
+from hibana.engine.rejection import distribution, small_laws, verify_batch
+from hibana.engine.sampler import SamplingParams
+from hibana.engine import sampling_rng
+from hibana.proposers.mtp import draft_laws, draft_rows
 
 
 @pytest.fixture(autouse=True)
@@ -93,7 +93,7 @@ def test_fused_verify_of_sampled_drafts_emits_the_target_law(r):
     support = ids.unsqueeze(1).expand(n, k, r).contiguous()
     verify_logits = target.view(1, 1, v).expand(n, k + 1, v).contiguous()
     rng = [[q_.rng_seed, o] for q_, o in zip(reqs, sampling_rng.offsets(reqs, sampling_rng.VERIFY))]
-    from sharar.engine.rejection import _verify_fused
+    from hibana.engine.rejection import _verify_fused
     assert _verify_fused(tokens[:4], verify_logits[:4], [params] * 4, rng[:4], q[:4], support[:4]) is not None  # the fused kernel decides
     acc, corr, flags, _ = verify_batch(tokens, verify_logits, [params] * n, [q_.generator for q_ in reqs], q, support, rng=rng)
     first = torch.where(acc > 0, tokens[:, 0], corr)

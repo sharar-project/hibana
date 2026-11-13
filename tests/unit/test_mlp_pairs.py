@@ -2,8 +2,8 @@
 the concatenated layout (SiLU-mul over the pairs: tests/gpu/test_mlp_fusion.py)."""
 import torch
 
-from sharar.kernels import w3
-from sharar.weights.modelopt import Nvfp4Linear, interleave_pairs, pair_order, swizzle_block_scales
+from hibana.kernels import w3
+from hibana.weights.modelopt import Nvfp4Linear, interleave_pairs, pair_order, swizzle_block_scales
 
 BLOCK = 64
 

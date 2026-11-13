@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Kernel-level breakdown of eager Flash-Next decode steps (torch profiler) plus graph-replay step time.
 
-    SHARAR_TARGET=flashnext python3 -m profiling.flashnext_profile --prompt benchmark_code --length 512
+    HIBANA_TARGET=flashnext python3 -m profiling.flashnext_profile --prompt benchmark_code --length 512
 
 The prompt is a frozen task of `profiling/inputs.py` (its first `--length` tokens); `--steps` decode steps are
 profiled and the `--top` CUDA kernels by time listed.
@@ -13,8 +13,8 @@ from collections import defaultdict
 import torch
 from torch.profiler import ProfilerActivity, profile
 
-from sharar.engine.run import _load
-from sharar.engine.sampler import SamplingParams
+from hibana.engine.run import _load
+from hibana.engine.sampler import SamplingParams
 
 
 def main():

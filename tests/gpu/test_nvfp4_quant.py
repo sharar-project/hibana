@@ -6,7 +6,7 @@ import torch
 import triton
 import triton.language as tl
 
-from sharar.kernels.nvfp4_quant import e2m1_pairs
+from hibana.kernels.nvfp4_quant import e2m1_pairs
 
 BLOCK = 4096
 
@@ -49,7 +49,7 @@ def test_hardware_e2m1_equals_the_comparison_chain_for_every_fp32():
 @pytest.mark.parametrize("silu", [False, True])
 @torch.inference_mode()
 def test_prefill_geometry_matches_the_decode_geometry(rows, silu, monkeypatch):
-    from sharar.kernels import nvfp4_quant
+    from hibana.kernels import nvfp4_quant
     torch.manual_seed(rows)
     k = 17408 if silu else 5120
     x = torch.randn(rows, 2 * k if silu else k, device="cuda", dtype=torch.bfloat16) * 3

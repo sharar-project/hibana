@@ -1,8 +1,8 @@
 import pytest
 
-from sharar.api.chat_template import ChatTemplate
-from sharar.target import NEMOTRON, NEMOTRON_BOLT
-from sharar.tokenizer import SnapshotTokenizer
+from hibana.api.chat_template import ChatTemplate
+from hibana.target import NEMOTRON, NEMOTRON_BOLT
+from hibana.tokenizer import SnapshotTokenizer
 
 
 def test_render_no_thinking_ends_with_generation_prompt(snapshot):

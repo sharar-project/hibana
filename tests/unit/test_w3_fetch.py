@@ -6,8 +6,8 @@ from dataclasses import replace
 
 import pytest
 
-from sharar.target import FLASHNEXT, QWEN38
-from sharar.weights import w3_checkpoint
+from hibana.target import FLASHNEXT, QWEN38
+from hibana.weights import w3_checkpoint
 
 
 def publish(directory, target, corrupt=False):

@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from sharar.engine import config
-from sharar.engine.sampler import SamplingParams
-from sharar.target import NEMOTRON_BOLT
+from hibana.engine import config
+from hibana.engine.sampler import SamplingParams
+from hibana.target import NEMOTRON_BOLT
 
 
 def numerics(**extra):
@@ -18,13 +18,13 @@ def numerics(**extra):
 
 @pytest.fixture(scope='module', params=('bf16', 'fp8'))
 def runtime(request):
-    from sharar.api.chat_template import ChatTemplate
-    from sharar.cache.spec_budget import SpecConfig
-    from sharar.engine.executor import Executor
-    from sharar.launch.guard import start_thread
-    from sharar.model.bolt.model import Bolt
-    from sharar.proposers.factory import draft_snapshot
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.api.chat_template import ChatTemplate
+    from hibana.cache.spec_budget import SpecConfig
+    from hibana.engine.executor import Executor
+    from hibana.launch.guard import start_thread
+    from hibana.model.bolt.model import Bolt
+    from hibana.proposers.factory import draft_snapshot
+    from hibana.tokenizer import SnapshotTokenizer
     try:
         snap = NEMOTRON_BOLT.snapshot_dir(config.current().hf_cache or Path.home() / '.cache/huggingface')
     except FileNotFoundError as exc:
@@ -50,8 +50,8 @@ def runtime(request):
 
 @torch.inference_mode()
 def test_target_taps_are_completed_residual_outputs(runtime):
-    from sharar.engine.context import scratch_prefill_context
-    from sharar.engine.contracts import FeatureRequest
+    from hibana.engine.context import scratch_prefill_context
+    from hibana.engine.contracts import FeatureRequest
     ex, _, _ = runtime
     ids = torch.tensor([1001, 1002, 1003], device='cuda')
     ctx = scratch_prefill_context(len(ids), 'cuda')
@@ -86,7 +86,7 @@ def test_greedy_graphs_match_eager_and_accept_drafts(runtime, depth):
 
 @torch.inference_mode()
 def test_device_acceptance_and_cached_anchor_features(runtime):
-    from sharar.benchmark_workloads import frozen_source
+    from hibana.benchmark_workloads import frozen_source
     ex, tok, encode = runtime
     document = tok.decode(tok.encode(frozen_source())[:300])
     ids = encode(document + '\n\nExplain why the sky appears blue in a few sentences.')

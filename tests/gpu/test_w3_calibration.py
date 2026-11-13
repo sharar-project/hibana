@@ -3,8 +3,8 @@
 import pytest
 import torch
 
-from sharar.kernels import w3
-from sharar.weights.w3_calibration import quantize
+from hibana.kernels import w3
+from hibana.weights.w3_calibration import quantize
 
 
 

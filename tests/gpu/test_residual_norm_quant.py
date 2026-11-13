@@ -24,8 +24,8 @@ def _reference_norm(x, residual, weight):
 @pytest.mark.parametrize("rows", ROWS)
 @torch.inference_mode()
 def test_fp8_epilogue(rows):
-    from sharar.kernels.cute.residual_norm import residual_norm_fp8
-    from sharar.kernels.fp8_quant import quant_fp8
+    from hibana.kernels.cute.residual_norm import residual_norm_fp8
+    from hibana.kernels.fp8_quant import quant_fp8
     x, residual, weight = _inputs(rows, rows)
     for scale in (0.004, 0.05, 1.0):  # 0.004 clamps many values at 448
         s = torch.tensor([scale], device="cuda")
@@ -40,8 +40,8 @@ def test_fp8_epilogue(rows):
 @pytest.mark.parametrize("rows", ROWS)
 @torch.inference_mode()
 def test_nvfp4_epilogue(rows):
-    from sharar.kernels.cute.residual_norm import residual_norm_nvfp4
-    from sharar.kernels.nvfp4_quant import nvfp4_quantize
+    from hibana.kernels.cute.residual_norm import residual_norm_nvfp4
+    from hibana.kernels.nvfp4_quant import nvfp4_quantize
     x, residual, weight = _inputs(rows, 100 + rows)
     for amax in (2.0, 12.0, 300.0):
         gs = torch.tensor([448 * 6 / amax], device="cuda")

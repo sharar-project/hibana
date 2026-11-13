@@ -1,12 +1,12 @@
 """The MTP draft's confidence per drafted position: the draft head's top-1 probability and margin,
-and the trace round records that carry it (SHARAR_TRACE_CONFIDENCE, the input for adaptive depth)."""
+and the trace round records that carry it (HIBANA_TRACE_CONFIDENCE, the input for adaptive depth)."""
 import torch
 
-from sharar.engine.config import EngineConfig
-from sharar.engine.request import Request
-from sharar.engine.sampler import SamplingParams
-from sharar.engine.spec import SpecDecoder
-from sharar.proposers.draft_head import TargetHead, confidence
+from hibana.engine.config import EngineConfig
+from hibana.engine.request import Request
+from hibana.engine.sampler import SamplingParams
+from hibana.engine.spec import SpecDecoder
+from hibana.proposers.draft_head import TargetHead, confidence
 
 
 def test_draft_confidence_is_the_heads_softmax_top1_and_margin():
@@ -32,4 +32,4 @@ def test_round_records_get_confidence_only_when_a_request_records_rounds():
 
 def test_setting_is_off_by_default():
     assert EngineConfig.from_env({}).trace_confidence is False
-    assert EngineConfig.from_env({"SHARAR_TRACE_CONFIDENCE": "1"}).trace_confidence is True
+    assert EngineConfig.from_env({"HIBANA_TRACE_CONFIDENCE": "1"}).trace_confidence is True
