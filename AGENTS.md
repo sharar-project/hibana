@@ -70,5 +70,5 @@ The design is in [architecture](docs/architecture.md) and [interfaces](docs/inte
 ## Editing these instructions
 
 This file loads on every agent request: keep it under 100 lines. Add a rule only for a mistake agents actually make,
-prefer a test or check that enforces it, and put area-specific detail in CONTRIBUTING.md. `CLAUDE.md` imports this
-file; keep the guidance here.
+prefer a test or check that enforces it, and put area-specific detail in CONTRIBUTING.md. Keep agent guidance in
+this one file rather than in tool-specific copies such as `CLAUDE.md`.
