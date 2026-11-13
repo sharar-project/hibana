@@ -4,7 +4,7 @@ In-process tools that look inside the engine: they load the model and kernels th
 Python environment (`uv run python -m profiling.<tool>` in the checkout), on an exclusive, guarded GPU.
 To measure a served build (quality suites, AIPerf speed, a lossy option) use the tools in
 [evaluation](../docs/evaluation.md) instead; HTTP benchmarks live in
-[sharar-eval](https://github.com/abdelfattah-lab/sharar-eval).
+[sharar-eval](https://github.com/sharar-project/sharar-eval).
 
 | Tool | Purpose |
 |---|---|

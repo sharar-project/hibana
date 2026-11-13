@@ -38,10 +38,6 @@ uv run hibana launch claude     # Claude Code on the local model (also opencode,
 Any OpenAI client works against `http://127.0.0.1:30005/v1` and Anthropic clients against `http://127.0.0.1:30005`
 ([API](docs/api.md)).
 
-> [!NOTE]
-> Hibana was called Sharar. The `sharar` command, `SHARAR_*` settings and the former directories keep working
-> ([upgrading](docs/operations.md#upgrading-from-sharar)).
-
 ## Models
 
 Pick a model and run its command. Hibana downloads the publisher's checkpoint from Hugging Face at a pinned revision,
