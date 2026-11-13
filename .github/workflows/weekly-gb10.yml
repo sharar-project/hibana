@@ -11,6 +11,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   weekly:
+    if: github.repository == 'abdelfattah-lab/sharar'  # the GB10 runner serves the private repo only; the public copy has none
     runs-on: [self-hosted, gb10]
     timeout-minutes: 120
     steps:
