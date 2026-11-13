@@ -6,25 +6,25 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.cache.snapshot import Snapshot
+from hibana.cache.snapshot import Snapshot
 
-from sharar.engine.contracts import VerifiedFeatures
-from sharar.engine.sampler import SamplingParams
-from sharar.proposers.parallel import DraftState
+from hibana.engine.contracts import VerifiedFeatures
+from hibana.engine.sampler import SamplingParams
+from hibana.proposers.parallel import DraftState
 
 
 
 @pytest.fixture(scope='module', params=['dflash2'])
 def runtime(request, qwen38):
-    from sharar import config
-    from sharar.proposers.factory import draft_snapshot
-    from sharar.target import DEFAULT_TARGET
+    from hibana import config
+    from hibana.proposers.factory import draft_snapshot
+    from hibana.target import DEFAULT_TARGET
     if not (draft_snapshot(request.param) / 'model.safetensors').is_file():
         name, revision = DEFAULT_TARGET.draft_pin(request.param)
         pytest.skip(f'{request.param} draft weights not in the model cache: {name}@{revision[:7]}')
-    from sharar.engine.executor import Executor
-    from sharar.engine.prompts import PARAGRAPH
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.engine.executor import Executor
+    from hibana.engine.prompts import PARAGRAPH
+    from hibana.tokenizer import SnapshotTokenizer
     gc.collect()  # the previous module's executor
     torch.cuda.empty_cache()
     model = qwen38
@@ -75,7 +75,7 @@ def checkpoint_slots(runtime):
 @pytest.mark.parametrize('batch', [1, 2, 3, 4])
 @torch.inference_mode()
 def test_real_projections_against_fp32_oracle_and_private_ring_boundaries(runtime, batch, tmp_path, checkpoint_slots):
-    from sharar.model.parallel_draft import rms, rotate
+    from hibana.model.parallel_draft import rms, rotate
     ex, _, source = runtime
     p, model = ex.spec.proposer, ex.spec.proposer.model
     counts, starts, slots = [1, 3, 5, 8][:batch], [2047, 2046, 2045, 2044][:batch], [4, 1, 3, 2][:batch]

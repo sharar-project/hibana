@@ -6,8 +6,8 @@ import gc
 import pytest
 import torch
 
-from sharar import target as targets
-from sharar.engine.sampler import SamplingParams
+from hibana import target as targets
+from hibana.engine.sampler import SamplingParams
 
 
 def chat(tok, text: str) -> list[int]:
@@ -20,10 +20,10 @@ def user(tok, text: str) -> list[int]:
 
 @pytest.fixture(scope="module", params=["nvfp4", "fp8"])
 def runtime(tmp_path_factory, request):
-    from sharar.cache.spec_budget import SpecConfig
-    from sharar.engine import config
-    from sharar.engine.executor import Executor
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.cache.spec_budget import SpecConfig
+    from hibana.engine import config
+    from hibana.engine.executor import Executor
+    from hibana.tokenizer import SnapshotTokenizer
     target = targets.get("qwen38")
     ssd = dict(ssd=True, ssd_dir=str(tmp_path_factory.mktemp("ssd")), ssd_gib=2.0)
     with config.using(config.current().replace(target="qwen38", kv_format=request.param, **ssd)):

@@ -1,7 +1,7 @@
 """Verifier dispatch must leave ordinary decode, wider batches and vocab alone."""
 import pytest
 
-from sharar.kernels.verify_gemm import is_attention_qkv, is_mlp
+from hibana.kernels.verify_gemm import is_attention_qkv, is_mlp
 
 
 @pytest.mark.parametrize('m', [1, 2, 3, 4, 8, 15, 17, 32, 48, 64, 2048])

@@ -1,17 +1,17 @@
 # Nemotron 3.5 Bolt
 
-`sharar serve bolt` serves the text backbone of
+`hibana serve bolt` serves the text backbone of
 `nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB` on one Spark, on port 30006.
-`nemotron-bolt` is an alias. The checkpoint is pinned in `sharar/model/bolt/config.py` and downloaded by
+`nemotron-bolt` is an alias. The checkpoint is pinned in `hibana/model/bolt/config.py` and downloaded by
 the normal launcher. Image input runs Super's image path on Bolt's own vision weights (C-RADIO and the projector,
 without the final LayerNorm; [Super's images](nemotron.md#images), [API](api.md#images)).
 
 ```bash
-sharar serve bolt
-sharar serve bolt --exact
-sharar serve bolt --spec 3  # a shorter prefix of LiLiCorr's seven trained slots
-sharar serve bolt --spec 0 # ordinary decode
-sharar chat bolt
+hibana serve bolt
+hibana serve bolt --exact
+hibana serve bolt --spec 3  # a shorter prefix of LiLiCorr's seven trained slots
+hibana serve bolt --spec 0 # ordinary decode
+hibana chat bolt
 ```
 
 Bolt uses the Nemotron Mamba-2 runtime: prefill checkpoints, decode, prefix reuse, SSD eviction/restore and
@@ -41,9 +41,9 @@ their checkpoint encodings (Q8_0 and IQ2_XXS are losslessly retiled at load) and
 for the CUDA graphs' row counts are compiled at load, on the loading thread; `model/bolt/tuning.py` pins measured
 launch configurations per projection and row count. The routed experts run b12x's fused IQ2_XXS MoE
 (`kernels/b12x_iq2_moe.py`: routing, up projection, ReLU², down projection and the weighted sum in one launch,
-BF16 activations). `SHARAR_BOLT_EXPERTS=fp8` selects Sharar's grouped operator (`kernels/iq2_moe.py`: E4M3
+BF16 activations). `HIBANA_BOLT_EXPERTS=fp8` selects Hibana's grouped operator (`kernels/iq2_moe.py`: E4M3
 activations, four launches), about 5% slower for one request and up to 6% faster for four;
-`SHARAR_BOLT_EXPERTS=bf16` keeps the Triton weight-only path (`kernels/ggml_bf16.py`). SSD cache identities
+`HIBANA_BOLT_EXPERTS=bf16` keeps the Triton weight-only path (`kernels/ggml_bf16.py`). SSD cache identities
 include the linears' b12x version and launch configurations, the expert backend and expert sharing.
 
 Loaded model allocations are about 21.2 GiB before request pools and graphs. One FP32 Mamba slot costs
@@ -56,9 +56,9 @@ The launcher and ledger budget the pools separately. The checkpoint's 24GB name 
 `fast` and `throughput` add the calibrated 3-bit copies of the trunk and vocabulary head (177 matrices, 2.1 GiB;
 `weights/bolt_w3_calibrate.py`), the int8 Mamba state (LeapQuant windows) and expert sharing: Super's `route_budget`, each token keeping
 its top 6 of 9 experts and a decode or verify call reading at most 20 distinct experts a request and 64 in all
-(`SHARAR_MOE_KEEP=6`, `SHARAR_MOE_BUDGET=20:64`). Every profile verifies LiLiCorr's drafts exactly. All profiles use FP8 KV, up to four active requests and the SSD
+(`HIBANA_MOE_KEEP=6`, `HIBANA_MOE_BUDGET=20:64`). Every profile verifies LiLiCorr's drafts exactly. All profiles use FP8 KV, up to four active requests and the SSD
 tier. NVIDIA publishes no 3-bit copies for Bolt: `fast` serves `w3-checkpoints/bolt-current` under the results
-directory (a link to a local calibration) or `SHARAR_W3_CHECKPOINT=DIR`, and without one the checkpoint encodings
+directory (a link to a local calibration) or `HIBANA_W3_CHECKPOINT=DIR`, and without one the checkpoint encodings
 with a warning.
 
 One GB10, LiLiCorr at seven drafts, the 22 h2h prompts at 256 forced tokens (`tools/h2h_pr.py`'s method), tok/s for
@@ -84,7 +84,7 @@ at the cap; IFEval (541, prompt-level strict) 85.0% against 84.8% (p 1.0). Greed
 1,000) with the 3-bit copies -0.1 points. Thinking on and greedy, the 3-bit copies score GPQA 74.2% against 73.7%
 and GSM8K (first 300) 97.3% against 96.3%.
 
-Relaxed acceptance is not a profile default (`SHARAR_ACCEPT_DEFAULT=off`, `SHARAR_ACCEPT_SOFT=0`): sampled with
+Relaxed acceptance is not a profile default (`HIBANA_ACCEPT_DEFAULT=off`, `HIBANA_ACCEPT_SOFT=0`): sampled with
 thinking on, accepting every top-2-within-1.0 draft outright costs `fast` GPQA 5.6 points (p 0.052; nine more answers
 at the cap), and greedy top-3 within 2.0 cost GPQA 8.6 points (p 0.02); s = 0.5 is unmeasured on Bolt. Expert sharing
 at keep 4, 16 a request and 48 in all (8% faster than 6 / 20:64) thinks 1.23x longer on GPQA than no sharing
@@ -92,7 +92,7 @@ at keep 4, 16 a request and 48 in all (8% faster than 6 / 20:64) thinks 1.23x lo
 
 This pin has no built-in MTP head. The pinned companion
 `nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-LiLiCorr` at `449d24140160b8e51871bfc0f0a7338abf640aa1`
-uses the parallel DFlash proposer (`dflash2` in Sharar), sharing the target's embeddings and vocabulary head.
+uses the parallel DFlash proposer (`dflash2` in Hibana), sharing the target's embeddings and vocabulary head.
 All profiles default to seven draft tokens (verified exactly under `exact`); `--spec N` selects 1–7 and
 `--spec 0` turns speculation off. Longer drafts and MTP are rejected. The draft keeps its published NVFP4/BF16
 weights (`--draft-precision bf16`); the precision name refers to its activations and floating-point matrices.
@@ -102,13 +102,13 @@ sliding attention with learned virtual sinks. The two-layer LiLiCorr head scores
 candidates per position; sampled proposals carry the actual conditional probabilities to the target verifier.
 Draft features and projected KV follow the parallel adapter's request, prefix-cache and SSD lifecycle. Shorter
 drafts use the learned slot prefix without resizing parameters. Tensor parallel and video input are not
-implemented for this target. BF16 KV (`SHARAR_KV_FORMAT=sim-bf16`, with SSD off) is available for
+implemented for this target. BF16 KV (`HIBANA_KV_FORMAT=sim-bf16`, with SSD off) is available for
 numerical parity; packed NVFP4 KV is not enabled.
 
 ## Prefill kernels
 
 On GB10, BF16 normalized prefills with at least 2,048 packed tokens use a rolling width-4 convolution and
-a fused scan, SiLU gate and grouped RMSNorm ([kernel](../sharar/kernels/mamba2_prefill.py)). Each scan CTA
+a fused scan, SiLU gate and grouped RMSNorm ([kernel](../hibana/kernels/mamba2_prefill.py)). Each scan CTA
 owns the 16 heads sharing B/C and 32 output tokens. It tiles the entering-state reduction, shares C/CB operands,
 and keeps the gated values on-chip, avoiding the global scan-output write/read. The BF16 scan rounding boundary
 and BF16 normalized-value/weight product are preserved.
@@ -134,7 +134,7 @@ trained slot prefixes, graph replay and virtual-sink attention. The Bolt LiLiCor
 acceptance, target feature taps and continuation through the cache lifecycle.
 
 ```bash
-SHARAR_RUN_GPU=1 uv run pytest tests/gpu/test_bolt_kernels.py tests/gpu/test_bolt_model.py tests/gpu/test_lilicorr.py tests/gpu/test_bolt_lilicorr.py
+HIBANA_RUN_GPU=1 uv run pytest tests/gpu/test_bolt_kernels.py tests/gpu/test_bolt_model.py tests/gpu/test_lilicorr.py tests/gpu/test_bolt_lilicorr.py
 uv run python tools/evaluate.py --target bolt --profile exact --suite quick --name bolt
 ```
 

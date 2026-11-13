@@ -8,10 +8,10 @@ import torch
 @pytest.fixture(scope='module', params=['bf16', 'fp8'])
 def draft_runtime(request, qwen38):
     import gc
-    from sharar import config
-    from sharar.engine.executor import Executor
-    from sharar.engine.prompts import PARAGRAPH
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana import config
+    from hibana.engine.executor import Executor
+    from hibana.engine.prompts import PARAGRAPH
+    from hibana.tokenizer import SnapshotTokenizer
     gc.collect()  # the other precision's executor
     torch.cuda.empty_cache()
     with torch.inference_mode():
@@ -28,8 +28,8 @@ def draft_runtime(request, qwen38):
 @pytest.mark.parametrize('depth,batch,mixed', [(1, 1, False), (3, 2, False), (7, 3, False), (7, 4, False), (3, 3, True)])
 @torch.inference_mode()
 def test_selection_preserves_real_outputs_and_cache(draft_runtime, monkeypatch, graphs, depth, batch, mixed):
-    from sharar.engine.sampler import SamplingParams
-    from sharar.kernels import draft_selection
+    from hibana.engine.sampler import SamplingParams
+    from hibana.kernels import draft_selection
     ex, ids = draft_runtime
     ex.use_graphs, ex.spec.verify_depth = graphs, depth
     native = draft_selection.greedy_lattice
@@ -78,7 +78,7 @@ def test_selection_preserves_real_outputs_and_cache(draft_runtime, monkeypatch, 
 
 @torch.inference_mode()
 def test_long_batched_prefill_retains_each_rows_endpoint(draft_runtime):
-    from sharar.engine.sampler import SamplingParams
+    from hibana.engine.sampler import SamplingParams
     ex, tape = draft_runtime
     ex.flush_cache()
     reqs = [ex.admit([100 + i] + (tape * 16)[:8189], SamplingParams(max_new_tokens=8, ignore_eos=True))
@@ -100,8 +100,8 @@ def test_long_batched_prefill_retains_each_rows_endpoint(draft_runtime):
 
 @torch.inference_mode()
 def test_branch_from_prompt_end_keeps_draft_after_longer_completion(draft_runtime):
-    from sharar import config
-    from sharar.engine.sampler import SamplingParams
+    from hibana import config
+    from hibana.engine.sampler import SamplingParams
     ex, ids = draft_runtime
     ex.flush_cache()
     p = ex.spec.proposer

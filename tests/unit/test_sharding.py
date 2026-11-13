@@ -1,9 +1,9 @@
 import pytest
 import torch
 
-from sharar.distributed import set_tp_info
-from sharar.target import QWEN38
-from sharar.weights.sharding import REPLICATED, ROW_PARALLEL, ColumnParallel
+from hibana.distributed import set_tp_info
+from hibana.target import QWEN38
+from hibana.weights.sharding import REPLICATED, ROW_PARALLEL, ColumnParallel
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def test_target_shard_is_one_ranks_share():
 
 
 def test_flashnext_shard_splits_heads_and_every_expert_width():
-    from sharar.target import FLASHNEXT
+    from hibana.target import FLASHNEXT
     t = FLASHNEXT.shard(2)
     assert (t.num_attention_heads, t.num_kv_heads, t.linear_num_key_heads, t.linear_num_value_heads) == (12, 1, 8, 24)
     assert (t.moe_intermediate_size, t.shared_expert_intermediate_size) == (320, 320)
@@ -47,7 +47,7 @@ def test_flashnext_shard_splits_heads_and_every_expert_width():
 def test_trunk_linear_parts_are_the_whole_matrix_in_fp8():
     """Every rank quantizes with the whole matrix's scale, so the ranks' parts are exactly the single-GPU copy's
     rows (column-parallel) or columns (row-parallel)."""
-    from sharar.model.flashnext.linear import TrunkLinear
+    from hibana.model.flashnext.linear import TrunkLinear
     w = torch.randn(64, 32, dtype=torch.bfloat16)
     whole = TrunkLinear.from_bf16(w, "fp8")
     rows, cols = [], []
@@ -65,6 +65,6 @@ def test_trunk_linear_parts_are_the_whole_matrix_in_fp8():
 
 
 def test_single_rank_collectives_are_identities():
-    from sharar.distributed import all_reduce_min, common_values
+    from hibana.distributed import all_reduce_min, common_values
     assert all_reduce_min(3, 1) == [3, 1]
     assert common_values([5, 2, 9]) == [5, 2, 9]

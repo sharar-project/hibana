@@ -1,0 +1,103 @@
+"""Per-step forward context handed to every layer.
+
+Prefill runs one fresh sequence (pages for every token, one state slot).
+Decode runs a batch of B requests, one new token each.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+import torch
+
+from hibana.engine.contracts import FeatureRequest
+from hibana.cache.kv_pool import KvPool
+from hibana.cache.state_pool import StatePool
+
+if TYPE_CHECKING:
+    from hibana.model.gdn_plan import GdnPrefillPlan
+
+
+@dataclass
+class ForwardContext:
+    mode: str  # "prefill" | "decode" | "verify"
+    kv_pool: KvPool | None
+    state_pool: StatePool | None
+    positions: torch.Tensor  # [T] prefill or [B] decode, int64
+    # prefill
+    slot: int = 0
+    pages: torch.Tensor | None = None  # [T] int32, KV write location for each new token
+    seq_len: int = 0  # number of new tokens in this prefill
+    # prefix reuse: the request's committed slot already holds the state after
+    # `prefix_len` tokens and `prefix_pages` hold their KV
+    prefix_len: int = 0
+    prefix_pages: torch.Tensor | None = None
+    paged_prefill_wrapper: object = None  # planned FlashInfer paged prefill (prefix case)
+    # GDN state checkpoints requested at these absolute token counts (multiples
+    # of 64, inside the new tokens); layer i writes them to checkpoint_slots
+    checkpoint_positions: list[int] = field(default_factory=list)
+    checkpoint_slots: list[int] = field(default_factory=list)
+    # batched prefill (several requests' chunks in one forward): per-sequence
+    # metadata; when set, `slot`/`prefix_len` above are unused
+    cu_seqlens: torch.Tensor | None = None  # int32 [B+1] over the new tokens
+    seq_slots: torch.Tensor | None = None  # int32 [B]
+    seq_prefix_lens: list[int] = field(default_factory=list)  # tokens already in state/pages per seq
+    seq_lens: list[int] = field(default_factory=list)  # new tokens per seq
+    checkpoint_seqs: list[int] = field(default_factory=list)  # sequence index of each checkpoint
+    # images in a prefill (engine/media.py): the rows whose input embedding is an image's (int64), and those embeddings
+    media_rows: torch.Tensor | None = None
+    media_embeds: torch.Tensor | None = None
+    gdn_plan: GdnPrefillPlan | None = field(default=None, init=False, repr=False)
+
+    # speculative verify: k+1 tokens per sequence; GDN runs the recurrent
+    # kernel from the committed state without updating it, recording the state
+    # after every token in inter_ssm[layer][scratch, step]
+    verify_steps: int = 0
+    verify_scratch: torch.Tensor | None = None  # int32 [B]
+    # packed verify of per-sequence lengths (at most verify_steps; cu_seqlens holds the offsets): each row's
+    # sequence and position in it, int32 [rows]; None when every sequence verifies verify_steps rows
+    verify_rows_seq: torch.Tensor | None = None
+    verify_rows_pos: torch.Tensor | None = None
+    # the 27B's verification over many rows a sequence: (qo_indptr, kv_indptr, kv_indices, splits), the graph's index
+    # buffers (FlashInfer's plan fills them) for kernels/verify_attn_cuda.verify_attention; None: FlashInfer's
+    verify_attention: tuple | None = None
+    # a prefill's prefix attention on kernels/csrc/verify_attn.cu (`prefix_attention`): its index buffers and splits; None:
+    # FlashInfer's planned paged prefill (`paged_prefill_wrapper`)
+    prefix_attention: tuple | None = None
+    inter_ssm: dict = field(default_factory=dict)  # layer -> [num_scratch, steps, HV, V, K] fp32
+    verify_conv_windows: dict = field(default_factory=dict)  # layer -> [max_batch, steps, dim, 3] bf16 buffer the layer fills
+    verify_replay: dict = field(default_factory=dict)  # optional compact GDN recurrence inputs
+
+    @property
+    def batched(self) -> bool:
+        return self.cu_seqlens is not None
+    # decode
+    slots: torch.Tensor | None = None  # [B] int32 committed state slot per row
+    out_pages: torch.Tensor | None = None  # [B] int32 KV write location for the new token
+    decode_wrapper: object = None  # planned FlashInfer BatchDecodeWithPagedKVCacheWrapper
+    batch_size: int = 0
+    # Parity capture keeps every layer's (hidden, residual); the residual is
+    # then cloned instead of updated in place.
+    capture: bool = False
+    feature_request: FeatureRequest = FeatureRequest()
+    # Verify: auxiliary per-slot state after each step, name -> [max_batch, steps, ...] buffer the model fills
+    verify_aux_windows: dict = field(default_factory=dict)
+    # The model's own side inputs for this forward (its `forward_extras()`; e.g. Flash-Next's PLE rows and
+    # sparse-attention bookkeeping, model/flashnext/extras.py). None for a model without any.
+    extras: object = None
+
+    @property
+    def query_start_loc(self) -> torch.Tensor:
+        return torch.tensor([0, self.seq_len], dtype=torch.int32, device=self.positions.device)
+
+
+def scratch_prefill_context(t: int, device: torch.device) -> ForwardContext:
+    """Context for a stand-alone prefill without pools (parity tools)."""
+    return ForwardContext(
+        mode="prefill",
+        kv_pool=None,
+        state_pool=None,
+        positions=torch.arange(t, dtype=torch.int64, device=device),
+        seq_len=t,
+    )

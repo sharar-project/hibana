@@ -7,9 +7,9 @@ import numpy as np
 import pytest
 import torch
 
-from sharar.engine.rejection import DraftColumns
-from sharar.model.flashnext.extras import FlashNextExtras
-from sharar.model.flashnext.ple import ROW_BYTES, PleLayer, PleTable, ResidentRows
+from hibana.engine.rejection import DraftColumns
+from hibana.model.flashnext.extras import FlashNextExtras
+from hibana.model.flashnext.ple import ROW_BYTES, PleLayer, PleTable, ResidentRows
 
 EOS = 7
 NAME = "ple.ngram_embedding"
@@ -147,7 +147,7 @@ def test_streamed_verify_rows_match_the_block(table):
 def test_resident_shares_give_the_host_rows(table, monkeypatch):
     """Two Sparks: each rank copies its heads' rows (here across shard boundaries) and gathers them; the
     all-gather of both ranks' parts, in rank order, is the host gather's bytes."""
-    from sharar import distributed
+    from hibana import distributed
     h = _Hash()
     shares = [ResidentRows(table, h.offsets, h.vocab_sizes, r, 2, torch.device("cpu"), log=lambda *_: None) for r in (0, 1)]
     assert [(s.h0, s.base, s.rows.shape[0]) for s in shares] == [(0, 0, 112), (2, 112, 128)]
@@ -170,7 +170,7 @@ def test_resident_shares_give_the_host_rows(table, monkeypatch):
 def test_prefetch_asks_for_every_page_the_rows_touch(table, monkeypatch):
     """WILLNEED on each distinct page a row lies on (both pages of a row across a page boundary)."""
     import os
-    from sharar.model.flashnext import ple as ple_module
+    from hibana.model.flashnext import ple as ple_module
     calls = []
     monkeypatch.setattr(os, "posix_fadvise", lambda fd, off, n, advice: calls.append((fd, off, n, advice)))
     rows = np.array([[0, 1, 25], [25, 150, 291]])  # row 25 of shard 0 crosses its 4 KiB page; 150 and 291 lie in other shards

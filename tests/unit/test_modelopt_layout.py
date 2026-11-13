@@ -1,6 +1,6 @@
 import torch
 
-from sharar.weights.modelopt import swizzle_block_scales
+from hibana.weights.modelopt import swizzle_block_scales
 
 
 def test_swizzle_is_a_permutation_with_padding():

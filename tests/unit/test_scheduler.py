@@ -7,10 +7,10 @@ Costs mirror the measured engine: prefill 2,500 tok/s, decode 85 ms per step
 import pytest
 import torch
 
-from sharar.engine.request import Request, State
-from sharar.engine.sampler import SamplingParams
-from sharar.engine.scheduler import Metrics, QueueFull, Scheduler, SchedulerConfig
-from sharar.target import DEFAULT_TARGET
+from hibana.engine.request import Request, State
+from hibana.engine.sampler import SamplingParams
+from hibana.engine.scheduler import Metrics, QueueFull, Scheduler, SchedulerConfig
+from hibana.target import DEFAULT_TARGET
 
 
 def test_latency_metrics_keep_a_bounded_recent_window():

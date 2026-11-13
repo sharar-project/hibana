@@ -6,13 +6,13 @@ from pathlib import Path
 import pytest
 import torch
 
-from sharar.engine import config
+from hibana.engine import config
 from tests import nemotron_reference as R
 
 
 @pytest.fixture(scope="module")
 def snapshot():
-    from sharar.target import NEMOTRON_BOLT
+    from hibana.target import NEMOTRON_BOLT
     try:
         return NEMOTRON_BOLT.snapshot_dir(config.current().hf_cache or Path.home() / ".cache" / "huggingface")
     except FileNotFoundError as exc:
@@ -21,8 +21,8 @@ def snapshot():
 
 @pytest.fixture(scope="module", params=("bf16", "fp8"))
 def model(snapshot, request):
-    from sharar.launch.guard import start_thread
-    from sharar.model.bolt.model import Bolt
+    from hibana.launch.guard import start_thread
+    from hibana.model.bolt.model import Bolt
     start_thread()
     with config.using(config.current().replace(target="bolt", w3_decode=False, moe_keep=0, moe_budget=0,
                                                ssd=False, kv_format="sim-bf16",
@@ -49,7 +49,7 @@ def cosine(a, b):
 
 
 def test_experts_own_one_packed_copy(model):
-    from sharar.model.bolt.config import BOLT
+    from hibana.model.bolt.config import BOLT
     for layer in model.layers:
         if layer.kind != "moe":
             continue
@@ -63,7 +63,7 @@ def test_experts_own_one_packed_copy(model):
 
 @pytest.mark.parametrize("text", [None, "The capital of France is"])
 def test_full_model_layer_and_logit_parity(model, reference, text):
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.tokenizer import SnapshotTokenizer
     tokens = SnapshotTokenizer(reference.snap).encode(text) if text else [1001, 1002, 1003, 1004]
     ids = torch.tensor(tokens, device="cuda")
     with torch.inference_mode():
@@ -121,8 +121,8 @@ def test_puzzle_moe_matches_publisher_module(model, reference, layer):
 
 
 def test_chunked_prefill_prefix_cache_and_graph_decode(model):
-    from sharar.engine.executor import Executor
-    from sharar.engine.sampler import SamplingParams
+    from hibana.engine.executor import Executor
+    from hibana.engine.sampler import SamplingParams
     with config.using(config.current().replace(target="bolt", w3_decode=False, ssd=False, kv_format="sim-bf16", ssm_state="fp32")):
         ex = Executor(model, num_pages=4096, num_slots=6, max_batch=2, max_context=1024, use_cache=True)
         ids = [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008]
@@ -151,8 +151,8 @@ def test_chunked_prefill_prefix_cache_and_graph_decode(model):
 
 
 def test_ssd_restores_mamba_state_and_continuation(model, tmp_path):
-    from sharar.engine.executor import Executor
-    from sharar.engine.sampler import SamplingParams
+    from hibana.engine.executor import Executor
+    from hibana.engine.sampler import SamplingParams
     with config.using(config.current().replace(target="bolt", w3_decode=False, ssd=True, ssd_dir=str(tmp_path), ssd_gib=2.0,
                                                ssd_block_tokens=64, kv_format="fp8", ssm_state="fp32")):
         ex = Executor(model, num_pages=4096, num_slots=10, max_batch=1, max_context=1024, use_cache=True)

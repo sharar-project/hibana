@@ -7,7 +7,7 @@ import torch
 @pytest.mark.parametrize("lens", [[2048], [5, 300, 1], [1024, 3000]])
 @torch.inference_mode()
 def test_packed_output_equals_the_split_output(lens):
-    from sharar.kernels.conv1d import causal_conv1d_fn
+    from hibana.kernels.conv1d import causal_conv1d_fn
     torch.manual_seed(len(lens))
     key, value, width = 2048, 6144, 4
     dim, t = 2 * key + value, sum(lens)

@@ -1,6 +1,6 @@
 """Served speed of the 27B on one Spark or two (docs/tensor-parallel.md): what a client sees over HTTP.
 
-Start the server first (`sharar serve 27b [--tp 2]`; `SHARAR_TP_ALLREDUCE=nccl` for NCCL's all-reduce
+Start the server first (`hibana serve 27b [--tp 2]`; `HIBANA_TP_ALLREDUCE=nccl` for NCCL's all-reduce
 everywhere), then `python3 profiling/tp_serve_bench.py --label NAME --out results/tp-bench/NAME.json`. Requests
 go to `/generate` with greedy sampling and the server's acceptance default (the profile's). Four phases:
 
@@ -9,7 +9,7 @@ go to `/generate` with greedy sampling and the server's acceptance default (the 
   outputs (equal hashes: the same greedy tokens);
 - `batch4`, `batch16`: 4 and 16 concurrent requests of 384 tokens each (`ignore_eos`) over the family prompts'
   questions: aggregate tok/s from the first submission to the last completion;
-- `long`: the three 10K-token benchmark prompts (`sharar/benchmark_workloads.py`: code, design, reasoning), one at
+- `long`: the three 10K-token benchmark prompts (`hibana/benchmark_workloads.py`: code, design, reasoning), one at
   a time, 1,000 tokens each (`ignore_eos`): time to first token and decode tok/s.
 
 Each phase also records the server's speculative rounds over it (tokens per round, ms per round).
@@ -31,7 +31,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from sharar.benchmark_workloads import WORKLOADS, frozen_source, materialize  # noqa: E402
+from hibana.benchmark_workloads import WORKLOADS, frozen_source, materialize  # noqa: E402
 
 CHAT = "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 SINGLE = {
@@ -145,7 +145,7 @@ def main() -> None:
     parser.add_argument("--label", required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--phases", default="single,batch4,batch16,long")
-    parser.add_argument("--api", choices=("sharar", "openai"), default="sharar")
+    parser.add_argument("--api", choices=("hibana", "openai"), default="hibana")
     args = parser.parse_args()
     global OPENAI_MODEL
     url, phases = args.url, args.phases.split(",")
@@ -154,7 +154,7 @@ def main() -> None:
         result = {"label": args.label, "engine": "openai", "model": OPENAI_MODEL, "phases": {}}
     else:
         info = call(url, "/get_server_info")
-        result = {"label": args.label, "engine": "sharar", "tp_size": info.get("tp_size"), "w3": bool(info.get("w3_target_identity")),
+        result = {"label": args.label, "engine": "hibana", "tp_size": info.get("tp_size"), "w3": bool(info.get("w3_target_identity")),
                   "max_running": info.get("max_running_requests"),
                   "accept_default": (info.get("speculative") or {}).get("accept_default"), "phases": {}}
     stream(url, {"text": CHAT.format("Say hello."), "max_tokens": 32})  # warm-up

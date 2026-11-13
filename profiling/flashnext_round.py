@@ -10,7 +10,7 @@
      verification of s rows reads what an M = s forward reads; this is the cost a
      longer draft block pays.
 
-    SHARAR_TARGET=flashnext python3 -m profiling.flashnext_round --out round.json
+    HIBANA_TARGET=flashnext python3 -m profiling.flashnext_round --out round.json
 
 `--gap-profile` (with `--batch`, `--accept`) and `--kernel-gaps` split a served round into GPU
 work, GPU idle time between replays (host work the GPU waits for) and bubbles inside the replays.
@@ -26,8 +26,8 @@ from pathlib import Path
 import torch
 from torch.profiler import ProfilerActivity, profile
 
-from sharar.engine.run import _load
-from sharar.engine.sampler import SamplingParams
+from hibana.engine.run import _load
+from hibana.engine.sampler import SamplingParams
 
 PROMPTS = {
     "code": "Write a Python module implementing an LRU cache class with get, put, delete and resize, plus a thread-safe wrapper. Include docstrings and pytest unit tests.",
@@ -487,7 +487,7 @@ def phase_kernels(ex, tok, out, tokens: int, batch: int = 1, accept: str | None 
 
 
 def accept_check(ex, tok, out, tokens: int, batch: int = 1, accept: str | None = None):
-    """Host against device-resident acceptance (SHARAR_DEVICE_ACCEPT) on the same prompts: outputs, the
+    """Host against device-resident acceptance (HIBANA_DEVICE_ACCEPT) on the same prompts: outputs, the
     tokens each round emitted per request, and the first round whose boundaries differ. The device pass
     projects the draft KV over the whole bucket, so drafts may drift (MtpProposer.feedback_device)."""
     spec = ex.spec
@@ -566,7 +566,7 @@ def main():
     ap.add_argument("--gap-profile", action="store_true")
     ap.add_argument("--kernel-gaps", action="store_true", help="bubbles inside the graph replays (torch profiler)")
     ap.add_argument("--phase-kernels", action="store_true", help="kernels by round phase: draft, verify, accept replays and eager work")
-    ap.add_argument("--spec", type=int, default=4, help="MTP draft depth (sharar serve flashnext serves 4)")
+    ap.add_argument("--spec", type=int, default=4, help="MTP draft depth (hibana serve flashnext serves 4)")
     ap.add_argument("--batch", default="1", help="--gap-profile / --kernel-gaps: requests per generation, a comma list (1,4)")
     ap.add_argument("--accept", default=None, help="relaxed acceptance K:M for every request (the fast profile: 3:2.0)")
     ap.add_argument("--ple-cold", action="store_true", help="--gap-profile also with the PLE table out of the page cache")

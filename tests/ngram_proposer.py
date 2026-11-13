@@ -1,14 +1,14 @@
 """Bounded suffix lookup: the tests' feature-free proposer, which exercises the proposer contract without a draft model.
 
 Only complete k-token continuations qualify. Missing matches use the target's
-ordinary decode path. It is not served (`sharar serve` offers MTP and DFlash2).
+ordinary decode path. It is not served (`hibana serve` offers MTP and DFlash2).
 """
 
 from __future__ import annotations
 
 import torch
 
-from sharar.engine.contracts import ProposerContext, ProposerRequirements
+from hibana.engine.contracts import ProposerContext, ProposerRequirements
 
 
 class NGramProposer:

@@ -1,6 +1,6 @@
 """Incremental detokenizer: bounded decode windows, UTF-8 hold-back and stop strings."""
 
-from sharar.api.detok import Detokenizer
+from hibana.api.detok import Detokenizer
 
 
 class ByteTokenizer:

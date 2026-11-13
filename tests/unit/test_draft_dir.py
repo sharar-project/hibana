@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from sharar.cache.spec_budget import SpecConfig
-from sharar.proposers.factory import draft_snapshot
+from hibana.cache.spec_budget import SpecConfig
+from hibana.proposers.factory import draft_snapshot
 
 
 def _checkpoint(tmp_path, architecture="DFlash2DraftModel"):
@@ -34,19 +34,19 @@ def test_draft_snapshot_validates_the_directory(tmp_path):
 
 
 def test_serve_cli_passes_the_draft_dir(monkeypatch, tmp_path):
-    from sharar import cli
+    from hibana import cli
 
     calls = []
-    monkeypatch.setattr("sharar.api.server.serve", lambda *args, **kwargs: calls.append(kwargs))
-    monkeypatch.delenv("SHARAR_DRAFT", raising=False)
+    monkeypatch.setattr("hibana.api.server.serve", lambda *args, **kwargs: calls.append(kwargs))
+    monkeypatch.delenv("HIBANA_DRAFT", raising=False)
     (tmp_path / "config.json").write_text("{}")
     (tmp_path / "model.safetensors").write_bytes(b"")
     assert cli.main(["engine", "--spec", "15", "--draft", str(tmp_path)]) == 0
     assert calls[-1]["draft_dir"] == str(tmp_path)
-    monkeypatch.setenv("SHARAR_DRAFT", str(tmp_path))
+    monkeypatch.setenv("HIBANA_DRAFT", str(tmp_path))
     assert cli.main(["engine", "--spec", "15"]) == 0
     assert calls[-1]["draft_dir"] == str(tmp_path)
-    monkeypatch.delenv("SHARAR_DRAFT")
+    monkeypatch.delenv("HIBANA_DRAFT")
     assert cli.main(["engine", "--spec", "15"]) == 0 and calls[-1]["draft_dir"] is None
     with pytest.raises(SystemExit):
         cli.main(["engine", "--spec", "0", "--draft", str(tmp_path)])
@@ -55,9 +55,9 @@ def test_serve_cli_passes_the_draft_dir(monkeypatch, tmp_path):
 
 
 def test_each_target_serves_its_own_pinned_draft(monkeypatch, tmp_path):
-    from sharar.model import qwen38_config
-    from sharar.model.flashnext import config as flashnext
-    from sharar.target import FLASHNEXT, QWEN38, Target
+    from hibana.model import qwen38_config
+    from hibana.model.flashnext import config as flashnext
+    from hibana.target import FLASHNEXT, QWEN38, Target
     assert QWEN38.draft_pin("dflash2") == qwen38_config.DRAFT_PINS["dflash2"]
     assert FLASHNEXT.draft_pin("dflash2") == flashnext.DRAFT_PINS["dflash2"] != QWEN38.draft_pin("dflash2")
     with pytest.raises(ValueError, match="no pinned mtp draft"):

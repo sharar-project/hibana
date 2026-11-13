@@ -1,6 +1,6 @@
 """Every CUTLASS FP4 tactic for the 27B's MLP GEMMs at prefill row counts: equal to the default output? how fast?
 
-The input to `sharar/kernels/prefill_gemm.py`'s table. Synthetic NVFP4 operands with the real shapes; each tactic's
+The input to `hibana/kernels/prefill_gemm.py`'s table. Synthetic NVFP4 operands with the real shapes; each tactic's
 output is compared bitwise with FlashInfer's default dispatch, and its time is the mean of 20 calls after 3.
 
     uv run python -m profiling.prefill_gemm_tactics [--rows 512,1024,2048,4096]

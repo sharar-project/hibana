@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Evaluate one Sharar build with sharar-eval: serve it, run quality suites and/or the speed benchmark, record both versions.
+"""Evaluate one Hibana build with sharar-eval: serve it, run quality suites and/or the speed benchmark, record both versions.
 
     tools/evaluate.py --target flashnext --profile fast --suite quick
     tools/evaluate.py --target flashnext --profile fast --suite hard --speed
     tools/evaluate.py --target qwen38 --profile exact --tasks gpqa,mmlupro --limit 50 --name gpqa50
-    tools/evaluate.py --target flashnext --profile fast --suite quick --baseline $SHARAR_RESULTS/reviews/<date>-evaluate-<name>
+    tools/evaluate.py --target flashnext --profile fast --suite quick --baseline $HIBANA_RESULTS/reviews/<date>-evaluate-<name>
 
-- **What is served.** `sharar serve <target> --<profile>` with the `--env SHARAR_KEY=VALUE` overrides in its
+- **What is served.** `hibana serve <target> --<profile>` with the `--env HIBANA_KEY=VALUE` overrides in its
   environment (and the user's config file), from this checkout's engine and Python environment (`uv sync --frozen`).
   The run records the commit; uncommitted engine changes are refused unless --allow-dirty (and then recorded as a
   hash). To evaluate another revision, run this tool from a worktree of it.
@@ -15,13 +15,13 @@
     replaces every task's token cap (a capped answer scores as wrong; needs sharar-eval with `run --max-tokens`);
     `--thinking` (`--reasoning-effort`), `--temperature T` and `--seed S` set the suite's requests (default greedy,
     thinking off; needs sharar-eval with `run --thinking`); `--concurrency N` sends N suite requests at once
-    (default 4; `exact` serves 4, so add `--env SHARAR_MAX_BATCH=N`, and on Flash-Next's NVFP4 experts 16 requests fit
-    only under a shorter context, e.g. `--env SHARAR_MAX_CONTEXT=81920` for a 64K cap);
+    (default 4; `exact` serves 4, so add `--env HIBANA_MAX_BATCH=N`, and on Flash-Next's NVFP4 experts 16 requests fit
+    only under a shorter context, e.g. `--env HIBANA_MAX_CONTEXT=81920` for a 64K cap);
   - `--speed` adds the AIPerf benchmark (`evals.speed`, `--workload code|design|reasoning|all`).
     Speed requests carry no acceptance fields, so both measure the served profile as a client sees it.
-- **Where.** One GPU window under $SHARAR_RESULTS/.gpu.lock, on --port (30200-30299), the server in the foreground
+- **Where.** One GPU window under $HIBANA_RESULTS/.gpu.lock, on --port (30200-30299), the server in the foreground
   of this tool; it stops afterwards. Output goes to
-  $SHARAR_RESULTS/reviews/<date>-evaluate-<name>/:
+  $HIBANA_RESULTS/reviews/<date>-evaluate-<name>/:
   - manifest.json: the engine (commit, uncommitted changes), sharar-eval commit, config;
   - served/: the serve command, /get_server_info, the server's log;
   - suite/: the sharar-eval run directory;
@@ -54,7 +54,7 @@ log = gate.log
 
 
 class Served(gate.Served):
-    """A served build: `sharar serve` as a user would run it (3-bit checkpoint fetched), recorded rather than checked
+    """A served build: `hibana serve` as a user would run it (3-bit checkpoint fetched), recorded rather than checked
     against an in-process arm."""
 
     def __init__(self, *args, **kwargs):
@@ -83,7 +83,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--target", choices=("flashnext", "qwen38", "nemotron", "bolt"), required=True)
     ap.add_argument("--profile", choices=gate.PROFILE_NAMES, default="fast")
-    ap.add_argument("--env", action="append", default=[], help="SHARAR_KEY=VALUE override (repeatable)")
+    ap.add_argument("--env", action="append", default=[], help="HIBANA_KEY=VALUE override (repeatable)")
     ap.add_argument("--allow-dirty", action="store_true", help="evaluate with uncommitted engine changes (recorded as a hash)")
     ap.add_argument("--suite", choices=("quick", "full", "hard", "long", "agentic", "all"), default=None)
     ap.add_argument("--tasks", default=None, help="comma-separated sharar-eval tasks instead of (or within) --suite")
@@ -95,15 +95,15 @@ def main(argv=None) -> int:
     ap.add_argument("--temperature", type=float, default=0.0, help="sample the suite's requests (top_p 0.95, top_k 20; default greedy)")
     ap.add_argument("--seed", type=int, default=0, help="with --temperature: another set of per-item seeds (use another --name)")
     ap.add_argument("--concurrency", type=int, default=4,
-                    help="suite requests in flight (default 4); above the profile's SHARAR_MAX_BATCH, raise it with --env too")
+                    help="suite requests in flight (default 4); above the profile's HIBANA_MAX_BATCH, raise it with --env too")
     ap.add_argument("--speed", action="store_true", help="also run the AIPerf speed benchmark (evals.speed)")
     ap.add_argument("--workload", default="code", help="evals.speed workload: code, design, reasoning or all")
     ap.add_argument("--name", default=None, help="output name (<date>-evaluate-<name>; default: target-profile)")
     ap.add_argument("--baseline", type=Path, default=None, help="an earlier evaluate output directory to pair with")
     ap.add_argument("--port", type=int, default=30200, help="30200-30299")
-    ap.add_argument("--evals", type=Path, default=Path(os.environ["SHARAR_EVALS"]) if os.environ.get("SHARAR_EVALS") else None,
-                    help="a sharar-eval checkout to run instead of the eval group (default: SHARAR_EVALS, else the group)")
-    ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
+    ap.add_argument("--evals", type=Path, default=Path(os.environ["HIBANA_EVALS"]) if os.environ.get("HIBANA_EVALS") else None,
+                    help="a sharar-eval checkout to run instead of the eval group (default: HIBANA_EVALS, else the group)")
+    ap.add_argument("--python", default=os.environ.get("HIBANA_EVALS_PYTHON"),
                     help="sharar-eval's Python (default: this environment's, or the checkout's .venv)")
     ap.add_argument("--hold-hours", type=float, default=48, help="longest GPU window")
     ap.add_argument("--dry-run", action="store_true", help="print the resolved run and exit")
@@ -151,7 +151,7 @@ def main(argv=None) -> int:
                   *(["--temperature", str(args.temperature)] if args.temperature else []), *(["--seed", str(args.seed)] if args.seed else []),
                   *(["--concurrency", str(args.concurrency)] if args.concurrency != 4 else [])]
     manifest = {**spec, "name": name, "config_file": str(conf_path) if conf_path else None, "port": args.port,
-                "launcher_source": gate.git("rev-parse", "HEAD"), "dirty": bool(gate.git("status", "--porcelain", "--", "sharar", "tools")),
+                "launcher_source": gate.git("rev-parse", "HEAD"), "dirty": bool(gate.git("status", "--porcelain", "--", "hibana", "tools")),
                 "evals": ev["label"], "evals_commit": ev["commit"],
                 "suite": suite_args, "speed": args.workload if args.speed else None,
                 "baseline": str(args.baseline) if args.baseline else None}

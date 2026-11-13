@@ -7,7 +7,7 @@ import math
 import pytest
 import torch
 
-from sharar.model.flashnext.reference import qsa_token_mask
+from hibana.model.flashnext.reference import qsa_token_mask
 
 
 # ---- vendored SGLang torch references (single sequence) ----

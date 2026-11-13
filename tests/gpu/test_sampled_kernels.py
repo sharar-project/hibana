@@ -6,8 +6,8 @@ from collections import Counter
 import pytest
 import torch
 
-from sharar.engine.rejection import distribution, small_laws, verify_rows
-from sharar.engine.sampler import SamplingParams
+from hibana.engine.rejection import distribution, small_laws, verify_rows
+from hibana.engine.sampler import SamplingParams
 
 DEV = torch.device("cuda")
 
@@ -19,7 +19,7 @@ def close(ref: Counter, got: Counter) -> list:
 
 
 def test_sampled_lattice_law_and_draws():
-    from sharar.kernels.draft_selection import sampled_lattice
+    from hibana.kernels.draft_selection import sampled_lattice
     torch.manual_seed(1)
     b, k, w = 4, 15, 32
     params = [SamplingParams(temperature=1.0, top_k=20, top_p=0.95), SamplingParams(temperature=0.6, top_k=5, top_p=0.9),
@@ -53,7 +53,7 @@ def test_sampled_lattice_law_and_draws():
 
 @pytest.mark.parametrize("relaxed,has_q", [(False, False), (True, False), (False, True), (True, True)])
 def test_verify_candidates_is_distributed_as_verify_rows(relaxed, has_q):
-    from sharar.kernels.sampled_verify import verify_candidates
+    from hibana.kernels.sampled_verify import verify_candidates
     torch.manual_seed(2)
     k, v, w, n = 3, 300, 6, 8000
     params = SamplingParams(temperature=1.0, top_k=8, top_p=0.9, accept_soft=0.5 if relaxed else 0.0)
@@ -82,7 +82,7 @@ def test_verify_candidates_is_distributed_as_verify_rows(relaxed, has_q):
 
 
 def test_verify_candidates_flags_ties_past_the_candidates():
-    from sharar.kernels.sampled_verify import verify_candidates
+    from hibana.kernels.sampled_verify import verify_candidates
     values, index = torch.zeros(1, 4, 300, device=DEV, dtype=torch.bfloat16).topk(30, dim=-1)
     rows = torch.tensor([[1.0, 5, 0.95, 0, 0, 0, 0, 0]], device=DEV)
     *_, fit = verify_candidates(values, index, torch.zeros(1, 3, dtype=torch.int64, device=DEV), rows, torch.tensor([[1, 32]], device=DEV))
@@ -94,7 +94,7 @@ def test_verify_candidates_soft_law(draft):
     """accept_soft s (row_params[3] = 1, row_params[5] = e^-s): the first token's law is
     min(q, e^s p) + (1 - alpha) (p - q)+ / Z (tests/unit/test_accept_soft.py); s = 0 is exact."""
     import math
-    from sharar.kernels.sampled_verify import verify_candidates
+    from hibana.kernels.sampled_verify import verify_candidates
     p = torch.tensor([0.60, 0.30, 0.07, 0.03], device=DEV)
     q = torch.tensor([0.90, 0.06, 0.02, 0.02], device=DEV)
     n = 400_000

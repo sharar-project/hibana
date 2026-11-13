@@ -3,8 +3,8 @@
 import pytest
 import torch
 
-from sharar.kernels import ggml_bf16 as kernels
-from sharar.model.bolt.linear import PackedLinear
+from hibana.kernels import ggml_bf16 as kernels
+from hibana.model.bolt.linear import PackedLinear
 
 
 def matrix(quant, n, k, device="cuda"):
@@ -26,7 +26,7 @@ def test_dense_matches_bf16_reference(quant, m, relu2):
     weight = matrix(quant, 80, 512)
     x = torch.randn(m, 512, device="cuda", dtype=torch.bfloat16)
     if quant == "NVFP4":
-        from sharar.weights.modelopt import unpack_fp4, unswizzle_block_scales
+        from hibana.weights.modelopt import unpack_fp4, unswizzle_block_scales
         scales = unswizzle_block_scales(weight.scales.reshape(-1), 80, 512 // 16)
         expected = (torch.mm(x, unpack_fp4(weight.weight, scales).bfloat16().T,
                              out_dtype=torch.float32) * weight.gain).bfloat16()
@@ -98,7 +98,7 @@ def test_nvfp4_bolt_shapes_and_graph_replay(n, k, m):
 @pytest.mark.parametrize("quant", ["Q8_0", "IQ2_XXS"])
 def test_block_quant_plan_rows_chunking_and_release(quant):
     """A prepared projection drops its checkpoint copy, runs its exact rows and chunks calls past its capacity."""
-    from sharar.model.bolt.linear import PlanRows
+    from hibana.model.bolt.linear import PlanRows
     torch.manual_seed(15)
     weight = matrix(quant, 256, 512)
     reference = weight.dequantize().bfloat16()
@@ -115,7 +115,7 @@ def test_block_quant_plan_rows_chunking_and_release(quant):
 def test_prepared_plans_run_on_another_thread(quant):
     """The engine infers on its own thread: a plan compiled at load must serve a row count no warm-up ran there."""
     import threading
-    from sharar.model.bolt.linear import PlanRows
+    from hibana.model.bolt.linear import PlanRows
     torch.manual_seed(16)
     weight = matrix(quant, 256, 512)
     reference = weight.dequantize().float()
@@ -133,8 +133,8 @@ def test_b12x_iq2_moe_matches_reference_replays_and_runs_on_another_thread():
     """b12x's fused IQ2_XXS MoE: weighted ReLU^2 experts against the BF16 operator, changed routes under graph replay,
     and a row count no warm-up ran, called from another thread (the engine's)."""
     import threading
-    from sharar.kernels import b12x_iq2_moe
-    from sharar.model.bolt.linear import PlanRows
+    from hibana.kernels import b12x_iq2_moe
+    from hibana.model.bolt.linear import PlanRows
     torch.manual_seed(17)
     experts, inter, hidden, topk = 16, 512, 256, 4
     up = torch.stack([matrix("IQ2_XXS", inter, hidden).weight for _ in range(experts)])
@@ -173,8 +173,8 @@ def test_b12x_iq2_moe_matches_reference_replays_and_runs_on_another_thread():
 @pytest.mark.parametrize("m", [8, 28])
 def test_tuned_launch_configs_take_their_own_plan(m):
     """A row count `model/bolt/tuning.py` lists runs its measured configuration and keeps the heuristic's result."""
-    from sharar.model.bolt import tuning
-    from sharar.model.bolt.linear import PlanRows
+    from hibana.model.bolt import tuning
+    from hibana.model.bolt.linear import PlanRows
     assert tuning.config("nvfp4", 4096, 8192, m) is not None
     torch.manual_seed(18)
     weight = matrix("NVFP4", 4096, 8192)
@@ -190,7 +190,7 @@ def test_expert_sharing_at_bolt_geometry(m, keep, cap):
     """Super's budgeted routing on Bolt's top 9 of 432 (16 padded lanes): a call reads at most the cap's experts (or
     the guaranteed ones), every real row keeps its top `keep` first and only set members after, in rank order, at
     renormalized sigmoid weights, dropped and padded slots at weight 0 on an expert already read; with every top 9 in the set, route_topk's ids and weights."""
-    from sharar.model.nemotron.moe import route_budget, route_topk
+    from hibana.model.nemotron.moe import route_budget, route_topk
     torch.manual_seed(19)
     experts, latent, k = 432, 1024, 9
     fused = torch.randn(m, experts + latent, device="cuda") * 2

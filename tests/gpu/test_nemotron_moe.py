@@ -1,10 +1,10 @@
-"""Nemotron-3.5-Super's latent MoE block (`sharar/model/nemotron/moe.py`) on block 1 of the pinned checkpoint.
+"""Nemotron-3.5-Super's latent MoE block (`hibana/model/nemotron/moe.py`) on block 1 of the pinned checkpoint.
 
 - `NemotronMoe.reference` (FP32, dequantized experts) against Transformers' `NemotronHMoE` carrying the same
   dequantized weights in BF16: the semantics (FP32 router, bias for the choice only, renormalized sigmoid weights times
   5, latent experts, shared expert on x).
 - The served block against the reference with its activations rounded to NVFP4 as the kernels round them. Calls of
-  at most 16 rows take Sharar's kernels (`kernels/nemotron_moe.py`): cosine >= 0.9999 (0.999997 measured), their router
+  at most 16 rows take Hibana's kernels (`kernels/nemotron_moe.py`): cosine >= 0.9999 (0.999997 measured), their router
   kernel's routing bitwise route_topk's, and the budgeted path. Larger calls take FlashInfer's b12x MoE (fused
   router|fc1 GEMM, routing kernel, b12x ReLU², NVFP4 shared expert, fc2 addmm), whose routed sum is checked against
   FlashInfer's `cutlass_fused_moe` on the same pairs (`cutlass_routed`, the test's reference: it is deterministic and
@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.model.nemotron import config as c
+from hibana.model.nemotron import config as c
 
 PREFIX = "language_model.backbone.layers.1.mixer"
 B12X_COS = 0.998  # b12x's routed sum against cutlass_fused_moe's on the same pairs (real inputs, blocks 1/8/14: 0.9987-0.9999)
@@ -36,8 +36,8 @@ def cos(a, b) -> float:
 
 @pytest.fixture(scope="module")
 def weights():
-    from sharar.target import NEMOTRON
-    from sharar.weights.safetensors import SnapshotWeights
+    from hibana.target import NEMOTRON
+    from hibana.weights.safetensors import SnapshotWeights
     try:
         snap = NEMOTRON.snapshot_dir()
     except FileNotFoundError as exc:
@@ -47,8 +47,8 @@ def weights():
 
 @pytest.fixture(scope="module")
 def moe(weights):
-    from sharar.model.nemotron.moe import NemotronMoe
-    from sharar.target import NEMOTRON
+    from hibana.model.nemotron.moe import NemotronMoe
+    from hibana.target import NEMOTRON
     m = NemotronMoe(weights[1], PREFIX, torch.device("cuda"), NEMOTRON)
     yield m
     del m
@@ -84,7 +84,7 @@ def ctx_for(mode: str, slots: list[int], steps: int = 1):
 def test_reference_matches_transformers(weights, moe):
     from transformers.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
     from transformers.models.nemotron_h.modeling_nemotron_h import NemotronHMoE
-    from sharar.kernels.w3_moe import nvfp4_dequant, unswizzle_batched
+    from hibana.kernels.w3_moe import nvfp4_dequant, unswizzle_batched
     import json
     snap, w = weights
     cfg = {k: v for k, v in json.loads((snap / "config.json").read_text())["llm_config"].items() if k != "time_step_limit"}
@@ -119,14 +119,14 @@ def test_block_matches_reference(weights, moe, m):
     with torch.inference_mode():
         out = moe(x, None)
         assert out.dtype == torch.bfloat16 and out.shape == x.shape
-        b12x = m > moe.SMALL_ROWS  # b12x rounds less exactly than cutlass and Sharar's kernels
+        b12x = m > moe.SMALL_ROWS  # b12x rounds less exactly than cutlass and Hibana's kernels
         assert cos(out, moe.reference(x, quantize_activations=True)) > (B12X_BLOCK_COS if b12x else 0.9999)
         assert cos(out, moe.reference(x)) > 0.998
 
 
 @pytest.mark.parametrize("m", [1, 7, 64, 2048])
 def test_routing_is_torch_topk(weights, moe, m):
-    from sharar.model.nemotron.moe import route_topk
+    from hibana.model.nemotron.moe import route_topk
     x = rows(weights[1], m, 100 + m)
     fused = torch.mm(x, moe.gate_fc1.T, out_dtype=torch.float32)
     ids, w, lat = route_topk(fused, moe.bias, moe.topk, moe.latent)
@@ -145,8 +145,8 @@ def test_routing_is_torch_topk(weights, moe, m):
 @pytest.mark.parametrize("m,k,slots,steps", [(16, 22, None, 1), (12, 22, [5, 0, 9], 4), (8, 6, None, 1)])
 def test_small_router_routes_as_route_topk(weights, moe, m, k, slots, steps):
     """The small-call router kernel's own routing (and its padded rows, and a reduced k) is route_topk's, bitwise."""
-    from sharar.kernels import nemotron_moe
-    from sharar.model.nemotron.moe import route_topk
+    from hibana.kernels import nemotron_moe
+    from hibana.model.nemotron.moe import route_topk
     x = rows(weights[1], m, 200 + m)
     s = None if slots is None else torch.tensor(slots, dtype=torch.int32, device="cuda")
     fused, ids, w, _ = nemotron_moe.router(x, moe.small_weights(), moe.bias, k, s, steps)
@@ -159,7 +159,7 @@ def test_small_router_routes_as_route_topk(weights, moe, m, k, slots, steps):
 def test_b12x_routed_matches_cutlass(weights, moe, m):
     """FlashInfer's b12x MoE (calls past 16 rows) on the checkpoint's tensors: the routed sum against
     cutlass_fused_moe's on the same pairs, same magnitude, eager and in a graph replay."""
-    from sharar.model.nemotron.moe import route_topk
+    from hibana.model.nemotron.moe import route_topk
     x = rows(weights[1], m, 700 + m)
     fused = torch.mm(x, moe.gate_fc1.T, out_dtype=torch.float32)
     ids, w, lat = route_topk(fused, moe.bias, moe.topk, moe.latent)
@@ -194,7 +194,7 @@ def test_small_budget_path(weights, moe):
 
 def test_padded_rows_repeat_row_zero(weights, moe):
     """Graph padding (dummy slot 0) names row 0's top expert at weight 0; real rows route as without slots."""
-    from sharar.model.nemotron.moe import route_topk
+    from hibana.model.nemotron.moe import route_topk
     x = rows(weights[1], 3 * 4, 7)
     fused = torch.mm(x, moe.gate_fc1.T, out_dtype=torch.float32)
     plain = route_topk(fused, moe.bias, moe.topk, moe.latent)
@@ -211,7 +211,7 @@ def test_budget_invariants(weights, moe, m, cap):
     """The call reads at most the cap's experts (or the guaranteed ones when they exceed it); every real row keeps its
     guaranteed top experts first and takes only experts in the set, from its top 22, in rank order; weights are
     its sigmoid scores renormalized; padded rows read nothing new."""
-    from sharar.model.nemotron.moe import route_budget
+    from hibana.model.nemotron.moe import route_budget
     x = rows(weights[1], m, 1000 + m)
     fused = torch.mm(x, moe.gate_fc1.T, out_dtype=torch.float32)
     keep = max(4, min(8, cap // m))
@@ -259,8 +259,8 @@ def test_graph_replay_matches_eager(weights, moe, mode, m):
 
 
 def test_mtp_block(weights):
-    from sharar.model.nemotron.moe import NemotronMoe
-    from sharar.target import NEMOTRON
+    from hibana.model.nemotron.moe import NemotronMoe
+    from hibana.target import NEMOTRON
     w = weights[1]
     mtp = NemotronMoe(w, MTP_PREFIX, torch.device("cuda"), NEMOTRON)
     assert mtp.expert_bytes == 512 * mtp.bytes_per_expert and mtp.bytes > mtp.expert_bytes
@@ -281,7 +281,7 @@ def test_bytes(moe):
 
 @pytest.mark.parametrize("m,floor,cap", [(12, 16, 0), (24, 16, 0), (24, 12, 0), (24, 16, 400), (12, 8, 90)])
 def test_floor_and_free_riders(weights, moe, m, floor, cap):
-    """MoE sharing with SHARAR_MOE_KEEP=F (verify rows, 6 a request, the last request padded): every real row keeps its
+    """MoE sharing with HIBANA_MOE_KEEP=F (verify rows, 6 a request, the last request padded): every real row keeps its
     top F; the call's set is the union of those floors, grown by the cap (when larger) with the highest-scoring experts;
     each real row also takes its other top-22 experts that are in the set, in rank order; weights are its sigmoid
     scores renormalized over its kept experts; padded rows take nothing."""

@@ -2,17 +2,17 @@
 heads it replaces, on two Sparks with a random Flash-Next-sized lm_head: the same picks, captured in a CUDA graph,
 and the time per draft step.
 
-    sharar dev tp-draft-head      (both ranks; rank 0 prints)
+    hibana dev tp-draft-head      (both ranks; rank 0 prints)
 """
 import argparse
 import time
 
 import torch
 
-from sharar import distributed
-from sharar.model.flashnext.linear import TrunkLinear
-from sharar.proposers.draft_head import ShortlistHead, TargetHead, VocabParallelHead
-from sharar.weights.sharding import ColumnParallel
+from hibana import distributed
+from hibana.model.flashnext.linear import TrunkLinear
+from hibana.proposers.draft_head import ShortlistHead, TargetHead, VocabParallelHead
+from hibana.weights.sharding import ColumnParallel
 
 VOCAB, HIDDEN = 248_320, 2560
 

@@ -14,7 +14,7 @@ import weakref
 import pytest
 import torch
 
-from sharar.cache.ssd_store import BLOCK, Header, SsdStore, block_hash, root_hash, tail_hash
+from hibana.cache.ssd_store import BLOCK, Header, SsdStore, block_hash, root_hash, tail_hash
 
 IDENTITY = {"target": "qwen38", "revision": "r1", "w3": "cal:1"}
 
@@ -86,7 +86,7 @@ def test_round_trip_across_a_restart(tmp_path):
 def test_o_direct_writes_and_buffered_writes_make_the_same_file(tmp_path, monkeypatch):
     """Through an O_DIRECT buffer smaller than the object, and through the page cache where the filesystem refuses
     O_DIRECT: byte for byte the same file, and it reads back."""
-    monkeypatch.setattr("sharar.cache.ssd_store.WRITE_BUFFER", 8192)  # several writes per object
+    monkeypatch.setattr("hibana.cache.ssd_store.WRITE_BUFFER", 8192)  # several writes per object
     segs, files = segments(seed=3), []
     for name in ("direct", "buffered"):
         store = SsdStore(tmp_path / name, IDENTITY)

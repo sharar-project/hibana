@@ -8,7 +8,7 @@ import torch
 @pytest.mark.parametrize('tokens', [1, 3, 16, 31, 37, 47, 64, 2048])
 @pytest.mark.parametrize('heads', [8, 32])
 def test_rotation_matches_bf16_reference(tokens, heads):
-    from sharar.model.parallel_draft import rotate, rotate_reference
+    from hibana.model.parallel_draft import rotate, rotate_reference
     torch.manual_seed(726)
     x = torch.randn(tokens, heads, 128, device='cuda', dtype=torch.bfloat16)
     # Strided inputs and long-context positions exercise both address maps.
@@ -21,7 +21,7 @@ def test_rotation_matches_bf16_reference(tokens, heads):
 
 @pytest.mark.parametrize('tokens', [1, 3, 16, 31, 37, 47, 64, 2048])
 def test_fused_scatter_preserves_other_slots_and_replays(tokens):
-    from sharar.model.parallel_draft import rotate_and_cache, rotate_reference
+    from hibana.model.parallel_draft import rotate_and_cache, rotate_reference
     torch.manual_seed(127)
     kv = torch.randn(tokens, 2048, device='cuda', dtype=torch.bfloat16)
     k, v = [x.view(tokens, 8, 128) for x in kv.chunk(2, -1)]

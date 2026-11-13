@@ -4,10 +4,10 @@ from math import prod
 import pytest
 import torch
 
-from sharar.cache.ssm_format import FP32, SsmFormat, WindowLayout
-from sharar.cache.state_pool import StatePool
-from sharar.engine.config import EngineConfig
-from sharar.target import DEFAULT_TARGET, FLASHNEXT, NEMOTRON
+from hibana.cache.ssm_format import FP32, SsmFormat, WindowLayout
+from hibana.cache.state_pool import StatePool
+from hibana.engine.config import EngineConfig
+from hibana.target import DEFAULT_TARGET, FLASHNEXT, NEMOTRON
 
 
 def test_fp32_is_the_targets_state():
@@ -61,11 +61,11 @@ def test_views_alias_one_row_per_layer_and_slot():
 
 
 def test_settings_and_validation():
-    c = EngineConfig.from_env({"SHARAR_SSM_STATE": "int8", "SHARAR_SSM_WINDOW": "32", "SHARAR_SSM_COMPENSATORS": "8"})
+    c = EngineConfig.from_env({"HIBANA_SSM_STATE": "int8", "HIBANA_SSM_WINDOW": "32", "HIBANA_SSM_COMPENSATORS": "8"})
     fmt = SsmFormat.from_config(c)
     assert fmt == SsmFormat("int8", 32, 8) and fmt.describe() == "int8:w32:r8"
     assert SsmFormat.from_config(EngineConfig.from_env({})) == FP32
-    assert SsmFormat.from_config(EngineConfig.from_env({"SHARAR_SSM_STATE": "int4"})) == SsmFormat("int4", 16, 8)
+    assert SsmFormat.from_config(EngineConfig.from_env({"HIBANA_SSM_STATE": "int4"})) == SsmFormat("int4", 16, 8)
     for bad in (dict(kind="int2"), dict(kind="int8", window=12), dict(kind="int8", rank=17)):
         with pytest.raises(ValueError):
             SsmFormat(**bad)
@@ -92,7 +92,7 @@ def test_quantized_pool_slots_clear_and_copy_whole_rows():
 
 def test_spec_decoder_requires_the_ring_for_a_quantized_pool():
     from types import SimpleNamespace
-    from sharar.engine.spec import SpecDecoder
+    from hibana.engine.spec import SpecDecoder
     pool = SimpleNamespace(window=object(), ssm_all=torch.zeros(1, 1, 1), conv_all=torch.zeros(1, 1, 1, 1), layer_ids=[0])
     ex = SimpleNamespace(state_pool=pool, max_batch=1, device=torch.device("cpu"), target=DEFAULT_TARGET)
     proposer = SimpleNamespace(k=3)
@@ -111,7 +111,7 @@ def test_fp16_is_nemotrons_and_halves_its_state():
     assert sr.state_bytes_per_slot(t) / 2 ** 20 == pytest.approx(82.3, abs=0.1)  # 162.3 MiB in FP32
     pool = StatePool(3, torch.device("cpu"), target=t, ssm_format=sr)
     assert pool.ssm_all.dtype == torch.float16 and pool.window is None and pool.bytes_per_slot == sr.state_bytes_per_slot(t)
-    assert SsmFormat.from_config(EngineConfig.from_env({"SHARAR_SSM_STATE": "fp16_sr"})) == sr
+    assert SsmFormat.from_config(EngineConfig.from_env({"HIBANA_SSM_STATE": "fp16_sr"})) == sr
     for old in ("fp16", "fp16-rn"):  # no other spelling
         with pytest.raises(ValueError, match="fp16_sr"):
             SsmFormat(old)
@@ -120,8 +120,8 @@ def test_fp16_is_nemotrons_and_halves_its_state():
 def test_formats_stay_on_their_recurrence():
     """FP16 is Mamba-2's (the GDN targets keep their FP32 pools, bit-identical); the windows run on both
     (`Target.recurrence`, the launcher's table of the same name)."""
-    from sharar.launch.settings import TARGET_SETTINGS
-    from sharar.target import TARGETS
+    from hibana.launch.settings import TARGET_SETTINGS
+    from hibana.target import TARGETS
     for gdn in (DEFAULT_TARGET, FLASHNEXT):
         with pytest.raises(ValueError, match="gdn state is stored as fp32, int8 or int4"):
             SsmFormat("fp16_sr").state_bytes_per_slot(gdn)
@@ -150,8 +150,8 @@ def test_windows_hold_nemotrons_mamba_state():
 def test_a_quantized_mamba_pool_commits_through_the_window_ring():
     """Nemotron's int8 pool verifies into the window ring (B per group, dt x per head), not Mamba-2's replay."""
     from types import SimpleNamespace
-    from sharar.engine.spec import SpecDecoder
-    from sharar.kernels.ssm_window import WindowState
+    from hibana.engine.spec import SpecDecoder
+    from hibana.kernels.ssm_window import WindowState
     t = NEMOTRON
     pool = StatePool(2, torch.device("cpu"), target=t, ssm_format=SsmFormat("int8"))
     ex = SimpleNamespace(state_pool=pool, max_batch=1, device=torch.device("cpu"), target=t,

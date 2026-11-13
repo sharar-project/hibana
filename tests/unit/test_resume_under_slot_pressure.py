@@ -9,7 +9,7 @@ been ingested; only then does `StateManager.checkpoint` move it to the request's
 node is stripped first: the drafter misses, and (before the stand-in row) the request never drafted and cached its own
 snapshots without rows, so later turns missed too.
 
-Sharar's own Scheduler, Executor, StateManager, RadixCache, StatePool, KvPool allocator, SpecDecoder and MtpProposer
+Hibana's own Scheduler, Executor, StateManager, RadixCache, StatePool, KvPool allocator, SpecDecoder and MtpProposer
 run; only the models are stubs:
 - the target is an exact recurrence per state slot, s = (31 s + token) mod 97, written to the slot and to every
   prefill checkpoint the executor plans; a token's final-norm row is (s after it, its position); the logits pick 7;
@@ -25,19 +25,19 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-import sharar
-from sharar.cache.kv_pool import KvPool
-from sharar.cache.radix import RadixCache
-from sharar.cache.request_state import StateManager
-from sharar.cache.state_pool import StatePool
-from sharar.engine.contracts import ProposerContext
-from sharar.engine.executor import Executor
-from sharar.engine.request import Request
-from sharar.engine.sampler import Sampler, SamplingParams
-from sharar.engine.scheduler import Scheduler, SchedulerConfig
-from sharar.proposers.draft_head import TargetHead
-from sharar.proposers.mtp import MtpProposer
-from sharar.target import FLASHNEXT
+import hibana
+from hibana.cache.kv_pool import KvPool
+from hibana.cache.radix import RadixCache
+from hibana.cache.request_state import StateManager
+from hibana.cache.state_pool import StatePool
+from hibana.engine.contracts import ProposerContext
+from hibana.engine.executor import Executor
+from hibana.engine.request import Request
+from hibana.engine.sampler import Sampler, SamplingParams
+from hibana.engine.scheduler import Scheduler, SchedulerConfig
+from hibana.proposers.draft_head import TargetHead
+from hibana.proposers.mtp import MtpProposer
+from hibana.target import FLASHNEXT
 
 CPU = torch.device("cpu")
 TOKEN = 7  # what both stubs predict; prompts never contain it
@@ -45,7 +45,7 @@ STATE = dataclasses.replace(FLASHNEXT, num_layers=1, layer_types=("linear_attent
                             linear_num_value_heads=1, linear_key_head_dim=1, linear_value_head_dim=1,
                             linear_conv_kernel=2)
 UNWRITTEN, EXACT, INEXACT, SPECULATIVE = range(4)  # a draft-KV row's state
-BUILD = Path(sharar.__file__).resolve().parent
+BUILD = Path(hibana.__file__).resolve().parent
 
 
 def recurrence(ids, s=0):
@@ -360,7 +360,7 @@ def run_turn(h, prompt, out=72, others=0, boundary=0):
 
 def table(h, turns):
     yes = {None: "-", True: "yes", False: "NO"}
-    rows = [f"sharar: {BUILD}", "turn  prompt resume evicted window snapshot@ingest row@ingest locked@ingest lock-after "
+    rows = [f"hibana: {BUILD}", "turn  prompt resume evicted window snapshot@ingest row@ingest locked@ingest lock-after "
                                 "drafter drafted rounds"]
     dash = lambda v: "-" if v is None else v  # noqa: E731
     rows += [f"{i:4d} {t.request.prefill_len:7d} {t.resume:6d} {t.evicted:7d} {dash(t.window):>6} {yes[t.snapshot]:>15} "

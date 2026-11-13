@@ -11,7 +11,7 @@ import torch
 
 @pytest.mark.parametrize("quantized", [False, True])
 def test_prefill_routes_fp32_and_quantized_pool_states(monkeypatch, quantized):
-    import sharar.model.gdn as module
+    import hibana.model.gdn as module
 
     layer = module.GatedDeltaNet.__new__(module.GatedDeltaNet)
     layer.layer_id = 0

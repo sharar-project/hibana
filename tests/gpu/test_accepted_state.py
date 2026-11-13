@@ -13,10 +13,10 @@ import torch
 def test_reconstruct_every_accepted_prefix(batch, steps, graphs, impl):
     """The ring commit (`AcceptedState.run`) and the oracle replay against the verify recurrence's own states, bit for bit:
     the vendored Triton pair and the CUDA pair (`kernels/gdn_verify.py`, which the engine runs on FP32 pools)."""
-    from sharar.kernels import gdn_verify
-    from sharar.kernels.fla.accepted_state import AcceptedState
-    from sharar.kernels.fla import accepted_state
-    from sharar.kernels.fla.fused_sigmoid_gating_recurrent import fused_sigmoid_gating_delta_rule_update as triton_verify
+    from hibana.kernels import gdn_verify
+    from hibana.kernels.fla.accepted_state import AcceptedState
+    from hibana.kernels.fla import accepted_state
+    from hibana.kernels.fla.fused_sigmoid_gating_recurrent import fused_sigmoid_gating_delta_rule_update as triton_verify
     if impl == 'cuda':
         fused_sigmoid_gating_delta_rule_update, reconstruct = gdn_verify.verify, gdn_verify.commit
     else:

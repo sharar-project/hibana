@@ -8,11 +8,11 @@ import torch
 @pytest.mark.parametrize('lengths', [[1], [3], [16], [17], [63], [64], [65], [129], [1, 3], [63, 65, 129]])
 @torch.inference_mode()
 def test_prepared_chunk_metadata_is_bit_exact(lengths, monkeypatch):
-    from sharar.engine.context import ForwardContext
-    from sharar.model.gdn_plan import prepare_gdn_prefill
-    from sharar.kernels.fla.chunk import chunk_gated_delta_rule
-    from sharar.kernels.fla.index import prepare_chunk_indices, prepare_chunk_offsets
-    from sharar.kernels.fla import chunk, chunk_delta_h, chunk_o, chunk_fwd, cumsum
+    from hibana.engine.context import ForwardContext
+    from hibana.model.gdn_plan import prepare_gdn_prefill
+    from hibana.kernels.fla.chunk import chunk_gated_delta_rule
+    from hibana.kernels.fla.index import prepare_chunk_indices, prepare_chunk_offsets
+    from hibana.kernels.fla import chunk, chunk_delta_h, chunk_o, chunk_fwd, cumsum
     from itertools import accumulate
     torch.manual_seed(913)
     t, n = sum(lengths), len(lengths)
@@ -50,10 +50,10 @@ def test_prepared_chunk_metadata_is_bit_exact(lengths, monkeypatch):
 def test_reordered_checkpoints_preserve_core_and_exact_snapshots():
     """Capacity-prioritized destinations must equal the ascending kernel plan."""
     from types import SimpleNamespace
-    from sharar import config
-    from sharar.engine.context import ForwardContext
-    from sharar.model.gdn import GatedDeltaNet
-    from sharar.cache.state_pool import CONV_DIM, CONV_STATE_LEN
+    from hibana import config
+    from hibana.engine.context import ForwardContext
+    from hibana.model.gdn import GatedDeltaNet
+    from hibana.cache.state_pool import CONV_DIM, CONV_STATE_LEN
 
     torch.manual_seed(72)
     layer = GatedDeltaNet.__new__(GatedDeltaNet)

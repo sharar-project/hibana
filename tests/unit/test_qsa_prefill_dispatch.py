@@ -1,11 +1,11 @@
 from types import SimpleNamespace
 import pytest
 import torch
-from sharar.kernels.qsa.prefill import PrefillKernels
+from hibana.kernels.qsa.prefill import PrefillKernels
 
 
 def fake_indexer():
-    from sharar.model.flashnext.indexer import FlashNextIndexer
+    from hibana.model.flashnext.indexer import FlashNextIndexer
     ix = FlashNextIndexer.__new__(FlashNextIndexer)
     ix.heads, ix.dim, ix.ratio, ix.budget, ix.rotary_dim = 4, 128, 4, 2048, 64
     ix.width = 2051
@@ -28,10 +28,10 @@ def test_prefill_scope(monkeypatch,mode,first,length,expected):
 
 
 def test_tp2_configuration_enables_sharded_attention(monkeypatch):
-    from sharar.engine.config import EngineConfig,using
-    import sharar.distributed as distributed
+    from hibana.engine.config import EngineConfig,using
+    import hibana.distributed as distributed
     monkeypatch.setattr(distributed,'get_tp_info',lambda:SimpleNamespace(size=2))
-    monkeypatch.setattr('sharar.kernels.qsa.prefill.PrefillKernels',lambda table:table)
+    monkeypatch.setattr('hibana.kernels.qsa.prefill.PrefillKernels',lambda table:table)
     ix=fake_indexer()
     monkeypatch.setattr(torch.cuda,'get_device_capability',lambda device:(12,1))
     with using(EngineConfig(qsa_prefill_backend='auto')):
@@ -40,7 +40,7 @@ def test_tp2_configuration_enables_sharded_attention(monkeypatch):
 
 
 def test_stable_numerics_stays_original():
-    from sharar.engine.config import EngineConfig,using
+    from hibana.engine.config import EngineConfig,using
     ix=fake_indexer()
     with using(EngineConfig(qsa_prefill_backend='auto',stable_numerics=True)):
         ix.configure_prefill(SimpleNamespace(num_attention_heads=24,num_kv_heads=2,head_dim=256),None)
@@ -48,8 +48,8 @@ def test_stable_numerics_stays_original():
 
 
 def test_replicated_tp2_draft_stays_original(monkeypatch):
-    from sharar.engine.config import EngineConfig,using
-    import sharar.distributed as distributed
+    from hibana.engine.config import EngineConfig,using
+    import hibana.distributed as distributed
     monkeypatch.setattr(distributed,'get_tp_info',lambda:SimpleNamespace(size=2))
     ix=fake_indexer()
     with using(EngineConfig(qsa_prefill_backend='auto')):
@@ -59,12 +59,12 @@ def test_replicated_tp2_draft_stays_original(monkeypatch):
 
 @pytest.mark.parametrize('backend', ['auto', 'optimized'])
 def test_supported_backend_initializes_adapter(monkeypatch, backend):
-    from sharar.engine.config import EngineConfig, using
-    import sharar.distributed as distributed
+    from hibana.engine.config import EngineConfig, using
+    import hibana.distributed as distributed
     monkeypatch.setattr(distributed, 'get_tp_info', lambda: SimpleNamespace(size=1))
     monkeypatch.setattr(torch.cuda, 'get_device_capability', lambda device: (12, 1))
     adapter = object()
-    monkeypatch.setattr('sharar.kernels.qsa.prefill.PrefillKernels', lambda table: adapter)
+    monkeypatch.setattr('hibana.kernels.qsa.prefill.PrefillKernels', lambda table: adapter)
     ix = fake_indexer()
     with using(EngineConfig(qsa_prefill_backend=backend)):
         ix.configure_prefill(SimpleNamespace(num_attention_heads=24,num_kv_heads=2,head_dim=256), None)
@@ -74,8 +74,8 @@ def test_supported_backend_initializes_adapter(monkeypatch, backend):
 @pytest.mark.parametrize('reason', ['hardware', 'stable', 'geometry'])
 @pytest.mark.parametrize('backend', ['auto', 'optimized'])
 def test_unsupported_configuration_fallback_or_error(monkeypatch, reason, backend):
-    from sharar.engine.config import EngineConfig, using
-    import sharar.distributed as distributed
+    from hibana.engine.config import EngineConfig, using
+    import hibana.distributed as distributed
     monkeypatch.setattr(distributed, 'get_tp_info', lambda: SimpleNamespace(size=1))
     monkeypatch.setattr(torch.cuda, 'get_device_capability', lambda device: (9, 0) if reason == 'hardware' else (12, 1))
     ix = fake_indexer()
@@ -84,7 +84,7 @@ def test_unsupported_configuration_fallback_or_error(monkeypatch, reason, backen
     target = SimpleNamespace(num_attention_heads=24, num_kv_heads=2, head_dim=256)
     with using(EngineConfig(qsa_prefill_backend=backend, stable_numerics=reason == 'stable')):
         if backend == 'optimized':
-            with pytest.raises(ValueError, match='SHARAR_QSA_PREFILL_BACKEND=optimized'):
+            with pytest.raises(ValueError, match='HIBANA_QSA_PREFILL_BACKEND=optimized'):
                 ix.configure_prefill(target, None)
         else:
             ix.configure_prefill(target, None)
@@ -92,7 +92,7 @@ def test_unsupported_configuration_fallback_or_error(monkeypatch, reason, backen
 
 
 def test_original_clears_adapter_without_gpu_probe(monkeypatch):
-    from sharar.engine.config import EngineConfig, using
+    from hibana.engine.config import EngineConfig, using
     monkeypatch.setattr(torch.cuda, 'get_device_capability', lambda device: pytest.fail('GPU probe'))
     ix = fake_indexer()
     ix._prefill = object()
@@ -102,7 +102,7 @@ def test_original_clears_adapter_without_gpu_probe(monkeypatch):
 
 
 def test_forced_backend_excludes_replicated_draft():
-    from sharar.engine.config import EngineConfig, using
+    from hibana.engine.config import EngineConfig, using
     ix = fake_indexer()
     with using(EngineConfig(qsa_prefill_backend='optimized')):
         ix.configure_prefill(None, None, sharded=False)
@@ -111,13 +111,13 @@ def test_forced_backend_excludes_replicated_draft():
 
 @pytest.mark.parametrize('backend', ['auto', 'optimized'])
 def test_compile_error_is_not_hidden(monkeypatch, backend):
-    from sharar.engine.config import EngineConfig, using
-    import sharar.distributed as distributed
+    from hibana.engine.config import EngineConfig, using
+    import hibana.distributed as distributed
     monkeypatch.setattr(distributed, 'get_tp_info', lambda: SimpleNamespace(size=1))
     monkeypatch.setattr(torch.cuda, 'get_device_capability', lambda device: (12, 1))
     def failed(table):
         raise RuntimeError('compile failed')
-    monkeypatch.setattr('sharar.kernels.qsa.prefill.PrefillKernels', failed)
+    monkeypatch.setattr('hibana.kernels.qsa.prefill.PrefillKernels', failed)
     ix = fake_indexer()
     with using(EngineConfig(qsa_prefill_backend=backend)):
         with pytest.raises(RuntimeError, match='compile failed'):
@@ -141,7 +141,7 @@ def test_force_applies_only_to_sparse_eager_scope(monkeypatch, mode, first, capt
     def original(*args):
         called.append(True)
         raise RuntimeError('original path reached')
-    monkeypatch.setattr('sharar.model.flashnext.indexer.F.linear', original)
+    monkeypatch.setattr('hibana.model.flashnext.indexer.F.linear', original)
     ctx = SimpleNamespace(mode=mode, extras=SimpleNamespace(qsa_seqs=[(first,1,None)]),
                           kv_pool=SimpleNamespace(page_aux={ix.name: object()}))
     x = SimpleNamespace(is_cuda=True, dtype=torch.bfloat16, shape=(1,8))

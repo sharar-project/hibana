@@ -23,7 +23,7 @@ def reference(candidates, scores):
 @pytest.mark.parametrize('dtype', [torch.bfloat16, torch.float32])
 @pytest.mark.parametrize('graphs', [False, True])
 def test_greedy_lattice_matches_conditional_reference(batch, steps, dtype, graphs):
-    from sharar.kernels.draft_selection import greedy_lattice
+    from hibana.kernels.draft_selection import greedy_lattice
     torch.manual_seed(1907 + batch + steps)
     width = 16
     # Non-contiguous views exercise padded graph rows and every input stride.

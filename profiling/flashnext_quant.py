@@ -3,8 +3,8 @@
 SGLang disagrees with itself on ~14% of positions, which buries a trunk-precision
 effect; the BF16 executor matches the reference, so it is the baseline here. `base`
 runs the executor with the BF16 trunk and stores each position's top-k logprobs;
-`score` runs a quantized trunk (SHARAR_TRUNK_KEEP_BF16 keeps chosen modules in
-BF16, see sharar/model/flashnext/linear.py) and reports, per region (dense: rows inside the
+`score` runs a quantized trunk (HIBANA_TRUNK_KEEP_BF16 keeps chosen modules in
+BF16, see hibana/model/flashnext/linear.py) and reports, per region (dense: rows inside the
 indexer budget; sparse: past it), argmax agreement with BF16, confident agreement
 (BF16 top-1 above 0.8), the truncated KL(BF16 || quantized) over BF16's top-k, and
 the negative log-likelihood of the text itself.
@@ -33,14 +33,14 @@ LIMIT = 2051  # rows at or past this index select sparsely (budget + ratio - 1)
 
 
 def snapshot() -> Path:
-    """The pinned Flash-Next snapshot through the target (SHARAR_FLASHNEXT_CACHE), as the server finds it."""
-    from sharar.target import FLASHNEXT
+    """The pinned Flash-Next snapshot through the target (HIBANA_FLASHNEXT_CACHE), as the server finds it."""
+    from hibana.target import FLASHNEXT
     return FLASHNEXT.snapshot_dir()
 
 
 def prompts(n_prompts: int, length: int) -> list[dict]:
     from profiling.inputs import tasks
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.tokenizer import SnapshotTokenizer
     rows = tasks(SnapshotTokenizer(snapshot()).encode)[:n_prompts]
     return [{"id": f"{t['id']}[:{length}]", "ids": t["input_ids"][:length]} for t in rows]
 
@@ -48,9 +48,9 @@ def prompts(n_prompts: int, length: int) -> list[dict]:
 def executor_model(precision, chunk: int = 2048):
     """The serving path: a real Executor with pools prefills in `chunk`-token chunks (the sparse
     indexer needs pages); every chunk's hidden rows give that chunk's logits."""
-    from sharar.engine.executor import Executor
-    from sharar.engine.sampler import SamplingParams
-    from sharar.model.flashnext.model import FlashNext
+    from hibana.engine.executor import Executor
+    from hibana.engine.sampler import SamplingParams
+    from hibana.model.flashnext.model import FlashNext
     engine = FlashNext(snapshot(), precision=precision)
     ex = Executor(engine, num_pages=40000, num_slots=8, max_context=32768, log=print)
 
@@ -119,7 +119,7 @@ def score(args):
         r["top_lp"], r["top_ix"], r["nll"] = r["top_lp"].cuda().float(), r["top_ix"].cuda(), r["nll"].cuda()
     torch.cuda.synchronize()
     model = executor_model(args.precision, args.chunk)
-    knobs = {k: v for k, v in os.environ.items() if k.startswith(("SHARAR_TRUNK", "SHARAR_W3"))}
+    knobs = {k: v for k, v in os.environ.items() if k.startswith(("HIBANA_TRUNK", "HIBANA_W3"))}
     per_prompt, agg = [], {}
     for row in rows:
         b_lp, b_ix = row["top_lp"], row["top_ix"]

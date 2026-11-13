@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from sharar.weights import calibration_inputs as inputs
-from sharar.weights.flashnext_w3_experts import resume_point
+from hibana.weights import calibration_inputs as inputs
+from hibana.weights.flashnext_w3_experts import resume_point
 
 GSM8K_ITEM = "Janet's ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for her friends every day with four."
 
@@ -64,7 +64,7 @@ def target(tmp_path, monkeypatch):
         "{% for m in messages %}<|im_start|> {{ m.role }} {% if m.reasoning_content %}<think> {{ m.reasoning_content }} </think> "
         "{% endif %}{{ m.content }} <|im_end|> {% endfor %}")
     t = SimpleNamespace(name="toy", model_revision="rev", template_defaults=(), snapshot_dir=lambda: snap)
-    from sharar import target as targets
+    from hibana import target as targets
     monkeypatch.setattr(targets, "get", lambda name: t)
     return t
 

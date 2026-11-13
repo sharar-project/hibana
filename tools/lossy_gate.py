@@ -2,18 +2,18 @@
 """The lossy-change gate: one scorecard, paired against a baseline profile, for a lossy speed option.
 
     tools/lossy_gate.py --target flashnext --name fast --profile fast
-    tools/lossy_gate.py --target flashnext --name recal --profile fast --env SHARAR_W3_CHECKPOINT=/path/to/candidate
-    tools/lossy_gate.py --target qwen38 --name fewer-experts --profile exact --env SHARAR_X=1 --through full
-    tools/lossy_gate.py --target flashnext --name experts3 --profile fast --env SHARAR_W3_CHECKPOINT=/path --battery hard
-    tools/lossy_gate.py --target flashnext --name kv-fp4 --profile fast --env SHARAR_X=1 --battery long
+    tools/lossy_gate.py --target flashnext --name recal --profile fast --env HIBANA_W3_CHECKPOINT=/path/to/candidate
+    tools/lossy_gate.py --target qwen38 --name fewer-experts --profile exact --env HIBANA_X=1 --through full
+    tools/lossy_gate.py --target flashnext --name experts3 --profile fast --env HIBANA_W3_CHECKPOINT=/path --battery hard
+    tools/lossy_gate.py --target flashnext --name kv-fp4 --profile fast --env HIBANA_X=1 --battery long
 
 A candidate is a serving profile (`--profile`, default exact) plus `--env KEY=VALUE` overrides, resolved for the
-target exactly as `sharar serve <target> --<profile>` resolves them with those settings in its environment
-(sharar/launch/settings.py: the user's config file, the target's settings, the profile's defaults); the baseline is
+target exactly as `hibana serve <target> --<profile>` resolves them with those settings in its environment
+(hibana/launch/settings.py: the user's config file, the target's settings, the profile's defaults); the baseline is
 `--baseline-profile` (default exact) with `--baseline-env`. Both arms run this checkout's engine from its Python
 environment (`uv sync --frozen`; the scorecard records the commit and any uncommitted engine changes). The run is
 unattended and resumable: every step writes its own file and a rerun with the same name skips what exists. Do not
-wrap the tool in flock: it takes $SHARAR_RESULTS/.gpu.lock itself for each GPU phase (at most --hold-minutes), and
+wrap the tool in flock: it takes $HIBANA_RESULTS/.gpu.lock itself for each GPU phase (at most --hold-minutes), and
 waits while another model server or GPU process runs.
 
 Layers, cheapest first:
@@ -25,7 +25,7 @@ Layers, cheapest first:
   2  Speculation health (same process): tokens per verify round, round cost and decode tok/s of
      each prompt, greedy with the profile's acceptance rule, paired per prompt; the floor is a
      second baseline pass. The speed delta of the verdict is the decode tok/s ratio here.
-  3  Task battery (served over HTTP: `sharar serve` in the foreground on --port, and
+  3  Task battery (served over HTTP: `hibana serve` in the foreground on --port, and
      sharar-eval's `evals.suite` runs with the server's own acceptance default): paired per item,
      McNemar. Screen: the `quick` suite (GSM8K first 300, HumanEval 164, MGSM 24 per language, plus
      long-context needles at 16K and 64K as a smoke test). Full, when the screen is close: the `full`
@@ -54,9 +54,9 @@ The screen escalates to the full stage (--through auto) unless it rejects the ca
 pooled interval already excludes a loss of more than 1.0 point. Layer 1 decides nothing beyond
 `exact`; it locates the damage (which domain) and is the cheap early warning.
 
-Outputs: $SHARAR_RESULTS/reviews/<date>-lossy-gate-<name>/ (manifest.json, arm configs, logs,
+Outputs: $HIBANA_RESULTS/reviews/<date>-lossy-gate-<name>/ (manifest.json, arm configs, logs,
 scorecard.json, SUMMARY.md); the baseline arm is cached under
-$SHARAR_RESULTS/reviews/lossy-gate-baselines/<target>-<profile>-<key>/ and reused by every
+$HIBANA_RESULTS/reviews/lossy-gate-baselines/<target>-<profile>-<key>/ and reused by every
 candidate with the same baseline, engine, prompts and eval code.
 """
 from __future__ import annotations
@@ -80,15 +80,15 @@ import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO))  # this checkout's sharar (the launcher resolver is standard-library only)
-from sharar.launch import guard, lxcfs, preflight  # noqa: E402
-from sharar.launch import settings as launch  # noqa: E402
+sys.path.insert(0, str(REPO))  # this checkout's hibana (the launcher resolver is standard-library only)
+from hibana.launch import guard, lxcfs, preflight  # noqa: E402
+from hibana.launch import settings as launch  # noqa: E402
 WORKLOAD = REPO / "tools" / "gate" / "workloads" / "lossy_v1.json"
 WORKER = REPO / "tools" / "gate" / "lossy_gate.py"
-LOCK: Path | None = None  # $SHARAR_RESULTS/.gpu.lock, set by main()
+LOCK: Path | None = None  # $HIBANA_RESULTS/.gpu.lock, set by main()
 EVALS_ENV: dict | None = None  # sharar-eval's environment (evals_env), set by main()
 VENV = Path(os.environ.get("UV_PROJECT_ENVIRONMENT") or REPO / ".venv")  # the project's environment (uv sync)
-PROTOCOL = 3  # bump when a step's meaning changes (it keys the baseline cache); 3: arms resolved by sharar.launch
+PROTOCOL = 3  # bump when a step's meaning changes (it keys the baseline cache); 3: arms resolved by hibana.launch
 CHUNK, FLOOR_CHUNK = 64, 32
 GUARD_GIB = guard.guard_kib() / 2**20  # where the memory guard acts: half the host floor (the pools are planned to leave the floor)
 BLOCK = 64  # layer-1 bootstrap unit: consecutive continuation positions
@@ -122,7 +122,7 @@ def log(msg: str) -> None:
 def engine_identity() -> str:
     """The engine both arms run: this checkout's commit, plus a hash of any uncommitted engine changes."""
     commit = git("rev-parse", "HEAD")
-    paths = ["sharar", "pyproject.toml", "constraints"]
+    paths = ["hibana", "pyproject.toml", "constraints"]
     diff = subprocess.run(["git", "-C", str(REPO), "diff", "HEAD", "--", *paths], capture_output=True).stdout
     diff += subprocess.run(["git", "-C", str(REPO), "ls-files", "--others", "--exclude-standard", "--", *paths], capture_output=True).stdout
     return commit + (f"+dirty-{sha256(diff)[:12]}" if diff else "")
@@ -138,7 +138,7 @@ def ensure_venv() -> None:
 
 def sharar_eval(evals: Path | None, python: str | None) -> dict:
     """Where sharar-eval runs: the `eval` dependency group in this project's environment (default), or a checkout given with
-    --evals / SHARAR_EVALS, run from its own .venv (unreleased sharar-eval changes). Returns its Python, working
+    --evals / HIBANA_EVALS, run from its own .venv (unreleased sharar-eval changes). Returns its Python, working
     directory, a label, its commit and the hash of its evals code (part of the baseline key)."""
     if evals is None:
         ensure_venv()
@@ -150,7 +150,7 @@ def sharar_eval(evals: Path | None, python: str | None) -> dict:
         commit, tree = json.loads(out.stdout)
         return {"python": python, "cwd": REPO, "label": "eval group", "commit": commit, "tree": tree}
     if not (evals / "evals" / "suite.py").is_file():
-        raise SystemExit(f"{evals}: no sharar-eval checkout (or drop --evals / SHARAR_EVALS to use the eval group)")
+        raise SystemExit(f"{evals}: no sharar-eval checkout (or drop --evals / HIBANA_EVALS to use the eval group)")
     python = python or str(evals / ".venv" / "bin" / "python")
     if not Path(python).is_file():
         raise SystemExit(f"{python} not found: run `uv sync` in {evals}")
@@ -159,22 +159,22 @@ def sharar_eval(evals: Path | None, python: str | None) -> dict:
 
 
 def gate_env() -> dict:
-    """The arms' environment: this process's, without its SHARAR_* settings (the arms read the config file, then their
+    """The arms' environment: this process's, without its HIBANA_* settings (the arms read the config file, then their
     own profile and overrides), with the user's config file named explicitly."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith("SHARAR_")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("HIBANA_", "SHARAR_"))}
     conf = launch.config_file()
     if conf is not None:
-        env["SHARAR_CONFIG_FILE"] = str(conf)
+        env["HIBANA_CONFIG_FILE"] = str(conf)
     return env
 
 
 def resolve(target: str, profile: str, overrides: dict) -> launch.Settings:
-    """One arm's settings, as `sharar serve <target> --<profile>` resolves them with the overrides in its environment."""
+    """One arm's settings, as `hibana serve <target> --<profile>` resolves them with the overrides in its environment."""
     return launch.resolve(target, profile, overrides, env=gate_env(), traces=False)
 
 
 def accept_rule(text: str) -> str:
-    """A K:M (or off) as `sharar engine` installs it."""
+    """A K:M (or off) as `hibana engine` installs it."""
     if text == "off":
         return "1:0.0"
     k, m = text.split(":")
@@ -182,33 +182,33 @@ def accept_rule(text: str) -> str:
 
 
 # Settings the in-process worker leaves out: what only the server uses (batching, sessions, traces, the context it plans).
-SERVER_ONLY = ("SHARAR_MAX_BATCH", "SHARAR_SPEC_DEPTHS", "SHARAR_TRACES", "SHARAR_TRACES_MAX_MIB", "SHARAR_MAX_CONTEXT",
-               "SHARAR_SSD", "SHARAR_SSD_GIB", "SHARAR_SSD_DIR", "SHARAR_SSD_BLOCK_TOKENS", "SHARAR_SSD_TRACE", "SHARAR_KV_POOL_TOKENS")
+SERVER_ONLY = ("HIBANA_MAX_BATCH", "HIBANA_SPEC_DEPTHS", "HIBANA_TRACES", "HIBANA_TRACES_MAX_MIB", "HIBANA_MAX_CONTEXT",
+               "HIBANA_SSD", "HIBANA_SSD_GIB", "HIBANA_SSD_DIR", "HIBANA_SSD_BLOCK_TOKENS", "HIBANA_SSD_TRACE", "HIBANA_KV_POOL_TOKENS")
 
 
 def arm_plan(s: launch.Settings) -> dict:
-    """What the arm runs: its engine environment and the executor built as `sharar engine` builds it (the gate does not
+    """What the arm runs: its engine environment and the executor built as `hibana engine` builds it (the gate does not
     fetch 3-bit checkpoints: an arm serves what <target>-current holds)."""
     w3 = preflight.ensure_w3(s, fetch=False)
     cenv = {k: v for k, v in s.engine_env(w3).items() if k not in SERVER_ONLY}
     spec = s.spec
-    accept = accept_rule(s.get("SHARAR_ACCEPT_DEFAULT", "off")) if spec else "1:0.0"
-    cenv["SHARAR_SPEC"], cenv["SHARAR_ACCEPT_DEFAULT"] = str(spec), accept
-    # sampled requests' s, as `sharar engine` records it (0 without speculation)
-    cenv["SHARAR_ACCEPT_SOFT"] = s.get("SHARAR_ACCEPT_SOFT", "0") if spec else "0"
+    accept = accept_rule(s.get("HIBANA_ACCEPT_DEFAULT", "off")) if spec else "1:0.0"
+    cenv["HIBANA_SPEC"], cenv["HIBANA_ACCEPT_DEFAULT"] = str(spec), accept
+    # sampled requests' s, as `hibana engine` records it (0 without speculation)
+    cenv["HIBANA_ACCEPT_SOFT"] = s.get("HIBANA_ACCEPT_SOFT", "0") if spec else "0"
     return {"target": s.target, "env": cenv, "proposer": s.proposer, "spec": spec,
-            "verify_state": s.get("SHARAR_VERIFY_STATE", "reconstruct"), "draft_precision": s.get("SHARAR_DRAFT_PRECISION", "bf16"),
+            "verify_state": s.get("HIBANA_VERIFY_STATE", "reconstruct"), "draft_precision": s.get("HIBANA_DRAFT_PRECISION", "bf16"),
             "draft": str(s.draft_dir) if s.draft_dir else None, "accept": accept}
 
 
 def served_command(target: str, profile: str, port: int) -> list[str]:
-    """A served arm: `sharar serve` in the foreground, on our port, recording nothing."""
-    return [str(VENV / "bin" / "python"), "-u", "-m", "sharar", "serve", target, f"--{profile}", "--port", str(port),
+    """A served arm: `hibana serve` in the foreground, on our port, recording nothing."""
+    return [str(VENV / "bin" / "python"), "-u", "-m", "hibana", "serve", target, f"--{profile}", "--port", str(port),
             "--no-fetch"]
 
 
 def served_env(overrides: dict) -> dict:
-    return {**gate_env(), **overrides, "SHARAR_TRACES": "off", "SHARAR_SSD": "0"}  # recording nothing and no SSD tier, the same in every stage
+    return {**gate_env(), **overrides, "HIBANA_TRACES": "off", "HIBANA_SSD": "0"}  # recording nothing and no SSD tier, the same in every stage
 
 
 def sha256(data: bytes) -> str:
@@ -229,14 +229,14 @@ def available_gib() -> float:
 
 
 def other_gpu_work() -> list[str]:
-    """Model servers and GPU processes that are not this tool's: Sharar services, model containers, GPU processes."""
+    """Model servers and GPU processes that are not this tool's: Hibana services, model containers, GPU processes."""
     busy = []
-    units = subprocess.run(["systemctl", "--user", "list-units", "--state=active", "--plain", "--no-legend", "sharar-*.service"],
+    units = subprocess.run(["systemctl", "--user", "list-units", "--state=active", "--plain", "--no-legend", "hibana-*.service", "sharar-*.service"],
                            capture_output=True, text=True).stdout.split()
     busy += [u for u in units if u.endswith(".service")]
     out = subprocess.run(["docker", "ps", "--format", "{{.Names}}\t{{.Image}}"], capture_output=True, text=True).stdout if shutil.which("docker") else ""
     rows = [line.split("\t") for line in out.splitlines() if "\t" in line]
-    busy += [f"{n} ({i})" for n, i in rows if i.startswith("sharar") or n.startswith("sharar") or "sglang" in i or "vllm" in i]
+    busy += [f"{n} ({i})" for n, i in rows if i.startswith(("hibana", "sharar")) or n.startswith(("hibana", "sharar")) or "sglang" in i or "vllm" in i]
     out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,process_name", "--format=csv,noheader"], capture_output=True, text=True).stdout
     busy += [f"GPU process {line.strip()}" for line in out.splitlines() if line.strip()]
     return busy
@@ -286,8 +286,8 @@ def tool_command(plan: dict, results: Path, hf_cache: str, out: Path, base: Path
     """The in-process worker (tools/gate/lossy_gate.py) on this checkout's engine, and its environment."""
     env = {"PATH": f"{VENV}/bin:/usr/local/cuda/bin:/usr/bin:/bin", "HOME": os.environ["HOME"], "CUDA_HOME": "/usr/local/cuda",
            "PYTHONPATH": f"{REPO / 'tools'}:{REPO}", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1",
-           "SHARAR_HF_CACHE": hf_cache, "HF_HUB_OFFLINE": "1", "TOKENIZERS_PARALLELISM": "false",
-           "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True", "SHARAR_RESULTS": str(results), **plan["env"]}
+           "HIBANA_HF_CACHE": hf_cache, "HF_HUB_OFFLINE": "1", "TOKENIZERS_PARALLELISM": "false",
+           "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True", "HIBANA_RESULTS": str(results), **plan["env"]}
     cmd = [str(VENV / "bin" / "python"), "-m", "gate.lossy_gate", "--prompts", str(WORKLOAD),
            "--out", str(out), "--accept", plan["accept"], "--proposer", plan["proposer"], "--spec", str(plan["spec"]),
            "--verify-state", plan["verify_state"], "--draft-precision", plan["draft_precision"], "--chunk", str(CHUNK)]
@@ -335,7 +335,7 @@ def get_json(url: str) -> dict:
 
 
 class Served:
-    """One served arm: `sharar serve <target> --<profile>` in the foreground with the arm's overrides, its configuration
+    """One served arm: `hibana serve <target> --<profile>` in the foreground with the arm's overrides, its configuration
     checked against the in-process arm, eval shards run against it, then stopped (SIGTERM, as Ctrl-C)."""
 
     def __init__(self, label, arm_dir: Path, target: str, profile: str, overrides: dict, port: int, python: str, evals: Path,
@@ -411,7 +411,7 @@ def run_suite(label: str, served: Served, suite: str, l3: Path, skip: list[str],
 def evals_env(results: Path, hf_cache) -> dict:
     """The environment sharar-eval runs in: this configuration's results directory (its datasets) and model cache
     (the pinned tokenizer), which sharar-eval does not guess."""
-    return {**os.environ, "SHARAR_RESULTS": str(results), "SHARAR_HF_CACHE": str(hf_cache)}
+    return {**os.environ, "HIBANA_RESULTS": str(results), "HIBANA_HF_CACHE": str(hf_cache)}
 
 
 def suite_compare(python: str, evals: Path, base: Path, cand: Path, tasks: list[str]) -> dict:
@@ -637,8 +637,8 @@ def parse_env(items: list[str]) -> dict:
     out = {}
     for kv in items:
         k, sep, v = kv.partition("=")
-        if not sep or not k.startswith("SHARAR_"):
-            raise SystemExit(f"--env takes SHARAR_KEY=VALUE, got {kv!r}")
+        if not sep or not k.startswith("HIBANA_"):
+            raise SystemExit(f"--env takes HIBANA_KEY=VALUE, got {kv!r}")
         out[k] = v
     return out
 
@@ -648,7 +648,7 @@ def main(argv=None) -> int:
     ap.add_argument("--target", choices=("flashnext", "qwen38"), required=True)
     ap.add_argument("--name", required=True, help="candidate name (the output directory: <date>-lossy-gate-<name>)")
     ap.add_argument("--profile", choices=PROFILE_NAMES, default="exact", help="the candidate's serving profile")
-    ap.add_argument("--env", action="append", default=[], help="SHARAR_KEY=VALUE override of the candidate (repeatable)")
+    ap.add_argument("--env", action="append", default=[], help="HIBANA_KEY=VALUE override of the candidate (repeatable)")
     ap.add_argument("--baseline-profile", choices=PROFILE_NAMES, default="exact")
     ap.add_argument("--baseline-env", action="append", default=[])
     ap.add_argument("--through", choices=("inprocess", "screen", "full", "auto"), default="auto",
@@ -657,9 +657,9 @@ def main(argv=None) -> int:
     ap.add_argument("--battery", choices=sorted(BATTERIES), default="quick",
                     help="quick: the screen, then the full sets when close; hard / long / all: also sharar-eval's hard suite "
                          "(4-6 h per arm), long suite (RULER v2, ~3 h per arm) or both; agentic: Terminal-Bench 2.1 (~18 h per arm)")
-    ap.add_argument("--evals", type=Path, default=Path(os.environ["SHARAR_EVALS"]) if os.environ.get("SHARAR_EVALS") else None,
-                    help="a sharar-eval checkout to run instead of the eval group (default: SHARAR_EVALS, else the group)")
-    ap.add_argument("--python", default=os.environ.get("SHARAR_EVALS_PYTHON"),
+    ap.add_argument("--evals", type=Path, default=Path(os.environ["HIBANA_EVALS"]) if os.environ.get("HIBANA_EVALS") else None,
+                    help="a sharar-eval checkout to run instead of the eval group (default: HIBANA_EVALS, else the group)")
+    ap.add_argument("--python", default=os.environ.get("HIBANA_EVALS_PYTHON"),
                     help="sharar-eval's Python (default: this environment's, or the checkout's .venv)")
     ap.add_argument("--hold-minutes", type=float, default=45, help="longest GPU hold per phase")
     ap.add_argument("--no-needles", action="store_true")
@@ -680,7 +680,7 @@ def main(argv=None) -> int:
     plans = {k: arm_plan(v) for k, v in arms.items()}
     results, hf_cache = arms["baseline"].results, str(arms["baseline"].hf_cache)
     global LOCK, EVALS_ENV
-    LOCK = results / ".gpu.lock"  # the shared GPU lock every Sharar tool takes
+    LOCK = results / ".gpu.lock"  # the shared GPU lock every Hibana tool takes
     EVALS_ENV = evals_env(results, hf_cache)
     engine = engine_identity()
     ev = sharar_eval(args.evals, args.python)

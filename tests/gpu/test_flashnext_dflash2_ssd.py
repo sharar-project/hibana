@@ -7,8 +7,8 @@ import gc
 import pytest
 import torch
 
-from sharar import target as targets
-from sharar.engine.sampler import SamplingParams
+from hibana import target as targets
+from hibana.engine.sampler import SamplingParams
 
 PROMPT = "Return only JSON with keys city and country for the capital of France."
 
@@ -23,11 +23,11 @@ def user(tok, text: str) -> list[int]:
 
 @pytest.fixture(scope="module")
 def runtime(tmp_path_factory):
-    from sharar.cache.spec_budget import SpecConfig
-    from sharar.engine import config
-    from sharar.engine.executor import Executor
-    from sharar.proposers.factory import draft_snapshot
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana.cache.spec_budget import SpecConfig
+    from hibana.engine import config
+    from hibana.engine.executor import Executor
+    from hibana.proposers.factory import draft_snapshot
+    from hibana.tokenizer import SnapshotTokenizer
     target = targets.get("flashnext")
     ssd = dict(ssd=True, ssd_dir=str(tmp_path_factory.mktemp("ssd")), ssd_gib=2.0)
     with config.using(config.current().replace(target="flashnext", w3_decode=False, w3_checkpoint=None, **ssd)):

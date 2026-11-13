@@ -7,13 +7,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.engine.loop import EngineLoop, Ticket
-from sharar.engine.request import Request, State
-from sharar.engine.sampler import SamplingParams
-from sharar.engine.scheduler import Scheduler
-from sharar.engine.spec import SpecDecoder
-from sharar.engine.contracts import VerifiedFeatures
-from sharar.cache.request_state import StateManager, Reservation
+from hibana.engine.loop import EngineLoop, Ticket
+from hibana.engine.request import Request, State
+from hibana.engine.sampler import SamplingParams
+from hibana.engine.scheduler import Scheduler
+from hibana.engine.spec import SpecDecoder
+from hibana.engine.contracts import VerifiedFeatures
+from hibana.cache.request_state import StateManager, Reservation
 from tests.unit.test_radix import make, snaps
 from tests.unit.test_scheduler import FakeExecutor
 
@@ -66,7 +66,7 @@ def test_idle_engine_publishes_queued_cancellation():
 
 @pytest.mark.parametrize('reason', ['length', 'stop', 'cancelled'])
 def test_terminal_notification_observes_retired_ticket(monkeypatch, reason):
-    from sharar.engine import loop as server
+    from hibana.engine import loop as server
 
     async def scenario():
         engine = EngineLoop(Scheduler(FakeExecutor()))

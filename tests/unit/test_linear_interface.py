@@ -1,13 +1,13 @@
 """One linear interface over every weight format."""
 import torch
 
-from sharar.weights.linear import Linear
+from hibana.weights.linear import Linear
 
 
 def _formats():
-    from sharar.model.draft_linear import DraftFp8Linear
-    from sharar.model.flashnext.linear import TrunkLinear
-    from sharar.weights.modelopt import Fp8Linear, Nvfp4Linear, swizzle_block_scales
+    from hibana.model.draft_linear import DraftFp8Linear
+    from hibana.model.flashnext.linear import TrunkLinear
+    from hibana.weights.modelopt import Fp8Linear, Nvfp4Linear, swizzle_block_scales
     torch.manual_seed(0)
     bf16 = torch.randn(32, 64).to(torch.bfloat16)
     fp8 = Fp8Linear(weight=torch.randn(32, 64).to(torch.float8_e4m3fn), weight_scale=torch.tensor(0.5), input_scale=torch.tensor(0.25))
@@ -32,7 +32,7 @@ def test_dequantize_matches_the_packed_sources():
     assert torch.equal(f["fp8"].dequantize(), f["fp8"].weight.float() * f["fp8"].weight_scale.float())
     assert torch.equal(f["draft"].dequantize(), f["draft"].weight.float() * f["draft"].scale.float())
     assert torch.equal(f["trunk-bf16"].dequantize(), f["trunk-bf16"].weight.float())
-    from sharar.weights.modelopt import unpack_fp4
+    from hibana.weights.modelopt import unpack_fp4
     n = f["nvfp4"]
     ref = unpack_fp4(n.weight, torch.ones(128, 4)) * (n.alpha * n.input_scale_inv).float()
     assert torch.equal(n.dequantize(), ref)

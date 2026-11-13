@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from sharar.launch import preflight, settings
-from sharar.model.bolt import config
-from sharar.target import NEMOTRON, NEMOTRON_BOLT, get
+from hibana.launch import preflight, settings
+from hibana.model.bolt import config
+from hibana.target import NEMOTRON, NEMOTRON_BOLT, get
 
 CONFIG = Path(__file__).resolve().parents[1] / "data" / "nemotron_bolt_config.json"
 
@@ -42,16 +42,16 @@ def test_profiles_and_pinned_lilicorr(tmp_path, profile, name):
     """exact: checkpoint encodings, FP32 state, exact verification; fast and throughput: the calibrated 3-bit copies
     (none here, so the engine serves the checkpoint encodings), the int8 state and expert sharing, verifying
     exactly. Bolt publishes no copies, so serving without them is no warning."""
-    env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
+    env = {"HOME": str(tmp_path), "HIBANA_CONFIG_FILE": str(tmp_path / "none")}
     s = settings.resolve(name, profile, env=env)
-    assert (s.target, s.port, s.service, s.spec) == ("bolt", 30006, "sharar-bolt", 7)
-    assert s.get("SHARAR_DEVICE_ACCEPT") == s.get("SHARAR_ACCEPT_SOFT") == "0"
+    assert (s.target, s.port, s.service, s.spec) == ("bolt", 30006, "hibana-bolt", 7)
+    assert s.get("HIBANA_DEVICE_ACCEPT") == s.get("HIBANA_ACCEPT_SOFT") == "0"
     lossy = profile != "exact"
-    knobs = ("SHARAR_W3_DECODE", "SHARAR_SSM_STATE", "SHARAR_ACCEPT_DEFAULT", "SHARAR_MOE_KEEP", "SHARAR_MOE_BUDGET")
+    knobs = ("HIBANA_W3_DECODE", "HIBANA_SSM_STATE", "HIBANA_ACCEPT_DEFAULT", "HIBANA_MOE_KEEP", "HIBANA_MOE_BUDGET")
     assert tuple(s.get(k) for k in knobs) == (("1", "int8", "off", "6", "20:64") if lossy else ("0", "fp32", "off", "0", "0"))
-    assert preflight.ensure_w3(s, log=lambda _: None, fetch=True) is None and s.engine_env(None)["SHARAR_W3_DECODE"] == "0"
+    assert preflight.ensure_w3(s, log=lambda _: None, fetch=True) is None and s.engine_env(None)["HIBANA_W3_DECODE"] == "0"
     assert not s.warnings and "3-bit copies: off" in preflight.summary(s, {"gpu": "GB10", "memory": "128 GiB"}, None)
-    assert s.get("SHARAR_BOLT_EXPERTS") == "b12x"
+    assert s.get("HIBANA_BOLT_EXPERTS") == "b12x"
     assert s.parallel_draft and s.proposer == 'dflash2'
     assert settings.model_config(s.target) is config
     assert preflight.pinned_snapshots(s) == [(s.hf_cache, config.MODEL_ID, config.MODEL_REVISION),
@@ -61,21 +61,21 @@ def test_profiles_and_pinned_lilicorr(tmp_path, profile, name):
 
 @pytest.mark.parametrize("backend", ["bf16", "fp8", "b12x"])
 def test_expert_backend_override_and_engine_report(tmp_path, backend):
-    from sharar.engine.config import EngineConfig
-    env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
-    s = settings.resolve("bolt", "fast", env=env, overrides={"SHARAR_BOLT_EXPERTS": backend})
+    from hibana.engine.config import EngineConfig
+    env = {"HOME": str(tmp_path), "HIBANA_CONFIG_FILE": str(tmp_path / "none")}
+    s = settings.resolve("bolt", "fast", env=env, overrides={"HIBANA_BOLT_EXPERTS": backend})
     assert EngineConfig.from_env(s.values).describe()["bolt_experts"] == backend
     for value in ("auto", "iq2", "FP8"):
-        with pytest.raises(ValueError, match="SHARAR_BOLT_EXPERTS"):
-            settings.resolve("bolt", env=env, overrides={"SHARAR_BOLT_EXPERTS": value})
-        with pytest.raises(ValueError, match="SHARAR_BOLT_EXPERTS"):
+        with pytest.raises(ValueError, match="HIBANA_BOLT_EXPERTS"):
+            settings.resolve("bolt", env=env, overrides={"HIBANA_BOLT_EXPERTS": value})
+        with pytest.raises(ValueError, match="HIBANA_BOLT_EXPERTS"):
             EngineConfig(bolt_experts=value)
 
 
 def test_ssd_identity_separates_bf16_and_fp8_experts():
     from types import SimpleNamespace as NS
-    from sharar.cache.ssd_store import root_hash
-    from sharar.engine.executor import Executor
+    from hibana.cache.ssd_store import root_hash
+    from hibana.engine.executor import Executor
     ex = Executor.__new__(Executor)
     ex.target = NEMOTRON_BOLT
     ex.state_pool = NS(bytes_per_slot=NEMOTRON_BOLT.state_bytes_per_slot, ssm_format=NS(kind="fp32"))
@@ -92,28 +92,28 @@ def test_ssd_identity_separates_bf16_and_fp8_experts():
 
 
 def test_bolt_rejects_unsupported_drafter_and_parallelism(tmp_path):
-    env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
+    env = {"HOME": str(tmp_path), "HIBANA_CONFIG_FILE": str(tmp_path / "none")}
     with pytest.raises(ValueError, match="no in-checkpoint MTP"):
-        settings.resolve("bolt", env=env, overrides={"SHARAR_SPEC": "3", "SHARAR_PROPOSER": "mtp"})
+        settings.resolve("bolt", env=env, overrides={"HIBANA_SPEC": "3", "HIBANA_PROPOSER": "mtp"})
     with pytest.raises(ValueError, match="one Spark"):
         settings.resolve("bolt", env=env, tp=2)
 
 
 def test_bolt_lilicorr_depth_limits_and_plain_decode(tmp_path):
-    env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
+    env = {"HOME": str(tmp_path), "HIBANA_CONFIG_FILE": str(tmp_path / "none")}
     for depth in (1, 3, 7):
-        assert settings.resolve('bolt', env=env, overrides={'SHARAR_SPEC': str(depth)}).spec == depth
+        assert settings.resolve('bolt', env=env, overrides={'HIBANA_SPEC': str(depth)}).spec == depth
     with pytest.raises(ValueError, match='depth 1..7'):
-        settings.resolve('bolt', env=env, overrides={'SHARAR_SPEC': '8'})
+        settings.resolve('bolt', env=env, overrides={'HIBANA_SPEC': '8'})
     with pytest.raises(ValueError, match='published W4A16/BF16'):
-        settings.resolve('bolt', env=env, overrides={'SHARAR_DRAFT_PRECISION': 'fp8'})
-    plain = settings.resolve('bolt', env=env, overrides={'SHARAR_SPEC': '0'})
+        settings.resolve('bolt', env=env, overrides={'HIBANA_DRAFT_PRECISION': 'fp8'})
+    plain = settings.resolve('bolt', env=env, overrides={'HIBANA_SPEC': '0'})
     assert not plain.parallel_draft
     assert preflight.pinned_snapshots(plain) == [(plain.hf_cache, config.MODEL_ID, config.MODEL_REVISION)]
 
 
 def test_bolt_accepts_mamba_state_storage(tmp_path):
-    from sharar.cache.ssm_format import SsmFormat
+    from hibana.cache.ssm_format import SsmFormat
     for kind in ("fp32", "fp16_sr", "int8", "int4"):
         SsmFormat(kind).check(NEMOTRON_BOLT)
 
@@ -131,14 +131,14 @@ def test_plan_rows_follow_the_graphs():
     """b12x plans tune the rows the CUDA graphs run: batch buckets times one or a speculative round."""
     from types import SimpleNamespace
 
-    from sharar.model.bolt.linear import graph_rows
+    from hibana.model.bolt.linear import graph_rows
     assert graph_rows(SimpleNamespace(max_batch=4, spec="7", spec_depths=None)) == (1, 2, 4, 7, 8, 14, 16, 28, 32)
     assert graph_rows(SimpleNamespace(max_batch=1, spec="auto", spec_depths="")) == tuple(range(1, 10))
     assert 6 in graph_rows(SimpleNamespace(max_batch=2, spec="7", spec_depths="2:2"))
 
 
 def test_w3_calibration_names_cover_the_trunk_not_the_shared_experts():
-    from sharar.weights import bolt_w3_calibrate as calibrate
+    from hibana.weights import bolt_w3_calibrate as calibrate
     names = calibrate.projection_names(NEMOTRON_BOLT)
     assert len(names) == 40 * 2 + 40 * 2 + 8 * 2 + 1 and names[-1] == "lm_head"
     assert not any("shared" in n for n in names)
@@ -150,11 +150,11 @@ def test_w3_calibration_names_cover_the_trunk_not_the_shared_experts():
 
 
 def test_w3_serves_a_local_calibration(tmp_path):
-    """Bolt publishes no 3-bit copies: SHARAR_W3_CHECKPOINT=DIR, or the w3-checkpoints/bolt-current link, without a fetch."""
-    env = {"HOME": str(tmp_path), "SHARAR_CONFIG_FILE": str(tmp_path / "none")}
+    """Bolt publishes no 3-bit copies: HIBANA_W3_CHECKPOINT=DIR, or the w3-checkpoints/bolt-current link, without a fetch."""
+    env = {"HOME": str(tmp_path), "HIBANA_CONFIG_FILE": str(tmp_path / "none")}
     (tmp_path / "w3").mkdir()
     (tmp_path / "w3" / "manifest.json").write_text("{}")
-    s = settings.resolve("bolt", "exact", env=env, overrides={"SHARAR_W3_DECODE": "1", "SHARAR_W3_CHECKPOINT": str(tmp_path / "w3")})
+    s = settings.resolve("bolt", "exact", env=env, overrides={"HIBANA_W3_DECODE": "1", "HIBANA_W3_CHECKPOINT": str(tmp_path / "w3")})
     assert preflight.ensure_w3(s, fetch=False) == (tmp_path / "w3").resolve()
     s = settings.resolve("bolt", "fast", env=env)
     s.w3_root.mkdir(parents=True)

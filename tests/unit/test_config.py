@@ -1,4 +1,4 @@
-from sharar import config
+from hibana import config
 
 
 def test_layer_types_pattern(snapshot):

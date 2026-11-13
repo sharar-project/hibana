@@ -5,7 +5,7 @@ decode, verify, the host-sorted calls past 640 pairs and the wide prefill passes
 import pytest
 import torch
 
-from sharar.kernels import w3_moe
+from hibana.kernels import w3_moe
 
 E, L, I, K = 48, 1024, 2688, 22  # the kernel reads only the experts the ids name
 
@@ -15,7 +15,7 @@ def cheap_fit(w1, s1, g1, w2, s2, g2, codebook2="lloyd", chunk: int = 16):
     """NVFP4 experts (up w1 [E, I, L/2], down w2 [E, L, I/2], unswizzled block scales, global scales [E]) -> W3Experts
     by the cheap fit (`w3_moe.quantize`: a weight-error scale grid, the nearest level; fc1 = up in the checkpoint's row
     order, fc2 in `codebook2`) and each matrix's relative weight error."""
-    from sharar.kernels import w3
+    from hibana.kernels import w3
     parts, report = {}, {}
     for key, (packed, scales, scale2), book in (("w1", (w1, s1, g1), "lloyd"), ("w2", (w2, s2, g2), codebook2)):
         levels = w3._codebook(book)
@@ -55,7 +55,7 @@ def experts():
 @torch.no_grad()
 def reference(experts, x, ids, weights):
     """w3_moe.reference's math (bf16 up, bf16 relu^2, E4M3 groups, FP32 fc2), one expert at a time over its rows."""
-    from sharar.kernels import w3
+    from hibana.kernels import w3
     xd = w3_moe.quant_e4m3(x, "x")
     out = torch.zeros((x.shape[0], L), dtype=torch.float32, device=x.device)
     for e in ids.unique().tolist():
@@ -139,9 +139,9 @@ def test_fewer_experts_per_row(experts, k):
 def block1():
     """Block 1 of the pinned checkpoint twice: NVFP4 experts and (nearest-rounded, Lloyd/zero8) 3-bit ones."""
     import gc
-    from sharar.model.nemotron.moe import NemotronMoe, load_experts
-    from sharar.target import NEMOTRON
-    from sharar.weights.safetensors import SnapshotWeights
+    from hibana.model.nemotron.moe import NemotronMoe, load_experts
+    from hibana.target import NEMOTRON
+    from hibana.weights.safetensors import SnapshotWeights
     try:
         snap = NEMOTRON.snapshot_dir()
     except FileNotFoundError as exc:
@@ -165,7 +165,7 @@ def test_block_with_3bit_experts(block1, m):
     decode calls with padded rows (slot 0: no expert, a zero routed sum) match the block's own prefill path on the real
     rows, and stay near the NVFP4 block (nearest rounding: cosine > 0.98)."""
     from types import SimpleNamespace
-    from sharar.model.nemotron import config as c
+    from hibana.model.nemotron import config as c
     (nvfp4, b3), norm = block1
     g = torch.Generator().manual_seed(m)
     x = (torch.randn(m, c.HIDDEN_SIZE, generator=g) * norm).bfloat16().cuda()
@@ -186,9 +186,9 @@ def test_small_calls_with_3bit_experts(block1, m, mode):
     the fc2 addmm to the rounding the NVFP4 block's two paths differ by; a CUDA graph replays it bitwise."""
     import copy
     from types import SimpleNamespace
-    from sharar.kernels import nemotron_moe
-    from sharar.model.nemotron import config as c
-    from sharar.model.nemotron.moe import route_topk
+    from hibana.kernels import nemotron_moe
+    from hibana.model.nemotron import config as c
+    from hibana.model.nemotron.moe import route_topk
     (_, b3), norm = block1
     g = torch.Generator().manual_seed(300 + m)
     x = (torch.randn(m, c.HIDDEN_SIZE, generator=g) * norm).bfloat16().cuda()

@@ -5,10 +5,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sharar.engine.grammar import GrammarState, Grammars, apply_bitmask, host_bitmask, sample_masks
-from sharar.engine.request import Request
-from sharar.engine.sampler import Sampler, SamplingParams
-from sharar.engine.spec import SpecDecoder
+from hibana.engine.grammar import GrammarState, Grammars, apply_bitmask, host_bitmask, sample_masks
+from hibana.engine.request import Request
+from hibana.engine.sampler import Sampler, SamplingParams
+from hibana.engine.spec import SpecDecoder
 
 PIECES = ['{"', '"', '":', ':', ',', '}', ' ', '\n', 'city', 'days', 'Paris', 'a', 'b', '1', '2', '3',
           '<tool_call>', '</tool_call>', '<function=', '<parameter=', '</parameter>', '</function>', '>', 'get_weather',

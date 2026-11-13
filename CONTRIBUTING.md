@@ -1,10 +1,11 @@
-# Contributing to Sharar
+# Contributing to Hibana
 
-Sharar specializes in local inference on one GB10. Keep the current Qwen
+Hibana specializes in local inference on one GB10. Keep the current Qwen
 target checkpoint, its vocabulary head and the numerical serving profile fixed
 unless a change explicitly validates a new one. Favor a small implementation with
 explicit tensor ownership over a registry or framework. Read [the architecture](docs/architecture.md) and
-[the interfaces](docs/interfaces.md) first; open work is in the GitHub issues.
+[the interfaces](docs/interfaces.md) first; open work is in the GitHub issues. AI-assisted changes also follow
+[AGENTS.md](AGENTS.md).
 
 Tracked files (code, comments, tests, docs, configs) carry no issue or pull-request numbers and no dates; pinned
 revisions and hashes and archive tag names are the exceptions. Say what the code does and why, with the measurement
@@ -24,20 +25,20 @@ wheel and probe installed runtime assets outside the checkout. CI runs these
 checks; a source-only or editable installation does not validate packaging.
 
 The GPU suite (`tests/gpu`, every target; a module on a real checkpoint skips without it) runs with
-`SHARAR_RUN_GPU=1`; without it the GPU modules are not collected:
+`HIBANA_RUN_GPU=1`; without it the GPU modules are not collected:
 
 ```bash
-SHARAR_RUN_GPU=1 uv run pytest tests/unit tests/gpu      # or: tools/check.sh gpu-suite
-SHARAR_RUN_GPU=1 uv run pytest tests/gpu/test_qsa.py -x
+HIBANA_RUN_GPU=1 uv run pytest tests/unit tests/gpu      # or: tools/check.sh gpu-suite
+HIBANA_RUN_GPU=1 uv run pytest tests/gpu/test_qsa.py -x
 ```
 
-`tests/conftest.py` points it at the model caches, the calibrated 3-bit checkpoint and `$SHARAR_RESULTS` as
-`sharar serve` resolves them (the environment wins). Preserve frozen
+`tests/conftest.py` points it at the model caches, the calibrated 3-bit checkpoint and `$HIBANA_RESULTS` as
+`hibana serve` resolves them (the environment wins). Preserve frozen
 workload content and checksums (`tools/gate/workloads/`, `profiling/workloads/`,
-`sharar/benchmark_workloads.py`) when moving readers.
+`hibana/benchmark_workloads.py`) when moving readers.
 
 The modules on the real 27B share one load (the session fixture `qwen38` in `tests/gpu/conftest.py`), run last,
-and build their executors on it with bounded pools: 35,000 KV pages and 12 recurrent slots. Keep the memory guard active for the run (`uv run python -m sharar.launch.guard --pid PID`). The loader
+and build their executors on it with bounded pools: 35,000 KV pages and 12 recurrent slots. Keep the memory guard active for the run (`uv run python -m hibana.launch.guard --pid PID`). The loader
 requires a 24 GiB allowance of `MemAvailable` above the host floor (30 GiB at the default 6), based on the measured 21.3 GiB
 streaming-load peak. Runtime separately checks the
 prospective pool/draft budget before allocation.
@@ -58,6 +59,18 @@ It serves main and the branch in turn and runs sharar-eval's h2h on `fast` (1 an
 (8 to 128 closed-loop streams), greedy and T 0.7; the tool's docstring has the details. About 1.5 hours a target;
 `--repeats 2` when the difference is within a few percent.
 
+## Write a test
+
+A test must fail on a plausible regression of the code it guards: name the future change that would turn it red. If
+the only answer is editing the test, do not write it. A test earns its place by guarding a bug a normal run would not
+show (a wrong number that still looks like a number, a wrong cache slot, a crash only one interleaving hits) or a
+property that took reasoning to get right, checked against something independent of the code: a PyTorch reference, a
+round-trip, the `exact` profile. Assertions that restate the branches just written, config tests that echo their
+fixture and tests whose only check is "no exception" are not admitted.
+
+Verify a fix by re-running what failed and say what you ran; that alone does not call for a new test. Extend an
+existing test file or `parametrize` before adding a file, fixture or helper.
+
 ## Judge a lossy option
 
 A lossy option changes what the model emits on purpose (low-bit weights, fewer or pruned experts, relaxed acceptance,
@@ -65,7 +78,7 @@ a reduced draft vocabulary). It never enters the `exact` profile, and it enters 
 through the lossy-change gate, which pairs the candidate against `exact` on the same engine:
 
 ```bash
-tools/lossy_gate.py --target flashnext --name my-option --profile exact --env SHARAR_X=1
+tools/lossy_gate.py --target flashnext --name my-option --profile exact --env HIBANA_X=1
 tools/lossy_gate.py --target qwen38 --name fast --profile fast
 ```
 
@@ -74,18 +87,18 @@ The layers, the verdict rules and the outputs are in the docstring of [`tools/lo
 
 ## Add a setting
 
-Settings are fields of `EngineConfig` (`sharar/engine/config.py`): a `SHARAR_*`
+Settings are fields of `EngineConfig` (`hibana/engine/config.py`): a `HIBANA_*`
 name, its default and a one-line comment. Read `current()` where you build the
 thing the setting shapes (a model, a linear, a proposer, a graph), not at import
 and not per call on the hot path; `tests/unit/test_engine_config.py` fails on any
-other `SHARAR_*` environment read under `sharar/`. The launcher keeps forwarding
+other `HIBANA_*` environment read under `hibana/`. The launcher keeps forwarding
 the same variable names; `/get_server_info` reports the installed value.
 
 ## Add a target
 
-A target is a pinned checkpoint with a `Target` value in `sharar/target.py`
+A target is a pinned checkpoint with a `Target` value in `hibana/target.py`
 (geometry, profile, load budget, snapshot lookup, host validation) and a
-model package under `sharar/model/` whose forward returns `ForwardResult`
+model package under `hibana/model/` whose forward returns `ForwardResult`
 and exposes `.target`. Register the loader in `target.load_model` under a
 new `Target.family`; model-specific facts become optional `Target` fields
 (absent for the 27B), per-slot state beyond the GDN's goes through
@@ -97,7 +110,7 @@ image input, a request input every target with a vision tower shares: the
 model's optional `vision`, typed by `engine/contracts.VisionEncoder`, is all
 `engine/` reads of it, and its embeddings reach prefill as
 `ForwardContext.media_rows` / `media_embeds`), and a family's model cache is named by
-`Target.cache_env`. `sharar/model/flashnext/` is the worked example. The
+`Target.cache_env`. `hibana/model/flashnext/` is the worked example. The
 engine, pools and graphs read `executor.target`; do not add module-level
 constants for a new model, and keep `config.py` describing the 27B for the
 tools that import it. Validate a new target with layer-by-layer parity
@@ -106,7 +119,7 @@ against a reference server, the CPU contracts, the GPU lifecycle suites and a
 
 ## Add a proposer
 
-1. Put the adapter in `sharar/proposers/`. Implement `Proposer` and declare
+1. Put the adapter in `hibana/proposers/`. Implement `Proposer` and declare
    width, target-feature requirements and persistent/scratch bytes. Use
    `tests/ngram_proposer.py` (the tests' proposer) for a feature-free example, `mtp.py`
    for a sequential draft, and `parallel.py` for conditional DFlash2 proposals and draft-cache handles.
@@ -142,7 +155,7 @@ StateManager commit and stop/continuation tests.
 
 ## Change the drafter
 
-Sharar serves the publisher's drafters; `--draft DIR` serves another DFlash2
+Hibana serves the publisher's drafters; `--draft DIR` serves another DFlash2
 checkpoint of the same architecture, trained elsewhere (a trainer on recorded
 traffic is archived at the tag `archive/draft-training`). Trace format changes
 bump `FORMAT_VERSION` in `engine/traces.py` and keep the reader accepting older
@@ -194,3 +207,26 @@ GB10 shares physical DRAM between CPU and GPU, but not every CUDA allocation is 
 evidence, the mechanism and the predicted gain before building; measure in fresh processes with repeats, intervals
 and host `MemAvailable`, and report the results, negative ones included, in the pull request. A microbenchmark alone
 does not establish a serving gain.
+
+## Commit messages
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/), one line, imperative, lowercase, no
+trailing period:
+
+```
+<type>(<scope>): <subject>
+```
+
+- `type`: `feat`, `fix`, `perf`, `refactor`, `build`, `ci`, `docs`, `test`, `chore`.
+- `scope`, optional: the package or model touched, such as `engine`, `cache`, `api`, `kernels`, `proposers`,
+  `weights`, `launch`, `27b`, `flashnext`, `nemotron`, `bolt`, `deps`.
+- A breaking change adds `!` after the scope and explains it in the body.
+
+```
+perf(bolt): fuse the mamba prefill scan and grouped normalization
+fix(nemotron): size the grammar for the served vocabulary
+docs: a launch guide for each model in the README
+```
+
+Pull requests are squash-merged, so the pull request title follows the same form; it becomes the commit subject. Add
+a body only when the change needs a why that the diff does not show. For AI attribution use `Assisted-by: <agent>`.

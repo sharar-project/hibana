@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import torch
 
-from sharar.proposers.mtp_graphs import DraftGraphs
+from hibana.proposers.mtp_graphs import DraftGraphs
 
 
 def _graphs(seen):

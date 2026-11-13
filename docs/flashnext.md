@@ -1,8 +1,8 @@
-# Qwen3.8-Flash-Next in Sharar
+# Qwen3.8-Flash-Next in Hibana
 
-The second serving target (`sharar serve flashnext`, `sharar/model/flashnext/`). Checkpoint:
+The second serving target (`hibana serve flashnext`, `hibana/model/flashnext/`). Checkpoint:
 `RadixArk/Qwen3.8-Flash-Next-NVFP4` (ModelOpt NVFP4 W4A4 routed experts, everything else BF16; 135 GB,
-206 shards). Settings: `TARGET_SETTINGS` in `sharar/launch/settings.py`.
+206 shards). Settings: `TARGET_SETTINGS` in `hibana/launch/settings.py`.
 
 ## The model as served
 
@@ -20,7 +20,7 @@ Serving formats: the trunk is quantized to FP8 at load (per-tensor, dynamic acti
 checkpoint carries them, as the pinned one does: GPTQ-calibrated on routed activations, read by `kernels/w3_moe.py`
 in decode and prefill, and the only resident expert copy (46.1 GiB instead of 63.3; 53 GiB of weights in all). On two
 Sparks each rank holds half of them, whole experts ([tensor parallel](tensor-parallel.md#flash-next)). In `exact` (no
-3-bit copies), without a W3 checkpoint or its expert entries, or with `SHARAR_FLASHNEXT_EXPERTS=nvfp4`, the experts
+3-bit copies), without a W3 checkpoint or its expert entries, or with `HIBANA_FLASHNEXT_EXPERTS=nvfp4`, the experts
 are the checkpoint's NVFP4 through FlashInfer's `cutlass_fused_moe` ([calibration](w3-calibration.md)). The PLE table
 stays on the NVMe as memory maps; on two Sparks each rank keeps its half of the heads in device memory. On one Spark a
 prompt's first prefill chunk starts reading the rows of the rest of the prompt into the page cache in the background
@@ -30,10 +30,10 @@ prompt's first prefill chunk starts reading the rows of the rest of the prompt i
 
 | File | Role |
 |---|---|
-| `config.py` | pinned revision and geometry; `sharar/target.py` builds `FLASHNEXT` from it |
+| `config.py` | pinned revision and geometry; `hibana/target.py` builds `FLASHNEXT` from it |
 | `reference.py` | plain-torch Gemma norm, NeoX RoPE and QSA token mask (the indexer and the QSA tests) |
 | `hyper.py` | hyper-connection mix/combine and the grouped Gemma norm |
-| `linear.py` | `TrunkLinear`: FP8 at load (`SHARAR_FLASHNEXT_TRUNK=bf16` for parity) with its 3-bit copy |
+| `linear.py` | `TrunkLinear`: FP8 at load (`HIBANA_FLASHNEXT_TRUNK=bf16` for parity) with its 3-bit copy |
 | `gdn.py`, `attention.py` | the 27B modules with these projections and the sigmoid gate; attention runs the indexer |
 | `indexer.py` | sparse-attention indexer: index keys in page aux rows, group compression, top-512 selection |
 | `moe.py` | routed experts: the 3-bit experts through `kernels/w3_moe.py`, or `cutlass_fused_moe` on the checkpoint's NVFP4 packing (fc1 rows are `[up; gate]`); never both resident |
@@ -68,11 +68,11 @@ Decode and verification replay CUDA graphs at every context length. Inside the b
 graph-safe key maintenance; once any row is past it, a second set of graphs selects on the device
 (`kernels/qsa/selection.py` scores every visible group through the plan's page table in one Triton kernel, takes
 the top 512 of a fixed-width buffer and assembles the pages in a second kernel), so no shape depends on the context.
-`SHARAR_QSA_SPARSE_GRAPHS=0` keeps rows past the budget eager. Eager prefill computes the forward's indexer layout
+`HIBANA_QSA_SPARSE_GRAPHS=0` keeps rows past the budget eager. Eager prefill computes the forward's indexer layout
 once (`FlashNextIndexer._plan`) and ranks 256 rows per top-k. On SM121 its selection runs CUDA kernels with the same
 result (`kernels/qsa/score_exact.py`: the Triton scorer's FP32 order, 64 rows sharing each key load, and a two-pass
 top-512 with Torch's tie order): every chunk in `exact`, and in `fast` the chunks past 32K, where the optimized
-prefill kernels (`SHARAR_QSA_PREFILL_BACKEND`, [operations.md](operations.md#serving-profiles)) stop. One GB10, one
+prefill kernels (`HIBANA_QSA_PREFILL_BACKEND`, [operations.md](operations.md#serving-profiles)) stop. One GB10, one
 cold prefill in 8K chunks (mean of 3 after a warmup), before -> after: `fast` 64K 19.36 -> 18.70 s and 128K
 43.63 -> 38.90 s (indexer 7.80 -> 3.29 s: scores 5.60 -> 2.28, top-k and assembly 1.68 -> 0.59); `exact` 64K
 19.95 -> 18.87 s and 128K 43.96 -> 38.92 s, with the same first tokens and greedy continuations.
@@ -80,25 +80,25 @@ cold prefill in 8K chunks (mean of 3 after a warmup), before -> after: `fast` 64
 ## The MTP draft
 
 - **Depth, per request.** Deeper drafts win on code and math and lose on prose and multilingual text, so no fixed
-  depth suits both. `fast` drafts up to 8 (`SHARAR_SPEC=8`) and sets the depth per request
+  depth suits both. `fast` drafts up to 8 (`HIBANA_SPEC=8`) and sets the depth per request
   (`engine/depth.AcceptanceDepth`): a moving average of the request's accepted drafts per position tested, q, and
   the depth d that maximizes the expected emitted tokens (1 - q^(d+1)) / (1 - q) per round cost
-  1 + c (d - 1). `SHARAR_SPEC_STEP_COST` is c: 0.14 on one Spark (a round measured 31.5 ms at depth 1 and about
+  1 + c (d - 1). `HIBANA_SPEC_STEP_COST` is c: 0.14 on one Spark (a round measured 31.5 ms at depth 1 and about
   4.3 ms per token more), 0.2 on two, where 0.14 drafted chat and prose too deep. A batch verifies the deepest depth
-  its requests want, up to 7 for two requests and 6 for three or four on one Spark (`SHARAR_SPEC_DEPTHS=2:7,4:6`; at
+  its requests want, up to 7 for two requests and 6 for three or four on one Spark (`HIBANA_SPEC_DEPTHS=2:7,4:6`; at
   fixed depth two requests decoded 184.0 tok/s at 7 against 171.1 at 4, four 238.7 at 6 against 230.5), 4 on two
   (`2:4,4:4`, unmeasured there). Under c = 0.14 a request wants past 4 only at q of 0.85 or more, so a batch goes
   past 4 when one of its requests drafts that well. The choice is made before
   drafting, so drafting is not held up. `exact` keeps depth 4. `throughput` drafts 4 and verifies 3 from 9 requests up
-  (`SHARAR_SPEC_DEPTHS=16:3,32:3,64:3,128:3`, with 3-bit experts on one Spark, where at 32-128 requests a verified row
+  (`HIBANA_SPEC_DEPTHS=16:3,32:3,64:3,128:3`, with 3-bit experts on one Spark, where at 32-128 requests a verified row
   costs about 0.5 ms and depth 3 was the best fixed depth); with NVFP4 experts or on two Sparks only the 16-request
   bucket verifies 3 (`16:3`).
-- **Draft-only head.** The draft steps read a 2-bit copy of the lm_head (`SHARAR_DRAFT_HEAD=w2`: four levels per
+- **Draft-only head.** The draft steps read a 2-bit copy of the lm_head (`HIBANA_DRAFT_HEAD=w2`: four levels per
   32 weights, each group's scale fitted, 2.25 bits per weight, 171 MiB); its top 16 candidates
-  (`SHARAR_DRAFT_HEAD_RESCORE`) are rescored with the target's FP8 rows, so the draft picks what the full head
+  (`HIBANA_DRAFT_HEAD_RESCORE`) are rescored with the target's FP8 rows, so the draft picks what the full head
   would except on near-ties: on recorded draft steps of the h2h prompts the top 16 held the FP8 argmax 99.8% of the
   time and tokens/round did not change. `w3` (3-bit, 247 MiB, top 8) and `fp8` (the target's head) remain. Exact
-  acceptance is unaffected. `SHARAR_DRAFT_VOCAB` restricts the draft
+  acceptance is unaffected. `HIBANA_DRAFT_VOCAB` restricts the draft
   to the first N lm_head rows (off by default: it costs multilingual text).
 - **Fused steps.** Each draft step is one graph replay of 66 kernels (`kernels/flashnext_fused.py`): FP8 GEMVs
   quantize their own input, the attention's q/k norm, RoPE and KV write are one kernel, and the experts' gather,
@@ -110,12 +110,12 @@ cold prefill in 8K chunks (mean of 3 after a warmup), before -> after: `fast` 64
   indices on the host and uploads them once, and the PLE gather (`kernels/csrc/ple_gather.cpp`) reads rows from a
   native thread pool outside the GIL: `preadv2(RWF_NOWAIT)` copies the rows the page cache holds, then the others are
   read blocking, one per pool thread, so their NVMe latencies overlap.
-- **Confidence.** `SHARAR_TRACE_CONFIDENCE=1` beside traces records the draft's top-1 probability and top-two
+- **Confidence.** `HIBANA_TRACE_CONFIDENCE=1` beside traces records the draft's top-1 probability and top-two
   margin per drafted position ([operations](operations.md#request-traces)).
 
 ## The DFlash2 draft
 
-`SHARAR_PROPOSER=dflash2` serves the pinned `incoai/Qwen3.8-Flash-Next-DFlash2` on one Spark through the 27B's DFlash2
+`HIBANA_PROPOSER=dflash2` serves the pinned `incoai/Qwen3.8-Flash-Next-DFlash2` on one Spark through the 27B's DFlash2
 path (`proposers/parallel.py`): one draft forward proposes the round's block, FP8 weights with 3-bit decode copies,
 draft and feedback graphs, device-resident acceptance, and retained features through the prefix cache and the SSD tier.
 
@@ -128,7 +128,7 @@ draft and feedback graphs, device-resident acceptance, and retained features thr
 - **Depth.** Under budgeted expert selection a verify forward reads its cap's experts whatever its rows (one request:
   32-35 ms a round from depth 3 to 15, 3-bit experts, drafting a whole block), so a deeper round guarantees each
   checked token fewer of its own experts (2 x cap / rows). The depths are caps that keep MTP's floor of 3: `fast` checks
-  at most 9 for one request and 7 for two to four (`SHARAR_SPEC=9`, `SHARAR_SPEC_DEPTHS=2:7,4:7`); `throughput` drafts as
+  at most 9 for one request and 7 for two to four (`HIBANA_SPEC=9`, `HIBANA_SPEC_DEPTHS=2:7,4:7`); `throughput` drafts as
   MTP, 4 and 3 from 16 requests (from 16, depth 5 decoded 9-10% slower than 3: its verification passes the 64 rows the
   3-bit copies serve; and the verify buffers hold every request slot at the deepest depth, 1.7 GiB at 4 and 3.4 at 9
   for 128 requests); `exact`, which reads every expert, drafts 7 (unmeasured). The depth tables stay: within them a
@@ -141,7 +141,7 @@ draft and feedback graphs, device-resident acceptance, and retained features thr
   logits (sampled requests: s = 0.5, as with MTP): at Flash-Next's top-3 within 2.0, DFlash2 lost 3.3 points of
   GSM8K-300 one request at a time against MTP with its 3-bit draft head; at top-2 within 1.0 it ties, for 5% fewer
   tokens a round there.
-- **Adaptive depth.** Off in every profile. With `SHARAR_SPEC_STEP_COST` (a DFlash2 round costs about 0.01 of a round
+- **Adaptive depth.** Off in every profile. With `HIBANA_SPEC_STEP_COST` (a DFlash2 round costs about 0.01 of a round
   more per depth), each request checks as deep as its recent acceptance pays for, up
   to its bucket's depth (`engine/depth.AcceptanceDepth`, [as for MTP](#the-mtp-draft)). Depth tables and adaptive
   depth reach the 27B's DFlash2 too, a round drafting d + 1 rows; there adaptive depth captures verify and draft

@@ -1,4 +1,4 @@
-"""Sampled MTP drafts on a served target (SHARAR_MTP_SAMPLE): sampled batches propose the draft head's law on its
+"""Sampled MTP drafts on a served target (HIBANA_MTP_SAMPLE): sampled batches propose the draft head's law on its
 candidates, the device acceptance graph decides on that law as the host path does, and greedy batches keep argmax
 drafts."""
 import dataclasses
@@ -7,8 +7,8 @@ import gc
 import pytest
 import torch
 
-from sharar.engine import config as engine_config
-from sharar.engine.sampler import SamplingParams
+from hibana.engine import config as engine_config
+from hibana.engine.sampler import SamplingParams
 from tests.gpu.test_mtp_device_accept import run_rounds
 
 SAMPLED = dict(max_new_tokens=40, ignore_eos=True, temperature=1.0, top_k=20, top_p=0.95)
@@ -16,10 +16,10 @@ SAMPLED = dict(max_new_tokens=40, ignore_eos=True, temperature=1.0, top_k=20, to
 
 @pytest.fixture(scope='module')
 def runtime(qwen38):
-    from sharar import config
-    from sharar.engine.executor import Executor
-    from sharar.engine.prompts import PARAGRAPH
-    from sharar.tokenizer import SnapshotTokenizer
+    from hibana import config
+    from hibana.engine.executor import Executor
+    from hibana.engine.prompts import PARAGRAPH
+    from hibana.tokenizer import SnapshotTokenizer
     gc.collect()
     torch.cuda.empty_cache()
     sampled_cfg = dataclasses.replace(engine_config.current(), mtp_sample=True)

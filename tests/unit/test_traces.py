@@ -10,14 +10,14 @@ import httpx
 import pytest
 import torch
 
-from sharar.api.server import create_app
-from sharar.engine.contracts import VerifiedFeatures
-from sharar.engine.request import Request
-from sharar.engine.sampler import InvalidRequest, SamplingParams
-from sharar.engine.scheduler import Scheduler
-from sharar.engine.spec import SpecDecoder
-from sharar.engine.traces import TraceSink, iter_records, summarize
-from sharar.cache.request_state import Reservation, StateManager
+from hibana.api.server import create_app
+from hibana.engine.contracts import VerifiedFeatures
+from hibana.engine.request import Request
+from hibana.engine.sampler import InvalidRequest, SamplingParams
+from hibana.engine.scheduler import Scheduler
+from hibana.engine.spec import SpecDecoder
+from hibana.engine.traces import TraceSink, iter_records, summarize
+from hibana.cache.request_state import Reservation, StateManager
 from tests.unit.test_scheduler import FakeExecutor
 
 
@@ -224,18 +224,18 @@ def test_http_rejects_non_boolean_trace():
 
 
 def test_serve_cli_passes_trace_settings(monkeypatch, tmp_path):
-    from sharar import cli
+    from hibana import cli
 
     calls = []
-    monkeypatch.setattr("sharar.api.server.serve", lambda *args, **kwargs: calls.append(kwargs))
-    monkeypatch.setenv("SHARAR_TRACES", str(tmp_path))
-    monkeypatch.setenv("SHARAR_TRACES_MAX_MIB", "7")
+    monkeypatch.setattr("hibana.api.server.serve", lambda *args, **kwargs: calls.append(kwargs))
+    monkeypatch.setenv("HIBANA_TRACES", str(tmp_path))
+    monkeypatch.setenv("HIBANA_TRACES_MAX_MIB", "7")
     assert cli.main(["engine", "--spec", "0"]) == 0
     assert calls[-1]["traces"] == str(tmp_path) and calls[-1]["traces_max_mib"] == 7
     assert cli.main(["engine", "--spec", "0", "--traces", "/elsewhere", "--traces-max-mib", "3"]) == 0
     assert calls[-1]["traces"] == "/elsewhere" and calls[-1]["traces_max_mib"] == 3
-    monkeypatch.delenv("SHARAR_TRACES")
-    monkeypatch.delenv("SHARAR_TRACES_MAX_MIB")
+    monkeypatch.delenv("HIBANA_TRACES")
+    monkeypatch.delenv("HIBANA_TRACES_MAX_MIB")
     assert cli.main(["engine", "--spec", "0"]) == 0
     assert calls[-1]["traces"] is None and calls[-1]["traces_max_mib"] == 32768
     with pytest.raises(SystemExit):
@@ -243,7 +243,7 @@ def test_serve_cli_passes_trace_settings(monkeypatch, tmp_path):
 
 
 def test_traces_cli_summarizes(monkeypatch, tmp_path, capsys):
-    from sharar import cli
+    from hibana import cli
 
     sink = TraceSink(tmp_path)
     req = Request(prompt_ids=[1, 2], params=SamplingParams(max_new_tokens=4), request_id=3)
@@ -254,7 +254,7 @@ def test_traces_cli_summarizes(monkeypatch, tmp_path, capsys):
     assert cli.main(["traces", "--dir", str(tmp_path)]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["requests"] == 1 and out["spec_rounds"] == 1 and out["tokens_per_round"] == 3.0
-    monkeypatch.delenv("SHARAR_TRACES", raising=False)
-    monkeypatch.setenv("SHARAR_RESULTS", str(tmp_path / "nothing-recorded"))
+    monkeypatch.delenv("HIBANA_TRACES", raising=False)
+    monkeypatch.setenv("HIBANA_RESULTS", str(tmp_path / "nothing-recorded"))
     with pytest.raises(SystemExit, match="no traces"):
         cli.main(["traces"])

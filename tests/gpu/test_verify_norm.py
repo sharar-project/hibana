@@ -8,8 +8,8 @@ import torch
 @pytest.mark.parametrize('rows', [1, 16, 64])
 @torch.inference_mode()
 def test_initial_verify_norm_graph_reads_new_embeddings(rows):
-    from sharar.model.norm import GemmaRMSNorm
-    from sharar.kernels.fp8_quant import quant_fp8
+    from hibana.model.norm import GemmaRMSNorm
+    from hibana.kernels.fp8_quant import quant_fp8
 
     torch.manual_seed(105)
     x = torch.randn(rows, 5120, device='cuda', dtype=torch.bfloat16)
@@ -40,8 +40,8 @@ def test_initial_verify_norm_graph_reads_new_embeddings(rows):
 @pytest.mark.parametrize('inplace', [False, True])
 @torch.inference_mode()
 def test_phase_specific_norm_uses_unrounded_variance(rows, verify, inplace):
-    from sharar.model.norm import GemmaRMSNorm
-    from sharar.kernels.fp8_quant import quant_fp8
+    from hibana.model.norm import GemmaRMSNorm
+    from hibana.kernels.fp8_quant import quant_fp8
 
     torch.manual_seed(841)
     x = torch.randn(rows, 5120, device='cuda', dtype=torch.bfloat16)
@@ -69,7 +69,7 @@ def test_phase_specific_norm_uses_unrounded_variance(rows, verify, inplace):
 
 @torch.inference_mode()
 def test_verify_norm_graph_reads_new_inputs_and_preserves_ownership():
-    from sharar.model.norm import GemmaRMSNorm
+    from hibana.model.norm import GemmaRMSNorm
     torch.manual_seed(22)
     x = torch.randn(16, 5120, device='cuda', dtype=torch.bfloat16)
     residual = torch.randn_like(x)
@@ -93,7 +93,7 @@ def test_verify_norm_graph_reads_new_inputs_and_preserves_ownership():
 @pytest.mark.parametrize('tokens', [2, 16, 64])
 @torch.inference_mode()
 def test_compiled_gdn_norm_scalar_precision_and_graph(tokens):
-    from sharar.kernels.verify_norm import verify_gated_norm
+    from hibana.kernels.verify_norm import verify_gated_norm
     torch.manual_seed(123)
     x = torch.randn(tokens, 48, 128, device='cuda', dtype=torch.bfloat16)
     z = torch.randn_like(x)

@@ -14,9 +14,9 @@ def _case(c=3, n=256, k=384, rows=2000, seed=0):
 
 
 def test_batched_matches_per_matrix():
-    from sharar.kernels import w3
-    from sharar.weights.flashnext_w3_experts import dequant_codes, gptq_batched
-    from sharar.weights.w3_calibration import quantize
+    from hibana.kernels import w3
+    from hibana.weights.flashnext_w3_experts import dequant_codes, gptq_batched
+    from hibana.weights.w3_calibration import quantize
     w, _, h = _case()
     levels = w3._codebook("lloyd")
     grid = (.6, .7, .8, .9, 1.0)
@@ -29,8 +29,8 @@ def test_batched_matches_per_matrix():
 
 
 def test_output_error_below_weight_fit():
-    from sharar.kernels import w3, w3_moe
-    from sharar.weights.flashnext_w3_experts import dequant_codes, gptq_batched
+    from hibana.kernels import w3, w3_moe
+    from hibana.weights.flashnext_w3_experts import dequant_codes, gptq_batched
     w, x, h = _case(seed=1)
     levels = w3._codebook("lloyd")
     codes, scales, rows = gptq_batched(w, h.clone(), levels, w3_moe.RATIOS)

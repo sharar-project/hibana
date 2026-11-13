@@ -4,12 +4,12 @@ import gc
 import pytest
 import torch
 
-from sharar.cache.spec_budget import SpecConfig, verify_bytes
-from sharar.engine import config
-from sharar.engine.executor import Executor
-from sharar.engine.sampler import SamplingParams
-from sharar.target import NEMOTRON, load_model
-from sharar.tokenizer import SnapshotTokenizer
+from hibana.cache.spec_budget import SpecConfig, verify_bytes
+from hibana.engine import config
+from hibana.engine.executor import Executor
+from hibana.engine.sampler import SamplingParams
+from hibana.target import NEMOTRON, load_model
+from hibana.tokenizer import SnapshotTokenizer
 
 
 @pytest.fixture(scope="module")
@@ -80,10 +80,10 @@ def test_an_image_is_read_in_one_chunk_across_chunks_in_a_batch_and_after_a_cach
     for the placeholders after it."""
     import io
     from PIL import Image as PILImage, ImageDraw, ImageFont
-    from sharar.engine import media
-    from sharar.engine.request import Request
-    from sharar.model.nemotron import vision as v
-    from sharar.weights.safetensors import SnapshotWeights
+    from hibana.engine import media
+    from hibana.engine.request import Request
+    from hibana.model.nemotron import vision as v
+    from hibana.weights.safetensors import SnapshotWeights
 
     loaded, tok = model
     w = SnapshotWeights(NEMOTRON.snapshot_dir())

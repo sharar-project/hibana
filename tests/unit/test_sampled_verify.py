@@ -5,8 +5,8 @@ from collections import Counter
 
 import torch
 
-from sharar.engine.rejection import NUCLEUS_CANDIDATES, candidate_laws, distribution, verify_batch, verify_rows
-from sharar.engine.sampler import SamplingParams
+from hibana.engine.rejection import NUCLEUS_CANDIDATES, candidate_laws, distribution, verify_batch, verify_rows
+from hibana.engine.sampler import SamplingParams
 
 
 def dense(law, index, v):
@@ -96,7 +96,7 @@ def test_greedy_rows_match_the_argmax():
 
 
 def test_small_laws_equal_distribution():
-    from sharar.engine.rejection import small_laws
+    from hibana.engine.rejection import small_laws
     g = torch.Generator().manual_seed(7)
     params = [SamplingParams(temperature=1.0, top_k=20, top_p=0.95), SamplingParams(temperature=0.6, top_k=5, top_p=0.9),
               SamplingParams(temperature=1.0, top_k=-1, top_p=1.0), SamplingParams(temperature=0.0), SamplingParams(temperature=2.0, top_k=3, top_p=0.5)]
@@ -108,7 +108,7 @@ def test_small_laws_equal_distribution():
 
 
 def test_sample_lattice_is_distributed_as_the_per_row_walk():
-    from sharar.engine.rejection import sample_lattice
+    from hibana.engine.rejection import sample_lattice
     torch.manual_seed(8)
     b, k, w, n = 1, 3, 5, 6000
     candidates = torch.arange(b * k * w).view(b, k, w)

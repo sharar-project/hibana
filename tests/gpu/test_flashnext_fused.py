@@ -1,11 +1,11 @@
-"""Fused Flash-Next kernels against their torch definitions (sharar/model/flashnext math)."""
+"""Fused Flash-Next kernels against their torch definitions (hibana/model/flashnext math)."""
 import pytest
 import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
 
-from sharar.kernels import flashnext_fused as fk  # noqa: E402
+from hibana.kernels import flashnext_fused as fk  # noqa: E402
 
 H, HC = 2560, 4
 
@@ -42,7 +42,7 @@ def test_gate_mean_and_inject(t):
 
 @pytest.mark.parametrize("shape", [(1, 2560), (4, 6144), (3, 640)])
 def test_quant_small_matches_draft_quant(shape):
-    from sharar.kernels.draft_fp8 import quant_dynamic
+    from hibana.kernels.draft_fp8 import quant_dynamic
     x = (torch.randn(shape, device="cuda") * 4).to(torch.bfloat16).contiguous()
     wscale = torch.tensor([[0.0123]], device="cuda")
     q, scale, alpha = fk.quant_fp8_small(x, wscale)
@@ -143,7 +143,7 @@ def _bits(t):
 @pytest.mark.parametrize("m", [1, 2, 3, 4])
 @pytest.mark.parametrize("n,k", [(13312, 2560), (2560, 6144), (2560, 2560), (1280, 2560), (2560, 8192)])
 def test_fp8_gemv_quant_cuda_bitwise(m, n, k):
-    from sharar.kernels.fp8_gemv_cuda import fp8_gemv_cuda, fp8_gemv_quant_cuda
+    from hibana.kernels.fp8_gemv_cuda import fp8_gemv_cuda, fp8_gemv_quant_cuda
     w8, ws = _fp8_weight(n, k, 1)
     for seed in range(3):
         x = _act_input(m, k, seed, outliers=seed != 0)
@@ -155,7 +155,7 @@ def test_fp8_gemv_quant_cuda_bitwise(m, n, k):
 
 
 def test_fp8_gemv_quant_cuda_zero_and_tiny():
-    from sharar.kernels.fp8_gemv_cuda import fp8_gemv_cuda, fp8_gemv_quant_cuda
+    from hibana.kernels.fp8_gemv_cuda import fp8_gemv_cuda, fp8_gemv_quant_cuda
     w8, ws = _fp8_weight(2560, 2560, 2)
     for x in (torch.zeros(2, 2560, device="cuda", dtype=torch.bfloat16), (torch.randn(2, 2560, device="cuda") * 1e-30).to(torch.bfloat16)):
         q, _, alpha = fk.quant_fp8_small(x, ws)
@@ -217,8 +217,8 @@ def test_expert_gemv_fused_bitwise(m, act):
 
 @pytest.mark.parametrize("t", [1, 4])
 def test_qkv_epilogue_bitwise(t):
-    from sharar.kernels.qk_norm_rope import qk_norm_rope
-    from sharar.model.rope import PartialRotary
+    from hibana.kernels.qk_norm_rope import qk_norm_rope
+    from hibana.model.rope import PartialRotary
     hq, hkv, d, rot = 24, 2, 256, 64
     rope = PartialRotary(d, rot, 10_000_000.0, 4096, torch.device("cuda"))
     qkv = _act_input(t, hq * 2 * d + 2 * hkv * d, 7)
@@ -348,8 +348,8 @@ def test_inject_combine_norm_with_the_gemv_bitwise(t):
                                        ((2560, 2560), fk.ACT_SILU)])
 def test_trunk_linear_fused_paths_bitwise(rows, shape, act):
     """TrunkLinear's fused FP8 calls equal the unfused chain they replaced: act, quantize, then GEMV or cuBLAS."""
-    from sharar.kernels.fp8_gemv_cuda import fp8_gemv_cuda
-    from sharar.model.flashnext.linear import TrunkLinear
+    from hibana.kernels.fp8_gemv_cuda import fp8_gemv_cuda
+    from hibana.model.flashnext.linear import TrunkLinear
     n, k = shape
     lin = TrunkLinear.from_bf16((torch.randn(n, k, device="cuda") * 0.02).to(torch.bfloat16), "fp8")
     x = _act_input(rows, 2 * k if act == fk.ACT_SILU_MUL else k, 10)
@@ -358,7 +358,7 @@ def test_trunk_linear_fused_paths_bitwise(rows, shape, act):
     if a.numel() <= 65536:
         q, scale, alpha = fk.quant_fp8_small(a, lin.scale)
     else:
-        from sharar.kernels.draft_fp8 import quant_dynamic
+        from hibana.kernels.draft_fp8 import quant_dynamic
         q, scale = quant_dynamic(a)
         alpha = (scale * lin.scale).reshape(1)
     if rows <= 4 and k % 512 == 0 and k <= 8192:
@@ -376,7 +376,7 @@ def test_trunk_linear_fused_paths_bitwise(rows, shape, act):
 @pytest.mark.parametrize("m", [1, 5, 20, 64])
 @pytest.mark.parametrize("inter", [640, 320])
 def test_silu_mul_quant_groups_bitwise(m, inter):
-    from sharar.kernels import w3
+    from hibana.kernels import w3
     for seed in range(4):
         gu = _act_input(m, 2 * inter, seed, outliers=seed % 2 == 1)
         if seed == 3:
@@ -390,7 +390,7 @@ def test_silu_mul_quant_groups_bitwise(m, inter):
 @pytest.mark.parametrize("m", [1, 16, 64, 128])
 def test_silu_mul_quant_groups_pairs_torch_chain_bitwise(m):
     """The 27B MLP's 3-bit decode input: gate/up interleaved in blocks of 64, the product rounded as ops.silu_and_mul."""
-    from sharar.kernels import ops, w3
+    from hibana.kernels import ops, w3
     for seed in range(3):
         gu = _act_input(m, 2 * 17408, seed, outliers=seed % 2 == 1)
         q, s = w3.quant_groups(ops.silu_and_mul(gu, 64))
