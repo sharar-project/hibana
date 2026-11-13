@@ -7,6 +7,11 @@
 
 <p align="center"><b>Tailored to the model. Tuned to the machine. Built for agents.</b></p>
 
+<p align="center">
+  <a href="https://arxiv.org/abs/2611.10469">Paper</a> ·
+  <a href="https://sharar-project.github.io/blog/sharar-paper/">Blog post</a>
+</p>
+
 Hibana (formerly Sharar) runs open models on your own NVIDIA GB10 (DGX Spark) and serves them through OpenAI- and
 Anthropic-compatible APIs, so Claude Code, opencode, aider or any OpenAI client can use them. It brings speculative
 decoding, prefix caching (with an optional SSD tier for agent sessions) and a 262K context.
@@ -17,7 +22,7 @@ You need one DGX Spark (or another NVIDIA GB10 machine) with DGX OS and about 13
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh     # install uv, if you don't have it
-git clone https://github.com/abdelfattah-lab/sharar && cd sharar
+git clone https://github.com/sharar-project/hibana && cd hibana
 uv sync                                             # set up Python (about a minute)
 uv run hibana serve nemotron                        # serve Nemotron 3.5 Super on http://127.0.0.1:30005
 ```
@@ -151,36 +156,39 @@ Not sure which to pick? Side by side:
 `HIBANA_*` environment variables, then an optional `config/gb10.env` ([example](config/gb10.env.example),
 [operations](docs/operations.md)).
 
-## Develop
+For more details:
 
-```bash
-uv run pytest tests/unit                      # CPU tests
-HIBANA_RUN_GPU=1 uv run pytest tests/gpu      # GPU suite (the GPU to itself)
+- [Operations](docs/operations.md): settings, serving profiles and the SSD tier
+- [API](docs/api.md): endpoints, tool calls, images and constrained output
+- [Tensor parallel](docs/tensor-parallel.md): serving on two Sparks
+- Models: [Flash-Next](docs/flashnext.md), [Nemotron Super](docs/nemotron.md), [Nemotron Bolt](docs/bolt.md)
+- [Evaluation](docs/evaluation.md): measuring quality and speed
+- [All documentation](docs/README.md) and [contributing](CONTRIBUTING.md)
+
+## Citation
+
+If you use Hibana for your research, please cite our [paper](https://arxiv.org/abs/2611.10469):
+
+```bibtex
+@article{emara2026hibana,
+  title={Hibana: Fast Agentic Inference on Unified-Memory Devices},
+  author={Emara, Yahya and Chang, Chi-Chih and Fei, Anthony and AbouElhamayed, Ahmed F. and Chen, Chong-Yan and
+          Chiang, Hung-Yueh and Wu, Kai-Chiang and Abdelfattah, Mohamed S.},
+  journal={arXiv preprint arXiv:2611.10469},
+  year={2026}
+}
 ```
 
-The engine is `hibana/`, in-process profilers are in `profiling/`, and checks and gates in `tools/`. Quality and
-speed benchmarks live in [sharar-eval](https://github.com/abdelfattah-lab/sharar-eval). Read
-[CONTRIBUTING.md](CONTRIBUTING.md) before changing the engine. Work in progress is tracked in
-[issues](https://github.com/abdelfattah-lab/sharar/issues). Apache 2.0 ([license](LICENSE),
-[third-party notices](THIRD_PARTY_NOTICES.md)).
+## Acknowledgment
 
-## Documentation
+Hibana learned the design and reused code from the following projects:
+[SGLang](https://github.com/sgl-project/sglang), [vLLM](https://github.com/vllm-project/vllm),
+[FlashInfer](https://github.com/flashinfer-ai/flashinfer),
+[flash-linear-attention](https://github.com/fla-org/flash-linear-attention),
+[Mamba](https://github.com/state-spaces/mamba), [causal-conv1d](https://github.com/Dao-AILab/causal-conv1d),
+[llama.cpp](https://github.com/ggml-org/llama.cpp), [b12x](https://pypi.org/project/b12x/) and
+[DFlash](https://github.com/z-lab/dflash). [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists what came from where.
 
-Each page describes the code as it is; measurements and plans live in issues and pull requests. When a change alters
-behavior, update its page in the same pull request (`python3 tools/check_links.py` after moving or deleting one).
+## License
 
-| Page | Contents |
-|---|---|
-| [Operations](docs/operations.md) | Prerequisites, launcher settings, serving profiles, traces, the SSD tier |
-| [API](docs/api.md) | Endpoints, request controls, tool calls, constrained output, Anthropic Messages |
-| [Architecture](docs/architecture.md) | Package layout, the seams the targets share, capability matrix |
-| [Cache design](docs/cache_design.md) | GPU pools, the radix prefix cache and the SSD tier |
-| [Memory plan](docs/memory_plan.md) | How startup sizes the KV and state pools around the host floor |
-| [Interfaces](docs/interfaces.md) | Request ownership, proposer lifecycle, device-resident acceptance, failure handling |
-| [Flash-Next](docs/flashnext.md) | Qwen3.8-Flash-Next: model, package, conventions, sparse attention, its MTP and DFlash2 drafts |
-| [Nemotron](docs/nemotron.md) | Nemotron 3.5 Super: the Mamba-2 and latent-MoE model as served, formats, its MTP draft |
-| [Nemotron Bolt](docs/bolt.md) | Packed IQ2/Q8/NVFP4 text inference on the Nemotron Mamba runtime |
-| [Tensor parallel](docs/tensor-parallel.md) | Two Sparks: setup, sharding, the RDMA all-reduce, limits |
-| [3-bit calibration](docs/w3-calibration.md) | Fitting and serving the calibrated 3-bit copies |
-| [Evaluation](docs/evaluation.md) | Measuring a build or a change, the lossy-change gate, nightly and weekly GB10 checks |
-| [Profiling](profiling/README.md) | In-process profilers |
+[Apache License 2.0](LICENSE).
