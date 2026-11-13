@@ -151,7 +151,25 @@ Not sure which to pick? Side by side:
 `HIBANA_*` environment variables, then an optional `config/gb10.env` ([example](config/gb10.env.example),
 [operations](docs/operations.md)).
 
-## More
+For more details:
 
-[Documentation](docs/README.md) · [Contributing](CONTRIBUTING.md) · Apache 2.0 ([license](LICENSE),
-[third-party notices](THIRD_PARTY_NOTICES.md))
+- [Operations](docs/operations.md): settings, serving profiles and the SSD tier
+- [API](docs/api.md): endpoints, tool calls, images and constrained output
+- [Tensor parallel](docs/tensor-parallel.md): serving on two Sparks
+- Models: [Flash-Next](docs/flashnext.md), [Nemotron Super](docs/nemotron.md), [Nemotron Bolt](docs/bolt.md)
+- [Evaluation](docs/evaluation.md): measuring quality and speed
+- [All documentation](docs/README.md) and [contributing](CONTRIBUTING.md)
+
+## Acknowledgment
+
+Hibana learned the design and reused code from the following projects:
+[SGLang](https://github.com/sgl-project/sglang), [vLLM](https://github.com/vllm-project/vllm),
+[FlashInfer](https://github.com/flashinfer-ai/flashinfer),
+[flash-linear-attention](https://github.com/fla-org/flash-linear-attention),
+[Mamba](https://github.com/state-spaces/mamba), [causal-conv1d](https://github.com/Dao-AILab/causal-conv1d),
+[llama.cpp](https://github.com/ggml-org/llama.cpp), [b12x](https://pypi.org/project/b12x/) and
+[DFlash](https://github.com/z-lab/dflash). [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists what came from where.
+
+## License
+
+[Apache License 2.0](LICENSE).
