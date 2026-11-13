@@ -59,6 +59,18 @@ It serves main and the branch in turn and runs sharar-eval's h2h on `fast` (1 an
 (8 to 128 closed-loop streams), greedy and T 0.7; the tool's docstring has the details. About 1.5 hours a target;
 `--repeats 2` when the difference is within a few percent.
 
+## Write a test
+
+A test must fail on a plausible regression of the code it guards: name the future change that would turn it red. If
+the only answer is editing the test, do not write it. A test earns its place by guarding a bug a normal run would not
+show (a wrong number that still looks like a number, a wrong cache slot, a crash only one interleaving hits) or a
+property that took reasoning to get right, checked against something independent of the code: a PyTorch reference, a
+round-trip, the `exact` profile. Assertions that restate the branches just written, config tests that echo their
+fixture and tests whose only check is "no exception" are not admitted.
+
+Verify a fix by re-running what failed and say what you ran; that alone does not call for a new test. Extend an
+existing test file or `parametrize` before adding a file, fixture or helper.
+
 ## Judge a lossy option
 
 A lossy option changes what the model emits on purpose (low-bit weights, fewer or pruned experts, relaxed acceptance,
@@ -195,3 +207,26 @@ GB10 shares physical DRAM between CPU and GPU, but not every CUDA allocation is 
 evidence, the mechanism and the predicted gain before building; measure in fresh processes with repeats, intervals
 and host `MemAvailable`, and report the results, negative ones included, in the pull request. A microbenchmark alone
 does not establish a serving gain.
+
+## Commit messages
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/), one line, imperative, lowercase, no
+trailing period:
+
+```
+<type>(<scope>): <subject>
+```
+
+- `type`: `feat`, `fix`, `perf`, `refactor`, `build`, `ci`, `docs`, `test`, `chore`.
+- `scope`, optional: the package or model touched, such as `engine`, `cache`, `api`, `kernels`, `proposers`,
+  `weights`, `launch`, `27b`, `flashnext`, `nemotron`, `bolt`, `deps`.
+- A breaking change adds `!` after the scope and explains it in the body.
+
+```
+perf(bolt): fuse the mamba prefill scan and grouped normalization
+fix(nemotron): size the grammar for the served vocabulary
+docs: a launch guide for each model in the README
+```
+
+Pull requests are squash-merged, so the pull request title follows the same form; it becomes the commit subject. Add
+a body only when the change needs a why that the diff does not show. For AI attribution use `Assisted-by: <agent>`.

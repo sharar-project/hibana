@@ -1,3 +1,5 @@
+<!-- Title: `type(scope): subject`, as in CONTRIBUTING.md#commit-messages; it becomes the squashed commit. -->
+
 ## What and why
 
 <!-- What the change does and the problem it solves. Link the issue it closes. -->
