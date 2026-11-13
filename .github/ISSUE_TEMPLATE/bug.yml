@@ -1,0 +1,64 @@
+name: Bug report
+description: Something does not work in Hibana (serving, the APIs, the hibana command, a check).
+labels: ["bug"]
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you start
+      options:
+        - label: I searched the existing issues and found no duplicate.
+          required: true
+        - label: I reproduced it on the latest release or a freshly synced `main` (`git pull && uv sync`).
+          required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: model
+    attributes:
+      label: Model
+      options: ["27b", "flashnext", "nemotron", "bolt", "none (not serving)"]
+    validations:
+      required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Profile
+      options: ["fast (default)", "exact", "throughput"]
+    validations:
+      required: true
+  - type: dropdown
+    id: sparks
+    attributes:
+      label: Sparks
+      options: ["one", "two (--tp 2)"]
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact command, with any HIBANA_* settings, and the request that triggers the problem if it is one.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: The Hibana commit (`git rev-parse --short HEAD`), the DGX OS version, `nvidia-smi` (driver) and `nvcc --version`.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Full log
+      description: The whole server output (`hibana logs` for a --detach service) and `hibana status`, not a screenshot of the last line.
+      render: text
+    validations:
+      required: true
