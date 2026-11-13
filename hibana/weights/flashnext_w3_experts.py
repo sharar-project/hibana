@@ -7,21 +7,18 @@ fitted into the W3 format: the trunk's Lloyd codebook, one E4M3 scale per 32 wei
 stored in the kernel's row order (w3_moe.fc1_order). Serving it with the 3-bit copies on (the `fast` profile,
 HIBANA_W3_CHECKPOINT=DIR) replaces the NVFP4 experts.
 
-Two methods:
-- `cheap` (the nearest-level route, `w3_moe.quantize`): group scales on a clipping grid minimizing the weight error,
-  nearest level. Needs no activations. It lost recall (MMLU-Pro law -13 pp).
-- `gptq`: GPTQ (w3_calibration's column-error update and activation-weighted scale grid, batched over experts) on
-  the inputs each expert is routed. `capture` prefills the frozen calibration samples through the serving model
-  (FP8 trunk, NVFP4 experts) and stores every layer's MoE input rows on disk; `fit` then works one layer at a time:
-  it routes the rows with the layer's router, accumulates per expert H = sum_t g_t^2 x_t x_t^T (g: the token's
-  routing weight, so the fit weighs the error as the layer's output does) for fc1, and the same over
-  h = silu(gate) * up from the NVFP4 fc1 for fc2. An expert that saw fewer than --min-tokens routed rows keeps
-  the cheap fit; below --prior-tokens its covariance is shrunk toward the layer's pooled one.
+GPTQ (w3_calibration's column-error update and activation-weighted scale grid, batched over experts) on the inputs
+each expert is routed. `capture` prefills the calibration samples (`calibration_inputs build --target flashnext`)
+through the serving model (FP8 trunk, NVFP4 experts) and stores every layer's MoE input rows on disk; `fit` then works
+one layer at a time: it routes the rows with the layer's router, accumulates per expert H = sum_t g_t^2 x_t x_t^T
+(g: the token's routing weight, so the fit weighs the error as the layer's output does) for fc1, and the same over
+h = silu(gate) * up from the NVFP4 fc1 for fc2. An expert that saw fewer than --min-tokens routed rows keeps the
+cheap fit (`w3_moe.quantize`: group scales on a weight-error clipping grid, nearest level; alone it lost recall,
+MMLU-Pro law -13 pp); below --prior-tokens its covariance is shrunk toward the layer's pooled one.
 
-    HIBANA_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts capture --inputs expert-inputs.json --activations DIR
-    HIBANA_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts fit --method gptq --activations DIR \\
-        --source $HIBANA_RESULTS/w3-checkpoints/flashnext-current --output $HIBANA_RESULTS/w3-checkpoints/<date>-flashnext-experts3-gptq \\
-        [--cheap-output $HIBANA_RESULTS/w3-checkpoints/<date>-flashnext-experts3]
+    HIBANA_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts capture --inputs flashnext-calibration-inputs.json --activations DIR
+    HIBANA_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts fit --activations DIR \\
+        --source $HIBANA_RESULTS/w3-checkpoints/flashnext-current --output $HIBANA_RESULTS/w3-checkpoints/<date>-flashnext-experts3-gptq
 """
 from __future__ import annotations
 
@@ -48,13 +45,13 @@ def capture(args) -> None:
     from hibana.model.flashnext.model import FlashNext
     from hibana.model.flashnext.moe import MoeLayer
     from hibana.target import FLASHNEXT
+    from hibana.weights.calibration_inputs import load_samples
     install(current().replace(flashnext_trunk="fp8", w3_decode=False, w3_checkpoint=None, flashnext_experts="nvfp4"))
     out = args.activations
     if (out / "capture.json").exists():
         raise SystemExit("refusing to overwrite a finished capture")
     out.mkdir(parents=True, exist_ok=True)
-    samples = [s["input_ids"] for s in json.loads(args.inputs.read_text())["samples"]]
-    samples = samples[:args.limit] if args.limit else samples
+    samples = load_samples(args.inputs, FLASHNEXT, args.limit, max_tokens=8192)
     skip, done_rows = 0, 0
     if args.resume:  # an interrupted capture: every layer file holds the same whole samples; continue after them
         sizes = {p.stat().st_size for p in out.glob("layer*.bin")}
@@ -247,27 +244,21 @@ def fit(args) -> None:
     source = CalibratedWeights(args.source, revision=FLASHNEXT.model_revision)
     if source.expert_layers():
         raise SystemExit("the source checkpoint already carries experts")
-    outputs = {"gptq" if args.method == "gptq" else "cheap": args.output}
-    if args.cheap_output:
-        outputs["cheap"] = args.cheap_output
-    partial = {m: d.with_name(d.name + ".partial") for m, d in outputs.items()}
-    weights = {m: {} for m in outputs}
-    for m, p in partial.items():
-        p.mkdir(parents=True, exist_ok=True)
-        for name, entry in source.weights.items():  # trunk entries unchanged, verified on the way
-            src, dst = args.source / entry["file"], p / entry["file"]
-            if not dst.is_file() or sha256(dst) != entry["sha256"]:
-                shutil.copyfile(src, dst)
-                if sha256(dst) != entry["sha256"]:
-                    raise SystemExit(f"checksum mismatch copying {name}")
-            weights[m][name] = entry
-    progress = {m: p / "progress.json" for m, p in partial.items()}
-    for m, path in progress.items():  # resume: layers finished in an interrupted run (entries re-verified)
-        if path.is_file():
-            done = json.loads(path.read_text())
-            for name, entry in done["weights"].items():
-                if (partial[m] / entry["file"]).is_file() and sha256(partial[m] / entry["file"]) == entry["sha256"]:
-                    weights[m][name] = entry
+    partial = args.output.with_name(args.output.name + ".partial")
+    partial.mkdir(parents=True, exist_ok=True)
+    weights = {}
+    for name, entry in source.weights.items():  # trunk entries unchanged, verified on the way
+        src, dst = args.source / entry["file"], partial / entry["file"]
+        if not dst.is_file() or sha256(dst) != entry["sha256"]:
+            shutil.copyfile(src, dst)
+            if sha256(dst) != entry["sha256"]:
+                raise SystemExit(f"checksum mismatch copying {name}")
+        weights[name] = entry
+    progress = partial / "progress.json"
+    if progress.is_file():  # resume: layers finished in an interrupted run (entries re-verified)
+        for name, entry in json.loads(progress.read_text())["weights"].items():
+            if (partial / entry["file"]).is_file() and sha256(partial / entry["file"]) == entry["sha256"]:
+                weights[name] = entry
 
     dev = torch.device("cuda")
     w = SnapshotWeights(FLASHNEXT.snapshot_dir())
@@ -280,138 +271,122 @@ def fit(args) -> None:
     stats = json.loads(stats_path.read_text()) if stats_path.is_file() else {}
     started = time.perf_counter()
     for i in layers:
-        if all(f"layers.{i}.experts.{key}" in weights[m] for m in outputs for key in ("w13", "w2")):
+        if all(f"layers.{i}.experts.{key}" in weights for key in ("w13", "w2")):
             continue
         prefix = f"{PREFIX}.layers.{i}.mlp"
         nv = load_nvfp4_experts(w, prefix, E, dev)
         router = w.get(f"{prefix}.gate.weight").to(dev)
         w.close()
         # Routed rows per expert: (row index, routing weight), from the captured MoE inputs.
-        x, counts, members = None, torch.zeros(E, dtype=torch.long), None
-        if args.activations:
-            x = load_rows(args.activations, i, dev)
-            ids, gates = [], []
-            for lo in range(0, x.shape[0], 65536):
-                a, b = route(x[lo:lo + 65536], router, K)
-                ids.append(a)
-                gates.append(b)
-            ids, gates = torch.cat(ids), torch.cat(gates)
-            flat = ids.reshape(-1)
-            sort = torch.sort(flat, stable=True).indices
-            counts = torch.bincount(flat, minlength=E).cpu()
-            members = (sort // K, gates.reshape(-1)[sort], torch.cat([torch.zeros(1, dtype=torch.long), counts.cumsum(0)]).tolist())
-            del ids, gates, flat, sort
-        layer_stats = {"tokens": x.shape[0] if x is not None else 0, "routed_min": int(counts.min()), "routed_median": int(counts.median()),
+        x = load_rows(args.activations, i, dev)
+        ids, gates = [], []
+        for lo in range(0, x.shape[0], 65536):
+            a, b = route(x[lo:lo + 65536], router, K)
+            ids.append(a)
+            gates.append(b)
+        ids, gates = torch.cat(ids), torch.cat(gates)
+        flat = ids.reshape(-1)
+        sort = torch.sort(flat, stable=True).indices
+        counts = torch.bincount(flat, minlength=E).cpu()
+        rows_idx, gate_w = sort // K, gates.reshape(-1)[sort]
+        offsets = torch.cat([torch.zeros(1, dtype=torch.long), counts.cumsum(0)]).tolist()
+        del ids, gates, flat, sort
+        layer_stats = {"tokens": x.shape[0], "routed_min": int(counts.min()), "routed_median": int(counts.median()),
                        "routed_max": int(counts.max()), "cheap_fallback": 0}
-        parts = {m: {"w13": [], "w2": []} for m in outputs}
+        parts = {"w13": [], "w2": []}
         err = {f"{m}_{kind}_{key}": [0.0, 0.0] for m in ("cheap", "gptq") for kind in ("weight", "output") for key in ("w13", "w2")}
         chunk = args.chunk
         # Per-expert covariances for the whole layer first (fc1 13.4 GB, fc2 0.8 GB in FP32), then their pools.
-        cov = None
-        if members is not None:
-            rows_idx, gate_w, offsets = members
-            cov = {"w13": torch.zeros((E, H, H), device=dev), "w2": torch.zeros((E, I, I), device=dev)}
-            for lo in range(0, E, chunk):
-                hi = min(E, lo + chunk)
-                w13 = w3_moe.nvfp4_dequant(nv["w13"][lo:hi], nv["s13"][lo:hi], nv["scale2_13"][lo:hi])  # [c, 2I, H] = [up; gate]
-                for j in range(hi - lo):
-                    a, b = offsets[lo + j], offsets[lo + j + 1]
-                    for s0 in range(a, b, 32768):
-                        t = min(b, s0 + 32768)
-                        xe = x[rows_idx[s0:t]].float()
-                        g = gate_w[s0:t, None]
-                        y = xe @ w13[j].T  # the NVFP4 fc1 (dequantized), FP32
-                        hh = (torch.nn.functional.silu(y[:, I:]) * y[:, :I]) * g
-                        xe.mul_(g)
-                        cov["w13"][lo + j].addmm_(xe.T, xe)
-                        cov["w2"][lo + j].addmm_(hh.T, hh)
-                        del xe, y, hh
-                del w13
-            pooled = {key: (m_.sum(0) / m_.sum(0).diagonal().sum().clamp_min(1e-30)) for key, m_ in cov.items()}
+        cov = {"w13": torch.zeros((E, H, H), device=dev), "w2": torch.zeros((E, I, I), device=dev)}
+        for lo in range(0, E, chunk):
+            hi = min(E, lo + chunk)
+            w13 = w3_moe.nvfp4_dequant(nv["w13"][lo:hi], nv["s13"][lo:hi], nv["scale2_13"][lo:hi])  # [c, 2I, H] = [up; gate]
+            for j in range(hi - lo):
+                a, b = offsets[lo + j], offsets[lo + j + 1]
+                for s0 in range(a, b, 32768):
+                    t = min(b, s0 + 32768)
+                    xe = x[rows_idx[s0:t]].float()
+                    g = gate_w[s0:t, None]
+                    y = xe @ w13[j].T  # the NVFP4 fc1 (dequantized), FP32
+                    hh = (torch.nn.functional.silu(y[:, I:]) * y[:, :I]) * g
+                    xe.mul_(g)
+                    cov["w13"][lo + j].addmm_(xe.T, xe)
+                    cov["w2"][lo + j].addmm_(hh.T, hh)
+                    del xe, y, hh
+            del w13
+        pooled = {key: (m_.sum(0) / m_.sum(0).diagonal().sum().clamp_min(1e-30)) for key, m_ in cov.items()}
         for lo in range(0, E, chunk):
             hi = min(E, lo + chunk)
             c = hi - lo
             w13 = w3_moe.nvfp4_dequant(nv["w13"][lo:hi], nv["s13"][lo:hi], nv["scale2_13"][lo:hi])[:, order]  # [c, 2I, H], kernel row order
             w2 = w3_moe.nvfp4_dequant(nv["w2"][lo:hi], nv["s2"][lo:hi], nv["scale2_2"][lo:hi])  # [c, H, I]
-            hess = {key: m_[lo:hi] for key, m_ in cov.items()} if cov is not None else None
             for key, weight in (("w13", w13), ("w2", w2)):
                 n, k = weight.shape[1:]
-                flatw = weight.reshape(c * n, k)
-                codes_c, scales_c, rows_c = w3_moe.quantize(flatw, levels, ratios)  # the cheap fit
+                hk = cov[key][lo:hi]
+                # The cheap fit (nearest level, weight-error scales): the fallback for rarely routed experts and the baseline.
+                codes_c, scales_c, rows_c = w3_moe.quantize(weight.reshape(c * n, k), levels, ratios)
                 deq_c = dequant_codes(codes_c, scales_c, rows_c, levels).reshape(c, n, k)
-                result = {"cheap": (codes_c, scales_c, rows_c, deq_c)}
-                if args.method == "gptq" and hess is not None:
-                    hk = hess[key]
-                    cnt = counts[lo:hi].to(dev).float()
-                    hk_fit = hk.clone()
-                    if args.prior_tokens:
-                        # Shrink sparse experts' covariance toward the layer's pooled one (unit trace, scaled to theirs).
-                        beta = (args.prior_tokens / (cnt + args.prior_tokens))[:, None, None]
-                        tr = hk.diagonal(dim1=1, dim2=2).sum(-1)[:, None, None]
-                        hk_fit += beta * tr * pooled[key][None]
-                    use = (cnt >= args.min_tokens)
-                    hk_fit[~use] = torch.eye(k, device=dev)  # placeholders; these experts keep the cheap fit
-                    codes_g, scales_g, rows_g = gptq_batched(weight, hk_fit, levels, ratios, args.damping)
-                    del hk_fit
-                    keep = use[:, None, None].expand(c, n, k)
-                    codes_g = torch.where(keep, codes_g, codes_c.reshape(c, n, k))
-                    scales_g = torch.where(use[:, None, None], scales_g.view(torch.uint8), scales_c.reshape(c, n, -1).view(torch.uint8)).view(torch.float8_e4m3fn)
-                    rows_g = torch.where(use[:, None], rows_g, rows_c.reshape(c, n))
-                    if key == "w13":
-                        layer_stats["cheap_fallback"] += int((~use).sum())
-                    deq_g = dequant_codes(codes_g, scales_g, rows_g, levels)
-                    result["gptq"] = (codes_g.reshape(c * n, k), scales_g.reshape(c * n, -1), rows_g.reshape(-1), deq_g)
-                for m, (codes, scales, rows, deq) in result.items():
+                cnt = counts[lo:hi].to(dev).float()
+                hk_fit = hk.clone()
+                if args.prior_tokens:
+                    # Shrink sparse experts' covariance toward the layer's pooled one (unit trace, scaled to theirs).
+                    beta = (args.prior_tokens / (cnt + args.prior_tokens))[:, None, None]
+                    tr = hk.diagonal(dim1=1, dim2=2).sum(-1)[:, None, None]
+                    hk_fit += beta * tr * pooled[key][None]
+                use = cnt >= args.min_tokens
+                hk_fit[~use] = torch.eye(k, device=dev)  # placeholders; these experts keep the cheap fit
+                codes_g, scales_g, rows_g = gptq_batched(weight, hk_fit, levels, ratios, args.damping)
+                del hk_fit
+                codes_g = torch.where(use[:, None, None].expand(c, n, k), codes_g, codes_c.reshape(c, n, k))
+                scales_g = torch.where(use[:, None, None], scales_g.view(torch.uint8), scales_c.reshape(c, n, -1).view(torch.uint8)).view(torch.float8_e4m3fn)
+                rows_g = torch.where(use[:, None], rows_g, rows_c.reshape(c, n))
+                if key == "w13":
+                    layer_stats["cheap_fallback"] += int((~use).sum())
+                deq_g = dequant_codes(codes_g, scales_g, rows_g, levels)
+                for m, deq in (("cheap", deq_c), ("gptq", deq_g)):
                     delta = deq - weight
                     err[f"{m}_weight_{key}"][0] += delta.square().sum().item()
                     err[f"{m}_weight_{key}"][1] += weight.square().sum().item()
-                    if hess is not None:
-                        hk = hess[key]
-                        err[f"{m}_output_{key}"][0] += torch.einsum("cnk,ckl,cnl->", delta, hk, delta).item()
-                        err[f"{m}_output_{key}"][1] += torch.einsum("cnk,ckl,cnl->", weight, hk, weight).item()
-                    if m in parts:
-                        parts[m][key].append(w3.pack_codes(codes.reshape(c * n, k), scales.reshape(c * n, -1), rows.reshape(-1), levels, rows_per_chunk=n))
+                    err[f"{m}_output_{key}"][0] += torch.einsum("cnk,ckl,cnl->", delta, hk, delta).item()
+                    err[f"{m}_output_{key}"][1] += torch.einsum("cnk,ckl,cnl->", weight, hk, weight).item()
                     del delta
-                del result
-            del w13, w2, hess
+                parts[key].append(w3.pack_codes(codes_g.reshape(c * n, k), scales_g.reshape(c * n, -1), rows_g.reshape(-1), levels, rows_per_chunk=n))
+                del codes_c, scales_c, rows_c, deq_c, codes_g, scales_g, rows_g, deq_g
+            del w13, w2
         del cov
-        for m, d in partial.items():
-            for key, n, k in (("w13", 2 * I, H), ("w2", H, I)):
-                ms = parts[m][key]
-                stacked = w3.W3Weight(*(torch.cat([getattr(p, a) for p in ms]) for a in ("planes", "scales", "row_scale")),
-                                      E * n, k, levels, w3.lut_of(levels))
-                name = f"layers.{i}.experts.{key}"
-                weights[m][name] = dict(save_weight(d / f"{name}.safetensors", stacked), experts=E)
-            progress[m].write_text(json.dumps({"weights": weights[m]}))
+        for key, n, k in (("w13", 2 * I, H), ("w2", H, I)):
+            stacked = w3.W3Weight(*(torch.cat([getattr(p, a) for p in parts[key]]) for a in ("planes", "scales", "row_scale")),
+                                  E * n, k, levels, w3.lut_of(levels))
+            name = f"layers.{i}.experts.{key}"
+            weights[name] = dict(save_weight(partial / f"{name}.safetensors", stacked), experts=E)
+        progress.write_text(json.dumps({"weights": weights}))
         layer_stats.update({k: round((v[0] / v[1]) ** 0.5, 5) if v[1] else None for k, v in err.items()})
         stats[str(i)] = layer_stats
         stats_path.write_text(json.dumps(stats, indent=1))
-        del nv, x, members, parts
+        del nv, x, rows_idx, gate_w, parts
         torch.cuda.empty_cache()
         print(f"layer {i}: " + ", ".join(f"{k} {v}" for k, v in layer_stats.items()) + f" ({time.perf_counter() - started:.0f}s)", flush=True)
 
-    if any(f"layers.{i}.experts.w13" not in weights[m] for m in outputs for i in range(FLASHNEXT.num_layers)):
+    if any(f"layers.{i}.experts.w13" not in weights for i in range(FLASHNEXT.num_layers)):
         print("partial run: no manifest written", flush=True)
         return
     keys = [k for k in next(iter(stats.values())) if k.startswith(("cheap_", "gptq_"))]
     mean = {k: round(sum(s[k] for s in stats.values() if s.get(k) is not None) / max(1, sum(s.get(k) is not None for s in stats.values())), 5) for k in keys}
-    capture_meta = json.loads((args.activations / "capture.json").read_text()) if args.activations else None
-    for m, d in partial.items():
-        manifest = dict(source.manifest)
-        manifest["weights"] = weights[m]
-        manifest["experts"] = {
-            "source": "checkpoint NVFP4 experts, dequantized", "codebook": list(levels), "group_size": w3.GROUP,
-            "scale_grid": list(ratios), "fc1_rows": "w3_moe.fc1_order", "trunk_from": str(args.source.resolve()),
-            "trunk_manifest_sha256": source.identity,
-            **({"method": "nearest level, group scales on a weight-error grid"} if m == "cheap" else
-               {"method": "gptq on routed activations (routing-weighted covariances), batched", "damping": args.damping,
-                "min_tokens": args.min_tokens, "prior_tokens": args.prior_tokens, "capture": capture_meta}),
-            "relative_error_mean": {k: v for k, v in mean.items() if k.startswith(m + "_")},
-        }
-        (d / "manifest.json").write_text(json.dumps(manifest, indent=1))
-        progress[m].unlink(missing_ok=True)
-        d.rename(outputs[m])
-        print(f"{m}: {json.dumps(manifest['experts']['relative_error_mean'])} -> {outputs[m]} manifest {sha256(outputs[m] / 'manifest.json')}", flush=True)
+    manifest = dict(source.manifest)
+    manifest["weights"] = weights
+    manifest["experts"] = {
+        "source": "checkpoint NVFP4 experts, dequantized", "codebook": list(levels), "group_size": w3.GROUP,
+        "scale_grid": list(ratios), "fc1_rows": "w3_moe.fc1_order", "trunk_from": str(args.source.resolve()),
+        "trunk_manifest_sha256": source.identity,
+        "method": "gptq on routed activations (routing-weighted covariances), batched", "damping": args.damping,
+        "min_tokens": args.min_tokens, "prior_tokens": args.prior_tokens,
+        "capture": json.loads((args.activations / "capture.json").read_text()),
+        "relative_error_mean": {k: v for k, v in mean.items() if k.startswith("gptq_")},
+    }
+    (partial / "manifest.json").write_text(json.dumps(manifest, indent=1))
+    progress.unlink(missing_ok=True)
+    partial.rename(args.output)
+    print(f"{json.dumps(manifest['experts']['relative_error_mean'])} -> {args.output} manifest {sha256(args.output / 'manifest.json')}", flush=True)
     print("mean relative errors:", json.dumps(mean), flush=True)
 
 
@@ -425,11 +400,9 @@ def main():
     c.add_argument("--pages", type=int, default=16384, help="KV pool pages: a sample plus speculative scratch must fit")
     c.add_argument("--resume", action="store_true", help="continue an interrupted capture after its whole samples")
     f = sub.add_parser("fit", help="write the checkpoint")
-    f.add_argument("--method", choices=("cheap", "gptq"), default="gptq")
     f.add_argument("--source", type=Path, required=True, help="W3 checkpoint whose trunk entries are copied")
     f.add_argument("--output", type=Path, required=True)
-    f.add_argument("--cheap-output", type=Path, help="also write the cheap-route checkpoint from the same pass")
-    f.add_argument("--activations", type=Path, help="capture directory (gptq; with cheap, only for the output-error report)")
+    f.add_argument("--activations", type=Path, required=True, help="the capture directory")
     f.add_argument("--codebook", default="lloyd")
     f.add_argument("--layers", default="", help="comma-separated subset (a partial checkpoint does not serve)")
     f.add_argument("--chunk", type=int, default=32, help="experts fitted together")
@@ -437,12 +410,7 @@ def main():
     f.add_argument("--min-tokens", type=int, default=16, help="fewer routed rows keep the cheap fit")
     f.add_argument("--prior-tokens", type=float, default=256, help="covariance shrinkage toward the layer's pool: weight n0 / (n + n0)")
     args = ap.parse_args()
-    if args.command == "capture":
-        capture(args)
-    else:
-        if args.method == "gptq" and not args.activations:
-            raise SystemExit("gptq needs --activations (run capture first)")
-        fit(args)
+    {"capture": capture, "fit": fit}[args.command](args)
 
 
 if __name__ == "__main__":

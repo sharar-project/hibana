@@ -16,19 +16,16 @@ release. It uses the [GPTQ column-error update](https://arxiv.org/abs/2210.17323
 32-weight groups and E4M3 group scales. There is no activation permutation or new serving kernel. The NVFP4/FP8
 prefill weights and the vocabulary head are unchanged.
 
-Freeze a JSON object containing `samples`, each with `input_ids`
-(`python3 -m hibana.weights.w3_calibration_inputs --tokenizer SNAPSHOT/tokenizer.json --commit C --output FILE`
-builds the coding-proxy set from this repository's source files at commit C, reproducibly). Use representative
-prompts, at most 2,048 tokens per sample, excluding task accuracy benchmarks and held-out drafter requests.
-Source-file separation is useful for a repository coding proxy. The calibration driver collects one layer's
-covariances at a time; it materializes the BF16 SiLU product to observe the down-projection inputs. It does not train
-on answers or logits.
+The samples come from [Calibration samples](#calibration-samples) (`build --target qwen38 --max-tokens 2048`: this
+driver keeps every sample's hidden state, so at most 2,048 tokens a sample). The calibration driver collects one
+layer's covariances at a time; it materializes the BF16 SiLU product to observe the down-projection inputs. It does
+not train on answers or logits.
 
 From the Python environment, with the GPU otherwise idle and the memory guard watching:
 
 ```bash
 HIBANA_W3_DECODE=0 uv run python -m hibana.weights.w3_calibrate \
-  --inputs calibration-inputs.json \
+  --inputs qwen38-calibration-inputs.json \
   --source $HIBANA_HF_CACHE/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a \
   --output $HIBANA_RESULTS/w3-checkpoints/<date>-qwen38-gptq
 ```
@@ -38,6 +35,35 @@ checksums before resuming an interrupted run. Only a complete run publishes `man
 loaded by serving. The manifest records the target/source revisions, frozen input hash, quantizer settings,
 projection diagnostics and per-file hashes. Projection diagnostics reuse calibration rows and are fitting
 diagnostics, not held-out quality evidence.
+
+## Calibration samples
+
+Every target's captures read one samples file, built by `hibana/weights/calibration_inputs.py` in three steps:
+
+1. `prompts` (one file for every target): first user turns of
+   [Open-PerfectBlend](https://huggingface.co/datasets/mlabonne/open-perfectblend) at a pinned revision, 160 from each
+   of its eight sources (MetaMathQA, orca-math, UltraInteract, evol-codealpaca, UltraChat, UltraFeedback, AutoIF,
+   LMSYS arena), and 320 MMLU / MMLU-Pro validation questions in the eval's multiple-choice format: the routed experts'
+   recall of law, business or history needs them (an expert fit on code alone lost MMLU-Pro law -13 pp). Any prompt
+   that shares a 13-word span with a sharar-eval set (GSM8K, MGSM, MATH-500, HumanEval, MBPP, GPQA Diamond, MMLU-Pro,
+   IFEval, WMT24++; `sharar-eval datasets fetch`), or equals a shorter eval question, is dropped; the output records
+   the eval files' hashes and the drops.
+2. `generate`: the target's own `--exact` server answers every prompt with thinking on (temperature 0.7, at most 4,096
+   tokens), so the samples carry the target's own reasoning and not the 3-bit copies' it calibrates.
+3. `build --target T`: each turn rendered with the target's chat template and tokenized with its tokenizer; a turn
+   longer than `--max-tokens` (4,096; 2,048 for the 27B) is cut, shorter ones are packed whole. The captures check
+   the file's target and tokenizer hash (`load_samples`).
+
+```bash
+python3 -m hibana.weights.calibration_inputs prompts --evals $HIBANA_RESULTS/datasets --output prompts.json
+hibana serve nemotron --exact --max-batch 16 --context-length 8192 &
+python3 -m hibana.weights.calibration_inputs generate --prompts prompts.json --url http://127.0.0.1:30005 --output answers-nemotron.json
+python3 -m hibana.weights.calibration_inputs build --target nemotron --answers answers-nemotron.json --output nemotron-calibration-inputs.json
+```
+
+The published checkpoints predate this set: they were fitted on a coding proxy (64 of this repository's Python files
+at `bc7984f`), ShareGPT reasoning traces and MMLU validation answers. Their builders, `w3_calibration_inputs`,
+`flashnext_expert_inputs` and `nemotron_w3_inputs` under `hibana/weights/`, are last at `5cf219b`.
 
 ## Where the served copies come from
 
@@ -82,33 +108,20 @@ manifest format and per-file SHA256; `manifest.json` gains an `experts` block (m
 relative weight and output error per layer). There is no BF16 expert source: both methods fit the checkpoint's NVFP4
 experts, dequantized, with the trunk's Lloyd codebook.
 
-- `--method cheap`: group scales on a 0.5-1.0 clipping grid minimizing the weight error
-  (`w3_calibration.fit_scales` with unit importance) and the nearest level. No activations; it lost recall against `exact` (MMLU-Pro law -13 pp).
-- `--method gptq`: GPTQ on routed activations. `capture` prefills the calibration samples through the serving
-  model (FP8 trunk, NVFP4 experts) and stores each layer's MoE input rows on disk (about 4.5 GB a layer for 0.9M
-  rows); `fit` then takes one layer at a time: it routes the rows with the layer's router, accumulates per expert
-  H = sum g^2 x x^T (g the routing weight) for fc1 and the same over silu(gate) * up of the NVFP4 fc1 for fc2, and
-  runs `w3_calibration.quantize`'s pass batched over 32 experts (`gptq_batched`, tested against it). Experts with
-  fewer than `--min-tokens` routed rows keep the cheap fit; sparse experts' covariances are shrunk toward the
-  layer's pooled one (weight n0 / (n + n0), `--prior-tokens`). `--cheap-output` writes the cheap checkpoint from
-  the same pass.
-
-Samples: the frozen coding-proxy set (`w3_calibration_inputs` at bc7984f, the trunk's, sha256 `1f041589…`) plus
-knowledge questions (`hibana/weights/flashnext_expert_inputs.py`): MMLU's and MMLU-Pro's validation splits with
-anything overlapping MMLU-Pro test or GPQA removed, answered by the `fast` server itself (thinking off), rendered with
-the chat template.
-
-Reasoning traces make the samples look like real use (long thinking, other languages): `prompts-sharegpt` takes first
-user turns from ShareGPT (`--english`, `--other`), `generate --thinking --temperature 0.7` keeps each reply's
-`reasoning_content`, and `build --max-tokens 4096` renders it as the model writes it (`<think> ... </think>`, then the
-answer). Samples of 4,096 tokens need the capture's default `--pages 16384`; `capture --resume` continues an interrupted capture
-after its last whole sample.
+GPTQ on routed activations: `capture` prefills the calibration samples through the serving model (FP8 trunk, NVFP4
+experts) and stores each layer's MoE input rows on disk (about 4.5 GB a layer for 0.9M rows); `fit` then takes one
+layer at a time: it routes the rows with the layer's router, accumulates per expert H = sum g^2 x x^T (g the routing
+weight) for fc1 and the same over silu(gate) * up of the NVFP4 fc1 for fc2, and runs `w3_calibration.quantize`'s pass
+batched over 32 experts (`gptq_batched`, tested against it). Experts with fewer than `--min-tokens` routed rows keep
+the cheap fit (group scales on a clipping grid minimizing the weight error, nearest level: as the whole checkpoint it
+lost recall against `exact`, MMLU-Pro law -13 pp); sparse experts' covariances are shrunk toward the layer's pooled
+one (weight n0 / (n + n0), `--prior-tokens`). Samples of 4,096 tokens need the capture's default `--pages 16384`;
+`capture --resume` continues an interrupted capture after its last whole sample.
 
 ```bash
-HIBANA_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts capture --inputs expert-inputs.json --activations ACT
-HIBANA_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts fit --method gptq --activations ACT \
-  --source $HIBANA_RESULTS/w3-checkpoints/flashnext-current --output $HIBANA_RESULTS/w3-checkpoints/<date>-flashnext-experts3-gptq \
-  --cheap-output $HIBANA_RESULTS/w3-checkpoints/<date>-flashnext-experts3
+HIBANA_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts capture --inputs flashnext-calibration-inputs.json --activations ACT
+HIBANA_TARGET=flashnext python3 -m hibana.weights.flashnext_w3_experts fit --activations ACT \
+  --source $HIBANA_RESULTS/w3-checkpoints/flashnext-current --output $HIBANA_RESULTS/w3-checkpoints/<date>-flashnext-experts3-gptq
 ```
 
 The pinned checkpoint's GPTQ fit (`694e279`; relative weight error against the NVFP4 experts 0.164 fc1 / 0.163 fc2,
@@ -145,24 +158,13 @@ Nemotron's checkpoint (`nemotron-current`) holds GPTQ copies of the 97 FP8 proje
 MoE block's 512 routed experts (the 40 trunk blocks' and the MTP head's). The trunk copies are decode copies (calls of
 at most 64 rows read them, prefill keeps FP8); the experts are the only expert copy, at every call size. Two tools
 write it, `hibana/weights/nemotron_w3_calibrate.py` (trunk) and `hibana/weights/nemotron_w3_experts.py` (experts),
-each a capture through the serving model (FP8 trunk, NVFP4 experts; hold the GPU lock) and a fit from it. Nemotron's
-tokenizer is its own, so the samples are rebuilt from the Qwen targets' sources in its tokenizer and chat template
-(`hibana/weights/nemotron_w3_inputs.py` builds both sets):
+each a capture through the serving model (FP8 trunk, NVFP4 experts; hold the GPU lock) and a fit from it, both on the
+same [calibration samples](#calibration-samples) (`build --target nemotron`):
 
 ```bash
-python3 -m hibana.weights.w3_calibration_inputs --tokenizer SNAP/tokenizer.json --commit bc7984f --output code.json
-# trunk: the coding proxy (64 files) and 80 ShareGPT reasoning traces (48 English, 32 other languages; Flash-Next's
-# `flashnext_expert_inputs generate --thinking`): 144 samples, sha256 edc0bd1d...
-python3 -m hibana.weights.nemotron_w3_inputs --tokenizer SNAP/tokenizer.json --code code.json \
-  --traces answers-sharegpt.json --output nemotron-calibration-inputs.json
 HIBANA_TARGET=nemotron python3 -m hibana.weights.nemotron_w3_calibrate capture --inputs nemotron-calibration-inputs.json --activations ACT
 HIBANA_TARGET=nemotron python3 -m hibana.weights.nemotron_w3_calibrate fit --activations ACT --output TRUNK
-# experts: the coding proxy, 180 ShareGPT reasoning traces (110 English, 70 other) and 250 MMLU / MMLU-Pro validation
-# answers packed into 104 samples: 348 samples, sha256 bba92b75...
-python3 -m hibana.weights.nemotron_w3_inputs --tokenizer SNAP/tokenizer.json --code code.json \
-  --traces answers-sharegpt.json --knowledge answers.json --traces-en 110 --traces-other 70 --knowledge-items 250 \
-  --seed 20261024 --output nemotron-expert-inputs.json
-python3 -m hibana.weights.nemotron_w3_experts capture --inputs nemotron-expert-inputs.json --activations EXPERT_ACT
+python3 -m hibana.weights.nemotron_w3_experts capture --inputs nemotron-calibration-inputs.json --activations EXPERT_ACT
 python3 -m hibana.weights.nemotron_w3_experts fit --activations EXPERT_ACT --source TRUNK \
   --output $HIBANA_RESULTS/w3-checkpoints/nemotron-<name>
 ln -sfn nemotron-<name> $HIBANA_RESULTS/w3-checkpoints/nemotron-current

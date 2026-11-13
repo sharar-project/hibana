@@ -1,8 +1,7 @@
 """Calibrate W3 decode copies, one target layer at a time, on frozen token inputs.
 
-Inputs: JSON object with `samples`, each with `input_ids`; keep calibration
-prompts disjoint from the accuracy/family gates and drafter test prompts.
-No target logits or task answers are used to fit the quantizer.
+Inputs: `calibration_inputs build --target qwen38 --max-tokens 2048`. No target logits or task answers are used
+to fit the quantizer.
 """
 from __future__ import annotations
 
@@ -102,15 +101,14 @@ class InputCovariances:
 def run(args):
     from hibana.engine.context import scratch_prefill_context
     from hibana.model.qwen38 import Qwen38
+    from hibana.target import QWEN38
+    from hibana.weights.calibration_inputs import load_samples
     if w3.enabled():
         raise ValueError("calibration must start with HIBANA_W3_DECODE=0")
     args.output.mkdir(parents=True, exist_ok=True)
     if (args.output / 'manifest.json').exists():
         raise ValueError("refusing to overwrite a finished calibration")
-    frozen = json.loads(args.inputs.read_text())
-    samples = [s['input_ids'] for s in frozen['samples']]
-    if not samples or any(not ids or len(ids) > 2048 for ids in samples):
-        raise ValueError("calibration samples must have between 1 and 2048 tokens")
+    samples = load_samples(args.inputs, QWEN38, max_tokens=2048)
     source_cfg = config.load_model_config(args.source)
     quant_cfg = source_cfg['quantization_config']
     if quant_cfg['quant_method'] != 'fp8' or quant_cfg['weight_block_size'] != [128, 128]:
