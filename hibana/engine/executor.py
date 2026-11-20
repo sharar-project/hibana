@@ -294,8 +294,27 @@ class Executor:
         self.state.admit(req, req.prefill_ids)
         req.state = State.PREFILL
         if req.media:
+            self._build_mrope(req)
             self.images.prefetch(req.media, req.prefill_pos)
         return req
+
+    def _build_mrope(self, req: Request) -> None:
+        """A media request's [3, L] RoPE positions (model/flashnext/mrope.py), when the model
+        builds them (`mrope_positions`; Flash-Next). Also keeps the request out of the caches:
+        its positions run behind its token count, and its recurrent-state checkpoints and
+        selected pages would resume under text-only assumptions. Recomputed only if retracted."""
+        builder = getattr(self.model, "mrope_positions", None)
+        if builder is None:
+            return
+        if self.spec is not None and getattr(self.spec.proposer, "requirements", None) is not None \
+                and getattr(self.spec.proposer.requirements, "name", "") == "dflash2":
+            raise InvalidRequest("image input serves with the MTP drafter (HIBANA_PROPOSER=mtp)")
+        if req.mrope3 is None:
+            pos = builder(len(req.prompt_ids), req.media)
+            if pos is not None:
+                req.mrope3 = torch.from_numpy(pos)
+                req.pos_delta = int(pos[0, -1]) + 1 - len(req.prompt_ids)
+        req.cacheable = False
 
     def can_admit(self, prompt_ids: list[int], reserve_tokens: int = 0) -> bool:
         ledger = getattr(self, "ledger", None)
@@ -351,6 +370,9 @@ class Executor:
         arithmetic = getattr(self.model, "arithmetic_identity", None)
         if arithmetic is not None:
             identity["arithmetic"] = arithmetic
+        vision = getattr(self.model, "vision", None)
+        if vision is not None:  # image handling: a target whose positions/embeddings changed never resumes old prefixes
+            identity["vision"] = vision.identity.decode(errors="replace").strip()
         return identity
 
     def enable_ssd_tier(self, log=None) -> None:
@@ -582,12 +604,14 @@ class Executor:
         t = len(new_ids)
         assert t > 0, (start, end)
         ids = upload(new_ids, torch.int64, self.device)
-        positions = torch.arange(start, end, dtype=torch.int64, device=self.device)
+        positions = (req.mrope3[:, start:end].to(self.device) if req.mrope3 is not None
+                     else torch.arange(start, end, dtype=torch.int64, device=self.device))
         ctx = ForwardContext(
             mode="prefill",
             kv_pool=self.kv_pool,
             state_pool=self.state_pool,
-            positions=positions,
+            positions=positions[0] if req.mrope3 is not None else positions,
+            mrope=positions if req.mrope3 is not None else None,
             slot=req.slot,
             pages=req.pages[start:end],
             seq_len=t,
@@ -620,12 +644,20 @@ class Executor:
         ids_list, pos_list, page_list, cu, kv_indptr, kv_indices = [], [], [], [0], [0], []
         seq_slots, prefix_lens, seq_lens = [], [], []
         boundaries, spans = [], []
+        mrope = any(req.mrope3 is not None for req, _ in chunks)
+        mrope_list = []
         for si, (req, n_new) in enumerate(chunks):
             start = req.prefill_pos
             end = start + n_new
             spans.append((req, start, end, cu[-1]))
             ids_list += self._model_ids(req, req.prefill_ids[start:end])
-            pos_list += list(range(start, end))
+            if req.mrope3 is not None:
+                pos_list += req.mrope3[0, start:end].tolist()
+                mrope_list.append(req.mrope3[:, start:end].to(self.device))
+            else:
+                pos_list += list(range(start, end))
+                if mrope:
+                    mrope_list.append(torch.arange(start, end, device=self.device)[None].expand(3, -1).contiguous())
             page_list.append(req.pages[start:end])
             cu.append(cu[-1] + n_new)
             kv_indices.append(req.pages[:start])
@@ -641,6 +673,7 @@ class Executor:
         ctx = ForwardContext(
             mode="prefill", kv_pool=self.kv_pool, state_pool=self.state_pool,
             positions=upload(pos_list, torch.int64, d),
+            mrope=torch.cat(mrope_list, dim=1) if mrope else None,
             pages=torch.cat(page_list), seq_len=cu[-1],
             cu_seqlens=upload(cu, torch.int32, d),
             seq_slots=upload(seq_slots, torch.int32, d),
@@ -808,12 +841,14 @@ class Executor:
         reqs = plain
         new_pages = self.state.reserve(reqs, 1)
         step_pages = [self.state.step_pages(r) for r in reqs]
-        seqs = [(r.context_len - 1, 1, pages) for r, pages in zip(reqs, step_pages)]
+        seqs = [(r.cur_pos(), 1, pages) for r, pages in zip(reqs, step_pages)]
         variant = self.variant(seqs)
+        if any(r.mrope3 is not None for r in reqs) and self.extras is not None and getattr(self.extras, "budget", 0):
+            variant = "dense"  # a media request never selects pages (its index keys were never compressed per the reference's mrope grouping)
         if self.use_graphs and self.graphs is not None and variant in self.graphs.variants:
             result = self.graphs.run(
                 [r.output_ids[-1] for r in reqs],
-                [r.context_len - 1 for r in reqs],
+                [r.cur_pos() for r in reqs],
                 [r.slot for r in reqs],
                 new_pages,
                 step_pages,
@@ -826,7 +861,7 @@ class Executor:
             else:
                 logits = result
         else:
-            positions = upload([r.context_len - 1 for r in reqs], torch.int64, self.device)
+            positions = upload([r.cur_pos() for r in reqs], torch.int64, self.device)
             tokens = upload([r.output_ids[-1] for r in reqs], torch.int64, self.device)
             self._plan_decode(reqs, step_pages)
             ctx = ForwardContext(

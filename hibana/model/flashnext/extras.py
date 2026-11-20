@@ -46,6 +46,9 @@ class FlashNextSideInputs:
     # Opt-in eager-prefill plan shared by attention layers within this forward only.
     qsa_prefill_plan: object | None = None
     qsa_optimized_prefill: bool = False
+    # A decode/verify forward with an image request: keys are maintained but no selection runs
+    # (an image request never selects pages; see `for_prefill`)
+    qsa_dense: bool = False
 
 
 class FlashNextExtras:
@@ -125,7 +128,16 @@ class FlashNextExtras:
             side.ple_history = torch.tensor([self._history(req, start) for req, start, _, _ in chunks], dtype=torch.int64)
             self._prefetch_prompts(chunks)
         if self.budget:
-            side.qsa_seqs = [(start, n, pages) for _, start, n, pages in chunks]
+            if any(req.mrope3 is not None for req, _, _, _ in chunks):
+                # An image prompt never runs the indexer's selection: its positions run behind
+                # its token count and its in-image groups do not follow the text grouping, so
+                # selection would read keys the reference's mrope grouping never wrote. Dense
+                # attention is exact; the request keeps exact behavior for its whole life
+                # (`variant` is forced dense the same way).
+                side.qsa_seqs = None
+            else:
+                side.qsa_seqs = [(start if req.mrope3 is None else req.row_pos(start), n, pages)
+                                 for req, start, n, pages in chunks]
         return side
 
     def _prefetch_prompts(self, chunks) -> None:
@@ -144,11 +156,13 @@ class FlashNextExtras:
 
     def for_decode(self, reqs, seqs) -> FlashNextSideInputs:
         return FlashNextSideInputs(ple_rows=self._decode_rows(reqs) if self.ple is not None else None,
-                                   qsa_seqs=seqs if self.budget else None)
+                                   qsa_seqs=seqs if self.budget else None,
+                                   qsa_dense=self.budget and any(r.mrope3 is not None for r in reqs))
 
     def for_verify(self, reqs, drafts: torch.Tensor, seqs) -> FlashNextSideInputs:
         return FlashNextSideInputs(ple_rows=self._verify_rows(reqs, drafts.tolist()) if self.ple is not None else None,
-                                   qsa_seqs=seqs if self.budget else None)
+                                   qsa_seqs=seqs if self.budget else None,
+                                   qsa_dense=self.budget and any(r.mrope3 is not None for r in reqs))
 
     # ---- CUDA graphs ----
     def buffers(self, rows: int) -> FlashNextSideInputs:

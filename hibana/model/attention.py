@@ -115,12 +115,12 @@ class Attention:
 
 
     def decode(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
-        q, k, v, gate = self._qkv(x, ctx.positions, x_q)
+        q, k, v, gate = self._qkv(x, getattr(ctx, "rope_positions", ctx.positions), x_q)
         ctx.kv_pool.write(self.layer_id, ctx.out_pages, k, v)
         attn = ctx.decode_wrapper.run(q, ctx.kv_pool.cache(self.layer_id), kv_cache_sf=ctx.kv_pool.scales(self.layer_id))
         return self._finish(attn.view(x.shape[0], self.q_size), gate)
 
     def forward(self, x: torch.Tensor, ctx: ForwardContext, x_q: torch.Tensor | None = None) -> torch.Tensor:
         if ctx.mode in ("prefill", "verify"):
-            return self.prefill(x, ctx.positions, ctx, x_q)
+            return self.prefill(x, getattr(ctx, "rope_positions", ctx.positions), ctx, x_q)
         return self.decode(x, ctx, x_q)

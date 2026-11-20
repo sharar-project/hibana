@@ -26,6 +26,11 @@ class Request(RequestState):
     params: SamplingParams
     request_id: int = 0
     media: tuple = ()  # the prompt's images (engine/media.Image), whose placeholder ids are in prompt_ids
+    # Multimodal RoPE (Flash-Next with images): the prompt's [3, L] positions (CPU int64) and
+    # how far its last row's text position runs behind the token count (vLLM's negative delta).
+    # Both None/0 for a text prompt, which keeps plain 1-D positions everywhere.
+    mrope3: object = None
+    pos_delta: int = 0
     state: State = State.QUEUED
     output_ids: list[int] = field(default_factory=list)
     # resources
@@ -79,6 +84,18 @@ class Request(RequestState):
     @property
     def ttft(self) -> float:
         return self.t_first_token - self.t_arrival if self.t_first_token else float("nan")
+
+    def row_pos(self, i: int) -> int:
+        """The RoPE text position of prompt/row index `i` (a text row's three components are
+        equal): the multimodal table's t component inside the prompt, else the index shifted by
+        `pos_delta` (the rows past the prompt, and every row of a text prompt)."""
+        if self.mrope3 is not None and 0 <= i < self.mrope3.shape[1]:
+            return int(self.mrope3[0, i])
+        return i + self.pos_delta
+
+    def cur_pos(self) -> int:
+        """`row_pos` of the request's last committed row (the position its next token reads)."""
+        return self.row_pos(self.context_len - 1)
 
     def push(self, token: int) -> None:
         if self.finished:
