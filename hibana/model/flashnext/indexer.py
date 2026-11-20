@@ -99,7 +99,9 @@ class FlashNextIndexer:
         aux[token_pages.long(), 0] = qk[:, h * d:]
         plan = self._plan(ctx.extras, x.device)
         self._compress(aux, ctx.extras.qsa_seqs, x.device, x.dtype, plan)
-        if plan["dense"]:
+        if plan["dense"] or getattr(ctx.extras, "qsa_dense", False):
+            # `qsa_dense`: a decode/verify forward with an image request — its keys are
+            # maintained but it never selects pages (see model/flashnext/extras.py `for_prefill`)
             return None
         # scores and top-k in chunks of 256 rows (a bounded score buffer); the queries' norm and rotation, and the
         # selection after the top-k, for every row at once (row by row the same bits)

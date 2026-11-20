@@ -55,9 +55,9 @@ class FlashNextAttention(Attention):
             selected = self.indexer.replay(x, ctx, token_pages)
             if selected is None:  # every row inside the budget: dense attention
                 return super().forward(x, ctx, x_q)
-            q, k, v, gate = self._qkv(x, ctx.positions)
+            q, k, v, gate = self._qkv(x, getattr(ctx, "rope_positions", ctx.positions))
             return self._sparse(q, k, v, gate, selected, ctx, token_pages)
-        q, k, v, gate = self._qkv(x, ctx.positions)
+        q, k, v, gate = self._qkv(x, getattr(ctx, "rope_positions", ctx.positions))
         selected = self.indexer.run(x, ctx, token_pages)
         if selected is None:  # every row sees at most the budget: the dense path is exact
             if ctx.mode == "decode":

@@ -128,9 +128,25 @@ A request's image is decoded once by the server to check it; the engine decodes 
 encoded, on a worker thread from the request's admission, so an image in a cached prefix is never decoded or encoded
 again: a later turn that sends the same image resumes from the cached prefix, image included. The encode (about 30 ms
 for a 1,024-patch tile, 0.7 s for a full one, on one GB10) runs on its own CUDA stream; while other requests decode, a
-prefill chunk ends before an image still encoding, so their tokens keep coming. The checkpoint's video and audio inputs
-are not served (`input_audio`, `file`, `video_url` and Messages `document` blocks are a 400, or a note inside a tool
-result). The 27B and Flash-Next refuse images; their vision towers are not loaded.
+prefill chunk ends before an image still encoding, so their tokens keep coming.
+
+## Videos (Flash-Next)
+
+With `HIBANA_VISION` (on) the Flash-Next fork also serves the checkpoint's video input: an OpenAI `video_url` (or
+`input_video`) part holding a base64 `data:` URL (mp4/WebM and whatever the server's ffmpeg reads; the server fetches
+nothing), at most 4 a request and 64 MiB each. `input_audio`, `file` and Messages `document` blocks remain a 400, or a
+note inside a tool result; the 27B still refuses every image and video.
+
+A video is sampled to 2 fps (the Qwen3-VL processor's default), uniformly, at least 4 frames when the clip has them
+and at most `HIBANA_VIDEO_MAX_FRAMES` (default 32; an odd sample count repeats its last frame — the processor pairs
+frames, `temporal_patch_size` 2). Every frame is smart-resized against the same 25,165,824-pixel budget the
+checkpoint's video config sets, *counting every frame* (32 frames of 640x480 stay 640x480), with a per-frame
+4,194,304-pixel cap. The prompt the template's single `<|video_pad|>` expands to is the Qwen3-VL video prompt: one
+`<12.4 seconds>`-style timestamp text run, then `<|vision_start|>`, a frame pair's placeholders and `<|vision_end|>`,
+a temporal step — each pair's span costs `rows * cols` tokens exactly as an image of the same grid, and the
+multimodal-RoPE positions and the encoder workspace follow the image path's (proven against transformers:
+bit-identical tower embeddings, `tools/video_parity.py`). Frame decoding and pairing run once in the API process;
+each pair is encoded like an image on the side stream, so cached-prefix and streaming behavior is unchanged.
 
 With thinking off the models sometimes still reason about an image and end it with `</think>`; as NVIDIA's reasoning
 parser does, everything is then content.

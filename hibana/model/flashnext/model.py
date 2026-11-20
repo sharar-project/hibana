@@ -26,6 +26,8 @@ from hibana.model.flashnext.gdn import FlashNextGdn
 from hibana.model.flashnext.hyper import HyperConnection
 from hibana.model.flashnext.linear import TrunkLinear
 from hibana.model.flashnext.moe import MoeLayer, nvfp4_expert_names
+from hibana.model.flashnext.mrope import positions_3d
+from hibana.model.flashnext.vision import VISION_BYTES
 from hibana.model.flashnext.ple import PleLayer
 from hibana.model.gdn_plan import prepare_gdn_prefill
 from hibana.model.rope import PartialRotary
@@ -107,8 +109,10 @@ class FlashNext:
         expert_layers = calibrated.expert_layers() if calibrated and current().flashnext_experts != "nvfp4" else set()
         if expert_layers and expert_layers != set(range(target.num_layers)):
             raise ValueError(f"the W3 checkpoint carries routed experts for {len(expert_layers)} of {target.num_layers} layers")
-        # the experts dominate, and each rank loads its half
-        check_load_headroom((target.weight_load_peak_bytes - (_w3_expert_saving(target) if expert_layers else 0)) // tp.size)
+        # the experts dominate, and each rank loads its half; the vision tower (about 0.9 GiB, replicated) with it
+        vision = current().vision
+        check_load_headroom((target.weight_load_peak_bytes - (_w3_expert_saving(target) if expert_layers else 0)) // tp.size
+                            + (VISION_BYTES if vision else 0))
         self.device = torch.device(device)
         cfg = target.load_model_config(snap)
         types = target.layer_types_of(cfg)
@@ -117,6 +121,12 @@ class FlashNext:
         started = time.perf_counter()
         w = SnapshotWeights(snap)
         self.embed = w.get(f"{PREFIX}.embed_tokens.weight").to(self.device)
+        self.vision = None
+        if vision:
+            from hibana.model.flashnext.vision import QwenVision
+            self.vision = QwenVision(w, self.device)
+            if log:
+                log(f"  vision: Qwen3-VL tower and merger ({self.vision.bytes / 2**30:.2f} GiB)")
         self.rope = PartialRotary(target.head_dim, target.rotary_dim, target.rope_theta, target.max_position_embeddings, self.device)
         self.ragged = ops.RaggedAttention(self.device, target.num_attention_heads, target.num_kv_heads, target.head_dim)
         self.layers: list[DecoderLayer] = []
@@ -160,6 +170,10 @@ class FlashNext:
         if log:
             log(f"  weights loaded in {time.perf_counter() - started:.0f}s, {torch.cuda.memory_allocated() / 2**30:.1f} GiB allocated "
                 f"({self.precision} trunk, {self.stream_bytes / 1e9:.2f} GB per decode token)")
+
+    # The engine's media requests ask the model for their [3, L] RoPE positions
+    # (engine/executor.Executor._build_mrope); None everywhere else keeps plain 1-D positions.
+    mrope_positions = staticmethod(positions_3d)
 
     def register_pages(self, kv_pool) -> None:
         """Per-page rows beyond K/V in the executor's KV pool: the indexer's index keys."""
@@ -239,6 +253,8 @@ class FlashNext:
         if ctx.mode == "prefill":
             prepare_gdn_prefill(ctx, len(input_ids), input_ids.device)
         x = torch.nn.functional.embedding(input_ids, self.embed)
+        if ctx.media_rows is not None:  # an image's placeholder rows read its encoder output (engine/media.py)
+            x.index_copy_(0, ctx.media_rows, ctx.media_embeds)
         hyper = torch.cat([x] * self.target.hc_count, dim=-1)
         ctx.capture = capture
         out: dict = {"input_ids": input_ids, "positions": ctx.positions}

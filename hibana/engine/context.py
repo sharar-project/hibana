@@ -48,6 +48,9 @@ class ForwardContext:
     # images in a prefill (engine/media.py): the rows whose input embedding is an image's (int64), and those embeddings
     media_rows: torch.Tensor | None = None
     media_embeds: torch.Tensor | None = None
+    # multimodal RoPE (Flash-Next with images, model/flashnext/mrope.py): the rows' three
+    # position components [3, T] int64; None for a text forward, whose positions are plain 1-D
+    mrope: torch.Tensor | None = None
     gdn_plan: GdnPrefillPlan | None = field(default=None, init=False, repr=False)
 
     # speculative verify: k+1 tokens per sequence; GDN runs the recurrent
@@ -72,6 +75,13 @@ class ForwardContext:
     @property
     def batched(self) -> bool:
         return self.cu_seqlens is not None
+
+    @property
+    def rope_positions(self) -> torch.Tensor:
+        """What the rotary layers read: the three per-row position components for an image
+        forward, else the plain 1-D positions (a text row's components are equal, so a text
+        forward never builds `mrope` and stays on its original path)."""
+        return self.mrope if self.mrope is not None else self.positions
     # decode
     slots: torch.Tensor | None = None  # [B] int32 committed state slot per row
     out_pages: torch.Tensor | None = None  # [B] int32 KV write location for the new token

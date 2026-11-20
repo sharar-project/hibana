@@ -29,6 +29,28 @@ import torch
 
 FORMATS = ("PNG", "JPEG", "WEBP", "GIF")
 MAX_IMAGE_PIXELS = 64_000_000  # a decoded image (the encoder resizes it to at most 13,312 patches, 3.4 MP)
+# A video frame pair's `data`: the magic, then a little-endian (h, w) header, then both frames' raw RGB bytes —
+# self-contained bytes a retracted prefill can decode again, as an image's encoded file is (api/media.py writes them).
+PAIR_MAGIC = b"\x93hibana-video-pair\x00"  # 20 bytes; no image format starts with 0x93
+
+
+def pair_bytes(a: np.ndarray, b: np.ndarray) -> bytes:
+    """Two RGB frames [H, W, 3] uint8 as one pair's `data` bytes."""
+    if a.shape != b.shape or a.dtype != np.uint8 or a.ndim != 3 or a.shape[2] != 3:
+        raise ValueError("a video pair is two same-size RGB frames")
+    return PAIR_MAGIC + np.int64(a.shape[0]).tobytes() + np.int64(a.shape[1]).tobytes() + a.tobytes() + b.tobytes()
+
+
+def decode_pair(raw: bytes) -> np.ndarray:
+    """A pair's `data` back to its two RGB frames [2, H, W, 3] uint8 (writable, for torch)."""
+    head = len(PAIR_MAGIC) + 16
+    if len(raw) < head or (len(raw) - head) % 2:
+        raise ValueError("truncated video pair")
+    h, w = np.frombuffer(raw, dtype=np.int64, count=2, offset=len(PAIR_MAGIC))
+    frame = h * w * 3
+    if len(raw) - head != 2 * frame:
+        raise ValueError("truncated video pair")
+    return np.frombuffer(raw, dtype=np.uint8, offset=head).reshape(2, h, w, 3).copy()
 # EXIF orientations and the transposes that undo them (Pillow's `ImageOps.exif_transpose`)
 _TRANSPOSE = {2: "FLIP_LEFT_RIGHT", 3: "ROTATE_180", 4: "FLIP_TOP_BOTTOM", 5: "TRANSPOSE", 6: "ROTATE_270",
               7: "TRANSVERSE", 8: "ROTATE_90"}
@@ -42,6 +64,8 @@ class Image:
     pixels: Future | None = None  # the encoder's input, being made on the worker thread
     embeds: torch.Tensor | None = None  # [len(ids), hidden], from its encode until its span is prefilled
     encoded: torch.cuda.Event | None = None  # recorded on the side stream after the encode, until a prefill waits on it
+    grid: tuple[int, int] | None = None  # the encoder's merged patch grid (rows, cols); multimodal-RoPE targets read it
+    pair: bool = False  # a video frame pair: `data` is `pair_bytes` (two frames, one temporal step), not an image file
 
     @property
     def end(self) -> int:
@@ -74,6 +98,12 @@ def size(raw: bytes) -> tuple[int, int]:
 def decode(raw: bytes) -> np.ndarray:
     """The image as RGB [H, W, 3] uint8: upright by its EXIF orientation, the first frame of an animation, alpha dropped
     (as the reference processor's RGB conversion); ValueError if it does not decode."""
+    if raw.startswith(PAIR_MAGIC):
+        return decode_pair(raw)  # a video pair: [2, H, W, 3] for `preprocess_pair`
+    return _decode_image(raw)
+
+
+def _decode_image(raw: bytes) -> np.ndarray:
     from PIL import Image as PILImage
     img, orientation = _open(raw)
     with img:
@@ -124,7 +154,12 @@ class Encoder:
         at admission): an image inside the prefix is never decoded."""
         for image in media:
             if image.end > pos and image.embeds is None and image.pixels is None:
-                image.pixels = self._worker.submit(lambda data: self.vision.preprocess(decode(data)), image.data)
+                if image.pair:  # a video pair: its merged grid says the clip's resize target
+                    prep = lambda frames, g=image.grid: self.vision.preprocess_pair_grid(frames, g)
+                    image.pixels = self._worker.submit(lambda data, p=prep: p(decode_pair(data)), image.data)
+                else:
+                    image.pixels = self._worker.submit(lambda data: self.vision.preprocess(_decode_image(data)),
+                                                       image.data)
 
     def ready(self, media: tuple[Image, ...], start: int, end: int, wait: bool) -> int:
         """Where a prefill chunk of prompt positions [start, end) can end: before the first image in it whose encode has
@@ -170,7 +205,8 @@ class Encoder:
     def _encode(self, image: Image) -> None:
         pixels, image.pixels = image.pixels.result(), None
         with torch.cuda.stream(self.stream) if self.stream is not None else nullcontext():
-            image.embeds = self.vision.encode(pixels)
+            encode = self.vision.encode_pair if image.pair else self.vision.encode
+            image.embeds = encode(pixels)
             if self.stream is not None:
                 image.encoded = torch.cuda.Event()
                 image.encoded.record(self.stream)

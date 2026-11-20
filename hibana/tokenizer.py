@@ -22,9 +22,16 @@ class SnapshotTokenizer:
         return enc.ids, enc.offsets
 
     def without_specials(self, ids: set[int]) -> SnapshotTokenizer:
-        """This tokenizer with the added tokens `ids` matched in text no more: their strings encode as text."""
+        """This tokenizer with the added tokens `ids` matched in text no more: their strings encode as text.
+
+        The entries stay, their content rewritten to a string no real text carries: dropping them
+        re-registers the added tokens by position and shifts every later one's id (Flash-Next's
+        `<think>` would encode as `<|file_sep|>`, three places down, and every special-prompt chat
+        render would reach the model as a different token sequence)."""
         spec = json.loads(self._tok.to_str())
-        spec["added_tokens"] = [t for t in spec["added_tokens"] if t["id"] not in ids]
+        for t in spec["added_tokens"]:
+            if t["id"] in ids:
+                t["content"] = f"\ue000disabled-{t['id']}\ue001"
         out = SnapshotTokenizer.__new__(SnapshotTokenizer)
         out._tok = Tokenizer.from_str(json.dumps(spec))
         return out

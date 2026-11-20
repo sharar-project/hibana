@@ -327,7 +327,7 @@ class SpecDecoder:
             if r.committed_len != r.context_len - 1:
                 raise ValueError("pending input does not follow the committed prefix")
             host[0, i] = r.output_ids[-1]
-            host[1, i] = r.committed_len
+            host[1, i] = r.row_pos(r.committed_len)  # the pending token's RoPE position (== committed_len for a text prompt)
             host[2, i] = r.slot
         rows = host[:, :b_sz].to(d, non_blocking=True)
         toks_t, poss_t, slots_t = rows[0], rows[1], rows[2].to(torch.int32)
@@ -343,7 +343,8 @@ class SpecDecoder:
         if (y.shape != (b_sz, k if short else self.k) or y.dtype != torch.int64 or y.device.type != self.device.type
                 or (self.device.index is not None and y.device.index != self.device.index)):
             raise ValueError("proposer must return int64 [batch, k] on the target device")
-        if getattr(self, "ragged_graphs", None) is not None and ex.use_graphs:
+        if getattr(self, "ragged_graphs", None) is not None and ex.use_graphs \
+                and not any(r.mrope3 is not None for r in reqs):  # image requests verify on the paged path
             return self._prepare_ragged(reqs, proposal, y, k, toks_t, poss_t, slots_t, new_pages, sampled, t0, timing)
         proposal = proposal.head(k)
         y = proposal.tokens
@@ -356,7 +357,7 @@ class SpecDecoder:
         # The verified block starts with the last emitted token, which is the
         # pending token uploaded above.
         tokens_v = torch.cat([toks_t.unsqueeze(1), y], dim=1).reshape(-1)
-        positions = torch.cat([torch.arange(r.context_len - 1, r.context_len - 1 + s_len, device=d) for r in reqs])
+        positions = torch.cat([torch.arange(r.cur_pos(), r.cur_pos() + s_len, device=d) for r in reqs])
         kv_indptr = [0]
         kv_all = []
         for i, r in enumerate(reqs):
@@ -457,8 +458,10 @@ class SpecDecoder:
             return self._verify_ragged(batch)
         b_sz, k = batch.proposal.tokens.shape
         s_len = k + 1
-        seqs = [(r.context_len - 1, s_len, pages) for r, pages in zip(batch.requests, batch.kv_pages)]
+        seqs = [(r.cur_pos(), s_len, pages) for r, pages in zip(batch.requests, batch.kv_pages)]
         variant = self.ex.variant(seqs)
+        if any(r.mrope3 is not None for r in batch.requests) and getattr(self.ex.extras, "budget", 0):
+            variant = "dense"  # a media request never selects pages
         graphs = self.width_graphs.get(k, self.verify_graphs)
         if self.ex.use_graphs and graphs is not None and variant in graphs.variants:
             norm_rows, z_flat, ctx, layers, logits = graphs.run(batch.tokens, batch.positions, batch.pages,
@@ -568,7 +571,7 @@ class SpecDecoder:
         )
         if getattr(self.ex, "extras", None) is not None:
             ctx.extras = self.ex.extras.for_verify(batch.requests, batch.proposal.tokens,
-                                                   [(r.context_len - 1, s_len, pages) for r, pages in zip(batch.requests, batch.kv_pages)])
+                                                   [(r.cur_pos(), s_len, pages) for r, pages in zip(batch.requests, batch.kv_pages)])
         indptr = [0]
         for pages in batch.kv_pages:
             indptr.append(indptr[-1] + pages.shape[0])

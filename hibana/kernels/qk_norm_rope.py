@@ -47,11 +47,64 @@ def _norm_rope_kernel(
     tl.store(out + HALF + lane, o2.to(tl.bfloat16))
 
 
+@triton.jit
+def _norm_rope_mrope_kernel(
+    src_ptr, cos_sin_ptr, pos_ptr, w_ptr, out_ptr,
+    stride_st, stride_sh, stride_ot, stride_oh,
+    eps, T,
+    D: tl.constexpr, R: tl.constexpr, HALF: tl.constexpr,
+):
+    """The multimodal variant: `pos_ptr` is [3, T] (t, h, w per row) and rotary pair `lane`
+    reads the position of its axis, `lane % 3` — the interleaved mrope_section [11, 11, 10]
+    layout of the deployed flash-next kernels (pairs 0,3,…,30 t / 1,4,…,31 h / 2,5,…,29 w).
+    A row whose components are equal loads the same cos/sin as `_norm_rope_kernel` would."""
+    t = tl.program_id(0)
+    h = tl.program_id(1)
+    base = src_ptr + t * stride_st + h * stride_sh
+    cols = tl.arange(0, D)
+    x = tl.load(base + cols).to(tl.float32)
+    w = tl.load(w_ptr + cols).to(tl.float32)
+    rstd = tl.rsqrt(tl.sum(x * x, axis=0) / D + eps)
+    y = (x * rstd * (1.0 + w)).to(tl.bfloat16).to(tl.float32)
+    out = out_ptr + t * stride_ot + h * stride_oh
+    # dims >= R pass through
+    tl.store(out + cols, y.to(tl.bfloat16), mask=cols >= R)
+    # rope on dims < R, NeoX pairing (i, i + R/2); cache and rotary products remain FP32 until the output store
+    lane = tl.arange(0, HALF)
+    pos_t = tl.load(pos_ptr + t)
+    pos_h = tl.load(pos_ptr + T + t)
+    pos_w = tl.load(pos_ptr + 2 * T + t)
+    axis = lane % 3
+    pos = tl.where(axis == 0, pos_t, tl.where(axis == 1, pos_h, pos_w))
+    cos = tl.load(cos_sin_ptr + pos * R + lane).to(tl.float32)
+    sin = tl.load(cos_sin_ptr + pos * R + HALF + lane).to(tl.float32)
+    x1 = tl.load(base + lane).to(tl.float32)
+    x2 = tl.load(base + HALF + lane).to(tl.float32)
+    w1 = tl.load(w_ptr + lane).to(tl.float32)
+    w2 = tl.load(w_ptr + HALF + lane).to(tl.float32)
+    y1 = (x1 * rstd * (1.0 + w1)).to(tl.bfloat16).to(tl.float32)
+    y2 = (x2 * rstd * (1.0 + w2)).to(tl.bfloat16).to(tl.float32)
+    o1 = y1 * cos - y2 * sin
+    o2 = y2 * cos + y1 * sin
+    tl.store(out + lane, o1.to(tl.bfloat16))
+    tl.store(out + HALF + lane, o2.to(tl.bfloat16))
+
+
 def norm_rope(src: torch.Tensor, positions: torch.Tensor, cos_sin: torch.Tensor, weight: torch.Tensor, rotary_dim: int, eps: float) -> torch.Tensor:
-    """src: [T, H, D] view with unit last stride. Returns contiguous [T, H, D] bf16."""
+    """src: [T, H, D] view with unit last stride. Returns contiguous [T, H, D] bf16.
+    `positions` [T] as before, or [3, T] int64 (t, h, w per row) for a multimodal forward —
+    only with rotary_dim 64 and the interleaved section [11, 11, 10]."""
     t, h, d = src.shape
     assert src.stride(2) == 1
     out = torch.empty((t, h, d), dtype=torch.bfloat16, device=src.device)
+    if positions.ndim == 2:
+        assert positions.shape == (3, t) and positions.stride(1) == 1 and rotary_dim == 64, positions.shape
+        _norm_rope_mrope_kernel[(t, h)](
+            src, cos_sin, positions, weight, out,
+            src.stride(0), src.stride(1), out.stride(0), out.stride(1), eps, t,
+            D=d, R=rotary_dim, HALF=rotary_dim // 2, num_warps=4,
+        )
+        return out
     _norm_rope_kernel[(t, h)](
         src, cos_sin, positions, weight, out,
         src.stride(0), src.stride(1), out.stride(0), out.stride(1), eps,

@@ -38,7 +38,7 @@ TARGET_SETTINGS = {
                "w3_missing": "nearest-rounded copies (about 2 GSM8K points and 8% tokens per round below calibrated)"},
     "flashnext": {"HIBANA_SERVICE": "hibana-flashnext", "HIBANA_PORT": "30004", "HIBANA_PROPOSER": "mtp",
                   "HIBANA_VERIFY_STATE": "reconstruct", "HIBANA_DRAFT_PRECISION": "fp8", "HIBANA_DRAFT": "pinned",
-                  "HIBANA_DRAFT_HEAD": "w2", "HIBANA_FLASHNEXT_TRUNK": "fp8", "w3_calibrated_only": True,
+                  "HIBANA_DRAFT_HEAD": "w2", "HIBANA_FLASHNEXT_TRUNK": "fp8", "HIBANA_VISION": "1", "w3_calibrated_only": True,
                   "w3_missing": "serving the FP8 trunk, about 24% slower single-stream than {profile} with it"},
     # its own MTP head (the depth is the profile's), one Spark only; the draft steps read a 2-bit copy of the FP8
     # lm_head, its top 16 rescored by the FP8 rows (lossless: acceptance checks every draft against the target)

@@ -159,14 +159,14 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         images = []
         if vision is not None:
             folded, images = await asyncio.to_thread(media.prepare, folded, vision, decode)
-            folded, tools = media.escape(folded), media.escape(tools)
+            folded, tools = media.escape(folded, vision), media.escape(tools, vision)
         head = ""  # rendered before the full prompt: the template's last render is the one tests and logs look at
         if boundary and len(folded) > 1:
             with contextlib.suppress(Exception):  # a template that rejects a partial conversation: no boundary
                 head = tmpl.render(folded[:-1], add_generation_prompt=False, enable_thinking=thinking, tools=tools, **kwargs)
         rendered = tmpl.render(folded, enable_thinking=thinking, tools=tools, **kwargs)
         ids, at = _message_boundary(markers or tok, rendered, head)
-        ids, at, prompt_media = media.expand(ids, at, images, vision) if images else (ids, at, ())
+        ids, at, prompt_media = media.expand(ids, at, images, vision, tok) if images else (ids, at, ())
         return ids, thinking and rendered.rstrip().endswith("<think>"), at, prompt_media
 
     async def _submit(ids: list[int], params, prompt_media: tuple = ()) -> Ticket:
@@ -401,7 +401,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         messages = body.get("messages") or []
         if not messages:
             raise HTTPException(400, "messages required")
-        messages = _text_only(messages, images=vision is not None)
+        messages = _text_only(messages, images=vision is not None,
+                              videos=getattr(vision, "video_token", None) is not None)
         kwargs, thinking = _template_kwargs(body)
         tools = None if body.get("tool_choice") == "none" else body.get("tools")  # "none": generate without tool schemas
         messages, stopped = _guard(messages, body)
@@ -669,11 +670,12 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 _OPENAI_MEDIA = ("image_url", "input_image", "image", "input_audio", "file", "video_url", "input_video", "video")
 
 
-def _text_only(messages: list, images: bool = False) -> list:
-    """Media parts the model cannot read (all of them, or with `images` all but images: api/media.py). One a tool
-    returned becomes the note the Messages API uses (an agent reading a PNG keeps going); one anywhere else is a 400,
-    not a reply about content the model never saw."""
-    unreadable = tuple(k for k in _OPENAI_MEDIA if not (images and k in media.IMAGE_PARTS))
+def _text_only(messages: list, images: bool = False, videos: bool = False) -> list:
+    """Media parts the model cannot read (all of them, or with `images`/`videos` all but those: api/media.py). One
+    a tool returned becomes the note the Messages API uses (an agent reading a PNG keeps going); one anywhere else
+    is a 400, not a reply about content the model never saw."""
+    readable = tuple(media.IMAGE_PARTS if images else ()) + tuple(media.VIDEO_PARTS if videos else ())
+    unreadable = tuple(k for k in _OPENAI_MEDIA if k not in readable)
     out = []
     for i, message in enumerate(messages):
         content = message.get("content") if isinstance(message, dict) else None

@@ -13,7 +13,8 @@ NVFP4 experts (intermediate 640) plus a sigmoid-gated shared expert. A prefix-lo
 before layer 1 reads 16 rows of a 320M-row FP8 table per token (bigram and trigram hashes, 8 heads each) and
 adds a gated, causally convolved projection to the streams; a global mixer feeds the BF16 head. The checkpoint
 also ships a one-layer MTP head (the default drafter; a DFlash2 drafter can serve instead, [below](#the-dflash2-draft))
-and a vision tower (not loaded).
+and a vision tower (served with `HIBANA_VISION`, default on for the fork's flashnext preset: image and video input,
+[api.md](api.md); Phase 1-3 of the vision fork, `PHASE1/2/3-NOTES.md`).
 
 Serving formats: the trunk is quantized to FP8 at load (per-tensor, dynamic activation scale), with calibrated
 3-bit decode copies in `fast` and `throughput`. The routed experts are 3-bit too when those copies are on and the W3

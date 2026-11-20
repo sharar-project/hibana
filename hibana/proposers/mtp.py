@@ -160,7 +160,9 @@ class MtpProposer:
                 hid = torch.cat([state.last_hidden.unsqueeze(0), norm_rows[:n - 1]], dim=0)
             else:
                 hid = norm_rows[first - start - 1:n - 1]
-            pos = torch.arange(first, end, dtype=torch.int64, device=self.context.device)
+            rp = getattr(req, "row_pos", None)
+            pos = (torch.tensor([rp(i) for i in range(first, end)], dtype=torch.int64, device=self.context.device)
+                   if rp is not None else torch.arange(first, end, dtype=torch.int64, device=self.context.device))
             pages = req.pages[first:end]
             self.head.write_kv(toks, hid, pos, pages)
             state.draft_pos = end
@@ -287,7 +289,9 @@ class MtpProposer:
         start, end = req.committed_len - count, req.committed_len
         norm = features.norm[row, :count]
         hidden = torch.cat([state.pending_hidden, norm[:count - 1]])
-        positions = torch.arange(start, end, dtype=torch.int64, device=self.context.device)
+        rp = getattr(req, "row_pos", None)
+        positions = (torch.tensor([rp(i) for i in range(start, end)], dtype=torch.int64, device=self.context.device)
+                     if rp is not None else torch.arange(start, end, dtype=torch.int64, device=self.context.device))
         # Preserve each row's projection shape/rounding. Accepted draft KV must
         # be target-conditioned, including the fully accepted bonus input.
         self.head.write_kv(inputs, hidden, positions, req.pages[start:end])
