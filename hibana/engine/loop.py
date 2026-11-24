@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import torch
 
 from hibana.distributed import broadcast_pyobj, expect_peer_exit, get_tp_info
+from hibana.engine.config import current
 from hibana.engine.grammar import Grammars
 from hibana.engine.request import Request
 from hibana.engine.sampler import InvalidRequest, SamplingParams
@@ -56,7 +57,8 @@ class EngineLoop:
     `_publish`: before and after a step, and each `on_progress` inside it), so
     their schedulers take the same steps and their forwards meet the
     primary's collectives. An engine failure ends the process, since the other
-    ranks' collectives cannot complete without it."""
+    ranks' collectives cannot complete without it; on one rank only with
+    HIBANA_EXIT_ON_FAILURE, else the server stays up and answers 503."""
 
     def __init__(self, sched: Scheduler, grammars: Grammars | None = None):
         self.sched = sched
@@ -71,6 +73,7 @@ class EngineLoop:
         if spec is not None:
             spec.on_wait = self._on_wait
         self.tp = get_tp_info()
+        self.exit_on_failure = self.tp.size > 1 or current().exit_on_failure
         self._recv_commands = self._recv_commands_rank0 if self.tp.is_primary() else self._recv_commands_rank1
         self._applied: list[tuple] = []  # commands applied since the last broadcast
         self.inbox: queue.Queue = queue.Queue()
@@ -286,7 +289,7 @@ class EngineLoop:
                     logging.exception("resource cleanup failed for request %s", req.request_id)
             requests.clear()
         self.last_stats = self.sched.stats()
-        if self.tp.size > 1:
+        if self.exit_on_failure:
             os._exit(1)
 
     def _on_wait(self) -> None:

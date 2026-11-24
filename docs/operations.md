@@ -107,6 +107,7 @@ Further settings, for tuning, diagnostics and the tools (defaults from `engine/c
 | `HIBANA_GDN_PREFILL` | `auto` | GDN prefill kernels: `auto` (CuTe on SM12x where supported), `cute` or `triton` |
 | `HIBANA_TRUNK_KEEP_BF16` | unset | A diagnostic: a regex of Flash-Next trunk projections kept in BF16 |
 | `HIBANA_DEBUG_SYNC` | off | `1` synchronizes after each phase, so an asynchronous CUDA fault names the phase and batch that launched it |
+| `HIBANA_EXIT_ON_FAILURE` | off | `1` ends the process when the engine fails (a CUDA error, say), so a supervisor (Docker's restart policy, systemd's `Restart=`) can start it again; off, the server stays up and `/health` answers 503 until restarted by hand. On two Sparks a failure always ends it |
 | `HIBANA_CUDA_ARCH` | `12.1a` | The architecture the CUDA kernels built on first use target |
 | `HIBANA_CLAUDE_MODEL` | `claude-hibana-<model>`, e.g. `claude-hibana-nemotron-3.5-super` | The model id `hibana launch claude` gives Claude Code (it accepts only ids containing "claude") |
 | `HIBANA_CLAUDE_CONFIG` | `~/.claude-hibana` | Claude Code's configuration directory under `hibana launch claude`, apart from the user's own |

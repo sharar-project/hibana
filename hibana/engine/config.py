@@ -141,6 +141,7 @@ class EngineConfig:
     trace_confidence: bool = False            # HIBANA_TRACE_CONFIDENCE: the MTP draft's confidence per drafted position in trace rounds (read when the proposer is built)
     # --- diagnostics and benchmark loader
     debug_sync: bool = False                  # HIBANA_DEBUG_SYNC
+    exit_on_failure: bool = False             # HIBANA_EXIT_ON_FAILURE: end the process when the engine fails, so a supervisor can restart it
     bench_verify_state: str = "snapshots"     # HIBANA_BENCH_VERIFY_STATE
     moe_keep: int = 0                         # HIBANA_MOE_KEEP=k: top experts a token is guaranteed in decode and verify (0, or k >= the top-k: all)
     moe_budget: int = 0                       # HIBANA_MOE_BUDGET=[P:]B: distinct experts a decode or verify forward reads, min(B, P x requests); 0: off (moe.py route_budget)
@@ -220,6 +221,7 @@ class EngineConfig:
             traces_max_mib=_int(e, "HIBANA_TRACES_MAX_MIB", 32768),
             trace_confidence=_flag(e, "HIBANA_TRACE_CONFIDENCE"),
             debug_sync=_flag(e, "HIBANA_DEBUG_SYNC"),
+            exit_on_failure=_flag(e, "HIBANA_EXIT_ON_FAILURE"),
             bench_verify_state=e.get("HIBANA_BENCH_VERIFY_STATE", "snapshots"),
             moe_keep=_int(e, "HIBANA_MOE_KEEP", 0),
             moe_budget=budget[1],

@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from hibana import config
+from hibana.engine.config import current, using
 from hibana.engine.loop import EngineLoop, EngineUnavailable
 from hibana.api.validation import _sampling_from
 from hibana.api.server import create_app
@@ -335,6 +336,32 @@ def test_engine_failure_terminates_tickets_and_rejects_new_work(monkeypatch, pha
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
                 assert (await client.get('/health')).status_code == 503
                 assert (await client.get('/ready')).status_code == 503
+        finally:
+            engine.stop = True
+            await asyncio.to_thread(engine.thread.join, 2)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('exit_on_failure', [False, True])
+def test_engine_failure_ends_the_process_only_when_asked(monkeypatch, exit_on_failure):
+    # A one-rank server that stays up after a failure answers 503 until restarted by hand; a supervisor restarts it only
+    # if the process ends.
+    async def scenario():
+        ex = tiny_executor(monkeypatch)
+        def fail(*args):
+            raise RuntimeError('injected decode failure')
+        ex.decode_step = fail
+        exits = []
+        monkeypatch.setattr('hibana.engine.loop.os._exit', exits.append)
+        with using(current().replace(exit_on_failure=exit_on_failure)):
+            engine = EngineLoop(Scheduler(ex))
+        engine.start()
+        try:
+            ticket = await engine.submit([1, 2], SamplingParams(max_new_tokens=10))
+            while not (await asyncio.wait_for(ticket.queue.get(), 2))[1]:
+                pass
+            await asyncio.to_thread(engine.thread.join, 2)
+            assert engine.failure and exits == ([1] if exit_on_failure else [])
         finally:
             engine.stop = True
             await asyncio.to_thread(engine.thread.join, 2)
