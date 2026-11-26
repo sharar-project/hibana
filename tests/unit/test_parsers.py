@@ -33,6 +33,25 @@ def test_tool_call_parse_with_schema_casts():
     assert json.loads(calls[0]["function"]["arguments"]) == {"city": "Paris", "days": 3}
 
 
+@pytest.mark.parametrize("schema,text,want", [
+    ({"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]}, '["x@y.z"]', ["x@y.z"]),
+    ({"anyOf": [{"type": "array"}, {"type": "null"}]}, "null", None),
+    ({"type": ["integer", "null"]}, "3", 3),
+    ({"type": ["integer", "null"]}, "null", None),
+    ({"oneOf": [{"type": "object"}, {"type": "null"}]}, '{"a": 1}', {"a": 1}),
+    ({"anyOf": [{"type": "array"}, {"type": "null"}]}, "x@y.z", "x@y.z"),  # fits no type: the text, for the tool's error
+    ({"anyOf": [{"type": "string"}, {"type": "array"}]}, '["a"]', '["a"]'),  # schema order: a string stays a string
+    ({"type": "boolean"}, "maybe", "maybe"),
+    ({"type": "string"}, "null", "null"),
+])
+def test_tool_call_casts_optional_and_union_parameters(schema, text, want):
+    """Optional[X] (anyOf / oneOf with null) and type lists cast to the first type the text reads as."""
+    import json
+    tools = [{"type": "function", "function": {"name": "f", "parameters": {"type": "object", "properties": {"p": schema}}}}]
+    _, calls = parse_tool_calls(f"<tool_call>\n<function=f>\n<parameter=p>\n{text}\n</parameter>\n</function>\n</tool_call>", tools)
+    assert json.loads(calls[0]["function"]["arguments"]) == {"p": want}
+
+
 def test_no_tool_call_passthrough():
     content, calls = parse_tool_calls("plain answer", None)
     assert content == "plain answer" and calls == []

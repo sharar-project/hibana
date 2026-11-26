@@ -29,22 +29,46 @@ def has_tool_call(text: str) -> bool:
     return TOOL_CALL_START in text
 
 
+def _types(schema: dict) -> list[str]:
+    """The JSON types a parameter allows: `type` (a name or a list), else its `anyOf` / `oneOf` branches'
+    (Pydantic and most tool frameworks write `Optional[X]` as `anyOf: [X, {type: null}]`)."""
+    t = schema.get("type")
+    if isinstance(t, str):
+        return [t]
+    if isinstance(t, list):
+        return [x for x in t if isinstance(x, str)]
+    out: list[str] = []
+    for branch in (schema.get("anyOf") or []) + (schema.get("oneOf") or []):
+        if isinstance(branch, dict):
+            out += [x for x in _types(branch) if x not in out]
+    return out
+
+
 def _cast(value: str, schema: dict | None):
+    """The model's text as the first allowed type it reads as, in schema order; the text itself when none fits, so the
+    tool's own error reaches the model."""
     if not schema:
         return value
-    t = schema.get("type")
+    types = _types(schema)
     v = value.strip()
-    try:
-        if t == "integer":
-            return int(v)
-        if t == "number":
-            return float(v)
-        if t == "boolean":
-            return v.lower() in ("true", "1", "yes")
-        if t in ("object", "array"):
-            return json.loads(v)
-    except (ValueError, json.JSONDecodeError):
-        return value
+    if v == "null" and "null" in types:
+        return None
+    for t in types:
+        try:
+            if t == "string":
+                return value
+            if t == "integer":
+                return int(v)
+            if t == "number":
+                return float(v)
+            if t == "boolean" and v.lower() in ("true", "false", "1", "0", "yes", "no"):
+                return v.lower() in ("true", "1", "yes")
+            if t in ("object", "array"):
+                parsed = json.loads(v)
+                if isinstance(parsed, dict if t == "object" else list):
+                    return parsed
+        except (ValueError, json.JSONDecodeError):
+            continue
     return value
 
 
