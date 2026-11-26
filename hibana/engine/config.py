@@ -119,6 +119,7 @@ class EngineConfig:
     draft_head_rescore: int = 8               # HIBANA_DRAFT_HEAD_RESCORE (default 8, 16 for w2)
     device_accept: bool = False               # HIBANA_DEVICE_ACCEPT
     mtp_sample: bool = False                  # HIBANA_MTP_SAMPLE: sampled requests draft from the MTP head's law on its rescored candidates instead of its argmax, verified against that law
+    default_thinking: bool = True             # HIBANA_DEFAULT_THINKING=0: chat requests without enable_thinking render with thinking off
     accept_default: str = "off"               # HIBANA_ACCEPT_DEFAULT: K:M for greedy requests that set neither field (off: exact)
     accept_soft: float = 0.0                  # HIBANA_ACCEPT_SOFT: accept_soft s for sampled requests that do not set it (0: exact)
     qsa_sparse_graphs: bool = True            # HIBANA_QSA_SPARSE_GRAPHS=0: rows past the indexer budget run eagerly
@@ -207,6 +208,7 @@ class EngineConfig:
             draft_head_rescore=_int(e, "HIBANA_DRAFT_HEAD_RESCORE", 16 if e.get("HIBANA_DRAFT_HEAD") == "w2" else 8),
             device_accept=_flag(e, "HIBANA_DEVICE_ACCEPT"),
             mtp_sample=_flag(e, "HIBANA_MTP_SAMPLE"),
+            default_thinking=_flag(e, "HIBANA_DEFAULT_THINKING", True),
             accept_default=e.get("HIBANA_ACCEPT_DEFAULT", "off"),
             accept_soft=_accept_soft(e),
             qsa_sparse_graphs=e.get("HIBANA_QSA_SPARSE_GRAPHS", "1") != "0",

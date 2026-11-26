@@ -77,8 +77,8 @@ def _stops(body: dict) -> list[str]:
 _EFFORT = {"low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh", "max": "xhigh"}
 
 
-def _template_kwargs(body: dict) -> tuple[dict, bool]:
-    """chat_template_kwargs without enable_thinking, and the thinking switch (default on).
+def _template_kwargs(body: dict, default_thinking: bool = True) -> tuple[dict, bool]:
+    """chat_template_kwargs without enable_thinking, and the thinking switch.
 
     A client effort level (OpenAI `reasoning_effort`, Anthropic
     `output_config.effort`) selects the template's reasoning effort unless
@@ -88,7 +88,7 @@ def _template_kwargs(body: dict) -> tuple[dict, bool]:
     effort = body.get("reasoning_effort") or (config.get("effort") if isinstance(config, dict) else None)
     if "reasoning_effort" not in kwargs and isinstance(effort, str) and effort.lower() in _EFFORT:
         kwargs["reasoning_effort"] = _EFFORT[effort.lower()]
-    return kwargs, bool(kwargs.pop("enable_thinking", True))
+    return kwargs, bool(kwargs.pop("enable_thinking", default_thinking))
 
 
 def _output_spec(body: dict) -> tuple[str, object] | None:
