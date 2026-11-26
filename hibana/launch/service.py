@@ -1,6 +1,6 @@
 """`hibana serve --detach`: the same command as a user systemd service.
 
-The service runs this checkout's `hibana` with the caller's HIBANA_* settings and config file; its output goes to
+The service runs this checkout's `hibana` with the caller's settings, config file and cache paths (`FORWARDED`); its output goes to
 $HIBANA_RESULTS/logs/<service>.log (the previous run's is .log.1); `systemctl --user stop` sends SIGTERM, so the server
 drains (and with the SSD tier on, stores its cached prefixes). SIGTERM reaches the main process only (KillMode=mixed):
 on two Sparks that is the supervisor, which passes it to rank 0 alone, and rank 1's ssh must stay up until rank 0's
@@ -17,6 +17,10 @@ from pathlib import Path
 
 from hibana.launch.settings import config_file
 
+# What the service inherits from the caller, as a foreground serve would: settings, the model cache, the GPU and the
+# caches and scratch space of the kernel compilers (Triton, Inductor, CUDA, FlashInfer); not the login session's rest.
+FORWARDED = ("HIBANA_", "HF_", "CUDA_", "NCCL_", "TRITON_", "TORCH", "PYTORCH_", "FLASHINFER_", "TOKENIZERS_")
+FORWARDED_NAMES = ("XDG_CACHE_HOME", "TMPDIR", "LD_LIBRARY_PATH")
 MILESTONES = ("loading", "  weights loaded", "  w3: ", "  captured verify graph for batch", "  warmup done", "serving on",
               "downloading", "fetching", "[rank 1]   weights loaded")
 
@@ -40,7 +44,7 @@ def start(unit: str, argv: list[str], log: Path, description: str) -> None:
     log.parent.mkdir(parents=True, exist_ok=True)
     if log.is_file():
         log.replace(log.with_name(log.name + ".1"))
-    env = {k: v for k, v in os.environ.items() if k.startswith(("HIBANA_", "HF_", "CUDA_VISIBLE", "NCCL_"))}
+    env = {k: v for k, v in os.environ.items() if k.startswith(FORWARDED) or k in FORWARDED_NAMES}
     conf = config_file()
     if conf is not None:
         env["HIBANA_CONFIG_FILE"] = str(conf)

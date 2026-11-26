@@ -42,7 +42,8 @@ missing snapshots, keeps the 3-bit checkpoint on its pinned revision, prints wha
 in its own process with the memory guard as a thread: when `MemAvailable` stays under half the host floor for six seconds it
 stops the server (SIGTERM, then SIGKILL after 15 s), before unified memory pages the weights. The scheduler already holds
 new admissions under that threshold. `--detach` runs the same command as the user systemd service `hibana-qwen38` or
-`hibana-flashnext`, logging to `$HIBANA_RESULTS/logs/<service>.log` (the previous run's is `.log.1`); `hibana stop`
+`hibana-flashnext` with the caller's settings and cache paths (`HIBANA_*`, `HF_*`, `CUDA_*`, `TRITON_*`,
+`TORCH*`, `XDG_CACHE_HOME`, `TMPDIR` and the like), logging to `$HIBANA_RESULTS/logs/<service>.log` (the previous run's is `.log.1`); `hibana stop`
 sends it SIGTERM, so it drains and, with the SSD tier on, stores its cached prefixes. Automatic KV capacity depends
 on available memory.
 

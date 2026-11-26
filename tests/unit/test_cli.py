@@ -181,11 +181,16 @@ def test_service_start_composes_systemd_run(home, monkeypatch, tmp_path):
     log = tmp_path / "logs" / "unit.log"
     log.parent.mkdir()
     log.write_text("old run")
+    monkeypatch.setenv("TRITON_CACHE_DIR", "/data/triton")
+    monkeypatch.setenv("XDG_CACHE_HOME", "/data/xdg")
+    monkeypatch.setenv("DISPLAY", ":0")
     service.start("hibana-x", ["serve", "27b"], log, "Hibana test")
     cmd = calls[-1]
     assert cmd[:2] == ["systemd-run", "--user"] and cmd[cmd.index("--unit") + 1] == "hibana-x"
     assert cmd[-5:] == [sys.executable, "-m", "hibana", "serve", "27b"]
     assert f"StandardOutput=append:{log}" in cmd and f"HIBANA_RESULTS={home / 'results'}" in cmd
+    assert "TRITON_CACHE_DIR=/data/triton" in cmd and "XDG_CACHE_HOME=/data/xdg" in cmd  # as a foreground serve sees
+    assert not any(a.startswith("DISPLAY=") for a in cmd)
     assert (tmp_path / "logs" / "unit.log.1").read_text() == "old run"
 
 
