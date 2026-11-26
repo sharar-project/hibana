@@ -90,6 +90,7 @@ same) and results, traces, 3-bit checkpoints and logs in `HIBANA_RESULTS` (defau
 | Flash-Next PLE table on two Sparks | each rank's half of the heads in device memory (23.8 GiB per rank; [tensor parallel](tensor-parallel.md)) | `HIBANA_PLE_RESIDENT=0` reads it from the memory maps on the host, as one Spark does (which prefetches a prompt's later chunks into the page cache) |
 | Image input | Nemotron and Bolt: on (their vision encoder, 1.6 GiB); the 27B and Flash-Next: off | `HIBANA_VISION=0` leaves the encoder's memory to the pools; images are then a 400 ([API](api.md#images)). `HIBANA_VISION=1` serves the 27B's and Flash-Next's vision tower (0.86 GiB, up to 2.2 GiB to encode the largest image); `HIBANA_VISION_MAX_PIXELS` caps their images (default 16,777,216 pixels, 16,384 tokens) |
 | Shape-stable prefill numerics | off | `HIBANA_STABLE_NUMERICS=1` (M-invariant kernels for the three row-count-dependent ops; see [limits](#numerical-limits)) |
+| Memory left to other programs (host floor) | 6 GiB of `MemAvailable` | `HIBANA_HOST_FLOOR_GIB`: raise it by what other services on the Spark use at their peak; it also moves the admission hold and the memory guard (half of it) and preflight's check (host floor, below) |
 
 For MTP on the 27B, use `HIBANA_PROPOSER=mtp HIBANA_SPEC=3 HIBANA_DRAFT_PRECISION=bf16`. `HIBANA_PROPOSER` is `mtp`
 or `dflash2`.
@@ -331,7 +332,10 @@ are counted: the drafter, the SSD tier's staging, FlashInfer's workspaces, the C
 prefill takes outside PyTorch, and the activation blocks PyTorch keeps cached (the server log's "counted after the
 pools" line; `/get_server_info`'s `after_plan_gib`). Admission holds, and the memory guard stops the server, only under
 half the floor, when other programs have used more than it left them (`HIBANA_HOST_FLOOR_GIB` moves both; main's
-`HIBANA_MIN_AVAILABLE_KIB` is retired). Preflight wants the 24 GiB load peak above the floor. `/get_server_info` also reports `memory_gib`:
+`HIBANA_MIN_AVAILABLE_KIB` is retired). Preflight wants the 24 GiB load peak above the floor.
+On a Spark shared with other services (a database, a proxy, an image model), raise the floor by what they use at their
+peak: at `HIBANA_HOST_FLOOR_GIB=24` the pools leave 24 GiB, admission holds and the guard act under 12 GiB, and
+preflight wants 48 GiB available before loading. `/get_server_info` also reports `memory_gib`:
 PyTorch's allocated and reserved bytes, now and at their peak, and the process's resident memory. Terms and measurements: [memory_plan.md](memory_plan.md).
 
 ## Development
