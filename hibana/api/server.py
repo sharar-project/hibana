@@ -62,9 +62,10 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                vision=None) -> FastAPI:
     """`vision`: the target's vision encoder (`model.vision`, engine/contracts.VisionEncoder) when it serves image
     input, else None."""
-    MODEL_ID = describe.get("model_path", targets.DEFAULT_TARGET.model_id)  # the served checkpoint id, reported as the model name
+    MODEL_ID = describe.get("model_path", targets.DEFAULT_TARGET.model_id)  # the served checkpoint id
     from hibana.engine.config import current
     model_alias = current().model_alias
+    response_model = model_alias or MODEL_ID
     markers = media.Markers(tok, vision) if vision is not None else None
     @asynccontextmanager
     async def lifespan(app):
@@ -379,7 +380,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                     if detok.stopped:
                         engine.cancel(ticket)
                         finished, reason = True, "stop"
-                    chunk = {"id": cid, "object": "text_completion", "created": created, "model": MODEL_ID,
+                    chunk = {"id": cid, "object": "text_completion", "created": created, "model": response_model,
                              "choices": [{"index": 0, "text": delta, "finish_reason": reason if finished else None}]}
                     if return_token_ids:
                         chunk["choices"][0]["token_ids"] = new
@@ -389,7 +390,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                     yield f"data: {json.dumps(chunk)}\n\n"
                     if finished:
                         if include_usage:
-                            yield f"data: {json.dumps({'id': cid, 'object': 'text_completion', 'created': created, 'model': MODEL_ID, 'choices': [], 'usage': usage(len(out))})}\n\n"
+                            yield f"data: {json.dumps({'id': cid, 'object': 'text_completion', 'created': created, 'model': response_model, 'choices': [], 'usage': usage(len(out))})}\n\n"
                         break
                 yield "data: [DONE]\n\n"
             return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
@@ -397,7 +398,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         choice = {"index": 0, "text": text, "finish_reason": reason}
         if return_token_ids:
             choice.update(token_ids=out, prompt_token_ids=ids)
-        return {"id": cid, "object": "text_completion", "created": created, "model": MODEL_ID,
+        return {"id": cid, "object": "text_completion", "created": created, "model": response_model,
                 "choices": [choice], "usage": usage(len(out))}
 
     # ---- OpenAI chat ----
@@ -462,11 +463,11 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                         if calls:
                             delta["tool_calls"] = [{"index": i, **c} for i, c in enumerate(calls)]
                         if delta or finished:
-                            chunk = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": MODEL_ID,
+                            chunk = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": response_model,
                                      "choices": [{"index": 0, "delta": delta, "finish_reason": reason if finished else None}]}
                             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                         if finished and include_usage:
-                            yield f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_ID, 'choices': [], 'usage': usage(n_out)})}\n\n"
+                            yield f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': response_model, 'choices': [], 'usage': usage(n_out)})}\n\n"
                 except EngineUnavailable:
                     yield 'data: {"error": {"message": "engine unavailable", "type": "server_error"}}\n\n'
                 yield "data: [DONE]\n\n"
@@ -481,7 +482,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
             message["tool_calls"] = calls
             reason = "tool_calls"
         reasoning_tokens = len(tok.encode(reasoning)) if reasoning else 0
-        return {"id": cid, "object": "chat.completion", "created": created, "model": MODEL_ID,
+        return {"id": cid, "object": "chat.completion", "created": created, "model": response_model,
                 "choices": [{"index": 0, "message": message, "finish_reason": reason}],
                 "usage": usage(len(out), reasoning_tokens)}
 
@@ -491,12 +492,12 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         if body.get("stream"):
             def chunk(delta, finish):
-                return f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_ID, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]})}\n\n"
+                return f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': response_model, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]})}\n\n"
             events = [chunk({"role": "assistant", "content": text}, None), chunk({}, "stop")]
             if (body.get("stream_options") or {}).get("include_usage"):
-                events.append(f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_ID, 'choices': [], 'usage': usage})}\n\n")
+                events.append(f"data: {json.dumps({'id': cid, 'object': 'chat.completion.chunk', 'created': created, 'model': response_model, 'choices': [], 'usage': usage})}\n\n")
             return StreamingResponse(iter(events + ["data: [DONE]\n\n"]), media_type="text/event-stream")
-        return {"id": cid, "object": "chat.completion", "created": created, "model": MODEL_ID,
+        return {"id": cid, "object": "chat.completion", "created": created, "model": response_model,
                 "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}], "usage": usage}
 
     async def _chat_choices(ids, params, stop, in_reasoning, tools, n, http, prompt_media=()):
@@ -526,7 +527,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         usage = {"prompt_tokens": len(ids), "completion_tokens": completion, "total_tokens": len(ids) + completion,
                  "prompt_tokens_details": {"cached_tokens": primer.req.prefix_len}, "reasoning_tokens": reasoning_total}
         return {"id": f"chatcmpl-{uuid.uuid4().hex[:24]}", "object": "chat.completion", "created": int(time.time()),
-                "model": MODEL_ID, "choices": choices, "usage": usage}
+                "model": response_model, "choices": choices, "usage": usage}
 
     # ---- Anthropic Messages ----
     async def _messages_errors(handler, http: HttpRequest):

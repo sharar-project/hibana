@@ -1,5 +1,6 @@
 """Unsupported output constraints fail before prompt work or engine admission."""
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -214,4 +215,39 @@ def test_models_lists_alias_first_and_keeps_checkpoint_root(alias, expected_ids)
             data = (await client.get('/v1/models')).json()['data']
         assert [m['id'] for m in data] == expected_ids
         assert all(m['root'] == 'RadixArk/Test' for m in data)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('alias, expected', [('qwen3-coder', 'qwen3-coder'), ('', 'RadixArk/Test')])
+@pytest.mark.parametrize('route', ['/v1/chat/completions', '/v1/completions'])
+@pytest.mark.parametrize('stream', [False, True])
+def test_openai_responses_report_served_name(alias, expected, route, stream):
+    from hibana.engine import config
+
+    async def scenario():
+        queue = asyncio.Queue()
+        queue.put_nowait(([2], True, 'stop'))
+        engine = SimpleNamespace(submit=AsyncMock(return_value=SimpleNamespace(
+            queue=queue, req=SimpleNamespace(prefix_len=0))), cancel=Mock())
+        tok = SimpleNamespace(encode=Mock(return_value=[1]), decode=lambda ids, **kwargs: 'ok')
+        with config.using(config.current().replace(model_alias=alias)):
+            app = create_app(engine, tok, SimpleNamespace(render=Mock(return_value='prompt')),
+                             {'model_path': 'RadixArk/Test'})
+        body = {'stream': stream, 'stream_options': {'include_usage': True}}
+        if route == '/v1/chat/completions':
+            body['messages'] = [{'role': 'user', 'content': 'hi'}]
+        else:
+            body['prompt'] = 'hi'
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+            response = await client.post(route, json=body)
+        assert response.status_code == 200
+        if stream:
+            events = [json.loads(line.removeprefix('data: ')) for line in response.text.splitlines()
+                      if line.startswith('data: {')]
+            assert len(events) == 2
+            assert events[-1]['choices'] == []
+            assert all(event['model'] == expected for event in events)
+        else:
+            assert response.json()['model'] == expected
+
     asyncio.run(scenario())
