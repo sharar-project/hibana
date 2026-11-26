@@ -118,6 +118,30 @@ Further settings, for tuning, diagnostics and the tools (defaults from `engine/c
 | `HIBANA_EVALS_PYTHON` | unset | That checkout's Python (`--python`; default its `.venv`) |
 | `HIBANA_MAX_QUEUED` | `0` | Requests queued before HTTP 429; it only raises the profile's limit (16, at least two batches), `0` keeps it |
 
+### Video input
+
+With `HIBANA_VISION=1` the 27B and Flash-Next read video as well as images, as their checkpoints' video processors
+do ([API](api.md#videos)): a clip is sampled at 2 frames a second, its frames are resized together to one size, and the
+engine reads each frame pair as an image, behind the text of its timestamp. Text and image requests are served as
+without it. The limits:
+
+| Limit | Default | |
+|---|---|---|
+| `HIBANA_VIDEO_MAX_FRAMES` | 32 | Frames sampled from a clip, uniformly at 2 frames a second and at least 4 (the checkpoints' own default is 768). Each pair costs what an image of the frame size does, in tokens and in encode time before the prefill: a 640 x 480 clip is 300 tokens a pair |
+| `HIBANA_VIDEO_MAX_BYTES` | 64 MiB | An encoded video in a request |
+| Pixels | the checkpoint's video budget | 25,165,824 over the whole clip (at least 4,096) and 4,194,304 a frame, every frame of a clip one size. A longer clip is therefore made of smaller frames: a 1280 x 720 clip at the default 32 frames is resized to 640 x 1152, 720 tokens a pair (16 pairs, about 11,700 with the timestamps). `HIBANA_VISION_MAX_PIXELS` bounds images only |
+| Videos a request | 4 | Beside the 100 images; the prompt with its videos must fit the context |
+| Decode | 300 s | What `ffmpeg` and `ffprobe` may spend on one video; longer is a 400 naming it |
+
+**`ffmpeg` and `ffprobe`.** Video needs both on the host (`apt install ffmpeg`); nothing else does, and they are not a
+dependency of the project. `hibana serve` does not check for them: without them every other request is served as before
+and a video is a 400 (`this server has no ffmpeg: videos are not served`), or a note inside a tool result.
+
+On one GB10 (27B, `fast`): a 4 s 640 x 480 clip (4 pairs, 1,200 tokens) prefills in 0.5 s where a text prompt of the
+same length takes 0.35 s, and a 16 s 1280 x 720 one (16 pairs, 11,700 tokens) in 5.0 s. Decode does not depend on the
+video: 67 ms a round with or without one in the prompt, so tokens a second follow the drafts' acceptance as for text. A
+later turn that sends the same video resumes from the cached prefix.
+
 ### Adaptive verification (DFlash2)
 
 DFlash2 drafts its whole block in one forward, then verifies only the drafts worth their time
