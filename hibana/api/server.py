@@ -63,6 +63,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     """`vision`: the target's vision encoder (`model.vision`, engine/contracts.VisionEncoder) when it serves image
     input, else None."""
     MODEL_ID = describe.get("model_path", targets.DEFAULT_TARGET.model_id)  # the served checkpoint id, reported as the model name
+    from hibana.engine.config import current
+    model_alias = current().model_alias
     markers = media.Markers(tok, vision) if vision is not None else None
     @asynccontextmanager
     async def lifespan(app):
@@ -226,7 +228,11 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
 
     @app.get("/v1/models")
     async def models():
-        return {"object": "list", "data": [{"id": MODEL_ID, "object": "model", "owned_by": "hibana", "root": MODEL_ID}]}
+        entry = {"object": "model", "owned_by": "hibana", "root": MODEL_ID}
+        data = [{"id": MODEL_ID, **entry}]
+        if model_alias and model_alias != MODEL_ID:
+            data.insert(0, {"id": model_alias, **entry})
+        return {"object": "list", "data": data}
 
     @app.get("/get_server_info")
     @app.get("/describe")

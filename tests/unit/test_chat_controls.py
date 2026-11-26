@@ -198,3 +198,20 @@ def test_constraints_are_built_for_the_served_targets_vocabulary(monkeypatch, ta
                 'messages': [{'role': 'user', 'content': 'hi'}], 'response_format': {'type': 'json_object'}})
     asyncio.run(scenario())
     assert built == [(vocab, tuple(targets.get(target).stop_token_ids))]
+
+
+@pytest.mark.parametrize('alias, expected_ids', [
+    ('qwen3-coder', ['qwen3-coder', 'RadixArk/Test']),
+    ('', ['RadixArk/Test']),
+    ('RadixArk/Test', ['RadixArk/Test']),
+])
+def test_models_lists_alias_first_and_keeps_checkpoint_root(alias, expected_ids):
+    from hibana.engine import config
+    async def scenario():
+        with config.using(config.current().replace(model_alias=alias)):
+            app = create_app(SimpleNamespace(), SimpleNamespace(), SimpleNamespace(), {'model_path': 'RadixArk/Test'})
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+            data = (await client.get('/v1/models')).json()['data']
+        assert [m['id'] for m in data] == expected_ids
+        assert all(m['root'] == 'RadixArk/Test' for m in data)
+    asyncio.run(scenario())

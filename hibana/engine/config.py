@@ -85,6 +85,7 @@ class EngineConfig:
     # --- target and files
     profile: str = "fast"                     # HIBANA_PROFILE: exact / fast / throughput (resolved by the launcher, reported here)
     target: str | None = None                 # HIBANA_TARGET: qwen38 (default) or flashnext
+    model_alias: str = ""                     # HIBANA_MODEL_ALIAS: extra model id listed first in /v1/models; root stays the checkpoint id
     hf_cache: str | None = None               # HIBANA_HF_CACHE, else HF_HOME: the 27B's model cache
     flashnext_cache: str | None = None        # HIBANA_FLASHNEXT_CACHE: Flash-Next's model cache
     max_context: int | None = None            # HIBANA_MAX_CONTEXT (0/unset: the target's)
@@ -175,6 +176,7 @@ class EngineConfig:
         return cls(
             profile=_str(e, "HIBANA_PROFILE", "fast"),
             target=_str(e, "HIBANA_TARGET"),
+            model_alias=_str(e, "HIBANA_MODEL_ALIAS", ""),
             hf_cache=_str(e, "HIBANA_HF_CACHE") or _str(e, "HF_HOME"),
             flashnext_cache=_str(e, "HIBANA_FLASHNEXT_CACHE"),
             max_context=_int(e, "HIBANA_MAX_CONTEXT", 0) or None,

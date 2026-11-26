@@ -132,6 +132,11 @@ def test_the_ssd_tier_stores_in_the_users_data_directory_unless_moved():
     assert cfg.ssd_dir == "/nvme/ssd" and cfg.ssd_gib == 50.0
 
 
+def test_model_alias_reads_the_environment():
+    assert EngineConfig.from_env({}).model_alias == ""
+    assert EngineConfig.from_env({"HIBANA_MODEL_ALIAS": "qwen3-coder"}).model_alias == "qwen3-coder"
+
+
 def test_max_queued_reads_the_environment():
     assert EngineConfig.from_env({}).max_queued == 0
     assert EngineConfig.from_env({"HIBANA_MAX_QUEUED": "4096"}).max_queued == 4096
