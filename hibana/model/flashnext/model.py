@@ -154,7 +154,8 @@ class FlashNext:
         # Vocabulary-parallel: each rank scores its rows of the vocabulary and `logits` gathers them.
         self.lm_head = TrunkLinear.load(w, ["lm_head.weight"], self.device, self.precision,
                                         ColumnParallel((div_even(target.vocab_size, tp.size),)))
-        self.vision = qwen_vision.load(w, self.device, cfg, current().vision_max_pixels, log) if vision else None
+        self.vision = (qwen_vision.load(w, self.device, cfg, current().vision_max_pixels, log, current().video_max_frames)
+                       if vision else None)
         w.close()
         torch.cuda.synchronize()
         # Bytes one decode token streams: the trunk, the head, one embedding row and its routed experts.

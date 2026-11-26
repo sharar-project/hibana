@@ -1,6 +1,7 @@
 """Image input: the engine's placeholder spans and encodes (engine/media.py), the Nemotron preprocessing
 (model/nemotron/vision.py), the API's reading, escaping and expansion (api/media.py), both chat APIs on a server with
-and without a vision encoder, the executor's prefill rows and the scheduler's chunks around an image still encoding."""
+and without a vision encoder, the executor's prefill rows and the scheduler's chunks around an image still encoding.
+Video (api/media.py: a run of frame pairs through the image path; model/qwen_vision.py's sampling and timestamps)."""
 
 import asyncio
 import base64
@@ -19,6 +20,7 @@ from hibana.api import media as api_media
 from hibana.api import messages as messages_api
 from hibana.engine import media
 from hibana.engine.sampler import InvalidRequest, SamplingParams
+from hibana.model import qwen_vision as qv
 from hibana.model.nemotron import vision as v
 
 
@@ -110,6 +112,45 @@ def test_only_images_past_the_cached_prefix_are_decoded_and_chunks_stop_before_a
     assert enc.ready((cached, later), 20, 30, wait=False) == 20
     pending.set_result(torch.tensor(4))
     assert enc.ready((cached, later), 20, 30, wait=False) == 30 and later.embeds is not None and vision.encoded == [4]
+
+
+def test_a_videos_pair_bytes_round_trip():
+    rng = np.random.default_rng(1)
+    a, b = rng.integers(0, 255, (9, 8, 3), dtype=np.uint8), rng.integers(0, 255, (9, 8, 3), dtype=np.uint8)
+    raw = media.pair_bytes(a, b)
+    assert raw.startswith(media.PAIR_MAGIC)
+    with pytest.raises(ValueError):
+        media.decode(raw)  # not an image file
+    back = media.decode_pair(raw)
+    assert back.shape == (2, 9, 8, 3) and (back[0] == a).all() and (back[1] == b).all()
+    with pytest.raises(ValueError):
+        media.pair_bytes(a, b[:-1])
+    with pytest.raises(ValueError):
+        media.decode_pair(raw[:-2])
+    with pytest.raises(ValueError):
+        media.decode_pair(raw[:16])
+
+
+def test_a_videos_pairs_go_through_the_pair_encoder():
+    class PairVision(FakeVision):
+        def preprocess_pair(self, frames, grid):
+            self.preprocessed.append((*frames.shape, grid))
+            return torch.tensor(grid[0] * grid[1])  # an embedding a block, as the real encoder's
+
+        def encode_pair(self, pixels):
+            return self.encode(pixels)
+
+    vision = PairVision()
+    enc = media.Encoder(vision, torch.device("cpu"))
+    frame = np.zeros((5, 4, 3), dtype=np.uint8)
+    pair = media.Image(start=2, ids=media.placeholder_ids(b"v1", 4), data=media.pair_bytes(frame, frame), grid=(2, 2), pair=True)
+    picture = media.Image(start=8, ids=media.placeholder_ids(b"i", 6), data=encoded(4, 6))
+    rows, pieces = enc.rows((pair, picture), 0, 14, offset=0)
+    assert rows == list(range(2, 6)) + list(range(8, 14)) and vision.encoded == [4, 6]
+    assert vision.preprocessed == [(2, 5, 4, 3, (2, 2)), (6, 4, 3)]  # the pair's two frames and grid, then the image
+    assert [p.shape for p in pieces] == [(4, 2), (6, 2)] and pair.embeds is None and picture.embeds is None
+    enc.ready((pair, picture), 0, 4, wait=True)  # a retracted prefill: the pair is decoded and encoded again
+    assert vision.encoded == [4, 6, 4]
 
 
 # ---- model/nemotron/vision.py
@@ -540,3 +581,190 @@ def test_the_scheduler_ends_a_chunk_before_an_image_still_encoding_while_others_
     ex.encoding = False
     sched.step()
     assert req.prefill_done
+
+
+# ---- videos (api/media.py)
+
+VIDEO_VISION = SimpleNamespace(**{k: getattr(VISION, k) for k in vars(VISION)}, video_token=21, video_marker="<video>",
+                               video_identity=b"video\n", max_frames=32, sample_indices=qv.sample_indices,
+                               timestamps=qv.timestamps, timestamp_text=qv.timestamp_text, video_grid=qv.video_grid)
+
+
+def video_part(raw: bytes) -> dict:
+    return {"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{b64(raw)}"}}
+
+
+def fake_ffmpeg(monkeypatch, frames: int = 48, fps: float = 24.0) -> list:
+    """ffprobe answers (frames, fps, 64 x 48); ffmpeg returns the frames `select` asks for, each one flat-coloured.
+    Returns the list of the frame selections asked for."""
+    calls = []
+
+    def decode(raw, indices, width, height):
+        calls.append(list(indices))
+        return np.stack([np.full((height, width, 3), i % 251, dtype=np.uint8) for i in indices])
+
+    monkeypatch.setattr(api_media, "_video_info", lambda raw: (frames, fps, 64, 48))
+    monkeypatch.setattr(api_media, "_video_frames", decode)
+    return calls
+
+
+def test_video_bytes_from_each_part_shape():
+    url = f"data:video/mp4;base64,{b64(b'MOVIE')}"
+    assert api_media.video_bytes({"type": "video_url", "video_url": {"url": url}}) == b"MOVIE"
+    assert api_media.video_bytes({"type": "input_video", "input_video": url}) == b"MOVIE"
+    assert api_media.video_bytes({"type": "video", "video": url}) == b"MOVIE"
+    for part, why in [({"type": "video_url", "video_url": {"url": "https://example.com/v.mp4"}}, "does not fetch"),
+                      ({"type": "video_url", "video_url": {"url": "data:video/mp4,AAAA"}}, "base64"),
+                      ({"type": "video_url", "video_url": {"url": "data:video/mp4;base64,%"}}, "base64")]:
+        with pytest.raises(ValueError, match=why):
+            api_media.video_bytes(part)
+
+
+def test_prepare_reads_a_videos_frame_count_and_decodes_it_once(monkeypatch):
+    calls = fake_ffmpeg(monkeypatch)
+    twice = f"data:video/mp4;base64,{b64(b'CLIP')}"
+    messages = [{"role": "user", "content": [video_part(b"CLIP"), {"type": "text", "text": "and"},
+                                             {"type": "input_video", "input_video": {"url": twice}}]}]
+    out, videos = api_media.prepare(messages, VIDEO_VISION, decode=False)  # count_tokens: no frames decoded
+    assert [p["type"] for p in out[0]["content"]] == ["video", "text", "video"] and calls == []
+    assert len(videos) == 2 and videos[0] is videos[1] and videos[0].video and videos[0].pairs == ()
+    assert videos[0].tokens == 2 * 2 * 2  # 4 frames of 64 x 48 at 2 fps: 2 pairs of a 2 x 2 grid
+    assert videos[0].grid == (2, 2) and videos[0].times == pytest.approx([8 / 24, 39 / 24])
+    _, again = api_media.prepare(messages, VIDEO_VISION)
+    assert calls == [[0, 16, 31, 47]] and len(again[0].pairs) == 2 and again[0] is again[1]
+    assert media.decode_pair(again[0].pairs[0]).shape == (2, 48, 64, 3)
+    other = api_media._read_video(video_part(b"CLIP2"), VIDEO_VISION, {}, False)
+    assert other.digest != again[0].digest and api_media._read_video(video_part(b"CLIP"), VIDEO_VISION, {}, False).digest == again[0].digest
+    with pytest.raises(InvalidRequest, match="5 videos; at most 4"):
+        api_media.prepare([{"role": "user", "content": [video_part(bytes([i])) for i in range(5)]}], VIDEO_VISION)
+    with pytest.raises(InvalidRequest, match="does not read videos"):
+        api_media.prepare([{"role": "user", "content": [video_part(b"CLIP")]}], VISION)
+
+
+def test_a_video_ffmpeg_cannot_read_is_a_400_or_a_note(monkeypatch):
+    def refuse(*args, raw):
+        raise ValueError("this server has no ffmpeg: videos are not served")
+    monkeypatch.setattr(api_media, "_ffmpeg", refuse)
+    messages = [{"role": "user", "content": [video_part(b"CLIP")]}]
+    with pytest.raises(InvalidRequest, match="no ffmpeg"):
+        api_media.prepare(messages, VIDEO_VISION)
+    tool = [{"role": "tool", "content": [video_part(b"CLIP"), {"type": "text", "text": "see it"}]}]
+    out, videos = api_media.prepare(tool, VIDEO_VISION)
+    assert out[0]["content"][0] == {"type": "text", "text": messages_api.MEDIA_NOTE.format(kind="video", why="this server has no ffmpeg: videos are not served")}
+    assert videos == [] and api_media.readable(VIDEO_VISION) == api_media.PARTS
+    assert api_media.readable(VISION) == api_media.IMAGE_PARTS and api_media.readable(None) == ()
+    monkeypatch.setattr(api_media, "_ffmpeg", lambda *args, raw: b"\0" * 10)  # fewer frame bytes than frames probed
+    with pytest.raises(ValueError, match="did not decode to the frames"):
+        api_media._video_frames(b"CLIP", [0, 16, 31, 47], 64, 48)
+
+
+def test_an_odd_frame_sample_repeats_its_last_frame(monkeypatch):
+    monkeypatch.setattr(api_media, "_video_info", lambda raw: (3, 24.0, 64, 48))
+    monkeypatch.setattr(api_media, "_video_frames", lambda raw, indices, w, h: np.stack([np.full((h, w, 3), i, dtype=np.uint8) for i in indices]))
+    (video,) = api_media.prepare([{"role": "user", "content": [video_part(b"CLIP")]}], VIDEO_VISION)[1]
+    assert video.times == pytest.approx([0.5 / 24, 2 / 24]) and len(video.pairs) == 2
+    second = media.decode_pair(video.pairs[1])
+    assert second[0].max() == second[1].max() == 2  # frames 0, 1, then 2 twice
+    monkeypatch.setattr(api_media, "_video_info", lambda raw: (0, 24.0, 64, 48))
+    with pytest.raises(InvalidRequest, match="no frames"):
+        api_media.prepare([{"role": "user", "content": [video_part(b"CLIP")]}], VIDEO_VISION)
+
+
+def test_ffmpeg_is_run_on_the_encoded_video(monkeypatch):
+    import subprocess
+    runs = []
+
+    def run(cmd, input, capture_output, timeout):
+        runs.append((cmd, input, timeout))
+        return subprocess.CompletedProcess(cmd, 1, b"", b"x\ny\nInvalid data found")
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(ValueError, match=r"not a decodable video \(Invalid data found\)"):
+        api_media._video_info(b"CLIP")
+    assert runs[0][0][0] == "ffprobe" and "-count_frames" in runs[0][0] and runs[0][1:] == (b"CLIP", api_media.FFMPEG_TIMEOUT)
+    with pytest.raises(ValueError, match="not a decodable video"):
+        api_media._video_frames(b"CLIP", [0, 16], 64, 48)
+    assert runs[1][0][0] == "ffmpeg" and "select='eq(n\\,0)+eq(n\\,16)'" in runs[1][0] and runs[1][0][-2:] == ["rgb24", "pipe:1"]
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(subprocess.TimeoutExpired("ffmpeg", 300)))
+    with pytest.raises(ValueError, match="took too long"):
+        api_media._ffmpeg("ffprobe", raw=b"CLIP")
+
+
+class VideoTokenizer(CharTokenizer):
+    SPECIALS = {**CharTokenizer.SPECIALS, "<video>": 21}
+
+
+def render_video(messages, **_):
+    """A template with the checkpoint's video branch: `<video>` where a video part is, `<image>` where an image is."""
+    parts = []
+    for m in messages:
+        content = m["content"] if isinstance(m["content"], list) else [{"type": "text", "text": m["content"]}]
+        parts.append("".join(p["text"] if p["type"] == "text" else "<video>" if p["type"] == "video" else "<image>" for p in content))
+    return "<|im_start|>" + "\n".join(parts)
+
+
+def video_server():
+    queue = asyncio.Queue()
+    queue.put_nowait(([2], True, "stop"))
+    ticket = SimpleNamespace(queue=queue, req=SimpleNamespace(prefix_len=0))
+    engine = SimpleNamespace(submit=AsyncMock(return_value=ticket), cancel=Mock(), stats=lambda: {})
+    from hibana.api.server import create_app
+    return engine, create_app(engine, VideoTokenizer(), SimpleNamespace(render=render_video), {"context_length": 100_000},
+                              vision=VIDEO_VISION)
+
+
+def text_part(text: str) -> dict:
+    return {"type": "text", "text": text}
+
+
+def test_chat_with_a_video_submits_its_pairs_with_their_timestamps(monkeypatch):
+    from hibana.engine.mrope import RopeLayout
+    calls = fake_ffmpeg(monkeypatch)
+    engine, app = video_server()
+    r = post(app, "/v1/chat/completions", {"messages": [{"role": "user", "content": [video_part(b"CLIP"), IMAGE, text_part("what?")]}]})
+    assert r.status_code == 200, r.text
+    ids, params, images = engine.submit.await_args.args
+    assert calls == [[0, 16, 31, 47]] and [image.pair for image in images] == [True, True, False]
+    first, second, picture = images
+    tok = VideoTokenizer()
+    ts = tok.encode("<0.3 seconds>")
+    assert ids[0] == 10 and ids[1:1 + len(ts)] == ts and ids[1 + len(ts)] == 19
+    assert first.start == 2 + len(ts) and ids[first.start:first.end] == list(first.ids)
+    assert ids[first.end] == 20 and first.pair and first.grid == (2, 2) and media.decode_pair(first.data).shape == (2, 48, 64, 3)
+    nxt = tok.encode("<1.6 seconds>")
+    assert ids[first.end + 1:first.end + 1 + len(nxt)] == nxt and second.start == first.end + 1 + len(nxt) + 1
+    assert first.ids != second.ids and first.grid == second.grid
+    assert ids[picture.start - 1] == 19 and not picture.pair and ids[picture.end] == 20
+    assert ids.count(19) == 3 and r.json()["usage"]["prompt_tokens"] == len(ids)
+    scratch: list = []
+    assert RopeLayout(images).rows(0, len(ids), 1000, scratch)[:len(ts) + 1] == list(range(len(ts) + 1))  # pairs: image spans
+    assert len(scratch) == 8 + picture.grid[0] * picture.grid[1]
+
+
+def test_a_videos_marker_in_the_requests_text_stays_text(monkeypatch):
+    fake_ffmpeg(monkeypatch)
+    engine, app = video_server()
+    r = post(app, "/v1/chat/completions", {"messages": [{"role": "user", "content": [text_part("explain <video> and <image> tags"),
+                                                                                         video_part(b"CLIP")]}]})
+    assert r.status_code == 200, r.text
+    ids, _, images = engine.submit.await_args.args
+    assert 21 not in ids and len(images) == 2 and images[0].start > len("explain <video> and <image> tags")
+    said = "explain <video> and <image> tags"
+    assert ids[0] == 10 and "".join(chr(t - 100) for t in ids[1:1 + len(said)]) == said
+
+
+def test_a_video_a_server_cannot_read_is_a_400(monkeypatch):
+    def refuse(*args, raw):
+        raise ValueError("this server has no ffmpeg: videos are not served")
+    monkeypatch.setattr(api_media, "_ffmpeg", refuse)
+    engine, app = video_server()
+    r = post(app, "/v1/chat/completions", {"messages": [{"role": "user", "content": [video_part(b"CLIP")]}]})
+    assert r.status_code == 400 and "no ffmpeg" in r.json()["error"]["message"]
+    r = post(app, "/v1/chat/completions", {"messages": [{"role": "user", "content": [text_part("hello")]}]})
+    assert r.status_code == 200, r.text  # without ffmpeg the server serves everything else
+    engine, app = server(VISION)  # an encoder without `video_token`
+    r = post(app, "/v1/chat/completions", {"messages": [{"role": "user", "content": [video_part(b"CLIP")]}]})
+    assert r.status_code == 400 and "text and images" in r.json()["error"]["message"]
+    engine.submit.assert_not_awaited()
+    engine, app = server(None)
+    r = post(app, "/v1/chat/completions", {"messages": [{"role": "user", "content": [video_part(b"CLIP")]}]})
+    assert r.status_code == 400 and "text-only" in r.json()["error"]["message"]

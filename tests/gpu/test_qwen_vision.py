@@ -51,6 +51,33 @@ def reference(ref, pixels) -> torch.Tensor:
     return ref(full.cuda().float(), grid_thw=torch.tensor([[1, gh, gw]], device="cuda")).pooler_output
 
 
+def reference_pair(ref, pixels) -> torch.Tensor:
+    """The reference tower on `preprocess_pair`'s patches: both temporal slots are the pair's frames (a t = 1 grid, as the
+    video reference's `cu_seqlens` make of a clip's frame pairs)."""
+    patches, gh, gw = pixels
+    return ref(patches.cuda().float(), grid_thw=torch.tensor([[1, gh, gw]], device="cuda")).pooler_output
+
+
+@pytest.mark.parametrize("size", [(512, 512), (1080, 1920), (1600, 400)])
+def test_pair_encode_is_the_image_path(pair, size):
+    """`encode_pair` of a frame with itself is bitwise `encode` of it, and of two frames the reference tower on the same
+    patches."""
+    import numpy as np
+    name, ours, ref = pair
+    a, b = image(*size, seed=1), image(*size, seed=2)
+    grid = ours.grid(size[1], size[0])
+    with torch.inference_mode():
+        one = ours.encode(ours.preprocess(a))
+        same = ours.encode_pair(ours.preprocess_pair(np.stack([a, a]), grid))
+        pixels = ours.preprocess_pair(np.stack([a, b]), grid)
+        got, expected = ours.encode_pair(pixels), reference_pair(ref, pixels)
+    assert torch.equal(one, same)
+    assert got.shape == one.shape
+    c = cos(got, expected)
+    print(f"{name} {size}: pair of a {grid[0]} x {grid[1]} grid, embeddings cos {c:.6f}")
+    assert c >= EMBED_COS, (name, size, c)
+
+
 @pytest.mark.parametrize("size", [(512, 512), (1080, 1920), (1600, 400), (20, 30)])
 def test_encoder_matches_the_reference(pair, size):
     name, ours, ref = pair

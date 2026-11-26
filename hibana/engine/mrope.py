@@ -1,5 +1,7 @@
 """Rope positions with images, for targets that rotate image tokens by 2-D positions (the Qwen checkpoints' interleaved
-M-RoPE). Text rotates by one position on all three axes, plain 1-D rope at `index + delta`. An image of rows x cols
+M-RoPE). Text rotates by one position on all three axes, plain 1-D rope at `index + delta`. A video frame pair
+(engine/media.py `Image.pair`) is an image span like any other, between the text of its timestamp: the checkpoints'
+`get_rope_index` splits a clip into t = 1 grids, so nothing here is of video. An image of rows x cols
 blocks starting at rope position s gives block (r, c) the position (s, s + r, s + c), and the text after it resumes at
 s + max(rows, cols). Image rows read scratch rows of the rotary table written for the forward
 (`PartialRotary.write_scratch`). Positions follow from the request's own images alone, so a prefix resumed from the

@@ -8,6 +8,11 @@ on the images in it, as on its text, and never resume one image's state for anot
 become the image token (`text_ids`), and the prefill forward replaces the embedding rows of an image's placeholders
 with the encoder's output (`ForwardContext.media_rows`, `media_embeds`).
 
+A video (a target whose encoder has a `video_token`) is a run of such images, one a frame pair (`Image.pair`): the
+API has decoded its frames, its `data` is the two frames (`pair_bytes`), and the encoder's `preprocess_pair` and
+`encode_pair` take the place of `preprocess` and `encode`. Its placeholders are content-derived as an image's, so
+the caches treat a pair as an image.
+
 The API reads only an image's header (`size`: the placeholder count follows from it) and keeps the encoded bytes. The
 executor's `Encoder` decodes and preprocesses an image on a worker thread once its request is admitted, and only
 when its span is past the cached prefix; runs the encode on a side stream ahead of the prefill chunk that reads it
@@ -38,6 +43,9 @@ MAX_IMAGE_PIXELS = 64_000_000
 _TRANSPOSE = {2: "FLIP_LEFT_RIGHT", 3: "ROTATE_180", 4: "FLIP_TOP_BOTTOM", 5: "TRANSPOSE", 6: "ROTATE_270",
               7: "TRANSVERSE", 8: "ROTATE_90"}
 BACKGROUND = (255, 255, 255)
+# A video frame pair's `data`: the magic, then a little-endian int64 (h, w), then both frames' RGB bytes: self-contained
+# bytes, as an image's encoded file is, that a prefill retracted and redone decodes again (api/media.py makes them)
+PAIR_MAGIC = b"\x93hibana-video-pair\x00"
 
 
 @dataclass(eq=False)
@@ -49,6 +57,7 @@ class Image:
     embeds: torch.Tensor | None = None  # [len(ids), hidden], from its encode until its span is prefilled
     encoded: torch.cuda.Event | None = None  # recorded on the side stream after the encode, until a prefill waits on it
     grid: tuple[int, int] | None = None  # (rows, cols) of its embeddings
+    pair: bool = False  # a video frame pair: `data` is `pair_bytes`, for the encoder's `preprocess_pair` and `encode_pair`
 
     @property
     def end(self) -> int:
@@ -112,6 +121,24 @@ def decode(raw: bytes) -> np.ndarray:
             raise ValueError(f"not a readable image ({exc})") from None
 
 
+def pair_bytes(a: np.ndarray, b: np.ndarray) -> bytes:
+    """Two RGB frames [H, W, 3] uint8, a video's temporal step, as one pair's `data`."""
+    if a.ndim != 3 or a.shape[2] != 3 or a.shape != b.shape or a.dtype != np.uint8 or b.dtype != np.uint8:
+        raise ValueError("a video pair is two same-size RGB frames")
+    return PAIR_MAGIC + np.array(a.shape[:2], dtype=np.int64).tobytes() + a.tobytes() + b.tobytes()
+
+
+def decode_pair(raw: bytes) -> np.ndarray:
+    """A pair's `data` as its two RGB frames [2, H, W, 3] uint8 (writable, for torch); ValueError if truncated."""
+    head = len(PAIR_MAGIC) + 16
+    if not raw.startswith(PAIR_MAGIC) or len(raw) < head:
+        raise ValueError("truncated video pair")
+    h, w = np.frombuffer(raw, dtype=np.int64, count=2, offset=len(PAIR_MAGIC))
+    if h < 1 or w < 1 or len(raw) - head != 2 * h * w * 3:
+        raise ValueError("truncated video pair")
+    return np.frombuffer(raw, dtype=np.uint8, offset=head).reshape(2, h, w, 3).copy()
+
+
 def placeholder_ids(digest: bytes, n: int) -> tuple[int, ...]:
     """n ids in [-2^31, -1] drawn from an image's digest: one per position, so two images share a cached prefix only
     if they agree on every placeholder in it. int32, which the SSD tier's block hashes pack (cache/ssd_store.py)."""
@@ -151,7 +178,11 @@ class Encoder:
         at admission): an image inside the prefix is never decoded."""
         for image in media:
             if image.end > pos and image.embeds is None and image.pixels is None:
-                image.pixels = self._worker.submit(lambda data: self.vision.preprocess(decode(data)), image.data)
+                if image.pair:
+                    image.pixels = self._worker.submit(lambda g, data: self.vision.preprocess_pair(decode_pair(data), g),
+                                                       image.grid, image.data)
+                else:
+                    image.pixels = self._worker.submit(lambda data: self.vision.preprocess(decode(data)), image.data)
 
     def ready(self, media: tuple[Image, ...], start: int, end: int, wait: bool) -> int:
         """Where a prefill chunk of prompt positions [start, end) can end: before the first image in it whose encode has
@@ -197,7 +228,7 @@ class Encoder:
     def _encode(self, image: Image) -> None:
         pixels, image.pixels = image.pixels.result(), None
         with torch.cuda.stream(self.stream) if self.stream is not None else nullcontext():
-            image.embeds = self.vision.encode(pixels)
+            image.embeds = (self.vision.encode_pair if image.pair else self.vision.encode)(pixels)
             if self.stream is not None:
                 image.encoded = torch.cuda.Event()
                 image.encoded.record(self.stream)

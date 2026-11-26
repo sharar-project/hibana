@@ -138,7 +138,11 @@ class VisionEncoder(Protocol):
     `model/nemotron/vision.py`, `model/qwen_vision.py`). The API makes an image `image_start`, `tokens(w, h)`
     placeholders (engine/media.py) and `image_end` where the template wrote `marker`; the model reads each placeholder as
     `image_token`, and prefill replaces those rows' embeddings with `encode(preprocess(rgb))`. With `mrope` the model
-    rotates the embeddings, `grid(w, h)` rows by cols in row-major order, by 2-D positions (engine/mrope.py)."""
+    rotates the embeddings, `grid(w, h)` rows by cols in row-major order, by 2-D positions (engine/mrope.py).
+    Optional, for video (api/media.py reads them): `video_token` and `video_marker` (the model reads a video's
+    placeholders, made a frame pair at a time by `preprocess_pair` and `encode_pair`), `video_identity` (part of every
+    video's digest), `video_grid(frames, w, h)`, `sample_indices`, `timestamps`, `timestamp_text` and `max_frames`
+    (model/qwen_vision.py)."""
 
     image_token: int
     image_start: int
