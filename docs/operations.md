@@ -114,6 +114,7 @@ Further settings, for tuning, diagnostics and the tools (defaults from `engine/c
 | `HIBANA_CLAUDE_CONFIG` | `~/.claude-hibana` | Claude Code's configuration directory under `hibana launch claude`, apart from the user's own |
 | `HIBANA_EVALS` | unset (the `eval` group) | A sharar-eval checkout for `tools/evaluate.py`, `tools/h2h_pr.py` and `tools/lossy_gate.py` (`--evals`) |
 | `HIBANA_EVALS_PYTHON` | unset | That checkout's Python (`--python`; default its `.venv`) |
+| `HIBANA_DEFAULT_THINKING` | `1` | `0` turns thinking off for chat requests that omit `chat_template_kwargs.enable_thinking` (an explicit request setting still overrides it) |
 | `HIBANA_MAX_QUEUED` | `0` | Requests queued before HTTP 429; it only raises the profile's limit (16, at least two batches), `0` keeps it |
 
 ### Adaptive verification (DFlash2)

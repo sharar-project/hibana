@@ -408,6 +408,12 @@ def test_adaptive_verification_for_dflash2_in_throughput(env):
     assert resolve(env, "27b", "throughput", overrides={"HIBANA_SPEC_DEPTHS": "16:4"}).get("HIBANA_SPEC_POLICY") == "budget"
 
 
+def test_default_thinking_validation(env):
+    assert resolve({**env, "HIBANA_DEFAULT_THINKING": "0"}, "flashnext").get("HIBANA_DEFAULT_THINKING") == "0"
+    with pytest.raises(ValueError, match="HIBANA_DEFAULT_THINKING must be 0 or 1"):
+        resolve({**env, "HIBANA_DEFAULT_THINKING": "yes"}, "flashnext")
+
+
 def test_max_queued_validation(env):
     assert resolve({**env, "HIBANA_MAX_QUEUED": "4096"}, "flashnext").get("HIBANA_MAX_QUEUED") == "4096"
     with pytest.raises(ValueError, match="HIBANA_MAX_QUEUED"):

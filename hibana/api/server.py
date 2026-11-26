@@ -63,6 +63,8 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
     """`vision`: the target's vision encoder (`model.vision`, engine/contracts.VisionEncoder) when it serves image
     input, else None."""
     MODEL_ID = describe.get("model_path", targets.DEFAULT_TARGET.model_id)  # the served checkpoint id, reported as the model name
+    from hibana.engine.config import current
+    default_thinking = current().default_thinking
     markers = media.Markers(tok, vision) if vision is not None else None
     @asynccontextmanager
     async def lifespan(app):
@@ -402,7 +404,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
         if not messages:
             raise HTTPException(400, "messages required")
         messages = _text_only(messages, images=vision is not None)
-        kwargs, thinking = _template_kwargs(body)
+        kwargs, thinking = _template_kwargs(body, default_thinking)
         tools = None if body.get("tool_choice") == "none" else body.get("tools")  # "none": generate without tool schemas
         messages, stopped = _guard(messages, body)
         if stopped is not None:
@@ -546,7 +548,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
                                                                                     list[int], bool, int, tuple]:
         req = messages_api.parse_request(body, images=vision is not None)
         req.messages, req.stopped = _guard(req.messages, body)
-        kwargs, thinking = _template_kwargs(body)
+        kwargs, thinking = _template_kwargs(body, default_thinking)
         if req.thinking is not None:
             thinking = req.thinking
         tools = None if choice == "none" else req.tools

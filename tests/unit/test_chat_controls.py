@@ -198,3 +198,28 @@ def test_constraints_are_built_for_the_served_targets_vocabulary(monkeypatch, ta
                 'messages': [{'role': 'user', 'content': 'hi'}], 'response_format': {'type': 'json_object'}})
     asyncio.run(scenario())
     assert built == [(vocab, tuple(targets.get(target).stop_token_ids))]
+
+
+@pytest.mark.parametrize('default, kwargs, expected', [
+    (True, None, True), (False, None, False),
+    (False, {'enable_thinking': True}, True), (True, {'enable_thinking': False}, False),
+])
+def test_thinking_default_is_fixed_at_app_creation_and_a_request_overrides_it(default, kwargs, expected):
+    from hibana.engine import config
+    async def scenario():
+        queue = asyncio.Queue()
+        queue.put_nowait(([5], True, 'stop'))
+        engine = SimpleNamespace(submit=AsyncMock(return_value=SimpleNamespace(queue=queue, req=SimpleNamespace(prefix_len=0))), cancel=Mock())
+        tok = SimpleNamespace(encode=Mock(return_value=[1]), decode=lambda ids, **kwargs: 'ok')
+        template = SimpleNamespace(render=Mock(return_value='prompt'))
+        with config.using(config.current().replace(default_thinking=default)):
+            app = create_app(engine, tok, template, {})
+        body = {'messages': [{'role': 'user', 'content': 'hi'}]}
+        if kwargs is not None:
+            body['chat_template_kwargs'] = kwargs
+        with config.using(config.current().replace(default_thinking=not default)):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+                response = await client.post('/v1/chat/completions', json=body)
+        assert response.status_code == 200
+        assert template.render.call_args.kwargs['enable_thinking'] is expected
+    asyncio.run(scenario())
