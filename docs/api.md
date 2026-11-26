@@ -156,12 +156,15 @@ a base64 `data:` URL, in user turns and in tool results as images are; the serve
 `ffprobe` on the server (`apt install ffmpeg`), which decode the clip's frames; without them every other request is
 served as before and a video is a 400 (`this server has no ffmpeg: videos are not served`). The template writes
 `<|vision_start|><|video_pad|><|vision_end|>` for a video part; that string in a request's own text is read as text.
+As the checkpoints' processor does (transformers 5.10 and later), only `<|video_pad|>` is replaced: the template's
+`<|vision_start|>` and `<|vision_end|>` stay around what replaces it.
 
 A video is read as its checkpoint's video processor does: sampled uniformly at 2 frames a second, at least 4 and at most
 `HIBANA_VIDEO_MAX_FRAMES` frames (default 32), the frames resized together so that all of them fit the checkpoint's
 25,165,824-pixel budget (and 4,194,304 pixels a frame: a pair then costs what the largest image does), and encoded two
 at a time. The prompt gets, a frame pair, the text of its timestamp (`<12.4 seconds>`, the mean time of its two frames),
-then `<|vision_start|>`, the pair's tokens and `<|vision_end|>`: each pair costs as many tokens as an image of the
+then `<|vision_start|>`, the pair's tokens and `<|vision_end|>`, all of it inside the template's own `<|vision_start|>`
+and `<|vision_end|>`: each pair costs as many tokens as an image of the
 frame size (a 1280 x 720 clip: 900 a pair, 16 pairs and about 170 more for the timestamps at the default cap), and the
 video's tokens must fit the context with the rest of the prompt. `usage` counts them, and
 `/v1/messages/count_tokens` includes them, from the clip's frame count alone. A pair rotates by image positions

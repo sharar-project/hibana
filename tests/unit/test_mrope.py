@@ -199,8 +199,11 @@ def test_the_qwen_video_marker_escapes_and_expands():
     at = [i for i, t in enumerate(ids) if t in (qv.IMAGE_TOKEN, qv.VIDEO_TOKEN)]  # the marks' token indices
     assert ids.count(qv.VIDEO_TOKEN) == 1 and ids.count(qv.IMAGE_TOKEN) == 1 and ids[at[0]] == qv.VIDEO_TOKEN
     assert [rendered[a:b] for a, b in (offsets[i] for i in at)] == [qv.VIDEO_MARKER, qv.MARKER]  # the template's own
-    text_ids = "".join(chr(t - 100) for t in ids if t not in (qv.IMAGE_TOKEN, qv.VIDEO_TOKEN))
+    text_ids = "".join(chr(t - 100) for t in ids if t not in (qv.IMAGE_TOKEN, qv.VIDEO_TOKEN, qv.IMAGE_START, qv.IMAGE_END))
     assert text_ids == "q  " + qv.VIDEO_MARKER + "  " + qv.MARKER + " w"  # the escapes undone, the markers read as text
+    # the template's markers around the video token stay in the prompt, as transformers' processor keeps them
+    assert ids[at[0] - 1:at[0] + 2] == [qv.IMAGE_START, qv.VIDEO_TOKEN, qv.IMAGE_END]
+    assert ids.count(qv.IMAGE_START) == 1 and ids.count(qv.IMAGE_END) == 1  # the video; the escaped ones are text
     video = api_media.Prepared(b"v" * 32, 12, b"V", (2, 2), video=True, times=(0.0, 12.34, 120.0), pairs=(b"p0", b"p1", b"p2"))
     picture = api_media.Prepared(b"a" * 32, 4, b"A", (2, 2))
     out, moved, engine_images = api_media.expand(ids, at[1], [video, picture], VideoLike, tok)
@@ -214,11 +217,14 @@ def test_the_qwen_video_marker_escapes_and_expands():
         assert out[image.end] == qv.IMAGE_END
         k = image.end + 1
         growth += len(ts) + 2 + len(image.ids)
+    assert out[at[0] - 1] == qv.IMAGE_START  # the template's, before the first timestamp
+    assert out[k] == qv.IMAGE_END and k == at[0] + growth  # the template's, after the last pair's
+    k += 1
     growth -= 1  # less the video token all of them replace
     assert len(set(i for e in engine_images[:3] for i in e.ids)) == 12  # each pair has its own ids
     assert [e.pair for e in engine_images] == [True] * 3 + [False] and engine_images[3].data == b"A"
-    assert out[k:k + at[1] - at[0] - 1] == ids[at[0] + 1:at[1]]  # the text between, as it was
-    k += at[1] - at[0] - 1
+    assert out[k:k + at[1] - at[0] - 2] == ids[at[0] + 2:at[1]]  # the text between, as it was
+    k += at[1] - at[0] - 2
     assert out[k] == qv.IMAGE_START and out[k + 1:k + 5] == list(engine_images[3].ids) and out[k + 5] == qv.IMAGE_END
     assert out[k + 6:] == ids[at[1] + 1:] and len(out) == len(ids) + growth + picture.tokens + 1
     assert moved == at[1] + growth  # the picture's mark, moved by what the video added before it

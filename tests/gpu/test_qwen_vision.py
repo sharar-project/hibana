@@ -150,3 +150,90 @@ def test_encode_cost(pair, tokens):
           f"workspace {peak / 2**20:.0f} MiB (reserved {ours.workspace_bytes / 2**20:.0f} MiB)")
     assert out.shape[0] == tokens
     assert peak <= ours.workspace_bytes
+def _test_clip(frames: int = 16, size: tuple[int, int] = (48, 64)) -> bytes:
+    """A tiny H.264 clip of `frames` solid frames, by ffmpeg on the host (None without it)."""
+    import subprocess
+    try:
+        p = subprocess.run(["ffmpeg", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{size[1]}x{size[0]}", "-r", "24",
+                            "-i", "pipe:0", "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"],
+                           input=b"".join(bytes([i * 16 % 256] * 3) * (size[0] * size[1]) for i in range(frames)), capture_output=True, timeout=60)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    return p.stdout if p.returncode == 0 and p.stdout else None
+
+
+def test_video_prompt_is_the_processors():
+    """A video request's prompt is `Qwen3VLProcessor`'s, token for token (Hibana's placeholders read as the video
+    token), and its M-RoPE positions `get_rope_index`'s, on four shapes: a video; text before the video; two videos; a
+    system prompt and a second turn with the same video. The template's `<|vision_start|>` and `<|vision_end|>` stay
+    around what replaces `<|video_pad|>` (transformers 5.10 and later). Needs the snapshot, transformers and torchvision
+    (the processor's video preprocessing), and ffmpeg on the host."""
+    pytest.importorskip("torchvision")
+    from transformers import AutoProcessor
+    from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLModel
+
+    from hibana.api import media as api_media
+    from hibana.api.chat_template import ChatTemplate
+    from hibana.engine.mrope import RopeLayout
+    from hibana.target import TARGETS
+    from hibana.tokenizer import SnapshotTokenizer
+    from hibana.weights.safetensors import SnapshotWeights
+    try:
+        snap = TARGETS["qwen38"].snapshot_dir()
+    except FileNotFoundError as exc:
+        pytest.skip(str(exc))
+    clip = _test_clip()
+    if clip is None:
+        pytest.skip("no ffmpeg on this host")
+    w = SnapshotWeights(snap)
+    vision = v.load(w, torch.device("cuda"), json.loads((snap / "config.json").read_text()), v.MAX_PIXELS, log=None)
+    w.close()
+    tok, tmpl = SnapshotTokenizer(snap), ChatTemplate(snap)
+    url = "data:video/mp4;base64," + __import__("base64").b64encode(clip).decode()
+
+    def part():
+        return {"type": "video_url", "video_url": {"url": url}}
+
+    shapes = [
+        [{"role": "user", "content": [part(), {"type": "text", "text": "In what order do the colours appear?"}]}],
+        [{"role": "user", "content": [{"type": "text", "text": "Watch this, then answer."}, part(),
+                                      {"type": "text", "text": "Which way does it move?"}]}],
+        [{"role": "user", "content": [part(), part(), {"type": "text", "text": "Are these the same?"}]}],
+        [{"role": "system", "content": "You are terse."},
+         {"role": "user", "content": [{"type": "text", "text": "What is here?"}, part()]},
+         {"role": "assistant", "content": "A clip."},
+         {"role": "user", "content": [part(), {"type": "text", "text": "And now?"}]}],
+    ]
+    proc = AutoProcessor.from_pretrained(snap)
+    total, fps, width, height = api_media._video_info(clip)
+    frames = api_media._video_frames(clip, list(range(total)), width, height)  # every frame: the processor samples
+    holder = Qwen3VLModel.__new__(Qwen3VLModel)
+    holder.config = type("C", (), {"vision_config": type("V", (), {"spatial_merge_size": 2})()})()
+    for n, messages in enumerate(shapes):
+        folded, images = api_media.prepare([dict(m) for m in messages], vision, decode=False)
+        rendered = tmpl.render(api_media.escape(folded, api_media.markers(vision)), enable_thinking=False, tools=None)
+        ids, _, engine_images = api_media.expand(api_media.Markers(tok, vision).encode(rendered), 0, images, vision, tok)
+        ids = [v.VIDEO_TOKEN if i < 0 else i for i in ids]
+        def as_hf(m):
+            content = m.get("content")
+            if isinstance(content, list):
+                content = [{"type": "video", "video": "clip.mp4"} if p.get("type") in api_media.VIDEO_PARTS else p for p in content]
+            return {**m, "content": content}
+        text = proc.apply_chat_template([as_hf(m) for m in messages], tokenize=False, add_generation_prompt=True, enable_thinking=False)
+        out = proc(text=[text], videos=[frames] * len(images), video_metadata=[{"fps": fps, "total_num_frames": total}] * len(images), return_tensors="pt")
+        hf = out["input_ids"][0].tolist()
+        assert ids == hf, f"shape {n}: Hibana {len(ids)} tokens, the processor {len(hf)}"
+        with torch.inference_mode():
+            positions, delta = holder.get_rope_index(out["input_ids"], out["mm_token_type_ids"], video_grid_thw=out["video_grid_thw"])
+        layout, scratch = RopeLayout(engine_images), []
+        base = 10**9
+        ours = []
+        k = 0
+        for r in layout.rows(0, len(ids), base, scratch):
+            if r >= base:
+                ours.append(scratch[k]); k += 1
+            else:
+                ours.append((r, r, r))
+        ours = torch.tensor(ours, dtype=positions.dtype).t()
+        assert torch.equal(ours, positions[:, 0, :]) and layout.delta == int(delta[0, 0]), f"shape {n}"
+        print(f"video prompt shape {n}: {len(ids)} tokens identical to Qwen3VLProcessor, positions identical ({int((out['mm_token_type_ids'] == 2).sum())} video tokens)")

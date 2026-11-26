@@ -14,8 +14,10 @@ the images (with their grids) for the engine.
 
 A video (OpenAI `video_url`, `input_video` or `video`, a `data:` URL) needs an encoder with a `video_token` (the Qwen
 targets). It is decoded here, by `ffmpeg` and `ffprobe` on the server, into the frames the checkpoint's video processor
-samples, and `expand` replaces its marker with what that processor writes: for each frame pair, the text of its
-timestamp, then the image start, the pair's placeholder ids and the image end. Every pair is an image to the engine
+samples, and `expand` replaces its video token with what that processor writes in place of `<|video_pad|>`: for each
+frame pair, the text of its timestamp, then the image start, the pair's placeholder ids and the image end. The
+template's `<|vision_start|>` before and `<|vision_end|>` after stay, as they do for an image and as transformers'
+processor keeps them (5.10 and later expand the video token alone). Every pair is an image to the engine
 (engine/media.py `Image.pair`), whose ids follow the video's content and the pair's place in it, so the caches resume
 a video's prefix as an image's. A server without `ffmpeg` serves everything else and answers a video with a 400.
 """
@@ -254,16 +256,19 @@ def escape(value, marker):
 
 
 class Markers:
-    """`tok` for a render of escaped messages: each image marker the template wrote is the image token, each video
-    marker the video token, and the rest, the escapes undone, is encoded with those tokens read as text. Offsets are
-    the render's."""
+    """`tok` for a render of escaped messages: each image marker the template wrote is the image token; each video
+    marker, the image start, the video token and the image end (the template's own markers around `<|video_pad|>`,
+    which stay in the prompt as transformers' processor keeps them); and the rest, the escapes undone, is encoded with
+    those tokens read as text. Offsets are the render's."""
 
     def __init__(self, tok, vision):
         self.image_token = vision.image_token
         self.video_token = getattr(vision, "video_token", None)
         self.tokens = {self.image_token: vision.marker}  # a token for each string the template writes for a part
+        self.ids = {self.image_token: [self.image_token]}  # what each marker's token becomes
         if self.video_token is not None:
             self.tokens[self.video_token] = vision.video_marker
+            self.ids[self.video_token] = [vision.image_start, self.video_token, vision.image_end]
         self.split = re.compile("(" + "|".join(re.escape(m) for m in self.tokens.values()) + ")")
         self.text = tok.without_specials({vision.image_token, vision.image_start, vision.image_end}
                                           | ({self.video_token} if self.video_token is not None else set()))
@@ -272,9 +277,9 @@ class Markers:
         ids, offsets, at = [], [], 0
         tokens = {m: t for t, m in self.tokens.items()}
         for k, piece in enumerate(self.split.split(text)):
-            if k % 2:  # a marker the template wrote: its token, at its span
-                ids.append(tokens[piece])
-                offsets.append((at, at + len(piece)))
+            if k % 2:  # a marker the template wrote: its token(s), at its span
+                ids += self.ids[tokens[piece]]
+                offsets += [(at, at + len(piece))] * len(self.ids[tokens[piece]])
             else:
                 for marker in self.tokens.values():
                     piece = piece.replace(_escaped(marker), marker)
@@ -290,8 +295,9 @@ class Markers:
 
 def expand(ids: list[int], boundary: int, images: list[Prepared], vision, tok=None) -> tuple[list[int], int, tuple[media.Image, ...]]:
     """`ids` with the n-th image token replaced by `<img>`, the n-th image's placeholders and `</img>`, and the n-th
-    video token by each of the n-th video's frame pairs as its processor writes them: the tokens of its timestamp
-    (`tok` encodes each on its own), `<img>`, the pair's placeholders and `</img>`. The message boundary moves past what
+    video token by each of the n-th video's frame pairs as its processor writes them in place of `<|video_pad|>`: the
+    tokens of its timestamp (`tok` encodes each on its own), `<img>`, the pair's placeholders and `</img>`; the
+    `<img>` before and `</img>` after it (`Markers`) stay. The message boundary moves past what
     was inserted before it (0 stays unknown). Returns the prompt and the engine's images, a video's pairs among them."""
     tokens = {vision.image_token: False}
     if getattr(vision, "video_token", None) is not None:

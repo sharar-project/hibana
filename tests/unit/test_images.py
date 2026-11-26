@@ -727,16 +727,17 @@ def test_chat_with_a_video_submits_its_pairs_with_their_timestamps(monkeypatch):
     first, second, picture = images
     tok = VideoTokenizer()
     ts = tok.encode("<0.3 seconds>")
-    assert ids[0] == 10 and ids[1:1 + len(ts)] == ts and ids[1 + len(ts)] == 19
-    assert first.start == 2 + len(ts) and ids[first.start:first.end] == list(first.ids)
+    assert ids[:2] == [10, 19] and ids[2:2 + len(ts)] == ts and ids[2 + len(ts)] == 19  # the template's <|vision_start|> stays before the first timestamp
+    assert first.start == 3 + len(ts) and ids[first.start:first.end] == list(first.ids)
     assert ids[first.end] == 20 and first.pair and first.grid == (2, 2) and media.decode_pair(first.data).shape == (2, 48, 64, 3)
     nxt = tok.encode("<1.6 seconds>")
     assert ids[first.end + 1:first.end + 1 + len(nxt)] == nxt and second.start == first.end + 1 + len(nxt) + 1
     assert first.ids != second.ids and first.grid == second.grid
     assert ids[picture.start - 1] == 19 and not picture.pair and ids[picture.end] == 20
-    assert ids.count(19) == 3 and r.json()["usage"]["prompt_tokens"] == len(ids)
+    assert ids[second.end + 1] == 20  # the template's <|vision_end|>, after the last pair's
+    assert ids.count(19) == 4 and ids.count(20) == 4 and r.json()["usage"]["prompt_tokens"] == len(ids)
     scratch: list = []
-    assert RopeLayout(images).rows(0, len(ids), 1000, scratch)[:len(ts) + 1] == list(range(len(ts) + 1))  # pairs: image spans
+    assert RopeLayout(images).rows(0, len(ids), 1000, scratch)[:len(ts) + 2] == list(range(len(ts) + 2))  # pairs: image spans
     assert len(scratch) == 8 + picture.grid[0] * picture.grid[1]
 
 
