@@ -31,7 +31,7 @@ speculative scratch capacity.
 | `stop` | A nonempty string or list of nonempty stop strings |
 | `n` | 1 to 16 choices (non-streaming). The prompt is prefilled once by a one-token primer and published to the prefix cache; the n samples resume at its last chunk end (at most 64 tokens re-prefilled each) and decode side by side, up to the batch size at a time. With a `seed`, choice i uses seed + i; use a temperature above 0 for distinct choices |
 | `chat_template_kwargs.enable_thinking` | Thinking defaults to true; false disables it |
-| `reasoning_effort` | `low`, `medium`, `high` select the template's reasoning instruction (`low`, `medium`, `xhigh`; `high` and `max` map to `xhigh`, the default); unknown values keep the default; `chat_template_kwargs.reasoning_effort` takes precedence |
+| `reasoning_effort` | `low`, `medium`, `high` select the template's reasoning instruction (`low`, `medium`, `xhigh`; `high` and `max` map to `xhigh`, the default); unknown values keep the default; `chat_template_kwargs.reasoning_effort` takes precedence. Nemotron's templates have only `medium_effort` (`{reasoning effort: efficient}`): `low` and `medium` set it, `high` keeps full reasoning, and `chat_template_kwargs.medium_effort` takes precedence |
 | `tools` | Tool schemas passed to the template; generated calls are parsed |
 | `tool_choice` omitted/null/`auto` | Unconstrained model choice |
 | `tool_choice: "none"` | Omit tool schemas from the prompt and tool-call parsing |

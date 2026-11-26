@@ -39,3 +39,19 @@ def test_nemotron_keeps_earlier_reasoning_so_a_new_user_turn_appends(target):
     # without reasoning in the history (most OpenAI clients drop it) the prompt is the template default's
     plain = [{k: v for k, v in m.items() if k != "reasoning_content"} for m in first + turn + second]
     assert tmpl.render(plain, enable_thinking=True) == tmpl.render(plain, enable_thinking=True, truncate_history_thinking=True)
+
+
+@pytest.mark.parametrize("variables,kwargs,want", [
+    ("medium_effort", {"reasoning_effort": "low"}, "efficient"),
+    ("medium_effort", {"reasoning_effort": "medium"}, "efficient"),
+    ("medium_effort", {"reasoning_effort": "xhigh"}, "full"),
+    ("medium_effort", {}, "full"),
+    ("medium_effort", {"reasoning_effort": "low", "medium_effort": False}, "full"),  # the request's own variable wins
+    ("reasoning_effort", {"reasoning_effort": "low"}, "low"),  # a template that reads reasoning_effort gets it as is
+])
+def test_a_client_effort_level_reaches_a_template_that_reads_only_medium_effort(tmp_path, variables, kwargs, want):
+    """Nemotron's templates (Super, Bolt) take medium_effort, not reasoning_effort."""
+    body = ("{{ 'efficient' if medium_effort is defined and medium_effort else 'full' }}" if variables == "medium_effort"
+            else "{{ reasoning_effort }}")
+    (tmp_path / "chat_template.jinja").write_text(body)
+    assert ChatTemplate(tmp_path).render([], **kwargs) == want

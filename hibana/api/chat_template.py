@@ -24,7 +24,11 @@ class ChatTemplate:
         )
         env.globals["raise_exception"] = _raise_exception
         env.filters["tojson"] = jinja2.filters.do_tojson if hasattr(jinja2.filters, "do_tojson") else None
-        self._template = env.from_string((snap / "chat_template.jinja").read_text())
+        source = (snap / "chat_template.jinja").read_text()
+        self._template = env.from_string(source)
+        # Nemotron's templates take no reasoning_effort, only medium_effort (its "{reasoning effort: efficient}" line):
+        # there a client's low or medium effort sets it, and high keeps the template's full reasoning
+        self._effort_to_medium = "medium_effort" in source and "reasoning_effort" not in source
 
     def render(
         self,
@@ -35,6 +39,9 @@ class ChatTemplate:
         tools: list | None = None,
         **kwargs,
     ) -> str:
+        if self._effort_to_medium and "reasoning_effort" in kwargs:
+            effort = kwargs.pop("reasoning_effort")
+            kwargs.setdefault("medium_effort", effort in ("low", "medium"))
         return self._template.render(
             messages=messages,
             add_generation_prompt=add_generation_prompt,
