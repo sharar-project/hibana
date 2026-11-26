@@ -15,10 +15,12 @@ speculative scratch capacity.
 | `POST /generate` | Native text or token-ID input, output IDs and request metadata |
 | `POST /v1/tokenize` | Token counting/encoding |
 | `POST /flush_cache` | Invalidate reusable prefixes; locked prefixes drain safely |
-| `GET /v1/models` | Supported model |
+| `GET /v1/models` | Supported model (`HIBANA_MODEL_ALIAS` listed first when set) |
 | `GET /health` | Engine availability |
 | `GET /get_server_info` | Serving profile, scheduler, cache and speculation statistics |
 | `GET /metrics` | Metrics |
+
+When `HIBANA_MODEL_ALIAS` is set, chat and text completion responses report the alias in `model`, including streaming chunks and usage chunks. Otherwise, they report the served checkpoint id.
 
 ## Chat controls
 
