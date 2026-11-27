@@ -152,7 +152,6 @@ def test_a_videos_pairs_go_through_the_pair_encoder():
     enc.ready((pair, picture), 0, 4, wait=True)  # a retracted prefill: the pair is decoded and encoded again
     assert vision.encoded == [4, 6, 4]
 
-
 # ---- model/nemotron/vision.py
 
 @pytest.mark.parametrize("size,patches", [((256, 256), (32, 32)), ((4000, 3000), (132, 100)), ((1920, 1080), (120, 68)),

@@ -150,6 +150,8 @@ def test_encode_cost(pair, tokens):
           f"workspace {peak / 2**20:.0f} MiB (reserved {ours.workspace_bytes / 2**20:.0f} MiB)")
     assert out.shape[0] == tokens
     assert peak <= ours.workspace_bytes
+
+
 def _test_clip(frames: int = 16, size: tuple[int, int] = (48, 64)) -> bytes:
     """A tiny H.264 clip of `frames` solid frames, by ffmpeg on the host (None without it)."""
     import subprocess

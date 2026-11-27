@@ -165,7 +165,8 @@ A video is read as its checkpoint's video processor does: sampled uniformly at 2
 at a time. The prompt gets, a frame pair, the text of its timestamp (`<12.4 seconds>`, the mean time of its two frames),
 then `<|vision_start|>`, the pair's tokens and `<|vision_end|>`, all of it inside the template's own `<|vision_start|>`
 and `<|vision_end|>`: each pair costs as many tokens as an image of the
-frame size (a 1280 x 720 clip: 900 a pair, 16 pairs and about 170 more for the timestamps at the default cap), and the
+frame size (a 1280 x 720 clip at the default cap: 16 pairs at 720 a pair, as its frames are resized together to 640 x 1152
+at 32 sampled frames; 900 a pair holds only up to 27; and about 170 more for the timestamps), and the
 video's tokens must fit the context with the rest of the prompt. `usage` counts them, and
 `/v1/messages/count_tokens` includes them, from the clip's frame count alone. A pair rotates by image positions
 (M-RoPE, as `get_rope_index` splits a clip), the text after each continuing from the pair's larger side.

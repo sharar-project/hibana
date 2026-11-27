@@ -133,6 +133,9 @@ without it. The limits:
 | Videos a request | 4 | Beside the 100 images; the prompt with its videos must fit the context |
 | Decode | 300 s | What `ffmpeg` and `ffprobe` may spend on one video; longer is a 400 naming it |
 
+The last two are module constants in `api/media.py` (`MAX_VIDEOS`, `FFMPEG_TIMEOUT`), as the 100 images a request are
+(`MAX_IMAGES`), not `EngineConfig` fields.
+
 **`ffmpeg` and `ffprobe`.** Video needs both on the host (`apt install ffmpeg`); nothing else does, and they are not a
 dependency of the project. `hibana serve` does not check for them: without them every other request is served as before
 and a video is a 400 (`this server has no ffmpeg: videos are not served`), or a note inside a tool result.
