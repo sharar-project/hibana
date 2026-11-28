@@ -108,6 +108,8 @@ class EngineConfig:
     bolt_experts: str = "b12x"                # HIBANA_BOLT_EXPERTS: b12x fused MoE (BF16 activations) | fp8 grouped native IQ2 | bf16 Triton weight-only
     vision: bool = False                      # HIBANA_VISION: load the checkpoint's vision encoder for image input
     vision_max_pixels: int = 16_777_216       # HIBANA_VISION_MAX_PIXELS: the Qwen targets' resize cap per image (16,384 tokens)
+    video_max_frames: int = 32                # HIBANA_VIDEO_MAX_FRAMES: the Qwen targets' sampled frames a video (a pair: as many tokens as an image)
+    video_max_bytes: int = 64 * 2**20         # HIBANA_VIDEO_MAX_BYTES: an encoded video in a request
     # --- speculation
     spec: str | None = None                   # HIBANA_SPEC as given ("auto"/unset: the proposer's default depth)
     proposer: str | None = None               # HIBANA_PROPOSER: mtp | dflash2 | dspark (serve: the target's default)
@@ -200,6 +202,8 @@ class EngineConfig:
             bolt_experts=_str(e, "HIBANA_BOLT_EXPERTS", "b12x"),
             vision=_flag(e, "HIBANA_VISION"),
             vision_max_pixels=_positive(e, "HIBANA_VISION_MAX_PIXELS", 16_777_216),
+            video_max_frames=_positive(e, "HIBANA_VIDEO_MAX_FRAMES", 32),
+            video_max_bytes=_positive(e, "HIBANA_VIDEO_MAX_BYTES", 64 * 2**20),
             spec=_str(e, "HIBANA_SPEC"),
             proposer=_str(e, "HIBANA_PROPOSER"),
             spec_depths=_str(e, "HIBANA_SPEC_DEPTHS"),

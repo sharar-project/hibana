@@ -24,7 +24,7 @@ speculative scratch capacity.
 
 | Field | Supported behavior |
 |---|---|
-| `messages` | Nonempty conversation rendered with the pinned snapshot template; `image_url` parts on a target serving images ([images](#images)). Earlier assistant turns' `reasoning_content` is rendered on every target (Nemotron's template variable `truncate_history_thinking` defaults to false here; `chat_template_kwargs` can set it), so a new user turn appends to the cached prompt instead of changing it |
+| `messages` | Nonempty conversation rendered with the pinned snapshot template; `image_url` parts on a target serving images ([images](#images)) and `video_url` parts on one serving video ([videos](#videos)). Earlier assistant turns' `reasoning_content` is rendered on every target (Nemotron's template variable `truncate_history_thinking` defaults to false here; `chat_template_kwargs` can set it), so a new user turn appends to the cached prompt instead of changing it |
 | `stream` | Server-sent events ending with `[DONE]` |
 | `max_tokens` / `max_completion_tokens` | Requested output budget |
 | `temperature`, `top_p`, `top_k`, `seed` | Validated sampling parameters. An omitted `temperature` is OpenAI's 1.0 (with Hibana's defaults top_p 0.95 and top_k 20, kept because the fused sampled verify needs a top_k; not every model's generation config sets them); send `temperature: 0` for greedy. OpenCode sends no sampling fields, and greedy thinking looped until `max_tokens` in its runs. `/v1/completions` and `/generate` keep greedy as their default |
@@ -134,9 +134,9 @@ A request's image is decoded once by the server to check it; the engine decodes 
 encoded, on a worker thread from the request's admission, so an image in a cached prefix is never decoded or encoded
 again: a later turn that sends the same image resumes from the cached prefix, image included. The encode (about 30 ms
 for a 1,024-patch tile, 0.7 s for a full one, on one GB10) runs on its own CUDA stream; while other requests decode, a
-prefill chunk ends before an image still encoding, so their tokens keep coming. The checkpoint's video and audio inputs
-are not served (`input_audio`, `file`, `video_url` and Messages `document` blocks are a 400, or a note inside a tool
-result).
+prefill chunk ends before an image still encoding, so their tokens keep coming. The checkpoint's audio and document
+inputs are not served (`input_audio`, `file` and Messages `document` blocks are a 400, or a note inside a tool
+result), nor video on a target without it (`video_url`, `input_video` and `video` parts likewise).
 
 The 27B and Flash-Next serve their checkpoints' vision tower with `HIBANA_VISION=1` (off by default; 0.86 GiB of BF16
 weights). An image is resized to multiples of 32 pixels between 65,536 pixels and `HIBANA_VISION_MAX_PIXELS` (default
@@ -148,6 +148,35 @@ continues from its larger side, not its token count; the positions follow from t
 and the SSD tier resume them unchanged. An image must be followed by at least 4 prompt tokens (every template's turn
 end is). The encode takes 0.09 s for 1,024 tokens, 0.76 s for 4,096 and 9.0 s for 16,384 on one GB10; a lower
 `HIBANA_VISION_MAX_PIXELS` bounds it (and is part of each image's identity, so no cached prefix crosses a change).
+
+### Videos
+
+With `HIBANA_VISION=1` the 27B and Flash-Next read video: an OpenAI `video_url` part (or `input_video`, or `video`) with
+a base64 `data:` URL, in user turns and in tool results as images are; the server fetches nothing. It needs `ffmpeg` and
+`ffprobe` on the server (`apt install ffmpeg`), which decode the clip's frames; without them every other request is
+served as before and a video is a 400 (`this server has no ffmpeg: videos are not served`). The template writes
+`<|vision_start|><|video_pad|><|vision_end|>` for a video part; that string in a request's own text is read as text.
+As the checkpoints' processor does (transformers 5.10 and later), only `<|video_pad|>` is replaced: the template's
+`<|vision_start|>` and `<|vision_end|>` stay around what replaces it.
+
+A video is read as its checkpoint's video processor does: sampled uniformly at 2 frames a second, at least 4 and at most
+`HIBANA_VIDEO_MAX_FRAMES` frames (default 32), the frames resized together so that all of them fit the checkpoint's
+25,165,824-pixel budget (and 4,194,304 pixels a frame: a pair then costs what the largest image does), and encoded two
+at a time. The prompt gets, a frame pair, the text of its timestamp (`<12.4 seconds>`, the mean time of its two frames),
+then `<|vision_start|>`, the pair's tokens and `<|vision_end|>`, all of it inside the template's own `<|vision_start|>`
+and `<|vision_end|>`: each pair costs as many tokens as an image of the
+frame size (a 1280 x 720 clip at the default cap: 16 pairs at 720 a pair, as its frames are resized together to 640 x 1152
+at 32 sampled frames; 900 a pair holds only up to 27; and about 170 more for the timestamps), and the
+video's tokens must fit the context with the rest of the prompt. `usage` counts them, and
+`/v1/messages/count_tokens` includes them, from the clip's frame count alone. A pair rotates by image positions
+(M-RoPE, as `get_rope_index` splits a clip), the text after each continuing from the pair's larger side.
+
+At most 4 videos and 100 images are read in a request, and a video is at most `HIBANA_VIDEO_MAX_BYTES` (default 64
+MiB). A 400 names the video that is not one ffmpeg can read or decode in 300 s. In a tool result such a video becomes
+a note and the turn goes on. Each frame pair is an image to the engine: decoded and encoded on the worker thread and
+the side stream as images are, once its span is past the cached prefix, and keyed in the radix cache and the SSD tier by
+the video's content and the pair's place in it, so a later turn that sends the same video resumes from the cached
+prefix.
 
 With thinking off the models sometimes still reason about an image and end it with `</think>`; as NVIDIA's reasoning
 parser does, everything is then content.

@@ -89,7 +89,7 @@ same) and results, traces, 3-bit checkpoints and logs in `HIBANA_RESULTS` (defau
 | Calibrated 3-bit checkpoint | `$HIBANA_RESULTS/w3-checkpoints/<target>-current`, kept on the pinned published revision at every serve ([how](w3-calibration.md#where-the-served-copies-come-from)) | `HIBANA_W3_CHECKPOINT=/dir`. Without one the 27B rounds to nearest and Flash-Next serves its FP8 trunk; the preflight and `/get_server_info` (`w3_warning`) say so ([calibration](w3-calibration.md)) |
 | Flash-Next routed experts | the W3 checkpoint's 3-bit experts when it carries them (`fast`, `throughput`) | `HIBANA_FLASHNEXT_EXPERTS=nvfp4` keeps the checkpoint's NVFP4 experts |
 | Flash-Next PLE table on two Sparks | each rank's half of the heads in device memory (23.8 GiB per rank; [tensor parallel](tensor-parallel.md)) | `HIBANA_PLE_RESIDENT=0` reads it from the memory maps on the host, as one Spark does (which prefetches a prompt's later chunks into the page cache) |
-| Image input | Nemotron and Bolt: on (their vision encoder, 1.6 GiB); the 27B and Flash-Next: off | `HIBANA_VISION=0` leaves the encoder's memory to the pools; images are then a 400 ([API](api.md#images)). `HIBANA_VISION=1` serves the 27B's and Flash-Next's vision tower (0.86 GiB, up to 2.2 GiB to encode the largest image); `HIBANA_VISION_MAX_PIXELS` caps their images (default 16,777,216 pixels, 16,384 tokens) |
+| Image input | Nemotron and Bolt: on (their vision encoder, 1.6 GiB); the 27B and Flash-Next: off | `HIBANA_VISION=0` leaves the encoder's memory to the pools; images are then a 400 ([API](api.md#images)). `HIBANA_VISION=1` serves the 27B's and Flash-Next's vision tower (0.86 GiB, up to 2.2 GiB to encode the largest image); `HIBANA_VISION_MAX_PIXELS` caps their images (default 16,777,216 pixels, 16,384 tokens). With it they read video too, which needs `ffmpeg` and `ffprobe` on the host (without them a video is a 400 and everything else is served): `HIBANA_VIDEO_MAX_FRAMES` caps a video's sampled frames (default 32, each pair as costly as an image of the frame size) and `HIBANA_VIDEO_MAX_BYTES` an encoded video (default 64 MiB) ([API](api.md#videos)) |
 | Shape-stable prefill numerics | off | `HIBANA_STABLE_NUMERICS=1` (M-invariant kernels for the three row-count-dependent ops; see [limits](#numerical-limits)) |
 | Memory left to other programs (host floor) | 6 GiB of `MemAvailable` | `HIBANA_HOST_FLOOR_GIB`: raise it by what other services on the Spark use at their peak; it also moves the admission hold and the memory guard (half of it) and preflight's check (host floor, below) |
 
@@ -117,6 +117,33 @@ Further settings, for tuning, diagnostics and the tools (defaults from `engine/c
 | `HIBANA_EVALS` | unset (the `eval` group) | A sharar-eval checkout for `tools/evaluate.py`, `tools/h2h_pr.py` and `tools/lossy_gate.py` (`--evals`) |
 | `HIBANA_EVALS_PYTHON` | unset | That checkout's Python (`--python`; default its `.venv`) |
 | `HIBANA_MAX_QUEUED` | `0` | Requests queued before HTTP 429; it only raises the profile's limit (16, at least two batches), `0` keeps it |
+
+### Video input
+
+With `HIBANA_VISION=1` the 27B and Flash-Next read video as well as images, as their checkpoints' video processors
+do ([API](api.md#videos)): a clip is sampled at 2 frames a second, its frames are resized together to one size, and the
+engine reads each frame pair as an image, behind the text of its timestamp. Text and image requests are served as
+without it. The limits:
+
+| Limit | Default | |
+|---|---|---|
+| `HIBANA_VIDEO_MAX_FRAMES` | 32 | Frames sampled from a clip, uniformly at 2 frames a second and at least 4 (the checkpoints' own default is 768). Each pair costs what an image of the frame size does, in tokens and in encode time before the prefill: a 640 x 480 clip is 300 tokens a pair |
+| `HIBANA_VIDEO_MAX_BYTES` | 64 MiB | An encoded video in a request |
+| Pixels | the checkpoint's video budget | 25,165,824 over the whole clip (at least 4,096) and 4,194,304 a frame, every frame of a clip one size. A longer clip is therefore made of smaller frames: a 1280 x 720 clip at the default 32 frames is resized to 640 x 1152, 720 tokens a pair (16 pairs, about 11,700 with the timestamps). `HIBANA_VISION_MAX_PIXELS` bounds images only |
+| Videos a request | 4 | Beside the 100 images; the prompt with its videos must fit the context |
+| Decode | 300 s | What `ffmpeg` and `ffprobe` may spend on one video; longer is a 400 naming it |
+
+The last two are module constants in `api/media.py` (`MAX_VIDEOS`, `FFMPEG_TIMEOUT`), as the 100 images a request are
+(`MAX_IMAGES`), not `EngineConfig` fields.
+
+**`ffmpeg` and `ffprobe`.** Video needs both on the host (`apt install ffmpeg`); nothing else does, and they are not a
+dependency of the project. `hibana serve` does not check for them: without them every other request is served as before
+and a video is a 400 (`this server has no ffmpeg: videos are not served`), or a note inside a tool result.
+
+On one GB10 (27B, `fast`): a 4 s 640 x 480 clip (4 pairs, 1,200 tokens) prefills in 0.5 s where a text prompt of the
+same length takes 0.35 s, and a 16 s 1280 x 720 one (16 pairs, 11,700 tokens) in 5.0 s. Decode does not depend on the
+video: 67 ms a round with or without one in the prompt, so tokens a second follow the drafts' acceptance as for text. A
+later turn that sends the same video resumes from the cached prefix.
 
 ### Adaptive verification (DFlash2)
 

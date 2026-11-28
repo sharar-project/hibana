@@ -124,7 +124,8 @@ class Qwen38:
         self.final_norm = GemmaRMSNorm(w.get(f"{PREFIX}.norm.weight").to(self.device), target.rms_norm_eps)
         # Vocabulary-parallel: each rank scores its rows of the vocabulary and `logits` gathers them.
         self.lm_head = load_nvfp4_linear(w, ["lm_head"], self.device, ColumnParallel((div_even(target.vocab_size, tp.size),)))
-        self.vision = qwen_vision.load(w, self.device, cfg, current().vision_max_pixels, log) if vision else None
+        self.vision = (qwen_vision.load(w, self.device, cfg, current().vision_max_pixels, log, current().video_max_frames)
+                       if vision else None)
         w.close()
         torch.cuda.synchronize()
         if log:
