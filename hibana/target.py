@@ -433,20 +433,20 @@ def get(name: str | None) -> Target:
 
 
 def load_model(target: Target, snap: Path, **kwargs):
-    """Construct the target's model object; the executor reads its `.target`."""
+    """Construct the target's model object; the executor reads its `.target` and `.weights_identity`."""
     if target.name == "bolt":
-        from hibana.model.bolt.model import Bolt
-        return Bolt(snap, target=target, **kwargs)
-    if target.family == "qwen38":
-        from hibana.model.qwen38 import Qwen38
-        return Qwen38(snap, target=target, **kwargs)
-    if target.family == "flashnext":
-        from hibana.model.flashnext.model import FlashNext
-        return FlashNext(snap, target=target, **kwargs)
-    if target.family == "nemotron":
-        from hibana.model.nemotron.model import Nemotron
-        return Nemotron(snap, target=target, **kwargs)
-    if target.family == "inkling":
-        from hibana.model.inkling.model import Inkling
-        return Inkling(snap, target=target, **kwargs)
-    raise ValueError(f"no loader for target {target.name!r}")
+        from hibana.model.bolt.model import Bolt as cls
+    elif target.family == "qwen38":
+        from hibana.model.qwen38 import Qwen38 as cls
+    elif target.family == "flashnext":
+        from hibana.model.flashnext.model import FlashNext as cls
+    elif target.family == "nemotron":
+        from hibana.model.nemotron.model import Nemotron as cls
+    elif target.family == "inkling":
+        from hibana.model.inkling.model import Inkling as cls
+    else:
+        raise ValueError(f"no loader for target {target.name!r}")
+    from hibana.weights.safetensors import snapshot_identity
+    model = cls(snap, target=target, **kwargs)
+    model.weights_identity = snapshot_identity(snap)
+    return model

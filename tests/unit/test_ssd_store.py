@@ -68,6 +68,40 @@ def test_keys_chain_every_token_and_fold_in_the_identity():
     assert tail_hash(a, [5, 6]) != tail_hash(a, [5]) != tail_hash(a, [])
 
 
+
+def snapshot(root, shard: bytes):
+    """A model cache's snapshot: config, index and one shard, each linked to its blob."""
+    blobs, snap = root / "blobs", root / "snapshots" / "r1"
+    blobs.mkdir(parents=True), snap.mkdir(parents=True)
+    files = {"config.json": b"{}", "model.safetensors.index.json": json.dumps({"weight_map": {"w": "s.safetensors"}}).encode(),
+             "s.safetensors": shard}
+    for name, data in files.items():
+        (blobs / name).write_bytes(data)
+        (snap / name).symlink_to(blobs / name)
+    return snap
+
+
+def test_the_weight_files_key_the_store(tmp_path):
+    """Two weight sets under one revision (separate model caches) key different stores; the same files, one."""
+    from types import SimpleNamespace as NS
+    from hibana.engine.executor import Executor
+    from hibana.target import QWEN38
+    from hibana.weights.safetensors import snapshot_identity
+    a, b = snapshot(tmp_path / "a", b"weights a"), snapshot(tmp_path / "b", b"weights b")
+    assert snapshot_identity(a) == snapshot_identity(a) != snapshot_identity(b)
+    shard = a / "s.safetensors"
+    before = snapshot_identity(a)
+    os.utime(shard, ns=(shard.stat().st_atime_ns, shard.stat().st_mtime_ns + 1))  # rewritten in place, same size
+    assert snapshot_identity(a) != before
+    ex = Executor.__new__(Executor)
+    ex.target = QWEN38
+    ex.state_pool = NS(bytes_per_slot=QWEN38.state_bytes_per_slot, ssm_format=NS(kind="fp32"))
+    ex.kv_pool = NS(nvfp4=False)
+    ex.model = NS(weights_identity=snapshot_identity(a))
+    first = root_hash(ex._cache_identity())
+    ex.model.weights_identity = snapshot_identity(b)
+    assert root_hash(ex._cache_identity()) != first
+
 def test_round_trip_across_a_restart(tmp_path):
     store = SsdStore(tmp_path, IDENTITY)
     key = block_hash(store.root, range(BLOCK))

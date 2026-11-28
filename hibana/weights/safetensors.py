@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -9,6 +10,18 @@ import torch
 from safetensors import safe_open
 
 from hibana.weights import files
+
+
+def snapshot_identity(snap: Path) -> str:
+    """The files a model reads from its snapshot (config.json, the index and every shard it names), by size and
+    modification time: the SSD store keys stored prefixes by it, so two weight sets under one revision (from separate
+    model caches, say) never restore each other's. Only a stat each; a re-downloaded or copied file costs a cold store."""
+    index = json.loads((snap / "model.safetensors.index.json").read_text())
+    h = hashlib.sha256()
+    for name in ("config.json", "model.safetensors.index.json", *sorted(set(index["weight_map"].values()))):
+        st = (snap / name).stat()  # through the model cache's link, its blob
+        h.update(f"{name}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+    return h.hexdigest()[:16]
 
 
 class SnapshotWeights:
