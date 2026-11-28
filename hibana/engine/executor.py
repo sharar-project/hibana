@@ -348,8 +348,8 @@ class Executor:
 
     def _cache_identity(self) -> dict:
         """What makes stored cache bytes interchangeable between processes: the
-        same target revision, decode weights, geometry, recurrent-state format
-        and prefill numerics."""
+        same target revision and weight files, decode weights, geometry,
+        recurrent-state format and prefill numerics."""
         from hibana.engine.config import current
         t = self.target
         tp = get_tp_info()
@@ -359,6 +359,9 @@ class Executor:
                     **({"tensor_parallel": f"{tp.rank}/{tp.size}"} if tp.size > 1 else {})}  # a rank's records hold its heads
         if self.state_pool.ssm_format.kind != "fp32":  # FP32 records keep their identity
             identity["ssm_state"] = self.state_pool.ssm_format.describe()
+        weights = getattr(self.model, "weights_identity", None)
+        if weights is not None:
+            identity["weights"] = weights
         if getattr(self.kv_pool, "nvfp4", False):  # FP8 records keep their identity
             identity["kv_format"] = "nvfp4"
         arithmetic = getattr(self.model, "arithmetic_identity", None)
